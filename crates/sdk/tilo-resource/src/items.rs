@@ -114,15 +114,31 @@ pub fn item_children<R: Resource>(
 
 /// The spec of `decl` with its item parameter bound to `item`.
 fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) -> ActionSpec {
+    bound(
+        decl,
+        &[(param, serde_json::Value::String(item.as_str().to_owned()))],
+    )
+}
+
+/// `decl` offered on the item it acts on, with `values` bound to their
+/// parameters: what a published child carries ("remove *this* photograph",
+/// "rename *this* album"). The other parameters stay typed; the action is
+/// built, checked and undone exactly as the declaration is. Published on a
+/// child, the declaration stays on the resource for scripts that name the
+/// item, out of the palette's way.
+pub fn bound<R: Resource>(
+    decl: &ActionDecl<R>,
+    values: &[(&'static str, serde_json::Value)],
+) -> ActionSpec {
     let params: Vec<ActionParam> = decl
         .params
         .iter()
-        .filter(|candidate| candidate.name != param)
+        .filter(|candidate| !values.iter().any(|(name, _)| candidate.name == *name))
         .cloned()
         .collect();
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
-    let item = item.as_str().to_owned();
+    let values: Vec<(&'static str, serde_json::Value)> = values.to_vec();
     let mut spec = ActionSpec::typed(
         decl.id,
         decl.label.clone(),
@@ -131,7 +147,9 @@ fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) 
         params,
         move |args| {
             let mut arguments = args.to_json();
-            arguments.insert(param.to_owned(), serde_json::Value::String(item.clone()));
+            for (name, value) in &values {
+                arguments.insert((*name).to_owned(), value.clone());
+            }
             let action = ActionArgs::bind_json(&all, &arguments)
                 .map_err(|error| error.to_string())
                 .and_then(|args| build(&args, crate::resource::origin_now_ms()));
@@ -147,4 +165,19 @@ fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) 
         spec = spec.destructive();
     }
     spec
+}
+
+/// Whether some resource in `children`, at any depth, offers `decl` with
+/// arguments bound ([`bound`]).
+pub(crate) fn offered_bound<R: Resource>(
+    children: &[tilo_actions::Resource],
+    decl: &ActionDecl<R>,
+) -> bool {
+    children.iter().any(|child| {
+        child
+            .actions
+            .iter()
+            .any(|spec| spec.id == decl.id && spec.params().len() < decl.params.len())
+            || offered_bound(&child.children, decl)
+    })
 }

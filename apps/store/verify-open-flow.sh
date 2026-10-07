@@ -2,8 +2,8 @@
 # Driven end-to-end proof of the store's tapp "add, don't install" path.
 #
 # Stands up a REAL local HTTP registry serving a REAL signed hello.tapp,
-# then drives the store's real click pipeline (CRDT edge → StoreApp::sync
-# → pending action → actions::execute) via the `drive_open` example:
+# then drives the store's real click pipeline (Store effect → admitted
+# package operation → actions::execute) via the `drive_open` example:
 #
 #   1. Click **Open** on the Tilo card → the store downloads the .tapp on
 #      demand and hands it to `tilo-install`, which verifies + caches it.

@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::InvocationId;
+
 /// Prefix used when context is embedded in an Automerge change message.
 /// Ordinary application-authored commit messages remain untouched.
 pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.action/1 ";
@@ -33,6 +35,20 @@ pub struct ActionContext {
     /// history bytes are unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invoker: Option<ActionInvoker>,
+    /// The invocation admitted by the action door, when this change came
+    /// through one. This is correlation, not authority: executors replace
+    /// this field from their retained admission before applying an action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_invocation: Option<InvocationId>,
+    /// Replayable document compensation computed by the canonical action
+    /// executor. This describes a change; it carries no caller authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compensation: Option<ActionCompensation>,
+    /// Exact executor action that produced this change. This is inert
+    /// correlation, never caller authority: fresh semantic envelopes replace
+    /// it with their own identity. Legacy replay preserves its absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executed_action: Option<crate::ActionId>,
     /// What the change is to the people sharing the document, declared by
     /// the action ([`crate::Action::change_kind`]) or, for a change that is
     /// nobody's step whatever it does (what a brand-new record starts with),
@@ -40,6 +56,12 @@ pub struct ActionContext {
     /// history bytes are unchanged.
     #[serde(skip_serializing_if = "ChangeKind::is_content")]
     pub change: ChangeKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionCompensation {
+    pub undo: crate::EncodedAction,
+    pub redo: crate::EncodedAction,
 }
 
 /// What a change is to the people sharing a document. Every kind is durable,
@@ -98,11 +120,24 @@ impl ActionContext {
         if self.invoker.is_none() {
             self.invoker.clone_from(&ambient.invoker);
         }
+        if self.source_invocation.is_none() {
+            self.source_invocation = ambient.source_invocation;
+        }
         for facet in &ambient.facets {
             if !self.facets.contains(facet) {
                 self.facets.push(facet.clone());
             }
         }
+        self
+    }
+
+    /// Pin the invocation retained by the admitted dispatch boundary.
+    ///
+    /// This replaces rather than fills an ambient value. Only the executor
+    /// that owns admission should call it.
+    #[must_use]
+    pub fn with_source_invocation(mut self, invocation: Option<InvocationId>) -> Self {
+        self.source_invocation = invocation;
         self
     }
 
@@ -520,6 +555,13 @@ impl ParticipantId {
         Self::new(format!("{AGENT_TASK_PARTICIPANT_PREFIX}{task_id}"))
     }
 
+    /// One host-minted execution's private view. This key is subordinate to the
+    /// admitted principal and confers no authority. Hosts derive it from their
+    /// execution lease, never a client-supplied run label or context.
+    pub fn for_execution(execution: uuid::Uuid) -> Self {
+        Self(format!("execution:{execution}"))
+    }
+
     /// The task id of a host-derived agent task participant.
     pub fn agent_task(&self) -> Option<&str> {
         self.0.strip_prefix(AGENT_TASK_PARTICIPANT_PREFIX)
@@ -768,6 +810,7 @@ mod tests {
         .with_app("org.tilo.Files", "Files")
         .with_purpose("Prepare the launch brief")
         .with_group("issue:42", "Launch brief", "issue")
+        .with_source_invocation(Some(InvocationId(uuid::Uuid::from_u128(42))))
         .with_facet(ActionFacet::new("file-type", "Markdown"));
         let message = context.change_message().expect("non-empty context");
         assert_eq!(ActionContext::from_change_message(&message), Some(context));

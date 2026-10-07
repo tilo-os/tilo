@@ -21,13 +21,57 @@ use ui::tokens::SpacingStep;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, cards, gap, rows, semantic_status_pill, value_row,
+    El, StatusTone, caption, card, cards, error_row, gap, rows, semantic_status_pill, value_row,
 };
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource;
 use ui::widget::{Button, Row, Spacer, Text, Widget};
+
+use crate::host::PaneCx;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+
+/// Where Privacy & Security sends the person to change what it reports.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum PermissionsEffect {
+    /// Open the privacy settings of the workspace that owns the grants.
+    #[effect(job, label = "Open workspace privacy")]
+    OpenWorkspacePrivacy,
+}
+
+/// Answer `effect` by opening the tool it names.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: PermissionsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    match effect {
+        PermissionsEffect::OpenWorkspacePrivacy => {
+            if !app.host().reaches_devices() {
+                return Err("only a window someone uses opens workspace settings".into());
+            }
+            Ok(cx.thread(
+                move |_| {
+                    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                    })
+                },
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ))
+        }
+    }
+}
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
 fn state_path() -> Option<PathBuf> {
@@ -42,15 +86,29 @@ fn load_text() -> Option<String> {
 struct DeviceSecurity {
     disk_encryption: String,
     secure_boot: String,
-    firewall: String,
+    /// The firewall in force, or why that could not be read.
+    firewall: Result<String, String>,
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let out =
-        bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5)).ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    command_output(program, args).ok()
+}
+
+/// `program args…`'s trimmed standard output, or why it gave none.
+fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
+    let out = bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5))
+        .map_err(|error| format!("{program}: {error}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let said = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .find(|text| !text.is_empty())
+            .map_or_else(|| format!("exited with {}", out.status), str::to_string);
+        Err(format!("{program}: {said}"))
+    }
 }
 
 /// `lsblk` reports every ancestor of `/`; any `crypt` layer means the live
@@ -89,14 +147,30 @@ fn secure_boot_status() -> String {
     }
 }
 
-fn firewall_status() -> String {
-    if command_stdout("firewall-cmd", &["--state"]).as_deref() == Some("running") {
-        return t("perm-firewall-firewalld");
+/// firewalld when it runs, otherwise the nftables ruleset. "Not active" is
+/// only said when the ruleset was read and is empty; a ruleset that could
+/// not be read (it needs privileges) is reported as unreadable.
+fn firewall_status() -> Result<String, String> {
+    firewall_from(command_output("firewall-cmd", &["--state"]), || {
+        command_output("nft", &["list", "ruleset"])
+    })
+}
+
+fn firewall_from(
+    firewalld: Result<String, String>,
+    nft: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if firewalld.as_deref() == Ok("running") {
+        return Ok(t("perm-firewall-firewalld"));
     }
-    if command_stdout("nft", &["list", "ruleset"]).is_some_and(|s| !s.trim().is_empty()) {
-        return t("perm-firewall-nftables");
+    match nft() {
+        Ok(ruleset) if !ruleset.trim().is_empty() => Ok(t("perm-firewall-nftables")),
+        Ok(_) => Ok(t("perm-firewall-off")),
+        Err(nft_error) => Err(match firewalld {
+            Err(firewalld_error) => format!("{firewalld_error}; {nft_error}"),
+            Ok(_) => nft_error,
+        }),
     }
-    t("perm-firewall-off")
 }
 
 fn device_security() -> DeviceSecurity {
@@ -152,7 +226,7 @@ enum Tint {
 impl Tint {
     fn tone(self) -> StatusTone {
         match self {
-            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Accent,
+            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Info,
             Tint::Camera | Tint::Microphone | Tint::Remote => StatusTone::Warning,
             Tint::Network => StatusTone::Success,
         }
@@ -225,7 +299,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             } else {
                 t("perm-verb-ro")
             };
-            ("Files", format!("{p}  ·  {verb}"), Tint::Files)
+            ("Files", format!("{verb}: {p}"), Tint::Files)
         }
         Scope::Device(d) if d == "camera" => ("Camera", t("perm-capture-video"), Tint::Camera),
         Scope::Device(d) if d == "microphone" => {
@@ -322,7 +396,11 @@ fn cap_row(view: &CapView) -> El {
     Box::new(
         Row::new()
             .push(semantic_status_pill(&kind, view.tint.tone()))
-            .push(Box::new(Text::new(&view.detail).with_size(12.0).dimmed()))
+            .push(Box::new(
+                Text::new(&view.detail)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            ))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(&expiry, StatusTone::Neutral)),
     )
@@ -331,15 +409,17 @@ fn cap_row(view: &CapView) -> El {
 /// One app's block within a workspace card: the app id, then its grants.
 fn app_block(grants: &AppGrants) -> El {
     let mut items: Vec<El> = Vec::new();
-    items.push(Box::new(Text::new(&grants.app).with_size(13.0)));
+    items.push(Box::new(
+        Text::new(&grants.app).with_role(ui::TextRole::Body),
+    ));
     for cap in &grants.caps {
         items.push(cap_row(cap));
     }
     rows(items)
 }
 
-pub fn build() -> Box<dyn Widget> {
-    build_view(load_text().as_deref())
+pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
+    build_view(cx, load_text().as_deref())
 }
 
 fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
@@ -391,7 +471,13 @@ fn device_security_card() -> El {
         rows(vec![
             value_row(&t("perm-disk"), &security.disk_encryption),
             value_row(&t("perm-secure-boot"), &security.secure_boot),
-            value_row(&t("perm-firewall"), &security.firewall),
+            match &security.firewall {
+                Ok(firewall) => value_row(&t("perm-firewall"), firewall),
+                Err(error) => error_row(
+                    &t("perm-firewall"),
+                    &t_args("perm-firewall-error", &[("error", error.as_str().into())]),
+                ),
+            },
             caption(&t("perm-security-caption")),
         ]),
     )
@@ -406,27 +492,22 @@ fn scope_card() -> El {
     card(
         &t("perm-this-device"),
         rows(vec![Box::new(
-            Text::new(&t("perm-this-device-body")).with_size(12.0),
+            Text::new(&t("perm-this-device-body")).with_role(ui::TextRole::Caption),
         )]),
     )
 }
 
 /// Intro card: what these grants are and where they come from.
-fn workspace_grants_intro_card() -> El {
+fn workspace_grants_intro_card(cx: &PaneCx) -> El {
     let open = t("perm-open-workspace");
     card(
         &t("perm-workspace-intro-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-workspace-intro-body")).with_size(12.0)),
-            Box::new(
-                Button::new("open-workspace-privacy", &open, None)
-                    .content_sized()
-                    .on_effect(|| {
-                        let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                            route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
-                        });
-                    }),
-            ),
+            Box::new(Text::new(&t("perm-workspace-intro-body")).with_role(ui::TextRole::Caption)),
+            Box::new(cx.bind_invocation(
+                Button::new("open-workspace-privacy", &open),
+                PermissionsEffect::OpenWorkspacePrivacy,
+            )),
         ]),
     )
 }
@@ -437,7 +518,7 @@ fn no_workspace_grants_card() -> El {
     card(
         &t("perm-no-grants-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-no-grants-body")).with_size(12.0)),
+            Box::new(Text::new(&t("perm-no-grants-body")).with_role(ui::TextRole::Caption)),
             gap(SpacingStep::S1),
             caption(&t("perm-no-grants-caption")),
         ]),
@@ -451,7 +532,7 @@ fn workspace_grants_unavailable_card() -> El {
     card(
         &t("perm-unavailable-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-unavailable-body")).with_size(12.0)),
+            Box::new(Text::new(&t("perm-unavailable-body")).with_role(ui::TextRole::Caption)),
             caption(&t("perm-unavailable-caption")),
         ]),
     )
@@ -467,7 +548,11 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
         "perm-grants-summary",
         &[("grants", grants.into()), ("workspaces", workspaces.into())],
     );
-    panel.push(Box::new(Text::new(&summary).with_size(11.0).dimmed()));
+    panel.push(Box::new(
+        Text::new(&summary)
+            .with_role(ui::TextRole::Caption)
+            .dimmed(),
+    ));
 
     for ws in all {
         let mut body: Vec<El> = Vec::new();
@@ -498,7 +583,7 @@ fn enforcement_card() -> El {
 
 /// Core builder, split from [`build`] so it can be exercised against an
 /// explicit state document in tests without touching the real config dir.
-fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
+fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
     let workspace_access = state_json.map(project).transpose();
 
     let mut panel: Vec<El> = Vec::new();
@@ -508,7 +593,7 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
     panel.push(privacy_hardware_card(&privacy));
     panel.push(active_privacy_use_card(&privacy));
     panel.push(device_security_card());
-    panel.push(workspace_grants_intro_card());
+    panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
         Ok(Some(all)) if all.is_empty() => panel.push(no_workspace_grants_card()),
@@ -527,8 +612,43 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cx() -> PaneCx {
+        PaneCx::in_file(std::env::temp_dir().join("tilo-settings-permissions-unused.json"))
+    }
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use std::collections::HashMap;
+
+    /// "Not active" is only said about a ruleset that was read and is empty.
+    /// A ruleset this session may not read (nft needs privileges) and no
+    /// running firewalld is not a firewall that is off.
+    #[test]
+    fn an_unreadable_firewall_is_not_reported_as_off() {
+        let denied = || Err("nft: Operation not permitted (you must be root)".to_string());
+        assert_eq!(
+            firewall_from(Ok("running".into()), denied),
+            Ok(t("perm-firewall-firewalld"))
+        );
+        assert_eq!(
+            firewall_from(Err("firewall-cmd: not running".into()), denied),
+            Err(
+                "firewall-cmd: not running; nft: Operation not permitted (you must be root)".into()
+            )
+        );
+        assert_eq!(
+            firewall_from(
+                Err("firewall-cmd: not running".into()),
+                || Ok(String::new())
+            ),
+            Ok(t("perm-firewall-off"))
+        );
+        assert_eq!(
+            firewall_from(Err("firewall-cmd: not running".into()), || {
+                Ok("table inet filter {}".into())
+            }),
+            Ok(t("perm-firewall-nftables"))
+        );
+    }
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
 
@@ -596,7 +716,7 @@ mod tests {
             // The pane still cannot mutate state.json. Its only button asks the
             // shell to reveal the active workspace's authoritative controls.
             for json in [None, Some(sample_state().as_str())] {
-                let mut pane = build_view(json);
+                let mut pane = build_view(&cx(), json);
                 build_layout_of(&mut pane);
                 assert_eq!(count_named(pane.as_ref(), "Button"), 1);
             }
@@ -607,11 +727,11 @@ mod tests {
             // System Settings never pretends it can edit a workspace. The one
             // live control is an explicit route to the current workspace's
             // authoritative access surface.
-            let mut pane = build_view(Some(&sample_state()));
+            let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             button_labels(pane.as_ref(), &mut labels);
-            assert_eq!(labels, vec!["Open current workspace access"]);
+            assert_eq!(labels, vec!["Open workspace access"]);
         }
 
         // Case `cap_view_maps_each_scope_to_its_kind`.
@@ -671,7 +791,7 @@ mod tests {
         {
             // Two grants → the workspace card carries a kind pill + a lifetime chip
             // for each (4 badges), built from the real projection.
-            let mut pane = build_view(Some(&sample_state()));
+            let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             assert_eq!(
                 count_named(pane.as_ref(), "Badge"),
@@ -679,7 +799,7 @@ mod tests {
                 "two pills per grant"
             );
             // Intro + one workspace + enforcement cards are all present.
-            assert!(count_named(pane.as_ref(), "Card") >= 3);
+            assert!(count_named(pane.as_ref(), "Section") >= 3);
         }
     }
 
@@ -712,7 +832,7 @@ mod tests {
         // Case `missing_state_never_claims_that_no_grants_exist`.
         {
             // No state document means the panel cannot make a claim about grants.
-            let mut pane = build_view(None);
+            let mut pane = build_view(&cx(), None);
             build_layout_of(&mut pane);
             assert_eq!(
                 count_named(pane.as_ref(), "Badge"),
@@ -721,7 +841,7 @@ mod tests {
             );
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"Workspace access can't be checked".to_string()));
             assert!(
                 !labels
                     .iter()
@@ -731,12 +851,12 @@ mod tests {
 
         // Case `valid_empty_state_is_the_only_path_that_claims_no_grants`.
         {
-            let mut pane = build_view(Some(r#"{"workspaces":[]}"#));
+            let mut pane = build_view(&cx(), Some(r#"{"workspaces":[]}"#));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"No workspace access grants".to_string()));
-            assert!(!labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"No workspace access".to_string()));
+            assert!(!labels.contains(&"Workspace access can't be checked".to_string()));
         }
 
         // Case `workspace_without_app_grants_is_omitted`.
@@ -756,12 +876,12 @@ mod tests {
         // Case `malformed_document_is_reported_as_unavailable_not_empty`.
         {
             assert!(project("not json {").is_err());
-            let mut pane = build_view(Some("not json {"));
+            let mut pane = build_view(&cx(), Some("not json {"));
             build_layout_of(&mut pane);
             assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"Workspace access can't be checked".to_string()));
         }
     }
 }

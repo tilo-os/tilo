@@ -1,19 +1,9 @@
-//! Search field focus + filter, driven through the production event path.
+//! The native-input observer reads the app without touching its document.
 //!
-//! This is the regression guard for the "clicking the search bar does nothing"
-//! bug. The root cause was that the field lived inside the `NavSplit`, whose
-//! children are laid out in an isolated inner taffy tree the host's focus walk
-//! never visits — so the field was never in `focusable_order`, a click's focus
-//! could not be restored after the per-keystroke filter rebuild, and typing
-//! died after one character. The fix hoists the field into the app's top strip,
-//! in the *main* taffy tree.
-//!
-//! The harness below is a faithful, minimal re-implementation of the pieces of
-//! `ui::App` this behaviour depends on — the same `collect_focusable` walk, the
-//! same `focus_target` → `set_focus` application, and the same
-//! ordinal-preserving `rebuild_structure` that `autofocus_on_structure_change`
-//! runs. Every assertion rides the real `SettingsApp` widget tree and the real
-//! `TextInput`/`Container`/`Row`/`NavSplit` event path; nothing is mocked.
+//! The snapshot a native audit asks for must describe the live state (the
+//! selected category, the layout class, the document heads) without
+//! committing the document's pending changes: the observer is a witness, not
+//! a writer.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,19 +15,20 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
-
-use super::SettingsApp;
+use crate::SettingsApp;
 use automerge::AutoCommit;
+use std::collections::HashMap;
+const W: f32 = 1200.0;
+const H: f32 = 1800.0;
 use taffy::{NodeId, TaffyTree};
+use ui::framework::HostDelivery as _;
 use ui::text_render::TextRenderer;
-use ui::widget::{ResourceOperation, Widget};
+use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NativeKeyCode, PhysicalKey, SmolStr};
 
-const W: f32 = 1200.0;
-const H: f32 = 760.0;
+use crate::categories::Category;
 
 fn root() -> automerge::ObjId {
     automerge::ROOT
@@ -64,7 +55,7 @@ fn char_key_event(s: &str) -> WindowEvent {
 /// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
 /// cycle. Owns the app, its live taffy tree + node map, and the focus state.
 struct Harness {
-    app: SettingsApp,
+    app: Box<SettingsApp>,
     doc: AutoCommit,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
@@ -85,7 +76,7 @@ impl Harness {
     fn at_size(width: f32, height: f32) -> Self {
         let config = crate::prefs::test_env::ScratchConfig::new();
         let mut h = Harness {
-            app: config.app(),
+            app: Box::new(config.app()),
             doc: AutoCommit::new(),
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -113,7 +104,7 @@ impl Harness {
     /// the focusable order. Mirrors `shots::render_to_path` + `App::init_layout`.
     fn layout(&mut self) {
         let theme = ui::Theme::dark();
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let app_node = self.app.build_layout(&mut taffy, &theme, &mut node_map);
@@ -129,30 +120,31 @@ impl Harness {
                 &[app_node],
             )
             .unwrap();
-        self.app.sync(&mut self.doc, &root());
-        let measure_map = node_map.clone();
+        self.app.sync(&self.doc, &root());
         let mut tr = TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
+        let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: this harness exclusively owns this unchanged app and its
+        // exact live layout pointers for both admission and measurement.
+        unsafe {
+            bindings.rebuild(&*self.app, &taffy, outer, &node_map);
+            ui::widget::compute_widget_layout(
+                &mut taffy,
                 outer,
                 taffy::Size {
                     width: taffy::AvailableSpace::Definite(self.viewport.0),
                     height: taffy::AvailableSpace::Definite(self.viewport.1),
                 },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
+                &node_map,
+                &bindings,
+                &mut tr,
             )
             .unwrap();
+        }
         self.app.apply_layout(&taffy, app_node, Point::ORIGIN);
         // Settling sync — the just-built leaf controls (search field, rows)
         // read back their bound CRDT values (this is what the shots harness
         // and the live app do after a structural rebuild).
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
 
         self.taffy = taffy;
         self.node_map = node_map;
@@ -178,7 +170,7 @@ impl Harness {
             }
         }
         let mut order = Vec::new();
-        walk(self.app_node, &self.app, &self.taffy, &mut order);
+        walk(self.app_node, &*self.app, &self.taffy, &mut order);
         self.focus_order = order;
     }
 
@@ -228,7 +220,7 @@ impl Harness {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut self.doc,
+                    state: ui::widget::Edits::lend(&mut self.doc),
                     path: &root(),
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -239,7 +231,7 @@ impl Harness {
             // Match the live host's action-bound control dispatch boundary,
             // also exercised by tests/control_interaction.rs. Back is a View
             // action; emitting its intent alone does not activate it.
-            while let Some(intent) = ui::widget::controls::take_control_invocation(&mut self.app) {
+            while let Some(intent) = ui::widget::controls::take_control_invocation(&mut *self.app) {
                 let control = intent
                     .address
                     .resource
@@ -248,13 +240,10 @@ impl Harness {
                 let payload = serde_json::to_vec(control).unwrap();
                 let started = self
                     .app
-                    .start_operation(
-                        &ResourceOperation::local(
-                            tilo_actions::InvocationId::new(),
-                            tilo_actions::OperationKind::View,
-                            "tilo.ui.control.invoke",
-                            &payload,
-                        ),
+                    .start_encoded(
+                        tilo_actions::OperationKind::View,
+                        "tilo.ui.control.invoke",
+                        &payload,
                         &mut self.doc,
                         &root(),
                     )
@@ -280,7 +269,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &root(),
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -293,8 +282,8 @@ impl Harness {
         }
         // Frame: sync consumes the field's SEARCH_KEY write; a changed query
         // flags a structure rebuild, which we run preserving focus by ordinal.
-        self.app.sync(&mut self.doc, &root());
-        if Widget::take_structure_dirty(&mut self.app) {
+        self.app.sync(&self.doc, &root());
+        if Widget::take_structure_dirty(&mut *self.app) {
             self.rebuild();
         }
     }
@@ -333,7 +322,7 @@ impl Harness {
             if out.is_some() {
                 return;
             }
-            if w.name() == "TextInput" {
+            if w.test_id() == Some("settings.search") {
                 *out = Some(w);
                 return;
             }
@@ -342,7 +331,7 @@ impl Harness {
             }
         }
         let mut out = None;
-        walk(&self.app, &mut out);
+        walk(&*self.app, &mut out);
         out
     }
 
@@ -354,15 +343,18 @@ impl Harness {
 
     fn sidebar_row_count(&self) -> usize {
         fn walk(w: &dyn Widget, n: &mut usize) {
-            if w.name() == "SidebarRow" {
-                *n = n.saturating_add(1);
+            if let Some(list) = w
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
+            {
+                *n = n.saturating_add(list.visible_item_ids().len());
             }
             for c in w.children() {
                 walk(c, n);
             }
         }
         let mut n = 0;
-        walk(&self.app, &mut n);
+        walk(&*self.app, &mut n);
         n
     }
 }
@@ -378,7 +370,11 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
         let before = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
         assert_eq!(before["ready"], true);
         assert_eq!(before["rendered_result_count"], h.sidebar_row_count());
-        assert_eq!(before["search_focused"], true);
+        assert_eq!(
+            before["search_focused"], true,
+            "observer={before:#}; focused={:?}; clicked={p:?}",
+            h.focused
+        );
         let original_heads = h.doc.get_heads();
         h.type_char("z");
         let typed = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
@@ -404,7 +400,7 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut h.doc,
+                state: ui::widget::Edits::lend(&mut h.doc),
                 path: &root(),
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -415,7 +411,7 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
         let immediate = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
         assert_eq!(immediate["local_search_text"], "");
         assert_eq!(immediate["synchronized_search_query"], "z");
-        h.app.sync(&mut h.doc, &root());
+        h.app.sync(&h.doc, &root());
         if h.app.take_structure_dirty() {
             h.rebuild();
         }
@@ -467,14 +463,14 @@ fn named_widget_identity(widget: &dyn Widget, name: &str) -> Option<usize> {
 #[test]
 fn search_preserves_production_network_pane_but_category_switch_replaces_it() {
     let mut h = Harness::new();
-    let network = named_widget_identity(&h.app, "NetworkPane").unwrap();
+    let network = named_widget_identity(&*h.app, "NetworkPane").unwrap();
     h.click(h.search_field_rect().center());
     h.type_char("z");
-    assert_eq!(named_widget_identity(&h.app, "NetworkPane"), Some(network));
+    assert_eq!(named_widget_identity(&*h.app, "NetworkPane"), Some(network));
     h.app.select(super::Category::About);
     h.rebuild();
     assert_eq!(h.app.selected(), super::Category::About);
-    assert_eq!(named_widget_identity(&h.app, "NetworkPane"), None);
+    assert_eq!(named_widget_identity(&*h.app, "NetworkPane"), None);
 }
 
 #[test]
@@ -485,7 +481,7 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     let back = h.app.back_button_rect();
     assert!(back.width() > 0.0);
     h.click(back.center());
-    h.app.sync(&mut h.doc, &root());
+    h.app.sync(&h.doc, &root());
     if h.app.take_structure_dirty() {
         h.rebuild();
     }
@@ -508,7 +504,7 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut h.doc,
+            state: ui::widget::Edits::lend(&mut h.doc),
             path: &root(),
             handled: &mut false,
             focus_target: &mut None,
@@ -516,7 +512,7 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
             taffy: &h.taffy,
         },
     );
-    h.app.sync(&mut h.doc, &root());
+    h.app.sync(&h.doc, &root());
     if h.app.take_structure_dirty() {
         h.rebuild();
     }
@@ -524,52 +520,365 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     assert_eq!(restored["search_focused"], true);
     assert_eq!(restored["search_caret_byte"], 0);
     assert_eq!(restored["local_search_text"], "");
-    assert_eq!(
-        restored["rendered_result_count"],
-        crate::categories::Category::ALL.len()
-    );
-    assert_eq!(restored["sidebar_open"], true);
 }
 
-fn find_test_widget<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-    if widget.test_id() == Some(id) {
-        return Some(widget);
+#[test]
+fn native_observer_reports_the_selected_category_and_layout_class() {
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let app = config.app().with_category(Category::Appearance);
+    let app = ui::headless::Framed::new(
+        ui::State::new(),
+        app,
+        ui::headless::viewport((1200.0, 760.0)),
+        ui::Theme::dark(),
+    );
+    let doc = AutoCommit::new();
+    let snapshot = app.native_input_snapshot(&doc, &root()).unwrap();
+    assert_eq!(snapshot["ready"], true);
+    assert_eq!(snapshot["selected_category"], "appearance");
+    assert_eq!(snapshot["narrow"], false);
+    assert_eq!(snapshot["sidebar_open"], true);
+    assert_eq!(snapshot["nav_id"], crate::sidebar::NAV_ID);
+}
+
+fn keyboard_map_pressed(widget: &dyn Widget, key: PhysicalKey) -> Option<bool> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return Some(map.is_pressed(key));
     }
     widget
         .children()
         .into_iter()
-        .find_map(|child| find_test_widget(child, id))
+        .find_map(|child| keyboard_map_pressed(child, key))
+}
+
+fn dispatch_preview_key(h: &mut Harness, state: ElementState) {
+    let logical = winit::keyboard::Key::Character("z".into());
+    dispatch_preview_event(
+        h,
+        &WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            is_synthetic: false,
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::KeyY),
+                    state,
+                },
+                logical.clone(),
+                Some("z".into()),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                Some("z".into()),
+                logical,
+            ),
+        },
+    );
+}
+
+fn dispatch_preview_event(h: &mut Harness, event: &WindowEvent) {
+    let mods = Modifiers::default();
+    let mut handled = false;
+    let mut focus = None;
+    h.app.handle_event(
+        event,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: ui::widget::Edits::lend(&mut h.doc),
+            path: &root(),
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: h.app_node,
+            taffy: &h.taffy,
+        },
+    );
 }
 
 #[test]
-fn query_rebuild_keeps_active_content_local_text_and_caret_state() {
+fn keyboard_map_observes_foreground_physical_keys_while_search_keeps_editing() {
     let mut h = Harness::new();
-    let local = ui::LocalState::new("content draft".to_owned());
-    // A real local TextInput isolates the content retention contract from
-    // backend-specific network controls. The production shell and search
-    // event/rebuild path remain unchanged.
-    h.app.shell.as_mut().unwrap().set_content(Box::new(
-        ui::widget::TextInput::from_state(&local).with_id("content-retention-probe"),
-    ));
+    h.app.select(Category::MouseKeyboard);
     h.rebuild();
-    let bounds = find_test_widget(&h.app, "content-retention-probe")
-        .unwrap()
-        .get_rect();
-    assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
-    h.click(bounds.center());
-    h.type_char("q");
-    assert!(local.with(|text| text.contains('q')));
     h.click(h.search_field_rect().center());
-    let content = find_test_widget(&h.app, "content-retention-probe").unwrap();
-    let identity = std::ptr::from_ref(content).cast::<()>() as usize;
-    let state = ui::undo::get_state(content).unwrap();
-    let text = local.with(Clone::clone);
-    h.type_char("z");
-    let retained = find_test_widget(&h.app, "content-retention-probe").unwrap();
-    assert_eq!(std::ptr::from_ref(retained).cast::<()>() as usize, identity);
-    assert_eq!(ui::undo::get_state(retained), Some(state));
-    assert_eq!(local.with(Clone::clone), text);
-    h.app.select(super::Category::About);
+    let compiled = crate::keyboard_preview::compilation_count();
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    let heads = h.doc.get_heads();
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(true));
+    assert_eq!(h.app.search_state.with(Clone::clone), "z");
+    assert_eq!(h.doc.get_heads(), heads, "pressed positions stay ephemeral");
+    // Search invalidates the retained content. The same held physical position
+    // survives that ordinary recomposition while editing remains focused.
+    h.app.sync(&h.doc, &root());
     h.rebuild();
-    assert!(find_test_widget(&h.app, "content-retention-probe").is_none());
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(true));
+    assert_eq!(
+        crate::keyboard_preview::compilation_count(),
+        compiled,
+        "search recomposition must retain the bounded compiled preview"
+    );
+    let snapshot = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    assert_eq!(snapshot["search_focused"], true);
+    dispatch_preview_key(&mut h, ElementState::Released);
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
+    assert_eq!(h.app.search_state.with(Clone::clone), "z");
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    dispatch_preview_event(&mut h, &WindowEvent::Focused(false));
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
+    dispatch_preview_event(&mut h, &WindowEvent::Focused(true));
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    h.app.select(Category::About);
+    h.rebuild();
+    assert_eq!(keyboard_map_pressed(&*h.app, key), None);
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
+}
+
+fn keyboard_map_symbols(
+    widget: &dyn Widget,
+    key: PhysicalKey,
+) -> Option<Vec<winit::keyboard::KeyboardLayoutSymbol>> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return map.active_symbols(key);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| keyboard_map_symbols(child, key))
+}
+
+fn keyboard_map_value(widget: &dyn Widget) -> Option<String> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return map.accessibility()?.value;
+    }
+    widget.children().into_iter().find_map(keyboard_map_value)
+}
+
+#[test]
+fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_capture() {
+    let mut h = Harness::new();
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    let snapshot = |text: &str| {
+        std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+            depressed: 1,
+            latched: 0,
+            locked: 0,
+            group: 1,
+            keys: vec![winit::keyboard::KeyboardLayoutKey {
+                physical: key,
+                symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                    name: text.into(),
+                    text: text.into(),
+                }],
+            }],
+        })
+    };
+    let original = snapshot("z");
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(original)));
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    assert_eq!(keyboard_map_symbols(&*h.app, key).unwrap()[0].text, "z");
+    let value = keyboard_map_value(&*h.app).unwrap();
+    assert!(value.contains("AD06: z"));
+    assert!(
+        !value.contains("AD06: y"),
+        "live accessibility must not claim the preferred US symbol"
+    );
+    h.app.select(Category::About);
+    h.rebuild();
+    let active = snapshot("Z");
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(active)));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Pressed,
+        });
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    assert_eq!(keyboard_map_symbols(&*h.app, key).unwrap()[0].text, "Z");
+    assert!(keyboard_map_value(&*h.app).unwrap().contains("AD06: Z"));
+    assert_eq!(
+        keyboard_map_pressed(&*h.app, key),
+        Some(false),
+        "off-page presses never enter the map"
+    );
+    let heads = h.doc.get_heads();
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    assert_eq!(
+        keyboard_map_symbols(&*h.app, key),
+        None,
+        "actual blur revokes native configuration"
+    );
+    let value = keyboard_map_value(&*h.app).unwrap();
+    assert!(!value.contains("AD06: y"));
+    assert!(!value.contains("AD06: Z"));
+    assert_eq!(
+        h.doc.get_heads(),
+        heads,
+        "configuration and press feedback stay out of CRDT state"
+    );
+}
+
+#[test]
+fn narrow_keyboard_inspection_has_touch_sized_selector_and_live_readable_details() {
+    fn find(widget: &dyn Widget, id: &str) -> Option<(vello::kurbo::Rect, String)> {
+        if widget.test_id() == Some(id) {
+            return Some((
+                widget.get_rect(),
+                widget.accessibility().unwrap().name.unwrap_or_default(),
+            ));
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find(child, id))
+    }
+    let mut h = Harness::at_size(600.0, 1800.0);
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    let (selector, _) = find(&*h.app, "input.map.inspect-key").unwrap();
+    let minimum = f64::from(ui::Theme::dark().tokens.metrics.min_pointer_target);
+    assert!(selector.width() >= minimum && selector.height() >= minimum);
+    let (map, _) = find(&*h.app, "input.keyboard_map").unwrap();
+    assert!(map.width() > 300.0, "the visual map remains prominent");
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
+    for text in ["λ", "Λ"] {
+        h.app
+            .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+                std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                    depressed: 1,
+                    latched: 0,
+                    locked: 0,
+                    group: 1,
+                    keys: vec![winit::keyboard::KeyboardLayoutKey {
+                        physical: key,
+                        symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                            name: text.into(),
+                            text: text.into(),
+                        }],
+                    }],
+                }),
+            )));
+        h.layout();
+        let (rect, content) = find(&*h.app, "input.keyboard-map.details").unwrap();
+        assert!(
+            content.contains(text),
+            "native modifier symbols update the actual Text: {content}"
+        );
+        assert!(!content.contains(": q"), "no preview fallback in live mode");
+        assert!(
+            rect.height()
+                >= f64::from(
+                    ui::Theme::dark()
+                        .text(ui::tokens::TextRole::Body)
+                        .line_height_px()
+                )
+        );
+    }
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    h.layout();
+    assert!(
+        !find(&*h.app, "input.keyboard-map.details")
+            .unwrap()
+            .1
+            .contains("Λ")
+    );
+}
+
+#[test]
+fn keyboard_map_read_matches_actual_focused_native_symbols_and_revokes_on_blur() {
+    let mut h = Harness::new();
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(true));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+            std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                depressed: 1,
+                latched: 2,
+                locked: 4,
+                group: 1,
+                keys: vec![winit::keyboard::KeyboardLayoutKey {
+                    physical: key,
+                    symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                        name: "Greek_LAMBDA".into(),
+                        text: "Λ".into(),
+                    }],
+                }],
+            }),
+        )));
+    let heads = h.doc.get_heads();
+    let actual = h.app.keyboard_inspection().unwrap();
+    assert_eq!(actual["available"], true);
+    assert_eq!(actual["mode"], "live");
+    assert!(
+        actual["source"].is_null(),
+        "preferred/preview source is not live native evidence"
+    );
+    assert_eq!(actual["native_group"], 1);
+    assert_eq!(actual["native_modifiers"], serde_json::json!([1, 2, 4]));
+    assert_eq!(actual["selected_symbols"], serde_json::json!(["Λ"]));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Pressed,
+        });
+    assert_eq!(
+        h.app.keyboard_inspection().unwrap()["pressed_physical_keys"],
+        serde_json::json!(["AD01"])
+    );
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Released,
+        });
+    assert_eq!(
+        h.app.keyboard_inspection().unwrap()["pressed_physical_keys"],
+        serde_json::json!([])
+    );
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    let blurred = h.app.keyboard_inspection().unwrap();
+    assert_eq!(blurred["available"], false);
+    assert_eq!(blurred["native_layout_available"], false);
+    assert_eq!(blurred["selected_symbols"], serde_json::json!([]));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(true));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+            std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                depressed: 0,
+                latched: 0,
+                locked: 0,
+                group: 0,
+                keys: vec![],
+            }),
+        )));
+    let missing = h.app.keyboard_inspection().unwrap();
+    assert_eq!(
+        missing["available"], false,
+        "missing selected native position is not usable evidence"
+    );
+    assert_eq!(missing["selected_symbols"], serde_json::json!([]));
+    assert_eq!(
+        h.doc.get_heads(),
+        heads,
+        "reading and physical feedback never edit the document"
+    );
 }

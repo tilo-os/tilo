@@ -73,6 +73,11 @@ policies! {
         "tilo.accessibility.screen_reader_rate",
         "tilo.accessibility.screen_reader_voice",
         "tilo.appearance.theme",
+        "tilo.appearance.mode",
+        "tilo.appearance.dark_theme",
+        "tilo.appearance.light_theme",
+        "tilo.appearance.custom_themes",
+        "tilo.appearance.density",
         "tilo.appearance.schedule",
         "tilo.appearance.sunrise",
         "tilo.appearance.sunset",
@@ -82,10 +87,11 @@ policies! {
         "tilo.appearance.reduce_motion",
         "tilo.appearance.text_scale",
         "tilo.appearance.ui_scale",
-        "tilo.appearance.app_accents",
+        "tilo.appearance.reduce_transparency",
         "tilo.appearance.forced_colors",
-        "tilo.appearance.workspace_tint",
+        "tilo.appearance.workspace_temperatures",
         "tilo.appearance.studio",
+        "tilo.identity.colour",
         "tilo.locale.currency",
         "tilo.locale.date_format",
         "tilo.locale.time_format",
@@ -134,8 +140,13 @@ policies! {
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",
+        "tilo.default_apps.handlers",
         "tilo.text_assistance.check_spelling",
         "tilo.text_assistance.auto_correct",
+        "tilo.text_assistance.spelling_language",
+        // Hosted providers name no device: an endpoint on the internet and a
+        // reference to the key, never the key itself.
+        "tilo.agent_providers.hosted",
     ],
     DeviceLocal => [
         "tilo.audio.output_device",
@@ -145,6 +156,12 @@ policies! {
         "tilo.input.tablets",
         "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
+        // Physical model and explicit inspection choices stay with this device.
+        "tilo.input.keyboard_model",
+        "tilo.input.keyboard_preview",
+        "tilo.input.keyboard_preview_extra_levels",
+        "tilo.input.keyboard_preview_level",
+        "tilo.input.keyboard_inspected_key",
         // Like whether the touchpad is on, whether a mouse switches it off
         // says nothing about another device's touchpad.
         "tilo.input.touchpad_disabled_on_external_mouse",
@@ -188,9 +205,8 @@ policies! {
         "tilo.display_transaction.candidate",
         "tilo.display_transaction.deadline_unix_ms",
         "tilo.display_transaction.message",
-        // Provider records can name loopback endpoints and device-vault
-        // locators. The secret bytes live elsewhere, but this aggregate
-        // cannot safely roam until it is split into portable/local records.
+        // Providers on this device or its network, and which one this device
+        // uses by default.
         "tilo.agent_providers.config",
         "tilo.collaboration.status_sharing",
         "tilo.collaboration.manual_status",
@@ -450,7 +466,7 @@ mod tests {
         {
             let document = serde_json::json!({
                 "appearance": {
-                    "theme": "Nord",
+                    "mode": "light",
                     "wallpaper_path": "/home/me/private.png",
                     "future_value": "must stay local"
                 },
@@ -462,8 +478,8 @@ mod tests {
             assert_eq!(
                 projected,
                 std::collections::BTreeMap::from([(
-                    "tilo.appearance.theme".to_string(),
-                    serde_json::json!("Nord")
+                    "tilo.appearance.mode".to_string(),
+                    serde_json::json!("light")
                 )])
             );
         }
@@ -502,7 +518,7 @@ mod tests {
                     "app_continuations": false,
                     "audit": []
                 },
-                "agent_providers": {"config": {}},
+                "agent_providers": {"config": {}, "hosted": {}},
                 "collaboration": {"status_sharing": "automatic", "manual_status": null},
                 "history": {"seen_frontiers": {}}
             });

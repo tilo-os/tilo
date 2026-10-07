@@ -4,6 +4,7 @@
 //! inside the state file ([`TreeStore`]), so every owner publication also
 //! binds an enrolled slot, projects the room into the tree and exports the
 //! resulting file-system capabilities under the same writer lock.
+mod local_filesystem_consents;
 pub(crate) mod publication;
 #[cfg(test)]
 mod publication_tests;
@@ -11,13 +12,14 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::test_enrolled_owner;
+pub(crate) use tests::{test_enrolled_owner, tree_of};
 
 use super::{
     persist,
     state::{RoomId, WorkspaceId, WorkspaceTreeHandle},
 };
 pub use store::NativeStateRuntime;
+pub(crate) use store::NativeStateWitness;
 pub use tilo_joined_room::NativeAuthorityStorage;
 use tilo_joined_room::{Change, Store};
 pub(crate) use tilo_joined_room::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};
@@ -29,9 +31,16 @@ pub(crate) use tilo_joined_room::{NativeBootstrap, PendingEnrollmentId, PendingE
 struct TreeStore {
     tree: WorkspaceTreeHandle,
     runtime: NativeStateRuntime,
+    history: tilo_joined_room::HistoryContent,
 }
 
 impl Store for TreeStore {
+    fn put_history(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        self.history.put(bytes)
+    }
+    fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        self.history.read(hash)
+    }
     fn healthy(&self) -> bool {
         self.runtime.healthy()
     }
@@ -110,6 +119,7 @@ impl Store for TreeStore {
                 *tree = candidate;
                 // Only the acknowledged final admitted projection reaches authority exports.
                 tree.export_fs_capabilities();
+                crate::shell::launcher::action_authority::Export::of(&tree).submit();
             }
         }
         Ok(())
@@ -153,6 +163,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
         std::sync::Arc::new(TreeStore {
             tree: tree.clone(),
             runtime: native.native_runtime.clone(),
+            history: tilo_joined_room::HistoryContent::for_state_file(&path),
         }),
         native.native_authority.clone(),
         std::time::SystemTime::now(),
@@ -183,4 +194,9 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
     native.native_runtime.attach(&owner, &tree);
     native.export_fs_capabilities();
     Ok(owner)
+}
+
+#[cfg(test)]
+pub(crate) fn test_tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
+    tests::tree_of(owner)
 }

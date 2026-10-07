@@ -70,6 +70,7 @@ export async function openDeviceCustody({
   crypto = globalThis.crypto,
   locks = globalThis.navigator?.locks,
   preferWebCrypto = true,
+  requireExisting = false,
 }) {
   if (!profile || typeof profile !== 'string') throw new TypeError('profile is required');
   if (!storage) throw new TypeError('storage is required');
@@ -79,18 +80,22 @@ export async function openDeviceCustody({
 
   let release;
   const released = new Promise(resolve => { release = resolve; });
+  let held;
   const acquired = await new Promise((resolve, reject) => {
-    locks.request(LOCK_PREFIX + profile, {mode: 'exclusive', ifAvailable: true}, lock => {
+    // Settles once the user agent let go of the lock, after `released`.
+    held = locks.request(LOCK_PREFIX + profile, {mode: 'exclusive', ifAvailable: true}, lock => {
       if (!lock) { resolve(false); return undefined; }
       resolve(true);
       return released;
-    }).catch(reject);
+    });
+    held.catch(reject);
   });
   if (!acquired) throw new CustodyError('custody-busy', 'Another tab holds this device key');
 
   try {
     let record = await storage.get(keyRecord(profile));
     if (!record) {
+      if (requireExisting) throw new CustodyError('custody-missing', 'This account has no existing browser device');
       record = preferWebCrypto && await supportsEd25519(subtle)
         ? await createWebCryptoKey(subtle)
         : await createSealedSeed(subtle, random);
@@ -100,7 +105,8 @@ export async function openDeviceCustody({
     const live = () => { if (closed) throw new CustodyError('custody-closed', 'Device custody is closed'); };
     const common = {
       kind: record.kind,
-      close() { if (!closed) { closed = true; release(); } },
+      /** Lets go of the device key; resolves once another holder may take it. */
+      close() { if (!closed) { closed = true; release(); } return held.then(() => undefined, () => undefined); },
       /** Forget the key (after revocation): the next open creates a new device. */
       async destroy() { live(); await storage.delete(keyRecord(profile)); this.close(); },
     };

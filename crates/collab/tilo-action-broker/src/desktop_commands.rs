@@ -16,7 +16,7 @@ impl CapnpBrokerState {
         self.owner_health()?;
         let room = service.room().to_string();
         uuid::Uuid::parse_str(&room).map_err(|e| e.to_string())?;
-        let peer_id = self.next_peer_id();
+        let peer_id = self.next_service_peer_id();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         self.invocation_subscribers
             .lock()
@@ -271,6 +271,7 @@ fn desktop_contract() -> tilo_actions::ActionContract {
 
 fn desktop_command_action() -> PublishedAction {
     PublishedAction {
+        semantic_identity: None,
         resource: command::RESOURCE.into(),
         action: command::ACTION.into(),
         resource_kind: "desktop".into(),
@@ -302,6 +303,7 @@ fn desktop_command_action() -> PublishedAction {
 /// catalogue of the host worker that serves the new record.
 fn open_app_action(app: &str, title: &str) -> PublishedAction {
     PublishedAction {
+        semantic_identity: None,
         resource: format!("{OPEN_APP_PREFIX}{app}"),
         action: OPEN_APP_ACTION.into(),
         resource_kind: command::OPEN_APP_RESOURCE_KIND.into(),

@@ -2,7 +2,7 @@
 
 An example of **navigation and master-detail**.
 
-A `TreeView` picks a section and a detail pane edits it. `AppShell` shows
+A `TreeView` picks a section and a detail pane edits it. `NavShell` shows
 both panes in a wide window and one at a time, with an accessible Back, in a
 compact one. The selection is view state (`cx.local`), never stored or
 synced; `cx.switch` rebuilds the detail pane with its own bindings when it

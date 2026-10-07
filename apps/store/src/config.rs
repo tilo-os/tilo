@@ -1,63 +1,42 @@
-//! `$XDG_CONFIG_HOME/tilo-store/` on-disk state.
+//! The registries the user pulls Tilo apps from: `registries.toml` under
+//! `$XDG_CONFIG_HOME/tilo-store/`, the list `app repo` edits.
 //!
-//! Two files, and only one of them is defined here:
+//! The sandboxed Store has a home of its own, so it never reads that file
+//! itself: it asks the app host, which runs `app repo list --json` as the
+//! person ([`repositories`]). A copy in the sandbox would be a second list
+//! `app repo` never edits.
 //!
-//!   * `registries.toml` — the list of Tilo registries the user pulls
-//!     entries from. **Owned by [`app_cli::config`]**, not by
-//!     this app. The desktop's search box reads the same file to decide
-//!     what software the machine could open, so a second definition of
-//!     its shape would eventually mean the store and the palette
-//!     disagreed about which registries exist. One reader had to become
-//!     the owner; the shared crate is it, because it is the one both
-//!     the app and the compositor can depend on.
-//!   * `config.toml` — a UI-settings file that nothing in the app reads
-//!     or writes. It was never wired up, and the UI state it describes
-//!     now lives in the app's Automerge document, which `ui::persist`
-//!     saves and restores. [`load_config`] / [`save_config`] remain only
-//!     so an existing file can still be read by whoever wants it.
+//! **Owned by [`app_cli::config`]**, not by this app. The desktop's search
+//! box reads the same file to decide what software the machine could open,
+//! and the privileged app host verifies installs against it, so a second
+//! definition of its shape would eventually mean the store, the palette and
+//! the installer disagreed about which registries exist. The shared crate is
+//! the owner because the app, the compositor and the host all depend on it.
 //!
-//! Everything here is best-effort I/O: a missing / malformed file is
-//! never fatal — the UI falls back to defaults and keeps rendering.
+//! Reading it is best-effort: a missing or malformed file is never fatal —
+//! the store falls back to the default registry and keeps rendering.
 
-use std::fs;
-
-use serde::{Deserialize, Serialize};
-
-use crate::model::SourceFilter;
-
-// The registry list, its file format and the two directories it lives
-// under, re-exported so existing `store::config::…` paths keep working
-// and there is still exactly one definition of each.
+// The registry list, its file format and the directories it lives under,
+// re-exported so there is still exactly one definition of each.
 pub use app_cli::config::{
     DEFAULT_REGISTRY_BASE_URL, RegistriesFile, RegistryConfig, cache_dir, config_dir,
     load_registries, placeholder_owner_pubkey, registries_path,
 };
 
-/// Persistent UI state — the filter and search bar are the two things
-/// worth restoring across restarts. Everything else lives in-memory.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct StoreConfig {
-    #[serde(default)]
-    pub last_filter: Option<SourceFilter>,
-    #[serde(default)]
-    pub last_query: Option<String>,
-}
-
-/// Read `config.toml` — never fails, missing / malformed → default.
-pub fn load_config() -> StoreConfig {
-    config_dir()
-        .and_then(|d| fs::read_to_string(d.join("config.toml")).ok())
-        .and_then(|t| toml::from_str::<StoreConfig>(&t).ok())
-        .unwrap_or_default()
-}
-
-/// Write `config.toml`. Best-effort — silently returns on failure.
-pub fn save_config(cfg: &StoreConfig) {
-    let Some(dir) = config_dir() else { return };
-    let _ = fs::create_dir_all(&dir);
-    if let Ok(text) = toml::to_string_pretty(cfg) {
-        let _ = fs::write(dir.join("config.toml"), text);
-    }
+/// The person's app repositories, through the app host. Without one (a
+/// test, a development run outside a session) the configuration directory
+/// the environment names is read, and nothing is ever written there.
+///
+/// # Errors
+/// Returns why the app host could not report them.
+pub fn repositories(
+    host: Option<&app_host::client::BlockingClient>,
+) -> Result<RegistriesFile, String> {
+    let Some(host) = host else {
+        return Ok(app_cli::config::load_registries_no_seed());
+    };
+    let json = host.repositories()?;
+    serde_json::from_str(&json).map_err(|error| format!("unreadable repository list: {error}"))
 }
 
 #[cfg(test)]
@@ -102,6 +81,15 @@ mod tests {
             assert_eq!(config_dir().as_deref(), Some(td.path()));
         }
 
+        // Case `without_an_app_host_nothing_is_written`.
+        // The Store's own reading never seeds a list in its sandbox.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            assert!(repositories(None).unwrap().registries.is_empty());
+            assert!(!td.path().join("registries.toml").exists());
+        }
+
         // Case `seed_written_when_missing`.
         {
             let td = TempDir::new().unwrap();
@@ -128,20 +116,6 @@ enabled = false
             assert_eq!(regs.registries.len(), 1);
             assert_eq!(regs.registries[0].name, "my mirror");
             assert!(!regs.registries[0].enabled);
-        }
-
-        // Case `config_roundtrip`.
-        {
-            let td = TempDir::new().unwrap();
-            let _g = scoped_dir(&td);
-            let cfg = StoreConfig {
-                last_filter: Some(SourceFilter::Tilo),
-                last_query: Some("term".into()),
-            };
-            save_config(&cfg);
-            let back = load_config();
-            assert_eq!(back.last_filter, Some(SourceFilter::Tilo));
-            assert_eq!(back.last_query.as_deref(), Some("term"));
         }
     }
 }

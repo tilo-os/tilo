@@ -194,7 +194,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
         .or_else(|| b.first())
         .map(|block| block.id.clone())
         .unwrap_or_default();
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
             caret_block: anchor.clone(),
             caret_offset: 0,
@@ -214,7 +214,7 @@ fn publish_word_processor_actions(peer: &mut UnixStream, doc: &AutoCommit) {
     let exported = typed_peer::exported_actions(&resources);
     assert!(
         exported.iter().any(|action| {
-            action.resource == "word-processor.document" && action.action == "insert-table"
+            action.resource == "tilo.rich-text" && action.action == "insert-table"
         }),
         "the production Word Processor surface must export insert-table"
     );
@@ -224,9 +224,9 @@ fn publish_word_processor_actions(peer: &mut UnixStream, doc: &AutoCommit) {
 fn service_word_processor_invocation(
     peer: &mut UnixStream,
     replica: &mut AutoCommit,
+    id: u64,
     invocation: typed_peer::DocumentInvocation<'_>,
 ) {
-    let id = invocation.id;
     let resources = word_processor_resources(replica);
     let update = typed_peer::service_document_invocation(
         peer,
@@ -268,12 +268,12 @@ fn drive_peer_to_table(
             } => {
                 // The typed SDK reports the local participant's initial
                 // presence as well as remote arrivals.
-                if user_id == "ada" {
+                if user_id == typed_peer::principal_id() {
                     continue;
                 }
                 assert_eq!(
-                    user_id, "Scribe",
-                    "the relay names presence by the announced handle"
+                    user_id, "agent:scribe",
+                    "presence names the authenticated agent actor, distinct from a person's display name"
                 );
                 saw_scribe_presence = true;
             }
@@ -286,10 +286,11 @@ fn drive_peer_to_table(
                 payload: PresencePayload::Caret { .. },
                 ..
             } => {
-                assert_eq!(user_id, "Scribe");
+                assert_eq!(user_id, "agent:scribe");
             }
             CollabEvent::Invocation {
                 id,
+                invocation,
                 resource,
                 action,
                 argument,
@@ -301,8 +302,9 @@ fn drive_peer_to_table(
                 service_word_processor_invocation(
                     &mut peer,
                     &mut replica,
+                    id,
                     typed_peer::DocumentInvocation {
-                        id,
+                        invocation,
                         address: ActionAddress::new(resource, action),
                         argument: argument.as_deref(),
                         actor: &actor,
@@ -426,7 +428,6 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
             // belongs to `run`, and is exercised on its own below.
             await_document: Duration::ZERO,
             settle: Duration::ZERO,
-            directory: None,
             permissions: granted("Scribe"),
             content: ContentStore::memory(),
         };
@@ -538,7 +539,6 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
             model_timeout: Duration::from_secs(1),
             await_document: Duration::ZERO,
             settle: Duration::ZERO,
-            directory: None,
             permissions: granted("Scribe"),
             content: ContentStore::memory(),
         };
@@ -719,6 +719,7 @@ fn drive_word_processor_to_table(
             }
             CollabEvent::Invocation {
                 id,
+                invocation,
                 resource,
                 action,
                 argument,
@@ -729,8 +730,9 @@ fn drive_word_processor_to_table(
                 service_word_processor_invocation(
                     &mut wp_peer,
                     &mut replica,
+                    id,
                     typed_peer::DocumentInvocation {
-                        id,
+                        invocation,
                         address: ActionAddress::new(resource, action),
                         argument: argument.as_deref(),
                         actor: &actor,
@@ -800,7 +802,6 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
         model_timeout: Duration::from_secs(1),
         await_document: Duration::from_millis(1500),
         settle: Duration::ZERO,
-        directory: None,
         permissions: granted("Scribe"),
         content: ContentStore::memory(),
     };
@@ -872,7 +873,6 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
             model_timeout: Duration::from_secs(1),
             await_document: Duration::ZERO,
             settle: Duration::ZERO,
-            directory: None,
             permissions: granted("Scribe"),
             content: ContentStore::memory(),
         };
@@ -897,6 +897,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
                 }
                 CollabEvent::Invocation {
                     id,
+                    invocation,
                     resource,
                     action,
                     argument,
@@ -907,8 +908,9 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
                     service_word_processor_invocation(
                         &mut peer,
                         &mut replica,
+                        id,
                         typed_peer::DocumentInvocation {
-                            id,
+                            invocation,
                             address: ActionAddress::new(resource, action),
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -1009,7 +1011,6 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
             model_timeout: Duration::from_secs(1),
             await_document: Duration::ZERO,
             settle: Duration::ZERO,
-            directory: None,
             permissions: granted("Scribe"),
             content: ContentStore::memory(),
         };

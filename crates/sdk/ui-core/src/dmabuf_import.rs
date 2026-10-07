@@ -59,9 +59,7 @@ pub struct PlaneRef<'a> {
 
 /// A dmabuf described well enough to import, borrowing its descriptors.
 ///
-/// Both `media::DmabufImage` (a decoded video picture) and the webview's
-/// `DmabufFrame` (a rendered page) convert into this, so one importer serves
-/// both.
+/// A `media::DmabufImage` (a decoded video picture) converts into this.
 pub struct DmabufRef<'a> {
     pub planes: &'a [PlaneRef<'a>],
     pub fourcc: u32,

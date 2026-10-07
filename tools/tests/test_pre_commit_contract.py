@@ -46,7 +46,7 @@ class PreCommitContractTests(unittest.TestCase):
                 if "tools/ci/clippy-check.sh" in line
             )
             self.assertNotIn("--all-features", invocation)
-            self.assertIn("ui/webview-wpe", workflow)
+            self.assertIn("native SDKs", workflow)
             self.assertIn("release-app workflow", workflow)
         with self.subTest(phase='clippy runs once per selected package set'):
             workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")

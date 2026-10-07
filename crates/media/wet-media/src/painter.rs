@@ -40,6 +40,56 @@ impl Painted {
     }
 }
 
+/// `marks`, given in whole-grid cells, as the window of the grid at
+/// `origin`, `width` by `height` cells, receives them: moved into the
+/// window's cells, and those that cannot reach it left out. A mark painted
+/// dry outside the window still dries the wash before it, so it stays as an
+/// empty region that paints nothing; an eraser elsewhere dries nothing.
+pub fn windowed(
+    marks: &[Painted],
+    origin: (usize, usize),
+    width: usize,
+    height: usize,
+) -> Vec<Painted> {
+    let (dx, dy) = (-crate::grid::float(origin.0), -crate::grid::float(origin.1));
+    let (width, height) = (crate::grid::float(width), crate::grid::float(height));
+    marks
+        .iter()
+        .filter_map(|painted| {
+            let mark = painted.mark.translated(dx, dy);
+            let reaches = mark.reach().is_some_and(|[x0, y0, x1, y1]| {
+                x1 >= 0.0 && y1 >= 0.0 && x0 <= width && y0 <= height
+            });
+            let mark = if reaches {
+                mark
+            } else if let (
+                Mark::Stroke(crate::engine::Stroke { paint, .. })
+                | Mark::Fill(crate::engine::Fill { paint, .. }),
+                false,
+            ) = (&mark, mark.wet())
+            {
+                Mark::Fill(crate::engine::Fill {
+                    contours: Vec::new(),
+                    paint: *paint,
+                    opacity: 0.0,
+                    wet: false,
+                    brush: 0.0,
+                    angle: 0.0,
+                    params: mark.params().clone(),
+                    field: None,
+                })
+            } else {
+                return None;
+            };
+            Some(Painted {
+                fingerprint: painted.fingerprint,
+                seed: painted.seed,
+                mark,
+            })
+        })
+        .collect()
+}
+
 /// The seed of the randomness of the mark addressed by `id`.
 pub fn seed_of(id: &str) -> u64 {
     let hash = blake3::hash(id.as_bytes());
@@ -57,6 +107,15 @@ pub struct LayerPainter {
     sim: Box<dyn LayerSim>,
     checkpoints: Vec<(usize, Box<dyn LayerSim>)>,
     pixels: Option<(usize, Vec<u8>)>,
+    /// The last preview's simulation and the marks it laid over the
+    /// applied ones, so laying exactly those marks next costs nothing.
+    ahead: Option<Ahead>,
+}
+
+/// A preview's simulation: the applied marks with `laid` painted over them.
+struct Ahead {
+    laid: Vec<[u8; 32]>,
+    sim: Box<dyn LayerSim>,
 }
 
 impl LayerPainter {
@@ -70,6 +129,7 @@ impl LayerPainter {
             sim,
             checkpoints: Vec::new(),
             pixels: None,
+            ahead: None,
         }
     }
 
@@ -101,18 +161,28 @@ impl LayerPainter {
             self.rewind(common);
         }
         let start = self.applied.len();
-        for mark in marks.get(start..).unwrap_or_default() {
+        let rest = marks.get(start..).unwrap_or_default();
+        if !rest.is_empty()
+            && let Some(Ahead { laid, sim }) = self.ahead.take()
+            && !laid.is_empty()
+            && rest.len() >= laid.len()
+            && rest
+                .iter()
+                .zip(&laid)
+                .all(|(mark, laid)| mark.fingerprint == *laid)
+        {
+            // What the last preview laid is what is being laid now: its
+            // simulation is the result, already.
+            self.sim = sim;
+            self.applied.extend(laid);
+            self.checkpoint();
+        }
+        for mark in marks.get(self.applied.len()..).unwrap_or_default() {
             for (piece, seed) in mark.mark.pieces(mark.seed) {
                 self.sim.apply(&piece, seed);
             }
             self.applied.push(mark.fingerprint);
-            let count = self.applied.len();
-            if count.is_multiple_of(CHECKPOINT_EVERY) {
-                self.checkpoints.push((count, self.sim.clone_box()));
-                if self.checkpoints.len() > CHECKPOINTS_KEPT {
-                    self.checkpoints.remove(0);
-                }
-            }
+            self.checkpoint();
         }
         let count = self.applied.len();
         if self.pixels.as_ref().is_none_or(|(at, _)| *at != count) || start != count {
@@ -126,13 +196,39 @@ impl LayerPainter {
     /// The layer with `marks` painted and `wet` laid over them, without
     /// keeping `wet`: what a stroke still being painted looks like. The
     /// painted marks stay simulated, so the next preview costs only `wet`.
+    ///
+    /// `wet` is painted as it will be once laid, piece by piece, and its
+    /// simulation is kept until the next [`Self::paint`]: when that lays
+    /// exactly `wet` after `marks`, it takes this simulation instead of
+    /// painting the stroke again.
     pub fn preview(&mut self, marks: &[Painted], wet: &[Painted]) -> Vec<u8> {
         self.paint(marks);
         let mut sim = self.sim.clone_box();
         for mark in wet {
-            sim.apply(&mark.mark, mark.seed);
+            for (piece, seed) in mark.mark.pieces(mark.seed) {
+                sim.apply(&piece, seed);
+            }
         }
-        sim.composite()
+        let pixels = sim.composite();
+        self.ahead = Some(Ahead {
+            laid: wet.iter().map(|mark| mark.fingerprint).collect(),
+            sim,
+        });
+        pixels
+    }
+
+    /// Keep a copy of the simulation when the marks applied reach the next
+    /// checkpoint.
+    fn checkpoint(&mut self) {
+        let count = self.applied.len();
+        if count.is_multiple_of(CHECKPOINT_EVERY)
+            && self.checkpoints.last().is_none_or(|(at, _)| *at != count)
+        {
+            self.checkpoints.push((count, self.sim.clone_box()));
+            if self.checkpoints.len() > CHECKPOINTS_KEPT {
+                self.checkpoints.remove(0);
+            }
+        }
     }
 
     /// Go back to the state after the first `keep` marks.
@@ -146,5 +242,6 @@ impl LayerPainter {
             self.applied.clear();
         }
         self.pixels = None;
+        self.ahead = None;
     }
 }

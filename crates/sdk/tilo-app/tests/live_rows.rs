@@ -10,14 +10,13 @@ use std::rc::Rc;
 
 use serde_json::json;
 use tilo_actions::{Action, ActionError, ActionParam, ActionSpec, OperationKind, ParamType};
-use tilo_app::automerge::ObjId;
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use tilo_app::framework::EffectAnswer;
 use tilo_app::prelude::*;
 use tilo_resource::{Doc, ModelError};
 
 const ACTION_TYPE: &str = "test.tally.action";
-const JOB_OPERATION: &str = "test.tally.job";
 const TOTAL: &str = "tally/total";
 
 #[derive(
@@ -79,11 +78,10 @@ impl Resource for Tally {
     }
 
     fn children(count: &i64) -> Vec<tilo_actions::Resource> {
-        vec![tilo_actions::Resource::new(
-            TOTAL,
-            "test.tally.total",
-            format!("Total {count}"),
-        )]
+        vec![
+            tilo_actions::Resource::new(TOTAL, "test.tally.total", format!("Total {count}"))
+                .with_action(JobEffect::Reveal { at: *count }.bound()),
+        ]
     }
 
     fn child(_: &i64, id: &str) -> Option<tilo_actions::Resource> {
@@ -105,11 +103,25 @@ enum Raw {
     Nothing,
     /// A hand-built document action the surface publishes itself.
     DocumentAction,
-    /// The same, from a surface that declares it still does.
-    DeclaredDocumentAction,
 }
 
-type Effects = Rc<RefCell<Vec<serde_json::Value>>>;
+/// What the jobs surface does outside the document, each offered on the
+/// row or child it acts on.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.tally.jobs")]
+enum JobEffect {
+    /// Stop the job.
+    #[effect(row, returns)]
+    Stop { job: u32 },
+    /// Inspect the total.
+    #[effect(view, row)]
+    Inspect { job: u32 },
+    /// Reveal the total.
+    #[effect(view, row)]
+    Reveal { at: i64 },
+}
+
+type Effects = Rc<RefCell<Vec<JobEffect>>>;
 
 thread_local! {
     static RAW: std::cell::Cell<Raw> = const { std::cell::Cell::new(Raw::Nothing) };
@@ -139,7 +151,7 @@ impl ResourceApp for TallyApp {
         Box::new(
             Column::new()
                 .push(Box::new(
-                    Button::new("step-up", "Step up", None)
+                    Button::new("step-up", "Step up")
                         .on_click(move || step.set(step.get().saturating_add(1))),
                 ))
                 .push(cx.surface(Jobs::default())),
@@ -156,18 +168,8 @@ struct Jobs {
 }
 
 fn job(id: u32) -> LiveRow {
-    let mut stop = ActionSpec::operation(
-        "stop",
-        "Stop the job",
-        OperationKind::Effect,
-        JOB_OPERATION,
-        &json!({ "job": id }),
-    )
-    .unwrap();
-    stop.contract.result = tilo_actions::ResultSpec::Json {
-        schema: json!({ "type": "object" }),
-    };
-    LiveRow::new(format!("job:{id}"), "test.job", format!("Job {id}")).operation(stop)
+    LiveRow::new(format!("job:{id}"), "test.job", format!("Job {id}"))
+        .effect(&JobEffect::Stop { job: id })
 }
 
 impl Widget for Jobs {
@@ -196,33 +198,6 @@ impl Widget for Jobs {
     }
 
     tilo_app::provides!(dyn tilo_app::resources::PublishesResources);
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[JOB_OPERATION]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &tilo_app::widget::ResourceOperation<'_>,
-        _: &mut AutoCommit,
-        _: &ObjId,
-    ) -> Result<Option<tilo_app::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        if request.type_id != JOB_OPERATION {
-            return Ok(None);
-        }
-        let payload: serde_json::Value =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-        self.effects.borrow_mut().push(payload.clone());
-        Ok(Some(tilo_app::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput {
-                value: Some(json!({ "stopped": payload.get("job") })),
-                resources: Vec::new(),
-            },
-        )))
-    }
 }
 
 impl tilo_app::resources::PublishesResources for Jobs {
@@ -239,7 +214,7 @@ impl tilo_app::resources::PublishesResources for Jobs {
     }
 }
 
-impl ResourceSurface<Tally> for Jobs {
+impl ResourceSurface<Tally, JobEffect> for Jobs {
     fn present(&mut self, count: &Rc<i64>) {
         self.selected = **count;
     }
@@ -247,6 +222,14 @@ impl ResourceSurface<Tally> for Jobs {
     fn attach(&mut self, _: SurfaceCx<Tally>) {
         self.selected = 3;
         EFFECTS.with(|effects| *effects.borrow_mut() = Some(self.effects.clone()));
+    }
+
+    fn effect(&mut self, effect: JobEffect, _: &mut EffectCx<Tally, Self>) -> EffectAnswer {
+        self.effects.borrow_mut().push(effect.clone());
+        Ok(match effect {
+            JobEffect::Stop { job } => Effected::value(json!({ "stopped": job })),
+            JobEffect::Inspect { .. } | JobEffect::Reveal { .. } => Effected::done(),
+        })
     }
 
     fn bound_declarations(&self) -> Vec<ActionDecl<Tally>> {
@@ -280,16 +263,7 @@ impl ResourceSurface<Tally> for Jobs {
             job(2),
             // Names the resource's own child: its operation joins it.
             LiveRow::new(TOTAL, "test.job.total", "Jobs total")
-                .operation(
-                    ActionSpec::operation(
-                        "inspect",
-                        "Inspect the total",
-                        OperationKind::View,
-                        JOB_OPERATION,
-                        &json!({ "job": 0 }),
-                    )
-                    .unwrap(),
-                )
+                .effect(&JobEffect::Inspect { job: 0 })
                 .presentation(tilo_actions::ResourcePresentation {
                     detail: Some("2 jobs running".into()),
                     badge: None,
@@ -301,10 +275,6 @@ impl ResourceSurface<Tally> for Jobs {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         let id = id.strip_prefix("job:")?.parse().ok()?;
         Some(job(id))
-    }
-
-    fn publishes_document_actions(&self) -> bool {
-        RAW.get() == Raw::DeclaredDocumentAction
     }
 }
 
@@ -352,7 +322,14 @@ fn live_rows_and_bound_edits_join_the_resource_tree() {
     assert_eq!(children, [TOTAL, "job:1", "job:2"]);
     let total = find(&resources, TOTAL).unwrap();
     assert_eq!(total.label, "Total 0", "the document child keeps its label");
-    assert_eq!(action_ids(total), ["inspect"]);
+    assert_eq!(action_ids(total), ["reveal", "inspect"]);
+    assert!(
+        total
+            .actions
+            .iter()
+            .all(|action| action.kind == OperationKind::View),
+        "presentation is offered as a view"
+    );
     assert_eq!(
         total
             .presentation
@@ -365,12 +342,28 @@ fn live_rows_and_bound_edits_join_the_resource_tree() {
         find(&resources, "job:2").unwrap().actions[0].kind,
         OperationKind::Effect
     );
+    for row_only in ["stop", "inspect", "reveal"] {
+        assert!(
+            !action_ids(root).contains(&row_only),
+            "`{row_only}` is offered only on what it acts on"
+        );
+    }
 
-    // A live row's effect reaches the surface through the door and
-    // answers its caller; it changes nothing in the document.
+    // A live row's effect reaches the surface's handler through the door as
+    // the value the row was bound to, and answers its caller; it changes
+    // nothing in the document. So does one a document child carries.
     let output = app.call_on("job:2", "stop", json!({})).unwrap();
     assert_eq!(output, Some(json!({ "stopped": 2 })));
-    assert_eq!(*effects.borrow(), [json!({ "job": 2 })]);
+    app.call_on(TOTAL, "reveal", json!({})).unwrap();
+    app.call_on(TOTAL, "inspect", json!({})).unwrap();
+    assert_eq!(
+        *effects.borrow(),
+        [
+            JobEffect::Stop { job: 2 },
+            JobEffect::Reveal { at: 0 },
+            JobEffect::Inspect { job: 0 },
+        ]
+    );
     assert_eq!(app.state(), 0);
 
     // A row the tree leaves out resolves by id, at the surface; a child the
@@ -417,10 +410,66 @@ fn a_surface_cannot_publish_a_document_action_of_its_own() {
     assert_eq!(app.state(), 0);
 }
 
+thread_local! {
+    static RETAINED_ACTIONS: RefCell<Option<tilo_app::framework::Actions<Tally>>> = const { RefCell::new(None) };
+}
+
+struct DynamicBindingsApp;
+
+impl ResourceApp for DynamicBindingsApp {
+    type Resource = Tally;
+    const ID: &'static str = "so.tilo.test-dynamic-bindings";
+    const TITLE: &'static str = "Dynamic bindings";
+
+    fn view(cx: &mut ViewCx<Tally>) -> Element {
+        RETAINED_ACTIONS.with(|actions| *actions.borrow_mut() = Some(cx.actions()));
+        cx.bind_declarations(|count| {
+            let mut declarations = vec![ActionDecl::new("seed", "Seed", Vec::new(), |_, _| {
+                Ok(TallyAction::Add { by: 1 })
+            })];
+            if *count > 0 {
+                declarations.push(ActionDecl::new(
+                    "conditional",
+                    "Conditional",
+                    Vec::new(),
+                    |_, _| Ok(TallyAction::Add { by: 1 }),
+                ));
+            }
+            declarations
+        });
+        Box::new(Text::new("Dynamic declarations"))
+    }
+}
+
 #[test]
-fn a_surface_declaring_its_document_actions_keeps_them() {
-    RAW.set(Raw::DeclaredDocumentAction);
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let resources = published(&mut app);
-    assert_eq!(action_ids(find(&resources, "rogue").unwrap()), ["bump"]);
+fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
+    use tilo_resource::ActionRef;
+    let mut app = TestApp::<DynamicBindingsApp>::new().unwrap();
+    let actions = RETAINED_ACTIONS
+        .with(|actions| actions.borrow().clone())
+        .unwrap();
+    let conditional = ActionRef::<Tally, ()>::new("conditional", &[]);
+    let root = actions
+        .binding(ActionRef::<Tally, ()>::new("seed", &[]))
+        .unwrap()
+        .address()
+        .resource
+        .clone();
+    assert!(actions.binding(conditional).is_none());
+    app.invoke(ActionRef::<Tally, ()>::new("seed", &[]).invoke())
+        .unwrap();
+    let binding = actions
+        .binding(conditional)
+        .expect("new declaration is bindable");
+    assert_eq!(binding.address().resource, root);
+    assert!(app.undo());
+    assert!(
+        actions.binding(conditional).is_none(),
+        "removed declaration cannot bind"
+    );
+    assert!(app.redo());
+    assert_eq!(
+        actions.binding(conditional).unwrap().address().resource,
+        root
+    );
 }

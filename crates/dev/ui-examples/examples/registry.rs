@@ -1,4 +1,4 @@
-//! Shared scenario registry and command-line dispatcher for the four UI
+//! Shared scenario registry and command-line dispatcher for the three UI
 //! example surfaces.
 
 #![allow(dead_code)] // Each binary intentionally compiles one surface subset.
@@ -8,7 +8,6 @@ pub enum Surface {
     Lab,
     Shots,
     Perf,
-    Wpe,
 }
 
 impl Surface {
@@ -17,7 +16,6 @@ impl Surface {
             Self::Lab => "ui-lab",
             Self::Shots => "ui-shots",
             Self::Perf => "ui-perf",
-            Self::Wpe => "ui-wpe",
         }
     }
 }
@@ -92,6 +90,7 @@ const LAB_SOURCES: &[&str] = &[
 ];
 const SHOT_SOURCES: &[&str] = &[
     "chart_gallery_shots.rs",
+    "content_shots.rs",
     "ctrl_k_palette.rs",
     "data_table.rs",
     "denied_state_shots.rs",
@@ -102,7 +101,6 @@ const SHOT_SOURCES: &[&str] = &[
     "history_cases.rs",
     "nav_shell_shots.rs",
     "perf_hud_shot.rs",
-    "rich_text_editor_shots.rs",
     "scrollbar_shots.rs",
     "search_showcase.rs",
     "soft_shadow_shots.rs",
@@ -112,16 +110,13 @@ const SHOT_SOURCES: &[&str] = &[
     "undo_controls_shots.rs",
     "widget_showcase_snapshot.rs",
     "widget_snapshot.rs",
+    "widget_states_shots.rs",
+    "window_chrome_shots.rs",
 ];
 const PERF_SOURCES: &[&str] = &[
     "dashboard_perf_bench.rs",
     "perf_scenario.rs",
     "widget_perf_bench.rs",
-];
-const WPE_SOURCES: &[&str] = &[
-    "wpe_dmabuf_probe.rs",
-    "wpe_latency_bench.rs",
-    "wpe_scroll_repro.rs",
 ];
 
 fn expected(surface: Surface) -> &'static [&'static str] {
@@ -129,7 +124,6 @@ fn expected(surface: Surface) -> &'static [&'static str] {
         Surface::Lab => LAB_SOURCES,
         Surface::Shots => SHOT_SOURCES,
         Surface::Perf => PERF_SOURCES,
-        Surface::Wpe => WPE_SOURCES,
     }
 }
 
@@ -279,12 +273,16 @@ mod tests {
     const STANDALONE_ENTRYPOINTS: &[&str] = &[
         "block_editor_typing.rs",
         "card_composition_shots.rs",
+        "distinct_letters_shots.rs",
+        "distinct_letters_specimen.rs",
         "form_composition_shots.rs",
         "managed_history_probe.rs",
         "manual_composition_shots.rs",
         "native_file_picker.rs",
         "native_input_probe.rs",
+        "reading_face_shots.rs",
         "search_latency.rs",
+        "type_specimen_shots.rs",
         "windows_host.rs",
     ];
 
@@ -304,7 +302,7 @@ mod tests {
                 .then_some(name)
             })
             .collect();
-        let catalogued: BTreeSet<String> = [LAB_SOURCES, SHOT_SOURCES, PERF_SOURCES, WPE_SOURCES]
+        let catalogued: BTreeSet<String> = [LAB_SOURCES, SHOT_SOURCES, PERF_SOURCES]
             .into_iter()
             .flatten()
             .map(|source| (*source).to_owned())

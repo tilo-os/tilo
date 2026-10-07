@@ -45,6 +45,8 @@
 #[cfg(feature = "client")]
 use std::rc::Rc;
 
+pub mod file_clipboard;
+
 #[cfg(feature = "client")]
 use runtime_portal::NotAvailable;
 
@@ -65,10 +67,15 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+pub mod audio_output;
 pub mod committed_document;
+#[cfg(feature = "client")]
+pub mod live_activity;
 pub mod native_media;
 #[cfg(feature = "client")]
 pub mod settings;
+#[cfg(feature = "client")]
+pub use live_activity::{LiveActivities, LiveActivityHandle};
 #[cfg(feature = "client")]
 pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
 
@@ -742,6 +749,15 @@ pub enum NearbyTransferCommand {
     Retry {
         handle: NearbyTransferHandle,
     },
+    /// Local JSON broker extension, not a personal-fabric peer protocol.
+    AirDropAvailability,
+    /// A manually selected lab receiver. Certificate trust is collected only
+    /// by the compositor; applications cannot submit or reuse a trusted pin.
+    SendAirDrop {
+        source_path: Vec<u8>,
+        address: String,
+        port: u16,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -751,6 +767,7 @@ pub enum NearbyTransferReply {
     Queued { handle: NearbyTransferHandle },
     Accepted,
     Rejected { reason: String },
+    AirDropAvailability { available: bool },
 }
 
 impl NearbyTransferCommand {
@@ -759,7 +776,21 @@ impl NearbyTransferCommand {
     /// the app, source path, transfer id and device to its live route.
     pub fn valid(&self) -> bool {
         match self {
-            Self::Snapshot => true,
+            Self::Snapshot | Self::AirDropAvailability => true,
+            Self::SendAirDrop {
+                source_path,
+                address,
+                port,
+            } => {
+                !source_path.is_empty()
+                    && source_path.len() <= MAX_NEARBY_TRANSFER_PATH_BYTES
+                    && !source_path.contains(&0)
+                    && *port != 0
+                    && address.len() <= 64
+                    && address
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| !ip.is_unspecified() && !ip.is_multicast())
+            }
             Self::Decide {
                 handle,
                 accept,
@@ -814,7 +845,7 @@ impl NearbyTransferReply {
                     })
             }
             Self::Queued { handle } => handle.valid(),
-            Self::Accepted => true,
+            Self::Accepted | Self::AirDropAvailability { .. } => true,
             Self::Rejected { reason } => {
                 !reason.is_empty() && reason.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
             }
@@ -824,6 +855,37 @@ impl NearbyTransferReply {
 
 #[cfg(feature = "client")]
 impl ChannelHandle {
+    /// Send PCM or controls to this launched application's output-only service.
+    ///
+    /// # Errors
+    /// Fails closed when the authenticated output service is absent or refuses the command.
+    pub async fn audio_output_command(
+        &self,
+        command: &audio_output::Command,
+    ) -> Result<audio_output::Snapshot, NotAvailable> {
+        let bytes = command
+            .encode()
+            .map_err(|error| NotAvailable::Capnp(capnp::Error::failed(error.into())))?;
+        let mut request = self.inner.audio_output_command_request();
+        request.get().set_command(&bytes);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply()?;
+        if bytes.len() > audio_output::MAX_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "audio output reply too large".into(),
+            )));
+        }
+        let snapshot: audio_output::Snapshot = serde_json::from_slice(bytes).map_err(|_| {
+            NotAvailable::Capnp(capnp::Error::failed("invalid audio output reply".into()))
+        })?;
+        if !snapshot.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid audio output state".into(),
+            )));
+        }
+        Ok(snapshot)
+    }
+
     /// Read this channel's current committed history. Unsupported peers remain
     /// unavailable; only an explicit Legacy response selects legacy storage.
     ///
@@ -952,6 +1014,37 @@ impl ChannelHandle {
         Ok(decoded)
     }
 
+    /// Run a bounded local Files command under its original invocation, if any.
+    /// Submit a local Files command on this admitted channel.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed or unavailable commands and replies.
+    pub async fn local_file_clipboard_command(
+        &self,
+        command: &file_clipboard::Command,
+        parent: Option<[u8; 16]>,
+    ) -> Result<file_clipboard::Reply, NotAvailable> {
+        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
+        if !command.valid() {
+            return Err(failed("invalid local clipboard command".into()));
+        }
+        let bytes = serde_json::to_vec(command).map_err(|error| failed(error.to_string()))?;
+        if bytes.len() > file_clipboard::MAX_WIRE_BYTES {
+            return Err(failed("clipboard command exceeds bound".into()));
+        }
+        let mut request = self.inner.local_file_clipboard_request();
+        request.get().set_command_json(&bytes);
+        request
+            .get()
+            .set_on_behalf_of(parent.as_ref().map_or(&[], |id| id.as_slice()));
+        let response = request.send().promise.await?;
+        let bytes = response.get()?.get_reply_json()?;
+        if bytes.len() > file_clipboard::MAX_WIRE_BYTES {
+            return Err(failed("clipboard reply exceeds bound".into()));
+        }
+        serde_json::from_slice(bytes).map_err(|error| failed(error.to_string()))
+    }
+
     /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated
     /// Settings route. Plaintext is confined to this connected local
     /// descriptor and the immediate `NetworkManager` call.
@@ -1070,6 +1163,21 @@ impl ChannelHandle {
         let reply = self.inner.settings_request().send().promise.await?;
         Ok(AppSettingsHandle {
             inner: Rc::new(reply.get()?.get_settings()?),
+        })
+    }
+
+    /// This application's live activity: what it shows outside its windows
+    /// and the controls pressed on it. The broker binds the capability to
+    /// this channel's certified app.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker presents no live activities
+    /// or is unavailable.
+    pub async fn live_activity(&self) -> Result<LiveActivityHandle, NotAvailable> {
+        let reply = self.inner.live_activity_request().send().promise.await?;
+        Ok(LiveActivityHandle {
+            inner: Rc::new(reply.get()?.get_activity()?),
         })
     }
 
@@ -1355,6 +1463,17 @@ impl ChannelHandle {
                 let idx = u32::try_from(i).unwrap_or(u32::MAX);
                 let mut row = list.reborrow().get(idx);
                 row.set_resource(&a.resource);
+                if let Some(identity) = &a.semantic_identity {
+                    if !identity.is_valid() || identity.kind != a.resource_kind {
+                        return Err(capnp::Error::failed(
+                            "invalid resource semantic identity".into(),
+                        )
+                        .into());
+                    }
+                    let mut out = row.reborrow().init_semantic_identity();
+                    out.set_kind(&identity.kind);
+                    out.set_key(&identity.key);
+                }
                 row.set_action(&a.action);
                 row.set_resource_kind(&a.resource_kind);
                 row.set_resource_label(&a.resource_label);
@@ -1370,6 +1489,13 @@ impl ChannelHandle {
                     out.set_description(view.description.as_deref().unwrap_or(""));
                     out.set_open_action(&view.open_action);
                     out.set_primary(view.primary);
+                    if let Some(range) = &view.range {
+                        let mut range_out = out.reborrow().init_range();
+                        range_out.set_action(&range.action);
+                        range_out.set_start_param(&range.start_param);
+                        range_out.set_end_param(&range.end_param);
+                        range_out.set_unit_param(&range.unit_param);
+                    }
                     if let Some(mount) = &view.mount {
                         let mut out = out.init_mount();
                         out.set_action(&mount.action);
@@ -1965,8 +2091,44 @@ impl ChannelHandle {
         app_id: &str,
         content_hash: Option<&str>,
     ) -> Result<(u64, String), NotAvailable> {
+        self.launch_installed_application(app_id, content_hash, None)
+            .await
+    }
+
+    /// Launch an exact installed package through this authenticated channel,
+    /// returning its observed startup outcome rather than a queue acceptance.
+    ///
+    /// # Errors
+    /// Returns an unavailable or malformed broker response.
+    pub async fn launch_installed_application(
+        &self,
+        app_id: &str,
+        content_hash: Option<&str>,
+        package_root: Option<&str>,
+    ) -> Result<(u64, String), NotAvailable> {
+        self.launch_installed_application_for(app_id, content_hash, package_root, None)
+            .await
+    }
+
+    /// Continue a live invocation on its original caller's behalf.
+    ///
+    /// # Errors
+    /// Returns an unavailable or malformed broker response.
+    pub async fn launch_installed_application_for(
+        &self,
+        app_id: &str,
+        content_hash: Option<&str>,
+        package_root: Option<&str>,
+        on_behalf_of: Option<[u8; 16]>,
+    ) -> Result<(u64, String), NotAvailable> {
         let mut request = self.inner.launch_published_application_request();
+        if let Some(invocation) = on_behalf_of {
+            request.get().set_on_behalf_of(&invocation);
+        }
         request.get().set_app_id(app_id);
+        request
+            .get()
+            .set_package_root(package_root.unwrap_or_default());
         request
             .get()
             .set_content_hash(content_hash.unwrap_or_default());
@@ -2302,6 +2464,15 @@ pub struct ExportedView {
     pub open_action: String,
     pub primary: bool,
     pub mount: Option<ExportedViewMount>,
+    pub range: Option<ExportedViewRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedViewRange {
+    pub action: String,
+    pub start_param: String,
+    pub end_param: String,
+    pub unit_param: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2311,14 +2482,36 @@ pub struct ExportedViewMount {
     pub view_param: String,
 }
 
-/// One operation an application exports, as inert data.
-///
-/// Everything a caller needs to decide whether to perform it, and
-/// nothing that could perform it — read-only is the shape of this
-/// struct, not a promise about how it is used.
+/// Bounded descriptive source identity; never permission or authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedResourceSemanticIdentity {
+    pub kind: String,
+    pub key: String,
+}
+
+impl ExportedResourceSemanticIdentity {
+    pub const MAX_KIND_BYTES: usize = 128;
+    pub const MAX_KEY_BYTES: usize = 4096;
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self.kind.is_empty()
+            && self.kind.len() <= Self::MAX_KIND_BYTES
+            && self
+                .kind
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+            && !self.key.is_empty()
+            && self.key.len() <= Self::MAX_KEY_BYTES
+            && !self.key.chars().any(char::is_control)
+    }
+}
+
+/// One inert operation an application exports, without execution authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedAction {
     pub resource: String,
+    pub semantic_identity: Option<ExportedResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
@@ -2407,6 +2600,30 @@ fn decode_exported_action(
     row: collab_capnp::exported_action::Reader<'_>,
 ) -> Result<ExportedAction, capnp::Error> {
     let description = capnp_text(row.get_description()?)?;
+    let semantic_identity = if row.has_semantic_identity() {
+        let identity = row.get_semantic_identity()?;
+        let kind = identity.get_kind()?;
+        let key = identity.get_key()?;
+        if kind.len() > ExportedResourceSemanticIdentity::MAX_KIND_BYTES
+            || key.len() > ExportedResourceSemanticIdentity::MAX_KEY_BYTES
+        {
+            return Err(capnp::Error::failed(
+                "oversized resource semantic identity".into(),
+            ));
+        }
+        let identity = ExportedResourceSemanticIdentity {
+            kind: capnp_text(kind)?,
+            key: capnp_text(key)?,
+        };
+        if !identity.is_valid() || identity.kind != capnp_text(row.get_resource_kind()?)? {
+            return Err(capnp::Error::failed(
+                "invalid resource semantic identity".into(),
+            ));
+        }
+        Some(identity)
+    } else {
+        None
+    };
     let input = match row.get_input()?.which()? {
         collab_capnp::action_input::Which::None(()) => ExportedInput::None,
         collab_capnp::action_input::Which::Text(text) => ExportedInput::Text {
@@ -2427,6 +2644,19 @@ fn decode_exported_action(
                 description: (!description.is_empty()).then_some(description),
                 open_action: capnp_text(view.get_open_action()?)?,
                 primary: view.get_primary(),
+                range: view
+                    .has_range()
+                    .then(|| view.get_range())
+                    .transpose()?
+                    .map(|range| {
+                        Ok::<_, capnp::Error>(ExportedViewRange {
+                            action: capnp_text(range.get_action()?)?,
+                            start_param: capnp_text(range.get_start_param()?)?,
+                            end_param: capnp_text(range.get_end_param()?)?,
+                            unit_param: capnp_text(range.get_unit_param()?)?,
+                        })
+                    })
+                    .transpose()?,
                 mount: view
                     .has_mount()
                     .then(|| view.get_mount())
@@ -2444,6 +2674,7 @@ fn decode_exported_action(
         .transpose()?;
     Ok(ExportedAction {
         resource: capnp_text(row.get_resource()?)?,
+        semantic_identity,
         action: capnp_text(row.get_action()?)?,
         resource_kind: capnp_text(row.get_resource_kind()?)?,
         resource_label: capnp_text(row.get_resource_label()?)?,
@@ -3259,6 +3490,66 @@ mod certified_join_tests {
 
 #[cfg(all(test, feature = "client"))]
 mod tests {
+    #[cfg(feature = "client")]
+    #[test]
+    fn action_semantic_identity_is_optional_bounded_and_kind_exact() {
+        let decode = |identity: Option<(&str, &str)>| {
+            let mut message = capnp::message::Builder::new_default();
+            let mut row = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
+            row.set_resource("opaque-alias");
+            row.set_resource_kind("store.app");
+            row.set_resource_label("A misleading label");
+            if let Some((kind, key)) = identity {
+                let mut out = row.reborrow().init_semantic_identity();
+                out.set_kind(kind);
+                out.set_key(key);
+            }
+            decode_exported_action(
+                message
+                    .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
+                    .unwrap(),
+            )
+        };
+        assert!(decode(None).unwrap().semantic_identity.is_none());
+        let decoded = decode(Some(("store.app", "app:so.tilo.chat"))).unwrap();
+        assert_eq!(decoded.resource, "opaque-alias");
+        assert_eq!(decoded.semantic_identity.unwrap().key, "app:so.tilo.chat");
+        assert!(decode(Some(("person", "app:so.tilo.chat"))).is_err());
+        assert!(decode(Some(("store.app", ""))).is_err());
+        assert!(decode(Some(("store.app", "key\nsecret"))).is_err());
+        assert!(decode(Some(("store.app", &"x".repeat(4097)))).is_err());
+        assert!(decode(Some((&"x".repeat(129), "key"))).is_err());
+        assert!(decode(Some(("store.app", &"x".repeat(4096)))).is_ok());
+    }
+
+    #[test]
+    fn airdrop_extension_preserves_old_json_and_accepts_no_application_trust_claim() {
+        use super::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
+        assert_eq!(
+            serde_json::to_string(&Command::Snapshot).unwrap(),
+            r#"{"command":"snapshot"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Reply::Accepted).unwrap(),
+            r#"{"result":"accepted"}"#
+        );
+        let command = r#"{"command":"send-air-drop","source_path":[47,116,109,112,47,102],"address":"127.0.0.1","port":443}"#;
+        let parsed = serde_json::from_str::<Command>(command).unwrap();
+        assert!(parsed.valid());
+        for claimed in ["certificate_sha256", "verified", "person", "remember"] {
+            let value = command.strip_suffix('}').unwrap().to_owned()
+                + &format!(",\"{claimed}\":\"claimed\"}}");
+            assert!(serde_json::from_str::<Command>(&value).is_err());
+        }
+        for address in ["receiver.example", "0.0.0.0", "239.1.1.1", "::"] {
+            let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
+            value["address"] = address.into();
+            assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
+        }
+        let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
+        value["port"] = 0.into();
+        assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
+    }
     use super::*;
     use std::env;
 
@@ -3476,6 +3767,11 @@ mod tests {
                 view.set_description("Edit this note");
                 view.set_open_action("show-editor");
                 view.set_primary(true);
+                let mut range = view.reborrow().init_range();
+                range.set_action("show-range");
+                range.set_start_param("start");
+                range.set_end_param("end");
+                range.set_unit_param("unit");
                 let mut mount = view.init_mount();
                 mount.set_action("mount-editor");
                 mount.set_capability_param("slot_capability");
@@ -3493,6 +3789,12 @@ mod tests {
                     description: Some("Edit this note".into()),
                     open_action: "show-editor".into(),
                     primary: true,
+                    range: Some(ExportedViewRange {
+                        action: "show-range".into(),
+                        start_param: "start".into(),
+                        end_param: "end".into(),
+                        unit_param: "unit".into()
+                    }),
                     mount: Some(ExportedViewMount {
                         action: "mount-editor".into(),
                         capability_param: "slot_capability".into(),

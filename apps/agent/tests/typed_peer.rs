@@ -49,6 +49,12 @@ fn device_key(handle: &str) -> SigningKey {
     SigningKey::from_bytes(&seed)
 }
 
+/// The stable human principal authenticated by this fixture's certificate.
+/// A display handle is deliberately not an authority or presence identifier.
+pub fn principal_id() -> String {
+    hex::encode(SigningKey::from_bytes(&ROOT_KEY).verifying_key().to_bytes())
+}
+
 /// # Panics
 ///
 /// Panics if the deterministic test certificate or presentation cannot encode.
@@ -187,6 +193,7 @@ pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
     tilo_actions::door::survey(resources)
         .into_iter()
         .map(|descriptor| ExportedAction {
+            semantic_identity: descriptor.semantic_identity.clone(),
             resource: descriptor.address.resource,
             action: descriptor.address.action,
             resource_kind: descriptor.resource_kind,
@@ -296,7 +303,9 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 
 /// A document invocation as the broker delivers it to the app host.
 pub struct DocumentInvocation<'a> {
-    pub id: u64,
+    /// The broker-minted end-to-end invocation identity. The connection-local
+    /// numeric correlation key remains solely on the response RPC.
+    pub invocation: tilo_actions::InvocationId,
     pub address: ActionAddress,
     pub argument: Option<&'a str>,
     pub actor: &'a str,
@@ -322,7 +331,7 @@ pub fn service_document_invocation(
     invocation: DocumentInvocation<'_>,
 ) -> tilo_actions::InvocationUpdate {
     let DocumentInvocation {
-        id,
+        invocation,
         address,
         argument,
         actor,
@@ -363,7 +372,6 @@ pub fn service_document_invocation(
             &mut transport,
         )
     };
-    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
     match result {
         Ok(_) => {
             let delta = replica.save_after(&before);
@@ -450,7 +458,7 @@ pub fn spawn_with_agent_actions(
         .grant_as(
             &principal,
             ui::permissions::CapOverride::membership(
-                ui::permissions::Subject::agent("Scribe"),
+                ui::permissions::Subject::agent("scribe"),
                 workspace.room.to_string(),
                 ui::permissions::Verb::Write,
             ),
@@ -460,7 +468,7 @@ pub fn spawn_with_agent_actions(
         .grant_as(
             &principal,
             ui::permissions::CapOverride::grant(
-                ui::permissions::Subject::agent("Scribe"),
+                ui::permissions::Subject::agent("scribe"),
                 ui::permissions::Scope::ResourceType(collab_types::ArtifactKind::Note),
                 ui::permissions::Verb::Write,
             ),
@@ -471,7 +479,7 @@ pub fn spawn_with_agent_actions(
             .grant_as(
                 &principal,
                 ui::permissions::CapOverride::grant(
-                    ui::permissions::Subject::agent("Scribe"),
+                    ui::permissions::Subject::agent("scribe"),
                     ui::permissions::Scope::Action {
                         app: (*app).to_string(),
                         action: (*action).to_string(),

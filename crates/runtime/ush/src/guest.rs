@@ -129,6 +129,8 @@ pub struct GuestPlan {
     pub grant_root: Option<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
+    /// Private loader closure for a dynamically linked runtime.
+    pub helper_runtime: Option<crate::helper_runtime::HelperRuntime>,
     /// Installed legacy apps' commands: shims that ask the broker for a
     /// `LegacyLaunch`.
     pub legacy_commands: Vec<String>,
@@ -170,6 +172,10 @@ impl GuestPlan {
     ///
     /// Returns an error if a directory or file can't be created.
     pub fn prepare(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.session_dir)?;
+        if let Some(helper) = &self.helper_runtime {
+            helper.write_wrapper(&self.session_dir.join("helper-shim"))?;
+        }
         std::fs::create_dir_all(&self.guest_home)?;
         for dir in ENVIRONMENT_VAR_DIRS {
             std::fs::create_dir_all(self.var_dir.join(dir))?;
@@ -274,8 +280,8 @@ pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> V
     a
 }
 
-/// `--clearenv`, the namespace/identity flags, and the hostname — the part
-/// of the argv that exists before any filesystem is touched.
+/// `--clearenv` and the namespace/identity flags — the part of the argv
+/// that exists before any filesystem is touched.
 fn push_namespace_flags(a: &mut Vec<OsString>, plan: &GuestPlan) {
     let push = |a: &mut Vec<OsString>, s: &str| a.push(OsString::from(s));
 
@@ -298,8 +304,9 @@ fn push_namespace_flags(a: &mut Vec<OsString>, plan: &GuestPlan) {
     push(a, "--unshare-uts");
     push(a, "--unshare-ipc");
     push(a, "--unshare-cgroup-try");
-    push(a, "--hostname");
-    push(a, "ush");
+    // The guest keeps the host's name in a namespace of its own: naming it
+    // takes `sethostname`, which a container's seccomp profile refuses, and
+    // bwrap then starts no shell at all.
     // The guest must not outlive the supervisor. Without this a crashed
     // supervisor leaves a shell running in a namespace nothing is watching.
     push(a, "--die-with-parent");
@@ -412,7 +419,33 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
     a.push(plan.runtime_bin.clone().into_os_string());
-    a.push(format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into());
+    a.push(if plan.helper_runtime.is_some() {
+        crate::helper_runtime::EXECUTABLE.into()
+    } else {
+        format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into()
+    });
+    if let Some(helper) = &plan.helper_runtime {
+        a.extend(["--dir".into(), crate::helper_runtime::LIB_DIR.into()]);
+        for (name, path) in &helper.libraries {
+            a.extend([
+                "--ro-bind".into(),
+                path.clone().into_os_string(),
+                Path::new(crate::helper_runtime::LIB_DIR)
+                    .join(name)
+                    .into_os_string(),
+            ]);
+        }
+        a.extend([
+            "--ro-bind".into(),
+            helper.loader.clone().into_os_string(),
+            crate::helper_runtime::LOADER.into(),
+        ]);
+        a.extend([
+            "--ro-bind".into(),
+            plan.session_dir.join("helper-shim").into_os_string(),
+            format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into(),
+        ]);
+    }
     for cmd in crate::GUEST_COMMANDS {
         if !crate::guest_command_available(&plan.host_root, cmd) {
             continue;
@@ -607,6 +640,10 @@ pub fn spawn(
     };
     let mut cmd = std::process::Command::new(program);
     cmd.args(rest);
+    // Direct `ush -c` must expose its command output and startup errors;
+    // served sessions inherit the supervisor's already-attached pty here.
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
     if let Some(netns) = netns {
         netns.enter(&mut cmd);
     }
@@ -647,6 +684,7 @@ mod tests {
             readable_dirs: Vec::new(),
             grant_root: None,
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
+            helper_runtime: None,
             legacy_commands: vec!["code".into()],
             broker_socket: dir.join("store/sessions/s1/broker.sock"),
             seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),
@@ -670,6 +708,17 @@ mod tests {
 
     fn path(p: &Path) -> String {
         p.display().to_string()
+    }
+
+    #[test]
+    fn the_guest_has_its_own_uts_namespace_without_renaming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
+        assert!(argv.iter().any(|arg| arg == "--unshare-uts"));
+        assert!(
+            !argv.iter().any(|arg| arg == "--hostname"),
+            "a container's seccomp profile refuses sethostname"
+        );
     }
 
     #[test]

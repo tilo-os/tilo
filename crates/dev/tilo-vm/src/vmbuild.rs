@@ -58,7 +58,7 @@ pub fn rsync_rsh(endpoint: &SshEndpoint, key: Option<&str>) -> Result<String, Cl
         tool: "rsync".into(),
         purpose: "sync worktree and image layers into a VM".into(),
     })?;
-    let ssh = remote::ssh_command(endpoint, key, &[], false);
+    let ssh = remote::ssh_transport(endpoint, key, false);
     #[cfg(windows)]
     let mut ssh = ssh;
     #[cfg(windows)]
@@ -128,7 +128,7 @@ pub fn rsync_command(
     .arg("--rsh")
     .arg(rsh)
     .arg("--rsync-path")
-    .arg(rsync_path)
+    .arg(remote::rsync_path_as_root(endpoint, &rsync_path))
     .arg(source)
     .arg(format!("{}@{}:{dest_dir}/", endpoint.user, endpoint.host)))
 }

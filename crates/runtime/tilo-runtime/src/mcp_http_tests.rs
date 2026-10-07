@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "mcp_admission_tests.rs"]
+mod admission_tests;
 use hyper::HeaderMap;
 use std::sync::Mutex as StdMutex;
 use tilo_actions::InvocationUpdate;
@@ -27,6 +30,7 @@ mod schema_rows {
 
 #[derive(Clone, Default)]
 struct StubHost {
+    room: Option<String>,
     invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
     callers: Arc<StdMutex<Vec<Caller>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
@@ -83,7 +87,7 @@ impl ActionHost for StubHost {
         page.providers = vec![CatalogueProvider {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
-            room: "room".into(),
+            room: self.room.clone().unwrap_or_else(|| "room".into()),
             record_id: String::new(),
             browsable: true,
         }];
@@ -537,13 +541,84 @@ fn beyond_loopback_needs_a_token() {
     let open = Config {
         address: "0.0.0.0:7070".parse().unwrap(),
         token: None,
+        room: None,
     };
     assert!(open.validate().is_err());
     let loopback = Config {
         address: "127.0.0.1:7070".parse().unwrap(),
         token: None,
+        room: None,
     };
     assert!(loopback.validate().is_ok());
+}
+
+#[test]
+fn explicit_mcp_room_is_only_a_canonical_room_identifier() {
+    let mut config = Config {
+        address: "127.0.0.1:7070".parse().unwrap(),
+        token: None,
+        room: None,
+    };
+    assert!(config.validate().is_ok());
+    for room in [
+        "",
+        "Writer",
+        "00000000-0000-0000-0000-000000000000",
+        "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+    ] {
+        config.room = Some(room.into());
+        assert!(config.validate().is_err());
+    }
+    config.room = Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into());
+    assert!(
+        config.validate().is_ok(),
+        "syntax validation does not grant admission"
+    );
+}
+
+#[test]
+fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
+    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let host = StubHost {
+        room: Some(room.into()),
+        ..Default::default()
+    };
+    let endpoint = Endpoint::new(
+        host.clone(),
+        room.into(),
+        "profile-actor".into(),
+        None,
+        None,
+    );
+    run(async {
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "clientInfo":{"name":"forged-room-name","room":"other"},
+            "room":"other", "actor":"forged", "capabilities":{}
+        }});
+        let response = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &HeaderMap::new(),
+                request.to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response.headers()[SESSION_HEADER]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let result = invoke(&endpoint, &session).await;
+        assert_ne!(result["result"]["isError"], true, "{result}");
+        let callers = host.callers.lock().unwrap().clone();
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].room(), Some(room));
+        assert_eq!(
+            callers[0].principal(),
+            &tilo_actions::remote::CallerPrincipal::Person("profile-actor".into())
+        );
+        assert!(callers[0].execution_id().is_some());
+    });
 }
 
 #[test]
@@ -1358,3 +1433,106 @@ fn continued_history_and_client_names_cannot_select_execution_identity() {
         }
     });
 }
+
+#[test]
+fn session_delete_idle_expiry_and_endpoint_drop_retire_run_lifetimes() {
+    let endpoint = endpoint(StubHost::default(), None);
+    run(async {
+        let first = open(&endpoint, "same label").await;
+        let second = open(&endpoint, "same label").await;
+        let retained = endpoint.find(&first).unwrap();
+        let first_caller = retained.lock().await.execution_caller();
+        let second_caller = endpoint
+            .find(&second)
+            .unwrap()
+            .lock()
+            .await
+            .execution_caller();
+        assert!(first_caller.execution_is_live());
+        assert!(second_caller.execution_is_live());
+        let deleted = endpoint
+            .dispatch(
+                &Method::DELETE,
+                "/mcp",
+                &headers(&[(SESSION_HEADER, &first)]),
+                b"",
+            )
+            .await;
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+        assert!(
+            !first_caller.execution_is_live(),
+            "retained server cannot revive a deleted run"
+        );
+        assert!(second_caller.execution_is_live());
+        endpoint
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&second)
+            .unwrap()
+            .last_used = Instant::now().checked_sub(SESSION_IDLE).unwrap();
+        let third = open(&endpoint, "same label").await;
+        assert!(!second_caller.execution_is_live());
+        let third_caller = endpoint
+            .find(&third)
+            .unwrap()
+            .lock()
+            .await
+            .execution_caller();
+        assert!(third_caller.execution_is_live());
+        drop(endpoint);
+        assert!(!third_caller.execution_is_live());
+        assert_ne!(first_caller.execution_id(), third_caller.execution_id());
+    });
+}
+
+#[test]
+fn stdio_server_drop_retires_retained_caller_clones() {
+    let server = McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    let caller = server.execution_caller();
+    let identity = caller.clone();
+    assert!(caller.execution_is_live());
+    drop(server);
+    assert!(!caller.execution_is_live());
+    assert_eq!(
+        caller, identity,
+        "liveness does not mutate invocation ownership keys"
+    );
+}
+
+#[test]
+fn logical_session_reconnect_stays_live_but_expired_id_cannot_renew_itself() {
+    let endpoint = endpoint(StubHost::default(), None);
+    run(async {
+        let id = open(&endpoint, "same label").await;
+        let connection = endpoint.find(&id).unwrap();
+        let caller = connection.lock().await.execution_caller();
+        drop(connection);
+        let reconnected = endpoint.find(&id).unwrap();
+        let resumed = reconnected.lock().await.execution_caller();
+        assert_eq!(caller.execution_id(), resumed.execution_id());
+        assert!(caller.execution_is_live());
+        endpoint
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .last_used = Instant::now().checked_sub(SESSION_IDLE).unwrap();
+        assert!(endpoint.find(&id).is_none());
+        assert!(!caller.execution_is_live());
+        assert!(!resumed.execution_is_live());
+        let replacement = open(&endpoint, "same label").await;
+        let fresh = endpoint
+            .find(&replacement)
+            .unwrap()
+            .lock()
+            .await
+            .execution_caller();
+        assert_ne!(fresh.execution_id(), caller.execution_id());
+        assert!(fresh.execution_is_live());
+    });
+}
+
+#[path = "mcp_retired_execution_tests.rs"]
+mod retired_execution_tests;

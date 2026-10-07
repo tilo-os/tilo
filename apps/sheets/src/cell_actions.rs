@@ -270,7 +270,13 @@ pub fn sort_writes(
     writes
 }
 
-fn sort_rows_spec(sheet: usize, sheet_id: &str, cells: Vec<SearchableCell>) -> ActionSpec {
+/// Sorting reads what the sheet's cells show, calculated when a sort is
+/// asked for rather than whenever the sheet is published.
+fn sort_rows_spec(
+    sheet: usize,
+    sheet_id: &str,
+    info: std::sync::Arc<crate::resource::SheetInfo>,
+) -> ActionSpec {
     let sheet_id = sheet_id.to_string();
     ActionSpec::typed(
         "sort-rows",
@@ -301,7 +307,7 @@ fn sort_rows_spec(sheet: usize, sheet_id: &str, cells: Vec<SearchableCell>) -> A
                 return invalid("by must be a column inside range");
             }
             let writes = sort_writes(
-                &cells,
+                info.cells(),
                 range,
                 by,
                 args.boolean("descending").unwrap_or(false),
@@ -394,12 +400,16 @@ fn read_cells_spec(sheet_id: &str) -> ActionSpec {
 }
 
 /// The cell actions each sheet publishes beside rename/delete/insert.
-pub fn sheet_actions(sheet: usize, sheet_id: &str, cells: &[SearchableCell]) -> Vec<ActionSpec> {
+pub fn sheet_actions(
+    sheet: usize,
+    sheet_id: &str,
+    info: std::sync::Arc<crate::resource::SheetInfo>,
+) -> Vec<ActionSpec> {
     let mut specs = vec![
         read_cells_spec(sheet_id),
         set_cells_spec(sheet, sheet_id),
         format_cells_spec(sheet_id),
-        sort_rows_spec(sheet, sheet_id, cells.to_vec()),
+        sort_rows_spec(sheet, sheet_id, info),
         delete_rows_spec(sheet_id),
     ];
     for spec in &mut specs {
@@ -455,10 +465,9 @@ fn project_read(
 ) -> Result<ReadPage, SemanticReadError> {
     let request: ReadRequest =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    let mut doc = document.clone();
-    let sheet = SheetsDoc::sheet_index_by_resource_id(&doc, &request.sheet)
+    let sheet = SheetsDoc::sheet_index_by_resource_id(document, &request.sheet)
         .ok_or(SemanticReadError::InvalidRequest)?;
-    let snap = SheetsDoc::snapshot_sheet(&mut doc, sheet, Currency::USD);
+    let snap = SheetsDoc::snapshot_sheet(document, sheet, Currency::USD);
     let used = snap.raw.keys().chain(snap.bold.iter()).copied();
     let (start, end) = match request.range.as_deref() {
         Some(range) => parse_range(range).ok_or(SemanticReadError::InvalidRequest)?,
@@ -555,8 +564,7 @@ pub fn edit_result(
         end.1
             .min(start.1.saturating_add(shown_rows.saturating_sub(1))),
     );
-    let mut doc = doc.clone();
-    let snap = SheetsDoc::snapshot_sheet(&mut doc, sheet, Currency::USD);
+    let snap = SheetsDoc::snapshot_sheet(doc, sheet, Currency::USD);
     let mut content = range_content(&snap, start, shown_end);
     if shown_end != end
         && let Some(fields) = content.as_object_mut()

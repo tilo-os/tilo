@@ -76,12 +76,38 @@ pub fn load_revocation_list(
     Ok(list)
 }
 
+/// The systemd credential a per-user unit receives the device key as.
+pub const DEVICE_KEY_CREDENTIAL: &str = "device-key";
+
 /// Where the device key lives — [`IdentityPaths::default_system`] unless [`IDENTITY_ROOT_ENV`] overrides it.
+///
+/// A sandboxed per-user unit runs in a user namespace that maps only its own
+/// account, so the root-owned system key reads as owned by nobody and is
+/// refused. Its service manager reads the key for it instead and hands it
+/// over as the [`DEVICE_KEY_CREDENTIAL`] credential, owned by the unit's user.
 pub fn identity_paths() -> IdentityPaths {
-    match std::env::var(IDENTITY_ROOT_ENV) {
+    let paths = match std::env::var(IDENTITY_ROOT_ENV) {
         Ok(v) if !v.is_empty() => IdentityPaths::under(PathBuf::from(v)),
         _ => IdentityPaths::default_system(),
+    };
+    with_device_key_credential(paths, std::env::var_os("CREDENTIALS_DIRECTORY"))
+}
+
+/// `paths` with the device key read from `credentials`, when the service
+/// manager passed one. A unit without an enrolled device gets a placeholder
+/// that is no key, and keeps the system path, which reports what is missing.
+fn with_device_key_credential(
+    mut paths: IdentityPaths,
+    credentials: Option<std::ffi::OsString>,
+) -> IdentityPaths {
+    let Some(directory) = credentials.filter(|directory| !directory.is_empty()) else {
+        return paths;
+    };
+    let key = PathBuf::from(directory).join(DEVICE_KEY_CREDENTIAL);
+    if std::fs::metadata(&key).is_ok_and(|metadata| metadata.is_file() && metadata.len() == 32) {
+        paths.device_privkey = key;
     }
+    paths
 }
 
 /// The device identity this mount runs as.
@@ -550,5 +576,38 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    #[test]
+    fn a_unit_reads_the_device_key_its_service_manager_passed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        let system_key = paths.device_privkey.clone();
+        let credentials = tmp.path().join("credentials");
+        std::fs::create_dir(&credentials).unwrap();
+
+        // Not enrolled: the placeholder is no key, so the system path stays.
+        std::fs::write(credentials.join(DEVICE_KEY_CREDENTIAL), b"absent").unwrap();
+        let unenrolled =
+            with_device_key_credential(paths.clone(), Some(credentials.clone().into_os_string()));
+        assert_eq!(unenrolled.device_privkey, system_key);
+
+        let passed = credentials.join(DEVICE_KEY_CREDENTIAL);
+        std::fs::remove_file(&passed).unwrap();
+        tilo_user_identity::persist::write_device_key(
+            &passed,
+            &ed25519_dalek::SigningKey::from_bytes(&DEVICE_SEED),
+        )
+        .unwrap();
+        let enrolled = with_device_key_credential(paths, Some(credentials.into_os_string()));
+        assert_eq!(enrolled.device_privkey, passed);
+        let identity = load_mount_identity(&enrolled).unwrap();
+        assert!(!identity.created);
+        assert_eq!(
+            identity.public,
+            ed25519_dalek::SigningKey::from_bytes(&DEVICE_SEED)
+                .verifying_key()
+                .to_bytes()
+        );
     }
 }

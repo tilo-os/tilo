@@ -1023,21 +1023,13 @@ fn spawn_workspace_authority_reload(
 }
 
 /// Serve document media from the content store (best-effort, like the other
-/// local sockets): collaborators' media is fetched through the workspace's
-/// known peers.
+/// local sockets). Content of another device's records reaches this store on
+/// the record's route, through the session.
 fn spawn_document_media(
     socket: &Path,
-    endpoint: &iroh::Endpoint,
-    identity: &FsTransportIdentity,
-    hydrator: &Arc<Hydrator>,
     store: &Arc<ContentStore>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    let fetcher = fs::document_media::PeerMediaFetcher::new(
-        endpoint.clone(),
-        identity.clone(),
-        Arc::clone(hydrator),
-    );
-    let media = fs::document_media::DocumentMedia::new(Arc::clone(store), Some(Arc::new(fetcher)));
+    let media = fs::document_media::DocumentMedia::new(Arc::clone(store));
     match fs::document_media::serve_socket(socket, media) {
         Ok(handle) => Some(handle),
         Err(error) => {
@@ -1829,9 +1821,9 @@ async fn serve(
                 .map(|authority| authority.handle())
         })
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
-    let _media = blob_sock.as_deref().and_then(|socket| {
-        spawn_document_media(socket, &endpoint, &transport_identity, &hydrator, &store)
-    });
+    let _media = blob_sock
+        .as_deref()
+        .and_then(|socket| spawn_document_media(socket, &store));
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
@@ -2178,9 +2170,9 @@ async fn mount(
         .as_ref()
         .map(|records| Arc::clone(&records.repository));
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
-    let _media = blob_sock.as_deref().and_then(|socket| {
-        spawn_document_media(socket, &endpoint, &transport_identity, &hydrator, &store)
-    });
+    let _media = blob_sock
+        .as_deref()
+        .and_then(|socket| spawn_document_media(socket, &store));
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(

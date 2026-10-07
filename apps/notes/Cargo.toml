@@ -29,10 +29,6 @@ android = []
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-# Single-writer custody of a notebook directory.
-tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-app-state = { path = "../../crates/system/app-state" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -45,14 +41,16 @@ tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # one over.
 tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 automerge.workspace = true
+base64.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
 chrono.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 uuid.workspace = true
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tracing.workspace = true
+# A pasted or dropped image larger than a notebook asset is re-encoded smaller.
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tempfile.workspace = true
 url.workspace = true
 vello.workspace = true
@@ -60,6 +58,7 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

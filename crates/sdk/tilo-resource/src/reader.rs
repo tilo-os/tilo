@@ -151,6 +151,14 @@ impl<R: Resource> Reader<R> {
         self.revision
     }
 
+    /// Whether the state is `doc` as it stands: no change arrived since the
+    /// last sync.
+    pub fn follows(&self, doc: &Doc) -> bool {
+        !self.stale
+            && self.uncommitted.is_none()
+            && heads_of(doc).is_some_and(|heads| self.tracker.heads() == Some(heads.as_slice()))
+    }
+
     /// Count the unchanged state as a new revision, so everything following
     /// it takes it again (a surface dropping an optimistic preview).
     pub fn represent(&mut self) {
@@ -169,7 +177,7 @@ impl<R: Resource> Reader<R> {
     /// Returns [`ModelError`] when the document no longer holds this
     /// resource; the state is left as it was last read successfully and the
     /// next sync reads it whole.
-    pub fn sync(&mut self, doc: &mut Doc) -> Result<bool, ModelError> {
+    pub fn sync(&mut self, doc: &Doc) -> Result<bool, ModelError> {
         // An open transaction belongs to whoever opened it, and closing it
         // here would move their commit boundary. It has no version to diff
         // from, so its state is read whole — once per change of the
@@ -186,7 +194,7 @@ impl<R: Resource> Reader<R> {
         let state = &self.state;
         let delta = self
             .tracker
-            .delta_located(doc, &|obj| R::locate(state, obj));
+            .committed_delta_located(doc, &|obj| R::locate(state, obj));
         let delta = if self.uncommitted.take().is_some() && delta.is_empty() {
             // The transaction was rolled back: read what is left.
             Delta::everything()

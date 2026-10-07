@@ -284,6 +284,21 @@ impl ClientInput {
 
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
 
+fn monotonic_time_ns() -> Option<u128> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the out pointer refers to a live timespec for the entire call.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
+        return None;
+    }
+    u128::try_from(now.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u128::try_from(now.tv_nsec).ok()?)
+}
+
 /// Mint a fresh input serial. Wayland clients ignore events whose serial goes backwards, so every delivered event gets its own.
 fn mint_serial(state: &mut State) -> Serial {
     state.serial_counter = state.serial_counter.wrapping_add(1);
@@ -291,6 +306,9 @@ fn mint_serial(state: &mut State) -> Serial {
 }
 
 fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) {
+    state
+        .clients_given_input
+        .insert(crate::compositor::state::client_index_of(surface_id));
     let now = Instant::now();
     state
         .activation_serials
@@ -306,6 +324,16 @@ fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) 
     {
         let _ = state.activation_serials.pop_front();
     }
+}
+
+/// The xdg `app_id` a toplevel declared, for naming it in latency records.
+fn toplevel_app_id(surface: &WlSurface) -> Option<String> {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok()?.app_id.clone())
+    })
 }
 
 /// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
@@ -395,6 +423,10 @@ impl State {
             // Retire their held keys while the old client still owns focus,
             // before Smithay sends the next client its focus-enter key array.
             self.release_remote_keys_for_surface(previous);
+            let root = crate::compositor::foreign::store().sheet_root(previous);
+            if root != previous {
+                self.release_remote_keys_for_surface(root);
+            }
         }
         let target = match surface_id {
             Some(id) => self.client_input.surfaces.get(&id).map(|s| (id, s.clone())),
@@ -434,6 +466,16 @@ impl State {
         } else {
             KeyState::Released
         };
+        let observed_surface = keyboard
+            .current_focus()
+            .as_ref()
+            .map(super::state::surface_id);
+        let delivery_time_ns = (forward
+            && has_focus
+            && pressed
+            && crate::shell::launcher::LaunchSession::current().presentation_observer_enabled())
+        .then(monotonic_time_ns)
+        .flatten();
         let intercepted: Option<()> = keyboard.input(
             self,
             keycode.saturating_add(8).into(),
@@ -450,7 +492,35 @@ impl State {
         );
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
+            if let Some((delivery_time_ns, observed_surface)) =
+                delivery_time_ns.zip(observed_surface)
+            {
+                eprintln!(
+                    "tilo-physical-delivery {}",
+                    serde_json::json!({
+                        "wayland_serial": u32::from(serial),
+                        "surface_id": observed_surface,
+                        "clock_id": libc::CLOCK_MONOTONIC,
+                        "delivery_time_ns": delivery_time_ns,
+                        "input_time_ns": self.physical_key_input_time_ns.filter(|origin| u128::from(*origin) <= delivery_time_ns),
+                    })
+                );
+            }
             record_activation_serial(self, serial, surface_id);
+            if pressed {
+                let app = self
+                    .client_input
+                    .surfaces
+                    .get(&surface_id)
+                    .and_then(toplevel_app_id)
+                    .unwrap_or_default();
+                crate::compositor::key_latency::tracker().key_delivered(
+                    surface_id,
+                    &app,
+                    keycode,
+                    Instant::now(),
+                );
+            }
         }
         delivered
     }
@@ -686,10 +756,11 @@ impl State {
         self.client_input.touch_down_reached_client = false;
     }
 
-    /// Whether a confirmed tap may be emulated as a pointer click. A tap whose
-    /// touch sequence already reached a client is that client's alone.
-    pub fn touch_tap_needs_pointer_click(&self) -> bool {
-        !self.client_input.touch_down_reached_client
+    /// Whether the latest touch-down reached a client that takes touch over
+    /// `wl_touch`. Such a contact is that client's alone; any other is turned
+    /// into pointer input (see [`crate::compositor::touch_pointer`]).
+    pub fn touch_down_reached_client(&self) -> bool {
+        self.client_input.touch_down_reached_client
     }
 
     /// Forward one touch point to the focused client over `wl_touch`.
@@ -708,8 +779,25 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
+        if matches!(touch, BackendTouchEvent::Down { .. })
+            && let Some((id, _)) = target
+        {
+            self.clients_given_input
+                .insert(crate::compositor::state::client_index_of(id));
+        }
         if matches!(touch, BackendTouchEvent::Down { .. }) {
-            self.client_input.touch_down_reached_client = handle.is_some() && focus.is_some();
+            // A client that never asked for a `wl_touch` would receive
+            // nothing; it gets the contact as pointer input instead.
+            self.client_input.touch_down_reached_client = handle.is_some()
+                && focus.as_ref().is_some_and(|(surface, _)| {
+                    surface.client().is_some_and(|client| {
+                        client
+                            .get_data::<crate::compositor::state::ClientState>()
+                            .is_some_and(|data| {
+                                data.touch_bound.load(std::sync::atomic::Ordering::Acquire)
+                            })
+                    })
+                });
         }
         let Some(handle) = handle else {
             return;
@@ -961,6 +1049,7 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     // theirs types there until they use this device again.
     let candidate = state
         .focused_output_presentation_surface()
+        .or_else(|| state.headless_keyboard_focus())
         .or(overlay_focus)
         .or_else(|| state.personal_keyboard_focus())
         .or_else(|| {
@@ -1038,10 +1127,11 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     let _ = state.deliver_client_key(code, pressed, true);
 }
 
-/// Decide what the pointer shows this tick: the focused client's request
-/// while the pointer is over its surface, otherwise the cursor the chrome
-/// under the pointer names (the default arrow when it names none). The lock
-/// screen is not chrome and never shows a client's cursor.
+/// Decide what the pointer shows this tick: nothing while touch is the input
+/// in use (a finger needs no cursor, and touch never moves it), the focused
+/// client's request while the pointer is over its surface, otherwise the
+/// cursor the chrome under the pointer names (the default arrow when it names
+/// none). The lock screen is not chrome and never shows a client's cursor.
 ///
 /// Records the result on the frame builder, where captures and the state
 /// dump read it, and returns it only when it changed so the caller hands it
@@ -1050,9 +1140,12 @@ pub fn sync_pointer_image(
     state: &State,
     fb: &mut FrameBuilder,
     session_locked: bool,
+    touch_in_use: bool,
 ) -> Option<crate::compositor::cursor::PointerImage> {
     use crate::compositor::cursor::{CursorShape, PointerImage};
-    let image = if session_locked {
+    let image = if touch_in_use {
+        PointerImage::Hidden
+    } else if session_locked {
         PointerImage::default()
     } else if state.client_input.pointer_focus().is_some() {
         state.client_cursor.image()
@@ -1227,7 +1320,7 @@ pub fn sync_pointer_constraint(
 /// [`foreign_tile_at`] resolves local clicks with. `session_locked` must be
 /// passed in since the lock surface isn't part of the tiled tree — without it a guest's click would pass through to a password-protected window.
 pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_locked: bool) {
-    let tiles: Vec<(u64, Rect)> = {
+    let (tiles, chrome_regions) = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
         let mut tiles = foreign_tiles(&tree, fb.host())
@@ -1236,6 +1329,14 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
             .map(|hit| (hit.surface_id, hit.rect))
             .collect::<Vec<_>>();
+        let chrome_regions = foreign_tiles(&tree, fb.host())
+            .iter()
+            .filter_map(|hit| {
+                fb.host()
+                    .group_resize_rect(hit.group)
+                    .map(|rect| (hit.surface_id, rect))
+            })
+            .collect();
         drop(tree);
         drop(chrome);
         tiles.extend(
@@ -1246,14 +1347,21 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
         tiles.extend(state.output_presentation_remote_tiles());
         let offscreen = state.offscreen_stream_tiles(&tiles);
         tiles.extend(offscreen);
-        tiles
+        (tiles, chrome_regions)
     };
     let view = crate::network::input_firewall::ShellView::new(
         tiles,
-        state.client_input.keyboard_focus(),
-        chrome_captures_input(fb),
+        // Viewers address the streamed tile; Wayland enters its modal
+        // sheet. Compare against the tile's root while delivering to the
+        // real focused child, so Save dialogs keep the same guarded door.
+        state
+            .client_input
+            .keyboard_focus()
+            .map(|surface| crate::compositor::foreign::store().sheet_root(surface)),
+        chrome_captures_input(fb) || fb.host().dictation_mutes_remote_input(),
         fb.host().palette_visible(),
     )
+    .chrome_regions(chrome_regions)
     .locked(session_locked)
     .pointer_held(state.pointer_lock.is_engaged());
     state.remote_input_firewall.publish_view(view);
@@ -1304,6 +1412,9 @@ pub fn route_input(
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            state.end_remote_typing();
+        }
         state.release_personal_keyboard_focus();
         // Another device of the person last placed this seat's pointer, on a
         // window it shows. The host's cursor never left its spot, so the
@@ -1593,6 +1704,7 @@ fn route_keyboard_input(
         let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
+            || fb.host().dictation_owns_key(&key.logical_key)
             || (!shortcuts_inhibited(state)
                 && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open)))
             || state.global_shortcuts.claims(&key.physical_key, modifiers);
@@ -1626,7 +1738,8 @@ fn route_keyboard_input(
     } else {
         state.global_shortcuts.release(&key.physical_key)
     };
-    let shell_owns = captured || shell_chord || granted;
+    let shell_owns =
+        captured || shell_chord || granted || fb.host().dictation_owns_key(&key.logical_key);
     let forward = track_forwarded_key(
         &mut state.client_input.forwarded_keys,
         code,
@@ -1846,6 +1959,11 @@ pub fn finish_chrome_drag_into_shell(
     reason = "Pointer targeting is an ordered routing policy: separating the Chrome, client drag-and-drop, implicit-grab, and capture cases could reorder focus delivery during a held gesture."
 )]
 fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> Option<TileHit> {
+    if state.client_input.grab.is_none()
+        && fb.host().dictation_pointer_at(state.client_input.cursor())
+    {
+        return None;
+    }
     match state.client_input.grab {
         // A file carried out of the hosted file manager: the drop target is whichever client the pointer is over, so hit-test normally, as for a client's own drag below.
         Some(PointerOwner::Chrome) if state.selection.chrome_drag.is_some() => {
@@ -2284,6 +2402,16 @@ mod tests {
                 None,
                 false,
                 false,
+            )
+            .chrome_regions(
+                tiles
+                    .iter()
+                    .filter_map(|hit| {
+                        fb.host()
+                            .group_resize_rect(hit.group)
+                            .map(|rect| (hit.surface_id, rect))
+                    })
+                    .collect(),
             );
 
             // Probe each tile's inside and just past each edge — a hit-test discrepancy shows up at a boundary first, derived from the layout's actual rects.
@@ -2406,6 +2534,37 @@ mod tests {
 
             publish_remote_input_view(&mut state, &fb, true);
             assert!(state.remote_input_firewall.view().session_locked());
+        }
+        // Local microphone decisions mute remote control without giving up
+        // the original local editable field's keyboard owner.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            let mut state = state_sharing(ORPHAN_SURFACE);
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(!state.remote_input_firewall.view().chrome_captures_input());
+
+            fb.host_mut()
+                .dictation_surface_mut()
+                .failure(crate::compositor::dictation::DictationError::NoEditableField);
+            assert!(
+                !chrome_captures_input(&fb),
+                "dictation controls must retain the local field's IME owner"
+            );
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(
+                state.remote_input_firewall.view().chrome_captures_input(),
+                "a peer cannot operate the local microphone controls"
+            );
+
+            fb.host_mut()
+                .dictation_surface_mut()
+                .status(crate::compositor::dictation::DictationStatus::Idle);
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(
+                !state.remote_input_firewall.view().chrome_captures_input(),
+                "closing dictation must restore normal shared-seat policy"
+            );
         }
     }
 

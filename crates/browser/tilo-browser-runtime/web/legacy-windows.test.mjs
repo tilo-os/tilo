@@ -89,6 +89,7 @@ test('decoding starts at a keyframe and skips a backlog until the next one', () 
 
 // --- minimal DOM and live layer --------------------------------------------------
 function fakeDocument() {
+  const doc = {createElement: element, activeElement: null};
   function element(tag) {
     return {
       tag, children: [], parent: null, dataset: {}, style: {}, width: 0, height: 0, drawn: 0,
@@ -96,13 +97,13 @@ function fakeDocument() {
       append(...nodes) { for (const child of nodes) { child.parent = this; this.children.push(child); } },
       addEventListener(type, handler) { (this.listeners[type] ??= []).push(handler); },
       dispatch(type, event = {}) { for (const handler of this.listeners[type] ?? []) handler({preventDefault() {}, ...event}); },
-      focus() {},
+      focus() { doc.activeElement = this; },
       getBoundingClientRect() { return {left: 10, top: 36, width: 400, height: 264}; },
       remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = null; },
       getContext() { const node = this; return {drawImage() { node.drawn++; }}; },
     };
   }
-  return {createElement: element};
+  return doc;
 }
 function fakeLive() {
   const watches = [];
@@ -119,7 +120,7 @@ function fakeLive() {
     },
   };
 }
-function mount({control = false, refuse = false, dismissed = () => []} = {}) {
+function mount({control = false, refuse = false, dismissed = () => [], paintFrame = () => false, takePaintInput = () => [], focusWindow, focusDesktop, sendInput, onError} = {}) {
   const doc = fakeDocument();
   const surface = doc.createElement('div');
   const live = fakeLive();
@@ -134,16 +135,19 @@ function mount({control = false, refuse = false, dismissed = () => []} = {}) {
     surface, document: doc, live: () => live, ...codecs, now: () => clock.t, mac: false,
     windows: () => rects,
     setWindows: list => shown.push(list),
-    dismissed,
-    sendInput: async (publisher, stream, events) => {
+    dismissed, focusWindow, focusDesktop, onError,
+    inputPause: async ms => { clock.t += ms; },
+    paintFrame,
+    takePaintInput,
+    sendInput: sendInput ?? (async (publisher, stream, events) => {
       if (events.length) sent.push({publisher, stream, events});
       return events.length ? control && !refuse : control;
-    },
+    }),
     requestFrame: callback => { frames.push(callback); return frames.length; }, cancelFrame: () => {},
     setInterval: callback => { poll = callback; return 1; }, clearInterval: () => {},
   });
   return {
-    layer, live, codecs, shown, sent, clock, surface,
+    layer, live, codecs, shown, sent, clock, surface, doc,
     run: () => { for (const callback of frames.splice(0)) callback(); },
     place: next => { rects = next; },
     poll: () => poll(),
@@ -154,7 +158,7 @@ test('a listed stream opens a desktop window, is decoded and drawn over it until
   const m = mount();
   assert.deepEqual(m.live.watches.map(w => w.record), [INDEX_RECORD]);
   m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
-  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium'}], 'the desktop opens a window for it');
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264'}], 'the desktop opens a window for it');
   assert.deepEqual(m.live.watches[1], {...m.live.watches[1], publisher: SHELL, record: {app: LEGACY_APP, record: STREAM.record}});
   m.live.deliver(STREAM.record, 'cd'.repeat(32), chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 0, SPS_IDR));
   assert.equal(m.codecs.decoders.length, 0, 'another namespace cannot feed the stream');
@@ -255,6 +259,99 @@ test('a member the host lets drive the window clicks, scrolls, types and pastes 
   m.layer.close();
 });
 
+test('typing reaches the window as every stroke in order, and a held key repeats as the browser repeats it', async () => {
+  const m = await controlled({control: true});
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  m.canvas.dispatch('pointerup', {button: 0});
+  const SHIFTED = {'!': 'Digit1', ':': 'Semicolon', '?': 'Slash'};
+  const code = c => SHIFTED[c] ?? ({' ': 'Space', '.': 'Period', ',': 'Comma', '/': 'Slash', ';': 'Semicolon'}[c]
+    ?? (/[0-9]/.test(c) ? `Digit${c}` : `Key${c.toUpperCase()}`));
+  const text = 'Hello, World! example.com';
+  for (const c of text) {
+    const shift = c in SHIFTED || /[A-Z]/.test(c);
+    if (shift) m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
+    m.canvas.dispatch('keydown', {code: code(c), shiftKey: shift});
+    m.canvas.dispatch('keyup', {code: code(c), shiftKey: shift});
+    if (shift) m.canvas.dispatch('keyup', {code: 'ShiftLeft'});
+  }
+  m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
+  m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true, repeat: true});
+  m.canvas.dispatch('keyup', {code: 'ShiftLeft'});
+  m.canvas.dispatch('keydown', {code: 'KeyO'});
+  m.canvas.dispatch('keydown', {code: 'KeyO', repeat: true});
+  m.canvas.dispatch('keydown', {code: 'KeyO', repeat: true});
+  m.canvas.dispatch('keyup', {code: 'KeyO'});
+  m.canvas.dispatch('keydown', {code: 'KeyP', repeat: true});
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  const strokes = [];
+  for (const c of text) {
+    const shift = c in SHIFTED || /[A-Z]/.test(c);
+    const keysym = evdevKey(code(c));
+    if (shift) strokes.push([42, true]);
+    strokes.push([keysym, true], [keysym, false]);
+    if (shift) strokes.push([42, false]);
+  }
+  assert.deepEqual(keys, [...strokes, [42, true], [42, false], [24, true], [24, true], [24, true], [24, false]],
+    'every press and release in order; a held letter repeats, a held modifier and a key not held do not');
+  m.layer.close();
+});
+
+test('character modifier snapshots reach the window as shift edges even without a shift key event', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  for (const [code, shiftKey] of [['KeyM', true], ['KeyI', false], ['Slash', true], ['Digit7', true], ['KeyA', false]]) {
+    m.canvas.dispatch('keydown', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+    m.canvas.dispatch('keyup', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+  }
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  assert.deepEqual(keys, [
+    [42, true], [50, true], [50, false], [42, false], [23, true], [23, false],
+    [42, true], [53, true], [53, false], [8, true], [8, false],
+    [42, false], [30, true], [30, false],
+  ], 'Mi?&a retains capitals and shifted punctuation without duplicate modifier presses');
+  m.layer.close();
+});
+
+test('a shortcut held before focus is restored and its modifier is released on blur', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  m.canvas.dispatch('keydown', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.canvas.dispatch('keyup', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.canvas.dispatch('blur');
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  assert.deepEqual(keys, [[29, true], [38, true], [38, false], [29, false]]);
+  m.layer.close();
+});
+
+test('the window the desktop focuses takes the keyboard, and a click focuses its desktop window', async () => {
+  const focused = [];
+  let desktop = 0;
+  const m = await controlled({control: true, focusWindow: key => focused.push(key), focusDesktop: () => { desktop++; m.doc.activeElement = m.surface; }});
+  assert.notEqual(m.doc.activeElement, m.canvas, 'an unfocused window leaves the keyboard alone');
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  assert.equal(m.doc.activeElement, m.canvas, 'opening it, or choosing its tab, focuses it');
+  await tick();
+  assert.deepEqual(m.sent.flatMap(request => request.events)[0], {KeyboardFocus: {surface: 0, focused: true}});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: false}]);
+  m.run();
+  assert.equal(desktop, 1, 'the desktop focusing another window takes the keyboard back');
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  assert.equal(m.doc.activeElement, m.canvas);
+  assert.deepEqual(focused, [KEY], 'a click into the window focuses its desktop window');
+  m.layer.close();
+  const watcher = await controlled({control: false});
+  watcher.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  watcher.run();
+  assert.notEqual(watcher.doc.activeElement, watcher.canvas, 'a watcher keeps typing on the desktop');
+  watcher.layer.close();
+});
+
 test('closing a window a member drives closes it at its source', async () => {
   let closedKeys = [];
   const options = {dismissed: () => { const keys = closedKeys; closedKeys = []; return keys; }};
@@ -332,6 +429,8 @@ test('closing while input is in flight drops unsent events', async () => {
   await tick();
   const canvas = layer.layer.children[0];
   canvas.dispatch('keydown', {code: 'KeyA'});
+  await tick();
+  assert.equal(sent.length, 1, 'the first key is in flight before closing');
   canvas.dispatch('keydown', {code: 'KeyB'});
   layer.close();
   complete(true);
@@ -354,5 +453,178 @@ test('blur releases held buttons and keys before relinquishing keyboard focus', 
   assert.ok(events.some(event => event.Key?.keysym === 42 && event.Key.pressed === false));
   assert.ok(events.some(event => event.PointerButton?.button === 272 && event.PointerButton.pressed === false));
   assert.deepEqual(events.at(-1), {KeyboardFocus: {surface: 0, focused: false}});
+  m.layer.close();
+});
+
+const PAINT = {...STREAM, app: 'so.tilo.browser', codec: 'tilo-paint'};
+const PAINT_KEY = `${SHELL}:${PAINT.surface}`;
+
+test('a painted page is handed to the runtime to draw, not decoded as video', async () => {
+  const painted = [];
+  const m = mount({paintFrame: (key, bytes) => { painted.push({key, bytes: [...bytes]}); return true; }});
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  assert.deepEqual(m.shown.at(-1), [{key: PAINT_KEY, app: PAINT.app, title: 'Browser', codec: 'tilo-paint'}],
+    'the desktop opens a window it draws itself');
+  assert.equal(m.layer.layer.children.length, 0, 'no canvas over the desktop');
+  m.live.deliver(PAINT.record, SHELL, json(2, PAINT));
+  // A whole frame (first byte 0) split across two chunks, then a patch.
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST, 0, [0, 1, 2], 5));
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_KEY | CHUNK_LAST, 0, [3, 4], 5));
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_FIRST | CHUNK_LAST, 1, [1, 9]));
+  assert.deepEqual(painted, [{key: PAINT_KEY, bytes: [0, 1, 2, 3, 4]}, {key: PAINT_KEY, bytes: [1, 9]}]);
+  assert.equal(m.codecs.decoders.length, 0, 'no video decoder');
+  assert.equal(m.layer.stats().drawn, 2);
+  // A start that changes the codec cannot turn the page into video.
+  m.live.deliver(PAINT.record, SHELL, json(2, {...PAINT, codec: 'h264'}));
+  assert.equal(m.layer.streams()[0].codec, 'tilo-paint');
+  m.place([{key: PAINT_KEY, rect: [0, 0, 100, 100]}]);
+  m.run();
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, []));
+  assert.equal(m.layer.stats().streams, 0);
+  m.layer.close();
+  await tick();
+});
+
+test('input on a painted page goes to its host only when this member drives it', async () => {
+  const events = [{PointerMotion: {x: 20, y: 30}}, {PointerButton: {button: 272, pressed: true}}];
+  let pending = [{key: PAINT_KEY, events}];
+  const take = () => { const out = pending; pending = []; return out; };
+  const watcher = mount({takePaintInput: take});
+  watcher.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  await tick();
+  watcher.run();
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watching member sends nothing');
+  watcher.layer.close();
+
+  pending = [{key: PAINT_KEY, events}, {key: 'unknown:0000000000000001', events}];
+  const driver = mount({control: true, takePaintInput: take});
+  driver.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  await tick();
+  driver.run();
+  await tick();
+  assert.ok(driver.sent.every(({publisher, stream}) => publisher === SHELL && stream === PAINT.surface),
+    'only to the painted stream\'s host; an unknown window\'s input is dropped');
+  assert.deepEqual(driver.sent.flatMap(request => request.events), events, 'in order');
+  driver.layer.close();
+  await tick();
+});
+
+
+test('a delayed HTTPS send preserves a mixed-case typing burst in wire order', async () => {
+  let release;
+  const sent = [], errors = [], delivered = [];
+  let clock;
+  const m = await controlled({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      if (sent.length === 1) await new Promise(resolve => { release = resolve; });
+      delivered.push({at: clock.t, count: events.length});
+      return true;
+    }});
+  clock = m.clock;
+  const physical = [
+    ['ShiftLeft', 42, true, true], ['KeyA', 30, true, true], ['KeyA', 30, false, true],
+    ['ShiftLeft', 42, false, false], ['KeyB', 48, true, false], ['KeyB', 48, false, false],
+    ['Digit1', 2, true, false], ['Digit1', 2, false, false],
+    ['ShiftLeft', 42, true, true], ['Slash', 53, true, true], ['Slash', 53, false, true],
+    ['ShiftLeft', 42, false, false],
+  ];
+  const expected = [];
+  for (let repeat = 0; repeat < 20; repeat++) {
+    for (const [code, keysym, pressed, shiftKey] of physical) {
+      m.canvas.dispatch(pressed ? 'keydown' : 'keyup', {code, shiftKey});
+      expected.push({Key: {keysym, pressed, modifiers: 0}});
+    }
+  }
+  await tick();
+  assert.equal(sent.length, 1, 'one send in flight while the remaining physical keys queue');
+  assert.equal(m.layer.streams()[0].control, true, 'typing retains the granted control');
+  assert.deepEqual(errors, []);
+  clock.t = 4000;
+  release();
+  for (let batch = 0; batch < 10; batch++) await tick();
+  assert.deepEqual(sent.flat(), expected, 'every physical key reaches the host exactly once in order');
+  assert.ok(sent.every(batch => batch.length <= 64), 'each request respects the host wire bound');
+  for (const sample of delivered) {
+    const count = delivered.filter(row => row.at >= sample.at && row.at < sample.at + 1000).reduce((sum, row) => sum + row.count, 0);
+    assert.ok(count <= 120, `catch-up offered ${count} events inside the native rate window`);
+  }
+  m.layer.close();
+});
+
+test('an unresponsive host still bounds the input queue and revokes control', async () => {
+  let release;
+  const errors = [], sent = [];
+  const m = await controlled({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      await new Promise(resolve => { release = resolve; });
+      return true;
+    }});
+  for (let i = 0; i < 600; i++) m.canvas.dispatch(i % 2 ? 'keyup' : 'keydown', {code: 'KeyA'});
+  assert.equal(m.layer.streams()[0].control, false);
+  assert.deepEqual(errors, ['Error: legacy window input backlog exceeded']);
+  await tick();
+  release();
+  await tick();
+  assert.equal(sent.length, 1, 'revocation drops the unsent queue');
+  m.layer.close();
+});
+
+
+test('two windows share the native input rate budget while draining queued keys', async () => {
+  const sent = [], errors = [];
+  let m;
+  m = mount({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, surface, events) => {
+      if (events.length) sent.push({surface, events, at: m.clock.t});
+      return true;
+    }});
+  const second = {...STREAM, surface: '0000000000000008', record: '@tilo:legacy-window:0000000000000008'};
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM, second]));
+  await tick();
+  const [first, other] = m.layer.layer.children;
+  for (let i = 0; i < 60; i++) {
+    for (const [canvas, code] of [[first, 'KeyA'], [other, 'KeyB']]) {
+      canvas.dispatch('keydown', {code});
+      canvas.dispatch('keyup', {code});
+    }
+  }
+  for (let batch = 0; batch < 10; batch++) await tick();
+  for (const [surface, keysym] of [[STREAM.surface, 30], [second.surface, 48]]) {
+    const expected = Array.from({length: 120}, (_, i) => ({Key: {keysym, pressed: i % 2 === 0, modifiers: 0}}));
+    assert.deepEqual(sent.filter(row => row.surface === surface).flatMap(row => row.events), expected);
+  }
+  for (const sample of sent) {
+    const count = sent.filter(row => row.at >= sample.at && row.at < sample.at + 1000).reduce((sum, row) => sum + row.events.length, 0);
+    assert.ok(count <= 120, `both windows offered ${count} events inside one native rate window`);
+  }
+  assert.deepEqual(errors, []);
+  assert.ok(m.layer.streams().every(stream => stream.control));
+  m.layer.close();
+});
+
+
+test('a dismissed window queues one close while its host acknowledges it', async () => {
+  let release;
+  const sent = [];
+  const m = await controlled({control: true, dismissed: () => [KEY],
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      await new Promise(resolve => { release = resolve; });
+      return true;
+    }});
+  await tick();
+  for (let frame = 0; frame < 100; frame++) m.run();
+  assert.deepEqual(sent, [['Close']], 'painting must not flood the shared sender with repeated closes');
+  release();
+  await tick();
+  m.run();
+  await tick();
+  assert.deepEqual(sent, [['Close']], 'the same dismissal is still one action after acknowledgement');
   m.layer.close();
 });

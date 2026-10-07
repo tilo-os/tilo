@@ -10,7 +10,8 @@ use std::rc::Rc;
 use ui::framework::history::HistoryVersion;
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::widget::ListRow;
+use ui::widget::ButtonRole;
+use ui::widget::ControlRow;
 
 use super::{caption, icon_button};
 use crate::resource::ArtworkResource;
@@ -45,6 +46,7 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
         if let Some(last) = entries.last_mut()
             && version.run.is_some()
             && last.run == version.run
+            && last.author == version.author
         {
             last.steps = last.steps.saturating_add(1);
             last.undone &= version.undone;
@@ -105,7 +107,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let mut list = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(2.0)
+            .with_gap(ui::tokens::Spacing::BASE.s1)
             .push(now_row(&tools));
         // A rule where the hand changes, between a person's steps and an
         // agent's run or one run and the next, so each reads as its own.
@@ -123,6 +125,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_gap(0.0)
+                .push(checkpoint_controls(cx, &tools))
                 .push(viewing(cx, &tools))
                 .push(Box::new(
                     Scrollable::new_vertical()
@@ -130,8 +133,11 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                         .with_child(Box::new(
                             Column::new()
                                 .with_intrinsic_height()
-                                .with_vertical_padding(4.0)
-                                .with_horizontal_padding(8.0, 8.0)
+                                .with_vertical_padding(ui::tokens::Spacing::BASE.s1)
+                                .with_horizontal_padding(
+                                    ui::tokens::Spacing::BASE.s2,
+                                    ui::tokens::Spacing::BASE.s2,
+                                )
                                 .push(Box::new(list)),
                         )),
                 )),
@@ -140,7 +146,38 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 }
 
 /// How tall the list of versions grows before it scrolls.
-const LIST_HEIGHT: f32 = 300.0; // a share of the sidebar for the dock: a layout size, not spacing
+const LIST_HEIGHT: f32 = 7.0 * ui::tokens::Metrics::BASE.panel_row_height;
+
+/// A person names a meaningful point without committing every typed letter.
+fn checkpoint_controls(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let name = tools.checkpoint_name.clone();
+    Box::new(
+        Column::new()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .with_padding_rhythm(ui::tokens::Rhythm::Sibling, ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                TextInput::from_state(&name)
+                    .with_id("canvas-checkpoint-label")
+                    .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+                        "canvas-checkpoint-label",
+                    ))
+                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
+                        "canvas-checkpoint-label",
+                    )),
+            ))
+            .push(cx.switch(&name, |cx, name| {
+                Box::new(
+                    cx.actions().bind_invocation(
+                        ui::widget::Button::new("canvas-checkpoint-save", "canvas-checkpoint-save")
+                            .with_icon(Icon::Flag)
+                            .with_enabled(!name.trim().is_empty()),
+                        ArtworkResource::CHECKPOINT.with(name.trim().to_owned()),
+                    ),
+                )
+            })),
+    )
+}
 
 /// Naming the current version, beside the history tab. Its name counts
 /// the checkpoints there are.
@@ -168,13 +205,13 @@ pub fn checkpoint_button(cx: &ViewCx<ArtworkResource>) -> Element {
 fn viewing(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     cx.switch(&tools.preview, |cx, preview| {
         let Some(version) = preview else {
-            return Box::new(Spacer::fixed(0.0));
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
         };
         Box::new(
             Row::new()
-                .with_gap(8.0)
+                .with_gap(ui::tokens::Spacing::BASE.s2)
                 .no_wrap()
-                .with_padding(16.0, 6.0)
+                .with_padding(ui::tokens::Spacing::BASE.s4, ui::tokens::Spacing::BASE.s2)
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(caption(&ui::i18n::I18nManager::lookup_plain(
                     "canvas-viewing-past",
@@ -185,7 +222,7 @@ fn viewing(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                         "canvas-restore",
                         ArtworkResource::RESTORE.with(version.clone()),
                     )
-                    .primary(),
+                    .role(ButtonRole::Primary),
                 )),
         )
     })
@@ -194,16 +231,15 @@ fn viewing(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 /// The live artwork, at the top of the list.
 fn now_row(tools: &Tools) -> Element {
     let content = Row::new()
-        .with_padding(8.0, 6.0)
-        .with_gap(10.0)
+        .with_padding(ui::tokens::Spacing::BASE.s2, ui::tokens::Spacing::BASE.s2)
+        .with_gap(ui::tokens::Spacing::BASE.s3)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center)
         .push(Box::new(
             Text::new("canvas-history-now").with_weight(ui::text_render::TextWeight::Semibold),
         ));
     Box::new(
-        ListRow::new(content)
-            .on_raised()
+        ControlRow::new(content)
             .choosing(&tools.preview, None)
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-history-now")),
     )
@@ -243,21 +279,22 @@ fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Elem
     if !entry.checkpoints.is_empty() {
         text = text.push(Box::new(
             Row::new()
-                .with_gap(4.0)
+                .with_gap(ui::tokens::Spacing::BASE.s1)
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(Box::new(
-                    ui::widget::IconWidget::new(Icon::Flag, 12.0).dim(),
+                    ui::widget::IconWidget::new(Icon::Flag)
+                        .sized(ui::widget::IconSize::Small)
+                        .dim(),
                 ))
                 .push(caption(&entry.checkpoints.join(", "))),
         ));
     }
-    let who = Box::new(
-        ui::widget::IconWidget::new(if by_agent { Icon::Bot } else { Icon::User }, 16.0).dim(),
-    );
+    let who =
+        Box::new(ui::widget::IconWidget::new(if by_agent { Icon::Bot } else { Icon::User }).dim());
     let mut content = Row::new()
-        .with_padding(8.0, 6.0)
-        .with_gap(10.0)
+        .with_padding(ui::tokens::Spacing::BASE.s2, ui::tokens::Spacing::BASE.s2)
+        .with_gap(ui::tokens::Spacing::BASE.s3)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center)
         .push(who)
@@ -282,8 +319,7 @@ fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Elem
         )));
     }
     Box::new(
-        ListRow::new(content)
-            .on_raised()
+        ControlRow::new(content)
             .choosing(&tools.preview, Some(entry.change.clone()))
             .with_id(format!("canvas-version-{}", entry.change))
             .with_accessible_name(format!("{action}, {byline}")),

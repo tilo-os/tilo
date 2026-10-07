@@ -12,19 +12,18 @@ use std::sync::Arc;
 use automerge::AutoCommit;
 use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::popover_widget::PopoverSide;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, PopoverWidget,
-    ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar,
-    TreeView, Widget,
+    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, Popover, ProgressBar,
+    Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -114,13 +113,13 @@ impl Widget for LabelTile {
             None,
             &self.rect,
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &self.text,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             translated(transform, self.rect.x0 + 8.0, self.rect.y0 + 6.0),
             None,
+            &theme.text(TextRole::Caption),
         );
     }
     fn name(&self) -> &'static str {
@@ -198,10 +197,6 @@ fn seed_doc() -> AutoCommit {
     let _ = doc.put(&automerge::ObjId::Root, "toggle_1", true);
     let _ = doc.put(&automerge::ObjId::Root, "check_1", false);
     let _ = doc.put(&automerge::ObjId::Root, "slider_1", 0.5);
-    if let Ok(text_id) = doc.put_object(&automerge::ObjId::Root, "text_1", automerge::ObjType::Text)
-    {
-        let _ = doc.splice_text(&text_id, 0, 0, "Edit me");
-    }
     doc
 }
 
@@ -233,17 +228,14 @@ fn build_tree_view() -> TreeView<()> {
 }
 
 /// The scrollable column of every widget this scenario showcases. Also
-/// builds (and discards) a `PopoverWidget` and `ModalDialog` to prove they
+/// builds (and discards) a `Popover` and `ModalDialog` to prove they
 /// construct cleanly — see the trailing comment on `row_struct` for why
 /// they aren't actually spliced into the column. Split out of `run` to
 /// keep that under the line cap.
 fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
-    let popover = PopoverWidget::new(
-        Rect::new(60.0, 60.0, 220.0, 90.0),
-        LabelTile::new("Popover content (always open)"),
-        PopoverSide::Below,
-    )
-    .open(true);
+    let popover = Popover::with_content(LabelTile::new("Popover content (always open)"))
+        .anchored(Rect::new(60.0, 60.0, 220.0, 90.0))
+        .open(true);
 
     let modal = ModalDialog::new(
         "Save your changes?",
@@ -261,16 +253,14 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
                 .push(caption("row_basics"))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(tilo_ui::widget::Button::new(
-                            "btn", "btn_save", None,
-                        )))
+                        .push(Box::new(tilo_ui::widget::Button::new("btn", "btn_save")))
                         .push(Box::new(tilo_ui::widget::Toggle::new("tog", "toggle_1")))
                         .push(Box::new(tilo_ui::widget::Checkbox::new("chk", "check_1")))
                         .push(Box::new(tilo_ui::widget::Slider::new("sld", "slider_1")))
                         .push(Box::new(
-                            tilo_ui::widget::TextInput::new(vec![])
-                                .with_id("txt")
-                                .with_on_change_path("text_1"),
+                            tilo_ui::widget::TextInput::local()
+                                .with_initial_value("Edit me")
+                                .with_id("txt"),
                         )),
                 ))
                 .push(caption("row_indicators"))
@@ -283,9 +273,12 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
                 .push(caption("row_avatar_badge"))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Avatar::from_initials("QD", 48.0)))
-                        .push(Box::new(Avatar::from_initials("AL", 48.0)))
-                        .push(Box::new(Avatar::new(placeholder_image(), 48.0)))
+                        .push(Box::new(Avatar::person("Quinn Daley", "quinn.daley")))
+                        .push(Box::new(Avatar::person("Ada Lovelace", "ada.lovelace")))
+                        .push(Box::new(
+                            Avatar::person("Sam Okafor", "sam.okafor")
+                                .with_image(placeholder_image()),
+                        ))
                         .push(Box::new(Badge::dot()))
                         .push(Box::new(Badge::count(7)))
                         .push(Box::new(Badge::count(120))),
@@ -390,7 +383,7 @@ pub fn run(_args: &[String]) {
         },
     );
     root.apply_layout(&taffy, root_node, Point::ORIGIN);
-    root.sync(&mut doc, &automerge::ObjId::Root);
+    root.sync(&doc, &automerge::ObjId::Root);
     let presence = PresenceCtx::default();
     root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &out_top);
@@ -415,7 +408,7 @@ pub fn run(_args: &[String]) {
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: tilo_ui::widget::Edits::lend(&mut doc),
             path: &automerge::ObjId::Root,
             handled: &mut handled,
             focus_target: &mut focus_target,

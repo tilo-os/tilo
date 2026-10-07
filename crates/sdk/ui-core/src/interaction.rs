@@ -375,7 +375,7 @@ pub(crate) fn back_key_as_escape(
 /// Pointer events synthesised from direct touch, so ordinary widgets work on a
 /// touchscreen without interpreting contact streams themselves.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum TouchPointerEvent {
+pub enum TouchPointerEvent {
     Move(winit::dpi::PhysicalPosition<f64>),
     Press(winit::event::MouseButton),
     Release(winit::event::MouseButton),
@@ -393,10 +393,7 @@ pub(crate) enum TouchPointerEvent {
 
 impl TouchPointerEvent {
     /// The window event every widget already understands.
-    pub(crate) fn window_event(
-        self,
-        device_id: winit::event::DeviceId,
-    ) -> winit::event::WindowEvent {
+    pub fn window_event(self, device_id: winit::event::DeviceId) -> winit::event::WindowEvent {
         use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
         match self {
             Self::Move(position) => WindowEvent::CursorMoved {
@@ -462,7 +459,7 @@ struct MultiTouch {
 ///   another finger; that widget handles its `WindowEvent::Touch` stream
 ///   itself.
 #[derive(Default)]
-pub(crate) struct TouchPointerEmulator {
+pub struct TouchPointerEmulator {
     active: Option<ActiveTouch>,
     multi: Option<MultiTouch>,
     arena: crate::gesture::TouchGestureArena,
@@ -472,13 +469,13 @@ pub(crate) struct TouchPointerEmulator {
 
 impl TouchPointerEmulator {
     const TAP_SLOP: f64 = 16.0;
-    pub(crate) const LONG_PRESS: crate::time::Duration = crate::time::Duration::from_millis(500);
+    pub const LONG_PRESS: crate::time::Duration = crate::time::Duration::from_millis(500);
     const CANCEL_POINT: winit::dpi::PhysicalPosition<f64> =
         winit::dpi::PhysicalPosition::new(-1.0, -1.0);
 
     /// Translate one contact update. `claims_raw` is asked only when a
     /// contact begins, with its physical position.
-    pub(crate) fn events(
+    pub fn events(
         &mut self,
         touch: &winit::event::Touch,
         claims_raw: impl FnOnce(winit::dpi::PhysicalPosition<f64>) -> bool,
@@ -691,7 +688,7 @@ impl TouchPointerEmulator {
     }
 
     /// When a still single-finger hold becomes a long press, if one is armed.
-    pub(crate) fn long_press_deadline(&self) -> Option<crate::time::Instant> {
+    pub fn long_press_deadline(&self) -> Option<crate::time::Instant> {
         self.active
             .filter(|active| !active.scrolling && !active.long_pressed)
             .map(|active| active.started_at + Self::LONG_PRESS)
@@ -699,7 +696,7 @@ impl TouchPointerEmulator {
 
     /// Fire a long press whose deadline has passed: a secondary click where
     /// the finger rests. The finger's eventual lift then does nothing.
-    pub(crate) fn poll(
+    pub fn poll(
         &mut self,
         now: crate::time::Instant,
     ) -> Option<(winit::event::DeviceId, Vec<TouchPointerEvent>)> {

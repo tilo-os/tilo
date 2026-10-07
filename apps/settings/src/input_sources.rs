@@ -55,17 +55,47 @@ pub(crate) fn layouts_full(active: &[String]) -> bool {
 }
 
 fn installed_layouts() -> Vec<CatalogEntry> {
+    read_installed_layouts().unwrap_or_else(|error| {
+        tracing::warn!(target: "tilo::settings", %error, "keyboard layout list unreadable; offering the built-in short list");
+        fallback_catalog()
+    })
+}
+
+/// Why the device's keyboard layout list could not be read, when it could
+/// not; the layouts offered are then a short built-in list.
+pub(crate) fn layout_catalog_error() -> Option<String> {
+    read_installed_layouts().err()
+}
+
+fn read_installed_layouts() -> Result<Vec<CatalogEntry>, String> {
+    let mut errors = Vec::new();
     for path in [
         Path::new("/usr/share/X11/xkb/rules/evdev.xml"),
         Path::new("/usr/share/X11/xkb/rules/base.xml"),
     ] {
-        if let Ok(entries) = catalog_from_path(path)
-            && !entries.is_empty()
-        {
-            return entries;
+        match catalog_from_path(path) {
+            Ok(entries) if !entries.is_empty() => {
+                let installed = entries
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let source = KeyboardInputSource::parse(&entry.id)?;
+                        match tilo_keyboard_map::is_installed(&source.layout) {
+                            Ok(true) => Some(Ok(entry)),
+                            Ok(false) => None,
+                            Err(error) => Some(Err(error.to_string())),
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !installed.is_empty() {
+                    return Ok(installed);
+                }
+                errors.push(format!("{}: no installed symbols", path.display()));
+            }
+            Ok(_) => errors.push(format!("{}: no layouts", path.display())),
+            Err(error) => errors.push(format!("{}: {error}", path.display())),
         }
     }
-    fallback_catalog()
+    Err(errors.join("; "))
 }
 
 fn catalog_from_path(path: &Path) -> Result<Vec<CatalogEntry>, String> {
@@ -173,7 +203,7 @@ fn parse_catalog<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Vec<Cata
     });
     for entry in &mut entries {
         if counts.get(&entry.label).copied().unwrap_or(0) > 1 {
-            entry.label = format!("{} · {}", entry.label, entry.id);
+            entry.label = format!("{} ({})", entry.label, entry.id);
         }
     }
     Ok(entries)

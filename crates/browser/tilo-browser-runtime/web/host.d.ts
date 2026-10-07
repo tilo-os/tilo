@@ -124,6 +124,10 @@ export interface RuntimeStatus {
   error?: string;
   persistence?: 'committed' | 'failed';
   frames?: number;
+  /** Exact instance used with publication aliases; absent on desktop mounts. */
+  componentInstance?: number;
+  presentation?: boolean;
+  layoutGeneration?: number;
   /** Private caller observation; never a claim of replicated document completion. */
   action?: Pick<PrivateInvocation,'invocation'|'state'|'terminal'|'cancellationRequested'>;
   actionError?: string;
@@ -222,6 +226,29 @@ export interface ActionResult {
   state: 'completed' | 'accepted';
   output?: {value?: unknown; resources?: string[]};
 }
+/** Local exact publication identity; authenticated admission is the caller's job. */
+export interface SemanticPresentationTarget {
+  app: string;
+  instance: number;
+  record: string;
+  resource: string;
+  action: string;
+}
+export interface SemanticPresentationReceipt {
+  target: SemanticPresentationTarget;
+  rect: [number, number, number, number];
+  frame: number;
+  gpuGeneration: number;
+  layoutGeneration: number;
+  presentedAtMs: number;
+  logicalSize: [number, number];
+  pixels: [number, number];
+}
+export interface SemanticPresentationWatch {
+  read(bounds?: {maxAgeMs?: number}): SemanticPresentationReceipt | null;
+  close(): void;
+}
+
 export interface DesktopMount {
   navigation?: DesktopNavigationV1;
   /** The mounted application; absent for the canonical desktop. */
@@ -244,6 +271,10 @@ export interface DesktopMount {
    * window's app (`window`, else the focused window).
    */
   actions(resource?: string, options?: WindowOption): ActionDescriptor[];
+  /** Current host/lifetime aliases; invokeAction accepts these through the same door. */
+  publications(): ActionDescriptor[];
+  /** At most 32 exact targets. No locus until a subsequent successful presentation. */
+  observeSemanticTarget(target: SemanticPresentationTarget): SemanticPresentationWatch;
   /**
    * Invoke one published action through the application's action door, the
    * one the palette, agents and assistive technology use. Throws

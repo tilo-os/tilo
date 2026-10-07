@@ -22,7 +22,6 @@ use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, Par
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 mod native_identity;
-mod text_insert;
 
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
@@ -146,11 +145,28 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+fn alarm_action_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        permission: tilo_actions::PermissionRequirement::Write,
+        retry: tilo_actions::RetryPolicy::Idempotent,
+        tags: vec!["desktop".into(), "notification".into(), "alarm".into()],
+        ..tilo_actions::ActionContract::default()
+    }
+}
+
+fn is_alarm_action(id: &str) -> bool {
+    crate::shell::notification::alarm_action_address(id).is_some()
+        || crate::shell::notification::is_snoozed_alarm_action(id)
+}
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
     };
 
+    if is_alarm_action(id) {
+        return alarm_action_contract();
+    }
     let mut contract = ActionContract::default();
     match id {
         "shortcut-help.toggle" | "overview.toggle" => {
@@ -172,6 +188,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "room.activity.acknowledge"
+        | "room.activity.tasks"
+        | "tab.menu"
+        | "tab.drag.cancel"
         | "history.compare"
         | "history.undo"
         | "history.restore" => {
@@ -194,11 +214,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Moving a tab between groups is layout, undone by moving it back;
         // a close is undone by `tab.reopen`, which puts it back in place.
-        "text.insert"
-        | "record.bring"
+        "record.bring"
         | "tab.new.terminal.here"
         | "window.new.terminal"
         | "tab.duplicate"
+        | "tab.open-beside"
         | "tab.split-right"
         | "tab.move-to-new-group"
         | "tab.close"
@@ -229,8 +249,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
         }
-        // Each is one step: repeating it steps again.
-        id if WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
+        // Navigation and focus each advance one step when repeated.
+        id if id.starts_with("navigation.axis.") || WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
@@ -264,16 +284,22 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "room.activity.acknowledge"
+        | "room.activity.tasks"
+        | "tab.menu"
+        | "tab.drag.cancel"
         | "history.compare"
         | "history.undo"
         | "history.restore"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
-        "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
+        "record.bring" | "peer.invite.named" | "agent.invite" => {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
-        _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
+        _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
+            tilo_actions::OperationKind::View
+        }
         _ => tilo_actions::OperationKind::Effect,
     }
 }
@@ -790,6 +816,25 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
 ];
 
 /// Parameters of `window.focus-nth`.
+/// What `tab.open-beside` may be told: which app, and what it opens.
+const TAB_OPEN_BESIDE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "app",
+        ParamType::Text,
+        "The installed app's package id, such as `so.tilo.browser`.",
+    ),
+    ActionParam::optional(
+        "target",
+        ParamType::Text,
+        "A URI the app declares, such as `https://example.org/`. Omit for an empty instance.",
+    ),
+    ActionParam::optional(
+        "background",
+        ParamType::Boolean,
+        "Open behind the focused tab instead of in front of it. Defaults to false.",
+    ),
+];
+
 const WINDOW_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
     "index",
     ParamType::Integer,
@@ -847,13 +892,22 @@ fn persist_appearance(
     Ok(())
 }
 
-fn set_theme(st: &mut ChromeState, theme: &str, high_contrast: bool) -> Result<(), ActionError> {
+/// Dark or light mode, keeping whichever theme the person chose for it.
+/// Choosing a mode leaves high contrast.
+fn set_mode(st: &mut ChromeState, mode: &str) -> Result<(), ActionError> {
     let mut values = serde_json::Map::new();
-    values.insert("theme".into(), serde_json::Value::String(theme.into()));
     values.insert(
-        "high_contrast".into(),
-        serde_json::Value::Bool(high_contrast),
+        ui::theme::MODE_KEY.into(),
+        serde_json::Value::String(mode.into()),
     );
+    values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+    persist_appearance(st, values)
+}
+
+/// High contrast in the current mode's polarity.
+fn set_high_contrast(st: &mut ChromeState) -> Result<(), ActionError> {
+    let mut values = serde_json::Map::new();
+    values.insert("high_contrast".into(), serde_json::Value::Bool(true));
     persist_appearance(st, values)
 }
 
@@ -909,6 +963,55 @@ const fn chrome(
 
 impl Action {
     const ALL: &'static [Action] = &[
+        chrome(
+            "dictation.toggle",
+            "shortcut-name-dictation-toggle",
+            "dictation-action-start-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationToggle),
+        ),
+        chrome(
+            "dictation.finish",
+            "shortcut-name-dictation-finish",
+            "dictation-action-finish-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationFinish),
+        ),
+        chrome(
+            "dictation.cancel",
+            "shortcut-name-dictation-cancel",
+            "dictation-action-cancel-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
+        ),
+        chrome(
+            "navigation.axis.enable",
+            "search-action-axis-enable",
+            "search-action-axis-enable-subtitle",
+            |st, _| {
+                st.set_axis_navigation_enabled(true);
+                Ok(())
+            },
+        ),
+        chrome(
+            "navigation.axis.disable",
+            "search-action-axis-disable",
+            "search-action-axis-disable-subtitle",
+            |st, _| {
+                st.set_axis_navigation_enabled(false);
+                Ok(())
+            },
+        ),
+        chrome(
+            "navigation.axis.gather",
+            "search-action-axis-gather",
+            "search-action-axis-gather-subtitle",
+            |st, _| {
+                if !st.axis_navigation_enabled() {
+                    return Err(ActionError::Refused(t("axis-navigation-disabled")));
+                }
+                active_workspace_id(st)?;
+                st.request_axis_gather();
+                Ok(())
+            },
+        ),
         chrome(
             "overview.toggle",
             "search-action-overview-toggle",
@@ -1550,9 +1653,63 @@ impl Action {
                 )
             },
         ),
+        // Another instance of an app as a tab right after the focused one:
+        // what an app's "open in new tab" asks for, open to every caller.
+        Action {
+            id: "tab.open-beside",
+            label: "search-action-tab-open-beside",
+            subtitle: "search-action-tab-open-beside-subtitle",
+            params: TAB_OPEN_BESIDE_PARAMS,
+            apply: |st, args| {
+                let app = args.text("app").unwrap_or_default().trim().to_owned();
+                if app.is_empty() {
+                    return Err(ActionError::Refused(
+                        "an app is required; nothing was opened".into(),
+                    ));
+                }
+                let target = args
+                    .text("target")
+                    .map(str::trim)
+                    .filter(|target| !target.is_empty())
+                    .map(str::to_owned);
+                let background = args.boolean("background").unwrap_or(false);
+                let anchor = crate::shell::window_actions::active_tab_id(st)
+                    .and_then(|tab| crate::shell::app_tabs::anchor_for_tab(&st.tree(), tab));
+                crate::shell::app_tabs::open_beside(st, &app, target.as_deref(), anchor, background)
+                    .map_err(|error| ActionError::Refused(error.to_string()))
+            },
+        },
         // The tab menu's three rows as actions, on the focused tab: a
         // capability reachable only by right-click is not finished. The
         // rows and these closures call the same `window_actions` functions.
+        chrome(
+            "tab.menu",
+            "search-action-tab-menu",
+            "search-action-tab-menu-subtitle",
+            |st, _| {
+                if st.session_locked() || crate::shell::window_actions::active_tab_id(st).is_none()
+                {
+                    return Err(ActionError::Refused(t(
+                        "search-action-tab-menu-unavailable",
+                    )));
+                }
+                request_window_shortcut(st, ShortcutAction::TabMenu)
+            },
+        ),
+        chrome(
+            "tab.drag.cancel",
+            "search-action-tab-drag-cancel",
+            "search-action-tab-drag-cancel-subtitle",
+            |st, _| {
+                if st.session_locked() {
+                    return Err(ActionError::Refused(t(
+                        "search-action-tab-drag-cancel-unavailable",
+                    )));
+                }
+                st.request_tab_drag_cancel();
+                Ok(())
+            },
+        ),
         chrome(
             "tab.close",
             "search-action-tab-close",
@@ -1760,19 +1917,19 @@ impl Action {
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
-            |st, _| set_theme(st, "dark", false),
+            |st, _| set_mode(st, "dark"),
         ),
         chrome(
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
-            |st, _| set_theme(st, "light", false),
+            |st, _| set_mode(st, "light"),
         ),
         chrome(
             "appearance.high-contrast",
             "search-action-appearance-high-contrast",
             "search-action-appearance-high-contrast-subtitle",
-            |st, _| set_theme(st, "dark", true),
+            |st, _| set_high_contrast(st),
         ),
         Action {
             id: "appearance.language",
@@ -1788,15 +1945,6 @@ impl Action {
                 }
                 set_language(st, language)
             },
-        },
-        // The first exported action that changes a document rather than
-        // the chrome around one, and so the first told *what* to write.
-        Action {
-            id: text_insert::ACTION_ID,
-            label: "search-action-text-insert",
-            subtitle: "search-action-text-insert-subtitle",
-            params: text_insert::PARAMS,
-            apply: text_insert::apply,
         },
         // The palette does this on Enter over a record row; this is the
         // address for a caller that names a record itself.
@@ -1862,6 +2010,8 @@ impl Action {
 pub(crate) struct SharedQsDispatcher {
     actions: std::cell::RefCell<Rc<dyn crate::shell::quick_settings::actions::QsActions>>,
     availability: std::cell::Cell<crate::shell::quick_settings::actions::QsActionAvailability>,
+    radio_job: std::cell::RefCell<Option<crate::shell::quick_settings::radio::RadioTicket>>,
+    radio_wake: std::cell::RefCell<Option<crate::session_runtime::Wake>>,
 }
 
 impl SharedQsDispatcher {
@@ -1872,6 +2022,8 @@ impl SharedQsDispatcher {
         Self {
             actions: std::cell::RefCell::new(actions),
             availability: std::cell::Cell::new(availability),
+            radio_job: std::cell::RefCell::new(None),
+            radio_wake: std::cell::RefCell::new(None),
         }
     }
 
@@ -1880,8 +2032,68 @@ impl SharedQsDispatcher {
         actions: Rc<dyn crate::shell::quick_settings::actions::QsActions>,
         availability: crate::shell::quick_settings::actions::QsActionAvailability,
     ) {
+        if let Some(job) = self.radio_job.borrow().as_ref() {
+            job.retire();
+        }
         *self.actions.borrow_mut() = actions;
         self.availability.set(availability);
+    }
+
+    pub(crate) fn set_radio_wake(&self, wake: crate::session_runtime::Wake) {
+        *self.radio_wake.borrow_mut() = Some(wake);
+    }
+
+    pub(crate) fn observe_radio_availability(&self, radios: &os_actions::RadioState) {
+        let mut availability = self.availability.get();
+        availability.wifi = radios.wifi_available;
+        availability.airplane_mode = radios.wifi_available || radios.wwan_available;
+        self.availability.set(availability);
+    }
+
+    pub(crate) fn start_radio(
+        &self,
+        change: os_actions::RadioChange,
+        chrome: &Chrome,
+    ) -> Result<Option<crate::shell::quick_settings::radio::RadioTicket>, String> {
+        let id = match change {
+            os_actions::RadioChange::Wifi(_) => QS_WIFI_ID,
+            os_actions::RadioChange::Airplane(_) => QS_AIRPLANE_ID,
+        };
+        if !self.action_available(id) {
+            return Err("radio action is unavailable".into());
+        }
+        if self.radio_job.borrow().is_some() {
+            return Err("a radio change is already pending".into());
+        }
+        let actions = self.actions.borrow().clone();
+        if let Some(work) = actions.prepare_radio_change(change) {
+            let job = crate::shell::quick_settings::radio::RadioTicket::start(
+                change,
+                work,
+                self.radio_wake.borrow().clone(),
+            )?;
+            *self.radio_job.borrow_mut() = Some(job.clone());
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.radio_change_pending = true;
+            state.bump();
+            Ok(Some(job))
+        } else {
+            let result = change.execute(actions.as_ref());
+            result?;
+            crate::shell::quick_settings::radio::apply(change, Ok(()), chrome);
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn take_radio_completion(
+        &self,
+    ) -> Option<crate::shell::quick_settings::radio::RadioTicket> {
+        let mut pending = self.radio_job.borrow_mut();
+        if !pending.as_ref()?.finished() {
+            return None;
+        }
+        let _ = pending.as_ref()?.result()?;
+        pending.take()
     }
 
     fn action_available(&self, id: &str) -> bool {
@@ -2033,6 +2245,13 @@ impl<'a> ValidatedQsActions<'a> {
 }
 
 impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_> {
+    fn prepare_radio_change(
+        &self,
+        change: os_actions::RadioChange,
+    ) -> Option<os_actions::RadioWork> {
+        self.inner.prepare_radio_change(change)
+    }
+
     fn set_brightness(&self, percent: f32) -> Result<(), String> {
         self.dispatch(
             QS_BRIGHTNESS_ID,
@@ -2206,11 +2425,13 @@ fn decline_bluetooth_pairing() -> Result<(), ActionError> {
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the
 /// machine sees Keep/Revert and the countdown.
-fn stage_display_layout(st: &mut ChromeState, mode: DisplayLayoutMode) -> Result<(), ActionError> {
-    settings_store::display_mode::stage_layout(mode)
-        .map_err(|error| ActionError::Refused(error.to_string()))?;
-    st.overlays.projection = true;
-    Ok(())
+fn stage_display_layout(
+    _st: &mut ChromeState,
+    _mode: DisplayLayoutMode,
+) -> Result<(), ActionError> {
+    Err(ActionError::Refused(
+        "display layouts require lifecycle dispatch".into(),
+    ))
 }
 
 /// Keep or revert the display change that is waiting for confirmation.
@@ -2431,7 +2652,7 @@ impl SearchProvider for ActionsProvider {
                 let apply = action.apply;
                 let (on_open, on_begin_invoke) = if action.id == "record.bring" {
                     let on_open = Rc::new(
-                        |_doc: &mut automerge::AutoCommit,
+                        |_doc: &mut ui::widget::Edits<'_>,
                          _root: &automerge::ObjId,
                          _chrome: &Chrome,
                          _args: &ActionArgs| {
@@ -2441,7 +2662,7 @@ impl SearchProvider for ActionsProvider {
                         },
                     ) as Rc<crate::shell::search::OpenFn>;
                     let begin = Rc::new(
-                        |_doc: &mut automerge::AutoCommit,
+                        |_doc: &mut ui::widget::Edits<'_>,
                          _root: &automerge::ObjId,
                          chrome: &Chrome,
                          args: &ActionArgs| {
@@ -2494,7 +2715,7 @@ impl SearchProvider for ActionsProvider {
                 ) {
                     let action_id = action.id;
                     let on_open = Rc::new(
-                        move |_doc: &mut automerge::AutoCommit,
+                        move |_doc: &mut ui::widget::Edits<'_>,
                               _root: &automerge::ObjId,
                               _chrome: &Chrome,
                               _args: &ActionArgs| {
@@ -2504,7 +2725,7 @@ impl SearchProvider for ActionsProvider {
                         },
                     ) as Rc<crate::shell::search::OpenFn>;
                     let begin = Rc::new(
-                        move |_doc: &mut automerge::AutoCommit,
+                        move |_doc: &mut ui::widget::Edits<'_>,
                               _root: &automerge::ObjId,
                               chrome: &Chrome,
                               args: &ActionArgs| {
@@ -2556,10 +2777,102 @@ impl SearchProvider for ActionsProvider {
                         },
                     ) as Rc<crate::shell::search::BeginInvokeFn>;
                     (on_open, Some(begin))
+                } else if let Some(mode) = action
+                    .id
+                    .strip_prefix("display.layout.")
+                    .and_then(DisplayLayoutMode::from_id)
+                {
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        |_doc: &mut ui::widget::Edits<'_>,
+                         _root: &automerge::ObjId,
+                         _chrome: &Chrome,
+                         _args: &ActionArgs| {
+                            Err(ActionError::Refused(
+                                "display layouts require lifecycle dispatch".into(),
+                            ))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        move |_doc: &mut ui::widget::Edits<'_>,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              _args: &ActionArgs| {
+                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                                return Err(ActionError::Refused("current workspace authority no longer permits this display layout".into()));
+                            }
+                            let pending = crate::shell::display_persistence::stage_layout(mode)
+                                .map_err(|error| ActionError::Refused(error.to_string()))?;
+                            {
+                                let mut state = chrome.borrow_mut();
+                                state.overlays.projection = true;
+                                state.bump();
+                            }
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    pending
+                                        .poll()
+                                        .map(|done| {
+                                            done.map(|_| {
+                                                chrome.borrow_mut().bump();
+                                                crate::shell::search::ActionReceipt::completed()
+                                            })
+                                        })
+                                        .map_err(|error| ActionError::Refused(error.to_string()))
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
+                } else if matches!(action.id, DISPLAY_KEEP_ID | DISPLAY_REVERT_ID) {
+                    use crate::shell::display_persistence::{Answer, answer};
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        |_doc: &mut ui::widget::Edits<'_>,
+                         _root: &automerge::ObjId,
+                         _chrome: &Chrome,
+                         _args: &ActionArgs| {
+                            Err(ActionError::Refused(
+                                "display answers require lifecycle dispatch".into(),
+                            ))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        move |_doc: &mut ui::widget::Edits<'_>,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              _args: &ActionArgs| {
+                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                                return Err(ActionError::Refused("current workspace authority no longer permits this display answer".into()));
+                            }
+                            let pending = answer(if action_id == DISPLAY_KEEP_ID {
+                                Answer::Keep
+                            } else {
+                                Answer::Revert
+                            })
+                            .map_err(|error| ActionError::Refused(error.to_string()))?;
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    pending
+                                        .poll()
+                                        .map(|done| {
+                                            done.map(|()| {
+                                                chrome.borrow_mut().bump();
+                                                crate::shell::search::ActionReceipt::completed()
+                                            })
+                                        })
+                                        .map_err(|error| ActionError::Refused(error.to_string()))
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
                 } else {
                     let action_id = action.id;
                     let on_open = Rc::new(
-                        move |_doc: &mut automerge::AutoCommit,
+                        move |_doc: &mut ui::widget::Edits<'_>,
                               _root: &automerge::ObjId,
                               chrome: &Chrome,
                               args: &ActionArgs| {
@@ -2632,6 +2945,18 @@ impl SearchProvider for ActionsProvider {
         }
         for (id, label_key, subtitle_key, keywords_key) in [
             (
+                tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE,
+                "search-action-activity-acknowledge",
+                "search-action-activity-acknowledge-subtitle",
+                "search-action-activity-acknowledge-keywords",
+            ),
+            (
+                tilo_desktop::activity::ACTIVITY_TASKS,
+                "search-action-activity-tasks",
+                "search-action-catch-up-tasks-subtitle",
+                "search-action-activity-tasks-keywords",
+            ),
+            (
                 tilo_desktop::activity::HISTORY_COMPARE,
                 "search-action-history-compare",
                 "search-action-history-compare-subtitle",
@@ -2686,6 +3011,60 @@ impl SearchProvider for ActionsProvider {
             let score = 0;
             let actions = self.qs_actions.actions.borrow().clone();
             let available = self.qs_actions.action_available(id);
+            let mut contract = quick_settings_contract_for(available);
+            if available
+                && matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID)
+                && self.qs_actions.radio_job.borrow().is_some()
+            {
+                contract.availability = tilo_actions::Availability::Unavailable {
+                    code: "quick_settings_radio_pending".into(),
+                    reason: t("display-confirm-applying"),
+                };
+            }
+            let on_begin_invoke = matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID).then(|| {
+                let slot = Rc::clone(&self.qs_actions);
+                Rc::new(
+                    move |_: &mut ui::widget::Edits<'_>,
+                          _: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        if !current_shell_action_authorized(&chrome.borrow(), id) {
+                            return Err(ActionError::Refused(format!(
+                                "current workspace authority no longer permits {id}"
+                            )));
+                        }
+                        let enabled = args.boolean("enabled").unwrap_or(false);
+                        let change = if id == QS_WIFI_ID {
+                            os_actions::RadioChange::Wifi(enabled)
+                        } else {
+                            os_actions::RadioChange::Airplane(enabled)
+                        };
+                        match slot
+                            .start_radio(change, chrome)
+                            .map_err(ActionError::Refused)?
+                        {
+                            None => Ok(crate::shell::search::InvocationDisposition::Accepted(
+                                crate::shell::search::ActionReceipt::completed(),
+                            )),
+                            Some(job) => {
+                                let chrome = chrome.clone();
+                                let pending: crate::shell::search::PendingInvocation =
+                                    Rc::new(move || {
+                                        let Some(result) = job.result() else {
+                                            return Ok(None);
+                                        };
+                                        job.apply(&chrome);
+                                        result.map_err(ActionError::Refused)?;
+                                        Ok(Some(crate::shell::search::ActionReceipt::completed()))
+                                    });
+                                Ok(crate::shell::search::InvocationDisposition::Pending(
+                                    pending,
+                                ))
+                            }
+                        }
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>
+            });
             out.push(SearchResult {
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
@@ -2696,12 +3075,17 @@ impl SearchProvider for ActionsProvider {
                 subtitle: Some(subtitle),
                 score,
                 params: quick_settings_params(id),
-                contract: Some(quick_settings_contract_for(available)),
+                contract: Some(contract),
                 on_open: Rc::new(move |_doc, _root, chrome, args| {
                     if !current_shell_action_authorized(&chrome.borrow(), id) {
                         return Err(ActionError::Refused(format!(
                             "current workspace authority no longer permits {id}"
                         )));
+                    }
+                    if matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID) {
+                        return Err(ActionError::Refused(
+                            "radio changes require lifecycle dispatch".into(),
+                        ));
                     }
                     apply_quick_settings_effect(id, actions.as_ref(), args)?;
                     let mut state = chrome.borrow_mut();
@@ -2759,7 +3143,7 @@ impl SearchProvider for ActionsProvider {
                     Ok(())
                 }),
                 on_invoke: None,
-                on_begin_invoke: None,
+                on_begin_invoke,
             });
         }
         let actor = ctx.chrome.active_local_user();
@@ -3067,6 +3451,14 @@ impl SearchProvider for ActionsProvider {
                 }
             }
         }
+        for row in crate::shell::notification::alarm_action_rows(ctx.chrome) {
+            candidates.record(
+                &row.title.to_lowercase(),
+                &row.subtitle.clone().unwrap_or_default().to_lowercase(),
+                &row.id,
+            );
+            out.push(row);
+        }
         crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
     }
 }
@@ -3209,6 +3601,8 @@ mod tests {
         let document = AutoCommit::new();
         let state = chrome.borrow();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "",
             wanted: &[ResourceKind::Action],
             chrome: &state,
@@ -3223,7 +3617,314 @@ mod tests {
             .find(|result| result.id == id)
             .unwrap_or_else(|| panic!("action provider did not return {id}"));
         let mut document = AutoCommit::new();
-        (result.on_open)(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap();
+        (result.on_open)(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn published_display_keep_waits_for_durability_without_blocking_dispatch() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+        settings_store::install_source(Some(session.host_view().unwrap()));
+        let mut transaction =
+            DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default()).unwrap();
+        transaction.state = DisplayTransactionState::AwaitingConfirmation;
+        transaction.save().unwrap();
+        let chrome = chrome_with_room();
+        let results = action_results(&ActionsProvider::new(), &chrome);
+        let action = results
+            .iter()
+            .find(|row| row.id == DISPLAY_KEEP_ID)
+            .expect("published Keep action");
+        let lock_path = paths.copy.with_file_name("settings.json.lock");
+        let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+        let lock =
+            tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+        let (sent, received) = mpsc::channel();
+        let release = std::thread::spawn(move || {
+            let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+            drop(lock);
+            responsive
+        });
+        let mut doc = AutoCommit::new();
+        let mut edits = ui::widget::Edits::lend(&mut doc);
+        let disposition = if let Some(begin) = &action.on_begin_invoke {
+            begin(&mut edits, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap()
+        } else {
+            (action.on_open)(&mut edits, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            crate::shell::search::InvocationDisposition::Accepted(
+                crate::shell::search::ActionReceipt::completed(),
+            )
+        };
+        if let crate::shell::search::InvocationDisposition::Pending(ticket) = &disposition {
+            assert!(
+                ticket().unwrap().is_none(),
+                "held storage cannot already complete the job"
+            );
+        }
+        let _ = sent.send(());
+        let responsive = release.join().unwrap();
+        settings_store::install_source(None);
+        assert!(
+            responsive,
+            "published Keep dispatch blocked on the real storage lock"
+        );
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("a storage command must retain its published job until durable completion");
+        };
+        crate::shell::durable_writer::global().flush();
+        assert!(ticket().unwrap().is_some());
+        let reopened = settings_store::SessionSettings::open(paths).unwrap();
+        assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
+        assert_eq!(
+            reopened.load()["display_transaction"]["state"],
+            "confirm_requested"
+        );
+    }
+
+    fn begin_display_answer(chrome: &Chrome, id: &str) -> crate::shell::search::PendingInvocation {
+        let results = action_results(&ActionsProvider::new(), chrome);
+        let row = results
+            .iter()
+            .find(|row| row.id == id)
+            .expect("published answer");
+        let mut doc = AutoCommit::new();
+        let disposition = row.on_begin_invoke.as_ref().expect("answer lifecycle")(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap();
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("storage must retain a real job");
+        };
+        ticket
+    }
+
+    #[test]
+    fn published_display_answers_refuse_a_replacement_adopted_under_the_copy_lock() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            let lock_path = paths.copy.with_file_name("settings.json.lock");
+            let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+            let lock =
+                tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            assert!(ticket().unwrap().is_none());
+            let mut replacement = transaction.clone();
+            replacement.id += 100;
+            replacement.state = DisplayTransactionState::Requested;
+            let copy = serde_json::json!({"display_transaction": replacement});
+            // The external writer owns the same canonical lock. Its copy is
+            // adopted by SessionSettings before the conditional comparison.
+            tilo_files::native::atomic::write_creating_parent(
+                &paths.copy,
+                &serde_json::to_vec(&copy).unwrap(),
+            )
+            .unwrap();
+            drop(lock);
+            crate::shell::durable_writer::global().flush();
+            assert!(
+                matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("replaced"))
+            );
+            let reopened = settings_store::SessionSettings::open(paths).unwrap();
+            assert_eq!(
+                reopened.load()["display_transaction"],
+                copy["display_transaction"]
+            );
+            settings_store::install_source(None);
+        }
+    }
+
+    #[test]
+    fn published_display_answers_report_real_record_failure_and_preserve_old_intent() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            std::fs::remove_file(&paths.device).unwrap();
+            std::fs::create_dir(&paths.device).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            crate::shell::durable_writer::global().flush();
+            assert!(matches!(ticket(), Err(ActionError::Refused(_))));
+            assert_eq!(
+                session.load()["display_transaction"],
+                serde_json::to_value(&transaction).unwrap()
+            );
+            std::fs::remove_dir(&paths.device).unwrap();
+            transaction.save().unwrap();
+            let reopened = settings_store::SessionSettings::open(paths).unwrap();
+            assert_eq!(
+                reopened.load()["display_transaction"],
+                serde_json::to_value(&transaction).unwrap()
+            );
+            settings_store::install_source(None);
+        }
+    }
+
+    #[test]
+    fn published_display_answer_requires_an_atomic_storage_receipt_even_if_state_matches() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+        use std::sync::mpsc;
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let transaction = DisplayTransaction {
+            id: 77,
+            state: DisplayTransactionState::AwaitingConfirmation,
+            ..DisplayTransaction::default()
+        };
+        let document = serde_json::json!({"display_transaction": transaction})
+            .as_object()
+            .unwrap()
+            .clone();
+        let source = Arc::new(settings_store::HostDocument::new(document, |_| Ok(())));
+        settings_store::install_source(Some(source.clone()));
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        crate::shell::durable_writer::global()
+            .submit_ordered(move || {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+            })
+            .unwrap();
+        started.recv().unwrap();
+        let ticket = begin_display_answer(&chrome_with_room(), DISPLAY_KEEP_ID);
+        assert!(ticket().unwrap().is_none());
+        // Another legitimate writer reaches the desired state. This cannot
+        // turn an unsupported atomic operation into our storage receipt.
+        source
+            .update_section(
+                "display_transaction",
+                serde_json::json!({"state":"confirm_requested"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        release.send(()).unwrap();
+        crate::shell::durable_writer::global().flush();
+        assert!(
+            matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("conditional settings persistence is unavailable"))
+        );
+        assert_eq!(
+            source.load()["display_transaction"]["state"],
+            "confirm_requested"
+        );
+        settings_store::install_source(None);
+    }
+
+    #[test]
+    fn published_display_answers_accept_real_durable_record_with_copy_repair_pending() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            std::fs::remove_file(&paths.copy).unwrap();
+            std::fs::create_dir(&paths.copy).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            crate::shell::durable_writer::global().flush();
+            assert!(ticket().unwrap().is_some());
+            let state = if id == DISPLAY_KEEP_ID {
+                "confirm_requested"
+            } else {
+                "revert_requested"
+            };
+            assert_eq!(session.load()["display_transaction"]["state"], state);
+            let record: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&paths.device).unwrap()).unwrap();
+            assert_eq!(record["display_transaction"]["id"], transaction.id);
+            assert_eq!(record["display_transaction"]["state"], state);
+            let accepted_revision = session.revision();
+            std::fs::remove_dir(&paths.copy).unwrap();
+            session.refresh();
+            assert_eq!(
+                session.revision(),
+                accepted_revision,
+                "copy repair must not republish unchanged committed state"
+            );
+            let repaired: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&paths.copy).unwrap()).unwrap();
+            assert_eq!(
+                repaired["display_transaction"],
+                record["display_transaction"]
+            );
+            settings_store::install_source(None);
+        }
+    }
+
+    #[test]
+    fn axis_navigation_action_door_is_session_local_and_opt_in() {
+        let chrome = chrome_with_room();
+        let results = action_results(&ActionsProvider::new(), &chrome);
+        assert!(!chrome.borrow().axis_navigation_enabled());
+        let gather = results
+            .iter()
+            .find(|row| row.id == "navigation.axis.gather")
+            .unwrap();
+        let mut document = AutoCommit::new();
+        assert!(
+            (gather.on_open)(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none()
+            )
+            .is_err()
+        );
+        invoke_action(&results, "navigation.axis.enable", &chrome);
+        assert!(chrome.borrow().axis_navigation_enabled());
+        invoke_action(&results, "navigation.axis.gather", &chrome);
+        assert!(chrome.borrow_mut().take_axis_gather_request());
+        let other = chrome_with_room();
+        assert!(!other.borrow().axis_navigation_enabled());
+        invoke_action(&results, "navigation.axis.disable", &chrome);
+        assert!(!chrome.borrow().axis_navigation_enabled());
+        assert!(!chrome.borrow_mut().take_axis_gather_request());
     }
 
     fn begin_lifecycle_action(
@@ -3240,7 +3941,13 @@ mod tests {
             .as_ref()
             .unwrap_or_else(|| panic!("{id} must use lifecycle dispatch"));
         let mut document = AutoCommit::new();
-        begin(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap()
+        begin(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -3322,6 +4029,8 @@ mod tests {
             let out = {
                 let cs = c.borrow();
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "activity",
                     wanted: &[ResourceKind::Action],
                     chrome: &cs,
@@ -3335,8 +4044,13 @@ mod tests {
                 .expect("typing 'activity' must surface the room-activity action");
             assert_eq!(action.title, "Show workspace activity");
             assert!(!c.borrow().overlays.room_activity, "starts closed");
-            (action.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none())
-                .expect("a nullary chrome action must run");
+            (action.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &c,
+                &ActionArgs::none(),
+            )
+            .expect("a nullary chrome action must run");
             assert!(
                 c.borrow().overlays.room_activity,
                 "invoking the exported action opened the sheet"
@@ -3355,6 +4069,8 @@ mod tests {
             let out = {
                 let cs = c.borrow();
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "do not disturb",
                     wanted: &[ResourceKind::Action],
                     chrome: &cs,
@@ -3367,13 +4083,13 @@ mod tests {
                 .find(|r| r.id == "notifications.dnd.toggle")
                 .expect("DND action must be present");
             assert!(!c.borrow().dnd(), "DND starts off");
-            let fire = |doc: &mut AutoCommit| {
+            let fire = |doc: &mut ui::widget::Edits<'_>| {
                 (dnd.on_open)(doc, &automerge::ROOT, &c, &ActionArgs::none())
                     .expect("a nullary chrome action must run");
             };
-            fire(&mut doc);
+            fire(&mut ui::widget::Edits::lend(&mut doc));
             assert!(c.borrow().dnd(), "opening the action turns DND on");
-            fire(&mut doc);
+            fire(&mut ui::widget::Edits::lend(&mut doc));
             assert!(!c.borrow().dnd(), "opening it again turns DND back off");
         }
 
@@ -3407,6 +4123,8 @@ mod tests {
                 let state = chrome.borrow();
                 provider
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "record.bring",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -3429,7 +4147,7 @@ mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("record bring has lifecycle admission")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &chrome,
                 &args,
@@ -3461,6 +4179,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "open",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
@@ -3479,6 +4199,8 @@ mod tests {
             let doc = AutoCommit::new();
             let score = |needle: &str| {
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle,
                     wanted: &[ResourceKind::Action],
                     chrome: &cs,
@@ -3507,6 +4229,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
@@ -3528,6 +4252,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "open",
                 wanted: &[ResourceKind::File],
                 chrome: &cs,
@@ -3544,6 +4270,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "workspace setings",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
@@ -3563,6 +4291,8 @@ mod tests {
         let cs = c.borrow();
         let doc = AutoCommit::new();
         let out = p.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "open",
             wanted: &[ResourceKind::Action],
             chrome: &cs,
@@ -3601,6 +4331,8 @@ mod tests {
         c.borrow_mut().peer_sync_enabled = true;
         let chrome = c.borrow();
         let ctx = || SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "",
             wanted: &[ResourceKind::Action],
             chrome: &chrome,
@@ -3628,6 +4360,8 @@ mod tests {
         let doc = AutoCommit::new();
         let state = chrome.borrow();
         let out = provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "activity",
             wanted: &[ResourceKind::Action],
             chrome: &state,
@@ -3638,6 +4372,8 @@ mod tests {
             "room.activity.open",
             "room.activity.explore",
             "room.activity.replay",
+            "room.activity.acknowledge",
+            "room.activity.tasks",
         ] {
             assert!(
                 out.iter().any(|action| action.id == id
@@ -3655,6 +4391,8 @@ mod tests {
         let state = chrome.borrow();
         let query = |needle| {
             provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -3675,6 +4413,44 @@ mod tests {
     }
 
     #[test]
+    fn tab_menu_is_searchable_as_a_view_and_refuses_empty_focus() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let rows = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "tab menu",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let menu = rows
+            .iter()
+            .find(|row| row.id == "tab.menu")
+            .expect("search discovers the menu");
+        assert_eq!(menu.operation_kind, tilo_actions::OperationKind::View);
+        let mut doc = AutoCommit::new();
+        let result = (menu.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        );
+        assert!(matches!(result, Err(ActionError::Refused(_))));
+        assert!(
+            chrome
+                .borrow_mut()
+                .take_shortcut_action_requests()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn history_finds_activity_views_and_not_a_workspace_switch() {
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -3682,6 +4458,8 @@ mod tests {
         let state = chrome.borrow();
         let query = |needle| {
             provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -3733,6 +4511,8 @@ mod tests {
         let switch = |needle| {
             provider
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle,
                     wanted: &[ResourceKind::Action],
                     chrome: &chrome.borrow(),
@@ -3779,6 +4559,8 @@ mod tests {
             let chrome = chrome_rc();
             let doc = AutoCommit::new();
             let results = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "search source",
                 wanted: &[ResourceKind::Action],
                 chrome: &chrome.borrow(),
@@ -3810,6 +4592,8 @@ mod tests {
                 .borrow_mut()
                 .set_provider_enabled("files", false);
             let disabled = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "files search",
                 wanted: &[ResourceKind::Action],
                 chrome: &chrome.borrow(),
@@ -3832,6 +4616,8 @@ mod tests {
             let out = {
                 let state = c.borrow();
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "workspace privacy",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -3844,7 +4630,13 @@ mod tests {
                 .find(|result| result.id == "settings.privacy.open")
                 .expect("privacy governance is directly searchable");
 
-            (result.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none()).unwrap();
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &c,
+                &ActionArgs::none(),
+            )
+            .unwrap();
 
             let state = c.borrow();
             assert!(state.overlays.ws_settings);
@@ -3862,6 +4654,8 @@ mod tests {
             let results = {
                 let state = chrome.borrow();
                 provider.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "status privacy",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -3882,7 +4676,13 @@ mod tests {
             )
             .unwrap();
 
-            (action.on_open)(&mut doc, &automerge::ROOT, &chrome, &args).unwrap();
+            (action.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &args,
+            )
+            .unwrap();
 
             assert_eq!(
                 chrome.borrow_mut().take_presence_requests(),
@@ -3902,6 +4702,8 @@ mod tests {
             let results = {
                 let state = chrome.borrow();
                 provider.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "desktop tour",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -3914,7 +4716,13 @@ mod tests {
                 .find(|result| result.id == "desktop-tour.open")
                 .expect("the completed first-use tour must remain discoverable");
 
-            (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
             assert!(chrome.borrow().overlays.desktop_tour);
         }
 
@@ -3958,6 +4766,8 @@ mod tests {
         let query = |needle: &str| {
             let state = chrome.borrow();
             provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -3996,7 +4806,7 @@ mod tests {
         );
         let appearance = settings_store::load_section("appearance");
         assert_eq!(
-            appearance.get("theme").and_then(serde_json::Value::as_str),
+            appearance.get("mode").and_then(serde_json::Value::as_str),
             Some("dark")
         );
         assert_eq!(
@@ -4028,7 +4838,13 @@ mod tests {
         )
         .expect("language arguments");
         let mut document = AutoCommit::new();
-        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+        (language.on_open)(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .unwrap();
         assert_eq!(
             settings_store::str_at(&settings_store::load(), "appearance", "language"),
             Some("de-DE")
@@ -4056,6 +4872,8 @@ mod tests {
             let doc = AutoCommit::new();
             provider
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "language",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -4075,7 +4893,13 @@ mod tests {
         )
         .expect("language arguments");
         let mut document = AutoCommit::new();
-        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+        (language.on_open)(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .unwrap();
 
         assert_eq!(
             settings_store::str_at(&settings_store::load(), "appearance", "language"),
@@ -4104,6 +4928,8 @@ mod tests {
             let doc = AutoCommit::new();
             let query = |chrome: &ChromeState, needle: &str| {
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle,
                     wanted: &[ResourceKind::Action],
                     chrome,
@@ -4151,6 +4977,8 @@ mod tests {
             let doc = AutoCommit::new();
             let offered = |chrome: &ChromeState| {
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "agent",
                     wanted: &[ResourceKind::Action],
                     chrome,
@@ -4389,6 +5217,8 @@ mod tests {
             let state = chrome.borrow();
             let doc = AutoCommit::new();
             let results = ActionsProvider::new().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "ownership",
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -4434,6 +5264,8 @@ mod tests {
                 let state = chrome.borrow();
                 provider
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "do not disturb",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -4452,8 +5284,13 @@ mod tests {
                 workspace.capabilities.clear();
                 drop(tree);
             }
-            let error = (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none())
-                .expect_err("revocation between discovery and execution must win");
+            let error = (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .expect_err("revocation between discovery and execution must win");
             assert!(matches!(error, ActionError::Refused(_)));
             assert!(!chrome.borrow().dnd());
         }
@@ -4535,6 +5372,8 @@ mod tests {
             let state = chrome.borrow();
             let doc = AutoCommit::new();
             let results = ActionsProvider::new().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -4560,6 +5399,8 @@ mod tests {
             let state = chrome.borrow();
             let doc = AutoCommit::new();
             let results = ActionsProvider::new().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "quick-settings.",
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -4634,6 +5475,8 @@ mod tests {
             let chrome = chrome_with_room();
             let doc = AutoCommit::new();
             let results = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "quick-settings.",
                 wanted: &[ResourceKind::Action],
                 chrome: &chrome.borrow(),
@@ -4760,6 +5603,8 @@ mod tests {
             let chrome = chrome_with_room();
             let mut doc = AutoCommit::new();
             let results = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "quick-settings.",
                 wanted: &[ResourceKind::Action],
                 chrome: &chrome.borrow(),
@@ -4826,8 +5671,26 @@ mod tests {
             for (id, supplied) in cases {
                 let result = results.iter().find(|result| result.id == id).expect(id);
                 let args = ActionArgs::bind(&result.params, supplied).expect("typed args bind");
-                (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &args)
+                if let Some(begin) = &result.on_begin_invoke {
+                    assert!(matches!(
+                        begin(
+                            &mut ui::widget::Edits::lend(&mut doc),
+                            &automerge::ROOT,
+                            &chrome,
+                            &args
+                        )
+                        .expect("controlled provider succeeds"),
+                        crate::shell::search::InvocationDisposition::Accepted(_)
+                    ));
+                } else {
+                    (result.on_open)(
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                        &chrome,
+                        &args,
+                    )
                     .expect("controlled provider succeeds");
+                }
             }
             assert_eq!(
                 recorder.calls.borrow().as_slice(),
@@ -5001,6 +5864,8 @@ mod tests {
             let state = chrome.borrow();
             provider
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "profile.save",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -5026,12 +5891,20 @@ mod tests {
             ],
         )
         .unwrap();
-        (save.on_open)(&mut doc, &automerge::ROOT, &chrome, &save_args).unwrap();
+        (save.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &save_args,
+        )
+        .unwrap();
 
         let assign = {
             let state = chrome.borrow();
             provider
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "assign permission role",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -5051,7 +5924,13 @@ mod tests {
             ],
         )
         .unwrap();
-        (assign.on_open)(&mut doc, &automerge::ROOT, &chrome, &assign_args).unwrap();
+        (assign.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &assign_args,
+        )
+        .unwrap();
 
         let state = chrome.borrow();
         let tree = state.tree();
@@ -5065,5 +5944,212 @@ mod tests {
             crate::shell::state::Verb::Read,
         ));
         drop(tree);
+    }
+
+    fn radio_catalog(
+        registry: &crate::shell::search::SearchRegistry,
+        chrome: &Chrome,
+        doc: &AutoCommit,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        crate::shell::search::action_api::ActionCatalog::build(
+            registry,
+            "quick-settings.",
+            crate::shell::search::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            doc,
+            &automerge::ROOT,
+            &crate::shell::search::action_api::AllVisible,
+        )
+    }
+
+    fn assert_radio_outcome(
+        poll: &crate::shell::search::PendingInvocation,
+        chrome: &Chrome,
+        change: os_actions::RadioChange,
+        outcome: &Result<(), String>,
+    ) {
+        if outcome.is_ok() {
+            let receipt = poll().unwrap().expect("real successful completion");
+            assert!(matches!(
+                receipt.update,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ));
+            match change {
+                os_actions::RadioChange::Wifi(_) => {
+                    assert!(chrome.borrow().quick_settings.wifi);
+                }
+                os_actions::RadioChange::Airplane(_) => {
+                    assert!(chrome.borrow().quick_settings.radios.airplane_mode);
+                }
+            }
+            assert!(chrome.borrow().notifications().is_empty());
+        } else {
+            assert!(
+                matches!(poll(), Err(ActionError::Refused(error)) if error.contains("fixture radio refusal"))
+            );
+            assert!(!chrome.borrow().quick_settings.wifi);
+            assert!(!chrome.borrow().quick_settings.radios.airplane_mode);
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+            assert!(poll().is_err());
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+        }
+    }
+
+    #[test]
+    fn radio_semantic_actions_wait_for_real_work_and_report_success_or_refusal() {
+        use crate::shell::quick_settings::radio::fixture::Fixture;
+        use crate::shell::search::InvocationDisposition;
+        use crate::shell::search::action_api::{ArgValue, ResourceRef};
+        for (id, change) in [
+            (QS_WIFI_ID, os_actions::RadioChange::Wifi(true)),
+            (QS_AIRPLANE_ID, os_actions::RadioChange::Airplane(true)),
+        ] {
+            for outcome in [Ok(()), Err("fixture radio refusal".into())] {
+                let fixture = Fixture::new();
+                let slot = Rc::new(SharedQsDispatcher::new(
+                    Rc::new(fixture.dispatcher),
+                    crate::shell::quick_settings::actions::QsActionAvailability::all(),
+                ));
+                let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+                slot.set_radio_wake(Arc::new(move || {
+                    let _ = wake_tx.send(());
+                }));
+                let mut registry = crate::shell::search::SearchRegistry::new();
+                registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
+                    slot.clone(),
+                )));
+                let chrome = chrome_with_room();
+                chrome.borrow_mut().quick_settings.wifi = false;
+                chrome.borrow_mut().quick_settings.radios.airplane_mode = false;
+                let mut doc = AutoCommit::new();
+                let catalog = radio_catalog(&registry, &chrome, &doc);
+                let resource = ResourceRef::new("actions", id);
+                let action = catalog.select(&resource).expect("declared Wi-Fi action");
+                let disposition = action
+                    .invoke(
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                        &chrome,
+                        [("enabled".into(), ArgValue::Boolean(true))],
+                    )
+                    .expect("owner action is admitted");
+                let InvocationDisposition::Pending(poll) = disposition else {
+                    panic!("starting radio work cannot manufacture completion");
+                };
+                assert_eq!(
+                    fixture
+                        .entered
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap(),
+                    change
+                );
+                assert!(poll().unwrap().is_none());
+                assert!(!chrome.borrow().quick_settings.wifi);
+                let busy_catalog = radio_catalog(&registry, &chrome, &doc);
+                assert!(matches!(
+                    busy_catalog
+                        .select(&resource)
+                        .unwrap()
+                        .contract()
+                        .unwrap()
+                        .availability,
+                    tilo_actions::Availability::Unavailable { .. }
+                ));
+                assert!(
+                    action
+                        .invoke(
+                            &mut ui::widget::Edits::lend(&mut doc),
+                            &automerge::ROOT,
+                            &chrome,
+                            [("enabled".into(), ArgValue::Boolean(false))],
+                        )
+                        .is_err(),
+                    "a stale descriptor cannot admit a second radio mutation"
+                );
+                fixture.release.send(outcome.clone()).unwrap();
+                wake_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                assert_radio_outcome(&poll, &chrome, change, &outcome);
+                assert!(!chrome.borrow().quick_settings.radio_change_pending);
+                let completion = slot
+                    .take_radio_completion()
+                    .expect("host consumes same owned receipt");
+                completion.apply(&chrome);
+                assert!(slot.take_radio_completion().is_none());
+                let restored = radio_catalog(&registry, &chrome, &doc);
+                assert!(matches!(
+                    restored
+                        .select(&resource)
+                        .unwrap()
+                        .contract()
+                        .unwrap()
+                        .availability,
+                    tilo_actions::Availability::Available
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn radio_semantic_admission_rechecks_current_dispatcher_and_workspace_authority() {
+        use crate::shell::quick_settings::radio::fixture::Fixture;
+        use crate::shell::search::action_api::{ArgValue, ResourceRef};
+        let fixture = Fixture::new();
+        let slot = Rc::new(SharedQsDispatcher::new(
+            Rc::new(fixture.dispatcher.clone()),
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        ));
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
+            slot.clone(),
+        )));
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let catalog = radio_catalog(&registry, &chrome, &doc);
+        let action = catalog
+            .select(&ResourceRef::new("actions", QS_WIFI_ID))
+            .unwrap();
+        slot.replace(
+            Rc::new(fixture.dispatcher.clone()),
+            crate::shell::quick_settings::actions::QsActionAvailability::default(),
+        );
+        assert!(
+            action
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &chrome,
+                    [("enabled".into(), ArgValue::Boolean(true))]
+                )
+                .is_err()
+        );
+        assert!(fixture.entered.try_recv().is_err());
+        slot.replace(
+            Rc::new(fixture.dispatcher.clone()),
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        );
+        chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .unwrap()
+            .set_owner("foreign-owner");
+        assert!(
+            action
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &chrome,
+                    [("enabled".into(), ArgValue::Boolean(true))]
+                )
+                .is_err()
+        );
+        assert!(
+            fixture.entered.try_recv().is_err(),
+            "revoked authority never reaches the native worker"
+        );
     }
 }

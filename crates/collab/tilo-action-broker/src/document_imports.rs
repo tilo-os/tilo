@@ -22,7 +22,7 @@ impl CapnpBrokerState {
         self.owner_health()?;
         let room = service.room().to_string();
         uuid::Uuid::parse_str(&room).map_err(|e| e.to_string())?;
-        let peer_id = self.next_peer_id();
+        let peer_id = self.next_service_peer_id();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         self.invocation_subscribers
             .lock()
@@ -183,6 +183,7 @@ fn argument(envelope: &InvocationEnvelope) -> Result<String, DesktopCommandError
 
 fn import_action(action: &str, label: &str) -> PublishedAction {
     PublishedAction {
+        semantic_identity: None,
         resource: RESOURCE.into(),
         action: action.into(),
         resource_kind: "document-import".into(),

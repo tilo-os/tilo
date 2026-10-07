@@ -84,11 +84,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "TILO_NTFS_HOST",
         "TILO_NTFS_NM",
         "TILO_NTFS_RANLIB",
+        "TILO_NTFS_SOURCE_CACHE",
+        "TILO_NTFS_SOURCE_OFFLINE",
+        "CARGO_NET_OFFLINE",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
     println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-changed=vendor");
     println!("cargo:rerun-if-changed=build_native.py");
+    println!("cargo:rerun-if-changed=source_artifact.py");
     Ok(())
 }

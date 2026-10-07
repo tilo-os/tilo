@@ -13,8 +13,10 @@ use thiserror::Error;
 
 use crate::shell::personal_continuity::DeviceId;
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 4;
+pub const FABRIC_SCHEMA_VERSION: u16 = 6;
 pub const MAX_DEVICES: usize = 64;
+/// More network interfaces than any one device wakes through.
+pub const MAX_WAKE_ROUTES: usize = 8;
 pub const MAX_MEDIA_SESSIONS: usize = 64;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
@@ -27,6 +29,7 @@ pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
 pub const MAX_FABRIC_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
+pub const MAX_DISPLAY_MOVE_AGE_MS: u64 = 10_000;
 /// Inline fast path only; larger nearby drops belong on the object stream.
 pub const MAX_NEARBY_DROP_BYTES: usize = 48 * 1024;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
@@ -100,6 +103,83 @@ pub struct FabricCapabilities {
     pub audio_group: bool,
 }
 
+/// The kind of network interface a device can be woken through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeInterfaceKind {
+    Ethernet,
+    WiFi,
+}
+
+/// An IPv4 network in canonical form: no host bits set beyond the prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Ipv4Subnet {
+    pub network: [u8; 4],
+    pub prefix: u8,
+}
+
+impl Ipv4Subnet {
+    /// The subnet `address/prefix` lies in, or `None` for a prefix that names
+    /// no broadcast domain (wider than /8 or a single host).
+    #[must_use]
+    pub fn containing(address: std::net::Ipv4Addr, prefix: u8) -> Option<Self> {
+        if !(8..=30).contains(&prefix) {
+            return None;
+        }
+        let mask = u32::MAX.checked_shl(32_u32.checked_sub(u32::from(prefix))?)?;
+        Some(Self {
+            network: (u32::from(address) & mask).to_be_bytes(),
+            prefix,
+        })
+    }
+
+    #[must_use]
+    pub fn is_canonical(self) -> bool {
+        Self::containing(std::net::Ipv4Addr::from(self.network), self.prefix) == Some(self)
+    }
+
+    /// The subnet's directed broadcast address.
+    #[must_use]
+    pub fn broadcast(self) -> std::net::Ipv4Addr {
+        let host = u32::MAX.checked_shr(u32::from(self.prefix)).unwrap_or(0);
+        std::net::Ipv4Addr::from(u32::from_be_bytes(self.network) | host)
+    }
+}
+
+impl std::fmt::Display for Ipv4Subnet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}/{}",
+            std::net::Ipv4Addr::from(self.network),
+            self.prefix
+        )
+    }
+}
+
+/// One network interface of a device, as the network sees it: what a sibling
+/// on the same LAN needs to wake it with a magic packet. Only the person's
+/// own devices receive it, inside their certified presence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WakeRoute {
+    /// The MAC the network sees, which for Wi-Fi is the per-network one.
+    pub mac: [u8; 6],
+    pub kind: WakeInterfaceKind,
+    /// Whether the interface wakes the device on a magic packet.
+    pub magic_packet: bool,
+    /// The IPv4 subnet the interface was last seen on.
+    pub subnet: Option<Ipv4Subnet>,
+}
+
+impl WakeRoute {
+    fn valid(&self) -> bool {
+        // A unicast, non-zero MAC; a multicast one cannot address a NIC.
+        self.mac != [0; 6]
+            && self.mac.first().is_some_and(|octet| octet & 1 == 0)
+            && self.subnet.is_none_or(Ipv4Subnet::is_canonical)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DevicePresence {
     pub device: DeviceId,
@@ -108,6 +188,8 @@ pub struct DevicePresence {
     pub capabilities: FabricCapabilities,
     pub online: bool,
     pub last_seen_unix_ms: u64,
+    /// How siblings on the same LAN can wake this device.
+    pub wake_routes: Vec<WakeRoute>,
     pub stamp: FabricStamp,
 }
 
@@ -122,7 +204,13 @@ impl DevicePresence {
         {
             return Err(FabricError::InvalidLabel);
         }
-        Ok(())
+        if self.wake_routes.len() > MAX_WAKE_ROUTES {
+            return Err(FabricError::SnapshotTooLarge);
+        }
+        if !self.wake_routes.iter().all(WakeRoute::valid) {
+            return Err(FabricError::InvalidWakeRoute);
+        }
+        unique(self.wake_routes.iter().map(|route| route.mac))
     }
 }
 
@@ -599,6 +687,47 @@ pub enum PersonalFabricAction {
         views: Vec<WindowView>,
         decode: Vec<HardwareDecode>,
     },
+    /// Wake `target` with a magic packet on a LAN this device is on, then
+    /// watch for it to rejoin. The receiver reads the target's wake routes
+    /// from its own copy of the person's fabric, never from the request.
+    WakeDevice {
+        target: DeviceId,
+    },
+    /// The waker's account of one [`Self::WakeDevice`] request.
+    WakeReport {
+        target: DeviceId,
+        outcome: WakeOutcome,
+    },
+    /// The waker asking a device it woke whether it is back.
+    WakeProbe {
+        nonce: [u8; 16],
+    },
+    /// The woken device answering a [`Self::WakeProbe`].
+    WakeProbeReply {
+        nonce: [u8; 16],
+    },
+    /// Compare-and-set placement; old action tags and checkpoint bytes stay stable.
+    SetDisplayPlacementChecked {
+        expected: FabricStamp,
+        rect: DisplayRect,
+        expires_unix_ms: u64,
+    },
+}
+
+/// What became of one request to wake a device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOutcome {
+    /// The magic packet went out on this subnet; the waker now waits.
+    Sent { subnet: Ipv4Subnet },
+    /// The target is back on the person's device network.
+    Rejoined,
+    /// The target did not come back within the wait.
+    NotRejoined,
+    /// The waker shares no LAN with any wakeable interface of the target.
+    NotOnTargetLan,
+    /// The packet could not be sent.
+    SendFailed,
 }
 
 /// Upper bound on the windows one [`PersonalFabricAction::WindowViews`] lists:
@@ -838,6 +967,21 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::WakeDevice { target }
+            | PersonalFabricAction::WakeReport { target, .. } => {
+                // Neither end of the exchange is the device being woken.
+                if target == &self.source || target == &self.target {
+                    return Err(FabricError::InvalidAction);
+                }
+                if let PersonalFabricAction::WakeReport {
+                    outcome: WakeOutcome::Sent { subnet },
+                    ..
+                } = &self.action
+                    && !subnet.is_canonical()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
             PersonalFabricAction::WindowViews { views, decode } => {
                 let mut tabs = BTreeSet::new();
                 let mut codecs = BTreeSet::new();
@@ -905,6 +1049,8 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::DeviceHealthProbe { nonce }
+            | PersonalFabricAction::WakeProbe { nonce }
+            | PersonalFabricAction::WakeProbeReply { nonce }
             | PersonalFabricAction::FabricClockProbe { nonce, .. }
             | PersonalFabricAction::InputLeaseRevoked { nonce } => {
                 if nonce == &[0; 16] {
@@ -1124,6 +1270,22 @@ impl PersonalFabricActionEnvelope {
                 lease_nonce,
             } => {
                 if forwarding_id == &[0; 16] || lease_nonce == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SetDisplayPlacementChecked {
+                expected,
+                rect,
+                expires_unix_ms,
+            } => {
+                if &expected.device != local_target
+                    || expected.counter == 0
+                    || *expires_unix_ms < self.issued_unix_ms
+                    || *expires_unix_ms
+                        > self.issued_unix_ms.saturating_add(MAX_DISPLAY_MOVE_AGE_MS)
+                    || now_unix_ms > *expires_unix_ms
+                    || !valid_display_rect(rect)
+                {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1378,6 +1540,21 @@ pub struct DisplayRect {
 }
 
 impl DisplayRect {
+    /// Logical geometry shared with the Displays arrangement control.
+    /// Malformed or overflowing screen bounds are never crossing targets.
+    pub fn logical_placement(self) -> Option<settings_store::display_placement::Placement> {
+        let width = i32::try_from(self.width).ok()?;
+        let height = i32::try_from(self.height).ok()?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        self.x.checked_add(width)?;
+        self.y.checked_add(height)?;
+        Some(settings_store::display_placement::Placement::new(
+            self.x, self.y, width, height,
+        ))
+    }
+
     fn contains_x(&self, x: i32) -> bool {
         x >= self.x && x < self.x.saturating_add_unsigned(self.width)
     }
@@ -1415,15 +1592,74 @@ impl DisplayEdge {
     }
 }
 
+/// A physical connector in its owner's logical seat coordinate space.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayConnectorPlacement {
+    pub connector: String,
+    pub label: String,
+    pub rect: DisplayRect,
+    pub scale_milli: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplayPlacement {
     pub device: DeviceId,
+    /// Ephemeral extension received separately; preserve the schema-6 checkpoint.
+    #[serde(skip)]
+    pub outputs: Vec<DisplayConnectorPlacement>,
     pub rect: DisplayRect,
     pub scale_milli: u16,
     pub stamp: FabricStamp,
 }
 
 impl DisplayPlacement {
+    /// Only the owner may accept a request over its exact published revision.
+    pub fn accepts_move(&self, expected: &FabricStamp, rect: DisplayRect) -> bool {
+        expected == &self.stamp
+            && !self.outputs.is_empty()
+            && rect.width == self.rect.width
+            && rect.height == self.rect.height
+            && valid_display_rect(&rect)
+            && self.outputs.iter().all(|output| {
+                rect.x
+                    .checked_add(output.rect.x)
+                    .zip(rect.y.checked_add(output.rect.y))
+                    .is_some_and(|(x, y)| {
+                        valid_display_rect(&DisplayRect {
+                            x,
+                            y,
+                            ..output.rect
+                        })
+                    })
+            })
+    }
+
+    /// Shared plane rectangle paired with the owner's seat rectangle.
+    fn screens(&self) -> Vec<(DisplayRect, DisplayRect)> {
+        if self.outputs.is_empty() {
+            return vec![(
+                self.rect,
+                DisplayRect {
+                    x: 0,
+                    y: 0,
+                    ..self.rect
+                },
+            )];
+        }
+        self.outputs
+            .iter()
+            .filter_map(|output| {
+                let global = DisplayRect {
+                    x: self.rect.x.checked_add(output.rect.x)?,
+                    y: self.rect.y.checked_add(output.rect.y)?,
+                    ..output.rect
+                };
+                global.logical_placement()?;
+                Some((global, output.rect))
+            })
+            .collect()
+    }
+
     fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if &self.device != owner
             || &self.stamp.device != owner
@@ -1432,6 +1668,22 @@ impl DisplayPlacement {
             || !(500..=4000).contains(&self.scale_milli)
         {
             return Err(FabricError::InvalidDisplayPlacement);
+        }
+        if self.outputs.len() > 32 {
+            return Err(FabricError::InvalidDisplayPlacement);
+        }
+        unique(self.outputs.iter().map(|output| output.connector.as_str()))?;
+        for output in &self.outputs {
+            if output.connector.is_empty()
+                || output.connector.len() > 256
+                || output.connector.chars().any(char::is_control)
+                || output.label.len() > 256
+                || output.label.chars().any(char::is_control)
+                || output.rect.logical_placement().is_none()
+                || !(500..=4000).contains(&output.scale_milli)
+            {
+                return Err(FabricError::InvalidDisplayPlacement);
+            }
         }
         Ok(())
     }
@@ -1523,6 +1775,30 @@ impl InputLease {
     }
 }
 
+/// The existing target-issued spatial-input gate, shared by the runtime and
+/// native transport fixtures. Same-user identity is never a substitute for a
+/// currently retained lease with the exact controller, target and nonce.
+pub fn permits_spatial_input(
+    lease: Option<&InputLease>,
+    controller: &DeviceId,
+    target: &DeviceId,
+    input: ([u8; 16], FabricInputEvent),
+    now_unix_ms: u64,
+) -> bool {
+    let (nonce, event) = input;
+    lease.is_some_and(|lease| {
+        lease.nonce == nonce
+            && lease.binds(controller, target)
+            && lease.validate_at(now_unix_ms).is_ok()
+            && match event {
+                FabricInputEvent::PointerMotion { .. }
+                | FabricInputEvent::PointerButton { .. }
+                | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
+                FabricInputEvent::Key { .. } => lease.allow_keyboard,
+            }
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceFabricSnapshot {
     pub schema_version: u16,
@@ -1534,6 +1810,9 @@ pub struct DeviceFabricSnapshot {
     pub wifi: Vec<WifiCredential>,
     pub display: Option<DisplayPlacement>,
     pub speakers: crate::shell::speaker_group::SpeakerFabricState,
+    /// Disk-unlock enrolments of this device and the owner's unlock
+    /// settings published from it.
+    pub unlock: crate::shell::device_unlock::UnlockFabricState,
 }
 
 impl DeviceFabricSnapshot {
@@ -1570,6 +1849,7 @@ impl DeviceFabricSnapshot {
             display.validate(&self.owner)?;
         }
         self.speakers.validate(&self.owner)?;
+        self.unlock.validate(&self.owner)?;
         unique(self.media.iter().map(|item| item.id.as_str()))?;
         unique(self.clipboard.iter().map(|item| item.id))?;
         unique(self.settings.iter().map(|item| item.key.as_str()))?;
@@ -1584,6 +1864,44 @@ pub struct DeviceFabric {
 }
 
 impl DeviceFabric {
+    /// Use actual native screen interiors, including legacy aggregate fallbacks.
+    pub fn display_destination_clear(&self, target: &DeviceId, rect: DisplayRect) -> bool {
+        let Some(display) = self
+            .snapshots
+            .get(target)
+            .and_then(|snapshot| snapshot.display.as_ref())
+        else {
+            return false;
+        };
+        if !display.accepts_move(&display.stamp, rect) {
+            return false;
+        }
+        let moved = DisplayPlacement {
+            rect,
+            ..display.clone()
+        };
+        let screens = moved.screens();
+        let others = self
+            .snapshots
+            .iter()
+            .filter(|(device, snapshot)| *device != target && snapshot.presence.online)
+            .filter_map(|(_, snapshot)| snapshot.display.as_ref())
+            .flat_map(DisplayPlacement::screens)
+            .map(|(screen, _)| screen)
+            .collect::<Vec<_>>();
+        !others
+            .iter()
+            .any(|other| screens.iter().any(|(screen, _)| screen.intersects(*other)))
+            && others.iter().any(|other| {
+                screens.iter().any(|(screen, _)| {
+                    screen
+                        .logical_placement()
+                        .zip(other.logical_placement())
+                        .is_some_and(|(screen, other)| screen.touches(other))
+                })
+            })
+    }
+
     pub fn snapshots(&self) -> &BTreeMap<DeviceId, DeviceFabricSnapshot> {
         &self.snapshots
     }
@@ -1610,6 +1928,13 @@ impl DeviceFabric {
                         snapshot
                             .speakers
                             .memberships
+                            .iter()
+                            .map(|item| item.stamp.counter),
+                    )
+                    .chain(
+                        snapshot
+                            .unlock
+                            .enrolments
                             .iter()
                             .map(|item| item.stamp.counter),
                     )
@@ -1671,6 +1996,14 @@ impl DeviceFabric {
         if !self.snapshots.contains_key(&snapshot.owner) && self.snapshots.len() >= MAX_DEVICES {
             return Err(FabricError::TooManyDevices);
         }
+        let mut snapshot = snapshot;
+        if let Some(current) = self.snapshots.get(&snapshot.owner)
+            && let (Some(incoming), Some(previous)) = (&mut snapshot.display, &current.display)
+            && incoming.stamp == previous.stamp
+            && incoming.outputs.is_empty()
+        {
+            incoming.outputs.clone_from(&previous.outputs);
+        }
         match self.snapshots.get(&snapshot.owner) {
             Some(current)
                 if !snapshot
@@ -1691,6 +2024,43 @@ impl DeviceFabric {
                 Ok(true)
             }
         }
+    }
+
+    /// Apply owner-authored connector observations for the exact display revision.
+    /// They are an optional transport extension and confer no input authority.
+    /// # Errors
+    /// Rejects unknown owners, stale revisions, invalid bounds or conflicting observations.
+    pub fn observe_display_connectors(
+        &mut self,
+        owner: &DeviceId,
+        stamp: &FabricStamp,
+        outputs: Vec<DisplayConnectorPlacement>,
+    ) -> Result<bool, FabricError> {
+        let current = self
+            .snapshots
+            .get_mut(owner)
+            .and_then(|snapshot| snapshot.display.as_mut())
+            .ok_or(FabricError::InvalidDisplayPlacement)?;
+        if &stamp.device != owner || stamp != &current.stamp {
+            return Err(FabricError::ForeignAuthorship);
+        }
+        let mut candidate = current.clone();
+        candidate.outputs = outputs;
+        candidate.validate(owner)?;
+        if candidate == *current {
+            return Ok(false);
+        }
+        if !current.outputs.is_empty() {
+            return Err(FabricError::ConflictingRevision);
+        }
+        *current = candidate;
+        Ok(true)
+    }
+
+    /// Forget everything a device published, e.g. once it left the fleet.
+    /// Returns whether it had published anything.
+    pub fn remove_device(&mut self, device: &DeviceId) -> bool {
+        self.snapshots.remove(device).is_some()
     }
 
     pub fn online_devices(&self) -> impl Iterator<Item = &DevicePresence> {
@@ -1746,69 +2116,92 @@ impl DeviceFabric {
         local_x: i32,
         local_y: i32,
     ) -> Option<EdgeTransition> {
-        let source = self.snapshots.get(from)?.display.as_ref()?;
-        let max_local_x = i32::try_from(source.rect.width)
-            .unwrap_or(i32::MAX)
-            .saturating_sub(1);
-        let max_local_y = i32::try_from(source.rect.height)
-            .unwrap_or(i32::MAX)
-            .saturating_sub(1);
-        let global_x = source.rect.x.saturating_add(local_x.clamp(0, max_local_x));
-        let global_y = source.rect.y.saturating_add(local_y.clamp(0, max_local_y));
-        let source_left = source.rect.x;
-        let source_right = source.rect.x.saturating_add_unsigned(source.rect.width);
-        let source_top = source.rect.y;
-        let source_bottom = source.rect.y.saturating_add_unsigned(source.rect.height);
-        let target = self
-            .snapshots
+        let snapshot = self.snapshots.get(from)?;
+        if !snapshot.presence.online {
+            return None;
+        }
+        let display = snapshot.display.as_ref()?;
+        display.rect.logical_placement()?;
+        let screens = display.screens();
+        let (left, top, right, bottom) = seat_bounds(&screens)?;
+        let x = local_x.clamp(left, right.checked_sub(1)?);
+        let y = local_y.clamp(top, bottom.checked_sub(1)?);
+        let (source, seat) = screens
+            .into_iter()
+            .find(|(_, seat)| seat.contains_x(x) && seat.contains_y(y))?;
+        let source_placement = source.logical_placement()?;
+        let global_x = source.x.checked_add(x.checked_sub(seat.x)?)?;
+        let global_y = source.y.checked_add(y.checked_sub(seat.y)?)?;
+        self.snapshots
             .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .filter(|snapshot| {
-                let caps = snapshot.presence.capabilities;
-                caps.display && caps.pointer && snapshot.owner != *from
+            .filter(|peer| {
+                peer.owner != *from
+                    && peer.presence.online
+                    && peer.presence.capabilities.display
+                    && peer.presence.capabilities.pointer
             })
-            .filter_map(|snapshot| snapshot.display.as_ref())
-            .filter(|display| match edge {
+            .filter_map(|peer| Some((&peer.owner, peer.display.as_ref()?)))
+            .flat_map(|(device, display)| {
+                display
+                    .screens()
+                    .into_iter()
+                    .map(move |(rect, seat)| (device, rect, seat))
+            })
+            .filter(|(_, target, _)| {
+                target
+                    .logical_placement()
+                    .is_some_and(|rect| rect.touches(source_placement))
+            })
+            .filter(|(_, target, _)| match edge {
                 DisplayEdge::Left => {
-                    display.rect.x.saturating_add_unsigned(display.rect.width) == source_left
-                        && display.rect.contains_y(global_y)
+                    target.x.saturating_add_unsigned(target.width) == source.x
+                        && target.contains_y(global_y)
                 }
                 DisplayEdge::Right => {
-                    display.rect.x == source_right && display.rect.contains_y(global_y)
+                    target.x == source.x.saturating_add_unsigned(source.width)
+                        && target.contains_y(global_y)
                 }
                 DisplayEdge::Top => {
-                    display.rect.y.saturating_add_unsigned(display.rect.height) == source_top
-                        && display.rect.contains_x(global_x)
+                    target.y.saturating_add_unsigned(target.height) == source.y
+                        && target.contains_x(global_x)
                 }
                 DisplayEdge::Bottom => {
-                    display.rect.y == source_bottom && display.rect.contains_x(global_x)
+                    target.y == source.y.saturating_add_unsigned(source.height)
+                        && target.contains_x(global_x)
                 }
             })
-            .min_by_key(|display| display.device.clone())?;
-        let target_x = match edge {
-            DisplayEdge::Left => i32::try_from(target.rect.width)
-                .unwrap_or(i32::MAX)
-                .saturating_sub(1),
-            DisplayEdge::Right => 0,
-            DisplayEdge::Top | DisplayEdge::Bottom => global_x.saturating_sub(target.rect.x),
-        };
-        let target_y = match edge {
-            DisplayEdge::Top => i32::try_from(target.rect.height)
-                .unwrap_or(i32::MAX)
-                .saturating_sub(1),
-            DisplayEdge::Bottom => 0,
-            DisplayEdge::Left | DisplayEdge::Right => global_y.saturating_sub(target.rect.y),
-        };
-        Some(EdgeTransition {
-            from: from.clone(),
-            to: target.device.clone(),
-            target_x,
-            target_y,
-        })
+            .min_by_key(|(device, target, _)| ((*device).clone(), target.x, target.y))
+            .map(|(device, target, seat)| EdgeTransition {
+                from: from.clone(),
+                to: device.clone(),
+                target_x: seat.x.saturating_add(match edge {
+                    DisplayEdge::Left => i32::try_from(target.width)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(1),
+                    DisplayEdge::Right => 0,
+                    DisplayEdge::Top | DisplayEdge::Bottom => global_x.saturating_sub(target.x),
+                }),
+                target_y: seat.y.saturating_add(match edge {
+                    DisplayEdge::Top => i32::try_from(target.height)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(1),
+                    DisplayEdge::Bottom => 0,
+                    DisplayEdge::Left | DisplayEdge::Right => global_y.saturating_sub(target.y),
+                }),
+            })
     }
 
     pub fn cross_right_edge(&self, from: &DeviceId, local_y: i32) -> Option<EdgeTransition> {
-        self.cross_edge(from, DisplayEdge::Right, 0, local_y)
+        let right = self
+            .snapshots
+            .get(from)?
+            .display
+            .as_ref()?
+            .screens()
+            .iter()
+            .filter_map(|(_, seat)| seat.x.checked_add(i32::try_from(seat.width).ok()?))
+            .max()?;
+        self.cross_edge(from, DisplayEdge::Right, right.checked_sub(1)?, local_y)
     }
 
     /// Resolve each roaming key to its newest authenticated authored record.
@@ -1997,6 +2390,20 @@ pub(crate) fn valid_nearby_file_name(value: &str) -> bool {
             .any(|character| character.is_control() || matches!(character, '/' | '\\'))
 }
 
+fn seat_bounds(screens: &[(DisplayRect, DisplayRect)]) -> Option<(i32, i32, i32, i32)> {
+    let left = screens.iter().map(|(_, seat)| seat.x).min()?;
+    let top = screens.iter().map(|(_, seat)| seat.y).min()?;
+    let right = screens
+        .iter()
+        .filter_map(|(_, seat)| seat.x.checked_add(i32::try_from(seat.width).ok()?))
+        .max()?;
+    let bottom = screens
+        .iter()
+        .filter_map(|(_, seat)| seat.y.checked_add(i32::try_from(seat.height).ok()?))
+        .max()?;
+    Some((left, top, right, bottom))
+}
+
 fn valid_display_rect(rect: &DisplayRect) -> bool {
     rect.width > 0
         && rect.height > 0
@@ -2162,6 +2569,10 @@ pub enum FabricError {
     InvalidSpeakerGroup,
     #[error("that device cannot play in this speaker group")]
     IneligibleSpeakerMember,
+    #[error("invalid disk-unlock enrolment or setting")]
+    InvalidUnlockEnrolment,
+    #[error("invalid wake route")]
+    InvalidWakeRoute,
 }
 
 #[cfg(test)]
@@ -2194,6 +2605,7 @@ mod tests {
                 capabilities: caps,
                 online: true,
                 last_seen_unix_ms: 10,
+                wake_routes: Vec::new(),
                 stamp: stamp(device, counter),
             },
             media: Vec::new(),
@@ -2201,6 +2613,7 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: Some(DisplayPlacement {
+                outputs: Vec::new(),
                 device: owner,
                 rect: DisplayRect {
                     x,
@@ -2211,8 +2624,133 @@ mod tests {
                 scale_milli: 1000,
                 stamp: stamp(device, counter),
             }),
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
+    }
+
+    #[test]
+    fn connector_extension_keeps_schema_six_display_bytes() {
+        let peer = DeviceId::new("peer").unwrap();
+        let display = DisplayPlacement {
+            device: peer.clone(),
+            rect: DisplayRect {
+                x: 960,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+            scale_milli: 1000,
+            stamp: FabricStamp {
+                counter: 1,
+                device: peer,
+            },
+            outputs: vec![DisplayConnectorPlacement {
+                connector: "DP-1".into(),
+                label: "Panel".into(),
+                rect: DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                },
+                scale_milli: 1250,
+            }],
+        };
+        // Fixed schema-6 Postcard bytes: owner, aggregate rect, scale, stamp.
+        let previous = hex::decode("0470656572800f00800ad005e807010470656572").unwrap();
+        assert_eq!(FABRIC_SCHEMA_VERSION, 6);
+        assert_eq!(postcard::to_allocvec(&display).unwrap(), previous);
+        let decoded: DisplayPlacement = postcard::from_bytes(&previous).unwrap();
+        assert!(
+            decoded.outputs.is_empty(),
+            "legacy peers retain their aggregate-screen behavior"
+        );
+        assert_eq!(decoded.rect, display.rect);
+    }
+
+    #[test]
+    fn connector_observations_require_the_exact_owner_display_revision() {
+        let caps = FabricCapabilities {
+            display: true,
+            pointer: true,
+            ..Default::default()
+        };
+        let mut local = snapshot("peer", 2, 960, caps);
+        let display = local.display.as_mut().unwrap();
+        let owner = display.device.clone();
+        let stamp = display.stamp.clone();
+        let outputs = vec![DisplayConnectorPlacement {
+            connector: "DP-1".into(),
+            label: "Panel".into(),
+            rect: DisplayRect {
+                x: 0,
+                y: 0,
+                width: 960,
+                height: 540,
+            },
+            scale_milli: 1250,
+        }];
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(local.clone()).unwrap();
+        let mut stale = stamp.clone();
+        stale.counter -= 1;
+        assert!(
+            fabric
+                .observe_display_connectors(&owner, &stale, outputs.clone())
+                .is_err()
+        );
+        assert!(
+            fabric
+                .observe_display_connectors(
+                    &DeviceId::new("other").unwrap(),
+                    &stamp,
+                    outputs.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            fabric
+                .observe_display_connectors(&owner, &stamp, outputs.clone())
+                .unwrap()
+        );
+        assert!(
+            !fabric
+                .observe_display_connectors(&owner, &stamp, outputs.clone())
+                .unwrap()
+        );
+        let mut conflict = outputs;
+        conflict[0].rect.x = 50;
+        assert!(
+            fabric
+                .observe_display_connectors(&owner, &stamp, conflict)
+                .is_err()
+        );
+        assert!(
+            !fabric.upsert(local.clone()).unwrap(),
+            "duplicate schema-6 checkpoints retain the optional observation"
+        );
+        local.presence.stamp.counter += 1;
+        fabric.upsert(local).unwrap();
+        assert_eq!(
+            fabric
+                .snapshots()
+                .get(&owner)
+                .unwrap()
+                .display
+                .as_ref()
+                .unwrap()
+                .outputs
+                .len(),
+            1
+        );
+        fabric.remove_device(&owner);
+        assert!(
+            fabric
+                .observe_display_connectors(&owner, &stamp, Vec::new())
+                .is_err(),
+            "revoked or forgotten peers cannot retain observations"
+        );
     }
 
     #[test]
@@ -2630,13 +3168,13 @@ mod tests {
         fn newest_roaming_setting_wins_deterministically() {
             let mut old = snapshot("desktop", 1, 0, FabricCapabilities::default());
             old.settings.push(RoamingSetting {
-                key: "tilo.appearance.theme".into(),
+                key: "tilo.appearance.mode".into(),
                 value: Value::Bool(false),
                 stamp: stamp("desktop", 1),
             });
             let mut new = snapshot("laptop", 2, 1000, FabricCapabilities::default());
             new.settings.push(RoamingSetting {
-                key: "tilo.appearance.theme".into(),
+                key: "tilo.appearance.mode".into(),
                 value: Value::Bool(true),
                 stamp: stamp("laptop", 2),
             });
@@ -2644,7 +3182,7 @@ mod tests {
             fabric.upsert(old).unwrap();
             fabric.upsert(new).unwrap();
             assert_eq!(
-                fabric.merged_settings()["tilo.appearance.theme"],
+                fabric.merged_settings()["tilo.appearance.mode"],
                 Value::Bool(true)
             );
         }
@@ -2752,7 +3290,7 @@ mod tests {
             let mut source = snapshot(&owner_text, 1, 0, FabricCapabilities::default());
             source.wifi.push(credential);
             source.settings.push(RoamingSetting {
-                key: "tilo.appearance.theme".into(),
+                key: "tilo.appearance.mode".into(),
                 value: Value::String("Nord".into()),
                 stamp: FabricStamp {
                     counter: 1,
@@ -2763,7 +3301,7 @@ mod tests {
             fabric.upsert(source).unwrap();
 
             assert_eq!(
-                fabric.merged_settings()["tilo.appearance.theme"],
+                fabric.merged_settings()["tilo.appearance.mode"],
                 Value::String("Nord".into())
             );
         }

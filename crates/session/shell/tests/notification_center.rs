@@ -118,7 +118,7 @@ fn deliver(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, eve
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut state,
+            state: ui::widget::Edits::lend(&mut state),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -253,8 +253,8 @@ fn notifications_group_by_verified_app_in_the_accessibility_tree() {
         .collect();
     assert_eq!(
         controls,
-        ["Dismiss"],
-        "with no agent in the workspace, Hand to agent is not offered"
+        ["Dismiss", "Read complete notification"],
+        "reading is available; with no agent in the workspace, Hand to agent is not offered"
     );
 
     // Fold every group from the keyboard: select a header, Enter, next.

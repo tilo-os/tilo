@@ -20,6 +20,10 @@ name = "tilo-launcher"
 path = "src/main.rs"
 
 [[bin]]
+name = "tilo-signal-provider"
+path = "src/bin/tilo-signal-provider.rs"
+
+[[bin]]
 name = "managed-tree-fixture"
 path = "tests/fixtures/managed-tree/main.rs"
 test = false
@@ -39,6 +43,11 @@ dev-overrides = ["package-store/dev-overrides"]
 managed-tree-test = []
 
 [dependencies]
+# Kernel-authenticated custody of the executing native service peer.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+blake3.workspace = true
+tempfile.workspace = true
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -96,7 +105,9 @@ tilo-test-env = { path = "../../dev/test-env" }
 package-store = { path = "../package-store", features = ["store"] }
 hex.workspace = true
 ed25519-dalek.workspace = true
-tempfile.workspace = true
+# A threshold identity record in the store a launch must only read.
+threshold-identity = { path = "../../collab/threshold-identity" }
+getrandom.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
 tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
 
@@ -109,3 +120,8 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock.workspace = true
+# `gpu.rs` asks each installed Vulkan ICD directly which render node its
+# devices are on (`VK_EXT_physical_device_drm`), loading the library itself
+# so every answer belongs to exactly one manifest.
+ash = { version = "0.38", default-features = false, features = ["std"] }
+libloading = "0.8"

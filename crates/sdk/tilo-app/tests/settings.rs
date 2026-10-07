@@ -75,7 +75,7 @@ impl ResourceApp for LogApp {
                     .with_id("confirm"),
                 ))
                 .push(Box::new(
-                    Button::new("toggle", "Toggle confirmation", None).on_click(move || {
+                    Button::new("toggle", "Toggle confirmation").on_click(move || {
                         toggle
                             .update(|prefs| prefs.confirm = !prefs.confirm)
                             .unwrap();

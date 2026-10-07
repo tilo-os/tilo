@@ -14,6 +14,19 @@ SPEC.loader.exec_module(contract)
 
 
 class AppResourceActionContractTests(unittest.TestCase):
+    def test_code_runs_preserve_delimiters_lifetimes_and_unicode(self):
+        cases = [
+            ("let ratio = α / β;\n", "let ratio = α / β;\n"),
+            ("fn f<'a>(x: &'a str) {}", "fn f<'a>(x: &'a str) {}"),
+            ("a// hidden\nb", "a         \nb"),
+            ("a/* hidden */b", "a          b"),
+            ('a"hidden\\\"text"b', "a              b"),
+            ("a'/' + '\"'b", "a    +    b"),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(contract.rust_code_only(source), expected)
+
     def fixture(
         self,
         source: str,
@@ -33,6 +46,33 @@ class AppResourceActionContractTests(unittest.TestCase):
         )
         (app / "src" / "lib.rs").write_text(source, encoding="utf-8")
         return root
+
+    def test_char_literals_do_not_hide_the_code_after_them(self):
+        code = contract.rust_code_only(
+            "fn f<'a>(s: &'a str) -> String { s.replace('\"', \"\").trim_matches('\\'') }\n"
+            "fn handler() { start_operation(); }\n"
+        )
+        self.assertIn("fn handler() { start_operation(); }", code)
+        self.assertIn("fn f<'a>(s: &'a str)", code)
+        self.assertNotIn('"', code)
+
+    def test_repeated_audits_observe_source_changes_at_the_same_path(self):
+        valid = (
+            "pub struct Note;\n"
+            "impl Resource for Note { fn register(registry: &mut ActionRegistry) {} }\n"
+            "struct Sample;\n"
+            "impl ResourceApp for Sample { type Resource = Note; }\n"
+        )
+        root = self.fixture(valid)
+        source = root / "apps/sample/src/lib.rs"
+        (source.parent / "main.rs").write_text("ui::main!(sample::Sample);\n")
+        self.assertEqual(contract.audit(root), ([], 1))
+        source.write_text("struct Sample;\nimpl ResourceApp for Sample {}\n")
+        violations, apps = contract.audit(root)
+        self.assertEqual(apps, 1)
+        self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        source.write_text(valid)
+        self.assertEqual(contract.audit(root), ([], 1))
 
     def test_resource_surface_requires_a_real_nonempty_resource_provider(self):
         with self.subTest(phase='resource action app passes'):
@@ -107,7 +147,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "pub fn app_root() {\n"
                 " let mut resource = tilo_actions::Resource::new(\"k:root\", \"k\", \"K\");\n"
                 " resource.actions.push(ActionSpec::operation(\"a\", \"A\", OperationKind::Effect, T, &()).unwrap());\n"
-                " ui::widget::resource_actions::background(root, resource, |_| {});\n"
+                " ui::widget::resource_actions::immediate(root, resource, |_| {});\n"
                 "}\n"
             )
             violations, _ = contract.audit(root)
@@ -281,6 +321,19 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertFalse(any("not reachable" in item.reason for item in violations))
+        with self.subTest(phase='framework surface answering typed effects passes'):
+            root = self.fixture(
+                "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
+                "#[resource(kind = \"sample.note\", label = \"Note\")]\n"
+                "impl Note { #[action] pub fn edit(&mut self, text: String) { self.body = text; } }\n"
+                "struct Sample;\n"
+                "impl ResourceApp for Sample { type Resource = Note; }\n"
+                "impl ResourceSurface<Note, Show> for View {\n"
+                " fn effect(&mut self, effect: Show, cx: &mut EffectCx<Note, Self>) -> EffectAnswer { todo() } }\n"
+                "fn check(spec: &ActionSpec) -> bool { spec.kind == OperationKind::View }\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
 
     def test_agent_uses_generic_broker_catalogue_and_receipts(self):
         with self.subTest(phase='agent must use generic broker catalogue and receipts'):
@@ -376,7 +429,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
             )
-            baseline = root / contract.BASELINE
+            baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
                 '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
@@ -400,7 +453,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             )
-            baseline = root / contract.BASELINE
+            baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
                 '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
@@ -408,6 +461,22 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("stale raw_on_click_closure ceiling" in item.reason for item in violations))
+        with self.subTest(phase="each ceiling lives in its app's baseline file"):
+            root = self.fixture(
+                "use tilo_actions::ActionSpec;\n"
+                "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+                "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
+            )
+            baseline = root / contract.BASELINE / "other.toml"
+            baseline.parent.mkdir(parents=True)
+            baseline.write_text(
+                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            self.assertTrue(any("belongs in" in item.reason for item in violations))
 
     def test_bespoke_automation_palette_and_search_activation_paths_fail(self):
         with self.subTest(phase='new bespoke automation entry point fails'):

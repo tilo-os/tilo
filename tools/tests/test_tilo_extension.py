@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -475,6 +476,54 @@ class Downloads(unittest.TestCase):
         self.assertEqual(machine.requests, [])
 
 
+class OfflineStartup(unittest.TestCase):
+    def test_empty_activation_does_not_load_download_or_archive_libraries(self):
+        machine = Machine(self)
+        child = r'''
+import importlib.machinery
+import importlib.util
+import sys
+from pathlib import Path
+
+for name in ("urllib.request", "ssl", "tarfile"):
+    assert name not in sys.modules, "test setup preloaded " + name
+
+class OfflineImports:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {"urllib.request", "ssl", "tarfile"}:
+            raise AssertionError("offline activation loaded " + fullname)
+
+sys.meta_path.insert(0, OfflineImports())
+loader = importlib.machinery.SourceFileLoader("offline_extension", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+sys.modules[loader.name] = module
+loader.exec_module(module)
+assert module.activate(module.Layout(Path(sys.argv[2]))) == 0
+'''
+        result = subprocess.run(
+            [sys.executable, "-", str(HELPER), str(machine.root)],
+            input=child, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_lazy_opener_keeps_https_only_redirects(self):
+        import urllib.request
+
+        opener = ext._http_opener()
+        self.assertIs(opener, ext._http_opener())
+        redirect = next(handler for handler in opener.handlers
+                        if isinstance(handler, urllib.request.HTTPRedirectHandler))
+        request = urllib.request.Request("https://publisher.example/source")
+        with self.assertRaisesRegex(urllib.error.HTTPError, "redirect away from HTTPS refused") as refused:
+            redirect.redirect_request(request, None, 302, "redirect", {},
+                                      "http://publisher.example/mirror")
+        refused.exception.close()
+        allowed = redirect.redirect_request(request, None, 302, "redirect", {},
+                                            "https://publisher.example/mirror")
+        self.assertEqual(allowed.full_url, "https://publisher.example/mirror")
+
+
 class Lifecycle(unittest.TestCase):
     def install(self, machine, mesa=True):
         machine.manifest([machine.artifact(rpm("libavcodec-freeworld"))],
@@ -581,6 +630,40 @@ class Lifecycle(unittest.TestCase):
         machine.run("activate")
         self.assertTrue(machine.part().is_dir())
         self.assertTrue(machine.part("tilo-codecs-mesa").is_dir())
+
+    def test_plugin_without_codec_is_refused_before_download_on_exact_base(self):
+        machine = Machine(self)
+        plugin = machine.artifact(rpm("gstreamer1-plugin-openh264"))
+        machine.manifest([plugin])
+        self.assertEqual(machine.run("install"), 1)
+        self.assertFalse(machine.part().exists())
+        self.assertIn("Cisco's codec library", machine.status()["last_error"])
+        self.assertFalse(any(url == plugin["urls"][0] for url, _offset in machine.requests))
+
+    def test_retained_plugin_loses_readiness_when_real_codec_becomes_stub(self):
+        machine = Machine(self)
+        machine.packages.append("openh264 0:2.6.0-3.fc44.x86_64")
+        plugin = machine.artifact(rpm("gstreamer1-plugin-openh264"))
+        machine.manifest([plugin])
+        self.assertEqual(machine.run("install"), 0)
+        self.assertTrue(machine.part().exists())
+        previous = list(machine.packages)
+        machine.packages = [p for p in previous if not p.startswith("openh264 ")]
+        machine.packages.append("noopenh264 0:2.6.0-4.fc44.x86_64")
+        self.assertEqual(machine.run("activate"), 0)
+        self.assertFalse(machine.part().exists())
+        self.assertEqual(machine.status()["parts"]["tilo-codecs"], "waiting")
+        machine.packages = previous
+        self.assertEqual(machine.run("activate"), 0)
+        self.assertTrue(machine.part().exists(), "the authenticated part returns on rollback")
+
+    def test_plugin_with_signed_codec_library_can_be_installed(self):
+        machine = Machine(self)
+        machine.packages.append("noopenh264 0:2.6.0-4.fc44.x86_64")
+        machine.manifest([machine.artifact(rpm("gstreamer1-plugin-openh264")),
+                          machine.artifact(rpm("openh264", files={"usr/lib64/libopenh264.so.8": "codec"}))])
+        self.assertEqual(machine.run("install"), 0)
+        self.assertEqual((machine.part() / "usr/lib64/libopenh264.so.8").read_text(), "codec")
 
     def test_a_part_whose_base_package_changed_waits_and_returns_on_rollback(self):
         machine = Machine(self)

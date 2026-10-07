@@ -244,7 +244,7 @@ fn open_app(h: &mut Harness, app_id: &str) -> App {
 }
 
 fn shown(h: &Harness, fb: &mut FrameBuilder) -> serde_json::Value {
-    let _ = sync_pointer_image(&h.state, fb, false);
+    let _ = sync_pointer_image(&h.state, fb, false, false);
     fb.pointer_image().describe()
 }
 

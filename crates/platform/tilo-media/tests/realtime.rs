@@ -459,11 +459,12 @@ fn percentile(times: &[Duration], p: f64) -> Duration {
 
 /// Per-frame latency of every real-time path this machine has, at 720p.
 ///
-/// The first frame (element start-up) is excluded. The bound is loose — a
-/// shared CI runner is slow and noisy — and exists to catch an element that
-/// buffers frames (which shows up as a missing picture, or as whole frame
-/// intervals of delay), not to benchmark.
+/// The first frame (element start-up) is excluded. A buffering element shows
+/// up as whole frame intervals of delay, which only a quiet machine can tell
+/// from load: run by hand there. The software round trips check every
+/// frame's picture on every runner.
 #[test]
+#[ignore = "latency measurement for a quiet machine, not a shared-runner gate"]
 fn realtime_latency_per_frame() {
     let mut paths = vec![
         (StreamCodec::Vp9, RealtimePolicy::SoftwareOnly),

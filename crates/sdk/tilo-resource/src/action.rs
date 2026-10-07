@@ -29,6 +29,7 @@ pub struct ActionCx {
     minted: u64,
     now_ms: i64,
     author: Option<String>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 /// Who invoked the action applying now, as its envelope pinned it.
@@ -36,6 +37,10 @@ fn invoking_author() -> Option<String> {
     tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
         .map(|invoker| invoker.actor)
+}
+
+fn invoking_invocation() -> Option<tilo_actions::InvocationId> {
+    tilo_actions::invoking_context().and_then(|context| context.source_invocation)
 }
 
 impl ActionCx {
@@ -52,6 +57,7 @@ impl ActionCx {
             minted: 0,
             now_ms,
             author: invoking_author(),
+            invocation: invoking_invocation(),
         }
     }
 
@@ -81,6 +87,7 @@ impl ActionCx {
             minted: 0,
             now_ms: 0,
             author: invoking_author(),
+            invocation: invoking_invocation(),
         }
     }
 
@@ -108,6 +115,24 @@ impl ActionCx {
     /// (an edit written straight into a document outside the host).
     pub fn author(&self) -> Option<&str> {
         self.author.as_deref()
+    }
+
+    /// The invocation admitted by the action door, pinned in the action
+    /// envelope so origin and replay observe the same correlation identity.
+    /// This is not caller authority; use [`Self::author`] for that.
+    pub const fn invocation(&self) -> Option<tilo_actions::InvocationId> {
+        self.invocation
+    }
+
+    /// The content store of the window applying the action, where the bytes
+    /// the record names by hash are kept: the one the host lent that window,
+    /// which carries them on the record's route. Content is not replayed —
+    /// a replica that applies the action reads the bytes through its own
+    /// window's store. `None` where no window applies it (a tool writing a
+    /// document directly).
+    #[must_use]
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        crate::content::current()
     }
 }
 
@@ -311,6 +336,7 @@ impl<R, A: Serialize> ActionRef<R, A> {
         Invoke {
             id: self.id,
             arguments: self.arguments(&input),
+            effect: false,
             marker: PhantomData,
         }
     }
@@ -369,15 +395,18 @@ impl<R> ActionRef<R, ()> {
         Invoke {
             id: self.id,
             arguments: serde_json::Map::new(),
+            effect: false,
             marker: PhantomData,
         }
     }
 }
 
-/// One fully specified invocation of a declared action.
+/// One fully specified invocation of a declared action, or of one of the
+/// app's effects ([`Invoke::effect`]).
 pub struct Invoke<R> {
     pub id: &'static str,
     pub arguments: serde_json::Map<String, serde_json::Value>,
+    effect: bool,
     marker: PhantomData<fn() -> R>,
 }
 
@@ -386,6 +415,7 @@ impl<R> Clone for Invoke<R> {
         Self {
             id: self.id,
             arguments: self.arguments.clone(),
+            effect: self.effect,
             marker: PhantomData,
         }
     }
@@ -396,7 +426,29 @@ impl<R> std::fmt::Debug for Invoke<R> {
         f.debug_struct("Invoke")
             .field("id", &self.id)
             .field("arguments", &self.arguments)
+            .field("effect", &self.effect)
             .finish()
+    }
+}
+
+impl<R> Invoke<R> {
+    /// An invocation of one of the app's effects — show an item, refresh a
+    /// list — through the same door as its actions: what a launch asks of
+    /// an app beside editing its resource (`tilo-store:app/<id>` showing that
+    /// app). It changes no document, so it never builds an action.
+    pub fn effect<E: crate::Effect>(effect: &E) -> Self {
+        Self {
+            id: effect.id(),
+            arguments: effect.arguments(),
+            effect: true,
+            marker: PhantomData,
+        }
+    }
+
+    /// Whether this invokes an effect ([`Self::effect`]) rather than one of
+    /// the resource's actions.
+    pub fn is_effect(&self) -> bool {
+        self.effect
     }
 }
 
@@ -413,8 +465,25 @@ impl<R: Resource> Invoke<R> {
                 crate::APPLY_PARAM.to_owned(),
                 serde_json::to_value(action)?,
             )]),
+            effect: false,
             marker: PhantomData,
         })
+    }
+
+    /// Select the audited low-risk door when this exact value is opted in.
+    /// The target independently revalidates the decoded value.
+    ///
+    /// # Errors
+    /// Returns the serialization error of `action`.
+    pub fn checked_apply(action: &R::Action) -> Result<Self, serde_json::Error> {
+        let mut invocation = Self::apply(action)?;
+        if R::AUDITED_LOW_MUTATIONS
+            && R::allows_low_mutation(action)
+            && tilo_actions::Action::risk(action) == tilo_actions::RiskLevel::Low
+        {
+            invocation.id = crate::APPLY_LOW;
+        }
+        Ok(invocation)
     }
 
     /// Several invocations applied as one action: one change, one version,
@@ -422,7 +491,7 @@ impl<R: Resource> Invoke<R> {
     pub fn group(members: impl IntoIterator<Item = Self>) -> Self {
         let mut actions = Vec::new();
         for member in members {
-            if member.id == crate::GROUP {
+            if member.is_group() {
                 if let Some(serde_json::Value::Array(inner)) =
                     member.arguments.get(crate::GROUP_PARAM)
                 {
@@ -435,19 +504,24 @@ impl<R: Resource> Invoke<R> {
                 }));
             }
         }
+        let low = !actions.is_empty()
+            && actions.iter().all(|member| {
+                member.get("action").and_then(serde_json::Value::as_str) == Some(crate::APPLY_LOW)
+            });
         Self {
-            id: crate::GROUP,
+            id: if low { crate::GROUP_LOW } else { crate::GROUP },
             arguments: serde_json::Map::from_iter([(
                 crate::GROUP_PARAM.to_owned(),
                 serde_json::Value::Array(actions),
             )]),
+            effect: false,
             marker: PhantomData,
         }
     }
 
     /// Whether this is a [`group`](Self::group) of invocations.
     pub fn is_group(&self) -> bool {
-        self.id == crate::GROUP
+        self.id == crate::GROUP || self.id == crate::GROUP_LOW
     }
 
     /// Build the replayable action on this (origin) machine. A group builds

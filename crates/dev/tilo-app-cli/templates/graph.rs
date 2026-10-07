@@ -39,12 +39,18 @@ impl Projects {
 /// The serialized screens under `ui/`, validated before any widget reaches
 /// the app. `tilo-app ui edit ui/main.json` edits them while the app runs;
 /// `tilo-app add screen` and `tilo-app add component --mount` extend them.
-fn screens() -> Element {
-    match crate::screens::router_with(
-        "main",
-        &Theme::default(),
-        crate::components::ui_graph_context(),
-    ) {
+/// A screen's text input over `draft` edits the draft through
+/// [`Projects::SET_DRAFT`]; an input over any other path keeps what is typed
+/// in the screen's values until the app acts on it.
+fn screens(cx: &ViewCx<Projects>) -> Element {
+    let context = crate::components::ui_graph_context();
+    cx.route_graph_text(
+        context.values(),
+        "draft",
+        |projects| projects.draft.clone(),
+        Projects::SET_DRAFT,
+    );
+    match crate::screens::router_with("main", &Theme::default(), context) {
         Ok(router) => Box::new(router),
         Err(error) => Box::new(Banner::error(ui::i18n::I18nManager::format(
             "graph-load-error",
@@ -76,7 +82,7 @@ impl ResourceApp for App {
         );
         Box::new(
             Column::new()
-                .push(screens())
+                .push(screens(cx))
                 .push(Box::new(labeled_field("graph-project-name", input)))
                 .push(Box::new(preview))
                 .push(Box::new(create))

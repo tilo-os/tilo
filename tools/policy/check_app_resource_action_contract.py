@@ -15,11 +15,17 @@ import re
 import sys
 import tomllib
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path("tools/policy/app_resource_action_baseline.toml")
+# Audited ceilings, one file per app (`<app>.toml`, `[ratchets.<rule>]` tables
+# of `"apps/<app>/<path>" = <count>`), so changes to different apps never edit
+# the same file. Rules absent from every file allow nothing; adding an entry is
+# a certification exception requiring architectural review. A file whose debt
+# is gone is deleted.
+BASELINE = Path("tools/policy/app_resource_action_baseline")
 
 RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
 RESOURCE_VALUE = re.compile(r"\bResource\s*::\s*new\s*\(")
@@ -39,9 +45,7 @@ ACTION_REGISTRY_DEFINITION = re.compile(
     r"\bfn\s+register\s*\([^)]*\bActionRegistry\b", re.DOTALL
 )
 LIVE_ACTION_REGISTRY_WIRING = re.compile(r"\bactions\s*::\s*register\s*\(")
-TOOLKIT_ACTION_HOST = re.compile(
-    r"\bresource_actions\s*::\s*(?:immediate|background)\s*\("
-)
+TOOLKIT_ACTION_HOST = re.compile(r"\bresource_actions\s*::\s*immediate\s*\(")
 TOOLKIT_RESOURCE_VALUE = re.compile(
     r"\bresource_actions\s*::\s*(?:resource|typed_resource)\s*\("
 )
@@ -56,6 +60,9 @@ FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
 FRAMEWORK_LAUNCH = re.compile(
     r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<|\b\w+\s*::\s*main\s*!\s*\("
 )
+# A framework app answers its effect and view operations as a typed
+# vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
+TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 FRAMEWORK_RESOURCE = re.compile(
     r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
@@ -69,6 +76,16 @@ LEGACY_ENTRY_POINTS = {
         r"\bstruct\s+(?:Automation|Agent|Mcp|Control)(?:Server|Socket)\b"
     ),
 }
+
+# The raw operation protocol between the host and the toolkit's own widgets.
+# An app answers operations as a typed effect vocabulary and, in a test that
+# drives a widget without a host, delivers one through
+# `ui::framework::HostDelivery`; it never
+# builds, routes or answers a raw operation, in its sources or its tests.
+RAW_OPERATION_PROTOCOL = re.compile(
+    r"\b(?:ResourceOperation|ResourceOperationStart|OperationRequest|start_in_children|host_operation)\b"
+    r"|(?:\.|::)\s*(?:start_operation|poll_resource_operation)\s*\("
+)
 
 SEARCH_PROVIDER_IMPL = re.compile(
     r"\bimpl(?:\s*<[^>{}]*>)?\s+SearchProvider\s+for\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -126,10 +143,10 @@ RATCHETS = {
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
-    "surface_document_actions": (
-        re.compile(r"\bfn\s+publishes_document_actions\s*\("),
-        "a surface publishing document actions of its own; bind edits to its view state with "
-        "ResourceSurface::bound_declarations and publish live rows with ResourceSurface::live_rows",
+    "widget_search_source": (
+        re.compile(r"\bSearchSource\s+for\b"),
+        "a content widget's own search provider beside the app's one search source; publish "
+        "SearchEntry values from Resource::search or ResourceSurface::search_entries",
     ),
 }
 
@@ -163,9 +180,23 @@ MODEL_RATCHETS = {
         "app-owned document; the framework owns the resource document",
     ),
 }
+# Counted over every line of a workspace app's sources but its test files: a
+# hook a widget implements anywhere in a file is the widget's.
+WORKSPACE_RATCHETS = {
+    "raw_operation_handler": (
+        re.compile(
+            r"\bfn\s+(?:start_operation|poll_resource_operation|local_resource_operation_handlers)\s*\("
+        ),
+        "raw resource-operation hook; answer a typed #[derive(Effect)] vocabulary in "
+        "ResourceSurface::effect (or ViewCx::effects) and offer item effects bound on their rows",
+    ),
+}
+# Ratchets that reached zero and stay there: a ceiling for one is refused.
+CLOSED_RATCHETS = {"raw_operation_handler"}
 RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
+    **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
 }
 TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
 
@@ -248,23 +279,38 @@ def is_ui_core_dependency(alias: str, specification: object) -> bool:
     return False
 
 
-def load_ratchet_baseline(root: Path) -> dict[str, dict[str, int]]:
-    path = root / BASELINE
-    if not path.is_file():
-        return {}
-    with path.open("rb") as handle:
-        document = tomllib.load(handle)
-    raw = document.get("ratchets", {})
-    if not isinstance(raw, dict):
-        return {}
+def baseline_file(relative: str) -> Path:
+    """The per-app baseline file that holds `relative`'s ceilings."""
+    parts = relative.split("/")
+    owner = parts[1] if len(parts) > 2 and parts[0] == "apps" else "workspace"
+    return BASELINE / f"{owner}.toml"
+
+
+def load_ratchet_baseline(
+    root: Path, violations: list[Violation] | None = None
+) -> dict[str, dict[str, int]]:
     baseline: dict[str, dict[str, int]] = {}
-    for rule, entries in raw.items():
-        if isinstance(entries, dict):
-            baseline[rule] = {
-                path: limit
-                for path, limit in entries.items()
-                if isinstance(path, str) and isinstance(limit, int) and limit >= 0
-            }
+    for path in sorted((root / BASELINE).glob("*.toml")):
+        with path.open("rb") as handle:
+            raw = tomllib.load(handle).get("ratchets", {})
+        if not isinstance(raw, dict):
+            continue
+        for rule, entries in raw.items():
+            if not isinstance(entries, dict):
+                continue
+            for relative, limit in entries.items():
+                if not (isinstance(relative, str) and isinstance(limit, int) and limit >= 0):
+                    continue
+                if violations is not None and rule in CLOSED_RATCHETS:
+                    violations.append(
+                        Violation(path, 1, f"{rule} is closed: no ceiling for `{relative}`")
+                    )
+                    continue
+                if violations is not None and root / baseline_file(relative) != path:
+                    violations.append(
+                        Violation(path, 1, f"{rule} ceiling for `{relative}` belongs in {baseline_file(relative)}")
+                    )
+                baseline.setdefault(rule, {})[relative] = limit
     return baseline
 
 
@@ -286,6 +332,11 @@ def audit_ratchets(
                 (rule, pattern, reason, production)
                 for rule, (pattern, reason) in MODEL_RATCHETS.items()
             ]
+            shipped = "" if is_test_source(relative) else code
+            rules += [
+                (rule, pattern, reason, shipped)
+                for rule, (pattern, reason) in WORKSPACE_RATCHETS.items()
+            ]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
             limit = baseline.get(rule, {}).get(relative, 0)
@@ -293,7 +344,7 @@ def audit_ratchets(
                 if len(matches) < limit:
                     violations.append(
                         Violation(
-                            root / BASELINE,
+                            root / baseline_file(relative),
                             1,
                             f"stale {rule} ceiling for {relative}: lower {limit} to {len(matches)}",
                         )
@@ -304,7 +355,7 @@ def audit_ratchets(
                 Violation(
                     source,
                     line_number(source_text, first_excess.start()),
-                    f"{reason} ({len(matches)} found, audited ceiling {limit} in {BASELINE})",
+                    f"{reason} ({len(matches)} found, audited ceiling {limit} in {baseline_file(relative)})",
                 )
             )
 
@@ -313,12 +364,25 @@ def line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
+CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+RUST_CODE_RUN = re.compile(r"[^/'\"]+")
+
+
+# Rules inspect the same immutable text repeatedly. Bound retained strings,
+# and key by content so an edit at the same path is always rescanned.
+@lru_cache(maxsize=128)
 def rust_code_only(text: str) -> str:
     """Remove comments and literals so prose cannot satisfy the protocol gate."""
     out: list[str] = []
     i = 0
     block_depth = 0
     while i < len(text):
+        # Ordinary code cannot start a comment or literal. Copy its entire run;
+        # keep the existing lexical handling at each delimiter below.
+        if not block_depth and (code := RUST_CODE_RUN.match(text, i)):
+            out.append(code.group())
+            i = code.end()
+            continue
         if block_depth:
             if text.startswith("/*", i):
                 block_depth += 1
@@ -340,6 +404,10 @@ def rust_code_only(text: str) -> str:
             block_depth = 1
             out.extend("  ")
             i += 2
+        elif text[i] == "'" and (char_literal := CHAR_LITERAL.match(text, i)):
+            # A char literal ('"', '\\'); a lifetime has no closing quote.
+            out.extend(" " * (char_literal.end() - i))
+            i = char_literal.end()
         elif text[i] == '"':
             quote = text[i]
             out.append(" ")
@@ -681,12 +749,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     "app host must install bounded canonical search for every live resource tree",
                 )
             )
-    ratchet_baseline = load_ratchet_baseline(root)
-    baseline_path = root / BASELINE
+    ratchet_baseline = load_ratchet_baseline(root, violations)
     for rule, entries in ratchet_baseline.items():
-        if rule not in RATCHET_REASONS:
-            violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
         for relative in entries:
+            baseline_path = root / baseline_file(relative)
+            if rule not in RATCHET_REASONS:
+                violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
             if not (root / relative).is_file():
                 violations.append(
                     Violation(
@@ -738,12 +806,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             sources.append((source, source.read_text(encoding="utf-8")))
         combined_raw = "\n".join(text for _, text in sources)
         combined = rust_code_only(combined_raw)
-        # What the app publishes, without its tests: a test asserting that a
-        # published operation is an effect publishes nothing.
-        production = "\n".join(
+        # Hand-built effect/view specs are judged by what ships: a test may
+        # assert the kind of an operation the framework publishes.
+        shipped = "\n".join(
             production_code(text)
             for source, text in sources
-            if not is_test_source(source.relative_to(manifest_path.parent).as_posix())
+            if not is_test_source(source.relative_to(root).as_posix())
         )
         main_path = manifest_path.parent / "src" / "main.rs"
         main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
@@ -829,9 +897,11 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "app builds no runtime Resource value (an empty provider is not a protocol)",
                     )
                 )
+            typed_effects = framework_host and TYPED_EFFECT_HANDLER.search(combined) is not None
             if (
                 not toolkit_host
-                and OPERATION_KIND.search(production)
+                and not typed_effects
+                and OPERATION_KIND.search(shipped)
                 and not OPERATION_HANDLER.search(combined)
             ):
                 violations.append(
@@ -843,7 +913,8 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
             if (
                 not toolkit_host
-                and OPERATION_KIND.search(production)
+                and not typed_effects
+                and OPERATION_KIND.search(shipped)
                 and not OPERATION_HANDLER_REGISTRY.search(combined)
             ):
                 violations.append(
@@ -853,7 +924,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "effect/view actions require an explicit runtime handler registry",
                     )
                 )
-            if not toolkit_host and OPERATION_KIND.search(combined):
+            if not toolkit_host and OPERATION_KIND.search(shipped):
                 for entry in unattached_handler_entries(combined_raw):
                     violations.append(
                         Violation(
@@ -879,6 +950,22 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         main_path if main_path.is_file() else manifest_path,
                         1,
                         "document action registry is not wired into the production app launch",
+                    )
+                )
+
+        app_dir = manifest_path.parent
+        for source in sorted(
+            [*(app_dir / "src").rglob("*.rs"), *(app_dir / "tests").rglob("*.rs")]
+        ):
+            raw = source.read_text(encoding="utf-8")
+            for match in RAW_OPERATION_PROTOCOL.finditer(rust_code_only(raw)):
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, match.start()),
+                        "the host's raw operation protocol is the toolkit's, not an app's: "
+                        "answer a typed effect vocabulary, and in a test deliver an "
+                        "operation through ui::framework::HostDelivery",
                     )
                 )
 

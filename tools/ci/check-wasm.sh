@@ -29,3 +29,6 @@ check "web desktop" -p tilo-web-desktop
 check "page runtime" -p tilo-browser-runtime
 # web-registry-client/build-verifier.sh.
 check "registry verifier" -p registry-web-bindgen
+
+# Private image-only worker kernel.
+check "image compute worker" -p tilo-browser-compute

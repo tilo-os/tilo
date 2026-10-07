@@ -1,0 +1,39 @@
+# Diagnose and verify an app
+
+From anywhere inside the app:
+
+```bash
+tilo-app doctor --json
+tilo-app test --json
+tilo-app inspect --audit --output target/inspect.json --audit-report target/audit.json --json
+tilo-app check --artifacts target/check --json
+```
+
+`doctor` reports manifest, resource/lifecycle wiring, serialized screens,
+translations and scenario problems together. `test` runs Rust tests;
+`check` also runs strict lints and saved accessibility-audited scenarios.
+Fix a reported failure instead of treating an unavailable check as a pass.
+
+`inspect` writes the actual post-layout widget and accessibility tree without
+opening a window. Inspect action bindings, accessible names and bounds there.
+Use semantic resource actions for behaviour tests; use pointer events when
+the subject is hit-testing or geometry.
+
+Capture the production view in more than one theme and window size:
+
+```bash
+TILO_SHOTS_THEME=light tilo-app shot --output target/light.png --viewport 480x900
+TILO_SHOTS_THEME=high-contrast tilo-app shot --output target/contrast.png --viewport 1200x900
+```
+
+Pass `--scenario NAME` only for a scenario your app declares. Put illustrative
+data in that capture fixture, not the live app. Check that artwork is decoded,
+controls fit, long copy wraps and the primary action remains reachable.
+
+`--json` returns one result document; progress goes to stderr. It does not
+bypass permission checks or confirmation. Headless peer tests prove resource
+merging; real device transport and authenticated membership need separate
+integration journeys.
+
+More: [Build an app](../../app-development.md),
+[Headless testing](../../headless-testing.md).

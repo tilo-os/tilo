@@ -35,12 +35,12 @@ PRIVATE_SOURCE_PATTERNS = {
     "private font system": re.compile(r"\b(?:FontSystem|SwashCache)::new\s*\("),
     "raw Vello glyph emission": re.compile(r"\.draw_glyphs\s*\(|\bvello::Glyph\b"),
     "product font family literal": re.compile(
-        r'"Noto (?:Sans(?: Mono| Math)?|Serif)"'
+        r'"(?:Noto (?:Sans(?: Mono| Math)?|Serif)|New Computer Modern[^"]*)"'
     ),
 }
 
 SHARED_TEXT_SURFACES = re.compile(
-    r"\b(?:TextRenderer|RichTextLayout|TextInput|RichTextEditor|RichTextLine|"
+    r"\b(?:TextRenderer|RichTextLayout|TextInput|RichTextLine|"
     r"BlockEditor|CodeEditor|QueryComposition|widget::Text)\b"
 )
 

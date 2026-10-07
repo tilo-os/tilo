@@ -535,6 +535,47 @@ pub fn local_user_id() -> UserId {
     std::env::var("USER").unwrap_or_else(|_| "local".to_string())
 }
 
+/// The colour the person at this machine wears: their stored choice
+/// (`identity.colour`, roaming with their other personal settings), or the
+/// hue their stable identity derives until they choose one — never the
+/// session's handle, so every machine they use and every collaborator who
+/// sees them agrees. Presence frames carry it to collaborators many times a
+/// second, so this reads it again at most once a second;
+/// [`read_local_presence_hue`] reads it now.
+pub fn local_presence_hue() -> ui::tokens::PresenceHue {
+    const FRESH: std::time::Duration = std::time::Duration::from_secs(1);
+    if let Ok(known) = LOCAL_PRESENCE_HUE.lock()
+        && let Some((at, hue)) = *known
+        && at.elapsed() < FRESH
+    {
+        return hue;
+    }
+    read_local_presence_hue()
+}
+
+static LOCAL_PRESENCE_HUE: std::sync::Mutex<Option<(std::time::Instant, ui::tokens::PresenceHue)>> =
+    std::sync::Mutex::new(None);
+
+/// [`local_presence_hue`] read from the settings document and identity
+/// now, for a caller that knows the settings just changed.
+pub fn read_local_presence_hue() -> ui::tokens::PresenceHue {
+    let hue =
+        ui::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
+            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&local_user_id()));
+    if let Ok(mut known) = LOCAL_PRESENCE_HUE.lock() {
+        *known = Some((std::time::Instant::now(), hue));
+    }
+    hue
+}
+
+/// Whether `room` is the local person's own room. It is never a workspace:
+/// it has no roster to invite anyone into, and its records travel only
+/// between that person's devices, so no invite, enrollment or continuation
+/// may turn it into a room collaborators share.
+pub fn is_local_person_room(room: RoomId) -> bool {
+    collab_types::person_room_of(&local_user_id()) == Some(room.as_uuid())
+}
+
 /// Identity acting in a specific durable room.
 ///
 /// Registry errors fail back to the session identity for compatibility, but
@@ -876,7 +917,9 @@ impl WorkspaceTree {
             if let Some(owner) = owner {
                 ws.owner = Some(owner);
             }
+            let local = self.native_runtime.preserve_files_home_consent(ws, peer);
             ws.capabilities = caps;
+            ws.capabilities.extend(local);
             ws.tasks = tasks;
             ws.effect_receipts = receipts;
         }
@@ -2282,11 +2325,27 @@ impl WorkspaceTree {
         // resource limits (and resets the patch log, see `sync_room_doc`);
         // it reports a refusal as text, so keep this API's error type and
         // the detail in the log.
-        let candidate = tilo_peer_state::room::candidate(self.room_docs.get(&room), changes)
-            .map_err(|error| {
-                tracing::warn!(%error, room = %room, "room changes refused");
-                automerge::AutomergeError::Fail
-            })?;
+        // A local rename may still live only in the cache when a delayed
+        // reply arrives. Stage it in a copy of the existing room document
+        // before merging, so projection cannot erase it. Keep this private:
+        // a malformed or unauthorized reply must leave our heads unchanged.
+        let mut staged_before = None;
+        if self.governs_room(room)
+            && let Some(before) = self.room_docs.get(&room)
+            && let Some(workspace) = self.workspace_in_room(room)
+            && let Some(name) = Self::extract_governed_fields(before).0
+            && name != workspace.name
+        {
+            use automerge::transaction::Transactable as _;
+            let mut staged = before.clone();
+            staged.put(automerge::ROOT, "name", workspace.name.clone())?;
+            staged_before = Some(staged);
+        }
+        let before = staged_before.as_ref().or_else(|| self.room_docs.get(&room));
+        let candidate = tilo_peer_state::room::candidate(before, changes).map_err(|error| {
+            tracing::warn!(%error, room = %room, "room changes refused");
+            automerge::AutomergeError::Fail
+        })?;
 
         if Self::declared_room_mismatches(&candidate, room) {
             return Ok(false);
@@ -2476,16 +2535,21 @@ impl WorkspaceTree {
     pub fn queue_save(&self) {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
+        let actions = crate::shell::launcher::action_authority::Export::of(self);
         match (&self.persist_path, export) {
             (Some(path), export) => {
                 crate::shell::persist::queue_save(self, path, move || {
+                    actions.publish();
                     if let Some(export) = export {
                         export.write();
                     }
                 });
             }
-            (None, Some(export)) => export.submit(),
-            (None, None) => {}
+            (None, Some(export)) => {
+                export.submit();
+                actions.submit();
+            }
+            (None, None) => actions.submit(),
         }
         let took = started.elapsed();
         if took > std::time::Duration::from_millis(4) {
@@ -2801,7 +2865,7 @@ impl WorkspaceTree {
     /// Existing join semantics for an unpublished owner candidate. No state,
     /// filesystem authority, relay export or publisher side effects occur here.
     pub(crate) fn set_room_in_memory(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
-        if room.is_nil() {
+        if room.is_nil() || is_local_person_room(room) {
             return false;
         }
         // Joining a room some other local workspace is already in is not a
@@ -3230,6 +3294,8 @@ impl WorkspaceTree {
     /// revoke would mutate only the local cache, so a peer would keep
     /// using a capability the owner took away.
     pub fn doc_revoke_capability(&mut self, workspace_id: WorkspaceId, cap_id: &str) {
+        self.native_runtime
+            .forget_files_home_consent(workspace_id, cap_id);
         if tilo_desktop_model::desktop_doc::revoke_capability(&mut self.doc, workspace_id, cap_id) {
             self.commit_room_change();
         }
@@ -3844,6 +3910,7 @@ impl WorkspaceTree {
     /// The room's authenticated sync response supplies its real name/layout.
     pub fn adopt_continuation_room(&mut self, room: RoomId, _source_device: &str) -> bool {
         if room.is_nil()
+            || is_local_person_room(room)
             || self
                 .desktop
                 .workspaces
@@ -3870,11 +3937,12 @@ impl WorkspaceTree {
     /// This is membership, not a continuation offer, so turning app
     /// continuations off does not remove it.
     pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
-        if self
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.room == room)
+        if is_local_person_room(room)
+            || self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
         {
             return false;
         }
@@ -3897,7 +3965,7 @@ impl WorkspaceTree {
         person: &UserId,
         governor: Option<&PeerOrigin>,
     ) -> bool {
-        if room.is_nil() {
+        if room.is_nil() || is_local_person_room(room) {
             return false;
         }
         if let Some(index) = self
@@ -8970,6 +9038,7 @@ mod workspace_tree_lifecycle_tests {
                         id: "document:brief".into(),
                         kind: "document".into(),
                         label: "Release brief".into(),
+                        agent_request: None,
                     }),
                 )
                 .expect("non-empty task is created");

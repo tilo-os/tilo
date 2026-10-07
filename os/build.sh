@@ -2,8 +2,8 @@
 # Build the Tilo image and a bootable qcow2.
 #
 #   ./os/build.sh                        the full image
-#   TILO_WITH_BROWSER=0 ./os/build.sh     without the browser + its WPE WebKit
-#                                        engine stage (~45 of the ~60 minutes)
+#   TILO_WITH_BROWSER=0 ./os/build.sh     without the Browser and its Chromium
+#                                        engine runtime
 #   ./os/build.sh --local                the full image from inputs resolved for
 #                                        this machine (os/dev/local-inputs.sh):
 #                                        the published RPM snapshot or a local

@@ -171,7 +171,7 @@ pub fn shortcut(
     match HostShortcut::resolve(conventions, character, shift)? {
         HostShortcut::Undo => Some(UndoRequest::Undo),
         HostShortcut::Redo => Some(UndoRequest::Redo),
-        HostShortcut::Search | HostShortcut::History => None,
+        HostShortcut::Search | HostShortcut::History | HostShortcut::Sidebar => None,
     }
 }
 
@@ -200,7 +200,7 @@ pub fn shortcut(
 /// * **Draining only the root.** This is the third host→widget channel of its
 ///   kind, and it was the only one that read a single widget: no container in
 ///   the toolkit forwards `take_committed_action`, so an app that put its
-///   editor inside a `Row`, a `Column`, or an `AppShell` lost every boundary
+///   editor inside a `Row`, a `Column`, or a `NavShell` lost every boundary
 ///   with no error anywhere. Like [`UndoStatus`] and [`UndoRequest`], this
 ///   sweeps `node_map` — every laid-out widget registers itself there — so a
 ///   widget is reached at any depth.
@@ -419,36 +419,9 @@ pub fn handle_local_undo_request(
         .any(|child| handle_local_undo_request(child, request))
 }
 
-/// A widget whose native edits (flowing text, a drag) mark undo points, and
-/// which restores its ephemeral state (caret, selection) around them.
+/// A widget that restores its ephemeral state (caret, selection) around the
+/// undo points its owner's actions make.
 pub trait UndoPoints: crate::widget::Widget {
-    /// Whether an edit in this subtree asks the host to commit an undo point.
-    fn needs_commit(&self) -> bool {
-        let mut needed = false;
-        self.for_each_child(&mut |child| {
-            if !needed {
-                needed = needs_commit(child);
-            }
-        });
-        needed
-    }
-
-    /// Drain semantic provenance for the native transaction asking the host
-    /// to commit. Use this for document-native edits such as flowing text;
-    /// replayable discrete operations go through `ActionHost`.
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        self.children_mut()
-            .into_iter()
-            .find_map(take_commit_context)
-    }
-
-    /// The host committed an undo point.
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            on_commit(child);
-        }
-    }
-
     /// Ephemeral state (caret, selection) saved with an undo point.
     fn get_state(&self) -> Option<String> {
         None
@@ -456,46 +429,6 @@ pub trait UndoPoints: crate::widget::Widget {
 
     /// Restore ephemeral state saved by [`Self::get_state`].
     fn set_state(&mut self, _state: &str) {}
-}
-
-/// Whether an edit under `widget` asks for an undo point.
-pub fn needs_commit(widget: &dyn crate::widget::Widget) -> bool {
-    if let Some(points) = crate::widget::capability::capability::<dyn UndoPoints>(widget) {
-        return points.needs_commit();
-    }
-    let mut needed = false;
-    widget.for_each_child(&mut |child| {
-        if !needed {
-            needed = needs_commit(child);
-        }
-    });
-    needed
-}
-
-/// Drain the provenance of the edit asking for an undo point under `widget`.
-pub fn take_commit_context(
-    widget: &mut dyn crate::widget::Widget,
-) -> Option<tilo_actions::ActionContext> {
-    if let Some(points) = crate::widget::capability::capability_mut::<dyn UndoPoints>(&mut *widget)
-    {
-        return points.take_commit_context();
-    }
-    widget
-        .children_mut()
-        .into_iter()
-        .find_map(take_commit_context)
-}
-
-/// Tell every widget under `widget` that an undo point was committed.
-pub fn on_commit(widget: &mut dyn crate::widget::Widget) {
-    if let Some(points) = crate::widget::capability::capability_mut::<dyn UndoPoints>(&mut *widget)
-    {
-        points.on_commit();
-        return;
-    }
-    for child in widget.children_mut() {
-        on_commit(child);
-    }
 }
 
 /// `widget`'s ephemeral state.
@@ -736,19 +669,22 @@ pub(crate) fn status_snapshot(
     history: &crate::state::UndoLog,
     author: Option<&crate::permissions::UserId>,
 ) -> UndoStatus {
-    let undo = history
-        .next_undo_as(author)
-        .map(|entry| (entry.before.clone(), entry.after.clone()));
-    let redo = history
-        .next_redo_as(author)
-        .map(|entry| (entry.after.clone(), entry.before.clone()));
+    let undo = history.next_undo_as(author);
+    let redo = history.next_redo_as(author);
     let mut snapshot = doc.clone();
+    // An entry an undo or redo already moved names the step it carries, not
+    // the undo change that moved it last.
+    let mut summary = |entry: &crate::state::UndoEntry, from: &[_], to: &[_]| {
+        entry
+            .step
+            .as_ref()
+            .and_then(tilo_actions::ActionContext::summary)
+            .unwrap_or_else(|| crate::history_source::change_summary(&mut snapshot, from, to))
+    };
     UndoStatus {
         can_undo: undo.is_some(),
         can_redo: redo.is_some(),
-        undo_summary: undo
-            .map(|(from, to)| crate::history_source::change_summary(&mut snapshot, &from, &to)),
-        redo_summary: redo
-            .map(|(from, to)| crate::history_source::change_summary(&mut snapshot, &from, &to)),
+        undo_summary: undo.map(|entry| summary(entry, &entry.before, &entry.after)),
+        redo_summary: redo.map(|entry| summary(entry, &entry.after, &entry.before)),
     }
 }

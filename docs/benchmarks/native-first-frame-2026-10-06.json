@@ -1,0 +1,820 @@
+{
+  "scope": "synthetic native SDK payload through production launcher and watched headless compositor",
+  "physical_presentation": false,
+  "cache": "fresh processes; private app data initially empty and retained between samples; host/driver caches not flushed",
+  "poll_interval_ms": 20.0,
+  "samples": [
+    {
+      "index": 0,
+      "launch_action_return_ms": 1.561349,
+      "first_frame_observation_lower_ms": 3141.993781,
+      "first_frame_observation_upper_ms": 3186.587553,
+      "frame": {
+        "surface_id": 4294967363,
+        "app_id": "io.tilo.startup-frame-probe",
+        "sheets": [],
+        "frame_seq": 1,
+        "last_error": null,
+        "rect": {
+          "x": 252.0,
+          "y": 128.0,
+          "w": 664.0,
+          "h": 592.0
+        },
+        "buffer": {
+          "w": 664,
+          "h": 592
+        },
+        "presented": true,
+        "opening": false
+      },
+      "sdk_startup": {
+        "origin_epoch_ms": 1791328529941,
+        "events": [
+          {
+            "name": "probe-main-start",
+            "ns": 997022
+          },
+          {
+            "name": "text-renderer-init",
+            "ns": 297710932
+          },
+          {
+            "name": "text-renderer-init-end",
+            "ns": 373340604
+          },
+          {
+            "name": "probe-app-ready",
+            "ns": 470007788
+          },
+          {
+            "name": "primary-window-created",
+            "ns": 649176326
+          },
+          {
+            "name": "primary-window-show-start",
+            "ns": 666514663
+          },
+          {
+            "name": "primary-window-show-done",
+            "ns": 666735795
+          },
+          {
+            "name": "primary-window-redraw-requested",
+            "ns": 666806046
+          },
+          {
+            "name": "primary-window-resumed-done",
+            "ns": 667856259
+          },
+          {
+            "name": "first-frame-redraw-start",
+            "ns": 670437389
+          },
+          {
+            "name": "first-redraw-init-render-start",
+            "ns": 670546881
+          },
+          {
+            "name": "window-render-context-start",
+            "ns": 670603521
+          },
+          {
+            "name": "surface-native-create-start",
+            "ns": 801587464
+          },
+          {
+            "name": "surface-native-create-done",
+            "ns": 819196454
+          },
+          {
+            "name": "surface-device-select-start",
+            "ns": 819536098
+          },
+          {
+            "name": "surface-device-select-done",
+            "ns": 1024201281
+          },
+          {
+            "name": "surface-capabilities-start",
+            "ns": 1027385229
+          },
+          {
+            "name": "surface-capabilities-done",
+            "ns": 1063979115
+          },
+          {
+            "name": "surface-targets-create-start",
+            "ns": 1065207140
+          },
+          {
+            "name": "surface-targets-create-done",
+            "ns": 1067915702
+          },
+          {
+            "name": "surface-blitter-create-start",
+            "ns": 1068944754
+          },
+          {
+            "name": "surface-blitter-create-done",
+            "ns": 1078203235
+          },
+          {
+            "name": "surface-initial-configure-start",
+            "ns": 1078478368
+          },
+          {
+            "name": "surface-initial-configure-done",
+            "ns": 1181842872
+          },
+          {
+            "name": "window-surface-validation-scope-start",
+            "ns": 1182276457
+          },
+          {
+            "name": "window-surface-checked-configure-start",
+            "ns": 1182407278
+          },
+          {
+            "name": "window-surface-checked-configure-done",
+            "ns": 1208138855
+          },
+          {
+            "name": "window-surface-validation-scope-done",
+            "ns": 1208475960
+          },
+          {
+            "name": "window-vello-init-start",
+            "ns": 1208600521
+          },
+          {
+            "name": "window-vello-init-done",
+            "ns": 1356000700
+          },
+          {
+            "name": "window-render-context-done",
+            "ns": 1359540032
+          },
+          {
+            "name": "render-worker-start",
+            "ns": 1359617743
+          },
+          {
+            "name": "first-redraw-init-render-done",
+            "ns": 1359786935
+          },
+          {
+            "name": "first-frame-record-start",
+            "ns": 1361007069
+          },
+          {
+            "name": "first-frame-record-done",
+            "ns": 1361187992
+          },
+          {
+            "name": "first-frame-update-start",
+            "ns": 1361311413
+          },
+          {
+            "name": "first-frame-update-done",
+            "ns": 1361428294
+          },
+          {
+            "name": "first-frame-sync-start",
+            "ns": 1361551016
+          },
+          {
+            "name": "first-frame-sync-done",
+            "ns": 1367691369
+          },
+          {
+            "name": "first-frame-live-regions-start",
+            "ns": 1367947902
+          },
+          {
+            "name": "first-frame-live-regions-done",
+            "ns": 1368112114
+          },
+          {
+            "name": "first-frame-build-layout-start",
+            "ns": 1368244576
+          },
+          {
+            "name": "first-frame-build-layout-done",
+            "ns": 1368383288
+          },
+          {
+            "name": "first-frame-layout-start",
+            "ns": 1368561510
+          },
+          {
+            "name": "first-frame-layout-done",
+            "ns": 1405251867
+          },
+          {
+            "name": "first-frame-submitted",
+            "ns": 1415451639
+          },
+          {
+            "name": "render-worker-first-frame-received",
+            "ns": 1415460869
+          },
+          {
+            "name": "render-worker-first-acquire-start",
+            "ns": 1416084407
+          },
+          {
+            "name": "render-worker-first-acquire-done",
+            "ns": 1416418781
+          },
+          {
+            "name": "render-worker-first-raster-start",
+            "ns": 1416582513
+          },
+          {
+            "name": "render-worker-first-raster-done",
+            "ns": 1435702771
+          },
+          {
+            "name": "render-worker-first-blit-start",
+            "ns": 1436073945
+          },
+          {
+            "name": "render-worker-first-encoder-done",
+            "ns": 1436261187
+          },
+          {
+            "name": "render-worker-first-blit-copy-done",
+            "ns": 2739717651
+          },
+          {
+            "name": "render-worker-first-blit-done",
+            "ns": 2740765583
+          },
+          {
+            "name": "render-worker-first-present-start",
+            "ns": 2741077197
+          },
+          {
+            "name": "render-worker-first-present-done",
+            "ns": 2772973097
+          },
+          {
+            "name": "render-worker-first-poll-done",
+            "ns": 2773566655
+          },
+          {
+            "name": "first-frame-presented",
+            "ns": 2773787547
+          }
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "launch_action_return_ms": 2.378019,
+      "first_frame_observation_lower_ms": 651.083599,
+      "first_frame_observation_upper_ms": 689.131973,
+      "frame": {
+        "surface_id": 25769803820,
+        "app_id": "io.tilo.startup-frame-probe",
+        "sheets": [],
+        "frame_seq": 1,
+        "last_error": null,
+        "rect": {
+          "x": 252.0,
+          "y": 128.0,
+          "w": 664.0,
+          "h": 592.0
+        },
+        "buffer": {
+          "w": 664,
+          "h": 592
+        },
+        "presented": true,
+        "opening": false
+      },
+      "sdk_startup": {
+        "origin_epoch_ms": 1791328532894,
+        "events": [
+          {
+            "name": "probe-main-start",
+            "ns": 6960
+          },
+          {
+            "name": "text-renderer-init",
+            "ns": 1708650
+          },
+          {
+            "name": "text-renderer-init-end",
+            "ns": 18335719
+          },
+          {
+            "name": "probe-app-ready",
+            "ns": 20294552
+          },
+          {
+            "name": "primary-window-created",
+            "ns": 56686466
+          },
+          {
+            "name": "primary-window-show-start",
+            "ns": 57356094
+          },
+          {
+            "name": "primary-window-show-done",
+            "ns": 57470886
+          },
+          {
+            "name": "primary-window-redraw-requested",
+            "ns": 57524476
+          },
+          {
+            "name": "primary-window-resumed-done",
+            "ns": 57579057
+          },
+          {
+            "name": "first-frame-redraw-start",
+            "ns": 57705189
+          },
+          {
+            "name": "first-redraw-init-render-start",
+            "ns": 57759769
+          },
+          {
+            "name": "window-render-context-start",
+            "ns": 57812990
+          },
+          {
+            "name": "surface-native-create-start",
+            "ns": 111238397
+          },
+          {
+            "name": "surface-native-create-done",
+            "ns": 111690913
+          },
+          {
+            "name": "surface-device-select-start",
+            "ns": 111778984
+          },
+          {
+            "name": "surface-device-select-done",
+            "ns": 276820793
+          },
+          {
+            "name": "surface-capabilities-start",
+            "ns": 277103077
+          },
+          {
+            "name": "surface-capabilities-done",
+            "ns": 373838171
+          },
+          {
+            "name": "surface-targets-create-start",
+            "ns": 374132004
+          },
+          {
+            "name": "surface-targets-create-done",
+            "ns": 374485548
+          },
+          {
+            "name": "surface-blitter-create-start",
+            "ns": 374604740
+          },
+          {
+            "name": "surface-blitter-create-done",
+            "ns": 376055407
+          },
+          {
+            "name": "surface-initial-configure-start",
+            "ns": 376207769
+          },
+          {
+            "name": "surface-initial-configure-done",
+            "ns": 418141889
+          },
+          {
+            "name": "window-surface-validation-scope-start",
+            "ns": 418494264
+          },
+          {
+            "name": "window-surface-checked-configure-start",
+            "ns": 418621065
+          },
+          {
+            "name": "window-surface-checked-configure-done",
+            "ns": 445561567
+          },
+          {
+            "name": "window-surface-validation-scope-done",
+            "ns": 445899601
+          },
+          {
+            "name": "window-vello-init-start",
+            "ns": 446010352
+          },
+          {
+            "name": "window-vello-init-done",
+            "ns": 555594459
+          },
+          {
+            "name": "window-render-context-done",
+            "ns": 556045665
+          },
+          {
+            "name": "render-worker-start",
+            "ns": 556113636
+          },
+          {
+            "name": "first-redraw-init-render-done",
+            "ns": 556189777
+          },
+          {
+            "name": "first-frame-record-start",
+            "ns": 556808144
+          },
+          {
+            "name": "first-frame-record-done",
+            "ns": 556943226
+          },
+          {
+            "name": "first-frame-update-start",
+            "ns": 557056757
+          },
+          {
+            "name": "first-frame-update-done",
+            "ns": 557172928
+          },
+          {
+            "name": "first-frame-sync-start",
+            "ns": 557289990
+          },
+          {
+            "name": "first-frame-sync-done",
+            "ns": 557516522
+          },
+          {
+            "name": "first-frame-live-regions-start",
+            "ns": 557640654
+          },
+          {
+            "name": "first-frame-live-regions-done",
+            "ns": 557768126
+          },
+          {
+            "name": "first-frame-build-layout-start",
+            "ns": 557893917
+          },
+          {
+            "name": "first-frame-build-layout-done",
+            "ns": 558021229
+          },
+          {
+            "name": "first-frame-layout-start",
+            "ns": 558168530
+          },
+          {
+            "name": "first-frame-layout-done",
+            "ns": 566488839
+          },
+          {
+            "name": "first-frame-submitted",
+            "ns": 568127349
+          },
+          {
+            "name": "render-worker-first-frame-received",
+            "ns": 568140879
+          },
+          {
+            "name": "render-worker-first-acquire-start",
+            "ns": 568649875
+          },
+          {
+            "name": "render-worker-first-acquire-done",
+            "ns": 568967459
+          },
+          {
+            "name": "render-worker-first-raster-start",
+            "ns": 569136481
+          },
+          {
+            "name": "render-worker-first-raster-done",
+            "ns": 571575550
+          },
+          {
+            "name": "render-worker-first-blit-start",
+            "ns": 571825313
+          },
+          {
+            "name": "render-worker-first-encoder-done",
+            "ns": 572007275
+          },
+          {
+            "name": "render-worker-first-blit-copy-done",
+            "ns": 589895559
+          },
+          {
+            "name": "render-worker-first-blit-done",
+            "ns": 590959992
+          },
+          {
+            "name": "render-worker-first-present-start",
+            "ns": 591252775
+          },
+          {
+            "name": "render-worker-first-present-done",
+            "ns": 601089522
+          },
+          {
+            "name": "render-worker-first-poll-done",
+            "ns": 601520048
+          },
+          {
+            "name": "first-frame-presented",
+            "ns": 601723930
+          }
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "launch_action_return_ms": 2.174926,
+      "first_frame_observation_lower_ms": 485.877327,
+      "first_frame_observation_upper_ms": 521.3041,
+      "frame": {
+        "surface_id": 47244640300,
+        "app_id": "io.tilo.startup-frame-probe",
+        "sheets": [],
+        "frame_seq": 1,
+        "last_error": null,
+        "rect": {
+          "x": 252.0,
+          "y": 128.0,
+          "w": 664.0,
+          "h": 592.0
+        },
+        "buffer": {
+          "w": 664,
+          "h": 592
+        },
+        "presented": true,
+        "opening": false
+      },
+      "sdk_startup": {
+        "origin_epoch_ms": 1791328533629,
+        "events": [
+          {
+            "name": "probe-main-start",
+            "ns": 2580
+          },
+          {
+            "name": "text-renderer-init",
+            "ns": 1641360
+          },
+          {
+            "name": "text-renderer-init-end",
+            "ns": 18083716
+          },
+          {
+            "name": "probe-app-ready",
+            "ns": 19999049
+          },
+          {
+            "name": "primary-window-created",
+            "ns": 85069735
+          },
+          {
+            "name": "primary-window-show-start",
+            "ns": 85813914
+          },
+          {
+            "name": "primary-window-show-done",
+            "ns": 85901465
+          },
+          {
+            "name": "primary-window-redraw-requested",
+            "ns": 85948466
+          },
+          {
+            "name": "primary-window-resumed-done",
+            "ns": 86005056
+          },
+          {
+            "name": "first-frame-redraw-start",
+            "ns": 86130578
+          },
+          {
+            "name": "first-redraw-init-render-start",
+            "ns": 86180498
+          },
+          {
+            "name": "window-render-context-start",
+            "ns": 86227909
+          },
+          {
+            "name": "surface-native-create-start",
+            "ns": 134583006
+          },
+          {
+            "name": "surface-native-create-done",
+            "ns": 135013281
+          },
+          {
+            "name": "surface-device-select-start",
+            "ns": 135092602
+          },
+          {
+            "name": "surface-device-select-done",
+            "ns": 211037248
+          },
+          {
+            "name": "surface-capabilities-start",
+            "ns": 211305481
+          },
+          {
+            "name": "surface-capabilities-done",
+            "ns": 227593586
+          },
+          {
+            "name": "surface-targets-create-start",
+            "ns": 227795768
+          },
+          {
+            "name": "surface-targets-create-done",
+            "ns": 228075352
+          },
+          {
+            "name": "surface-blitter-create-start",
+            "ns": 228170843
+          },
+          {
+            "name": "surface-blitter-create-done",
+            "ns": 229371757
+          },
+          {
+            "name": "surface-initial-configure-start",
+            "ns": 229547929
+          },
+          {
+            "name": "surface-initial-configure-done",
+            "ns": 253130340
+          },
+          {
+            "name": "window-surface-validation-scope-start",
+            "ns": 253418444
+          },
+          {
+            "name": "window-surface-checked-configure-start",
+            "ns": 253568906
+          },
+          {
+            "name": "window-surface-checked-configure-done",
+            "ns": 267659834
+          },
+          {
+            "name": "window-surface-validation-scope-done",
+            "ns": 267959767
+          },
+          {
+            "name": "window-vello-init-start",
+            "ns": 268070839
+          },
+          {
+            "name": "window-vello-init-done",
+            "ns": 377821388
+          },
+          {
+            "name": "window-render-context-done",
+            "ns": 378273964
+          },
+          {
+            "name": "render-worker-start",
+            "ns": 378349375
+          },
+          {
+            "name": "first-redraw-init-render-done",
+            "ns": 378417436
+          },
+          {
+            "name": "first-frame-record-start",
+            "ns": 379060423
+          },
+          {
+            "name": "first-frame-record-done",
+            "ns": 379203485
+          },
+          {
+            "name": "first-frame-update-start",
+            "ns": 379324596
+          },
+          {
+            "name": "first-frame-update-done",
+            "ns": 379462188
+          },
+          {
+            "name": "first-frame-sync-start",
+            "ns": 379589549
+          },
+          {
+            "name": "first-frame-sync-done",
+            "ns": 379813762
+          },
+          {
+            "name": "first-frame-live-regions-start",
+            "ns": 379946694
+          },
+          {
+            "name": "first-frame-live-regions-done",
+            "ns": 380079835
+          },
+          {
+            "name": "first-frame-build-layout-start",
+            "ns": 380212967
+          },
+          {
+            "name": "first-frame-build-layout-done",
+            "ns": 380350568
+          },
+          {
+            "name": "first-frame-layout-start",
+            "ns": 380516430
+          },
+          {
+            "name": "first-frame-layout-done",
+            "ns": 388711018
+          },
+          {
+            "name": "first-frame-submitted",
+            "ns": 389304095
+          },
+          {
+            "name": "render-worker-first-frame-received",
+            "ns": 389306635
+          },
+          {
+            "name": "render-worker-first-acquire-start",
+            "ns": 389788201
+          },
+          {
+            "name": "render-worker-first-acquire-done",
+            "ns": 390108355
+          },
+          {
+            "name": "render-worker-first-raster-start",
+            "ns": 390269767
+          },
+          {
+            "name": "render-worker-first-raster-done",
+            "ns": 392786867
+          },
+          {
+            "name": "render-worker-first-blit-start",
+            "ns": 393047180
+          },
+          {
+            "name": "render-worker-first-encoder-done",
+            "ns": 393229702
+          },
+          {
+            "name": "render-worker-first-blit-copy-done",
+            "ns": 393541576
+          },
+          {
+            "name": "render-worker-first-blit-done",
+            "ns": 412237379
+          },
+          {
+            "name": "render-worker-first-present-start",
+            "ns": 412662414
+          },
+          {
+            "name": "render-worker-first-present-done",
+            "ns": 419156382
+          },
+          {
+            "name": "render-worker-first-poll-done",
+            "ns": 419575177
+          },
+          {
+            "name": "first-frame-presented",
+            "ns": 419777919
+          }
+        ]
+      }
+    }
+  ],
+  "binary_sha256": {
+    "shell": "e593a020380256e536ad9eb643ac89fc39079623137f0ed89a55cf7920f9826c",
+    "launcher": "d88cdfbdbc293e2527afa81d3581aafd99ef1ddf0477d5b6cd420135a24806ec",
+    "probe": "885c03634fafea23f6a89948687410dd0767b4a322ca6c80361911dde9667196"
+  },
+  "compositor_semantic_ready_ms": 377.90165,
+  "live_trace_rows": 398,
+  "instrumentation": "Debug builds, startup checkpoints enabled, 20ms polling plus IPC duration; not hardware or release timing",
+  "launch": "Private desktop action registers a host wrapper whose child enters the ordinary net-off native sandbox; not package-store installation",
+  "base_commit": "40ea26db5f",
+  "run_date": "2026-10-06",
+  "profile": "dev",
+  "adapter_scope": "headless builder; no physical display/GPU qualification",
+  "trace_source_change": "first completed row flush"
+}

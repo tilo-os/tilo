@@ -161,6 +161,12 @@ struct SnapAnim {
 /// whole-group reorder drag instead of a focus click.
 const GROUP_DRAG_THRESHOLD: f64 = 6.0;
 
+/// How long a finger rests on a tab bar before moving for the drag to carry
+/// the window instead of panning the strip. A quick swipe pans; touch, hold
+/// briefly, then drag moves the window, as on a phone's home screen. Shorter
+/// than the long press that opens a context menu.
+const TOUCH_GRAB_HOLD: crate::time::Duration = crate::time::Duration::from_millis(300);
+
 /// One-finger swipe that is following the strip. Distinct from
 /// [`GroupDrag`]: a horizontal swipe pans; a grab that goes mostly
 /// vertical, or a pointer drag, still reorders.
@@ -806,6 +812,13 @@ impl Lane {
     }
 }
 
+/// Whether a strip panned to `scroll` (whole pixels) can be drawn in canvas
+/// coordinates: the retained canvas spans the content from no pan to the
+/// furthest, so an overscroll past either end cannot be panned within it.
+pub fn pan_within_canvas(scroll: f64, max_scroll: f64) -> bool {
+    (0.0..=max_scroll.max(0.0)).contains(&scroll)
+}
+
 impl GroupRow {
     /// Paint selected active app surfaces without the row's viewport clip.
     ///
@@ -910,9 +923,40 @@ impl GroupRow {
 
     /// Whether a group at `rect`, shifted by `dx`, paints anything inside
     /// the row, including its shadow sprites.
+    ///
+    /// A strip drawn in canvas coordinates draws the whole canvas: after
+    /// [`Self::offset_lane`] the rects are canvas coordinates, so the window
+    /// has to include every group a pan can reveal.
     fn paints_within_row(&self, rect: Rect, dx: f64) -> bool {
         let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
-        reach.x1 + dx > self.rect.x0 && reach.x0 + dx < self.rect.x1
+        let x1 = if crate::retained_present::unbake_scroll() {
+            self.rect.x1 + self.max_scroll_x()
+        } else {
+            self.rect.x1
+        };
+        reach.x1 + dx > self.rect.x0 && reach.x0 + dx < x1
+    }
+
+    /// Shift one lane from screen coordinates to canvas coordinates, or back.
+    fn offset_lane(&mut self, lane: usize, dx: f64) {
+        let in_lane: Vec<bool> = (0..self.groups.len())
+            .map(|index| self.lane_index_of(index) == lane)
+            .collect();
+        for (index, group) in self.groups.iter_mut().enumerate() {
+            if in_lane.get(index).copied().unwrap_or(false) {
+                group.offset_layout(dx);
+            }
+        }
+        for (index, handle) in self.handles.iter_mut().enumerate() {
+            let left = in_lane.get(index).copied().unwrap_or(false);
+            let right = in_lane
+                .get(index.saturating_add(1))
+                .copied()
+                .unwrap_or(false);
+            if left && right {
+                handle.offset_layout(dx);
+            }
+        }
     }
 
     /// Group to promote fullscreen, if `fullscreen_group` belongs to this
@@ -1097,6 +1141,24 @@ impl GroupRow {
 
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_idx().is_some()
+    }
+
+    /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
+    /// The viewport clips grips, and promoted or hidden groups have none.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        if self.hidden {
+            return None;
+        }
+        let (index, group) = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(_, group)| group.id == group_id)?;
+        if self.layout_hides_group(index) || self.fullscreen_group == Some(group_id) {
+            return None;
+        }
+        let rect = group.resize_grab_rect()?.intersect(self.rect);
+        (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
     }
 
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
@@ -1686,6 +1748,39 @@ impl GroupRow {
         self.leading_pan().scroll_x
     }
 
+    /// The pan as drawn, preserving fractional motion and input geometry.
+    pub fn drawn_scroll_x(&self) -> f64 {
+        self.scroll_x()
+    }
+
+    /// Where a strip whose viewport is `viewport` draws: the viewport and a
+    /// 16 px pad above and below it that keeps shadow and glow sprites
+    /// (ambient_pad=50, bloom_pad=120, see `TileHost::draw_steady_state`)
+    /// intact at the top and bottom.
+    pub fn drawn_bounds(viewport: Rect) -> Rect {
+        Rect::new(
+            viewport.x0,
+            viewport.y0 - 16.0,
+            viewport.x1,
+            viewport.y1 + 16.0,
+        )
+    }
+
+    /// How far a retained draw moves the row into canvas coordinates
+    /// ([`crate::retained_present::unbake_scroll`]): the drawn pan while it
+    /// lies within the content, zero outside a retained draw or while the
+    /// strip is overscrolled, which is drawn where it is.
+    pub fn canvas_shift(&self) -> f64 {
+        let scroll = self.drawn_scroll_x();
+        if crate::retained_present::unbake_scroll()
+            && pan_within_canvas(scroll, self.max_scroll_x())
+        {
+            scroll
+        } else {
+            0.0
+        }
+    }
+
     /// Set the real strip viewport to an absolute finite offset. Browser and
     /// other external navigation controllers use this narrow seam instead of
     /// synthesizing wheel input or moving rendered output independently.
@@ -2204,6 +2299,18 @@ impl GroupRow {
         self.tab_drop_target
     }
 
+    /// Cancel owned tab gestures and their in-strip drop feedback.
+    pub fn cancel_tab_drag(&mut self) -> bool {
+        let mut cancelled = false;
+        for group in &mut self.groups {
+            cancelled |= group.cancel_tab_drag();
+        }
+        if cancelled {
+            self.clear_tab_drop_preview();
+        }
+        cancelled
+    }
+
     /// Whether one of this row's own tab bars currently owns a drag.
     pub fn tab_drag_active(&self) -> bool {
         self.groups.iter().any(WindowGroup::drag_in_flight)
@@ -2459,10 +2566,13 @@ impl GroupRow {
         {
             return;
         }
+        // A finger may carry the window from anywhere on its tab bar,
+        // tabs included: a tab is too small a target to have to avoid.
+        let at = self.last_cursor;
         if let Some(idx) = self
             .groups
             .iter()
-            .position(|g| g.bar_grab_hit(self.last_cursor))
+            .position(|g| g.bar_grab_hit(at) || (touch.is_some() && g.touch_grab_hit(at)))
             && let Some(group_id) = self.groups.get(idx).map(|g| g.id)
         {
             self.group_drag = Some(GroupDrag {
@@ -2567,7 +2677,13 @@ impl GroupRow {
             return false;
         }
         if !pan.engaged {
-            if self.group_drag.is_some_and(|drag| drag.moved)
+            let held = self.group_drag.is_some_and(|drag| {
+                drag.touch == Some(id)
+                    && crate::time::now().saturating_duration_since(drag.lifted_at)
+                        >= TOUCH_GRAB_HOLD
+            });
+            if held
+                || self.group_drag.is_some_and(|drag| drag.moved)
                 || travel.abs() <= GROUP_DRAG_THRESHOLD
                 || travel.abs() <= dy.abs()
             {
@@ -2742,6 +2858,45 @@ impl GroupRow {
 }
 
 impl FloatingSurfaceProvider for GroupRow {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_focus_changed(group, id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_event_source(group, id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        self.groups
+            .iter()
+            .find_map(|group| FloatingSurfaceProvider::floating_surface_accessibility(group, id))
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        self.groups.iter_mut().any(|group| {
+            FloatingSurfaceProvider::perform_floating_surface_accessibility_action(
+                group, id, target, action, state, path,
+            )
+        })
+    }
+
+    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+        self.groups
+            .iter()
+            .find_map(|group| FloatingSurfaceProvider::floating_surface_ime(group, id))
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
@@ -2922,13 +3077,13 @@ impl Widget for GroupRow {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         for g in &mut self.groups {
             g.sync(state, root);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
         // Animation needs one layout refresh per host frame, not an endless
         // structural invalidation inside bounded composition settlement.
         self.structure_dirty |= self.snap_in_flight();
@@ -3285,7 +3440,9 @@ impl Widget for GroupRow {
                 *w = right;
             }
         }
-        let steady = !self.group_drag_active()
+        let edge_resizing = self.groups.iter().any(WindowGroup::edge_resize_in_flight);
+        let steady = !edge_resizing
+            && !self.group_drag_active()
             && !self
                 .handles
                 .iter()
@@ -3307,7 +3464,7 @@ impl Widget for GroupRow {
             // or a release settle is in flight. At rest, geometry changes
             // clamp to the deliberate trailing allowance instead of the old
             // three-viewports of unbounded empty canvas.
-            if pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
+            if !edge_resizing && pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
                 pan.scroll_x = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
             }
             if spans_aligned {
@@ -3416,12 +3573,30 @@ impl Widget for GroupRow {
             // 16px vertical pad keeps shadow/glow sprites (ambient_pad=50,
             // bloom_pad=120, see `TileHost::draw_steady_state`) intact at
             // top/bottom.
-            let clip = Rect::new(
-                viewport.x0,
-                viewport.y0 - 16.0,
-                viewport.x1,
-                viewport.y1 + 16.0,
-            );
+            // A retained strip draws the canvas, not the current pan. Layout
+            // placed the lane at its exact pan; shifting
+            // the rects back by the same amount gives canvas positions that
+            // do not change while the pan does. They are put back afterwards,
+            // so hit testing still sees screen positions. An overscroll is
+            // drawn where it is: the canvas only spans the content.
+            let pan = self.pan_of_lane(k);
+            let scroll = pan.scroll_x();
+            let max_scroll = pan.max_scroll_x();
+            let unbake =
+                crate::retained_present::unbake_scroll() && pan_within_canvas(scroll, max_scroll);
+            let clip_right = if unbake {
+                viewport.x1 + max_scroll
+            } else {
+                viewport.x1
+            };
+            let shifted = unbake && scroll.abs() > f64::EPSILON;
+            if shifted {
+                self.offset_lane(k, scroll);
+            }
+            let clip = Rect {
+                x1: clip_right,
+                ..Self::drawn_bounds(viewport)
+            };
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -3459,6 +3634,9 @@ impl Widget for GroupRow {
                 &in_run,
             );
             scene.pop_layer();
+            if shifted {
+                self.offset_lane(k, -scroll);
+            }
         }
         self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
@@ -4107,7 +4285,7 @@ impl GroupRow {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.accent[6],
+            theme.tokens.colors.intent.you,
             None,
             &capsule,
         );
@@ -4773,7 +4951,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5060,6 +5238,87 @@ mod tests {
         (row, taffy, root)
     }
 
+    /// A presenter pans a strip drawn in canvas coordinates. The encoded
+    /// scene must be the same at two pans, or every pan draws the strip
+    /// again.
+    #[test]
+    fn panning_a_strip_drawn_in_canvas_coordinates_does_not_change_its_scene() {
+        let specs: Vec<Vec<u64>> = (1..=12).map(|id| vec![id]).collect();
+        let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
+        let (mut row, taffy, root) = make_row_with_groups_on_display(&specs, 2400.0, 800.0);
+        assert!(
+            row.max_scroll_x() > 200.0,
+            "the fixture must be able to pan"
+        );
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut text = TextRenderer::new();
+        let mut draw_at = |row: &mut GroupRow, scroll: f64| {
+            row.reduce_motion = true;
+            row.set_scroll_x_for_test(scroll);
+            row.apply_layout(&taffy, root, Point::ORIGIN);
+            let mut scene = Scene::new();
+            row.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            scene
+        };
+        row.reduce_motion = true;
+        crate::retained_present::begin_retained_scene(true);
+        let _warm = draw_at(&mut row, 0.0);
+        let rested = draw_at(&mut row, 0.0);
+        let again = draw_at(&mut row, 0.0);
+        let panned = draw_at(&mut row, 200.0);
+        let shift = row.canvas_shift();
+        let on_screen = row.groups[0].get_rect().x0;
+        crate::retained_present::end_retained_scene();
+        row.set_scroll_x_for_test(0.0);
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        let at_rest = row.groups[0].get_rect().x0;
+        assert!(
+            rested.encoding_eq(&again),
+            "two settled frames at rest must match before a pan is meaningful"
+        );
+        assert!(
+            rested.encoding_eq(&panned),
+            "a pan must leave the strip's scene as it was"
+        );
+        assert_eq!(shift, 200.0, "floating surfaces follow the same shift");
+        assert!(
+            (on_screen - at_rest).abs() > 1.0,
+            "drawing must put the windows back into screen coordinates"
+        );
+    }
+
+    #[test]
+    fn an_overscrolled_strip_is_drawn_where_it_is() {
+        let specs: Vec<Vec<u64>> = (1..=12).map(|id| vec![id]).collect();
+        let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
+        let (mut row, taffy, root) = make_row_with_groups_on_display(&specs, 2400.0, 800.0);
+        let max = row.max_scroll_x();
+        assert!(pan_within_canvas(0.0, max) && pan_within_canvas(max.round(), max));
+        assert!(!pan_within_canvas(-30.0, max) && !pan_within_canvas(max + 30.0, max));
+
+        row.reduce_motion = true;
+        row.set_scroll_x_for_test(-30.0);
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        crate::retained_present::begin_retained_scene(true);
+        let overscrolled = row.canvas_shift();
+        row.set_scroll_x_for_test(120.0);
+        let panned = row.canvas_shift();
+        crate::retained_present::end_retained_scene();
+        let outside = row.canvas_shift();
+        assert_eq!(
+            overscrolled, 0.0,
+            "a rubber band past the start is not panned within the canvas"
+        );
+        assert_eq!(panned, 120.0);
+        assert_eq!(outside, 0.0, "outside a retained draw nothing is shifted");
+    }
+
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
         make_row_with_groups_with_taffy(tab_specs).0
     }
@@ -5219,7 +5478,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: crate::widget::Edits::lend(&mut state),
                 path: &path,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -5386,6 +5645,59 @@ mod tests {
             root,
             &touch_event(1, winit::event::TouchPhase::Ended, mid),
         );
+    }
+
+    #[test]
+    fn touch_hold_then_drag_on_the_tab_bar_moves_the_window() {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let start = group_grab_point(&row, 0);
+        let before = row.scroll_x();
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Started, start),
+        );
+        // The finger rested before moving.
+        let drag = row
+            .group_drag
+            .as_mut()
+            .expect("a finger on the bar lifts the group");
+        drag.lifted_at = drag
+            .lifted_at
+            .checked_sub(TOUCH_GRAB_HOLD)
+            .expect("monotonic clock has room");
+        let to = Point::new(row.groups[2].get_rect().center().x + 60.0, start.y);
+        for step in 1..=8 {
+            let t = f64::from(step) / 8.0;
+            let p = Point::new(start.x + (to.x - start.x) * t, start.y);
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
+                &touch_event(1, winit::event::TouchPhase::Moved, p),
+            );
+        }
+        assert!(
+            row.group_drag_active(),
+            "after a hold, a horizontal drag carries the window"
+        );
+        assert!(
+            (row.scroll_x() - before).abs() < f64::EPSILON,
+            "a carried window does not pan the strip"
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Ended, to),
+        );
+        assert_eq!(
+            row.group_ids(),
+            vec![200, 300, 100],
+            "the carried window lands where the finger lifted"
+        );
+        assert_eq!(row.take_pending_group_reorder(), Some((100, 2)));
     }
 
     #[test]
@@ -5584,7 +5896,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5663,7 +5975,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5706,7 +6018,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5779,7 +6091,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5899,7 +6211,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5948,7 +6260,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_obj,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5991,7 +6303,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_obj,
                     handled: &mut handled2,
                     focus_target: &mut focus,
@@ -6039,7 +6351,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &doc_root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -6097,7 +6409,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -6156,7 +6468,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -6199,7 +6511,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -6255,7 +6567,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -6620,7 +6932,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &modifiers,
-                        state: &mut state,
+                        state: crate::widget::Edits::lend(&mut state),
                         path: &root_obj,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -6637,7 +6949,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &modifiers,
-                        state: &mut state,
+                        state: crate::widget::Edits::lend(&mut state),
                         path: &root_obj,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -6834,7 +7146,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_obj,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -6851,7 +7163,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_obj,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -7306,7 +7618,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &path,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -7347,7 +7659,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state,
+                state: crate::widget::Edits::lend(state),
                 path,
                 handled: &mut handled,
                 focus_target: focus,

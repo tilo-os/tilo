@@ -12,7 +12,10 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
+pub(crate) mod diagnostics;
+
 use crate::shell::state::WorkspaceAuthority as _;
+pub(crate) mod action_authority;
 use std::collections::VecDeque;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Command;
@@ -122,6 +125,8 @@ pub struct ServiceLaunchIdentity {
     pub workspace_id: String,
     pub allowed_compat_entry_ids: Vec<String>,
     pub compat_entry_generation: u64,
+    /// Original signed declaration snapshot, not the package currently installed.
+    pub application_creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
 }
 
 #[derive(Clone, Debug)]
@@ -138,7 +143,7 @@ static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(target_os = "linux")]
-fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+pub(super) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm is parenthesised and may contain spaces/parentheses; the final ')'
     // is the only safe place from which to index the remaining fields.
@@ -151,7 +156,7 @@ fn proc_stat(pid: u32) -> Option<(u32, u64)> {
 // Linux process ancestry is the authority for sandbox launch attribution.
 // Other hosts must not infer equivalent authority from numeric PIDs.
 #[cfg(not(target_os = "linux"))]
-fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
+pub(super) fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
     None
 }
 
@@ -267,6 +272,45 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
             registered_at: Instant::now(),
         },
     );
+}
+
+/// Launch records of the apps the session shows inside its own process: the
+/// app and room each is about to connect for, until its collaboration
+/// connection is attested or the record expires.
+static IN_PROCESS_LAUNCHES: Mutex<Vec<(ServiceLaunchIdentity, Instant)>> = Mutex::new(Vec::new());
+
+/// Record that the session itself is about to connect `app_id` in room
+/// `workspace_id`, as it records a process it launched.
+pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
+    launches.push((
+        ServiceLaunchIdentity {
+            app_id: app_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            allowed_compat_entry_ids: Vec::new(),
+            compat_entry_generation: 0,
+            application_creation: None,
+        },
+        Instant::now(),
+    ));
+}
+
+/// Spend the session's launch record for a connection from its own process
+/// naming `app_id` in room `workspace_id`.
+pub fn consume_in_process_launch(pid: u32, app_id: &str, workspace_id: &str) -> bool {
+    if pid != std::process::id() {
+        return false;
+    }
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
+    let Some(index) = launches.iter().position(|(identity, _)| {
+        identity.app_id == app_id && identity.workspace_id == workspace_id
+    }) else {
+        return false;
+    };
+    launches.remove(index);
+    true
 }
 
 /// Consume the compositor's one-shot authority record for a launcher child.
@@ -750,6 +794,12 @@ pub enum LaunchEventKind {
     /// The app ran and exited cleanly. Not an error; reported so
     /// callers can retire per-app UI state.
     Exited,
+    /// The app's window went away without anyone closing it, whatever its
+    /// process reported. `code` is its exit status when it had one.
+    WindowLost {
+        code: Option<i32>,
+        stderr_tail: String,
+    },
 }
 
 /// Normal-user copy for an asynchronous launch failure. The launcher keeps
@@ -779,12 +829,27 @@ impl LaunchEvent {
             LaunchEventKind::Failed { code, stderr_tail } => {
                 crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
             }
+            LaunchEventKind::WindowLost { .. } => {
+                crate::shell::i18n::t("launch-failed-window-lost")
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
         };
-        Some(LaunchFailureNotice {
-            title: launch_failure_title(&self.display_name),
-            body,
-        })
+        let window_lost = match &self.kind {
+            LaunchEventKind::WindowLost { .. } => true,
+            LaunchEventKind::Failed { stderr_tail, .. } => {
+                stderr_tail.contains(ui::app::WINDOW_LOST)
+            }
+            _ => false,
+        };
+        let title = if window_lost {
+            crate::shell::i18n::t_args(
+                "launch-window-lost-title",
+                &[("app", compact_notice_name(&self.display_name).into())],
+            )
+        } else {
+            launch_failure_title(&self.display_name)
+        };
+        Some(LaunchFailureNotice { title, body })
     }
 
     /// Preserve the complete failure in the compositor's session log. Field
@@ -811,8 +876,39 @@ impl LaunchEvent {
                     "application stopped before presenting a window"
                 );
             }
+            LaunchEventKind::WindowLost { code, stderr_tail } => {
+                tracing::error!(
+                    target: "tilo::app_launch",
+                    package_id = %self.package_id,
+                    display_name = %self.display_name,
+                    exit_code = ?code,
+                    stderr_tail = ?stderr_tail,
+                    "application window went away without being closed"
+                );
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {}
         }
+    }
+
+    /// This event, read knowing whether the launch's window went away
+    /// without being closed: then neither a clean exit nor an error after
+    /// the window was shown is the app ending as asked.
+    #[must_use]
+    pub(crate) fn with_window_lost(self, lost: bool) -> Self {
+        if !lost {
+            return self;
+        }
+        let kind = match self.kind {
+            LaunchEventKind::Exited => LaunchEventKind::WindowLost {
+                code: Some(0),
+                stderr_tail: String::new(),
+            },
+            LaunchEventKind::Failed { code, stderr_tail } => {
+                LaunchEventKind::WindowLost { code, stderr_tail }
+            }
+            other => other,
+        };
+        Self { kind, ..self }
     }
 }
 
@@ -821,12 +917,24 @@ impl LaunchEvent {
 /// they are only recognised here and logged in full by
 /// [`LaunchEvent::log_failure`].
 fn stopped_reason_key(code: Option<i32>, stderr_tail: &str) -> &'static str {
-    if stderr_tail.contains("error while loading shared libraries")
-        || stderr_tail.contains("cannot open shared object file")
+    let loader_failed = stderr_tail.contains("error while loading shared libraries")
+        || stderr_tail.contains("cannot open shared object file");
+    // The launcher's own refusal (`RunError::RuntimeLibraryMissing`), or the
+    // loader failing on a library only a Tilo runtime bundle ships: the app
+    // was built against another runtime than the one installed.
+    if stderr_tail.contains("built for a different Tilo runtime")
+        || (loader_failed
+            && (stderr_tail.contains("libstd-") || stderr_tail.contains("libruntime_dylib")))
     {
+        "launch-failed-runtime-mismatch"
+    } else if loader_failed {
         "launch-failed-missing-library"
     } else if stderr_tail.lines().any(|line| line.starts_with("bwrap: ")) {
         "launch-failed-sandbox"
+    } else if stderr_tail.contains(ui::collaboration::ROUTE_JOIN_FAILED) {
+        "launch-failed-collaboration"
+    } else if stderr_tail.contains(ui::app::WINDOW_LOST) {
+        "launch-failed-window-lost"
     } else if code.is_none() {
         "launch-failed-crashed"
     } else {
@@ -915,6 +1023,8 @@ pub(crate) struct LaunchSession(std::sync::Arc<SessionLaunches>);
 
 pub(crate) struct SessionLaunches {
     events: Mutex<Vec<LaunchEvent>>,
+    pub(crate) diagnostics: Mutex<Option<diagnostics::Options>>,
+    pub(super) startup: super::launch_readiness::StartupObservations,
     /// `package_id` -> where its next window should land; claimed (not
     /// consumed) by [`placement_for_toplevel`] since the compositor tracks
     /// each toplevel in two trees and consuming here would desync them.
@@ -926,6 +1036,14 @@ pub(crate) struct SessionLaunches {
     surfaces: Mutex<HashMap<u64, String>>,
     /// Launch keys whose app has shown a window since it last started.
     presented: Mutex<HashSet<String>>,
+    /// Launch keys whose window went away without anyone closing it: the
+    /// compositor never asked, and the person never reached the app to ask
+    /// it. However the process then exits, the window was lost.
+    vanished: Mutex<HashSet<String>>,
+    /// Launch keys whose app has been handed an action invocation since it
+    /// started: an agent, another device or the person drove it, so a
+    /// window it then closes was closed on request.
+    acted_on: Mutex<HashSet<String>>,
     /// User launches still waiting for a window. This outlives the short
     /// placement claim: Wine's first window can announce `wineboot.exe` long
     /// after that claim expires, and it still belongs to the launch the
@@ -937,6 +1055,9 @@ pub(crate) struct SessionLaunches {
     /// XDG autostart entries. Their exit is not a failed open of the app the
     /// person just launched.
     session_helpers: Mutex<HashSet<String>>,
+    /// Autostart entries with `X-GNOME-AutoRestart=true`: how to start each
+    /// again, and when it last started.
+    restartable_helpers: Mutex<HashMap<String, RestartableHelper>>,
     /// The "Opening…" notification of each package still on its way, so the
     /// frame thread can retire it when the app starts.
     pub(crate) opening_notices: Mutex<Vec<(String, u64)>>,
@@ -951,13 +1072,18 @@ impl Default for SessionLaunches {
     fn default() -> Self {
         Self {
             events: Mutex::default(),
+            diagnostics: Mutex::default(),
+            startup: super::launch_readiness::StartupObservations::default(),
             pending: Mutex::default(),
             launched: Mutex::default(),
             surfaces: Mutex::default(),
             presented: Mutex::default(),
+            vanished: Mutex::default(),
+            acted_on: Mutex::default(),
             awaiting_window: Mutex::default(),
             unresolved_owners: Mutex::default(),
             session_helpers: Mutex::default(),
+            restartable_helpers: Mutex::default(),
             opening_notices: Mutex::default(),
             open_documents: Mutex::default(),
             #[cfg(any(test, target_os = "linux"))]
@@ -983,6 +1109,21 @@ thread_local! {
 }
 
 impl LaunchSession {
+    pub(crate) fn presentation_observer_enabled(&self) -> bool {
+        lock(&self.diagnostics).map_or_else(
+            || std::env::var_os("TILO_PROFILE_PRESENTATION").is_some(),
+            |options| options.0[0],
+        )
+    }
+
+    pub(crate) fn diagnostic_options(&self) -> diagnostics::Options {
+        lock(&self.diagnostics).unwrap_or_else(diagnostics::Options::inherited)
+    }
+
+    pub(crate) fn configure_diagnostics(&self, options: diagnostics::Options) {
+        *lock(&self.diagnostics) = Some(options);
+    }
+
     /// The session launches started on this thread belong to.
     pub(crate) fn current() -> Self {
         THREAD_SESSION.with(|slot| {
@@ -1271,32 +1412,25 @@ fn attach_trusted_identities_projection(
 }
 
 /// Write `capabilities` where `tilo-launcher --capabilities` will read
-/// them, returning the path. `Ok(None)` means nothing was granted — no
-/// file, no flag, the launcher applies the manifest alone — and any
-/// stale file for this app is removed so a revoked grant can't survive
-/// on disk.
+/// them. Each launch owns a private immutable snapshot until its supervisor
+/// drops the file. `Ok(None)` means no file or flag: manifest permissions alone.
 fn write_capabilities_file(
     package_id: &str,
     capabilities: &[CapOverride],
-) -> std::io::Result<Option<PathBuf>> {
+) -> std::io::Result<Option<tempfile::NamedTempFile>> {
     // Create at 0600 rather than writing and chmod-ing after: the window
     // between the two is exactly when another process could open it.
     use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
 
     // Reverse-DNS in principle, but this arrives from a registry file —
     // refuse anything that could escape the directory.
-    let file_name = format!("{package_id}.json");
     if package_id.is_empty() || package_id.contains('/') || package_id.contains("..") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("refusing to write a capability file for package id {package_id:?}"),
         ));
     }
-    let path = capabilities_dir().join(file_name);
     if capabilities.is_empty() {
-        // Best-effort: a missing file is the same as an empty one.
-        let _ = std::fs::remove_file(&path);
         return Ok(None);
     }
     {
@@ -1312,15 +1446,13 @@ fn write_capabilities_file(
             format!("serialising capabilities: {e}"),
         )
     })?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("launch-")
+        .suffix(".json")
+        .tempfile_in(capabilities_dir())?;
     file.write_all(&json)?;
-    file.sync_all()?;
-    Ok(Some(path))
+    file.as_file().sync_all()?;
+    Ok(Some(file))
 }
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
@@ -1446,6 +1578,13 @@ pub fn invalidate_app_cache() {
     APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     *cache = None;
+}
+
+/// Cheap installed-store invalidation token for session-owned services.
+/// A changed token means callers must reread the canonical cached catalogue;
+/// it is not an authorization or a package identity.
+pub(crate) fn installed_apps_epoch() -> u64 {
+    APP_CACHE_EPOCH.load(Ordering::Acquire)
 }
 
 fn expire_watched_app_cache() {
@@ -1972,6 +2111,7 @@ fn build_launch_command_for(
         document,
         uri,
     } = *extras;
+    let application_creation = original_application_creation(app);
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -1985,6 +2125,12 @@ fn build_launch_command_for(
         "--app-id".to_string(),
         app.package_id.clone(),
     ];
+    if let Some(evidence) = &application_creation {
+        args.extend([
+            "--expected-package-hash".into(),
+            evidence.package_hash.clone(),
+        ]);
+    }
     if let Some(wayland_socket) = wayland_socket {
         args.push("--wayland-socket".to_string());
         args.push(wayland_socket.display().to_string());
@@ -2047,10 +2193,44 @@ fn build_launch_command_for(
                 Vec::new()
             },
             compat_entry_generation: windows_compat_entry_generation(),
+            application_creation,
         }),
         portal_workspace_id: None,
         managed_agent_id: None,
     }
+}
+
+fn original_application_creation(
+    app: &InstalledApp,
+) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
+    let installed = package_store::find_installed(&app.package_id).ok()??;
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return None;
+    }
+    let record = package_store::integrity::read_record(
+        &package_store::integrity::record_dir(&installed),
+        &installed.id,
+        &installed.package_id_hex,
+    )
+    .ok()?;
+    if std::fs::read(&app.manifest_path).ok()? != record.manifest_bytes {
+        return None;
+    }
+    let original = std::str::from_utf8(&record.manifest_bytes).ok()?;
+    let parsed: launcher::manifest::MinimalManifest = toml::from_str(original).ok()?;
+    if parsed.package_id != app.package_id {
+        return None;
+    }
+    let manifest: toml::Value = toml::from_str(original).ok()?;
+    let kinds = manifest.get("resources")?.get("kinds")?.as_array()?;
+    let evidence = tilo_action_broker::services::ApplicationCreationEvidence {
+        package_hash: installed.package_id_hex,
+        declared_kinds: kinds
+            .iter()
+            .map(|kind| kind.as_str().map(str::to_owned))
+            .collect::<Option<_>>()?,
+    };
+    evidence.valid().then_some(evidence)
 }
 
 /// Resolve `package_id` and start it in `room`, with whatever the
@@ -2154,7 +2334,7 @@ fn execute_workspace_agent(
         identity_path.as_deref(),
         agent_id,
     );
-    if let Err(detail) = spawn_detached(app.clone(), command) {
+    if let Err(detail) = spawn_detached(app.clone(), command, None) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
     }
     Ok(app)
@@ -2429,6 +2609,44 @@ fn execute_installed(
     )
 }
 
+fn stage_launch_capabilities(
+    app_id: &str,
+    capabilities: &[CapOverride],
+) -> Option<tempfile::NamedTempFile> {
+    match write_capabilities_file(app_id, capabilities) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!(
+                "[launch {app_id}] could not stage {} capabilities ({error}); starting with manifest permissions only",
+                capabilities.len()
+            );
+            None
+        }
+    }
+}
+
+fn attach_sandbox_authority(
+    app: &InstalledApp,
+    room: RoomId,
+    command: &mut LaunchCommand,
+    capabilities: Vec<CapOverride>,
+    file: Option<tempfile::NamedTempFile>,
+) -> Result<Option<action_authority::Lease>, LaunchError> {
+    let applied = if file.is_some() {
+        capabilities
+    } else {
+        Vec::new()
+    };
+    let requires_supervision = !applied.is_empty();
+    match action_authority::attach_optional(app, room, command) {
+        Some(lease) => Ok(Some(lease.with_sandbox_capabilities(applied, file))),
+        None if requires_supervision => Err(LaunchError::RegistryUnreadable {
+            detail: crate::shell::i18n::t("launch-error-sandbox-supervision"),
+        }),
+        None => Ok(None),
+    }
+}
+
 fn execute_installed_inner(
     app: InstalledApp,
     room: RoomId,
@@ -2446,18 +2664,7 @@ fn execute_installed_inner(
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
     let capabilities = capability_snapshot.unwrap_or_else(|| capabilities_for_app(&app.package_id));
-    let capabilities_file = match write_capabilities_file(&app.package_id, &capabilities) {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!(
-                "[launch {}] could not stage {} capabilities ({e}); \
-                 starting with manifest permissions only",
-                app.package_id,
-                capabilities.len()
-            );
-            None
-        }
-    };
+    let capabilities_file = stage_launch_capabilities(&app.package_id, &capabilities);
     let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
         .map_err(|error| LaunchError::IdentityUnavailable {
             detail: error.to_string(),
@@ -2470,7 +2677,9 @@ fn execute_installed_inner(
         Some(&socket),
         room,
         &LaunchExtras {
-            capabilities_file: capabilities_file.as_deref(),
+            capabilities_file: capabilities_file
+                .as_ref()
+                .map(tempfile::NamedTempFile::path),
             identity_path: identity_path.as_deref(),
             render_node: crate::compositor::render_node::resolved(),
             document,
@@ -2543,9 +2752,12 @@ fn execute_installed_inner(
             app.package_id
         );
     }
+    let authority_lease =
+        attach_sandbox_authority(&app, room, &mut command, capabilities, capabilities_file)?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "governance projection staged");
     remember_launch(&app);
-    let _ = spawn_detached(app.clone(), command);
+    spawn_detached(app.clone(), command, authority_lease)
+        .map_err(|detail| LaunchError::AgentLaunchWorkerUnavailable { detail })?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch worker queued");
     Ok(app)
 }
@@ -2581,20 +2793,352 @@ pub fn queue_launch_in_workspace(
     app: InstalledApp,
     workspace: &Workspace,
 ) -> Result<(), LaunchError> {
-    let package_id = app.package_id.clone();
-    let display_name = app.display_name.clone();
+    queue_launch_target_in_workspace(app, workspace, None)
+}
+
+/// [`queue_launch_in_workspace`], asking the app to open `uri` when given —
+/// a link an app opened in a new tab. The app's manifest must claim the
+/// URI's scheme; the launcher refuses one it does not.
+///
+/// # Errors
+///
+/// As [`queue_launch_in_workspace`].
+pub fn queue_launch_target_in_workspace(
+    app: InstalledApp,
+    workspace: &Workspace,
+    uri: Option<String>,
+) -> Result<(), LaunchError> {
     let room = workspace.room;
-    let capabilities = workspace.capabilities.clone();
+    let workspace = workspace.clone();
+    queue_prepared_launch(app, room, move || Ok(workspace), uri)
+}
+
+/// A retained host notification resolves its verified package on the same
+/// preflight worker as other launches. It carries its original room snapshot,
+/// and never adds capabilities or app authorship while opening its URI.
+pub(crate) fn queue_package_target_in_workspace(
+    package_id: String,
+    workspace: &Workspace,
+    uri: String,
+) -> Result<(), LaunchError> {
+    let workspace = workspace.clone();
     spawn_reporting(
         std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
-        move || {
-            let app_capabilities = capabilities
-                .into_iter()
-                .filter(|capability| capability.subject == Subject::app(&package_id))
-                .collect();
-            let outcome =
-                execute_installed(app, room, None, None, None, None, Some(app_capabilities));
+        super::launch_readiness::inherit(move || {
+            let outcome = installed_apps().and_then(|apps| {
+                let app = apps
+                    .into_iter()
+                    .find(|app| app.package_id == package_id)
+                    .ok_or_else(|| LaunchError::NotInstalled {
+                        package_id: package_id.clone(),
+                    })?;
+                if !app.has_gui {
+                    return Err(LaunchError::NotAGuiApp {
+                        package_id: package_id.clone(),
+                    });
+                }
+                let capabilities = workspace
+                    .capabilities
+                    .into_iter()
+                    .filter(|capability| capability.subject == Subject::app(&package_id))
+                    .collect();
+                execute_installed(
+                    app,
+                    workspace.room,
+                    None,
+                    Some(&uri),
+                    None,
+                    None,
+                    Some(capabilities),
+                )
+            });
             if let Err(error) = outcome {
+                super::launch_readiness::fail_current(error.user_message());
+                push_event(LaunchEvent {
+                    display_name: package_id.clone(),
+                    package_id,
+                    managed_agent_id: None,
+                    managed_workspace_id: None,
+                    kind: LaunchEventKind::SpawnFailed {
+                        detail: error.user_message(),
+                    },
+                });
+            }
+        }),
+    )
+    .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+        detail: error.to_string(),
+    })?;
+    Ok(())
+}
+
+/// The session's existing authenticated broker, attached by its owning host.
+#[derive(Clone)]
+pub(crate) struct NativeAppOpening(pub tilo_action_broker::collab_broker::WeakAppActionBroker);
+
+impl std::fmt::Debug for NativeAppOpening {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NativeAppOpening")
+    }
+}
+
+/// Open only after the normal broker durably delegates app authorship for the
+/// retained local person. Missing or stale custody never grants in the cache.
+///
+/// # Errors
+/// Refuses unavailable owner/preflight workers; asynchronous authority and
+/// publication failures arrive through the ordinary launch event channel.
+pub(crate) fn queue_native_authoring_launch(
+    app: InstalledApp,
+    tree: super::state::WorkspaceTreeHandle,
+    room: RoomId,
+    opening: Option<NativeAppOpening>,
+) -> Result<(), LaunchError> {
+    let package = app.package_id.clone();
+    let expected = tree
+        .read()
+        .installed_native_owner()
+        .ok_or_else(|| LaunchError::IdentityUnavailable {
+            detail: crate::shell::i18n::t("launch-error-identity-unavailable"),
+        })?
+        .with_current(room, |view| Ok(view.device().clone()))
+        .map_err(|detail| LaunchError::IdentityUnavailable { detail })?;
+    queue_prepared_launch(
+        app,
+        room,
+        move || {
+            let prepare = || -> Result<Workspace, String> {
+                let (_, certificate) =
+                    tilo_identity_host::broker::trusted_current_device(&room.to_string())
+                        .map_err(|error| error.to_string())?;
+                if certificate != expected {
+                    return Err("native app opening identity changed before admission".into());
+                }
+                let owner = tree
+                    .read()
+                    .installed_native_owner()
+                    .ok_or("native app owner disappeared")?;
+                let access = native_app_open_access(&owner, room, &certificate, &package)?;
+                if access != NativeAppOpenAccess::Delegate {
+                    return Ok(native_launch_capabilities(
+                        native_launch_workspace(&tree, room)?,
+                        &package,
+                        access,
+                    ));
+                }
+                let broker = opening.ok_or("native app authorship broker unavailable")?;
+                let broker = broker.0.upgrade()?;
+                let job = broker.change_workspace_membership(
+                    &room.to_string(),
+                    &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                        app: package,
+                    },
+                    &certificate,
+                )?;
+                drop(broker);
+                let completed = job
+                    .completion
+                    .recv_timeout(Duration::from_secs(30))
+                    .map_err(|error| {
+                        format!("native app authorship did not durably complete: {error}")
+                    })?;
+                if !completed.code.is_empty() {
+                    return Err(format!(
+                        "native app authorship refused: {}",
+                        completed.message
+                    ));
+                }
+                native_launch_workspace(&tree, room)
+            };
+            prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
+        },
+        None,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeAppOpenAccess {
+    Delegate,
+    Author,
+    Viewer,
+}
+
+pub(crate) fn queue_observed_native_launch(
+    app: InstalledApp,
+    tree: super::state::WorkspaceTreeHandle,
+    room: RoomId,
+    original: tilo_action_broker::services::ObservedApplicationLaunch,
+) -> Result<(), LaunchError> {
+    let package = app.package_id.clone();
+    queue_prepared_launch(
+        app,
+        room,
+        move || {
+            prepare_observed_native_launch(&tree, room, &package, &original)
+                .map_err(|detail| LaunchError::IdentityUnavailable { detail })
+        },
+        None,
+    )
+}
+
+fn prepare_observed_native_launch(
+    tree: &super::state::WorkspaceTreeHandle,
+    room: RoomId,
+    package: &str,
+    original: &tilo_action_broker::services::ObservedApplicationLaunch,
+) -> Result<Workspace, String> {
+    let certificate = original.certificate()?;
+    let owner = tree
+        .read()
+        .installed_native_owner()
+        .ok_or("native app owner disappeared")?;
+    let access = native_app_open_access(&owner, room, &certificate, package)?;
+    if access == NativeAppOpenAccess::Delegate {
+        let job = original.delegate_authorship()?;
+        let completed = job
+            .completion
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|error| format!("native app authorship did not durably complete: {error}"))?;
+        if !completed.code.is_empty() {
+            return Err(format!(
+                "native app authorship refused: {}",
+                completed.message
+            ));
+        }
+        if original.certificate()? != certificate {
+            return Err("original launch certificate changed during admission".into());
+        }
+        if native_app_open_access(&owner, room, &certificate, package)?
+            != NativeAppOpenAccess::Author
+        {
+            return Err("native app authorship was not admitted by the canonical owner".into());
+        }
+    }
+    // Recheck even viewer/author opens; the earlier result was not authority.
+    original.certificate()?;
+    Ok(native_launch_capabilities(
+        native_launch_workspace(tree, room)?,
+        package,
+        access,
+    ))
+}
+
+fn native_launch_capabilities(
+    mut workspace: Workspace,
+    package: &str,
+    access: NativeAppOpenAccess,
+) -> Workspace {
+    if access == NativeAppOpenAccess::Viewer {
+        workspace
+            .capabilities
+            .push(collab_types::caps::CapOverride::new(
+                Subject::app(package),
+                collab_types::caps::Scope::Workspace,
+                collab_types::caps::Effect::Restrict,
+                collab_types::caps::Verb::Read,
+            ));
+    }
+    workspace
+}
+
+#[cfg(test)]
+#[path = "launcher_native_open_tests.rs"]
+mod native_open_tests;
+
+fn native_app_open_access(
+    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+    room: RoomId,
+    certificate: &tilo_user_identity::DeviceCert,
+    package: &str,
+) -> Result<NativeAppOpenAccess, String> {
+    owner.with_current(room, |view| {
+        if !view.peer().certificates().contains(certificate) {
+            return Err("native app opening certificate is no longer admitted".into());
+        }
+        let now = std::time::SystemTime::now();
+        let (role, caps, person) = view
+            .peer()
+            .permissions(certificate.device_public_key, now)?;
+        let administrator = view
+            .peer()
+            .check_workspace_administration(certificate.device_public_key, now)
+            .is_ok();
+        let exists = view.peer().document(package, "").is_some();
+        if exists {
+            view.peer()
+                .check_document_read(certificate.device_public_key, package, "", now)?;
+        } else if !administrator {
+            return Err("creating an application requires governor-authorized authorship".into());
+        }
+        let seconds = now
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map_err(|_| "native app opening clock is before the Unix epoch")?
+            .as_secs();
+        let person =
+            collab_types::caps::Actor::person(Some(role), person).in_room(room.to_string());
+        let application = collab_types::caps::Actor::app(package).in_room(room.to_string());
+        let writes = |actor: &collab_types::caps::Actor| {
+            collab_types::caps::decide_capability(
+                actor,
+                &collab_types::caps::ResourceRef::Workspace,
+                collab_types::caps::Verb::Write,
+                &caps,
+                Some(seconds),
+            ) == collab_types::caps::CapDecision::Allow
+        };
+        if writes(&person) && writes(&application) {
+            return Ok(NativeAppOpenAccess::Author);
+        }
+        Ok(if administrator {
+            NativeAppOpenAccess::Delegate
+        } else {
+            NativeAppOpenAccess::Viewer
+        })
+    })
+}
+
+fn native_launch_workspace(
+    tree: &super::state::WorkspaceTreeHandle,
+    room: RoomId,
+) -> Result<Workspace, String> {
+    tree.read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .cloned()
+        .ok_or_else(|| "native app launch room disappeared".into())
+}
+
+fn queue_prepared_launch(
+    app: InstalledApp,
+    room: RoomId,
+    prepare: impl FnOnce() -> Result<Workspace, LaunchError> + Send + 'static,
+    uri: Option<String>,
+) -> Result<(), LaunchError> {
+    let package_id = app.package_id.clone();
+    let display_name = app.display_name.clone();
+    spawn_reporting(
+        std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
+        super::launch_readiness::inherit(move || {
+            let outcome = prepare().and_then(|workspace| {
+                let app_capabilities = workspace
+                    .capabilities
+                    .into_iter()
+                    .filter(|capability| capability.subject == Subject::app(&package_id))
+                    .collect();
+                execute_installed(
+                    app,
+                    room,
+                    None,
+                    uri.as_deref(),
+                    None,
+                    None,
+                    Some(app_capabilities),
+                )
+            });
+            if let Err(error) = outcome {
+                super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
                     package_id,
                     display_name,
@@ -2605,7 +3149,7 @@ pub fn queue_launch_in_workspace(
                     },
                 });
             }
-        },
+        }),
     )
     .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
         detail: error.to_string(),
@@ -2627,6 +3171,32 @@ pub fn launch_document_in_workspace(
 ) -> Result<InstalledApp, LaunchError> {
     set_workspace_capabilities(workspace.capabilities.clone());
     launch_with_document(package_id, workspace.room, document)
+}
+
+/// Execute an already resolved installed package under the workspace's
+/// ordinary capability, identity and continuity authority.
+///
+/// # Errors
+/// Refuses packages without a GUI or the normal launcher preflight errors.
+pub(crate) fn launch_resolved_in_workspace(
+    app: InstalledApp,
+    workspace: &Workspace,
+) -> Result<(), LaunchError> {
+    if !app.has_gui {
+        return Err(LaunchError::NotAGuiApp {
+            package_id: app.package_id,
+        });
+    }
+    execute_installed(
+        app,
+        workspace.room,
+        None,
+        None,
+        None,
+        None,
+        Some(workspace.capabilities.clone()),
+    )
+    .map(|_| ())
 }
 
 /// [`launch_uri_in_workspace`] taking the room and capabilities directly
@@ -2670,8 +3240,20 @@ pub fn launch_uri_in_workspace(
 
 /// Run `command` on a worker thread and report the outcome through
 /// [`LaunchSession`]; the thread lives as long as the app does.
-fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), String> {
-    spawn_launch(app.package_id, app.display_name, command)
+fn spawn_detached(
+    app: InstalledApp,
+    command: LaunchCommand,
+    authority: Option<action_authority::Lease>,
+) -> Result<(), String> {
+    #[cfg(any(test, target_os = "linux"))]
+    {
+        spawn_launch_with_authority(app.package_id, app.display_name, command, authority)
+    }
+    #[cfg(not(any(test, target_os = "linux")))]
+    {
+        drop(authority);
+        spawn_launch(app.package_id, app.display_name, command)
+    }
 }
 
 /// Put a [`LaunchCommand`]'s environment on the `tilo-launcher` process.
@@ -2706,6 +3288,7 @@ fn apply_launch_env_with(
 #[cfg(any(test, target_os = "linux"))]
 #[derive(Debug)]
 struct HeldLaunch {
+    authority: Option<action_authority::Lease>,
     package_id: String,
     display_name: String,
     command: LaunchCommand,
@@ -2736,7 +3319,13 @@ pub fn release_held_launches() {
     let session = LaunchSession::current();
     release_from(&session.gate, |held| {
         // A failure to start is reported through the session by `start_launch`.
-        let _ = start_launch(held.package_id, held.display_name, held.command, &session);
+        let _ = start_launch(
+            held.package_id,
+            held.display_name,
+            held.command,
+            &session,
+            held.authority,
+        );
     });
 }
 
@@ -2745,7 +3334,13 @@ pub fn release_held_launches() {
 #[cfg(any(test, target_os = "linux"))]
 pub fn fail_held_launches(reason: &str) {
     let session = LaunchSession::current();
-    fail_from(&session.gate, reason, |event| session.push(event));
+    release_from(&session.gate, |launch| {
+        session.startup.fail(
+            super::launch_readiness::command_token(&launch.command),
+            reason.to_owned(),
+        );
+        session.push(held_launch_failure(launch, reason));
+    });
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -2757,7 +3352,7 @@ fn release_from(gate: &Mutex<Gate>, mut start: impl FnMut(HeldLaunch)) {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(test)]
 fn fail_from(gate: &Mutex<Gate>, reason: &str, mut report: impl FnMut(LaunchEvent)) {
     let held = lock(gate).open();
     for launch in held {
@@ -2791,10 +3386,17 @@ fn admit_launch(
 ) -> Result<(), String> {
     use crate::shell::launch_gate::Admission;
 
+    let mut key_args = launch.command.args.clone();
+    if let Some(token) = super::launch_readiness::command_token(&launch.command) {
+        // Ordinary repeated palette launches remain deduplicated. A broker
+        // invocation owns one distinct startup attempt and cannot borrow
+        // another invocation's queued worker or adopted window.
+        key_args.push(format!("startup-observation:{token}"));
+    }
     let key = (
         launch.package_id.clone(),
         launch.command.program.clone(),
-        launch.command.args.clone(),
+        key_args,
     );
     let admission = lock(gate).admit(key, launch);
     match admission {
@@ -2822,15 +3424,35 @@ pub fn spawn_launch(
     display_name: String,
     command: LaunchCommand,
 ) -> Result<(), String> {
+    spawn_launch_with_authority(package_id, display_name, command, None)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn spawn_launch_with_authority(
+    package_id: String,
+    display_name: String,
+    mut command: LaunchCommand,
+    authority: Option<action_authority::Lease>,
+) -> Result<(), String> {
+    super::launch_readiness::attach(&mut command);
     let session = LaunchSession::current();
     admit_launch(
         &session.gate,
         HeldLaunch {
+            authority,
             package_id,
             display_name,
             command,
         },
-        |held| start_launch(held.package_id, held.display_name, held.command, &session),
+        |held| {
+            start_launch(
+                held.package_id,
+                held.display_name,
+                held.command,
+                &session,
+                held.authority,
+            )
+        },
         |event| session.push(event),
     )
 }
@@ -2853,6 +3475,7 @@ fn start_launch(
     display_name: String,
     command: LaunchCommand,
     events: &LaunchSession,
+    authority: Option<action_authority::Lease>,
 ) -> Result<(), String> {
     #[cfg(all(test, not(target_os = "linux")))]
     if !TEST_EXECUTION_PROGRAM.with(|slot| slot.borrow().as_ref() == Some(&command.program)) {
@@ -2876,12 +3499,18 @@ fn start_launch(
         app.managed_workspace_id.clone(),
     );
     let worker_events = events.clone();
+    let startup_token = super::launch_readiness::command_token(&command);
     let spawn_result = builder.spawn(move || {
+        let mut authority_lease = authority;
         let events = worker_events;
         events.clone().adopt();
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
         apply_launch_env(&mut cmd, &command.env);
+        let diagnostic_options = *lock(&events.diagnostics);
+        if let Some(options) = diagnostic_options {
+            options.apply(&mut cmd);
+        }
         // Not a terminal job: no stdin, and output is relayed (not
         // inherited) so it can be quoted back in a failure notification.
         cmd.stdin(Stdio::null());
@@ -2891,6 +3520,7 @@ fn start_launch(
         let mut launch_gate = match install_launch_registration_gate(&mut cmd) {
             Ok(gate) => gate,
             Err(error) => {
+                events.startup.fail(startup_token, error.to_string());
                 events.push(LaunchEvent {
                     package_id: app.package_id.clone(),
                     display_name: app.display_name.clone(),
@@ -2907,6 +3537,7 @@ fn start_launch(
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
+                events.startup.fail(startup_token, e.to_string());
                 events.push(LaunchEvent {
                     package_id: app.package_id.clone(),
                     display_name: app.display_name.clone(),
@@ -2933,7 +3564,29 @@ fn start_launch(
             workspace_id,
             command.service_identity.is_some(),
         );
+        #[cfg(target_os = "linux")]
+        if let Some(lease) = authority_lease.as_mut()
+            && let Err(error) = lease.register_sandbox(child.id())
+        {
+            // The child is still behind the launch gate and has no sandbox
+            // descriptors. Do not release a stale accepted-policy snapshot.
+            let _ = child.kill();
+            let _ = child.wait();
+            unregister_launched_process(child.id());
+            events.startup.fail(startup_token, error.to_string());
+            events.push(LaunchEvent {
+                package_id: app.package_id.clone(),
+                display_name: app.display_name.clone(),
+                managed_agent_id: app.managed_agent_id.clone(),
+                managed_workspace_id: app.managed_workspace_id.clone(),
+                kind: LaunchEventKind::SpawnFailed {
+                    detail: error.to_string(),
+                },
+            });
+            return;
+        }
         mark_launch_spawned(&app.package_id, child.id());
+        events.startup.started(startup_token, child.id());
         // Recorded before the gate opens, so the session learns of the start
         // before the app can do anything a start explains.
         events.push(LaunchEvent {
@@ -2974,6 +3627,7 @@ fn start_launch(
                     let mut tail = VecDeque::with_capacity(STDERR_TAIL_LINES);
                     relay_capped_lines(stderr, |line| {
                         eprintln!("[app {stderr_tag} stderr] {line}");
+                        crate::compositor::gpu_health::observe_app_line(&stderr_tag, &line);
                         if tail.len() == STDERR_TAIL_LINES {
                             tail.pop_front();
                         }
@@ -2986,6 +3640,19 @@ fn start_launch(
 
         let launcher_pid = child.id();
         let status = child.wait();
+        // Every end of an app, clean or not, with how it ended (a signal has
+        // no exit code). The session's default log passes errors only, so a
+        // clean exit would otherwise leave no trace; stderr is recorded.
+        match &status {
+            Ok(status) => eprintln!(
+                "app-exit: package={} launcher_pid={launcher_pid} status={status}",
+                app.package_id
+            ),
+            Err(error) => eprintln!(
+                "app-exit: package={} launcher_pid={launcher_pid} wait_failed={error}",
+                app.package_id
+            ),
+        }
         let tail = stderr_drain
             .and_then(|drain| drain.join().ok())
             .unwrap_or_default();
@@ -3000,6 +3667,18 @@ fn start_launch(
                 detail: e.to_string(),
             },
         };
+        match &kind {
+            LaunchEventKind::Failed { stderr_tail, code } => events.startup.fail(
+                startup_token,
+                format!("the application launcher exited ({code:?}): {stderr_tail}"),
+            ),
+            LaunchEventKind::SpawnFailed { detail } => {
+                events.startup.fail(startup_token, detail.clone());
+            }
+            LaunchEventKind::Started { .. }
+            | LaunchEventKind::Exited
+            | LaunchEventKind::WindowLost { .. } => {}
+        }
         events.push(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -3127,7 +3806,7 @@ pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
 /// its Wayland connection. Host applications may announce an undeclared
 /// toolkit app-id, so this mapping is intentionally independent of protocol
 /// strings and pending-placement matching.
-pub(crate) fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
+pub fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
     lock(&LaunchSession::current().surfaces).insert(surface_id, launch_key.to_string());
 }
 
@@ -3142,6 +3821,67 @@ pub(crate) fn note_launch_presented(key: &str) {
 /// failing to open the app they just launched.
 pub(crate) fn note_session_helper(package_id: &str) {
     lock(&LaunchSession::current().session_helpers).insert(package_id.to_string());
+}
+
+/// How to start an `X-GNOME-AutoRestart` autostart entry again.
+#[derive(Debug, Clone)]
+pub(crate) struct RestartableHelper {
+    display_name: String,
+    command: LaunchCommand,
+    started_at: Instant,
+}
+
+/// A helper that dies sooner than this after (re)starting is not restarted
+/// again, so a program that cannot run does not loop. `gnome-session`'s limit.
+pub(crate) const HELPER_RESTART_LIMIT: Duration = Duration::from_secs(60);
+
+/// Remember how to restart an autostart entry marked `X-GNOME-AutoRestart`.
+pub(crate) fn note_restartable_session_helper(
+    package_id: &str,
+    display_name: &str,
+    command: LaunchCommand,
+) {
+    lock(&LaunchSession::current().restartable_helpers).insert(
+        package_id.to_string(),
+        RestartableHelper {
+            display_name: display_name.to_string(),
+            command,
+            started_at: Instant::now(),
+        },
+    );
+}
+
+/// The command to start a restartable helper that died at `now` again, or
+/// `None` when it is not restartable or died within [`HELPER_RESTART_LIMIT`]
+/// of its last start (it is then forgotten).
+pub(crate) fn take_helper_restart(
+    package_id: &str,
+    now: Instant,
+) -> Option<(String, LaunchCommand)> {
+    let session = LaunchSession::current();
+    let mut helpers = lock(&session.restartable_helpers);
+    let helper = helpers.get_mut(package_id)?;
+    if now.saturating_duration_since(helper.started_at) >= HELPER_RESTART_LIMIT {
+        helper.started_at = now;
+        return Some((helper.display_name.clone(), helper.command.clone()));
+    }
+    helpers.remove(package_id);
+    drop(helpers);
+    tracing::warn!(
+        target: "shell::launcher",
+        %package_id,
+        "autostart helper is dying too quickly; not restarting it again"
+    );
+    None
+}
+
+/// Restart an `X-GNOME-AutoRestart` helper that died; whether it was restarted.
+pub(crate) fn restart_session_helper(package_id: &str) -> bool {
+    let Some((display_name, command)) = take_helper_restart(package_id, Instant::now()) else {
+        return false;
+    };
+    tracing::info!(target: "shell::launcher", %package_id, "restarting autostart helper");
+    spawn_launch(package_id.to_string(), display_name, command).is_ok()
 }
 
 /// A signal exit of an autostart helper that the person did not ask to open.
@@ -3188,6 +3928,12 @@ pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
     }
     attribute_unresolved_host_window(surface_id, app_id);
     note_launch_presented(&crate::shell::persist::durable_app_id(surface_id, app_id));
+}
+
+/// An accepted toplevel's kernel peer, after ordinary workspace admission.
+/// A client-announced application id cannot produce a startup receipt.
+pub(crate) fn record_startup_window(pid: u32) {
+    LaunchSession::current().startup.adopted(pid);
 }
 
 /// Live unconfined launches a close of an unmatched toolkit window may stop.
@@ -3257,8 +4003,44 @@ pub(crate) fn take_launch_presented(key: &str) -> bool {
     lock(&LaunchSession::current().presented).remove(key)
 }
 
-pub(crate) fn forget_surface_launch(surface_id: u64) {
-    lock(&LaunchSession::current().surfaces).remove(&surface_id);
+/// A toplevel went away. `closed` says someone ended it: the compositor
+/// asked it to close, or the person had reached the app and could have
+/// asked it. Otherwise the window was lost under its launch.
+pub(crate) fn note_surface_gone(surface_id: u64, closed: bool) {
+    let session = LaunchSession::current();
+    let key = lock(&session.surfaces).remove(&surface_id);
+    if let Some(key) = key
+        && !closed
+        && !lock(&session.acted_on).contains(&key)
+    {
+        tracing::error!(
+            target: "tilo::app_launch",
+            launch = %key,
+            surface_id,
+            "an application window went away without being closed"
+        );
+        lock(&session.vanished).insert(key);
+    }
+}
+
+/// An action invocation was handed to the app of launch `key`. Driving an
+/// app through its actions is reaching it as much as a key or a click is.
+pub fn note_launch_acted_on(key: &str) {
+    lock(&LaunchSession::current().acted_on).insert(key.to_string());
+}
+
+/// Launch `key` started again: what was said of its previous run no
+/// longer holds.
+pub(crate) fn note_launch_restarted(key: &str) {
+    let session = LaunchSession::current();
+    lock(&session.vanished).remove(key);
+    lock(&session.acted_on).remove(key);
+}
+
+/// Whether a window of launch `key` went away without being closed since
+/// the launch started, clearing the mark.
+pub fn take_launch_vanished(key: &str) -> bool {
+    lock(&LaunchSession::current().vanished).remove(key)
 }
 
 /// Forget every launch this session has recorded — for tests asserting
@@ -3272,7 +4054,10 @@ pub(crate) fn clear_launched_for_test() {
     lock(&session.awaiting_window).clear();
     lock(&session.unresolved_owners).clear();
     lock(&session.session_helpers).clear();
+    lock(&session.restartable_helpers).clear();
     lock(&session.presented).clear();
+    lock(&session.vanished).clear();
+    lock(&session.acted_on).clear();
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
@@ -3590,7 +4375,8 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
 /// A normal desktop application should announce its first surface promptly.
 /// Keep enough headroom for cold Electron startup and VM software rendering,
 /// while still turning a dead launch into actionable feedback.
-const PENDING_PRESENTATION_TIMEOUT: Duration = Duration::from_secs(15);
+const PENDING_PRESENTATION_TIMEOUT: Duration =
+    tilo_action_broker::services::APPLICATION_STARTUP_TIMEOUT;
 
 /// Long enough for a daemonising desktop entry to hand off to its GUI child,
 /// while keeping a genuinely windowless launch from steering a later app.
@@ -3612,6 +4398,7 @@ pub fn clear_pending_placements() {
     lock(&session.awaiting_window).clear();
     lock(&session.unresolved_owners).clear();
     lock(&session.session_helpers).clear();
+    lock(&session.restartable_helpers).clear();
     lock(&session.presented).clear();
 }
 
@@ -3670,6 +4457,7 @@ mod tests {
 
     fn held(package_id: &str, args: &[&str]) -> HeldLaunch {
         HeldLaunch {
+            authority: None,
             package_id: package_id.into(),
             display_name: package_id.into(),
             command: LaunchCommand {
@@ -3977,14 +4765,43 @@ mod tests {
             (
                 Some(127),
                 "/usr/libexec/tilo/apps/terminal: error while loading shared libraries: \
-                 libstd-8f2c.so: cannot open shared object file: No such file or directory",
+                 libvulkan.so.1: cannot open shared object file: No such file or directory",
                 "The app needs a library this system doesn't have, so it stopped before opening.",
+            ),
+            (
+                Some(127),
+                "/var/tilo-apps/so.tilo.terminal/bin/terminal: error while loading shared \
+                 libraries: libstd-8f2c.so: cannot open shared object file: No such file or \
+                 directory",
+                "This app was built for a different Tilo runtime. Update or reinstall it to get \
+                 the runtime it needs.",
+            ),
+            (
+                Some(1),
+                "tilo-launcher: `so.tilo.terminal` was built for a different Tilo runtime than \
+                 the one installed, so it cannot start: it needs the library \
+                 `libstd-55999f89fc36b51f.so`, which the installed runtime \
+                 `tilo-runtime/2026.10.0` does not provide (looked in \
+                 /usr/lib/tilo-runtime/2026.10.0/lib, /etc/ld.so.cache, /lib64). Update it with \
+                 `app update so.tilo.terminal` or reinstall it with `app install \
+                 so.tilo.terminal`, which also fetches the runtime it needs, or remove it with \
+                 `app remove so.tilo.terminal` to go back to the system build.",
+                "This app was built for a different Tilo runtime. Update or reinstall it to get \
+                 the runtime it needs.",
             ),
             (
                 Some(1),
                 "bwrap: Can't make overlay mount on /newroot/usr with options \
                  upperdir=/proc/self/fd/13,userxattr: Invalid argument",
                 "The app's sandbox could not be set up, so it stopped before opening.",
+            ),
+            (
+                Some(1),
+                "error: service connection failed: joining collaboration route failed: \
+                 capnp error: Failed: remote exception: collaboration launch is not an \
+                 authenticated shell-managed process",
+                "The app couldn't join this workspace's collaboration service, so it \
+                 stopped before opening. The desktop log says why.",
             ),
             (
                 None,
@@ -4002,6 +4819,59 @@ mod tests {
             assert_eq!(notice.body, body);
             assert!(!notice.body.contains('/'), "no path reaches the banner");
         }
+    }
+
+    /// A window that went away without being closed is a lost window: the
+    /// person is told, whether the process then exited cleanly (an app
+    /// whose drawing surface died used to) or with an error after its
+    /// window was up (which is otherwise an ordinary ending).
+    #[test]
+    fn a_window_lost_unasked_is_reported_however_the_process_exits() {
+        clear_launched_for_test();
+        attribute_surface_launch(7 << 32 | 3, "Broken App");
+        note_surface_gone(7 << 32 | 3, false);
+        assert!(take_launch_vanished("Broken App"));
+        assert!(
+            !take_launch_vanished("Broken App"),
+            "the mark is taken once"
+        );
+
+        attribute_surface_launch(7 << 32 | 4, "Broken App");
+        note_surface_gone(7 << 32 | 4, true);
+        assert!(
+            !take_launch_vanished("Broken App"),
+            "a window someone closed is not lost"
+        );
+
+        let lost = launch_event(LaunchEventKind::Exited).with_window_lost(true);
+        assert!(matches!(
+            lost.kind,
+            LaunchEventKind::WindowLost { code: Some(0), .. }
+        ));
+        let notice = lost.failure_notice().expect("a lost window is reported");
+        assert_eq!(notice.title, "Broken App closed unexpectedly");
+        assert!(
+            launch_event(LaunchEventKind::Exited)
+                .with_window_lost(false)
+                .failure_notice()
+                .is_none(),
+            "a clean exit after a close stays quiet"
+        );
+
+        let stopped = launch_event(LaunchEventKind::Failed {
+            code: Some(ui::app::WINDOW_LOST_EXIT_CODE),
+            stderr_tail: format!(
+                "error: {}: its drawing surface could not be resized: Validation Error",
+                ui::app::WINDOW_LOST
+            ),
+        });
+        let notice = stopped.failure_notice().expect("failure has a notice");
+        assert_eq!(notice.title, "Broken App closed unexpectedly");
+        assert_eq!(
+            notice.body,
+            "Its window stopped without being closed. Open it again from Applications; \
+             the desktop log says why."
+        );
     }
 
     /// The startup metrics of `package_id`'s launches. The metrics registry
@@ -5176,10 +6046,10 @@ mod tests {
                 .expect("a granted app gets a file");
 
             // readable only by the user: this file says what one app may reach
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            let mode = std::fs::metadata(path.path()).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "capability file must not be world-readable");
 
-            let records = launcher::capabilities::load_capability_file(&path);
+            let records = launcher::capabilities::load_capability_file(path.path());
             let plan = launcher::capabilities::CapabilityPlan::for_app(
                 "so.tilo.books",
                 &records,
@@ -5204,9 +6074,8 @@ mod tests {
             );
         }
 
-        /// Revoking is not a UI state — the file the launcher reads has to
-        /// go away too, or the next launch would honour a grant the user
-        /// took back.
+        /// Every launch has its own record. A reduced-policy launch cannot
+        /// reuse the previous file; the supervisor removes that file on exit.
         fn revoking_the_last_capability_removes_the_file() {
             let tmp = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -5220,20 +6089,43 @@ mod tests {
             let path = write_capabilities_file("so.tilo.books", &granted)
                 .unwrap()
                 .expect("file written while granted");
-            assert!(path.exists());
+            let old_path = path.path().to_path_buf();
+            assert!(old_path.exists());
 
             let after_revoke = write_capabilities_file("so.tilo.books", &[]).unwrap();
-            let still_there = path.exists();
-            env.remove("XDG_RUNTIME_DIR");
-
-            assert_eq!(
-                after_revoke, None,
-                "with nothing granted there is no file to name on the command line"
-            );
             assert!(
-                !still_there,
-                "the stale capability file must be gone, not left for the next launch to read"
+                after_revoke.is_none(),
+                "revoked relaunch must have no capability file"
             );
+            let other = write_capabilities_file(
+                "so.tilo.books",
+                &[fs_grant("so.tilo.books", "/another-room", Verb::Write)],
+            )
+            .unwrap()
+            .unwrap();
+            assert_ne!(old_path, other.path());
+            assert_eq!(
+                launcher::capabilities::load_capability_file(&old_path),
+                granted,
+                "a concurrent same-package launch must not overwrite this snapshot"
+            );
+            assert_eq!(
+                launcher::capabilities::load_capability_file(other.path())[0].scope,
+                Scope::FsPath("/another-room".into())
+            );
+            drop(path);
+            assert!(
+                !old_path.exists(),
+                "the ended launch's snapshot must be removed"
+            );
+            let other_path = other.path().to_path_buf();
+            assert!(other_path.exists(), "another launch's snapshot must remain");
+            drop(other);
+            assert!(
+                !other_path.exists(),
+                "each supervisor removes only its own snapshot"
+            );
+            env.remove("XDG_RUNTIME_DIR");
         }
 
         published_capabilities_are_filtered_to_the_launching_app();
@@ -5344,6 +6236,7 @@ mod tests {
                     workspace_id: "room-1".into(),
                     allowed_compat_entry_ids: vec!["windows-reader".into()],
                     compat_entry_generation: 7,
+                    application_creation: None,
                 },
             );
             let (_, start_time) = proc_stat(pid).expect("launcher process stat");
@@ -5546,6 +6439,21 @@ mod tests {
             "Wine File's host process tree exits after its wineboot.exe window closes",
             || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
         );
+    }
+
+    #[test]
+    fn an_auto_restart_helper_restarts_until_it_dies_too_quickly() {
+        let command = held("orca", &["run-host"]).command;
+        assert!(take_helper_restart("orca", Instant::now()).is_none());
+        note_restartable_session_helper("orca", "Screen Reader", command.clone());
+        let later = Instant::now() + HELPER_RESTART_LIMIT;
+        assert_eq!(
+            take_helper_restart("orca", later),
+            Some(("Screen Reader".to_string(), command))
+        );
+        // Dead again within the limit of that restart: given up for good.
+        assert!(take_helper_restart("orca", later + Duration::from_secs(1)).is_none());
+        assert!(take_helper_restart("orca", later + HELPER_RESTART_LIMIT * 2).is_none());
     }
 
     #[test]
@@ -5758,7 +6666,7 @@ mod tests {
         catalog
             .select(&ResourceRef::new("desktop-windows", id))
             .unwrap_or_else(|| panic!("{id} must stay a visible action"))
-            .invoke(doc, &ROOT, chrome, [])
+            .invoke(&mut ui::widget::Edits::lend(doc), &ROOT, chrome, [])
             .unwrap_or_else(|err| panic!("{id} failed: {err}"));
     }
 
@@ -5795,6 +6703,8 @@ mod tests {
             let state = chrome.borrow();
             let page = DesktopWindowsProvider::new().query_page(
                 crate::shell::search::SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "",
                     wanted: &[],
                     chrome: &state,

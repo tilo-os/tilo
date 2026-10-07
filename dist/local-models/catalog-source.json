@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "production": true,
+  "key_id": "tilo-local-model-release-2026-10",
+  "recommendation": "",
+  "runtimes": [],
+  "models": [
+    {
+      "id": "u2net-subject",
+      "label": "Subject selection (U²-Net)",
+      "description": "Finds the main subject of a photo so apps can select or cut it out in one step. U²-Net runs on this device's processor inside the apps that use it; images never leave this device.",
+      "revision": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491",
+      "artifact": {
+        "file": "artifacts/u2net.onnx",
+        "url": "https://code.tilo.so/api/packages/tilo/generic/u2net-subject/8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491/u2net.onnx",
+        "sha256": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491",
+        "size_bytes": 175997641
+      },
+      "artifact_format": "onnx_file",
+      "license_id": "Apache-2.0",
+      "license_url": "https://code.tilo.so/api/packages/tilo/generic/u2net-subject/8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491/LICENSE",
+      "requires_acceptance": true,
+      "installed_size_bytes": 175997641,
+      "allowed_runtimes": [],
+      "required_memory_mib": 1024,
+      "required_accelerator_mib": 0,
+      "context_window": 0,
+      "vision": false,
+      "face_recognition": false,
+      "segmentation": true
+    }
+  ]
+}

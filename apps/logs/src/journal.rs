@@ -179,7 +179,7 @@ const ROWS_SERVICES: &[Row] = &[
         Priority::Warning,
         Some(very(820)),
         "stdout",
-        "sandbox: cluster 'web' requested /home/user/Downloads — prompting user",
+        "sandbox: cluster 'web' requested /home/alex/Downloads — prompting user",
         &[
             ("CODE_FILE", "crates/session/shell/src/portal/access.rs"),
             ("CLUSTER", "web"),
@@ -248,8 +248,8 @@ const ROWS_SERVICES: &[Row] = &[
         Priority::Notice,
         Some(very(1022)),
         "syslog",
-        "Accepted publickey for ada from 10.42.0.5 port 51344 ssh2: ED25519",
-        &[("SYSLOG_FACILITY", "4"), ("SSH_USER", "ada")],
+        "Accepted publickey for alex from 10.42.0.5 port 51344 ssh2: ED25519",
+        &[("SYSLOG_FACILITY", "4"), ("SSH_USER", "alex")],
     ),
     (
         4120,
@@ -591,11 +591,10 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
 /// collaboration session — seeded with a scatter of warnings and errors
 /// so the severity colouring and filters have something to bite on.
 pub fn sample_entries() -> Vec<LogEntry> {
-    // Base: 2026-06-30 14:20:00.000 UTC.
-    let base: u64 = {
-        let days: u64 = 20_634; // days from 1970-01-01 to 2026-06-30
-        (days * 86_400 + 14 * 3_600 + 20 * 60) * 1_000_000
-    };
+    // The boot began a few minutes before now on the wall clock, which a
+    // capture pins, so the sample reads as this morning's journal.
+    let now_us = u64::try_from(ui::clock::local_now().timestamp_micros()).unwrap_or(0);
+    let base: u64 = now_us.saturating_sub(4 * 60 * 1_000_000) / 1_000_000 * 1_000_000;
     let host = "tilo-station";
     let boot_a = "9f2c1e7b4a6d4c0fb1e3a8d5c2f70a11";
     let boot_b = "5a1d8c3e2b9f4710a6c4e0d7b385f922";

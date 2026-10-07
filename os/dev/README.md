@@ -41,8 +41,7 @@ If your host has qemu + tools natively, set `TILO_DISTROBOX=""` to skip the box.
 # 1. Build the image (≈ a few min incremental; first cargo build is long).
 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=<published-64-hex-owner-key> ./os/dev/build-image.sh
 
-# …or skip the browser and the WPE WebKit engine stage that builds its engine
-# from source — ~45 of the ~60 minutes a cold build costs. The boot chain is
+# …or skip the Browser and its Chromium engine runtime. The boot chain is
 # untouched, so this is the build to use when the question is "does it boot?".
 TILO_WITH_BROWSER=0 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=<published-64-hex-owner-key> ./os/dev/build-image.sh
 

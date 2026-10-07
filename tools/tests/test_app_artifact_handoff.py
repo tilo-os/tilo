@@ -31,7 +31,8 @@ class AppArtifactHandoffTests(unittest.TestCase):
         for relative in (
             "dist/apps/package-apps.sh", "dist/apps/assemble-collection.sh",
             "os/scripts/bake-runtime-bundle.sh", "tools/apps/app_release.py",
-            "tools/ci/__init__.py", "tools/ci/workspace_graph.py",
+            "os/scripts/stamp-runtime.sh", "tools/apps/pack-runtime-package.sh",
+            "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
             "crates/packaging/tilo-app-package/max-app-bytes",
@@ -77,9 +78,12 @@ if a[:2] == ['key', 'generate']:
 elif a[:2] == ['key', 'pubkey']:
     print('ab'*32)
 elif a[0] == 'build':
-    out = pathlib.Path(a[a.index('--out')+1]); out.mkdir(parents=True)
-    (out/'bundle.toml').write_text('version="2026.07"\\nroot_hash="'+'cd'*32+'"\\n')
+    version = a[a.index('--release')+1] + '+native.' + 'ab'*16
+    out = pathlib.Path(a[a.index('--out-root')+1]) / version; out.mkdir(parents=True)
+    arch = a[a.index('--arch')+1]
+    (out/'bundle.toml').write_text(f'version = "{version}"\\narch = "{arch}"\\nroot_hash = "'+'cd'*32+'"\\n')
     (out/'lib').mkdir(); (out/'lib/runtime.so').write_bytes(b'runtime payload')
+    pathlib.Path(a[a.index('--version-out')+1]).write_text(version + '\\n')
 elif a[0] == 'verify':
     assert (pathlib.Path(a[1])/'bundle.toml').is_file()
 else:
@@ -88,12 +92,24 @@ else:
         self.write("target/release/tilo-app-package", """#!/usr/bin/env python3
 import pathlib, sys, os, tomllib
 a = sys.argv[1:]
+runtime = 'tilo-runtime/2026.07+native.' + 'ab'*16
 if a[0] == 'pack':
     manifest = tomllib.loads(pathlib.Path(a[a.index('--manifest')+1]).read_text())
     arch = os.environ['FIXTURE_ARCH']
-    assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
-    payload = pathlib.Path(a[a.index('--payload')+1])/'bin/calculator'
-    pathlib.Path(a[a.index('--output')+1]).write_bytes(payload.read_bytes())
+    if manifest['package']['kind'] == 'runtime':
+        assert manifest['package']['provides'] == runtime, manifest
+        assert (pathlib.Path(a[a.index('--payload')+1])/'bundle.toml').is_file()
+        pathlib.Path(a[a.index('--output')+1]).write_bytes(b'r' * 64)
+    else:
+        assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
+        assert manifest['package']['runtime'] == runtime, manifest
+        payload = pathlib.Path(a[a.index('--payload')+1])/'bin/calculator'
+        pathlib.Path(a[a.index('--output')+1]).write_bytes(payload.read_bytes())
+elif a[0] == 'split':
+    tapp = pathlib.Path(a[1]); out = pathlib.Path(a[a.index('--out')+1])
+    out.mkdir(parents=True, exist_ok=True)
+    (out/tapp.name).write_bytes(b'thin')
+    (out/('ef'*32 + '.blob')).write_bytes(b'runtime payload')
 elif a[0] == 'verify':
     assert len(pathlib.Path(a[-1]).read_bytes()) == 64
 else:
@@ -240,8 +256,15 @@ exit 99
                                 target = artifact / source.relative_to(out)
                                 target.parent.mkdir(parents=True, exist_ok=True)
                                 shutil.copyfile(source, target)
-                    self.assertTrue((artifact / "runtime/tilo-runtime/2026.07/bundle.toml").is_file(),
+                    abi = "2026.07+native." + "ab" * 16
+                    self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "bundle.toml").is_file(),
                                     "workflow did not transport the produced runtime")
+                    self.assertTrue((artifact / f"runtime-package/runtime-0.1.0-{architecture}.tapp").is_file(),
+                                    "workflow did not transport the runtime package")
+                    self.assertTrue(list((artifact / "runtime-package").glob("*.blob")),
+                                    "workflow did not transport the runtime's payload objects")
+                    index = json.loads((out / "index.json").read_text())
+                    self.assertEqual({app["runtime"] for app in index["apps"]}, {"tilo-runtime/" + abi})
                     self.assertEqual((artifact / "runtime/runtime-bundle-publisher.hex").read_text().strip(), "ab" * 32)
                     sums = self.command("bash", "-c", 'cd "$1" && sha256sum --check --strict SHA256SUMS',
                                         "verify-download", str(artifact))

@@ -55,8 +55,8 @@ pub struct Key {
     /// the row's available width by the sum of weights — see [`key_rects`].
     pub width: f32,
     /// An optional vector glyph to render on the keycap instead of [`label`].
-    /// Used for the modifier/edit keys whose conventional symbols (⇧ ⌫ ⏎)
-    /// have no glyph in the shipped UI font and would otherwise render as a
+    /// Used for the modifier/edit keys (Shift, Backspace, Return), whose
+    /// conventional symbols have no glyph in the shipped UI font and would otherwise render as a
     /// `.notdef` box. The `label` is kept as the accessible/testable name.
     ///
     /// [`label`]: Key::label
@@ -110,7 +110,7 @@ impl Key {
 
     /// Render this key with a vector [`Icon`] instead of its text label
     /// (the label is retained as the accessible/testable name). Used for the
-    /// ⇧ / ⌫ / ⏎ keys, whose symbol glyphs are absent from the UI font.
+    /// Shift, Backspace and Return keys.
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
@@ -128,7 +128,7 @@ impl Key {
     /// everything else is unaffected.
     pub fn display_label(&self, shift: ShiftState) -> String {
         if self.is_letter() && shift.is_upper() {
-            self.label.to_uppercase()
+            ShiftState::CapsLock.case_word(&self.label)
         } else {
             self.label.clone()
         }
@@ -140,7 +140,7 @@ impl Key {
     pub fn emit_action(&self, shift: ShiftState) -> KeyAction {
         match &self.action {
             KeyAction::Char(s) if self.is_letter() && shift.is_upper() => {
-                KeyAction::Char(s.to_uppercase())
+                KeyAction::Char(ShiftState::CapsLock.case_word(s))
             }
             other => other.clone(),
         }
@@ -167,7 +167,7 @@ impl Key {
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let case = |c: char| {
             let form = c.to_string();
-            let upper = form.to_uppercase();
+            let upper = ShiftState::CapsLock.case_word(&form);
             // Casing must not change the length (ß → SS): keep such forms.
             if shift.is_upper() && upper.chars().count() == 1 {
                 upper
@@ -213,6 +213,18 @@ pub enum ShiftState {
 }
 
 impl ShiftState {
+    /// Apply typing case to a decoded word: one-shot Shift changes its first
+    /// Unicode character; Caps Lock changes the whole word. This is the same
+    /// casing policy used for key labels, emitted letters and accent choices.
+    #[must_use]
+    pub fn case_word(self, word: &str) -> String {
+        match self {
+            Self::Off => word.to_owned(),
+            Self::Shift => ui::format::capitalize_first(word),
+            Self::CapsLock => word.to_uppercase(),
+        }
+    }
+
     /// Whether letters should render / emit upper-case in this state.
     pub fn is_upper(self) -> bool {
         matches!(self, ShiftState::Shift | ShiftState::CapsLock)
@@ -284,18 +296,18 @@ impl KeyboardLayout {
         rows.push(letters[0].chars().map(Key::letter).collect());
         rows.push(letters[1].chars().map(Key::letter).collect());
         // Row 2: Shift, letters, Backspace.
-        let mut r3 = vec![Key::action("⇧", KeyAction::Shift, 1.5).with_icon(Icon::ArrowBigUp)];
+        let mut r3 = vec![Key::action("Shift", KeyAction::Shift, 1.5).with_icon(Icon::ArrowBigUp)];
         r3.extend(letters[2].chars().map(Key::letter));
-        r3.push(Key::action("⌫", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
+        r3.push(Key::action("Backspace", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
         rows.push(r3);
         // Row 3: function row.
         rows.push(vec![
             Key::action("?123", KeyAction::SymbolsToggle, 1.5),
             Key::ch(","),
-            Key::action("\u{1F642}", KeyAction::Emoji, 1.0),
+            Key::action("Emoji", KeyAction::Emoji, 1.5).with_icon(Icon::Smile),
             Key::action("space", KeyAction::Space, 5.0),
             Key::ch("."),
-            Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
+            Key::action("Return", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
         ]);
         Self {
             name: name.to_string(),
@@ -303,20 +315,22 @@ impl KeyboardLayout {
         }
     }
 
-    /// A calculator-style number pad: three digit rows, then a bottom row with
-    /// `0` flanked by the minus sign and decimal point, plus Backspace and
-    /// Enter. Suited to plain number entry where a sign and decimals are
-    /// reasonable (quantities, ages, amounts).
+    /// A calculator-style number pad on four columns: the digits on the
+    /// first three, and Backspace, the minus sign, the decimal point and
+    /// Enter down the fourth, with `0` across the first three of the bottom
+    /// row. Every row runs on the same columns, so the key edges line up.
+    /// Suited to plain number entry where a sign and decimals are reasonable
+    /// (quantities, ages, amounts).
     pub fn numeric() -> Self {
-        Self::digit_pad("numeric", vec![Key::ch("-"), Key::ch("0"), Key::ch(".")])
+        Self::digit_pad("numeric", Key::ch("-"), Key::ch("."))
     }
 
-    /// Like [`numeric`](Self::numeric) but tuned for decimal entry: the bottom
-    /// row pairs `0` with the decimal point (no minus sign) so the point is
-    /// always one tap away. Kept distinct from `numeric` so a field that only
-    /// wants non-negative decimals (prices, measurements) can pick it.
+    /// Like [`numeric`](Self::numeric) but tuned for decimal entry: no minus
+    /// sign, and both the decimal point and the decimal comma one tap away.
+    /// Kept distinct from `numeric` so a field that only wants non-negative
+    /// decimals (prices, measurements) can pick it.
     pub fn decimal() -> Self {
-        Self::digit_pad("decimal", vec![Key::ch("0"), Key::ch(".")])
+        Self::digit_pad("decimal", Key::ch("."), Key::ch(","))
     }
 
     /// A phone dialpad: the standard `1-9` grid plus a `* 0 #` bottom row, with
@@ -330,7 +344,7 @@ impl KeyboardLayout {
             vec![Key::ch("*"), Key::ch("0"), Key::ch("#")],
             vec![
                 Key::ch("+"),
-                Key::action("⌫", KeyAction::Backspace, 2.0).with_icon(Icon::Delete),
+                Key::action("Backspace", KeyAction::Backspace, 2.0).with_icon(Icon::Delete),
             ],
         ];
         Self {
@@ -343,50 +357,43 @@ impl KeyboardLayout {
     /// has no `.`, `-`, `*`, or `#` — a secret numeric code is just digits, and
     /// extra symbols would only invite mistakes.
     pub fn pin() -> Self {
-        Self::digit_pad(
-            "pin",
+        let rows = vec![
+            "123".chars().map(Key::ch_char).collect::<Vec<_>>(),
+            "456".chars().map(Key::ch_char).collect::<Vec<_>>(),
+            "789".chars().map(Key::ch_char).collect::<Vec<_>>(),
             vec![
-                Key::action("⌫", KeyAction::Backspace, 1.0).with_icon(Icon::Delete),
+                Key::action("Backspace", KeyAction::Backspace, 1.0).with_icon(Icon::Delete),
                 Key::ch("0"),
-                Key::action("⏎", KeyAction::Enter, 1.0).with_icon(Icon::CornerDownLeft),
+                Key::action("Return", KeyAction::Enter, 1.0).with_icon(Icon::CornerDownLeft),
             ],
-        )
+        ];
+        Self {
+            name: "pin".to_string(),
+            rows,
+        }
     }
 
-    /// Build a numeric pad: three rows of `1-9`, a custom bottom row, and a
-    /// right-hand column of Backspace (top) and Enter (bottom) spanning the
-    /// digit rows. The bottom row carries whatever extra keys the variant wants
-    /// (a `0` plus signs/points, or the full bottom row for `pin`).
-    fn digit_pad(name: &str, bottom: Vec<Key>) -> Self {
-        // For `pin` the caller already supplies a complete bottom row including
-        // its own Backspace/Enter, so we don't append side keys there.
-        let bottom_is_complete = bottom
-            .iter()
-            .any(|k| matches!(k.action, KeyAction::Enter | KeyAction::Backspace));
-        let rows = if bottom_is_complete {
-            vec![
-                "123".chars().map(Key::ch_char).collect::<Vec<_>>(),
-                "456".chars().map(Key::ch_char).collect::<Vec<_>>(),
-                "789".chars().map(Key::ch_char).collect::<Vec<_>>(),
-                bottom,
-            ]
-        } else {
-            // Backspace tops the editing column; Enter commits at the bottom.
-            vec![
-                {
-                    let mut r = "123".chars().map(Key::ch_char).collect::<Vec<_>>();
-                    r.push(Key::action("⌫", KeyAction::Backspace, 1.0).with_icon(Icon::Delete));
-                    r
-                },
-                "456".chars().map(Key::ch_char).collect::<Vec<_>>(),
-                "789".chars().map(Key::ch_char).collect::<Vec<_>>(),
-                {
-                    let mut r = bottom;
-                    r.push(Key::action("⏎", KeyAction::Enter, 1.0).with_icon(Icon::CornerDownLeft));
-                    r
-                },
-            ]
+    /// Build a number pad on four columns: `1-9` on the first three, `0`
+    /// across them on the bottom row, and the fourth column top to bottom
+    /// Backspace, `second`, `third` and Enter.
+    fn digit_pad(name: &str, second: Key, third: Key) -> Self {
+        let digits = |chars: &str, side: Key| {
+            let mut row: Vec<Key> = chars.chars().map(Key::ch_char).collect();
+            row.push(side);
+            row
         };
+        let rows = vec![
+            digits(
+                "123",
+                Key::action("Backspace", KeyAction::Backspace, 1.0).with_icon(Icon::Delete),
+            ),
+            digits("456", second),
+            digits("789", third),
+            vec![
+                Key::ch("0").with_width(3.0),
+                Key::action("Return", KeyAction::Enter, 1.0).with_icon(Icon::CornerDownLeft),
+            ],
+        ];
         Self {
             name: name.to_string(),
             rows,
@@ -406,7 +413,7 @@ impl KeyboardLayout {
                 Key::ch("."),
                 Key::action("space", KeyAction::Space, 3.5),
                 Key::ch(".com").with_width(1.5),
-                Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
+                Key::action("Return", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
             ],
         )
     }
@@ -426,7 +433,7 @@ impl KeyboardLayout {
                 // but is labelled "no space" to discourage the habit.
                 Key::action("no space", KeyAction::Space, 3.5),
                 Key::ch(".com").with_width(1.5),
-                Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
+                Key::action("Return", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
             ],
         )
     }
@@ -439,9 +446,9 @@ impl KeyboardLayout {
         let mut rows: Vec<Vec<Key>> = Vec::new();
         rows.push(letters[0].chars().map(Key::letter).collect());
         rows.push(letters[1].chars().map(Key::letter).collect());
-        let mut r3 = vec![Key::action("⇧", KeyAction::Shift, 1.5).with_icon(Icon::ArrowBigUp)];
+        let mut r3 = vec![Key::action("Shift", KeyAction::Shift, 1.5).with_icon(Icon::ArrowBigUp)];
         r3.extend(letters[2].chars().map(Key::letter));
-        r3.push(Key::action("⌫", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
+        r3.push(Key::action("Backspace", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
         rows.push(r3);
         rows.push(bottom);
         Self {
@@ -457,9 +464,10 @@ impl KeyboardLayout {
             "1234567890".chars().map(Key::letter).collect::<Vec<_>>(),
             "@#$_&-+()/".chars().map(Key::letter).collect::<Vec<_>>(),
             {
-                let mut r = vec![Key::action("=\\<", KeyAction::SymbolsToggle, 1.5)];
-                r.extend("*\"':;!?".chars().map(Key::letter));
-                r.push(Key::action("⌫", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
+                // Eight marks and a wider Backspace fill the ten columns the
+                // rows above use, so every key edge lines up.
+                let mut r: Vec<Key> = "%*\"':;!?".chars().map(Key::letter).collect();
+                r.push(Key::action("Backspace", KeyAction::Backspace, 2.0).with_icon(Icon::Delete));
                 r
             },
             vec![
@@ -467,7 +475,7 @@ impl KeyboardLayout {
                 Key::ch(","),
                 Key::action("space", KeyAction::Space, 5.0),
                 Key::ch("."),
-                Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
+                Key::action("Return", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
             ],
         ];
         Self {
@@ -628,7 +636,7 @@ mod tests {
             assert_eq!(l.rows[1][0].label, "q");
         }
 
-        // The ⇧ / ⌫ / ⏎ action keys must carry a vector icon on every layout
+        // The Shift, Backspace and Return action keys must carry a vector icon on every layout
         // that exposes them — their Unicode symbols have no glyph in the shipped
         // UI font and would render as `.notdef` boxes otherwise. This asserts the
         // production layout data (what the widget draws), not a helper.
@@ -772,6 +780,14 @@ mod tests {
             let space = Key::action("space", KeyAction::Space, 5.0);
             assert_eq!(space.emit_action(ShiftState::Shift), KeyAction::Space);
         }
+
+        eprintln!("phase unicode_typing_case_preserves_word_and_expands_letters");
+        assert_eq!(ShiftState::Off.case_word("élève"), "élève");
+        assert_eq!(ShiftState::Shift.case_word("élève"), "Élève");
+        assert_eq!(ShiftState::CapsLock.case_word("élève"), "ÉLÈVE");
+        assert_eq!(ShiftState::Shift.case_word("ßeta"), "SSeta");
+        assert_eq!(ShiftState::CapsLock.case_word("straße"), "STRASSE");
+        assert_eq!(ShiftState::Shift.case_word(""), "");
 
         eprintln!("phase shift_state_cycles");
         {
@@ -920,5 +936,44 @@ mod tests {
             assert!(KeyboardLayout::by_name("dvorak").is_none());
             assert_eq!(KeyboardLayout::by_name("phone").unwrap().name, "phone");
         }
+    }
+
+    /// Every row of a layout runs on the same column grid: the cumulative
+    /// key edges of any row all fall on edges of the first row, so a key edge
+    /// never sits between two keys of the rows above and below.
+    #[test]
+    fn number_and_symbol_rows_share_one_column_grid() {
+        let edges = |row: &[Key]| -> Vec<f32> {
+            let total: f32 = row.iter().map(|k| k.width).sum();
+            row.iter()
+                .scan(0.0, |x, k| {
+                    *x += k.width;
+                    Some(*x / total)
+                })
+                .collect()
+        };
+        for l in [
+            KeyboardLayout::numeric(),
+            KeyboardLayout::decimal(),
+            KeyboardLayout::pin(),
+            KeyboardLayout::phone(),
+        ] {
+            let grid = edges(&l.rows[0]);
+            for row in &l.rows {
+                for e in edges(row) {
+                    assert!(
+                        grid.iter().any(|g| (g - e).abs() < 1e-4),
+                        "{}: an edge at {e} is off the grid {grid:?}",
+                        l.name
+                    );
+                }
+            }
+        }
+        let symbols = KeyboardLayout::symbols();
+        let widths: Vec<f32> = symbols.rows[..3]
+            .iter()
+            .map(|r| r.iter().map(|k| k.width).sum())
+            .collect();
+        assert!(widths.iter().all(|w| (w - 10.0).abs() < 1e-6), "{widths:?}");
     }
 }

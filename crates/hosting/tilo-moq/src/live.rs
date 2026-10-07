@@ -968,6 +968,9 @@ impl Inner {
         let Some(slot) = self.slot(path, true) else {
             return;
         };
+        // A spawned watcher can run immediately on another worker. Publish
+        // its ownership while holding the lock that its first check takes.
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
         let watch = Task::spawn(watch_client(
             Arc::downgrade(self),
             Arc::downgrade(&slot),
@@ -975,10 +978,7 @@ impl Inner {
             path.to_owned(),
             ingress,
         ));
-        slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .client = Some(Client {
+        state.client = Some(Client {
             session,
             _watch: watch,
         });
@@ -1020,8 +1020,8 @@ impl Inner {
             let Some(slot) = slots.get(path) else {
                 return false;
             };
+            let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(session) = session {
-                let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state
                     .client
                     .as_ref()
@@ -1029,7 +1029,19 @@ impl Inner {
                 {
                     return false;
                 }
+            } else if Arc::strong_count(slot) > 1
+                || state.client.is_some()
+                || state
+                    .host_active
+                    .is_some_and(|at| at.elapsed() < HOST_SLOT_IDLE)
+            {
+                // Recheck the idle candidate under both locks. slot() takes
+                // the map lock to acquire a reference; its caller retains
+                // that reference until attaching or updating host activity.
+                // A stale snapshot cannot collect that in-flight operation.
+                return false;
             }
+            drop(state);
             slots.remove(path)
         };
         let Some(slot) = slot else { return false };

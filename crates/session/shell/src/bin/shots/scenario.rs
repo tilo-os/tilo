@@ -405,6 +405,9 @@ pub enum Action {
     ShowHostDesktopOnboarding,
     SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState),
     SetLockVisual(super::driver::LockVisualState),
+    /// Turn the reduced-transparency setting on or off: floating chrome is
+    /// then the opaque material instead of the blurred one.
+    ReduceTransparency(bool),
     /// Create the person's "Research" workspace on the shown device, the way
     /// the laptop has it, and look at it.
     SeedOwnWorkspace,
@@ -610,7 +613,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::OpenPalette => {
-            // Drive the default Super+K binding through the host's keyboard branch instead
+            // Drive the default Super+Space binding through the host's keyboard branch instead
             // of `set_palette_visible(true)` directly — the hotkey path
             // calls `toggle_palette()` which also focuses the palette
             // input + clears the residual query (see ShellOverlayHost::
@@ -618,7 +621,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             // actions would fall through because the palette ignores
             // characters when `!is_focused`.
             driver.set_modifiers(ModifiersState::SUPER);
-            driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
+            driver.press_key(&Key::Named(winit::keyboard::NamedKey::Space));
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::CaptureRecordingActive(active) => {
@@ -676,6 +679,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
         Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
+        Action::ReduceTransparency(on) => driver.set_reduce_transparency(*on),
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
@@ -864,7 +868,7 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::EnableNativeAppSearch => {
-            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory(
+            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
                 &std::env::temp_dir(),
             ) {
                 Ok(inputs) => {
@@ -1316,20 +1320,17 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::SeedLongNotes(group_idx) => {
-            let strip_id = {
+            let target = {
                 let chrome = driver.chrome();
                 let tree = chrome.tree();
-                tree.desktop
-                    .active_workspace()
-                    .and_then(|workspace| workspace.strips.first())
-                    .map(|strip| strip.id)
+                tree.desktop.active_workspace().and_then(|workspace| {
+                    let strip = workspace.strips.first()?;
+                    let group = strip.window_groups.get(*group_idx)?;
+                    Some((strip.id, workspace.room.to_string(), group.active_tab))
+                })
             };
-            if let Some(strip_id) = strip_id
-                && let Some(host) = driver
-                    .host_mut()
-                    .group_at_for_tests(strip_id, *group_idx)
-                    .and_then(|group| group.active_host_mut())
-            {
+            let inputs = driver.chrome().hosted_inputs().clone();
+            if let Some((strip_id, room, tab)) = target {
                 let body = (1..=52)
                     .map(|line| {
                         format!(
@@ -1337,11 +1338,26 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                         )
                     })
                     .collect::<Vec<_>>()
-                    .join("\n");
-                host.replace_content(ui::widget::TileContent::App(Box::new(
-                    shell::shell::notes_app::NotesApp::with_seed(body),
-                )));
-                driver.relayout();
+                    .join("\n\n");
+                match inputs.mount_note(&room, tab, "Complete capture.md", &body) {
+                    Some(Ok(component)) => {
+                        match tilo_desktop::resolver::app_tile(component, None, |_| {}) {
+                            Ok(app) => {
+                                if let Some(host) = driver
+                                    .host_mut()
+                                    .group_at_for_tests(strip_id, *group_idx)
+                                    .and_then(|group| group.active_host_mut())
+                                {
+                                    host.replace_content(ui::widget::TileContent::App(app));
+                                }
+                                driver.relayout();
+                            }
+                            Err(error) => eprintln!("shots: the long note did not mount: {error}"),
+                        }
+                    }
+                    Some(Err(error)) => eprintln!("shots: the long note did not mount: {error}"),
+                    None => eprintln!("shots: this host mounts no Notes"),
+                }
             }
         }
         Action::SwitchWorkspace(idx) => {
@@ -1686,10 +1702,25 @@ fn build_scenarios() -> Vec<Scenario> {
             actions: vec![
                 Action::ShowHostDesktopOnboarding,
                 Action::Wait(4),
-                Action::Snapshot("01-identity-introduction"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Connect),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Intro),
                 Action::Relayout,
-                Action::Snapshot("02-restore-existing"),
+                Action::Snapshot("01-identity-introduction"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::Existing,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02-use-existing"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Nearby),
+                Action::Relayout,
+                Action::Snapshot("02a-nearby-waiting"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::NearbyCode,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02b-nearby-code"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Restore),
+                Action::Relayout,
+                Action::Snapshot("02c-restore-backup"),
                 Action::SetOnboardingVisual(
                     shell::onboarding_view::OnboardingVisualState::RestoreError,
                 ),
@@ -2480,6 +2511,36 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "tab_drag_cancel",
+            description: "Cancel a lifted tab with Escape before releasing the pointer.",
+            actions: vec![
+                Action::Snapshot("01-desktop"),
+                Action::MoveCursorNamed("tab:Files"),
+                Action::MousePress,
+                Action::MoveCursor(Point::new(600.0, 300.0)),
+                Action::Snapshot("02-tab-dragging"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Snapshot("03-tab-cancelled"),
+                Action::MouseRelease,
+                Action::Snapshot("04-pointer-released"),
+            ],
+        },
+        Scenario {
+            name: "tab_menu_keyboard",
+            description: "Open the focused tab menu with Super+F10, navigate and cancel.",
+            actions: vec![
+                Action::Snapshot("01-desktop"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Named(NamedKey::F10)),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("02-tab-menu-focused"),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
+                Action::Snapshot("03-tab-menu-next"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Snapshot("04-tab-menu-cancelled"),
+            ],
+        },
+        Scenario {
             name: "palette_typing",
             description: "Open the command palette, type 'h', then close with Esc.",
             actions: vec![
@@ -3068,6 +3129,32 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickAt(Point::new(744.0, 103.0)),
                 Action::Wait(2),
                 Action::Snapshot("04-browser-active"),
+            ],
+        },
+        Scenario {
+            name: "floating_material",
+            description: "Quick settings, then the palette, over a long note: floating chrome is the blurred material.",
+            actions: vec![
+                Action::SeedLongNotes(0),
+                Action::Wait(2),
+                Action::Relayout,
+                Action::Snapshot("01-document"),
+                Action::PushQsLevel(QsLevel::Root),
+                Action::Wait(30),
+                Action::Snapshot("02-quick-settings"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(30),
+                Action::OpenPalette,
+                Action::Wait(30),
+                Action::Snapshot("03-palette"),
+                // The same two surfaces under reduced transparency: opaque.
+                Action::ReduceTransparency(true),
+                Action::Snapshot("04-palette-opaque"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(30),
+                Action::PushQsLevel(QsLevel::Root),
+                Action::Wait(30),
+                Action::Snapshot("05-quick-settings-opaque"),
             ],
         },
         Scenario {

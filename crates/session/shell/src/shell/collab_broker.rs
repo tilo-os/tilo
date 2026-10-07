@@ -29,6 +29,9 @@ use crate::shell::network::{
 #[cfg(test)]
 use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
+mod personal_session;
+pub(crate) use personal_session::{NativePersonalSession, NativePersonalSource};
+
 /// What a room calls the peers in it, keyed by the handle presence
 /// frames identify their sender by. Same shape as
 /// [`crate::shell::peer_presence::PeerLabels`].
@@ -131,7 +134,9 @@ pub use tilo_action_broker::collab_broker::{
 pub struct BrokerHandle {
     inner: tilo_action_broker::collab_broker::BrokerHandle,
     local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
+    _personal_source: Option<Arc<NativePersonalSource>>,
     native_media: Option<super::native_media::NativeMediaService>,
+    task_review: Option<super::task_review::NativeTaskReview>,
     realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
@@ -161,6 +166,10 @@ impl std::ops::Deref for BrokerHandle {
 }
 
 impl BrokerHandle {
+    pub(crate) fn task_review(&self) -> Option<super::task_review::NativeTaskReview> {
+        self.task_review.clone()
+    }
+
     pub(crate) fn native_media_service(&self) -> Option<super::native_media::NativeMediaService> {
         self.native_media.clone()
     }
@@ -261,6 +270,8 @@ pub fn spawn_native(
             crate::shell::record_hydration::NetworkSource(Arc::clone(network)),
         ));
     }
+    let task_review =
+        super::task_review::NativeTaskReview::new(membership.clone(), peer_sync.clone()).ok();
     let publisher = PeerPublisher::with_optional_owner_commit(
         peer_sync
             .clone()
@@ -270,14 +281,16 @@ pub fn spawn_native(
             peer_sync.clone(),
         )),
     );
-    spawn_inner(
+    let mut handle = spawn_inner(
         capnp_socket_path,
         peer_sync.as_ref(),
         &publisher,
         Some(membership),
         CertificateProvisioning::Production,
         None,
-    )
+    )?;
+    handle.task_review = task_review;
+    Ok(handle)
 }
 
 /// Spawn the production broker pipeline with an explicit enrolled-device set.
@@ -295,6 +308,32 @@ pub fn spawn_native_harness(
     spawn_inner(
         capnp_socket_path,
         None,
+        &publisher,
+        Some(membership),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        None,
+    )
+}
+
+/// Production owner/read pipeline with explicitly authorized synthetic devices.
+/// No enrollment or input grant is created by this test-only constructor.
+#[cfg(test)]
+pub(crate) fn spawn_native_owner_harness(
+    socket: PathBuf,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+    network: &Arc<ShellNetwork>,
+) -> std::io::Result<BrokerHandle> {
+    let publisher = PeerPublisher::with_optional_owner_commit(
+        Some(network.clone()),
+        Arc::new(super::broker_services::NativeOwnerCommitService::new(
+            membership.clone(),
+            Some(network.clone()),
+        )),
+    );
+    spawn_inner(
+        socket,
+        Some(network),
         &publisher,
         Some(membership),
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
@@ -351,6 +390,30 @@ impl CertificateProvisioning {
     }
 }
 
+/// The history page a peer's scrollback request is answered with: from
+/// durable history as well as the memory window, so a member who joined on
+/// another device can page back through everything this device retained,
+/// but only when the artifact belongs to the room whose topic asked, and
+/// never for the person's own room. An artifact whose room this device never
+/// learned is answered to nobody.
+pub(crate) fn scrollback_answer(
+    net: &ShellNetwork,
+    channels: &Mutex<BrokerChannels>,
+    entry: &InboundScrollbackRequest,
+) -> Vec<collab_types::SignedOp> {
+    let Ok(mut ch) = channels.lock() else {
+        return Vec::new();
+    };
+    if !ch
+        .room_of(entry.artifact)
+        .is_some_and(|room| net.scrollback_answer_allowed(&room, entry.workspace_topic))
+    {
+        return Vec::new();
+    }
+    ch.scrollback_page(entry.artifact, entry.before_seq, entry.max)
+        .0
+}
+
 /// Inbound queues + shared fanout state the drain thread polls each
 /// cycle. Grouped into one struct so the thread closure in
 /// [`spawn_inner`] doesn't have to carry the whole per-iteration match
@@ -362,6 +425,10 @@ struct DrainQueues {
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
     remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// Other devices' requests for, and answers with, records' content.
+    record_content_inbound: Arc<Mutex<Vec<crate::shell::network::InboundRecordContent>>>,
+    /// The record-content service those reach; absent on a peer broker.
+    record_content: Option<Arc<tilo_action_broker::record_content::RouteContent>>,
     /// The action host remote requests are answered by, built once the
     /// application broker is up; its invocation ledger lives as long as
     /// the drainer so retries stay idempotent.
@@ -386,16 +453,52 @@ impl DrainQueues {
     fn drain_once(
         &self,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
+        announced: &mut Announced,
     ) -> bool {
         if let Some(service) = &self.channel_encryption {
             service.pump(&*self.net);
         }
+        self.drain_owner_views();
         self.drain_presence(labels, announced)
             && self.drain_documents(labels, announced)
+            && self.drain_person_snapshot_requests()
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
+            && self.drain_record_content()
+    }
+
+    fn drain_owner_views(&self) {
+        for (view, source_route) in self.net.pump_owner_views() {
+            let route = tilo_action_broker::route::CrdtRoute::record(
+                &view.app,
+                &view.room,
+                format!("continuation:{}", view.instance),
+            );
+            let event = CollabEvent::Handoff {
+                request: ui::collaboration::handoff::HandoffRequest::OwnerView { view },
+            };
+            if let Some(source) = source_route {
+                let _ = self.net.with_current_personal_route(&source, || {
+                    self.table.fanout_to_route(&event, u64::MAX, &route);
+                });
+            } else {
+                self.table.fanout_to_route(&event, u64::MAX, &route);
+            }
+        }
+    }
+
+    fn drain_record_content(&self) -> bool {
+        match &self.record_content {
+            Some(content) => {
+                crate::shell::record_content::drain(&self.record_content_inbound, content)
+            }
+            None => self
+                .record_content_inbound
+                .lock()
+                .map(|mut inbound| inbound.clear())
+                .is_ok(),
+        }
     }
 
     /// Answer remote-action requests through the same broker local callers
@@ -429,7 +532,7 @@ impl DrainQueues {
     fn drain_presence(
         &self,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
+        announced: &mut Announced,
     ) -> bool {
         let drained_presence: Vec<_> = {
             let Ok(mut buf) = self.presence_inbound.lock() else {
@@ -446,6 +549,7 @@ impl DrainQueues {
                 &entry.cluster_id,
                 entry.peer,
                 &|c| self.net.peer_labels(c),
+                &|peer| self.net.peer_colour(peer),
                 &self.table,
                 labels,
                 announced,
@@ -466,7 +570,7 @@ impl DrainQueues {
     fn drain_documents(
         &self,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
+        announced: &mut Announced,
     ) -> bool {
         let drained_signed: Vec<_> = {
             let Ok(mut buf) = self.documents.lock() else {
@@ -495,6 +599,7 @@ impl DrainQueues {
                         &route.cluster_id,
                         peer,
                         &|c| self.net.peer_labels(c),
+                        &|peer| self.net.peer_colour(peer),
                         &self.table,
                         labels,
                         announced,
@@ -504,6 +609,17 @@ impl DrainQueues {
             if !delivered {
                 return false;
             }
+        }
+        true
+    }
+
+    /// When another of this person's devices came back, ask the local apps
+    /// holding person-room records for their snapshots, which then travel to
+    /// it over the personal fabric like any other edit.
+    fn drain_person_snapshot_requests(&self) -> bool {
+        while let Some(person_room) = self.net.take_person_snapshot_request() {
+            let asked = self.table.request_room_snapshots(&person_room);
+            tracing::debug!(asked, "asked local apps to catch a returning device up");
         }
         true
     }
@@ -519,19 +635,12 @@ impl DrainQueues {
             std::mem::take(&mut *buf)
         };
         for entry in drained_req {
-            // Answer from durable history as well as the memory window, so a
-            // member who joined on another device can page back through
-            // everything this device retained.
-            let (ops, _exhausted) = {
-                let Ok(mut ch) = self.channels.lock() else {
-                    continue;
-                };
-                ch.scrollback_page(entry.artifact, entry.before_seq, entry.max)
-            };
+            let ops = scrollback_answer(&self.net, &self.channels, &entry);
             if !ops.is_empty() {
                 let boxed: Vec<Box<collab_types::SignedOp>> =
                     ops.into_iter().map(Box::new).collect();
-                self.net.publish_scrollback_response(entry.artifact, boxed);
+                self.net
+                    .publish_scrollback_response(entry.workspace_topic, entry.artifact, boxed);
             }
         }
         true
@@ -622,6 +731,9 @@ fn spawn_inner(
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
+    let record_content = peer_sync
+        .filter(|_| config.is_none())
+        .map(crate::shell::record_content::session_record_content);
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
             presence_inbound: net.inbound_app_presence_handle(),
@@ -629,6 +741,8 @@ fn spawn_inner(
             sb_req_inbound: net.inbound_scrollback_request_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),
             remote_actions: net.inbound_remote_actions_handle(),
+            record_content_inbound: net.inbound_record_content_handle(),
+            record_content: record_content.clone(),
             action_host: std::sync::OnceLock::new(),
             table: Arc::clone(&table),
             channels: Arc::clone(&channels),
@@ -644,7 +758,7 @@ fn spawn_inner(
                 // Name already announced per (peer, cluster) — said
                 // again only when it changes, not on every
                 // pointer-rate presence frame.
-                let mut announced: HashMap<(String, u64), (String, u64)> = HashMap::new();
+                let mut announced = Announced::new();
                 // What the room last said, on a re-ask cadence
                 // rather than every frame — the lookup takes the
                 // replica's lock and parses every peer id it holds.
@@ -670,6 +784,10 @@ fn spawn_inner(
     } else {
         tilo_action_broker::services::HostServices::default()
     };
+    services.record_content = record_content;
+    services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
+        local_session.lifecycle(),
+    )));
     if certificate_provisioning.uses_harness_devices() && config.is_none() {
         services.native_certificates = None;
     }
@@ -718,6 +836,7 @@ fn spawn_inner(
             tree.clone(),
         )) as tilo_action_broker::services::WorkspaceAuthorityHandle
     });
+    let personal_socket = capnp_socket_path.clone();
     let inner = match certificate_provisioning {
         CertificateProvisioning::Production => {
             tilo_action_broker::collab_broker::spawn_with_services(
@@ -760,9 +879,17 @@ fn spawn_inner(
             .try_send(crate::network::actor::NetCmd::AttachActionBroker { queue, host, rooms })
             .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
     }
+    let personal_source = inner
+        .app_action_broker()
+        .zip(peer_sync.and_then(|network| network.messaging_host_identity()))
+        .and_then(|(broker, host)| {
+            NativePersonalSource::install(personal_socket, broker, local_session.lifecycle(), host)
+        });
     Ok(BrokerHandle {
+        task_review: None,
         inner,
         local_session,
+        _personal_source: personal_source,
         native_media,
         realtime_fabric: realtime_fabric.map(|(_, bridge)| bridge),
         drain_thread,
@@ -954,20 +1081,26 @@ pub(crate) fn answer_remote_actions(
     }
 }
 
+/// What has been announced per (room, peer): the name, the colour, and the
+/// connection generation it was said in front of.
+type Announced = HashMap<(String, u64), (String, Option<ui::tokens::PresenceHue>, u64)>;
+
 /// The id a remote peer's traffic is attributed under, announcing the
-/// room's name for it first if nobody has said it yet. Every path
-/// showing a remote participant goes through here so they agree. The id
-/// stays the peer handle even once named — a roster entry names a
-/// participant, it does not recolour one. `labels` caches the room's
-/// answer on [`LABEL_TTL`]; `announced` remembers what has been said, so
-/// the roster publishes on change rather than every frame.
+/// room's name for it and the colour its own machine says it wears
+/// (`colour_of`) first if nobody has said them yet. Every path showing a
+/// remote participant goes through here so they agree. The id stays the
+/// peer handle even once named or coloured — a roster entry names and
+/// colours a participant, it does not make it someone else. `labels`
+/// caches the room's answer on [`LABEL_TTL`]; `announced` remembers what has
+/// been said, so the roster publishes on change rather than every frame.
 fn remote_participant_id(
     cluster_id: &str,
     peer: u64,
     labels_of: &dyn Fn(&str) -> PeerLabels,
+    colour_of: &dyn Fn(u64) -> Option<ui::tokens::PresenceHue>,
     table: &FanoutState,
     labels: &mut HashMap<String, (Instant, PeerLabels)>,
-    announced: &mut HashMap<(String, u64), (String, u64)>,
+    announced: &mut Announced,
 ) -> String {
     // Attributed to the publishing host, not a local peer slot: this is
     // what colours the caret, so two peers must never collapse to one id.
@@ -988,22 +1121,25 @@ fn remote_participant_id(
         .map(String::as_str);
     let prior = announced.get(&slot);
     let generation = table.connections_seen();
-    let say = roster_announcement(prior.map(|(n, _)| n.as_str()), known, &user_id)
+    let colour = colour_of(peer);
+    let say = roster_announcement(prior.map(|(n, _, _)| n.as_str()), known, &user_id)
         // "Changed" alone misses an app that connected after the name
         // was said — it was never in the audience, and nothing would
         // say it again. A connection this answer hasn't been said in
-        // front of is itself a reason to say it again.
+        // front of is itself a reason to say it again, and so is a
+        // colour the peer wears that has not been said.
         .or_else(|| {
-            let unheard = prior.is_some_and(|(_, at)| *at != generation);
-            unheard.then(|| known.unwrap_or(&user_id).to_string())
+            let unheard = prior.is_some_and(|(_, _, at)| *at != generation);
+            let recoloured = colour.is_some() && prior.is_none_or(|(_, said, _)| *said != colour);
+            (unheard || recoloured).then(|| known.unwrap_or(&user_id).to_string())
         });
     if let Some(name) = say {
-        announced.insert(slot, (name.clone(), generation));
+        announced.insert(slot, (name.clone(), colour, generation));
         let roster = CollabEvent::Context {
             collaborators: vec![ui::collaboration::Collaborator {
                 id: user_id.clone(),
                 name,
-                color: [0.0, 0.0, 0.0],
+                colour,
                 // Always a remote network peer here — an agent joins
                 // over the local socket and is marked there instead.
                 is_agent: false,
@@ -1116,7 +1252,7 @@ mod tests {
 
             assert!(matches!(
                 validate_document_route(&route, &envelope),
-                Ok(collab_types::WholeDocumentPayload::Cleartext(
+                Ok(collab_types::RoutedDocumentPayload::Cleartext(
                     DocumentMutation::Snapshot(data)
                 )) if data == b"whole document"
             ));
@@ -1155,7 +1291,7 @@ mod tests {
             );
             assert_eq!(
                 validate_document_route(&route, &envelope),
-                Ok(collab_types::WholeDocumentPayload::Encrypted {
+                Ok(collab_types::RoutedDocumentPayload::Encrypted {
                     channel: expected_channel,
                     epoch: 9,
                 })
@@ -1260,6 +1396,7 @@ mod tests {
                     "room-1",
                     HANDLE,
                     &room,
+                    &|_| None,
                     &table,
                     &mut labels,
                     &mut announced,
@@ -1323,6 +1460,7 @@ mod tests {
                 "room-1",
                 HANDLE,
                 &room,
+                &|_| None,
                 &table,
                 &mut labels,
                 &mut announced,
@@ -1331,6 +1469,7 @@ mod tests {
                 "room-1",
                 HANDLE,
                 &room,
+                &|_| None,
                 &table,
                 &mut labels,
                 &mut announced,
@@ -1357,8 +1496,68 @@ mod tests {
             );
         }
 
+        fn the_colour_a_peer_wears_reaches_every_app_once() {
+            const HANDLE: u64 = 77;
+
+            type Heard = Arc<Mutex<Vec<(String, Option<ui::tokens::PresenceHue>)>>>;
+            let table = Arc::new(super::FanoutState::new());
+            let heard: Heard = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&heard);
+            let _sub = table.subscribe_rooms(
+                vec!["room-1".to_string()],
+                Box::new(move |event, _route| {
+                    if let CollabEvent::Context { collaborators, .. } = event {
+                        for c in collaborators {
+                            if let Ok(mut g) = sink.lock() {
+                                g.push((c.name.clone(), c.colour));
+                            }
+                        }
+                    }
+                }),
+            );
+            let unnamed = |_c: &str| PeerLabels::new();
+            let colour = Mutex::new(None);
+            let colour_of = |_peer: u64| *colour.lock().unwrap();
+            let mut labels = HashMap::new();
+            let mut announced = super::Announced::new();
+            let mut say = || {
+                super::remote_participant_id(
+                    "room-1",
+                    HANDLE,
+                    &unnamed,
+                    &colour_of,
+                    &table,
+                    &mut labels,
+                    &mut announced,
+                )
+            };
+
+            say();
+            assert!(
+                heard.lock().unwrap().is_empty(),
+                "an unnamed peer that said no colour is not announced"
+            );
+            *colour.lock().unwrap() = Some(ui::tokens::PresenceHue::Violet);
+            say();
+            say();
+            let id = format!("peer@{HANDLE}");
+            assert_eq!(
+                heard.lock().unwrap().clone(),
+                vec![(id.clone(), Some(ui::tokens::PresenceHue::Violet))],
+                "the colour is said once, under the id"
+            );
+            *colour.lock().unwrap() = Some(ui::tokens::PresenceHue::Teal);
+            say();
+            assert_eq!(
+                heard.lock().unwrap().last().cloned(),
+                Some((id, Some(ui::tokens::PresenceHue::Teal))),
+                "a new choice is said again"
+            );
+        }
+
         a_named_peer_is_announced_and_then_left_alone();
         an_unnamed_peer_is_not_announced();
+        the_colour_a_peer_wears_reaches_every_app_once();
         a_revoked_name_reverts_the_peer_to_its_id();
         a_name_already_announced_is_said_again_for_an_app_that_missed_it();
         a_remote_peer_is_one_id_across_presence_and_deltas();

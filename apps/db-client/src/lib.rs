@@ -20,12 +20,14 @@
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
-//! - `ui::CodeEditor` — the shared CRDT-backed SQL editing surface.
-//! - [`grid`]      — the sortable, paginated, horizontally-scrollable results grid.
-//! - `schema_tree` — the database → schema → table → column browser.
-//! - [`structure`] — the columns/keys/indexes inspector.
-//! - [`connect_modal`] — the new-connection form.
-//! - [`app`]       — the root widget that composes them all.
+//! - [`link`]      — the model the controller publishes and the intents the
+//!   views answer with.
+//! - [`navigator`] — the sidebar: connections and tables.
+//! - [`workspace`] — the content: tabs, the views they show, and the dialogs.
+//! - [`query`], [`results`], [`structure`] — the Query, Data and Structure
+//!   views over the toolkit's editor and table.
+//! - [`connect_modal`] — the new-connection form and the confirmation dialog.
+//! - [`app`]       — the controller that owns the session and the window.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -58,16 +60,18 @@ pub mod doc;
 pub mod engine;
 pub mod engine_mysql;
 pub mod engine_pg;
-pub mod grid;
+pub mod link;
 pub mod model;
+pub mod navigator;
+pub mod query;
 pub mod resource;
+pub mod results;
 pub mod sample;
-pub mod schema_nav;
 pub mod search;
 pub mod session;
 pub mod structure;
-pub mod theme_ext;
 pub mod worker;
+pub mod workspace;
 
 pub use app::DbClientApp;
 pub use resource::{DbClient, DbClientShell};

@@ -65,6 +65,10 @@ pub struct MinimalManifest {
     /// when present the launcher mounts the bundle so the app doesn't need
     /// `--minimal-libs`.
     pub runtime: Option<String>,
+    /// `[package].optional-runtimes` — further runtime bundles
+    /// (`<name>/<version>`) mounted read-only beside the runtime when they
+    /// are installed and verify. A missing one never stops the launch.
+    pub optional_runtimes: Vec<String>,
     pub entrypoint: Entrypoint,
     pub sandbox: Sandbox,
     /// `[cli].commands` — PATH-visible command names the package declares.
@@ -152,6 +156,8 @@ struct PackageBlock {
     kind: Option<String>,
     #[serde(default)]
     runtime: Option<String>,
+    #[serde(default, rename = "optional-runtimes")]
+    optional_runtimes: Vec<String>,
 }
 
 /// `[package].kind` for something a user opens. Everything else is a
@@ -201,6 +207,11 @@ impl From<RawManifest> for MinimalManifest {
             .filter(|scheme| valid_scheme(scheme))
             .collect();
         let runtime = raw.package.as_ref().and_then(|p| p.runtime.clone());
+        let optional_runtimes = raw
+            .package
+            .as_ref()
+            .map(|p| p.optional_runtimes.clone())
+            .unwrap_or_default();
         let name = raw.package.as_ref().and_then(|p| p.name.clone());
         let localized_names = raw
             .package
@@ -229,6 +240,7 @@ impl From<RawManifest> for MinimalManifest {
             version,
             kind,
             runtime,
+            optional_runtimes,
             entrypoint: raw.entrypoint,
             sandbox: raw.sandbox,
             cli_commands,
@@ -567,8 +579,18 @@ pub fn read_manifest(path: &Path) -> Result<MinimalManifest, ManifestError> {
         path: path.to_path_buf(),
         source: e,
     })?;
-    let parsed: MinimalManifest =
+    let mut parsed: MinimalManifest =
         toml::from_str(&raw).map_err(|e| ManifestError::Parse(e.to_string()))?;
+    let fields: toml::Table =
+        toml::from_str(&raw).map_err(|e| ManifestError::Parse(e.to_string()))?;
+    if fields.contains_key("target") {
+        let canonical = tilo_app_package::Manifest::from_toml_str(&raw)
+            .map_err(|e| ManifestError::Parse(e.to_string()))?;
+        tilo_app_package::desktop::validate_native_host(&canonical)
+            .map_err(|e| ManifestError::Parse(e.to_string()))?;
+        parsed.runtime =
+            tilo_app_package::desktop::runtime_dependency(&canonical).map(str::to_owned);
+    }
     Ok(parsed)
 }
 
@@ -592,6 +614,89 @@ pub enum ManifestError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn desktop_fixture(
+        dir: &Path,
+        platform: &str,
+        arch: &str,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let authored = tilo_app_package::Manifest::from_toml_str(&format!(
+            r#"
+[package]
+id = "so.tilo.contract"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2099.01"
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp = "tilo-default"
+landlock = "strict"
+[sandbox.net]
+mode = "off"
+[entrypoint]
+bin = "bin/app"
+"#,
+            "00".repeat(32)
+        ))?;
+        let native = tilo_app_package::desktop::desktop_manifest(
+            &authored, platform, arch, arch, "bin/app",
+        )?;
+        let path = dir.join("manifest.toml");
+        std::fs::write(&path, native.to_toml_string()?)?;
+        Ok(path)
+    }
+
+    #[test]
+    fn desktop_contract_uses_linked_runtime_without_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            desktop_fixture(dir.path(), std::env::consts::OS, std::env::consts::ARCH).unwrap();
+        let manifest = read_manifest(&path).unwrap();
+        assert!(manifest.runtime.is_none());
+        assert!(
+            crate::run::resolve_runtime(&manifest, &crate::run::RunOptions::default())
+                .unwrap()
+                .is_none()
+        );
+        let mut canonical =
+            tilo_app_package::Manifest::from_toml_str(&std::fs::read_to_string(&path).unwrap())
+                .unwrap();
+        // A signed target cannot excuse a mismatched linked toolkit release.
+        canonical.package.runtime = Some("tilo-runtime/2099.02".into());
+        std::fs::write(&path, canonical.to_toml_string().unwrap()).unwrap();
+        assert!(read_manifest(&path).is_err());
+        canonical.package.runtime = Some("tilo-runtime/2099.01".into());
+        canonical.target = None;
+        std::fs::write(&path, canonical.to_toml_string().unwrap()).unwrap();
+        let thin = read_manifest(&path).unwrap();
+        assert_eq!(thin.runtime.as_deref(), Some("tilo-runtime/2099.01"));
+        assert!(matches!(
+            crate::run::resolve_runtime(&thin, &crate::run::RunOptions::default()),
+            Err(crate::run::RunError::RuntimeBundleMissing { .. })
+        ));
+    }
+
+    #[test]
+    fn desktop_contract_refuses_foreign_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = if std::env::consts::OS == "linux" {
+            "windows"
+        } else {
+            "linux"
+        };
+        let path = desktop_fixture(dir.path(), platform, std::env::consts::ARCH).unwrap();
+        assert!(read_manifest(&path).is_err());
+        let arch = if std::env::consts::ARCH == "x86_64" {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
+        let path = desktop_fixture(dir.path(), std::env::consts::OS, arch).unwrap();
+        assert!(read_manifest(&path).is_err());
+    }
 
     #[test]
     fn shipped_system_apps_carry_their_german_names() {
@@ -944,6 +1049,22 @@ mod tests {
             let (name, ver) = m.runtime_ref().expect("runtime ref");
             assert_eq!(name, "tilo-runtime");
             assert_eq!(ver, "2026.07");
+            assert!(m.optional_runtimes.is_empty());
+        }
+        // Phase `parses_optional_runtimes_from_package_block`.
+        {
+            let toml_text = r#"
+    [package]
+    id                = "so.tilo.browser"
+    version           = "0.1.0"
+    runtime           = "tilo-runtime/2026.07"
+    optional-runtimes = ["tilo-runtime/2026.10.0-chromium"]
+
+    [entrypoint]
+    bin = "bin/browser"
+    "#;
+            let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
+            assert_eq!(m.optional_runtimes, ["tilo-runtime/2026.10.0-chromium"]);
         }
     }
 

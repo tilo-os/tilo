@@ -145,6 +145,43 @@ fn item_options(attrs: &[Attribute], variant: bool) -> syn::Result<ItemOptions> 
     Ok(options)
 }
 
+/// A field's `#[schema(range(min = …, max = …))]`: the bounds narrowing its
+/// type's, either side optional.
+#[derive(Default)]
+struct Range {
+    min: Option<syn::Expr>,
+    max: Option<syn::Expr>,
+}
+
+fn field_range(attrs: &[Attribute]) -> syn::Result<Option<Range>> {
+    let mut found = None;
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("schema")) {
+        attr.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("range") {
+                return Err(meta.error("JsonSchema knows `#[schema(range(min = …, max = …))]`"));
+            }
+            let mut range = Range::default();
+            meta.parse_nested_meta(|bound| {
+                let value: syn::Expr = bound.value()?.parse()?;
+                if bound.path.is_ident("min") {
+                    range.min = Some(value);
+                } else if bound.path.is_ident("max") {
+                    range.max = Some(value);
+                } else {
+                    return Err(bound.error("a range has `min` and `max`"));
+                }
+                Ok(())
+            })?;
+            if range.min.is_none() && range.max.is_none() {
+                return Err(meta.error("a range needs `min`, `max` or both"));
+            }
+            found = Some(range);
+            Ok(())
+        })?;
+    }
+    Ok(found)
+}
+
 /// Split an identifier into its lowercase words: `SpliceText` and
 /// `splice_text` both become `["splice", "text"]`.
 fn words(name: &str) -> Vec<String> {
@@ -289,9 +326,24 @@ fn fields_schema(
                 let ty = &field.ty;
                 let doc = plain_doc(&field.attrs);
                 let defaulted = options.default || all_default;
+                let mut schema = quote!(<#ty as #krate::JsonSchema>::json_schema());
+                if let Some(Range { min, max }) = field_range(&field.attrs)? {
+                    let bound = |value: Option<syn::Expr>| {
+                        value.map_or_else(
+                            || quote!(::core::option::Option::None),
+                            |value| {
+                                quote!(::core::option::Option::Some(
+                                    #krate::__private::serde_json::json!(#value)
+                                ))
+                            },
+                        )
+                    };
+                    let (min, max) = (bound(min), bound(max));
+                    schema = quote!(#krate::schema::range(#schema, #min, #max));
+                }
                 properties.push(quote! {(
                     #name,
-                    #krate::schema::describe(<#ty as #krate::JsonSchema>::json_schema(), #doc),
+                    #krate::schema::describe(#schema, #doc),
                     !#defaulted && !<#ty as #krate::JsonSchema>::OPTIONAL,
                 )});
             }

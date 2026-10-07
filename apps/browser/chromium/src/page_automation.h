@@ -130,18 +130,26 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const auto action=Action();
     command->SetString("action",action=="click"?"locate":action=="press"?"focus":action);
     command->SetInt("doc",document_);
-    for(const char* key:{"element","text"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
+    for(const char* key:{"element","text","key"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
+    for(const char* key:{"cross_origin","secret"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
+    for(const char* key:{"x","y"}) if(pending_->command->HasKey(key)) command->SetDouble(key,Number(pending_->command,key));
+    for(const char* key:{"quiet_ms","timeout_ms"}) if(pending_->command->HasKey(key)) command->SetInt(key,pending_->command->GetInt(key));
     if(pending_->command->HasKey("values")) command->SetList("values",pending_->command->GetList("values")->Copy());
     auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
     auto params=CefDictionaryValue::Create();
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
     params->SetInt("contextId",world_);params->SetBool("returnByValue",true);
     params->SetBool("userGesture",true);params->SetBool("silent",true);
+    // `settle` answers with a promise; everything else with a value.
+    params->SetBool("awaitPromise",true);
     Call(Stage::Evaluate,"Runtime.evaluate",params);
   }
   void Act(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
-    if(action=="outline") { Succeed(Text(value,"message"),Text(value,"outline"));return; }
+    if(action=="outline" || action=="changes") { Succeed(Text(value,"message"),Text(value,"outline"));return; }
+    if(action=="at" || action=="settle") {
+      Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return;
+    }
     if(action=="click") {
       const auto number=[&](const char* key){return value->GetType(key)==VTYPE_DOUBLE?value->GetDouble(key):value->GetInt(key);};
       click_(number("x"),number("y"));
@@ -172,12 +180,16 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   static std::string Text(CefRefPtr<CefDictionaryValue> value,const char* key) {
     return value && value->GetType(key)==VTYPE_STRING?value->GetString(key).ToString():std::string();
   }
-  void Succeed(const std::string& message,std::optional<std::string> outline) {
+  static double Number(CefRefPtr<CefDictionaryValue> d,const char* key) {
+    return d->GetType(key)==VTYPE_DOUBLE?d->GetDouble(key):d->GetInt(key);
+  }
+  void Succeed(const std::string& message,std::optional<std::string> outline,CefRefPtr<CefDictionaryValue> data=nullptr) {
     auto fields=CefDictionaryValue::Create();fields->SetBool("ok",true);
     fields->SetString("url",browser_->GetMainFrame()->GetURL());fields->SetString("message",message.substr(0,1024));
     const bool navigated=navigations_!=pending_->navigations;
     fields->SetBool("navigated",navigated);fields->SetBool("loading",navigated && browser_->IsLoading());
     if(outline) fields->SetString("outline",*outline);else fields->SetNull("outline");
+    if(data) fields->SetDictionary("data",data->Copy(false));
     Finish(fields);
   }
   static CefRefPtr<CefDictionaryValue> Failure(const std::string& code,const std::string& message) {

@@ -8,6 +8,8 @@
 ARG BASE_REF
 FROM ${BASE_REF}
 
+# foot is a small Wayland terminal for guest tools, and the window the
+# end-to-end test (scripts/legacy-vm-e2e.py) opens.
 RUN dnf install -y --setopt=install_weak_deps=False \
       flatpak \
       waypipe \
@@ -18,6 +20,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       dbus-daemon \
       polkit \
       fuse3 \
+      foot \
+      dejavu-sans-mono-fonts \
  && dnf clean all \
  && flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
@@ -32,5 +36,5 @@ COPY --chmod=0755 os/legacy-guest/agent/tilo-legacy-agent /usr/libexec/tilo-lega
 
 RUN systemctl enable tilo-legacy-agent.service \
  && test -x /usr/libexec/tilo-legacy-agent \
- && command -v waypipe xwayland-satellite flatpak \
+ && command -v waypipe xwayland-satellite flatpak foot \
  && bootc container lint

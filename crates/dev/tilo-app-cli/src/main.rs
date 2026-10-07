@@ -9,6 +9,7 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
+mod guide;
 mod json_stdout;
 mod publishing;
 
@@ -18,6 +19,7 @@ mod publishing;
     version,
     about = "Create and work on Tilo apps",
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
+                  Start with `tilo-app guide` for short offline workflows.\n\n\
                   Run `tilo-app new` for an interactive setup, or provide a name \
                   and flags for a reproducible, non-interactive scaffold. Then \
                   use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `build`, `shot`, `inspect`, and `package` from anywhere inside the app; `--target linux|macos|web` picks the platform. Use `ui` to construct validated serialized screens."
@@ -34,6 +36,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Read one short offline workflow, or list the available topics.
+    Guide {
+        #[arg(value_enum)]
+        topic: Option<guide::Topic>,
+    },
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
     /// List the example apps `tilo-app new --from-example` starts from.
@@ -61,6 +68,8 @@ enum Command {
     /// Build the runnable artifact for a target: a binary, a dev `.app`, or a web bundle.
     #[command(after_long_help = TARGET_EXAMPLES)]
     Build(BuildArgs),
+    /// Assemble an unsigned macOS bundle from existing binaries, without building or signing.
+    BundleMacos(BundleMacosArgs),
     /// Test an app from any path inside it, after a structural preflight.
     Test(AppTaskArgs),
     /// Run an app and rebuild/restart it after source or asset changes.
@@ -487,6 +496,16 @@ struct CertifyArgs {
     /// expanded-copy, 200%-text, and high-contrast modes.
     #[arg(long, requires = "workspace", value_name = "DIR")]
     responsive_artifacts: Option<PathBuf>,
+
+    /// With `--workspace`, certify only the applications of these Cargo
+    /// packages; packages that are no workspace application are ignored.
+    #[arg(
+        long = "package",
+        short = 'p',
+        requires = "workspace",
+        value_name = "SPEC"
+    )]
+    packages: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -706,6 +725,21 @@ struct BuildArgs {
 }
 
 #[derive(clap::Args)]
+struct BundleMacosArgs {
+    /// App project whose manifest supplies identity, capabilities, icon and version.
+    path: PathBuf,
+    /// Previously compiled app executable. Architecture/signature validation is separate.
+    #[arg(long)]
+    binary: PathBuf,
+    /// Previously compiled tilo-runtime-mcp helper.
+    #[arg(long)]
+    runtime_host: PathBuf,
+    /// New output directory; an existing destination is never overwritten.
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(clap::Args)]
 struct DevArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
@@ -722,6 +756,20 @@ struct DevArgs {
     /// first presented frame. With `--json`, the result lists every reload.
     #[arg(long)]
     timings: bool,
+
+    /// Build the app optimised, with `--profile thin-app`: release
+    /// optimisation without LTO, as thin Tilo builds ship. Use it when the
+    /// debug build is too slow to judge (painting, video, large documents);
+    /// each rebuild takes longer. The app still reloads in place.
+    #[arg(long, conflicts_with = "profile")]
+    release: bool,
+
+    /// Cargo profile for every build of the app [default: Cargo's `dev`].
+    /// Only `dev` and `thin-app` reload in place; any other profile (such
+    /// as the fat-LTO `release`) restarts the app on each change instead.
+    /// The runtime host stays a debug build.
+    #[arg(long)]
+    profile: Option<String>,
 
     /// `web` serves the app's web build and reloads the page into the same
     /// document after each rebuild; a native platform runs on this machine
@@ -1049,6 +1097,7 @@ fn main() -> ExitCode {
     let interactive = json.is_none();
     let name = cli.command.name();
     let result = match cli.command {
+        Command::Guide { topic } => Ok(guide::run(topic, interactive)),
         Command::New(args) => run_new(args, interactive),
         Command::Examples => Ok(list_examples()),
         Command::Add(args) => run_add(args, interactive),
@@ -1060,6 +1109,7 @@ fn main() -> ExitCode {
         Command::Certify(args) => run_certify(args),
         Command::Run(args) => run_run(args),
         Command::Build(args) => run_build(args),
+        Command::BundleMacos(args) => run_bundle_macos(&args),
         Command::Test(args) => run_app_task(args, tilo_app_cli::AppTask::Test),
         Command::Dev(args) => run_dev(args),
         Command::Shot(args) => run_shot(args),
@@ -1152,6 +1202,7 @@ fn failed(message: impl Into<String>, report: Value) -> anyhow::Error {
 impl Command {
     fn name(&self) -> &'static str {
         match self {
+            Self::Guide { .. } => "guide",
             Self::New(_) => "new",
             Self::Examples => "examples",
             Self::Add(_) => "add",
@@ -1163,6 +1214,7 @@ impl Command {
             Self::Certify(_) => "certify",
             Self::Run(_) => "run",
             Self::Build(_) => "build",
+            Self::BundleMacos(_) => "bundle-macos",
             Self::Test(_) => "test",
             Self::Dev(_) => "dev",
             Self::Shot(_) => "shot",
@@ -1413,8 +1465,11 @@ fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> R
         "Would create"
     };
     println!("{verb} {}", outcome.path.display());
+    if let Some(path) = &outcome.reusable_path {
+        println!("{verb} {} (reusable GitHub workflow)", path.display());
+    }
     println!(
-        "Next: add the TILO_PUBLISHER_KEY secret (the file `tilo-app keys new` wrote), then push a v* tag to publish"
+        "Next: add the TILO_PUBLISHER_KEY secret (what `tilo-app keys export` prints), then push a v* tag to publish"
     );
     Ok(outcome.to_json())
 }
@@ -1760,6 +1815,17 @@ fn run_run(args: RunArgs) -> Result<Value> {
     Ok(json!({"app_dir": path}))
 }
 
+fn run_bundle_macos(args: &BundleMacosArgs) -> Result<Value> {
+    let artifact = tilo_app_cli::targets::assemble_macos(
+        &args.path,
+        &args.binary,
+        &args.runtime_host,
+        &args.output,
+    )?;
+    println!("{}", artifact.display());
+    Ok(json!({"artifact": artifact, "signed": false, "notarized": false}))
+}
+
 fn run_build(args: BuildArgs) -> Result<Value> {
     let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
     let Some(target) = args.target.and_then(TargetArg::sdk) else {
@@ -1810,8 +1876,12 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         watch_ui: !args.app_only,
         debounce: Duration::from_millis(args.debounce_ms.get()),
         timings: args.timings,
+        profile: dev_profile(args.release, args.profile),
     };
     let (platform, arch) = args.platform.resolve()?;
+    if platform == tilo_app_cli::PackagePlatform::Web && request.profile.is_some() {
+        anyhow::bail!("--release and --profile are for a native or Android dev loop");
+    }
     if platform == tilo_app_cli::PackagePlatform::Web {
         tilo_app_cli::web::dev_web(
             &path,
@@ -1835,6 +1905,15 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         }
     }
     Ok(json!({"stopped": true}))
+}
+
+/// The Cargo profile `dev` builds the app with; `None` is Cargo's `dev`.
+fn dev_profile(release: bool, profile: Option<String>) -> Option<String> {
+    if release {
+        Some(tilo_app_cli::DEV_RELEASE_PROFILE.to_owned())
+    } else {
+        profile
+    }
 }
 
 fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
@@ -2381,6 +2460,14 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             .unwrap_or(package_name);
         packages.push((app.clone(), package_name.to_owned(), binary_name.to_owned()));
     }
+    if !args.packages.is_empty() {
+        packages.retain(|(_, package, _)| args.packages.contains(package));
+        app_dirs = packages.iter().map(|(app, _, _)| app.clone()).collect();
+        if packages.is_empty() {
+            println!("Certified 0 graphical Tilo applications");
+            return Ok(json!({"certified": app_dirs}));
+        }
+    }
 
     // Build the complete application set in one Cargo graph. Apart from being
     // substantially faster, this keeps the SDK's feature set unified instead
@@ -2684,6 +2771,7 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
                 watch_ui: true,
                 debounce: Duration::from_millis(tilo_app_cli::DEV_DEBOUNCE_MS),
                 timings: false,
+                profile: None,
             },
         )?;
         Ok(report)
@@ -2726,6 +2814,29 @@ fn list_examples() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_macos_requires_explicit_existing_inputs_and_output() {
+        let cli = Cli::try_parse_from([
+            "tilo-app",
+            "bundle-macos",
+            "app with spaces",
+            "--binary",
+            "app binary",
+            "--runtime-host",
+            "helper binary",
+            "--output",
+            "new output",
+        ])
+        .unwrap();
+        assert_eq!(cli.command.name(), "bundle-macos");
+        let Command::BundleMacos(args) = cli.command else {
+            panic!("expected bundle command")
+        };
+        assert_eq!(args.binary, PathBuf::from("app binary"));
+        assert_eq!(args.runtime_host, PathBuf::from("helper binary"));
+        assert!(Cli::try_parse_from(["tilo-app", "bundle-macos", "."]).is_err());
+    }
 
     /// new starts from an example instead of a template, never both, and examples are listed.
     #[test]
@@ -3420,6 +3531,25 @@ mod tests {
                 [OsString::from("--document"), OsString::from("sample.qdoc")]
             );
             assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
+            assert_eq!(dev.profile, None);
+            assert_eq!(dev_profile(dev.release, dev.profile), None);
+        }
+
+        // Phase: dev_builds_the_app_in_a_chosen_profile.
+        {
+            let dev = |args: &[&str]| {
+                let cli = Cli::try_parse_from(["tilo-app", "dev"].iter().chain(args))?;
+                let Command::Dev(dev) = cli.command else {
+                    panic!("expected dev command");
+                };
+                Ok::<_, clap::Error>(dev_profile(dev.release, dev.profile))
+            };
+            assert_eq!(dev(&["--release"]).unwrap().as_deref(), Some("thin-app"));
+            assert_eq!(
+                dev(&["--profile", "release"]).unwrap().as_deref(),
+                Some("release")
+            );
+            assert!(dev(&["--release", "--profile", "dev"]).is_err());
         }
 
         // Phase: every_build_command_takes_platform_and_arch.

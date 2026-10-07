@@ -13,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use ui::time::Duration;
 
 use git2::{Repository, Signature};
-use ui::widget::Widget;
+use ui::framework::testing::TestApp;
 
 #[path = "support/ssh_remote.rs"]
 mod ssh_remote;
@@ -355,53 +355,54 @@ fn https_rejects_an_untrusted_server_certificate() {
     assert!(client.find_reference("refs/remotes/origin/main").is_err());
 }
 
-/// Remote operations from the app: a fetch keeps the app responsive and reports
-/// completion after sync, and a failure reaches the invocation and visible status.
-/// Each phase is a former test with its own fresh fixture.
+/// Remote effects from the app: a fetch keeps the app responsive and reports
+/// completion to its caller, and a failure reaches the caller and visible
+/// status. Each phase is a former test with its own fresh fixture.
 #[test]
 fn app_remote_operations_stay_responsive_and_report_outcomes() {
-    remote_fetch_keeps_app_responsive_and_reports_completion_after_sync();
-    remote_failure_is_reported_to_the_invocation_and_visible_status();
+    remote_fetch_keeps_app_responsive_and_reports_completion();
+    remote_failure_is_reported_to_the_caller_and_visible_status();
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one production lifecycle scenario checks admission, responsiveness, isolation and completion in order"
-)]
-fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
-    use git_client::actions::{GIT_CLIENT_OPERATION_TYPE, GitClientOperation};
-    use tilo_actions::{InvocationId, InvocationUpdate, OperationKind};
+/// The published row of the remote `name`.
+fn remote_row(name: &str) -> String {
+    format!("git_client.remote:{}", hex::encode(name))
+}
+
+/// Whether the app publishes a row for a transfer in flight.
+fn transfer_published(app: &mut TestApp<git_client::GitClientShell>) -> bool {
+    fn find(resource: &tilo_actions::Resource) -> bool {
+        resource.id.as_str() == "git_client.remote-job" || resource.children.iter().any(find)
+    }
+    app.harness().resources().iter().any(find)
+}
+
+fn remote_fetch_keeps_app_responsive_and_reports_completion() {
+    use git_client::actions::GitClientEffect;
+    use tilo_actions::InvocationUpdate;
     let root = tempfile::tempdir().unwrap();
     let expected = seed_remote(&root.path().join("remote.git"));
     let (_server, url) = start_server(root.path());
     let client = authenticated_client(root.path(), &url, "test");
     let path = client.workdir().unwrap();
     fs::write(path.join("unstaged.txt"), "keep unstaged").unwrap();
-    let mut app = git_client::GitClientApp::open_at(path).unwrap();
-    let mut doc = automerge::AutoCommit::new();
-    let invocation = InvocationId::new();
-    let payload = serde_json::to_vec(&GitClientOperation::Fetch {
-        remote: "origin".into(),
-    })
-    .unwrap();
+    let mut app =
+        TestApp::<git_client::GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+    app.settle();
     fs::write(root.path().join("block"), "").unwrap();
-    let started = app
-        .start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                OperationKind::Effect,
-                GIT_CLIENT_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
+
+    // Started as the palette or an agent does on the remote's row, without
+    // waiting for the transfer.
+    let instance_id = app.harness().component_instance_id().unwrap();
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id,
+        address: tilo_actions::ActionAddress::new(remote_row("origin"), "fetch"),
+    };
+    let (invocation, started) = app
+        .harness()
+        .start_bound_job(&address, &serde_json::Map::new(), false)
         .unwrap();
-    assert!(matches!(
-        started,
-        Some(ui::widget::ResourceOperationStart::Accepted)
-    ));
-    assert!(app.needs_animation_frame());
+    assert!(started.completed().is_none(), "the fetch runs as a job");
     let request_deadline = tilo_test_env::hang_deadline();
     while !root.path().join("request-started").exists() {
         assert!(
@@ -410,89 +411,49 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    let view = serde_json::to_vec(&GitClientOperation::ShowHistory).unwrap();
-    assert!(matches!(
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::View,
-                GIT_CLIENT_OPERATION_TYPE,
-                &view
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Completed(_))
-    ));
-    let mutation = serde_json::to_vec(&GitClientOperation::StageAll).unwrap();
+    app.settle();
+    assert!(transfer_published(&mut app), "the transfer is a live row");
     assert!(
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                GIT_CLIENT_OPERATION_TYPE,
-                &mutation
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .is_err()
+        app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, InvocationUpdate::Progress { .. })),
+        "the caller hears the transfer is running"
     );
-    app.test_stage_all();
+
+    app.effect(&GitClientEffect::ShowHistory)
+        .expect("navigation stays available during a transfer");
     assert!(
-        matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    GIT_CLIENT_OPERATION_TYPE,
-                    &view
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ),
-        "a rejected mutation must not disable navigation"
+        app.effect(&GitClientEffect::StageAll).is_err(),
+        "repository changes wait for the transfer"
     );
+    app.with_surface::<git_client::GitClientApp, _>(git_client::GitClientApp::test_stage_all)
+        .unwrap();
+    app.effect(&GitClientEffect::ShowChanges)
+        .expect("a rejected mutation must not disable navigation");
     assert_eq!(
         client.index().unwrap().len(),
         0,
         "UI actions must not race the worker"
     );
-    assert!(
-        app.poll_resource_operation(InvocationId::new(), false, &doc, &automerge::ROOT)
-            .is_none()
-    );
-    assert!(matches!(
-        app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-        Some(InvocationUpdate::Progress { .. })
-    ));
-    app.sync(&mut doc, &automerge::ROOT);
-    assert!(
-        app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-            .is_none()
-    );
+
     fs::write(root.path().join("release"), "").unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        app.sync(&mut doc, &automerge::ROOT);
-        if let Some(update) = app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-        {
-            assert!(
-                matches!(update, InvocationUpdate::Succeeded { .. }),
-                "{update:?}"
-            );
-            break;
-        }
-        assert!(
-            ui::time::now() < deadline,
-            "remote operation did not complete"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let finished = |harness: &ui::headless::FrameHarness| {
+        harness
+            .job_updates(invocation)
+            .iter()
+            .find(|update| update.is_terminal())
+            .cloned()
+    };
+    app.harness().wait_until(
+        Duration::from_secs(tilo_test_env::hang_bound().as_secs()),
+        |harness| finished(harness).is_some(),
+    );
+    let outcome = finished(app.harness()).expect("remote operation did not complete");
+    assert!(
+        matches!(outcome, InvocationUpdate::Succeeded { .. }),
+        "{outcome:?}"
+    );
     assert_eq!(
         client
             .find_reference("refs/remotes/origin/main")
@@ -501,92 +462,43 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
         Some(expected)
     );
     assert!(
-        app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-            .is_none()
+        !transfer_published(&mut app),
+        "the finished transfer is gone"
     );
-    assert!(!app.needs_animation_frame());
-    assert!(matches!(
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                GIT_CLIENT_OPERATION_TYPE,
-                &mutation
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Completed(_))
-    ));
+    app.effect(&GitClientEffect::StageAll).unwrap();
     assert_eq!(Repository::open(path).unwrap().index().unwrap().len(), 1);
 }
 
-fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
-    use git_client::actions::{GIT_CLIENT_OPERATION_TYPE, GitClientOperation};
-    use tilo_actions::{InvocationId, InvocationUpdate, OperationKind};
+fn remote_failure_is_reported_to_the_caller_and_visible_status() {
+    use git_client::actions::GitClientEffect;
     let root = tempfile::tempdir().unwrap();
     seed_remote(&root.path().join("remote.git"));
     let (_server, url) = start_server(root.path());
     let client = authenticated_client(root.path(), &url, "wrong");
-    let mut app = git_client::GitClientApp::open_at(client.workdir().unwrap()).unwrap();
-    let mut doc = automerge::AutoCommit::new();
-    // Settle the initial collapsed sidebar through a real view action so its
-    // startup animation does not keep requesting frames after the job ends.
-    let view = serde_json::to_vec(&GitClientOperation::ShowHistory).unwrap();
-    app.start_operation(
-        &ui::widget::ResourceOperation::local(
-            ui::tilo_actions::InvocationId::new(),
-            OperationKind::View,
-            GIT_CLIENT_OPERATION_TYPE,
-            &view,
-        ),
-        &mut doc,
-        &automerge::ROOT,
-    )
-    .unwrap();
-    assert!(!app.needs_animation_frame());
-    let invocation = InvocationId::new();
-    let payload = serde_json::to_vec(&GitClientOperation::Fetch {
-        remote: "origin".into(),
-    })
-    .unwrap();
-    assert!(matches!(
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                OperationKind::Effect,
-                GIT_CLIENT_OPERATION_TYPE,
-                &payload
-            ),
-            &mut doc,
-            &automerge::ROOT
+    let path = client.workdir().unwrap();
+    let mut app =
+        TestApp::<git_client::GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+    app.settle();
+    let error = app
+        .effect_on(
+            &remote_row("origin"),
+            &GitClientEffect::Fetch {
+                remote: "origin".into(),
+            },
         )
-        .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Accepted)
-    ));
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        app.sync(&mut doc, &automerge::ROOT);
-        // A cancellation request is not evidence of cancellation: authentication
-        // still failed, and the worker's actual outcome must be returned.
-        if let Some(InvocationUpdate::Failed {
-            invocation: actual,
-            error,
-        }) = app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT)
-        {
-            assert_eq!(actual, invocation);
-            assert!(!error.retryable);
-            assert!(
-                error.message.contains("authentication failed"),
-                "{}",
-                error.message
-            );
-            assert_eq!(app.test_last_error(), Some(error.message.as_str()));
-            break;
-        }
-        assert!(ui::time::now() < deadline, "failure was not delivered");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(!app.needs_animation_frame());
+        .expect_err("authentication fails");
+    let tilo_actions::DoorError::Failed(message) = error else {
+        panic!("the transfer ran and failed, it was not refused: {error:?}");
+    };
+    assert!(message.contains("authentication failed"), "{message}");
+    assert_eq!(
+        app.with_surface::<git_client::GitClientApp, _>(|app| {
+            app.test_last_error().map(str::to_owned)
+        })
+        .unwrap()
+        .as_deref(),
+        Some(message.as_str()),
+        "the failure shows where the person looks"
+    );
+    assert!(!transfer_published(&mut app));
 }

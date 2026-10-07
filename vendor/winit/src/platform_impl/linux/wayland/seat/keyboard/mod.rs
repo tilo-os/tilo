@@ -49,11 +49,15 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
             WlKeyboardEvent::Keymap { format, fd, size } => match format {
                 WEnum::Value(format) => match format {
                     WlKeymapFormat::NoKeymap => {
-                        warn!("non-xkb compatible keymap")
+                        warn!("non-xkb compatible keymap");
+                        keyboard_state.xkb_context.clear_keymap();
+                        keyboard_state.publish_layout(&mut state.events_sink, data);
                     },
                     WlKeymapFormat::XkbV1 => {
                         let context = &mut keyboard_state.xkb_context;
                         context.set_keymap_from_fd(fd, size as usize);
+                        keyboard_state.masks = [0; 4];
+                        keyboard_state.publish_layout(&mut state.events_sink, data);
                     },
                     _ => unreachable!(),
                 },
@@ -87,6 +91,8 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                 if was_unfocused {
                     state.events_sink.push_window_event(WindowEvent::Focused(true), window_id);
                 }
+
+                keyboard_state.publish_layout(&mut state.events_sink, data);
 
                 // HACK: this is just for GNOME not fixing their ordering issue of modifiers.
                 if std::mem::take(&mut seat_state.modifiers_pending) {
@@ -131,7 +137,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     state.events_sink.push_window_event(WindowEvent::Focused(false), window_id);
                 }
             },
-            WlKeyboardEvent::Key { key, state: WEnum::Value(WlKeyState::Pressed), .. } => {
+            WlKeyboardEvent::Key { key, serial, time, state: WEnum::Value(WlKeyState::Pressed) } => {
                 let key = key + 8;
 
                 key_input(
@@ -141,6 +147,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     key,
                     ElementState::Pressed,
                     false,
+                    Some((serial, time)),
                 );
 
                 let delay = match keyboard_state.repeat_info {
@@ -193,6 +200,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                             repeat_keycode,
                             ElementState::Pressed,
                             true,
+                            None,
                         );
 
                         // NOTE: the gap could change dynamically while repeat is going.
@@ -203,7 +211,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     })
                     .ok();
             },
-            WlKeyboardEvent::Key { key, state: WEnum::Value(WlKeyState::Released), .. } => {
+            WlKeyboardEvent::Key { key, serial, time, state: WEnum::Value(WlKeyState::Released) } => {
                 let key = key + 8;
 
                 key_input(
@@ -213,6 +221,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     key,
                     ElementState::Released,
                     false,
+                    Some((serial, time)),
                 );
 
                 if keyboard_state.repeat_info != RepeatInfo::Disable
@@ -235,6 +244,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     key + 8,
                     ElementState::Pressed,
                     true,
+                    None,
                 );
             },
             WlKeyboardEvent::Key { state, .. } => {
@@ -251,6 +261,9 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
 
                 xkb_state.update_modifiers(mods_depressed, mods_latched, mods_locked, 0, 0, group);
                 seat_state.modifiers = xkb_state.modifiers().into();
+
+                keyboard_state.masks = [mods_depressed, mods_latched, mods_locked, group];
+                keyboard_state.publish_layout(&mut state.events_sink, data);
 
                 // HACK: part of the workaround from `WlKeyboardEvent::Enter`.
                 let window_id = match *data.window_id.lock().unwrap() {
@@ -305,9 +318,23 @@ pub struct KeyboardState {
 
     /// The current repeat raw key.
     pub current_repeat: Option<u32>,
+
+    /// Exact compositor-provided masks, preserved before queued event delivery.
+    masks: [u32; 4],
 }
 
 impl KeyboardState {
+    fn publish_layout(&self, sink: &mut EventSink, data: &KeyboardData) {
+        let Some(window_id) = *data.window_id.lock().unwrap() else {
+            return;
+        };
+        let layout = self
+            .xkb_context
+            .keyboard_layout(self.masks)
+            .map(std::sync::Arc::new);
+        sink.push_window_event(WindowEvent::KeyboardLayoutChanged(layout), window_id);
+    }
+
     pub fn new(keyboard: WlKeyboard, loop_handle: LoopHandle<'static, WinitState>) -> Self {
         Self {
             keyboard,
@@ -316,6 +343,7 @@ impl KeyboardState {
             repeat_info: RepeatInfo::default(),
             repeat_token: None,
             current_repeat: None,
+            masks: [0; 4],
         }
     }
 }
@@ -380,6 +408,7 @@ fn key_input(
     keycode: u32,
     state: ElementState,
     repeat: bool,
+    stamp: Option<(u32, u32)>,
 ) {
     let window_id = match *data.window_id.lock().unwrap() {
         Some(window_id) => window_id,
@@ -388,7 +417,8 @@ fn key_input(
 
     let device_id = crate::event::DeviceId(crate::platform_impl::DeviceId::Wayland(DeviceId));
     if let Some(mut key_context) = keyboard_state.xkb_context.key_context() {
-        let event = key_context.process_key_event(keycode, state, repeat);
+        let mut event = key_context.process_key_event(keycode, state, repeat);
+        event.platform_specific.wayland_stamp = stamp;
         let event = WindowEvent::KeyboardInput { device_id, event, is_synthetic: false };
         event_sink.push_window_event(event, window_id);
     }

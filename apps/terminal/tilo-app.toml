@@ -35,7 +35,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["processes"]
-optional = ["clipboard", "files.paths", "app-files", "threads"]
+optional = ["clipboard", "files.paths", "app-files", "threads", "settings"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -69,6 +69,8 @@ open-uri = "via-host"
 # Required application runtime; the launcher passes its connected descriptor as
 # `TILO_SVC_USH_FD`.
 ush    = "required@1"
+# Authenticated permission prompt for the device shell.
+shell-ui = "optional@1"
 collab = "optional@1"
 tilo-fs = "optional@1"
 

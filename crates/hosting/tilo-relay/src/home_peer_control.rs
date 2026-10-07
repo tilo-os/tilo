@@ -40,21 +40,6 @@ enum BrokerCommand {
         #[arg(long)]
         expected_service: Option<String>,
     },
-    /// Receive an existing identity on this new personal device.
-    PairDevice {
-        #[arg(long)]
-        identity_root: PathBuf,
-        #[arg(long)]
-        identity_dir: PathBuf,
-        #[arg(long)]
-        label: String,
-        #[arg(long)]
-        status_file: PathBuf,
-        #[arg(long)]
-        requester_pid: u32,
-        #[arg(long)]
-        requester_start_time: u64,
-    },
     /// Approve an ordinary nearby personal device.
     ApproveDevice {
         #[arg(long)]
@@ -606,11 +591,11 @@ fn enrollment_command_result(
     bail!("{incomplete}: {detail}")
 }
 
-fn personal_device_command(
-    operation: &str,
+fn approve_personal_device(
     identity_root: &Path,
     identity_dir: &Path,
-    extra: impl FnOnce(&mut Command),
+    expected_device: &str,
+    expected_service: &str,
 ) -> anyhow::Result<()> {
     let uid = invoking_uid()?;
     let account = account_for_uid(uid)?;
@@ -618,22 +603,22 @@ fn personal_device_command(
     let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
     command
-        .arg(operation)
+        .arg("approve-device")
         .arg("--identity-root")
         .arg(&identity_root)
         .arg("--identity-dir")
-        .arg(identity_dir);
-    extra(&mut command);
+        .arg(identity_dir)
+        .args(["--expected-device", expected_device])
+        .args(["--expected-service", expected_service]);
     // A seed under the identity root is opened by whoever owns that root, as
     // before. Without one the approval signs with the person's record.
-    if operation == "approve-device"
-        && !tilo_user_identity::IdentityPaths::under(&identity_root)
-            .user_privkey
-            .exists()
+    if tilo_user_identity::IdentityPaths::under(&identity_root)
+        .user_privkey
+        .exists()
     {
-        run_as_invoking_person(&mut command, uid, &account)?;
-    } else {
         run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+    } else {
+        run_as_invoking_person(&mut command, uid, &account)?;
     }
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
@@ -663,33 +648,6 @@ fn run() -> anyhow::Result<()> {
             expected_device,
             expected_service,
         ),
-        BrokerCommand::PairDevice {
-            identity_root,
-            identity_dir,
-            label,
-            status_file,
-            requester_pid,
-            requester_start_time,
-        } => {
-            let status_parent = status_file.parent().context("status file has no parent")?;
-            if status_parent != identity_dir {
-                bail!("pairing status must be stored in the identity directory");
-            }
-            let requester =
-                tilo_relay::ProcessLease::from_parts(requester_pid, requester_start_time);
-            requester
-                .validate_owner(invoking_uid()?)
-                .context("pairing requester is no longer the invoking user process")?;
-            personal_device_command("pair-device", &identity_root, &identity_dir, |command| {
-                command
-                    .args(["--label", &label, "--status-file"])
-                    .arg(status_file)
-                    .arg("--requester-pid")
-                    .arg(requester_pid.to_string())
-                    .arg("--requester-start-time")
-                    .arg(requester_start_time.to_string());
-            })
-        }
         BrokerCommand::ApproveDevice {
             identity_root,
             identity_dir,
@@ -697,11 +655,12 @@ fn run() -> anyhow::Result<()> {
             expected_service,
         } => {
             validate_peer_ids(&expected_device, &expected_service)?;
-            personal_device_command("approve-device", &identity_root, &identity_dir, |command| {
-                command
-                    .args(["--expected-device", &expected_device])
-                    .args(["--expected-service", &expected_service]);
-            })
+            approve_personal_device(
+                &identity_root,
+                &identity_dir,
+                &expected_device,
+                &expected_service,
+            )
         }
     }
 }

@@ -198,6 +198,23 @@ impl LaunchableCatalogue {
             .unwrap_or_default()
     }
 
+    pub(super) fn action_for(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        self.surfaces
+            .lock()
+            .ok()?
+            .get(&(
+                route.app_id.clone(),
+                route.cluster_id.clone(),
+                route.record_id.clone(),
+            ))?
+            .action_projection(resource, action)
+    }
+
     /// The retained surface `provider` names.
     pub(super) fn surface_for(&self, provider: &str) -> Option<PublishedSurface> {
         self.surfaces.lock().ok().and_then(|surfaces| {
@@ -317,6 +334,7 @@ mod tests {
 
     fn action(name: &str, confirmation: tilo_actions::ConfirmationPolicy) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: "files.app".into(),
             action: name.into(),
             resource_kind: "files.app".into(),
@@ -449,6 +467,7 @@ mod tests {
             None,
             None,
             &InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: provider.to_string(),
@@ -492,6 +511,88 @@ mod tests {
             Some("8"),
             "once the app is live its action is offered on its own connection"
         );
+    }
+
+    /// An application target reaches an app that never ran in the workspace:
+    /// it launches the app and delivers once the app offers the action, and
+    /// reaches the running app without launching it again.
+    #[test]
+    fn an_application_target_launches_an_app_that_never_ran_and_delivers() {
+        let (state, room) = broker(&workspace());
+        let (streams, launches) = app_comes_up_as(&state, 8);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        assert!(state.launchable.surfaces().is_empty(), "nothing retained");
+
+        invoke(&state, &owner, &target.provider, "new-window", None)
+            .expect("admitted once launched");
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        let mut stream = streams.try_recv().expect("the app came up");
+        let delivered = stream.try_recv().expect("the invocation reached the app");
+        assert_eq!(delivered.action, "new-window");
+        assert_eq!(delivered.actor, "owner");
+
+        invoke(&state, &owner, &target.provider, "new-window", None)
+            .expect("the running app takes it");
+        assert_eq!(
+            launches.lock().expect("launches").len(),
+            1,
+            "a running app is not launched again"
+        );
+        assert_eq!(
+            stream.try_recv().expect("delivered again").action,
+            "new-window"
+        );
+        assert_eq!(
+            invoke(&state, &owner, &target.provider, "empty-trash", None),
+            Err(ActionHostError::ConfirmationRequired),
+            "the app's own contract admits what it offers"
+        );
+    }
+
+    #[test]
+    fn an_application_target_is_refused_before_anything_launches() {
+        let (state, room) = broker(&workspace());
+        let (_streams, launches) = app_comes_up_as(&state, 8);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        assert_eq!(
+            invoke(
+                &state,
+                &Caller::local_person("stranger").in_room(&room),
+                &target.provider,
+                "new-window",
+                None,
+            ),
+            Err(ActionHostError::NotPermitted),
+            "a caller who may not launch the app does not start it"
+        );
+        assert_eq!(
+            invoke(
+                &state,
+                &Caller::authenticated([0xA1; 32], [0xA2; 32]),
+                &target.provider,
+                "new-window",
+                None,
+            ),
+            Err(ActionHostError::UnknownAction),
+            "a remote device does not launch apps on this desktop"
+        );
+        let elsewhere =
+            tilo_actions::remote::application_action_target("no-such-room", APP, "files.app", "x");
+        assert_eq!(
+            invoke(
+                &state,
+                &Caller::local_person("owner").in_room(&room),
+                &elsewhere.provider,
+                "new-window",
+                None,
+            ),
+            Err(ActionHostError::UnknownAction),
+            "a workspace the caller is not in launches nothing"
+        );
+        assert!(launches.lock().expect("launches").is_empty());
     }
 
     #[test]

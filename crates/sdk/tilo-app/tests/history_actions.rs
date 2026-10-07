@@ -111,6 +111,37 @@ fn history(app: &mut TestApp<BoardApp>) -> Value {
 }
 
 #[test]
+fn undo_to_takes_back_every_step_after_a_version() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.call("add", json!({"text": "milk"})).unwrap();
+    app.call("checkpoint", json!({"name": "shopping"})).unwrap();
+    app.call("add", json!({"text": "eggs"})).unwrap();
+    app.call("add", json!({"text": "bread"})).unwrap();
+    app.call("rename", json!({"title": "Plan"})).unwrap();
+
+    let undone = app
+        .call("undo", json!({"to": "shopping"}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(cards(&app), ["milk"]);
+    assert_eq!(undone["undone"].as_array().unwrap().len(), 3, "{undone}");
+
+    // A change id from history works the same, and naming both is refused.
+    app.call("add", json!({"text": "tea"})).unwrap();
+    let listed = history(&mut app);
+    let versions = listed["versions"].as_array().unwrap();
+    let tea = versions.last().unwrap()["change"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    app.call("add", json!({"text": "jam"})).unwrap();
+    app.call("undo", json!({"to": tea})).unwrap();
+    assert_eq!(cards(&app), ["milk", "tea"]);
+    let both = refusal(app.call("undo", json!({"to": "shopping", "steps": 1})));
+    assert!(both.contains("steps or to"), "{both}");
+}
+
+#[test]
 fn undo_and_redo_take_back_the_callers_own_steps() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
     app.call("rename", json!({"title": "Plan"})).unwrap();
@@ -141,6 +172,54 @@ fn undo_and_redo_take_back_the_callers_own_steps() {
         .collect();
     assert_eq!(undos.len(), 1, "{listed}");
     assert_eq!(undos[0]["args"], json!("{steps:2}"), "{listed}");
+}
+
+/// The newest listed version, with what it carries over filled in.
+fn newest(app: &mut TestApp<BoardApp>) -> Value {
+    let listed = history(app);
+    carried(listed.get("versions").and_then(Value::as_array).unwrap())
+        .pop()
+        .expect("a version")
+}
+
+#[test]
+fn a_keyboard_undo_and_redo_are_named_after_the_step_and_stay_its_authors() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.invoke(Board::RENAME.with("Plan".into())).unwrap();
+    let renamed = newest(&mut app);
+    let label = renamed["action"].as_str().unwrap().to_owned();
+    assert!(!label.is_empty(), "{renamed}");
+    let by = renamed["by"].clone();
+    assert!(by.is_string(), "{renamed}");
+
+    // Ctrl+Z: the undo is the person's own step, named after what it took
+    // back, never an unnamed change by a bare actor.
+    assert!(app.undo());
+    assert_eq!(app.state().title, "");
+    let undo = newest(&mut app);
+    assert_eq!(undo["action"], json!(format!("Undo {label}")), "{undo}");
+    assert_eq!(undo["by"], by, "{undo}");
+    let context = app
+        .versions()
+        .pop()
+        .unwrap()
+        .context
+        .expect("an undo says what it did");
+    assert_eq!(context.action_label, format!("Undo {label}"));
+    assert!(context.invoker.is_some(), "{context:?}");
+
+    // Ctrl+Shift+Z names the same step, not the undo it reverts.
+    assert!(app.redo());
+    assert_eq!(app.state().title, "Plan");
+    let redo = newest(&mut app);
+    assert_eq!(redo["action"], json!(format!("Redo {label}")), "{redo}");
+    assert_eq!(redo["by"], by, "{redo}");
+
+    // And undoing that redo is again an undo of the step.
+    assert!(app.undo());
+    let again = newest(&mut app);
+    assert_eq!(again["action"], json!(format!("Undo {label}")), "{again}");
+    assert_eq!(again["by"], by, "{again}");
 }
 
 #[test]
@@ -338,4 +417,60 @@ fn render_shows_a_past_version() {
     assert_ne!(past["content"], now["content"], "a different picture");
     let unknown = refusal(app.call("render", json!({"version": "abcdef12"})));
     assert!(unknown.contains("version"), "{unknown}");
+}
+
+#[test]
+fn undo_author_selector_rejects_invalid_or_ambiguous_requests_without_mutation() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.call("add", json!({"text": "keep"})).unwrap();
+    for args in [
+        json!({"by": ""}),
+        json!({"by": " \n "}),
+        json!({"by": "author\u{0000}"}),
+        json!({"by": "a".repeat(513)}),
+        json!({"by": "agent:one", "run": "run:one"}),
+    ] {
+        assert!(app.call("undo", args).is_err());
+        assert_eq!(cards(&app), ["keep"]);
+    }
+}
+
+#[test]
+fn undo_named_author_preserves_other_authors_and_attributes_the_undo_to_its_caller() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    for (actor, text) in [
+        ("agent:clipboard-helper", "agent card"),
+        ("person:owner", "person card"),
+    ] {
+        app.call_by(
+            tilo_actions::ActionInvoker::actor(actor),
+            "test.board",
+            "add",
+            json!({"text": text}),
+        )
+        .unwrap();
+    }
+    let listed = history(&mut app);
+    let author = listed["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["args"] == r#"{text:"agent card"}"#)
+        .and_then(|entry| entry["by"].as_str())
+        .expect("history publishes the exact invoker");
+    assert_eq!(author, "agent:clipboard-helper");
+    app.call_by(
+        tilo_actions::ActionInvoker::actor("person:owner"),
+        "test.board",
+        "undo",
+        json!({"by": author}),
+    )
+    .unwrap();
+    assert_eq!(cards(&app), ["person card"]);
+    let undo = newest(&mut app);
+    assert_eq!(undo["by"], "person:owner", "{undo}");
+    assert!(
+        undo["action"].as_str().unwrap().starts_with("Undo"),
+        "{undo}"
+    );
 }

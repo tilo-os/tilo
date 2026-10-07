@@ -659,3 +659,295 @@ fn a_reply_is_written_as_its_paragraphs_marks_and_attributes() {
         Some(&tilo_doc::AttrVal::Bool(true))
     );
 }
+
+/// Apply `action` as a window does for `writer`: the envelope pins who
+/// invoked it.
+fn apply_as(
+    replica: &mut Replica<RichText>,
+    action: &RichTextAction,
+    writer: &str,
+) -> tilo_actions::ActionEnvelope {
+    let encoded = tilo_actions::EncodedAction::encode(RICH_TEXT_ACTION_TYPE, action).unwrap();
+    let context = tilo_actions::ActionContext::for_resource(
+        "Type",
+        RichText::KIND,
+        RichText::KIND,
+        RichText::LABEL,
+    )
+    .with_invoker(tilo_actions::ActionInvoker::actor(writer));
+    tilo_actions::apply_local_with_context(
+        replica.doc_mut(),
+        action,
+        encoded,
+        Some(b"writer-device"),
+        context,
+    )
+    .unwrap()
+}
+
+/// Every author run in the body: the paragraph's position, the run, whose.
+fn author_runs(replica: &Replica<RichText>) -> Vec<(usize, usize, usize, String)> {
+    let doc = replica.doc();
+    let c = model::open(doc, &automerge::ROOT).unwrap();
+    model::materialize(doc, &c)
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(index, block)| {
+            tilo_doc::author_runs(&block.marks)
+                .into_iter()
+                .map(move |(start, end, author)| (index, start, end, author))
+        })
+        .collect()
+}
+
+#[test]
+fn text_typed_in_carries_its_invokers_name_from_the_one_change_that_wrote_it() {
+    type Case = (fn(&[String]) -> RichTextAction, (usize, usize, usize));
+    let paragraph = "Paragraph 0 of the document.".chars().count();
+    let cases: [Case; 5] = [
+        (
+            |ids| RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: ids[1].clone(),
+                at: 10,
+                del: 0,
+                ins: "zero ".into(),
+            },
+            (1, 10, 15),
+        ),
+        (
+            |ids| RichTextAction::ReplaceSelection {
+                region: RegionKind::Body,
+                start_block: ids[1].clone(),
+                start: 0,
+                end_block: ids[1].clone(),
+                end: 9,
+                ins: "Section".into(),
+            },
+            (1, 0, 7),
+        ),
+        (
+            |ids| RichTextAction::InsertParagraph {
+                after: ids[1].clone(),
+                text: "Next".into(),
+            },
+            (2, 0, 4),
+        ),
+        (
+            |_| RichTextAction::AppendParagraph { text: "End".into() },
+            (2, 0, 3),
+        ),
+        (
+            |_| RichTextAction::ContinueParagraph {
+                text: " More.".into(),
+            },
+            (1, paragraph, paragraph + 6),
+        ),
+    ];
+    for (action, (index, start, end)) in cases {
+        let mut origin = document(1);
+        let mut peer = origin.fork();
+        let action = action(&body_ids(&origin.state().unwrap()));
+        let changes = origin.doc_mut().get_changes(&[]).len();
+        let envelope = apply_as(&mut origin, &action, "ada");
+        assert_eq!(
+            origin.doc_mut().get_changes(&[]).len(),
+            changes + 1,
+            "{action:?} and its authorship are one change"
+        );
+        assert_eq!(
+            author_runs(&origin),
+            [(index, start, end, "ada".to_owned())],
+            "{action:?} marks exactly what it typed"
+        );
+
+        // The peer replays the envelope into the very same change.
+        peer.replay(&envelope).unwrap();
+        assert_eq!(
+            origin.heads(),
+            peer.heads(),
+            "{action:?} replays identically"
+        );
+        assert_eq!(author_runs(&peer), author_runs(&origin));
+    }
+}
+
+#[test]
+fn text_nobody_invoked_and_text_taken_away_stay_unattributed() {
+    let mut replica = document(1);
+    let ids = body_ids(&replica.state().unwrap());
+    replica
+        .apply_action(
+            &RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: ids[1].clone(),
+                at: 0,
+                del: 0,
+                ins: "Unsigned ".into(),
+            },
+            "Type",
+        )
+        .unwrap();
+    assert!(author_runs(&replica).is_empty());
+
+    apply_as(
+        &mut replica,
+        &RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: ids[1].clone(),
+            at: 0,
+            del: 9,
+            ins: String::new(),
+        },
+        "ada",
+    );
+    assert!(author_runs(&replica).is_empty());
+}
+
+#[test]
+fn replace_matches_refuses_invalid_batches_before_any_mutation() {
+    let mut replica = document(1);
+    let id = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    let span = |start, end| Span {
+        block: id.clone(),
+        start,
+        end,
+    };
+    let heads = replica.heads();
+    for (spans, ins) in [
+        (vec![], "x".into()),
+        (vec![span(0, 1), span(2, usize::MAX)], "x".into()),
+        (
+            vec![
+                span(0, 1),
+                Span {
+                    block: "gone".into(),
+                    start: 0,
+                    end: 1,
+                },
+            ],
+            "x".into(),
+        ),
+        (vec![span(0, 2), span(1, 3)], "x".into()),
+        (vec![span(0, 1), span(0, 1)], "x".into()),
+        (vec![span(0, 1), span(2, 2)], "x".into()),
+        (vec![span(0, 1), span(4, 2)], "x".into()),
+        (vec![span(0, 1); 10_001], String::new()),
+        (
+            vec![span(0, 1), span(2, 3)],
+            "x".repeat(action::MAX_ACTION_TEXT_CHARS / 2 + 1),
+        ),
+    ] {
+        assert!(
+            replica
+                .apply_action(
+                    &RichTextAction::ReplaceMatches {
+                        region: RegionKind::Body,
+                        spans,
+                        ins
+                    },
+                    "Replace all"
+                )
+                .is_err()
+        );
+        assert_eq!(replica.heads(), heads, "invalid batch wrote a partial edit");
+    }
+}
+
+#[test]
+fn replace_matches_uses_pre_action_unicode_offsets_and_one_replay_envelope() {
+    let mut replica = document(0);
+    let id = replica.state().unwrap().body().id_at(0).unwrap().to_owned();
+    replica
+        .apply_action(
+            &RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: id.clone(),
+                at: 0,
+                del: 0,
+                ins: "😀alpha alpha 日".into(),
+            },
+            "Type",
+        )
+        .unwrap();
+    let mut peer = replica.fork();
+    let logs = replica.log().len();
+    replica
+        .apply_action(
+            &RichTextAction::ReplaceMatches {
+                region: RegionKind::Body,
+                spans: vec![
+                    Span {
+                        block: id.clone(),
+                        start: 7,
+                        end: 12,
+                    },
+                    Span {
+                        block: id.clone(),
+                        start: 1,
+                        end: 6,
+                    },
+                ],
+                ins: "β😀".into(),
+            },
+            "Replace all",
+        )
+        .unwrap();
+    assert_eq!(replica.log().len(), logs + 1);
+    assert_eq!(
+        model::block_text(replica.doc(), replica.state().unwrap().containers(), &id).unwrap(),
+        "😀β😀 β😀 日"
+    );
+    peer.replay(replica.log().last().unwrap()).unwrap();
+    assert_eq!(
+        model::block_text(peer.doc(), peer.state().unwrap().containers(), &id).unwrap(),
+        model::block_text(replica.doc(), replica.state().unwrap().containers(), &id).unwrap()
+    );
+    assert_eq!(body_ids(&peer.state().unwrap()), vec![id]);
+}
+
+/// A new document starts the same whoever creates it: its first paragraph's
+/// id names no device.
+#[test]
+fn a_new_document_starts_the_same_on_every_device() {
+    let body = |actor: &str| {
+        let mut doc =
+            automerge::AutoCommit::new().with_actor(automerge::ActorId::from(actor.as_bytes()));
+        RichText::initialize(&mut doc).unwrap();
+        body_ids(&RichText::read(&doc).unwrap())
+    };
+    assert_eq!(body("device-a"), body("device-b"));
+    assert_eq!(body("device-a").len(), 1);
+}
+
+/// An imported file is remembered by its content address, and a write of
+/// the file records what it then holds, as content from outside.
+#[test]
+fn the_document_remembers_the_file_it_was_read_from_and_written_to() {
+    use tilo_actions::Action;
+    let mut doc = automerge::AutoCommit::new();
+    RichText::initialize(&mut doc).unwrap();
+    assert_eq!(RichText::read(&doc).unwrap().file_digest(), None);
+    let bytes = b"# Report\n";
+    crate::action::RichTextAction::ReplaceFormatted {
+        format: crate::action::ImportFormat::Markdown,
+        bytes: bytes.to_vec(),
+    }
+    .apply(&mut doc)
+    .unwrap();
+    let digest = tilo_content::hash_bytes(bytes);
+    assert_eq!(
+        RichText::read(&doc).unwrap().file_digest(),
+        Some(digest.as_str())
+    );
+    let written = crate::action::RichTextAction::NoteFileWritten {
+        digest: tilo_content::hash_bytes(b"saved"),
+    };
+    assert_eq!(written.change_kind(), tilo_actions::ChangeKind::External);
+    written.apply(&mut doc).unwrap();
+    assert_eq!(
+        RichText::read(&doc).unwrap().file_digest(),
+        Some(tilo_content::hash_bytes(b"saved").as_str())
+    );
+}

@@ -59,7 +59,7 @@ PY
 echo "== collaborative Files shipped-image contract ($mode) =="
 
 # Executables and the host FUSE prerequisite must be in the immutable image.
-for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
+for path in /usr/bin/fs /usr/bin/tilo-launcher \
             /usr/bin/tilo-runtime-mcp \
             /usr/bin/tilo-install /usr/bin/tilo-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/tilo/files-atspi-smoke.sh \
@@ -85,7 +85,12 @@ require_file /usr/lib/systemd/user/tilo-fs-cloud.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
 require_file /usr/share/wayland-sessions/shell.desktop
-require_file /usr/share/wayland-sessions/shell-peer-sync.desktop
+# The greeter offers a session picker only when there is a real choice, so the
+# image ships exactly one session. A second entry, from Tilo or from a package
+# the base pulls in, would put a picker back in front of every login.
+sessions="$(cd "$(at /usr/share)" && find wayland-sessions xsessions -name '*.desktop' 2>/dev/null | sort | tr '\n' ' ')"
+[ "$sessions" = "wayland-sessions/shell.desktop " ] \
+  || die "login sessions are not exactly wayland-sessions/shell.desktop: ${sessions:-none}"
 require_file /usr/lib/tmpfiles.d/tilo.conf
 require_file /usr/share/tilo/fs-capabilities.json
 
@@ -158,7 +163,6 @@ require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graph
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"
 require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-session --backend drm"
-require_line /usr/share/wayland-sessions/shell-peer-sync.desktop "Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync"
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user start "$SESSION_TARGET"'
 require_text /usr/libexec/tilo-session 'run_managed "$SHELL_BIN" "$@"'
 require_text /usr/libexec/tilo-session '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
@@ -212,18 +216,26 @@ require_exec "$payload/bin/file-explorer"
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
 require_toml_string "$manifest" sandbox.services.tilo-fs "optional@1"
-require_toml_string "$manifest" package.runtime "tilo-runtime/2026.07"
+# The package names the exact runtime build it links, and the image ships it.
+runtime_version="$(python3 - "$(at "$manifest")" <<'PY'
+import pathlib, re, sys, tomllib
+runtime = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["package"]["runtime"]
+match = re.fullmatch(r"tilo-runtime/(2026\.07\+native\.[0-9a-f]{32})", runtime)
+print(match.group(1) if match else "")
+PY
+)"
+[ -n "$runtime_version" ] \
+  || die "$manifest does not name the runtime build it links (tilo-runtime/2026.07+native.<digest>)"
 # A thin app links the runtime bundle's shared libraries, which the launcher
 # puts on its loader path.
-require_file /usr/lib/tilo-runtime/2026.07/lib/libruntime_dylib.so
-# These are deliberately allowed to be distinct signed build artifacts.  The
-# loose binary is the privileged recovery surface built with the OS, while the
-# launcher resolves the checksum-pinned app-collection payload.  Requiring
-# byte equality made every legitimate pinned-collection image fail before its
-# installed-session AT-SPI gate could run.  The checks below exercise the
-# recovery binary and verify the installed package independently; runtime mode
-# then launches this exact payload for the external AT-SPI smoke.
-require_file /usr/lib/tilo-runtime/2026.07/bundle.toml
+require_file "/usr/lib/tilo-runtime/$runtime_version/lib/libruntime_dylib.so"
+# Files, Terminal and Settings ship only as packages that update through the
+# app registry; a loose copy on the image would be a second, stale build.
+# Runtime mode launches the installed payload for the external AT-SPI smoke.
+for loose in /usr/bin/file-explorer /usr/bin/terminal /usr/bin/settings; do
+  [ ! -e "$(at "$loose")" ] || die "$loose ships outside its package"
+done
+require_file "/usr/lib/tilo-runtime/$runtime_version/bundle.toml"
 require_file /usr/share/tilo/runtime-bundle-publisher.hex
 require_file /etc/tilo/runtime-bundle-trusted-publishers.txt
 
@@ -233,16 +245,11 @@ if [ "$root" = / ]; then
   fs_help="$(/usr/bin/fs --help)" || die "shipped fs --help failed"
   grep -Fq 'serve' <<<"$fs_help" || die "shipped fs lacks serve"
   grep -Fq 'recipient-service' <<<"$fs_help" || die "shipped fs lacks recipient-service"
-  scratch="$(mktemp -d)"
-  trap 'rm -rf "$scratch"' EXIT
-  HOME="$scratch" XDG_DATA_HOME="$scratch/data" XDG_CONFIG_HOME="$scratch/config" \
-    /usr/bin/file-explorer --headless-drive '{}' >/dev/null \
-    || die "shipped Files headless frame failed"
   /usr/bin/tilo-launcher --help >/dev/null || die "shipped launcher CLI failed"
   TILO_APPS_DATA_DIR=/usr/share/tilo-apps \
     /usr/bin/tilo-install verify so.tilo.file-explorer >/dev/null \
     || die "installed Files payload failed its recorded integrity check"
-  /usr/bin/tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
+  /usr/bin/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$runtime_version" \
     --require-publisher "$(cat /usr/share/tilo/runtime-bundle-publisher.hex)" >/dev/null \
     || die "shipped runtime bundle signature or content check failed"
   # Everything the store volume helper runs, at install and at boot.
@@ -328,6 +335,18 @@ if [ "$mode" = runtime ]; then
   done
   [ -S "$user_runtime/tilo/services/tilo-fs.sock" ] || die "recipient service socket is absent"
   [ -d "$HOME/.cache/tilo/received-files" ] || die "recipient state root is absent"
+
+  # A listening socket proves nothing about identity: the recipient idles
+  # when its sandbox cannot read the device key. Start it and require that it
+  # loaded the certified identity the chain above verified.
+  systemctl --user start tilo-fs-recipient.service \
+    || die "recipient service does not start"
+  await_user_active tilo-fs-recipient.service
+  sleep 2
+  if journalctl --user -b -u tilo-fs-recipient.service --no-pager -q \
+    | grep -F 'no certified mount identity'; then
+    die "recipient service cannot load the device identity"
+  fi
 
   # SSH does not inherit the graphical user's display variables. Import only
   # the display and bus values from that same user's systemd manager. The

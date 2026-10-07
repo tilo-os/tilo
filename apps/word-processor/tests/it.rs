@@ -17,14 +17,13 @@ mod e2e_docx;
 mod e2e_html;
 #[path = "e2e_odt.rs"]
 mod e2e_odt;
-#[path = "two_sessions_one_document.rs"]
-mod two_sessions_one_document;
 
 mod canonical_component;
 #[path = "concurrent_paragraph_edits.rs"]
 mod concurrent_paragraph_edits;
 #[path = "headless_launch.rs"]
 mod headless_launch;
+mod support;
 
 #[path = "framework_host.rs"]
 mod framework_host;

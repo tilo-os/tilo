@@ -45,6 +45,7 @@ pub mod invite;
 pub mod live;
 #[cfg(feature = "net")]
 pub mod net;
+pub mod remote_page;
 pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;

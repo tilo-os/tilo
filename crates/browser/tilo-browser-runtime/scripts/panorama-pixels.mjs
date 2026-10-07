@@ -15,7 +15,7 @@ try{
   const source=createPresentedSource({audience:'synthetic-only',app:'fixture',canvas:input,layer:()=>layer,valid:()=>true,now:()=>t});
   const output=document.createElement('canvas');
   const view=createPanorama({canvas:output,sources:[{source:source.handle,rect:[100,50,100,50]}],width:200,height:100,now:()=>t});
-  source.present({phase:'presented',frames:1,gpuGeneration:1,record:'synthetic-only',logicalSize:[100,50],surfaceSize:[200,100]});
+  source.present({phase:'presented',captureProtected:false,frames:1,gpuGeneration:1,record:'synthetic-only',logicalSize:[100,50],surfaceSize:[200,100]});
   // Changing the live source after presentation must not change the copied frame.
   c.fillStyle='#ffffff';c.fillRect(0,0,200,100);
   const capture=await view.png({cx:150,cy:75,scale:1});
@@ -31,7 +31,7 @@ try{
   const s=createPresentedSource({audience:'synthetic-only',app:'fixture',canvas:gpu,layer:()=>undefined,valid:()=>true});
   const out=document.createElement('canvas');const v=createPanorama({canvas:out,sources:[{source:s.handle,rect:[0,0,64,32]}],width:64,height:32});
   await device.queue.onSubmittedWorkDone();
-  s.present({phase:'presented',frames:1,gpuGeneration:1,record:'gpu-fixture',logicalSize:[64,32],surfaceSize:[64,32]});
+  s.present({phase:'presented',captureProtected:false,frames:1,gpuGeneration:1,record:'gpu-fixture',logicalSize:[64,32],surfaceSize:[64,32]});
   v.render({cx:32,cy:16,scale:1});checks.webgpu=[...out.getContext('2d').getImageData(20,10,1,1).data];
   v.close();s.close();context.unconfigure();device.destroy();
   return {checks,receipt,pngBytes:capture.blob.size};

@@ -11,6 +11,7 @@ thread_local! { static CAPTURES: RefCell<Vec<(&'static str, crate::LatestRequest
 thread_local! { static DISCOVERY_COUNT: Cell<usize> = const { Cell::new(0) }; }
 thread_local! { static CONTROL_AUTHORITY: RefCell<Vec<(bool, bool)>> = const { RefCell::new(vec![]) }; }
 thread_local! { static COMPOUND_MODE: Cell<u8> = const { Cell::new(0) }; }
+thread_local! { static DOCUMENT_JOB_MODE: Cell<bool> = const { Cell::new(false) }; }
 thread_local! {
     static PAGED_SEARCH_COUNTS: RefCell<Option<Rc<[Cell<usize>; 2]>>> = const { RefCell::new(None) };
 }
@@ -81,13 +82,13 @@ impl crate::search::SearchProvider for PagedProbe {
     }
     fn search_page(
         &self,
-        query: &str,
+        query: &crate::search::SearchQuery,
         cursor: Option<&crate::search::SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> crate::search::SearchPage {
         self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+            .query_page(query.text(), cursor, work_budget, result_limit)
     }
     // Deliberately inherit unknown generation: validation cannot cache a
     // claim that this provider's authorization declarations are stable.
@@ -230,15 +231,16 @@ impl Widget for Probe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest { type_id, .. }) = op.unscoped() else {
+        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
             return Ok(None);
         };
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
-                self.actions.dispatch(doc, "bound.apply", &FollowUp);
+                self.actions
+                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
             }
             Self::capture("bound-view");
             return Ok(Some(crate::widget::ResourceOperationStart::Completed(
@@ -253,12 +255,12 @@ impl Widget for Probe {
         );
         let mode = COMPOUND_MODE.get();
         if matches!(mode, 3 | 4 | 6) {
-            doc.put(ROOT, "raw-before", true).unwrap();
+            doc.document_mut().put(ROOT, "raw-before", true).unwrap();
         }
         match mode {
             2 | 3 => {}
             7 => self.actions.dispatch_with_context(
-                doc,
+                doc.document_mut(),
                 "bound.apply",
                 &FollowUp,
                 tilo_actions::ActionContext::for_resource(
@@ -269,27 +271,33 @@ impl Widget for Probe {
                 ),
             ),
             8 => {
-                let mut queue = tilo_actions::OptimisticQueue::new(doc);
+                let mut queue = tilo_actions::OptimisticQueue::new(doc.document_mut());
                 self.actions
-                    .dispatch_optimistic(doc, &mut queue, "bound.apply", &FollowUp)
+                    .dispatch_optimistic(doc.document_mut(), &mut queue, "bound.apply", &FollowUp)
                     .unwrap();
             }
             9 | 10 => {
                 assert_eq!(
                     self.actions
-                        .try_dispatch(doc, "bound.empty", &EmptyFollowUp { refuse: mode == 10 })
+                        .try_dispatch(
+                            doc.document_mut(),
+                            "bound.empty",
+                            &EmptyFollowUp { refuse: mode == 10 }
+                        )
                         .is_err(),
                     mode == 10
                 );
             }
             11 => {
-                doc.put(ROOT, "raw-unwind", true).unwrap();
+                doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
                 panic!("controlled compound unwind");
             }
-            _ => self.actions.dispatch(doc, "bound.apply", &FollowUp),
+            _ => self
+                .actions
+                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
         }
         if matches!(mode, 5 | 6) {
-            doc.put(ROOT, "raw-after", true).unwrap();
+            doc.document_mut().put(ROOT, "raw-after", true).unwrap();
         }
         Self::capture("mutable-operation");
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
@@ -318,8 +326,8 @@ impl Widget for Probe {
         })
     }
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = crate::doc::document(doc, path);
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document_ref(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
@@ -390,7 +398,7 @@ impl Widget for Probe {
     fn perform_action(
         &mut self,
         _: &crate::a11y::Action,
-        doc: &mut AppModel,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = crate::doc::document(doc, path);
@@ -398,7 +406,7 @@ impl Widget for Probe {
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
         );
-        doc.put(ROOT, "action", true).unwrap();
+        doc.document_mut().put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
     }
@@ -413,10 +421,15 @@ impl crate::search::capability::SearchSource for Probe {
             strict: self.strict,
         })]
     }
-    fn activate_search_result(&mut self, id: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(id, "opaque");
-        doc.put(ROOT, "navigation", true).unwrap();
+        doc.document_mut().put(ROOT, "navigation", true).unwrap();
     }
 }
 
@@ -436,6 +449,18 @@ impl crate::resources::PublishesResources for Probe {
         if self.strict {
             action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
         }
+        let mut document = tilo_actions::ActionSpec::immediate(
+            "apply",
+            "Apply follow up",
+            "bound.apply",
+            &FollowUp,
+        )
+        .unwrap();
+        if DOCUMENT_JOB_MODE.get() {
+            document.contract.execution =
+                tilo_actions::ExecutionMode::Background { cancellable: true };
+            document.contract.result = tilo_actions::ResultSpec::Job;
+        }
         vec![
             tilo_actions::Resource::new(
                 self.collision.as_deref().unwrap_or("bound:probe"),
@@ -443,15 +468,7 @@ impl crate::resources::PublishesResources for Probe {
                 "Probe",
             )
             .with_action(action)
-            .with_action(
-                tilo_actions::ActionSpec::immediate(
-                    "apply",
-                    "Apply follow up",
-                    "bound.apply",
-                    &FollowUp,
-                )
-                .unwrap(),
-            )
+            .with_action(document)
             .with_action(
                 tilo_actions::ActionSpec::operation(
                     "view",
@@ -588,9 +605,11 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
             title: "Probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: crate::record::RecordKind::new("probe"),
+
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: factory,
         };
         let context = HostContext::prepare(
@@ -893,9 +912,11 @@ impl ActionFixture {
                 title: "Probe",
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: crate::record::RecordKind::new("probe"),
+
                 required: vec![],
                 optional: vec![],
                 opens: &[],
+                room_record: false,
                 create,
             };
             let target = if shared && !bindings.is_empty() {
@@ -942,7 +963,10 @@ impl ActionFixture {
     }
     fn broker() -> Self {
         let mut fixture = Self::with_same_record(true);
-        fixture.app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+        // This fixture captures broker submission and injects admitted delivery;
+        // it does not exercise authenticated native document history.
+        fixture.app.collaboration.manager =
+            super::semantic_tree_app_tests::admitted_delivery_manager();
         fixture.app.actions.bound_broker_route_for_test =
             Some(crate::collaboration::PrimaryRouteWitness {
                 route: fixture.bindings[0].broker_route().unwrap(),
@@ -953,6 +977,7 @@ impl ActionFixture {
     fn target(&self, index: usize, action: &str) -> crate::bound_dispatch::BoundActionTarget {
         let binding = self.bindings[index].clone();
         crate::bound_dispatch::BoundActionTarget {
+            physical_text: false,
             address: crate::bound_dispatch::BoundActionAddress {
                 instance_id: binding.instance_id,
                 address: tilo_actions::ActionAddress::new("bound:probe", action),
@@ -964,11 +989,85 @@ impl ActionFixture {
 
 include!("directory_permission_tests.rs");
 
+include!("invocation_locus_tests.rs");
+
 include!("owner_publication_tests.rs");
 
 include!("action_directory_snapshot_bound_tests.rs");
 include!("bound_record_sync_tests.rs");
 include!("standalone_history_record_restore_tests.rs");
+
+#[test]
+fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
+    DOCUMENT_JOB_MODE.set(true);
+    let mut fixture = ActionFixture::broker();
+    let target = fixture.target(0, "apply");
+    let actor = fixture.app.collaboration.local_author.0.clone();
+    let before = fixture
+        .records
+        .read(&target.binding.checkout.id, |doc| doc.clone().get_heads())
+        .unwrap();
+    let mut requests = Vec::new();
+    let started = fixture
+        .app
+        .invoke_bound_target_with_broker(
+            &target,
+            &ResourceInvocation::new(&target.address.address, &actor).confirmed(true),
+            Some(&mut |request| requests.push(request)),
+        )
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::widget::ResourceOperationStart::Accepted
+    ));
+    assert_eq!(
+        requests.len(),
+        1,
+        "document work needs an actual native source invocation"
+    );
+    assert_eq!(
+        fixture
+            .records
+            .read(&target.binding.checkout.id, |doc| doc.clone().get_heads())
+            .unwrap(),
+        before,
+        "no canonical edit or outside consequence before broker admission"
+    );
+    let CollabRequest::RemoteAction {
+        message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+    } = requests.pop().unwrap()
+    else {
+        panic!("expected canonical broker request")
+    };
+    assert_eq!(request.target.provider, tilo_actions::remote::OWN_PROVIDER);
+    let delivered = fixture
+        .app
+        .invoke_bound_target_with_broker(
+            &target,
+            &ResourceInvocation::new(&target.address.address, &actor)
+                .confirmed(true)
+                .broker_admitted(true)
+                .invocation(Some(request.invocation)),
+            Some(&mut |request| requests.push(request)),
+        )
+        .unwrap();
+    assert!(matches!(
+        delivered,
+        crate::widget::ResourceOperationStart::Completed(_)
+    ));
+    assert!(
+        requests.is_empty(),
+        "an admitted delivery must not route in a loop"
+    );
+    assert_ne!(
+        fixture
+            .records
+            .read(&target.binding.checkout.id, |doc| doc.clone().get_heads())
+            .unwrap(),
+        before
+    );
+    DOCUMENT_JOB_MODE.set(false);
+}
 
 #[allow(
     clippy::too_many_lines,
@@ -2149,6 +2248,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                             confirmed: true,
                             broker_admitted: false,
                             invocation: tilo_actions::InvocationId::new(),
+                            source_invocation: None,
                             ambient: None,
                             scope: None,
                         },
@@ -2365,6 +2465,91 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     );
 }
 
+/// Inside the Tilo shell the app's window does not present search: a
+/// component's request to open it is handed to the host as an intent, and
+/// the host's tile drains it.
+#[test]
+fn a_hosted_components_search_request_becomes_a_host_intent() {
+    let request = crate::search::SearchRequest::within(crate::search::ScopeDecl::new(
+        "folder:inbox",
+        "Inbox",
+    ))
+    .with_query("invoice");
+
+    let mut fixture = ActionFixture::new();
+    fixture.bindings[0]
+        .queued_controls
+        .borrow_mut()
+        .push_back(crate::search::open_search_invocation(&request));
+    assert!(fixture.app.dispatch_control_invocations() > 0);
+    assert!(
+        fixture.app.action_palette().is_none(),
+        "a window that does not present search opens no palette of its own"
+    );
+    assert_eq!(
+        fixture.bindings[0].take_search_request(),
+        Some(request.clone())
+    );
+    assert_eq!(fixture.bindings[1].take_search_request(), None);
+
+    // The tile hosting the component hands the request to the shell once.
+    let temp = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let records = owners
+        .open(
+            "so.tilo.binding-probe",
+            "00000000-0000-0000-0000-000000000009",
+        )
+        .unwrap();
+    let views = Rc::new(
+        crate::application_view::InstanceViewStore::new(
+            temp.path().into(),
+            "D",
+            "00000000-0000-0000-0000-000000000009",
+        )
+        .unwrap(),
+    );
+    let definition = ApplicationDefinition {
+        app_id: "so.tilo.binding-probe",
+        title: "Probe",
+        icon: IconDescriptor::Glyph("P"),
+        record_kind: crate::record::RecordKind::new("probe"),
+        room_record: true,
+        required: vec![],
+        optional: vec![],
+        opens: &[],
+        create: factory,
+    };
+    let context = HostContext::prepare(
+        &definition,
+        HostContextInputs {
+            records,
+            views,
+            device_id: "D".into(),
+            instance_id: 21,
+            permissions: Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
+            )),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let binding = component.callback_binding();
+    let mut tile = TileHost::from_component(component);
+    assert!(tile.take_host_intent().is_none());
+    binding.request_search(request.clone());
+    assert_eq!(
+        tile.take_host_intent(),
+        Some(crate::widget::AppHostIntent::OpenSearch(request))
+    );
+    assert!(tile.take_host_intent().is_none(), "the request drains once");
+}
+
 fn behaviour_probe_factory(
     context: HostContext,
     target: LaunchTarget,
@@ -2375,13 +2560,12 @@ fn behaviour_probe_factory(
         autofocus_on_structure_change: true,
         appearance_reconcile: true,
         capture_protected: true,
+        window: crate::application::WindowRole::InputSurface,
     });
     Ok(component)
 }
 
-fn hosted_behaviour(
-    create: crate::application::ComponentFactory,
-) -> crate::application::ComponentBehaviour {
+fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
     let host = crate::application_test_support::ProbeHost::new();
     let definition = crate::application_test_support::definition(create);
     let target = LaunchTarget::New;
@@ -2396,12 +2580,22 @@ fn hosted_behaviour(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    let app =
-        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    App::from_component(component, crate::application_test_support::runner_inputs()).unwrap()
+}
+
+fn hosted_behaviour(
+    create: crate::application::ComponentFactory,
+) -> crate::application::ComponentBehaviour {
+    let app = hosted_behaviour_app(create);
     crate::application::ComponentBehaviour {
         autofocus_on_structure_change: app.autofocus_on_structure_change,
         appearance_reconcile: app.appearance_reconcile,
         capture_protected: app.capture_protected(),
+        window: if app.window.app_id.is_some() {
+            crate::application::WindowRole::InputSurface
+        } else {
+            crate::application::WindowRole::Ordinary
+        },
     }
 }
 
@@ -2417,6 +2611,235 @@ fn the_hosting_window_takes_the_components_behaviour() {
             autofocus_on_structure_change: true,
             appearance_reconcile: true,
             capture_protected: true,
+            window: crate::application::WindowRole::InputSurface,
         }
     );
+}
+
+#[test]
+fn deferred_input_stamp_is_read_only_and_invalidates_an_edit_and_its_inverse() {
+    let mut fixture = ActionFixture::new();
+    let owner = fixture.bindings[0].clone();
+    let node = *fixture
+        .app
+        .layout
+        .node_map
+        .keys()
+        .find(|node| {
+            fixture
+                .app
+                .bindings
+                .binding_for(**node)
+                .is_some_and(|binding| binding.same_component(&owner))
+        })
+        .unwrap();
+    let pending = fixture.app.state.doc.pending_ops();
+    let before = fixture
+        .app
+        .bindings
+        .document_edit_stamp(node, &fixture.app.state.doc)
+        .unwrap();
+    let repeated = fixture
+        .app
+        .bindings
+        .document_edit_stamp(node, &fixture.app.state.doc)
+        .unwrap();
+    assert!(before == repeated);
+    assert_eq!(
+        fixture.app.state.doc.pending_ops(),
+        pending,
+        "reading a stamp must not commit or mutate the host document"
+    );
+    owner
+        .with_document(&mut fixture.app.state.doc, |doc, _| {
+            doc.put(ROOT, "dictation-guard", "edit").unwrap();
+        })
+        .unwrap();
+    let edited = fixture
+        .app
+        .bindings
+        .document_edit_stamp(node, &fixture.app.state.doc)
+        .unwrap();
+    assert!(edited != before);
+    owner
+        .with_document(&mut fixture.app.state.doc, |doc, _| {
+            doc.delete(ROOT, "dictation-guard").unwrap();
+        })
+        .unwrap();
+    let reverted = fixture
+        .app
+        .bindings
+        .document_edit_stamp(node, &fixture.app.state.doc)
+        .unwrap();
+    assert!(
+        reverted != edited && reverted != before,
+        "restoring the same text must not revive a deferred insertion"
+    );
+    owner.closing.set(true);
+    assert!(
+        fixture
+            .app
+            .bindings
+            .document_edit_stamp(node, &fixture.app.state.doc)
+            .is_err(),
+        "a retired owner cannot issue a live stamp"
+    );
+}
+
+#[test]
+fn deferred_input_embedded_app_follows_its_actual_editable_child() {
+    use crate::widget::{Column, TextInput, Widget};
+    let mut app = App::from_scoped_parts_with_controlled_inputs(
+        crate::wake::WakeScope::new(),
+        State::new(),
+        Box::new(
+            Column::new()
+                .push(Box::new(TextInput::local().with_initial_value("same")))
+                .push(Box::new(TextInput::local().with_initial_value("same"))),
+        ),
+    );
+    app.init_layout();
+    app.refresh_focus_order();
+    let first = app.focusable_order[0];
+    let second = app.focusable_order[1];
+    app.set_focused_node(Some(first));
+    let mut embedded = crate::app::EmbeddedApp::new(app, |_| {}).unwrap();
+    assert!(crate::ime::ImeWindowState::from_widget(&embedded).is_some());
+    let stamp = embedded.ime_edit_fingerprint(&[3; 32]).unwrap();
+    embedded.app_mut().set_focused_node(Some(second));
+    assert_ne!(
+        embedded.ime_edit_fingerprint(&[3; 32]).unwrap(),
+        stamp,
+        "identical embedded fields must remain distinct insertion targets"
+    );
+    let stamp = embedded.ime_edit_fingerprint(&[3; 32]).unwrap();
+    embedded
+        .app_mut()
+        .state
+        .doc
+        .put(ROOT, "guard", "edit")
+        .unwrap();
+    embedded.app_mut().state.doc.delete(ROOT, "guard").unwrap();
+    assert_ne!(
+        embedded.ime_edit_fingerprint(&[3; 32]).unwrap(),
+        stamp,
+        "an edit and inverse must invalidate deferred embedded input"
+    );
+    embedded.app_mut().set_focused_node(None);
+    assert!(crate::ime::ImeWindowState::from_widget(&embedded).is_none());
+    assert!(embedded.ime_edit_fingerprint(&[3; 32]).is_none());
+}
+
+#[test]
+fn input_surfaces_keep_their_controls_without_native_document_chrome() {
+    for (create, ordinary) in [
+        (
+            collaboration_probe_factory as crate::application::ComponentFactory,
+            true,
+        ),
+        (
+            behaviour_probe_factory as crate::application::ComponentFactory,
+            false,
+        ),
+    ] {
+        let mut app = hosted_behaviour_app(create);
+        app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
+        assert_eq!(app.history_chrome_enabled, ordinary);
+        assert_eq!(app.native_document_chrome, ordinary);
+        assert_eq!(
+            app.document_sync_status().is_some(),
+            ordinary,
+            "an intentionally unattached input service is not a failed document route"
+        );
+        for (width, height) in [(800, 600), (600, 800)] {
+            app.init_layout();
+            let root = app.layout.root_node.expect("native root layout exists");
+            run_layout_pass(&mut app, root, width, height, 1.0, false, None).unwrap();
+            app.refresh_semantic_tree();
+            let names: Vec<_> = app
+                .semantic_tree()
+                .iter()
+                .filter_map(|node| node.name.as_deref())
+                .collect();
+            assert!(
+                names.contains(&"Live owner"),
+                "the actual application's accessible label remains: {names:?}"
+            );
+            assert!(
+                tilo_actions::door::resolve(
+                    &app.collect_local_resources(),
+                    &tilo_actions::ActionAddress::new("bound-collaboration", "export"),
+                )
+                .is_some(),
+                "the app's declared control remains available"
+            );
+            assert_eq!(names.contains(&"History"), ordinary);
+        }
+        app.action_publication_failure = Some("explicit publication refusal".into());
+        assert_eq!(
+            app.document_sync_status(),
+            Some("explicit publication refusal"),
+            "system-surface presentation must still expose actual errors"
+        );
+        app.close_components();
+    }
+}
+
+#[test]
+fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
+    let mut fixture = ActionFixture::broker();
+    fixture.app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    let target = fixture.target(0, "follow-up");
+    let actor = fixture.app.collaboration.local_author.0.clone();
+    let granted = fixture.permissions.borrow().clone();
+    fixture.app.continuation.owner_view.following = true;
+    fixture.app.continuation.owner_view.pending =
+        Some(crate::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: b"pending-peer-view".to_vec(),
+        });
+    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
+        crate::permissions::Actor::person(None, "fixture-user"),
+        vec![],
+    )
+    .at_unix_time(100);
+    let heads = fixture.app.state.doc.get_heads();
+    let mut actual_before = fixture
+        .records
+        .read(&target.binding.checkout.id, Clone::clone)
+        .unwrap();
+    let actual_heads = actual_before.get_heads();
+    assert!(
+        fixture
+            .app
+            .invoke_bound_target(
+                &target,
+                &ResourceInvocation::new(&target.address.address, &actor)
+                    .confirmed(true)
+                    .broker_admitted(true)
+                    .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+            .is_err()
+    );
+    assert!(fixture.app.continuation.owner_view.following);
+    assert!(!fixture.app.continuation.owner_view.awaiting_claim);
+    assert!(fixture.app.continuation.owner_view.pending.is_some());
+    assert_eq!(fixture.app.state.doc.get_heads(), heads);
+    let mut actual_after = fixture
+        .records
+        .read(&target.binding.checkout.id, Clone::clone)
+        .unwrap();
+    assert_eq!(actual_after.get_heads(), actual_heads);
+    *fixture.permissions.borrow_mut() = granted;
+    let accepted = fixture.app.invoke_bound_target(
+        &target,
+        &ResourceInvocation::new(&target.address.address, &actor)
+            .confirmed(true)
+            .broker_admitted(true)
+            .invocation(Some(tilo_actions::InvocationId::new())),
+    );
+    assert!(accepted.is_ok(), "authorized local action: {accepted:?}");
+    assert!(!fixture.app.continuation.owner_view.following);
+    assert!(fixture.app.continuation.owner_view.awaiting_claim);
+    assert!(fixture.app.continuation.owner_view.pending.is_none());
 }

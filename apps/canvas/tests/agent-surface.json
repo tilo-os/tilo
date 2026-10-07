@@ -16,8 +16,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "An id to address the layer by (`sky`); one is made when absent."
+          ]
         },
         "nullable": true
       },
@@ -40,8 +39,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art."
+          ]
         },
         "nullable": true
       },
@@ -54,8 +52,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "`0..=1`."
+          ]
         },
         "nullable": true
       },
@@ -68,8 +65,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "Put the new layer directly above this layer instead of on top."
+          ]
         },
         "nullable": true
       },
@@ -82,8 +78,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "`0..=1`: let the ground's tooth show through the layer's marks."
+          ]
         },
         "nullable": true
       }
@@ -106,8 +101,7 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "description": "Marks or groups."
+          }
         },
         "nullable": false
       },
@@ -120,8 +114,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`."
+          ]
         },
         "nullable": true
       },
@@ -134,8 +127,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`horizontal` or `vertical`: equal gaps."
+          ]
         },
         "nullable": true
       },
@@ -148,8 +140,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`artwork` or a mark/group id; else their extent."
+          ]
         },
         "nullable": true
       }
@@ -215,6 +206,8 @@
                   "type": "string",
                   "enum": [
                     "set-artwork",
+                    "new-artwork",
+                    "open-artwork",
                     "add-layer",
                     "edit-layer",
                     "remove-layer",
@@ -269,8 +262,7 @@
         "required": true,
         "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`.",
         "schema": {
-          "type": "string",
-          "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`."
+          "type": "string"
         },
         "nullable": false
       },
@@ -283,8 +275,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "The mark or group `above` and `below` are relative to."
+          ]
         },
         "nullable": true
       }
@@ -324,8 +315,7 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "description": "Marks or groups."
+          }
         },
         "nullable": false
       },
@@ -335,8 +325,7 @@
         "required": true,
         "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`.",
         "schema": {
-          "type": "string",
-          "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`."
+          "type": "string"
         },
         "nullable": false
       }
@@ -364,8 +353,7 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "`[x, y, width, height]`; the reference's frame when absent."
+          "maxItems": 4
         },
         "nullable": true
       },
@@ -378,8 +366,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ)."
+          ]
         },
         "nullable": true
       },
@@ -394,8 +381,7 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295,
-          "description": "Longest side of each picture, 64 to 1024 (default 640)."
+          "maximum": 4294967295
         },
         "nullable": true
       }
@@ -415,8 +401,7 @@
         "required": true,
         "description": "The earlier version: a change id from history or a checkpoint name.",
         "schema": {
-          "type": "string",
-          "description": "The earlier version: a change id from history or a checkpoint name."
+          "type": "string"
         },
         "nullable": false
       },
@@ -429,8 +414,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "The later version (default now)."
+          ]
         },
         "nullable": true
       },
@@ -443,8 +427,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Also a picture of the changed region: before left, after right."
+          ]
         },
         "nullable": true
       }
@@ -455,7 +438,7 @@
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
-    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
+    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
     "operation": "Document",
     "params": [
       {
@@ -467,8 +450,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "The layer to draw on; the top layer when absent."
+          ]
         },
         "nullable": true
       },
@@ -485,6 +467,13 @@
               "shape"
             ],
             "properties": {
+              "pixelated": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Images: preserve hard pixel edges when enlarged."
+              },
               "id": {
                 "type": [
                   "string",
@@ -743,15 +732,13 @@
                           "null"
                         ],
                         "minimum": 0,
-                        "maximum": 4294967295,
-                        "description": "A limb that lifts to a point and forks this many times (1-6) into ever thinner twigs: a branch or bare tree in one stroke."
+                        "maximum": 4294967295
                       },
                       "spread": {
                         "type": [
                           "number",
                           "null"
-                        ],
-                        "description": "With `forks`: how widely the twigs splay, in degrees (default 35)."
+                        ]
                       },
                       "dabs": {
                         "type": [
@@ -759,22 +746,25 @@
                           "null"
                         ],
                         "minimum": 0,
-                        "maximum": 4294967295,
-                        "description": "Instead of one line, this many short dabs (1-600) of `size` scattered along the points: foliage, flowers, broken light."
+                        "maximum": 4294967295
                       },
                       "scatter": {
                         "type": [
                           "number",
                           "null"
-                        ],
-                        "description": "With `dabs`: how far they stray either side of the path, in units (default twice `size`)."
+                        ]
                       },
                       "dab_length": {
                         "type": [
                           "number",
                           "null"
-                        ],
-                        "description": "With `dabs`: how long each is, in units (about `size` when absent); much longer than `size`, each is a flick that lifts to a point, as grass is painted."
+                        ]
+                      },
+                      "hatch": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
                       },
                       "kind": {
                         "type": "string",
@@ -782,7 +772,7 @@
                       }
                     },
                     "additionalProperties": false,
-                    "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                    "description": "A brush stroke as `paint` lays one: a smooth curve through `points` (`[x, y]` or `[x, y, pressure]`), `size` wide; forks, dabs and hatch as there."
                   },
                   {
                     "type": "object",
@@ -1025,29 +1015,7 @@
                   "object",
                   "null"
                 ],
-                "properties": {
-                  "offset": {
-                    "type": "array",
-                    "items": {
-                      "type": "number"
-                    },
-                    "minItems": 2,
-                    "maxItems": 2,
-                    "description": "`[dx, dy]` in units."
-                  },
-                  "blur": {
-                    "type": "number",
-                    "description": "Softness in units; 0 is hard."
-                  },
-                  "colour": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "additionalProperties": false,
-                "description": "Inside the mark from its edge; light colour = highlight."
+                "description": "As shadow, inside the mark from its edge; light colour = highlight."
               },
               "grain": {
                 "type": [
@@ -1103,7 +1071,7 @@
     "action": "edit-layer",
     "resource_kind": "canvas.artwork",
     "label": "Edit layer",
-    "description": "Rename a layer, change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
+    "description": "Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
     "operation": "Document",
     "params": [
       {
@@ -1130,6 +1098,19 @@
         "nullable": true
       },
       {
+        "name": "group",
+        "ty": "text",
+        "required": false,
+        "description": "Organisational folder name; empty removes the layer from its folder. Consecutive members are presented together without changing stacking.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
         "name": "medium",
         "ty": "text",
         "required": false,
@@ -1138,8 +1119,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "A medium id, or empty for plain vector art."
+          ]
         },
         "nullable": true
       },
@@ -1178,8 +1158,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Locked marks are not picked by the pointer."
+          ]
         },
         "nullable": true
       },
@@ -1192,8 +1171,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`front`, `back`, `forward` or `backward` among the layers."
+          ]
         },
         "nullable": true
       },
@@ -1206,8 +1184,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "`0..=1`: let the ground's tooth show through the layer's marks."
+          ]
         },
         "nullable": true
       },
@@ -1220,8 +1197,7 @@
           "type": [
             "object",
             "null"
-          ],
-          "description": "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears."
+          ]
         },
         "nullable": true
       },
@@ -1229,13 +1205,12 @@
         "name": "mask",
         "ty": "text",
         "required": false,
-        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides.",
+        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides."
+          ]
         },
         "nullable": true
       },
@@ -1248,8 +1223,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Invert the mask."
+          ]
         },
         "nullable": true
       },
@@ -1262,8 +1236,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Clip to the layer below."
+          ]
         },
         "nullable": true
       }
@@ -1278,6 +1251,19 @@
     "operation": "Document",
     "params": [
       {
+        "name": "pixelated",
+        "ty": "boolean",
+        "required": false,
+        "description": "Images: preserve hard pixel edges when enlarged.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
         "name": "ids",
         "ty": "array",
         "required": true,
@@ -1286,8 +1272,7 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "description": "Marks, or groups (all their members)."
+          }
         },
         "nullable": false
       },
@@ -1313,8 +1298,7 @@
           "type": [
             "object",
             "null"
-          ],
-          "description": "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`)."
+          ]
         },
         "nullable": true
       },
@@ -1330,8 +1314,7 @@
           ],
           "items": {
             "type": "number"
-          },
-          "description": "`[]` removes dashes."
+          }
         },
         "nullable": true
       },
@@ -1378,35 +1361,12 @@
         "name": "shadow",
         "ty": "object",
         "required": false,
-        "description": "Zero offset and blur removes it.",
+        "description": "As draw's; zero offset and blur removes it.",
         "schema": {
           "type": [
             "object",
             "null"
-          ],
-          "properties": {
-            "offset": {
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "`[dx, dy]` in units."
-            },
-            "blur": {
-              "type": "number",
-              "description": "Softness in units; 0 is hard."
-            },
-            "colour": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "description": "Zero offset and blur removes it."
+          ]
         },
         "nullable": true
       },
@@ -1414,35 +1374,12 @@
         "name": "inner_shadow",
         "ty": "object",
         "required": false,
-        "description": "Zero offset and blur removes it.",
+        "description": "As draw's; zero offset and blur removes it.",
         "schema": {
           "type": [
             "object",
             "null"
-          ],
-          "properties": {
-            "offset": {
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "`[dx, dy]` in units."
-            },
-            "blur": {
-              "type": "number",
-              "description": "Softness in units; 0 is hard."
-            },
-            "colour": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "description": "Zero offset and blur removes it."
+          ]
         },
         "nullable": true
       },
@@ -1455,8 +1392,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "0 removes it."
+          ]
         },
         "nullable": true
       },
@@ -1469,8 +1405,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "0 removes it."
+          ]
         },
         "nullable": true
       },
@@ -1483,8 +1418,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "Put into this group (`a/b` nests b in a); empty takes out of any."
+          ]
         },
         "nullable": true
       },
@@ -1497,8 +1431,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts."
+          ]
         },
         "nullable": true
       },
@@ -1511,8 +1444,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "A colour (replacing a gradient), or `none`."
+          ]
         },
         "nullable": true
       },
@@ -1520,63 +1452,12 @@
         "name": "gradient",
         "ty": "object",
         "required": false,
-        "description": "A colour gradient across a mark.",
+        "description": "As draw's.",
         "schema": {
           "type": [
             "object",
             "null"
-          ],
-          "required": [
-            "kind",
-            "from",
-            "to",
-            "stops"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "description": "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
-            },
-            "from": {
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2
-            },
-            "to": {
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2
-            },
-            "stops": {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "minItems": 2,
-                "maxItems": 2
-              },
-              "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
-            },
-            "focal": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "Radial only: where the light sits inside the circle, off its centre."
-            }
-          },
-          "additionalProperties": false,
-          "description": "A colour gradient across a mark."
+          ]
         },
         "nullable": true
       },
@@ -1589,8 +1470,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "A colour, or `none`."
+          ]
         },
         "nullable": true
       },
@@ -1629,8 +1509,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "A stroke's brush preset (see paint)."
+          ]
         },
         "nullable": true
       },
@@ -1643,8 +1522,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "A stroke's width."
+          ]
         },
         "nullable": true
       },
@@ -1657,8 +1535,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Painted layers: the brush size a filled shape is laid in with."
+          ]
         },
         "nullable": true
       },
@@ -1715,8 +1592,7 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2,
-          "description": "Move by `[dx, dy]` units."
+          "maxItems": 2
         },
         "nullable": true
       },
@@ -1729,8 +1605,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Scale about each mark's or group's centre."
+          ]
         },
         "nullable": true
       },
@@ -1743,8 +1618,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Degrees clockwise about each centre."
+          ]
         },
         "nullable": true
       },
@@ -1757,8 +1631,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "Move the marks onto this layer, on top."
+          ]
         },
         "nullable": true
       },
@@ -1776,8 +1649,7 @@
             "type": "number"
           },
           "minItems": 6,
-          "maxItems": 6,
-          "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point."
+          "maxItems": 6
         },
         "nullable": true
       },
@@ -1790,8 +1662,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`horizontal` or `vertical`: mirror about each centre."
+          ]
         },
         "nullable": true
       },
@@ -1807,8 +1678,7 @@
           ],
           "items": {
             "type": "number"
-          },
-          "description": "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it."
+          }
         },
         "nullable": true
       },
@@ -1821,8 +1691,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Images: degrees, -45 to 45, to level it."
+          ]
         },
         "nullable": true
       },
@@ -1945,8 +1814,7 @@
               "description": "Edges darker +, lighter -."
             }
           },
-          "additionalProperties": false,
-          "description": "Colour and tone; given steps replace, `{}` clears."
+          "additionalProperties": false
         },
         "nullable": true
       },
@@ -1959,8 +1827,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Strokes: take the wobble out of their paths, 0..=1."
+          ]
         },
         "nullable": true
       },
@@ -1973,8 +1840,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Strokes: drop points within this many units of the line."
+          ]
         },
         "nullable": true
       },
@@ -1993,8 +1859,7 @@
             "items": {
               "type": "number"
             }
-          },
-          "description": "A stroke: continue it through these points, from the end they start nearer."
+          }
         },
         "nullable": true
       },
@@ -2012,8 +1877,7 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2,
-          "description": "A stroke: cut it in two at the point nearest x, y; the far part gets a new id."
+          "maxItems": 2
         },
         "nullable": true
       },
@@ -2026,8 +1890,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Strokes: join them, in the order named, into the first."
+          ]
         },
         "nullable": true
       }
@@ -2038,9 +1901,22 @@
     "action": "export",
     "resource_kind": "canvas.artwork",
     "label": "Export picture",
-    "description": "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP and answer with its content address.",
+    "description": "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
     "operation": "Effect",
     "params": [
+      {
+        "name": "transparent",
+        "ty": "boolean",
+        "required": false,
+        "description": "Omit the artwork ground for a transparent PNG or WebP.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
       {
         "name": "scale",
         "ty": "number",
@@ -2050,8 +1926,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Pixels per artwork unit, 0.05 to 4 (default 1)."
+          ]
         },
         "nullable": true
       },
@@ -2059,13 +1934,12 @@
         "name": "format",
         "ty": "text",
         "required": false,
-        "description": "`png` (default), `jpeg` or `webp` (lossless).",
+        "description": "`png` (default, or the path's), `jpeg` or `webp` (lossless).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`png` (default), `jpeg` or `webp` (lossless)."
+          ]
         },
         "nullable": true
       },
@@ -2073,15 +1947,27 @@
         "name": "quality",
         "ty": "integer",
         "required": false,
-        "description": "JPEG quality, 1 to 100 (default 90).",
+        "description": "JPEG quality (default 90).",
         "schema": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 0,
-          "maximum": 255,
-          "description": "JPEG quality, 1 to 100 (default 90)."
+          "minimum": 1,
+          "maximum": 100
+        },
+        "nullable": true
+      },
+      {
+        "name": "path",
+        "ty": "text",
+        "required": false,
+        "description": "An absolute `.png`, `.jpg` or `.webp` path to write it to.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "nullable": true
       }
@@ -2092,7 +1978,7 @@
     "action": "export-svg",
     "resource_kind": "canvas.artwork",
     "label": "Export SVG",
-    "description": "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
+    "description": "Export the artwork as SVG (plain layers as exact vectors, painted ones as pictures), written to path or kept as content (small ones answered).",
     "operation": "Effect",
     "params": [
       {
@@ -2107,8 +1993,7 @@
           ],
           "items": {
             "type": "string"
-          },
-          "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set."
+          }
         },
         "nullable": true
       },
@@ -2121,8 +2006,113 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "path",
+        "ty": "text",
+        "required": false,
+        "description": "An absolute `.svg` path to write it to.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "find-area",
+    "resource_kind": "canvas.artwork",
+    "label": "Find image area",
+    "description": "Find a photo's subject (subject: true) or refine the selected edge (refine: units) in the background, with progress and one undo step. Then use-selection mask or fill. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "subject",
+        "ty": "boolean",
+        "required": false,
+        "description": "Find the main subject on-device; with at, the object there.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "refine",
+        "ty": "number",
+        "required": false,
+        "description": "Edge reach in artwork units; subject defaults to 6 image pixels.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "at",
+        "ty": "array",
+        "required": false,
+        "description": "Subject point `[x, y]` in artwork units.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
           ],
-          "description": "Write text as outlines, which look the same without its fonts. Text along a path is always outlined."
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "nullable": true
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "Find on this layer alone; otherwise use all visible layers.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "mode",
+        "ty": "text",
+        "required": false,
+        "description": "`replace` (default), `add`, `subtract` or `intersect`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "feather",
+        "ty": "number",
+        "required": false,
+        "description": "Feather in artwork units.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "nullable": true
       }
@@ -2171,7 +2161,9 @@
                       "open",
                       "select",
                       "use-selection",
-                      "combine"
+                      "combine",
+                      "new-artwork",
+                      "open-artwork"
                     ]
                   },
                   "args": {
@@ -2245,6 +2237,8 @@
                                 "type": "string",
                                 "enum": [
                                   "set-artwork",
+                                  "new-artwork",
+                                  "open-artwork",
                                   "add-layer",
                                   "edit-layer",
                                   "remove-layer",
@@ -2284,7 +2278,7 @@
     "action": "history",
     "resource_kind": "canvas.artwork",
     "label": "History",
-    "description": "List the versions, oldest first: change id, action and its arguments, run, author, time, undone, checkpoints.",
+    "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, run, author, time, undone, checkpoints.",
     "operation": "View",
     "params": [
       {
@@ -2310,8 +2304,7 @@
         "required": true,
         "description": "SVG markup, an absolute path to a `.svg`, or a content address.",
         "schema": {
-          "type": "string",
-          "description": "SVG markup, an absolute path to a `.svg`, or a content address."
+          "type": "string"
         },
         "nullable": false
       },
@@ -2324,8 +2317,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "The layer to draw on; the top layer when absent."
+          ]
         },
         "nullable": true
       },
@@ -2338,8 +2330,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "The group the marks join (one is made when absent)."
+          ]
         },
         "nullable": true
       },
@@ -2357,8 +2348,7 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise."
+          "maxItems": 4
         },
         "nullable": true
       }
@@ -2369,9 +2359,22 @@
     "action": "inspect",
     "resource_kind": "canvas.artwork",
     "label": "Inspect marks",
-    "description": "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer; measure weighs marks' ink as the eye does, to balance icons and type.",
+    "description": "List layers and newest marks (ids, bounds, colours), scoped by region/layer. palette: true also counts literal fill, stroke and gradient colours across all matching marks, independent of limit (first 32 colours, palette_colours is the total). Named pigments come from media. measure weighs ink to balance icons and type.",
     "operation": "View",
     "params": [
+      {
+        "name": "palette",
+        "ty": "boolean",
+        "required": false,
+        "description": "Include literal fill, stroke and gradient colours with mark counts, scoped by region/layer, independent of the newest-mark limit.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
       {
         "name": "region",
         "ty": "array",
@@ -2386,8 +2389,7 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "Only marks touching `[x, y, width, height]`."
+          "maxItems": 4
         },
         "nullable": true
       },
@@ -2400,8 +2402,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "Only marks on this layer."
+          ]
         },
         "nullable": true
       },
@@ -2409,15 +2410,14 @@
         "name": "limit",
         "ty": "integer",
         "required": false,
-        "description": "How many of the newest matching marks to list, 1 to 400 (default 100).",
+        "description": "How many of the newest matching marks to list, 0 to 400 (default 100; none with measure).",
         "schema": {
           "type": [
             "integer",
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295,
-          "description": "How many of the newest matching marks to list, 1 to 400 (default 100)."
+          "maximum": 4294967295
         },
         "nullable": true
       },
@@ -2430,8 +2430,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "A past version: a change id from history or a checkpoint name."
+          ]
         },
         "nullable": true
       },
@@ -2444,8 +2443,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Also each mark's shape, style and transform, to edit exactly."
+          ]
         },
         "nullable": true
       },
@@ -2461,8 +2459,7 @@
           ],
           "items": {
             "type": "string"
-          },
-          "description": "Marks or groups to measure as the eye sees them: ink box, ink area, centre of mass and its offset from the box's middle (for balancing icons optically), and a text's letter boxes."
+          }
         },
         "nullable": true
       }
@@ -2490,8 +2487,7 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "`[x, y, width, height]` in artwork units; the whole artwork when absent. A small region is a close look at detail."
+          "maxItems": 4
         },
         "nullable": true
       },
@@ -2506,8 +2502,7 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295,
-          "description": "The longest side of the picture in pixels, 64 to 1536 (default 768)."
+          "maximum": 4294967295
         },
         "nullable": true
       },
@@ -2520,8 +2515,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`jpeg` (default) or `png` for exact pixels."
+          ]
         },
         "nullable": true
       },
@@ -2534,8 +2528,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Draw a labelled coordinate grid over the picture, to place marks."
+          ]
         },
         "nullable": true
       },
@@ -2551,8 +2544,7 @@
           ],
           "items": {
             "type": "string"
-          },
-          "description": "Show only these layers."
+          }
         },
         "nullable": true
       },
@@ -2565,8 +2557,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "A past version: a change id from history or a checkpoint name."
+          ]
         },
         "nullable": true
       },
@@ -2579,8 +2570,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Show the reference picture over the artwork; as set when absent."
+          ]
         },
         "nullable": true
       }
@@ -2597,6 +2587,133 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "new-artwork",
+    "resource_kind": "canvas.artwork",
+    "label": "New artwork",
+    "description": "Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "title",
+        "ty": "text",
+        "required": false,
+        "description": "title",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "size",
+        "ty": "text",
+        "required": false,
+        "description": "A size preset; `width` and `height` override it.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "landscape",
+        "ty": "boolean",
+        "required": false,
+        "description": "Turn the size on its side.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "width",
+        "ty": "number",
+        "required": false,
+        "description": "Width in units, 16 to 8192.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "height",
+        "ty": "number",
+        "required": false,
+        "description": "Height in units, 16 to 8192.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "start",
+        "ty": "text",
+        "required": false,
+        "description": "A ground and first medium; the fields below override it.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "texture",
+        "ty": "text",
+        "required": false,
+        "description": "texture",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "ground_colour",
+        "ty": "text",
+        "required": false,
+        "description": "Ground colour, `#rrggbb`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "medium",
+        "ty": "text",
+        "required": false,
+        "description": "The first layer's medium; empty for plain.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "open",
     "resource_kind": "canvas.artwork",
     "label": "Open picture",
@@ -2609,8 +2726,27 @@
         "required": true,
         "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI.",
         "schema": {
-          "type": "string",
-          "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI."
+          "type": "string"
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "open-artwork",
+    "resource_kind": "canvas.artwork",
+    "label": "Open artwork",
+    "description": "Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "file",
+        "ty": "text",
+        "required": true,
+        "description": "A `.artwork` path, a content address, or the file's JSON.",
+        "schema": {
+          "type": "string"
         },
         "nullable": false
       }
@@ -2621,7 +2757,7 @@
     "action": "paint",
     "resource_kind": "canvas.artwork",
     "label": "Paint strokes",
-    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (light pressure, many strokes; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
     "operation": "Document",
     "params": [
       {
@@ -2633,8 +2769,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "The layer to paint on; the top layer when absent."
+          ]
         },
         "nullable": true
       },
@@ -2687,7 +2822,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Plain layers: `pen` (crisp ink, pressure sets width), `pencil` (grainy, pressure sets darkness), `marker` (flat, overlaps darken), `airbrush` (soft spray that builds up), `charcoal` (picks up the ground's tooth), `calligraphy` (broad nib at `angle`, default 45). Any layer: `eraser` clears paint beneath it on its layer. A round ink brush when absent."
+                "description": "Plain layers: `pen` (crisp ink, pressure sets width), `pencil` (grainy, pressure sets darkness), `marker` (flat, overlaps darken), `airbrush` (soft spray that builds up), `charcoal` (picks up the ground's tooth), `calligraphy` (broad nib at `angle`, default 45). Any layer: `eraser` clears paint beneath it on its layer. A round ink brush when absent. Plain layers: `pixel` and `pixel-eraser` paint or clear whole square cells, ignoring pressure and taper."
               },
               "opacity": {
                 "type": [
@@ -2748,12 +2883,19 @@
                 ],
                 "description": "With `dabs`: how long each is, in units (about `size` when absent); much longer than `size`, each is a flick lifting to a point (grass)."
               },
+              "hatch": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Instead of one line, lines this many units apart across the area the points enclose: shading in one stroke; another at a second angle cross-hatches."
+              },
               "angle": {
                 "type": [
                   "number",
                   "null"
                 ],
-                "description": "With `dabs`: the way they point, in degrees (-90 is up); along the path when absent."
+                "description": "With `dabs`, the way they point in degrees (-90 is up; along the path when absent); with `hatch`, the lines' (default 45)."
               },
               "clip": {
                 "type": [
@@ -2768,6 +2910,19 @@
           }
         },
         "nullable": false
+      },
+      {
+        "name": "group",
+        "ty": "text",
+        "required": false,
+        "description": "Put them in this group, to edit or remove them as one.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
       }
     ]
   },
@@ -2838,8 +2993,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "Remove every mark on this layer (with along: only its strokes)."
+          ]
         },
         "nullable": true
       },
@@ -2860,8 +3014,7 @@
             },
             "minItems": 2,
             "maxItems": 2
-          },
-          "description": "Remove the brush strokes this path `[[x, y], …]` crosses, as a stroke eraser does."
+          }
         },
         "nullable": true
       }
@@ -2936,6 +3089,29 @@
           "items": {
             "type": "string"
           }
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "save-artwork",
+    "resource_kind": "canvas.artwork",
+    "label": "Save artwork",
+    "description": "Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "path",
+        "ty": "text",
+        "required": false,
+        "description": "An absolute `.artwork` path to write; else kept as content.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "nullable": true
       }
@@ -3018,8 +3194,7 @@
               }
             }
           },
-          "additionalProperties": false,
-          "description": "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it."
+          "additionalProperties": false
         },
         "nullable": false
       }
@@ -3030,7 +3205,7 @@
     "action": "select",
     "resource_kind": "canvas.artwork",
     "label": "Select area",
-    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it",
+    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it",
     "operation": "Document",
     "params": [
       {
@@ -3047,8 +3222,7 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "`[x, y, w, h]`."
+          "maxItems": 4
         },
         "nullable": true
       },
@@ -3066,8 +3240,7 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "In `[x, y, w, h]`."
+          "maxItems": 4
         },
         "nullable": true
       },
@@ -3088,8 +3261,7 @@
             },
             "minItems": 2,
             "maxItems": 2
-          },
-          "description": "Lasso `[[x, y], …]`."
+          }
         },
         "nullable": true
       },
@@ -3102,8 +3274,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "SVG path data."
+          ]
         },
         "nullable": true
       },
@@ -3119,8 +3290,7 @@
           ],
           "items": {
             "type": "string"
-          },
-          "description": "Marks or groups."
+          }
         },
         "nullable": true
       },
@@ -3138,8 +3308,65 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2,
-          "description": "Magic wand `[x, y]`: like colour touching it."
+          "maxItems": 2
+        },
+        "nullable": true
+      },
+      {
+        "name": "subject",
+        "ty": "boolean",
+        "required": false,
+        "description": "The photo's main subject, found on-device (with at: the object there).",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "refine",
+        "ty": "number",
+        "required": false,
+        "description": "Units: fit the edge to the picture, soft for fur (subject: 6px).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "matte",
+        "ty": "object",
+        "required": false,
+        "description": "Set by subject/refine.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "src",
+            "rect"
+          ],
+          "properties": {
+            "src": {
+              "type": "string"
+            },
+            "rect": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 4,
+              "maxItems": 4,
+              "description": "`[x, y, w, h]`."
+            }
+          },
+          "additionalProperties": false
         },
         "nullable": true
       },
@@ -3152,8 +3379,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`#rrggbb`, everywhere."
+          ]
         },
         "nullable": true
       },
@@ -3166,8 +3392,20 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "0..1, default 0.15."
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "at or colour: on this layer alone, not as all show.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "nullable": true
       },
@@ -3175,13 +3413,12 @@
         "name": "mode",
         "ty": "text",
         "required": false,
-        "description": "`replace`, `add`, `subtract`, `intersect` or `none`.",
+        "description": "`replace`, `add`, `subtract`, `intersect` or `none` (deselect).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`replace`, `add`, `subtract`, `intersect` or `none`."
+          ]
         },
         "nullable": true
       },
@@ -3194,8 +3431,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Units."
+          ]
         },
         "nullable": true
       },
@@ -3203,13 +3439,12 @@
         "name": "grow",
         "ty": "number",
         "required": false,
-        "description": "Units; negative shrinks.",
+        "description": "Units, after invert; negative shrinks.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Units; negative shrinks."
+          ]
         },
         "nullable": true
       },
@@ -3258,8 +3493,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Width in units, 16 to 8192."
+          ]
         },
         "nullable": true
       },
@@ -3272,8 +3506,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Height in units, 16 to 8192."
+          ]
         },
         "nullable": true
       },
@@ -3286,8 +3519,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`."
+          ]
         },
         "nullable": true
       },
@@ -3300,8 +3532,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "Ground colour, `#rrggbb`."
+          ]
         },
         "nullable": true
       },
@@ -3319,8 +3550,7 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "Crop to `[x, y, width, height]`; marks move with it."
+          "maxItems": 4
         },
         "nullable": true
       },
@@ -3333,8 +3563,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "Crop to what this mark or group shows."
+          ]
         },
         "nullable": true
       }
@@ -3357,8 +3586,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "description": "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`."
+          ]
         },
         "nullable": true
       },
@@ -3376,8 +3604,7 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "`[x, y, width, height]`; fitted to the artwork when absent."
+          "maxItems": 4
         },
         "nullable": true
       },
@@ -3390,8 +3617,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "`0..=1` (default 0.5)."
+          ]
         },
         "nullable": true
       },
@@ -3417,8 +3643,7 @@
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Remove the reference."
+          ]
         },
         "nullable": true
       }
@@ -3429,7 +3654,7 @@
     "action": "undo",
     "resource_kind": "canvas.artwork",
     "label": "Undo",
-    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps.",
+    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
     "operation": "Document",
     "params": [
       {
@@ -3444,6 +3669,20 @@
         "ty": "text",
         "required": false,
         "description": "An agent run id from history",
+        "nullable": true
+      },
+      {
+        "name": "by",
+        "ty": "text",
+        "required": false,
+        "description": "Exact author id from history, for steps outside a run",
+        "nullable": true
+      },
+      {
+        "name": "to",
+        "ty": "text",
+        "required": false,
+        "description": "A change id from history, or a checkpoint name",
         "nullable": true
       }
     ]
@@ -3462,8 +3701,7 @@
         "required": true,
         "description": "`fill`, `stroke`, `mask` or `clear`.",
         "schema": {
-          "type": "string",
-          "description": "`fill`, `stroke`, `mask` or `clear`."
+          "type": "string"
         },
         "nullable": false
       },
@@ -3502,8 +3740,7 @@
           "type": [
             "number",
             "null"
-          ],
-          "description": "Stroke width (2)."
+          ]
         },
         "nullable": true
       },
@@ -3516,8 +3753,41 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "defringe",
+        "ty": "boolean",
+        "required": false,
+        "description": "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true).",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "cleaned",
+        "ty": "array",
+        "required": false,
+        "description": "Set by defringe.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
           ],
-          "description": "The new mark's."
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
         },
         "nullable": true
       }
@@ -3559,6 +3829,15 @@
     "params": []
   },
   {
+    "resource": "tilo.control:canvas-export-title",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Export a picture",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
     "resource": "tilo.control:canvas-layer-adjust-fold",
     "action": "invoke",
     "resource_kind": "tilo.control",
@@ -3568,13 +3847,65 @@
     "params": []
   },
   {
-    "resource": "tilo.control:canvas-sidebar",
+    "resource": "tilo.control:canvas-tools-scope",
+    "action": "select",
+    "resource_kind": "tilo.control.segmented",
+    "label": "Select",
+    "description": null,
+    "operation": "View",
+    "params": [
+      {
+        "name": "index",
+        "ty": "integer",
+        "required": true,
+        "description": "Zero-based segment index",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "tilo.control:canvas-welcome-close",
     "action": "invoke",
     "resource_kind": "tilo.control",
-    "label": "Show or hide the panels",
+    "label": "Put the welcome away",
     "description": null,
     "operation": "View",
     "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-welcome-new",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "New artwork…",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-welcome-open",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Open…",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-workspace",
+    "action": "select",
+    "resource_kind": "tilo.control.segmented",
+    "label": "Select",
+    "description": null,
+    "operation": "View",
+    "params": [
+      {
+        "name": "index",
+        "ty": "integer",
+        "required": true,
+        "description": "Zero-based segment index",
+        "nullable": false
+      }
+    ]
   },
   {
     "resource": "tilo.control:canvas-zoom-fit",
@@ -3599,6 +3930,114 @@
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Zoom out",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:nav-shell-inspector",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Hide inspector",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dadd%2Dpicture",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dexport%2Dtitle",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dmenu",
+    "action": "activate",
+    "resource_kind": "tilo.ui.control",
+    "label": "Activate",
+    "description": null,
+    "operation": "Effect",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dmenu",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Dfit",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Din",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Dout",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dhistory",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dinspector",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Aredo",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Aundo",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
     "description": null,
     "operation": "View",
     "params": []

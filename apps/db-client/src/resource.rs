@@ -1,6 +1,7 @@
 //! Database client as a [`tilo_resource::Resource`]: connection profiles and
-//! saved queries sync (passwords stay on the device); connect / run SQL are
-//! Effects.
+//! saved queries sync (passwords stay on the device); connecting, running SQL
+//! and everything else done on a database server are [`DbEffect`]s, offered
+//! on the connection, query, table or result they act on.
 
 use std::rc::Rc;
 
@@ -244,9 +245,12 @@ impl Resource for DbClient {
                 .iter()
                 .find(|profile| connection_resource_id(profile.id) == child.id.as_str())
             {
-                child
-                    .actions
-                    .push(crate::actions::connect_operation(profile.id));
+                child.actions.push(
+                    DbEffect::Connect {
+                        connection: profile.id,
+                    }
+                    .bound(),
+                );
             } else if let Some(query) = state
                 .saved_queries
                 .iter()
@@ -254,7 +258,7 @@ impl Resource for DbClient {
             {
                 child
                     .actions
-                    .push(crate::actions::run_saved_query_operation(query));
+                    .push(DbEffect::Run { query: query.id }.bound());
             }
         }
         children.push(publish_child::<PlainText, Self>(
@@ -312,11 +316,13 @@ pub(crate) fn sql_dispatcher(dispatcher: &Dispatcher<DbClient>) -> Dispatcher<Pl
     dispatcher.child::<PlainText>(&sql_resource_id(), DbAction::EditSql)
 }
 
-/// The client's work on a database server, which changes no document: run
-/// SQL on the open connection. Connecting, browsing a table and running a
-/// saved query ride the rows they act on.
+/// The client's work on a database server and what it shows of one, which
+/// change no document. Running SQL is offered on the workspace; everything
+/// else rides the connection, saved query, catalog entry, result or history
+/// entry it acts on, which it names by id and resolves again when invoked.
+/// None carries a password.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "db_client.effects")]
+#[effect(operation = "db_client.effects", device_only)]
 pub enum DbEffect {
     /// Run SQL
     ///
@@ -326,6 +332,49 @@ pub enum DbEffect {
         #[param("SQL query")]
         sql: String,
     },
+    /// Connect
+    ///
+    /// Opens the saved connection on this device, with this device's
+    /// password.
+    #[effect(row, job, idempotent)]
+    Connect { connection: Uuid },
+    /// Run saved query
+    #[effect(row, job, destructive)]
+    Run { query: Uuid },
+    /// Show database
+    #[effect(view, row)]
+    FocusDatabase { connection: Uuid },
+    /// Show schema
+    #[effect(view, row)]
+    FocusSchema { connection: Uuid, schema: String },
+    /// Browse rows
+    #[effect(row, job, idempotent)]
+    Browse {
+        connection: Uuid,
+        schema: String,
+        table: String,
+    },
+    /// Show query result
+    #[effect(view, row)]
+    ShowResult { connection: Uuid, generation: usize },
+    /// Export CSV
+    #[effect(row, job)]
+    ExportCsv { connection: Uuid, generation: usize },
+    /// Begin transaction
+    #[effect(row, job)]
+    Begin { connection: Uuid },
+    /// Commit transaction
+    #[effect(row, job, destructive)]
+    Commit { connection: Uuid },
+    /// Roll back transaction
+    #[effect(row, job, destructive)]
+    Rollback { connection: Uuid },
+    /// Run historical query
+    ///
+    /// Runs again a query from this device's own history, which is never
+    /// shared.
+    #[effect(row, job, destructive)]
+    Rerun { connection: Uuid, generation: usize },
 }
 
 /// What a capture shows in place of a database server: the bundled sample
@@ -345,12 +394,12 @@ const SHOP_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_00
 fn sample_connections() -> Vec<ConnectionProfile> {
     let mut sample = ConnectionProfile::sqlite_sample();
     sample.id = SAMPLE_CONNECTION;
-    let mut analytics = ConnectionProfile::new("Analytics · prod", Engine::Postgres);
+    let mut analytics = ConnectionProfile::new("Production analytics", Engine::Postgres);
     analytics.id = ANALYTICS_CONNECTION;
     analytics.host = "db.internal".into();
     analytics.database = "analytics".into();
     analytics.user = "reader".into();
-    let mut shop = ConnectionProfile::new("Shop · staging", Engine::MySql);
+    let mut shop = ConnectionProfile::new("Staging shop", Engine::MySql);
     shop.id = SHOP_CONNECTION;
     shop.host = "mysql.staging".into();
     shop.database = "shop".into();
@@ -372,11 +421,18 @@ impl ResourceApp for DbClientShell {
     }
 
     /// `empty` is the first run; every other scenario shows the bundled
-    /// sample catalog with a query run against it, and `status`, `connect`
-    /// and `confirm` add the status bubble, the new-connection sheet and the
-    /// destructive-statement confirmation.
+    /// sample catalog with a query run against it, on the tab or dialog it
+    /// names (see [`DbClientApp::stage_scenario`]).
     fn scenarios() -> &'static [&'static str] {
-        &["default", "empty", "status", "connect", "confirm"]
+        &[
+            "data",
+            "structure",
+            "wide",
+            "connect",
+            "confirm",
+            "error",
+            "empty",
+        ]
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -399,7 +455,7 @@ impl ResourceApp for DbClientShell {
             .iter()
             .map(crate::actions::add_connection_action)
             .chain([DbAction::EditSql(TextEdit::ReplaceText {
-                text: crate::sample::DEFAULT_QUERY.to_owned(),
+                text: crate::app::scenario_query(name).to_owned(),
             })])
             .filter_map(|action| Invoke::apply(&action).ok())
             .collect()
@@ -420,9 +476,7 @@ impl ResourceSurface<DbClient, DbEffect> for DbClientApp {
     }
 
     fn effect(&mut self, effect: DbEffect, cx: &mut EffectCx<DbClient, Self>) -> EffectAnswer {
-        match effect {
-            DbEffect::Query { sql } => self.start_query_effect(&sql, cx),
-        }
+        self.answer_effect(effect, cx)
     }
 
     fn effects(&self) -> Vec<EffectStatus> {
@@ -443,6 +497,12 @@ impl ResourceSurface<DbClient, DbEffect> for DbClientApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_row(id)
+    }
+
+    /// The open connection's relations, columns, result, transaction and
+    /// local query history: what the live catalog holds, not the document.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.catalog_search_entries()
     }
 }
 

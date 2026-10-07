@@ -4,22 +4,20 @@
 //! Document mutations (`new-snippet`, per-folder create, per-snippet rename /
 //! language / tags / star / delete, the body as editable text) live on this
 //! resource via [`Resource::declarations`] / [`Resource::children`]. Opening a
-//! snippet, revealing a tag and focusing search are View operations the
-//! surface answers.
+//! snippet, revealing a tag and focusing search are [`SnippetsView`]s the
+//! surface answers; the first two ride the snippet or tag they show.
 
 use std::rc::Rc;
 
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, OperationKind, ParamType, Resource as PublishedResource,
-};
+use ui::tilo_actions::{ActionParam, ParamType, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, library_view_specs,
+    SNIPPETS_ACTION_TYPE, SnippetsAction, SnippetsView, create_snippet_action,
     open_snippet_address, publish_children, register, reveal_tag_address, titled_snippet,
 };
 use crate::app::SnippetsApp;
@@ -80,13 +78,6 @@ impl Resource for Snippets {
 
     fn children(state: &Vec<Snippet>) -> Vec<PublishedResource> {
         publish_children(state)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        library_view_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     /// Every snippet is found by its title, language, folder, tags,
@@ -172,7 +163,7 @@ impl ResourceApp for SnippetsShell {
     }
 }
 
-impl ResourceSurface<Snippets> for SnippetsApp {
+impl ResourceSurface<Snippets, SnippetsView> for SnippetsApp {
     fn present(&mut self, state: &Rc<Vec<Snippet>>) {
         self.show_library(state);
     }
@@ -182,7 +173,11 @@ impl ResourceSurface<Snippets> for SnippetsApp {
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario.unwrap_or_default());
+        self.stage_scenario(scenario);
+    }
+
+    fn effect(&mut self, view: SnippetsView, _: &mut EffectCx<Snippets, Self>) -> EffectAnswer {
+        self.show(view)
     }
 }
 
@@ -215,16 +210,25 @@ mod tests {
         let mut detail = TestApp::<SnippetsShell>::capture(Some("detail")).unwrap();
         assert_eq!(detail.harness().inspection().viewport, [420, 760]);
         assert!(detail.state().len() >= 10);
+        assert!(has_control(&mut detail, "Back"), "the detail is pushed in");
+        detail.harness().click_named("nav-shell-back").unwrap();
+        detail.settle();
         assert!(
-            has_control(&mut detail, "Back to snippet list"),
-            "the detail is pushed in"
+            !has_control(&mut detail, "Back"),
+            "Back returns to the snippet list"
         );
 
         let mut narrow = TestApp::<SnippetsShell>::capture(Some("narrow")).unwrap();
         assert_eq!(narrow.harness().inspection().viewport, [720, 720]);
         assert!(
-            has_control(&mut narrow, "Close folders and tags"),
+            has_control(&mut narrow, "Hide sidebar"),
             "the overlay sidebar is open"
+        );
+        narrow.harness().click_named("nav-shell-sidebar").unwrap();
+        narrow.settle();
+        assert!(
+            has_control(&mut narrow, "Show sidebar"),
+            "the sidebar closes through its control"
         );
     }
 
@@ -292,6 +296,11 @@ mod tests {
             .unwrap();
         app.call_on(&tag_resource_id("k8s"), "reveal", serde_json::json!({}))
             .unwrap();
+        app.call("search", serde_json::json!({})).unwrap();
+        assert!(
+            !surface.contains("\"snippet\""),
+            "opening is offered on each snippet, never with an id to type"
+        );
         assert!(
             app.call_on(
                 &snippet_resource_id(Uuid::nil()),
@@ -317,7 +326,7 @@ mod tests {
         snippet.body = "kubectl rollout".into();
         let entries = Snippets::search(&vec![snippet.clone()]);
         let hit = entries.iter().find(|e| e.title == "Deploy").unwrap();
-        for field in ["Ops", "k8s", "kubectl rollout", "Plain Text"] {
+        for field in ["Ops", "k8s", "kubectl rollout", snippet.language.label()] {
             assert!(hit.text.contains(field), "{field} in {:?}", hit.text);
         }
         assert_eq!(hit.action, Some(open_snippet_address(snippet.id)));

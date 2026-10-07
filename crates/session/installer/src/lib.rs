@@ -40,7 +40,8 @@
 //! * [`disk_row`] — a selectable disk row widget.
 //! * [`step_indicator`] — the numbered step-progress breadcrumb.
 //! * [`action_button`] — primary/secondary/disabled call-to-action button.
-//! * [`seg_choice`] — CRDT-backed segmented selector (filesystem).
+//! * [`control`] — what a control does when used: queue its published action.
+//! * [`seg_choice`] — segmented selector over a published action (filesystem).
 //! * [`layouts`] — curated keyboard-layout dataset (apply + visual data).
 //! * [`keyboard_view`] — live visual keyboard reflecting the selection.
 //! * [`installer_app`] — the root [`InstallerApp`] `Widget` + wizard
@@ -64,6 +65,7 @@
 
 pub mod action_button;
 pub mod backend;
+pub mod control;
 pub mod disk_row;
 pub mod disks;
 pub mod install;

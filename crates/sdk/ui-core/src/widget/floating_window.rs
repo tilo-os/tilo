@@ -16,8 +16,8 @@
 )]
 
 use crate::time::{Duration, Instant};
-use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use crate::widget::ModelPath;
+use automerge::ObjId;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -28,10 +28,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Metrics;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -659,7 +659,7 @@ impl<C: Widget> FloatingWindow<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
@@ -672,7 +672,7 @@ impl<C: Widget> FloatingWindow<C> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut inner_handled,
                 focus_target,
@@ -688,7 +688,7 @@ impl<C: Widget> FloatingWindow<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
@@ -852,7 +852,13 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 visual,
                 &self.rect.inflate(48.0, 48.0),
             );
-            crate::surface::shadow(scene, visual, self.rect, 22.0, &theme.tokens.elevation.e4);
+            crate::surface::shadow(
+                scene,
+                visual,
+                self.rect,
+                22.0,
+                &theme.tokens.elevation.floating,
+            );
             scene.pop_layer();
         }
 
@@ -948,7 +954,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 // Capture PiP is primarily the selected pixels, not a tiny
                 // utility window. Keep the controls compact and legible over
                 // arbitrary light/dark imagery without reserving any layout.
-                let title_size = theme.tokens.typography.scale.sm;
+                let title_size = theme.tokens.typography.size(TextRole::Caption);
                 let glyph_width = f64::from(title_size) * 0.56;
                 let estimated_title_width = (self
                     .title
@@ -1005,14 +1011,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 self.rect,
                 theme.tokens.colors.text_dim,
             );
-            let title_size = renderer_type_size(
-                text_renderer,
-                if self.overlay_chrome {
-                    theme.tokens.typography.scale.sm
-                } else {
-                    theme.tokens.typography.scale.base
-                },
-            );
+            let title_style = theme.text(if self.overlay_chrome {
+                TextRole::Label
+            } else {
+                TextRole::Body
+            });
             let tx = self.rect.x0
                 + if self.overlay_chrome {
                     18.0
@@ -1020,15 +1023,15 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     f64::from(theme.tokens.spacing.s4)
                 };
             // Centre on the measured line, not the font size.
-            let (_, title_h) = text_renderer.measure(&self.title, title_size, None);
+            let (_, title_h) = text_renderer.measure_style(&self.title, None, &title_style);
             let ty = self.rect.y0 + (self.title_bar_height() - f64::from(title_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &self.title,
-                title_size,
                 theme.tokens.colors.text_primary,
                 visual.pre_translate(Vec2::new(tx, ty)),
                 None,
+                &title_style,
             );
             if self.closable {
                 crate::icons::draw_icon(
@@ -1095,7 +1098,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                         event,
                         ctx.scale_factor,
                         *ctx.modifiers,
-                        ctx.state,
+                        &mut ctx.state,
                         ctx.path,
                         ctx.focus_target,
                     );
@@ -1145,7 +1148,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1157,7 +1160,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1202,7 +1205,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1337,7 +1340,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if target == "floating-window.close"
@@ -1745,14 +1748,14 @@ mod tests {
         let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut ft = None;
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         w.handle_event(
             e,
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -1933,12 +1936,12 @@ mod tests {
             assert_eq!(node.children[0].role, Role::Button);
             assert_eq!(node.children[0].name.as_deref(), Some("Close Compose"));
 
-            let mut state = AutoCommit::new();
+            let mut state = automerge::AutoCommit::new();
             assert!(Widget::perform_semantic_action(
                 &mut w,
                 "floating-window.close",
                 &Action::Activate,
-                &mut state,
+                &mut crate::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             assert!(!w.is_open());

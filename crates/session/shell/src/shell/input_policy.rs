@@ -63,8 +63,13 @@ pub fn foreign_tile_at(
     host: &ShellOverlayHost,
     point: (f64, f64),
 ) -> Option<TileHit> {
+    if host.dictation_pointer_at(point) {
+        return None;
+    }
     let p = KurboPoint::new(point.0, point.1);
-    find_foreign_tile(tree, host, |hit| hit.rect.contains(p))
+    find_foreign_tile(tree, host, |hit| {
+        hit.rect.contains(p) && !host.group_resize_hit(hit.group, point)
+    })
 }
 
 /// The live laid-out rect for one foreign surface in the active workspace.
@@ -296,11 +301,14 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     if matches!(
         key,
         ChordKey::Tab
+            | ChordKey::Space
             | ChordKey::ArrowLeft
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f' | '.')
+            | ChordKey::Char(
+                'k' | 'l' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f' | '.'
+            )
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -1253,6 +1261,135 @@ mod tests {
         (tree, strip_id, foreign_group)
     }
     #[test]
+    fn sole_foreign_window_right_edge_belongs_to_compositor_resize() {
+        use ui::Widget;
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1280, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed =
+                insert_foreign_group(&mut chrome.tree_mut(), 991_001, Some("org.example.resize"));
+            chrome.bump();
+        });
+        let (strip, group) = placed.expect("foreign group");
+        let _ = fb.paint_settled();
+        let rect = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let point = (rect.x1 - 2.0, rect.center().y);
+        assert!(
+            fb.host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("group")
+                .resize_grab_hit(KurboPoint::new(point.0, point.1)),
+            "fixture grabs painted grip"
+        );
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert_eq!(tree.desktop.active_group_for(strip), Some(group));
+        assert_eq!(
+            tree.desktop.active_workspace().expect("workspace").strips[0]
+                .window_groups
+                .len(),
+            1
+        );
+        assert!(
+            foreign_tile_at(&tree, fb.host(), point).is_none(),
+            "the sole window's painted resize grip must reach chrome, not its client"
+        );
+        let content = fb.host().active_tile_rect(group).expect("content");
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), (content.center().x, content.center().y))
+                .expect("client interior")
+                .surface_id,
+            991_001
+        );
+    }
+
+    #[test]
+    fn scrolled_foreign_window_grip_uses_screen_coordinates() {
+        use ui::Widget;
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1472, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed =
+                insert_foreign_group(&mut chrome.tree_mut(), 991_002, Some("org.example.resize"));
+            insert_foreign_group(
+                &mut chrome.tree_mut(),
+                991_003,
+                Some("org.example.neighbor"),
+            );
+            chrome.bump();
+        });
+        let (strip, group) = placed.expect("first group");
+        let _ = fb.paint_settled();
+        let initial = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
+        assert!(
+            fb.host_mut()
+                .update_active_strip_pan(initial.x0 - viewport.x0 + 80.0, true)
+        );
+        let _ = fb.paint_settled();
+        let rect = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
+        assert!(
+            rect.x0 < viewport.x0 && rect.x1 > viewport.x0 + 10.0,
+            "scrolled group {rect:?} in {viewport:?}"
+        );
+        let point = (rect.x1 - 2.0, rect.center().y);
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert!(fb.host().group_resize_hit(group, point));
+        assert!(foreign_tile_at(&tree, fb.host(), point).is_none());
+        let inside = (rect.x1 - 20.0, rect.center().y);
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), inside)
+                .expect("client")
+                .surface_id,
+            991_002
+        );
+    }
+
+    #[test]
+    fn maximized_foreign_window_retains_client_edge_input() {
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1280, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed = insert_foreign_group(
+                &mut chrome.tree_mut(),
+                991_004,
+                Some("org.example.maximized"),
+            );
+            let mut tree = chrome.tree_mut();
+            tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
+            drop(tree);
+            chrome.bump();
+        });
+        let (_, group) = placed.expect("group");
+        let _ = fb.paint_settled();
+        let rect = fb.host().active_tile_rect(group).expect("client rect");
+        let point = (rect.x1 - 2.0, rect.center().y);
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert!(!fb.host().group_resize_hit(group, point));
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), point)
+                .expect("client edge")
+                .surface_id,
+            991_004
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -1707,8 +1844,8 @@ mod tests {
         fn only_immutable_super_chords_are_static_client_firewall_rules() {
             let m = mods(ModifiersState::SUPER);
             for key in [
-                Key::Character(SmolStr::new("l")),
-                Key::Named(NamedKey::Space),
+                Key::Character(SmolStr::new("w")),
+                Key::Named(NamedKey::Enter),
             ] {
                 let ev = key_event(key.clone(), true);
                 assert!(
@@ -1718,6 +1855,8 @@ mod tests {
             }
             for key in [
                 Key::Character(SmolStr::new("k")),
+                Key::Character(SmolStr::new("l")),
+                Key::Named(NamedKey::Space),
                 Key::Named(NamedKey::Tab),
                 Key::Named(NamedKey::ArrowUp),
                 Key::Named(NamedKey::ArrowDown),
@@ -2292,19 +2431,6 @@ pub fn is_lock_chord(
     modifiers: Modifiers,
     shortcuts: &settings_store::hardware::ShortcutConfig,
 ) -> bool {
-    let WindowEvent::KeyboardInput { event: key, .. } = event else {
-        return false;
-    };
-    // Super+L is a fixed alias: it locks whatever the editable Lock
-    // binding is, exactly as the shell dispatcher behind the router does.
-    if key.state == ElementState::Pressed
-        && crate::shell::fixed_chords::fixed_action(
-            chord_key_for_logical(&key.logical_key),
-            ChordMods::from(&modifiers),
-        ) == Some(crate::shell::fixed_chords::FixedChordAction::LockSession)
-    {
-        return true;
-    }
     shortcuts
         .bindings
         .get(&settings_store::hardware::ShortcutAction::Lock)
@@ -2397,13 +2523,13 @@ mod lock_chord_tests {
             "a custom lock chord only locks while the snapshot assigns it"
         );
         assert!(
-            is_lock_chord(&l, mods_with_super(true), &rebound),
-            "Super+L is a fixed lock alias alongside the editable binding"
+            !is_lock_chord(&l, mods_with_super(true), &rebound),
+            "rebinding Lock screen replaces Super+L"
         );
 
         let mut unbound = ShortcutConfig::default();
         unbound.bindings.remove(&ShortcutAction::Lock);
-        assert!(is_lock_chord(&l, mods_with_super(true), &unbound));
+        assert!(!is_lock_chord(&l, mods_with_super(true), &unbound));
         assert!(!is_lock_chord(&l, ctrl_alt, &unbound));
     }
 

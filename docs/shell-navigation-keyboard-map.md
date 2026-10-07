@@ -26,7 +26,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Intent | Keyboard | Pointer route |
 |---|---|---|
 | Search current app | Ctrl+K | Search |
-| Search all Tilo | Super+K, Super+Space, Super tapped alone | Search |
+| Search all Tilo | Super+Space, Super tapped alone | Search |
 | Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
@@ -140,8 +140,6 @@ granted to an app through the GlobalShortcuts portal.
 | Add tab here | Super+T |
 | Duplicate tab | Super+D |
 | Open terminal | Super+Enter |
-| Global search | Super+Space |
-| Lock | Super+L |
 | Workspace wheel | Super+S |
 | Display layout | Super+P |
 | Capture screenshot | Super+Shift+S |

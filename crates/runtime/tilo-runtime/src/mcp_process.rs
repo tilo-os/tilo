@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{RuntimeServices, mcp::McpServer};
+use crate::RuntimeServices;
 
 pub(crate) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
@@ -377,11 +377,7 @@ where
 {
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let session = S::start_reporting(profile, &mut |_| {})?;
-    let mut server = McpServer::new(
-        session.action_host()?,
-        session.room().to_owned(),
-        session.actor().to_owned(),
-    );
+    let mut server = session.mcp_session_factory(session.room())?()?;
     let mut children = launch_apps(&session, profile, manifest)?;
     let input = spawn_reader(reader)?;
     loop {

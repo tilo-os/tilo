@@ -1,9 +1,9 @@
 //! Cache adapter for the canonical record lifecycle; widget, action and history
 //! ownership remain in the ordinary RecordStore.
 use super::{
-    AutoCommit, HashMap, Parked, Path, PortableStorage, ROOT, Rc, RecordCheckout, RecordId,
-    RecordOpenError, RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus,
-    RecordSet, RecordStore, Reserved, Transactable, validate_identity,
+    AutoCommit, Parked, Path, PortableStorage, ROOT, Rc, RecordCheckout, RecordId, RecordOpenError,
+    RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
+    Reserved, Transactable, validate_identity,
 };
 // The browser cache has its own key space (with a package-primary slot).
 use crate::portable_storage::StorageKey;
@@ -32,7 +32,7 @@ impl RecordOwners {
             // Record sets over a portable cache never open this store.
             store: Rc::new(durable_store::MemoryStore::new()),
             portable: Some(cache),
-            owners: HashMap::new(),
+            owners: Rc::default(),
             profile_lifetime: None,
         }
     }

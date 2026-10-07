@@ -282,6 +282,16 @@ impl HiColor {
             HiColor::Purple => "purple",
         }
     }
+    /// The colour's name: its swatch's tooltip and accessible name.
+    pub fn name(self) -> &'static str {
+        match self {
+            HiColor::Yellow => "Yellow",
+            HiColor::Green => "Green",
+            HiColor::Blue => "Blue",
+            HiColor::Pink => "Pink",
+            HiColor::Purple => "Purple",
+        }
+    }
     pub fn from_str(s: &str) -> Self {
         match s {
             "green" => HiColor::Green,
@@ -480,7 +490,7 @@ impl CompositionStyle {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Book => "Book",
+            Self::Book => "Justified",
             Self::Ragged => "Ragged",
         }
     }
@@ -509,9 +519,9 @@ impl ReadMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            ReadMode::Paged => "Page",
+            ReadMode::Paged => "Pages",
             ReadMode::Continuous => "Scroll",
-            ReadMode::TwoUp => "Spread",
+            ReadMode::TwoUp => "Two pages",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -542,14 +552,17 @@ impl ReadMode {
 }
 
 /// Which font *class* a registered face resolves to. `Default` is the reader's
-/// proportional face (also used for EPUB-specified text); `Serif` / `Mono` are
-/// the other generic classes; `Named` targets a specific installed family the
-/// reader picked from the system font list.
+/// proportional face (also used for EPUB-specified text); `Serif` is the
+/// system's reading face and `Mono` the monospace class; `Reading` is one of
+/// the other reading faces the system ships, by its name
+/// ([`ui::ReadingFace::name`]); `Named` targets a specific installed family
+/// the reader picked from the system font list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FontKind {
     Default,
     Serif,
     Mono,
+    Reading(String),
     Named(String),
 }
 
@@ -560,12 +573,16 @@ impl FontKind {
             FontKind::Default => "default".to_string(),
             FontKind::Serif => "serif".to_string(),
             FontKind::Mono => "mono".to_string(),
+            FontKind::Reading(name) => format!("reading:{name}"),
             FontKind::Named(n) => format!("named:{n}"),
         }
     }
     pub fn from_code(s: &str) -> Self {
         if let Some(n) = s.strip_prefix("named:") {
             return FontKind::Named(n.to_string());
+        }
+        if let Some(name) = s.strip_prefix("reading:") {
+            return FontKind::Reading(name.to_string());
         }
         match s {
             "serif" => FontKind::Serif,
@@ -610,15 +627,55 @@ impl FontEntry {
     }
 }
 
-/// The built-in font registry: the reader's default proportional face plus a
-/// serif book face and a monospace face. A fresh library starts here; the font
-/// manager can add installed families, rename, retune size, or hide any of them.
+/// The built-in font registry: the reader's default proportional face, the
+/// system's reading face (New Computer Modern), the other reading faces the
+/// system ships, and a monospace face. A fresh library starts here; the font
+/// manager can add installed families, rename, retune size, or hide any of
+/// them.
 pub fn default_fonts() -> Vec<FontEntry> {
-    vec![
+    let mut fonts = vec![
         FontEntry::new("default", FontKind::Default, "Default", 1.0, true),
-        FontEntry::new("serif", FontKind::Serif, "Serif", 1.05, true),
-        FontEntry::new("mono", FontKind::Mono, "Mono", 0.96, true),
-    ]
+        FontEntry::new(
+            "serif",
+            FontKind::Serif,
+            ui::ReadingFace::Default.name(),
+            1.05,
+            true,
+        ),
+    ];
+    fonts.extend(
+        ui::ReadingFace::ALL
+            .into_iter()
+            .filter(|face| *face != ui::ReadingFace::Default)
+            .map(|face| {
+                let name = face.name();
+                FontEntry::new(
+                    &format!("reading-{}", name.to_lowercase().replace(' ', "-")),
+                    FontKind::Reading(name.to_owned()),
+                    name,
+                    reading_size_mult(face),
+                    true,
+                )
+            }),
+    );
+    fonts.push(FontEntry::new("mono", FontKind::Mono, "Mono", 0.96, true));
+    fonts
+}
+
+/// The size multiplier that sets a reading face at New Computer Modern's
+/// apparent size: its x-height over theirs, so switching faces does not
+/// change how large the page reads.
+fn reading_size_mult(face: ui::ReadingFace) -> f32 {
+    match face {
+        // x-heights in em: New Computer Modern Book 0.431, Libertinus 0.429.
+        ui::ReadingFace::Default | ui::ReadingFace::Libertinus => 1.05,
+        // 0.507
+        ui::ReadingFace::Literata => 0.9,
+        // 0.400
+        ui::ReadingFace::Garamond => 1.12,
+        // 0.475
+        ui::ReadingFace::SourceSerif => 0.96,
+    }
 }
 
 // ===========================================================================
@@ -817,21 +874,21 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub const FONT_MIN: f32 = 0.8;
-    pub const FONT_MAX: f32 = 2.0;
+    pub const READING_SCALE_MIN: f32 = 0.8;
+    pub const READING_SCALE_MAX: f32 = 2.0;
     pub const SPACING_MIN: f32 = 0.95;
     pub const SPACING_MAX: f32 = 1.6;
 
     /// Base body size in logical px before the scale multiplier.
-    pub const BASE_SIZE: f32 = 19.0;
+    pub const BODY_CONTENT_PX: f32 = 19.0;
 
     pub fn body_size(&self) -> f32 {
-        Self::BASE_SIZE * self.font_scale
+        Self::BODY_CONTENT_PX * self.font_scale
     }
 
     /// Body size including a selected font's per-face size multiplier.
     pub fn body_size_with(&self, font_mult: f32) -> f32 {
-        Self::BASE_SIZE * self.font_scale * font_mult
+        Self::BODY_CONTENT_PX * self.font_scale * font_mult
     }
 }
 
@@ -839,7 +896,10 @@ impl Settings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Progress {
     pub chapter: usize,
-    pub page: usize,
+    /// The first block (paragraph, heading, …) on screen, counted from 0 in
+    /// the chapter. A block, not a page number, so the reader lands on the
+    /// same passage at any window or text size.
+    pub block: usize,
     /// 0.0..=1.0 fraction through the whole book, for the shelf bar.
     pub fraction: f32,
     /// ms-since-epoch this book was last opened, for the "recently opened"
@@ -997,6 +1057,7 @@ mod tests {
                 FontKind::Default,
                 FontKind::Serif,
                 FontKind::Mono,
+                FontKind::Reading(ui::ReadingFace::Libertinus.name().into()),
                 FontKind::Named("Literata".into()),
             ] {
                 assert_eq!(FontKind::from_code(&k.as_code()), k);
@@ -1069,7 +1130,7 @@ mod tests {
                 font_scale: 1.5,
                 ..Default::default()
             };
-            assert!((s.body_size() - Settings::BASE_SIZE * 1.5).abs() < 0.01);
+            assert!((s.body_size() - Settings::BODY_CONTENT_PX * 1.5).abs() < 0.01);
         }
 
         // --- phase: progress_is_read_at_the_end ---

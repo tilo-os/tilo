@@ -72,10 +72,10 @@ pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
         .map_err(|error| error.to_string())
 }
 
-/// The picture behind a content address, from the app's content store.
-pub fn bytes_of(address: &str) -> Option<Vec<u8>> {
+/// The picture behind a content address, from `content`.
+pub fn bytes_of(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<u8>> {
     let hash = ui::tilo_actions::content_hash(address)?;
-    tilo_content::ContentStore::for_app().read(hash)
+    content.read(hash)
 }
 
 /// The frame, crop and turn of an image mark.
@@ -369,15 +369,123 @@ const KEPT_BYTES: usize = 384 << 20;
 /// The most pictures kept decoded.
 const KEPT_PICTURES: usize = 12;
 
+/// A picture decoded, and its halved copies made, off the UI thread.
+type Decoding = std::sync::mpsc::Receiver<Option<Vec<ImageData>>>;
+
 /// Decoded pictures and treated copies, kept between frames.
-#[derive(Default)]
 pub struct Pictures {
     decoded: HashMap<String, Option<Pyramid>>,
     treated: Vec<(String, ImageData, u64)>,
     clock: u64,
+    /// Pictures being decoded in the background, by address.
+    decoding: HashMap<String, Decoding>,
+    /// Whether a picture not decoded yet is waited for (a look, an
+    /// export: they must show it) or decoded in the background while a
+    /// placeholder shows (the canvas: a frame must not wait).
+    pub patient: bool,
+    /// The store the pictures' bytes are read from: the window's, handed
+    /// over when the window attaches. Without one, the store of the window
+    /// whose code is running.
+    content: Option<tilo_content::ContentStore>,
+}
+
+impl Default for Pictures {
+    fn default() -> Self {
+        Self {
+            decoded: HashMap::new(),
+            treated: Vec::new(),
+            clock: 0,
+            decoding: HashMap::new(),
+            patient: true,
+            content: None,
+        }
+    }
+}
+
+/// A picture's bytes decoded and halved down to a thumbnail's size, every
+/// copy made at once: work for a background thread.
+fn decode_all(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<ImageData>> {
+    let full = bytes_of(content, address).and_then(|bytes| decode(&bytes).ok())?;
+    let mut levels = vec![full];
+    while let Some(last) = levels.last() {
+        if last.width.max(last.height) <= 64 {
+            break;
+        }
+        let half = halve(last);
+        levels.push(half);
+    }
+    Some(levels)
 }
 
 impl Pictures {
+    /// Read the pictures' bytes from `content` from now on.
+    pub fn read_from(&mut self, content: tilo_content::ContentStore) {
+        self.content = Some(content);
+    }
+
+    fn content(&self) -> tilo_content::ContentStore {
+        self.content.clone().unwrap_or_else(crate::content::store)
+    }
+
+    /// Whether pictures are still being decoded in the background: the
+    /// canvas draws again until they are.
+    pub fn decoding(&self) -> bool {
+        !self.decoding.is_empty()
+    }
+
+    /// Keep the pictures whose background decoding has finished.
+    fn collect(&mut self) {
+        let finished: Vec<(String, Option<Vec<ImageData>>)> = self
+            .decoding
+            .iter()
+            .filter_map(|(address, channel)| match channel.try_recv() {
+                Ok(levels) => Some((address.clone(), levels)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some((address.clone(), None)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            })
+            .collect();
+        for (address, levels) in finished {
+            self.decoding.remove(&address);
+            self.keep(address, levels);
+        }
+    }
+
+    /// Keep `levels` of the picture at `address`, making room first.
+    fn keep(&mut self, address: String, levels: Option<Vec<ImageData>>) {
+        if self.decoded.len() >= KEPT_PICTURES
+            && let Some(oldest) = self
+                .decoded
+                .iter()
+                .min_by_key(|(_, pyramid)| pyramid.as_ref().map_or(0, |p| p.used))
+                .map(|(key, _)| key.clone())
+        {
+            self.decoded.remove(&oldest);
+        }
+        self.decoded
+            .insert(address, levels.map(|levels| Pyramid { levels, used: 0 }));
+    }
+
+    /// Start decoding the picture at `address` in the background; answers
+    /// whether it started.
+    fn start(&mut self, address: &str) -> bool {
+        if self.decoding.contains_key(address) {
+            return true;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let owned = address.to_owned();
+        // The thread reads the window's store, handed to it here.
+        let content = self.content();
+        let started = ui::rt::background::Background::current()
+            .spawn("canvas-picture", move || {
+                let _ = sender.send(decode_all(&content, &owned));
+            })
+            .is_ok();
+        if started {
+            self.decoding.insert(address.to_owned(), receiver);
+        }
+        started
+    }
+
     /// The full picture at `address`, decoded once.
     pub fn full(&mut self, address: &str) -> Option<ImageData> {
         self.pyramid(address).map(|pyramid| pyramid.level(0))
@@ -392,24 +500,19 @@ impl Pictures {
 
     fn pyramid(&mut self, address: &str) -> Option<&mut Pyramid> {
         self.clock += 1;
+        self.collect();
         if !self.decoded.contains_key(address) {
-            if self.decoded.len() >= KEPT_PICTURES
-                && let Some(oldest) = self
-                    .decoded
-                    .iter()
-                    .min_by_key(|(_, pyramid)| pyramid.as_ref().map_or(0, |p| p.used))
-                    .map(|(key, _)| key.clone())
-            {
-                self.decoded.remove(&oldest);
+            if !self.patient && self.start(address) {
+                return None;
             }
-            let image = bytes_of(address).and_then(|bytes| decode(&bytes).ok());
-            self.decoded.insert(
-                address.to_owned(),
-                image.map(|image| Pyramid {
-                    levels: vec![image],
-                    used: 0,
-                }),
-            );
+            let levels = match self.decoding.remove(address) {
+                // Already on its way: wait for it rather than decode twice.
+                Some(channel) => channel.recv().ok().flatten(),
+                None => bytes_of(&self.content(), address)
+                    .and_then(|bytes| decode(&bytes).ok())
+                    .map(|full| vec![full]),
+            };
+            self.keep(address.to_owned(), levels);
         }
         let clock = self.clock;
         let pyramid = self.decoded.get_mut(address)?.as_mut()?;

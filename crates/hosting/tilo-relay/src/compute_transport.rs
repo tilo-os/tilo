@@ -322,6 +322,30 @@ impl ComputeTransportState {
             .and_then(|(worker, _)| Some((*worker, self.worker_connection(worker)?)))
     }
 
+    /// What the workers attached here run for environments now: a live,
+    /// connected worker with environment capacity, or one advertising
+    /// `kvm`.
+    #[must_use]
+    pub fn environment_offer(&self, now_ms: u64) -> tilo_relay_protocol::RelayEnvironments {
+        let live = |worker: &DeviceKey, advertisement: &ComputeWorkerAdvertisement| {
+            advertisement.validate(*worker, now_ms).is_ok()
+                && self
+                    .worker_connection(worker)
+                    .is_some_and(|connection| connection.close_reason().is_none())
+        };
+        tilo_relay_protocol::RelayEnvironments {
+            sessions: self.workers.iter().any(|(worker, advertisement)| {
+                live(worker, advertisement) && advertisement.environment_capacity > 0
+            }),
+            legacy_apps: self.workers.iter().any(|(worker, advertisement)| {
+                live(worker, advertisement)
+                    && advertisement
+                        .accelerators
+                        .contains(&ComputeAccelerator::Kvm)
+            }),
+        }
+    }
+
     /// The live connection of an attached device.
     #[must_use]
     pub fn worker_connection(&self, worker: &DeviceKey) -> Option<iroh::endpoint::Connection> {

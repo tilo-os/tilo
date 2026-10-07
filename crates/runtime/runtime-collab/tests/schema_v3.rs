@@ -58,6 +58,7 @@ struct Captures {
 #[derive(Debug, PartialEq, Eq)]
 struct PublishedAction {
     resource: String,
+    semantic_identity: Option<(String, String)>,
     action: String,
     resource_kind: String,
     resource_label: String,
@@ -280,6 +281,15 @@ impl channel_handle::Server for FakeChannel {
                 };
                 rows.push(PublishedAction {
                     resource: a.get_resource()?.to_str()?.to_owned(),
+                    semantic_identity: if a.has_semantic_identity() {
+                        let identity = a.get_semantic_identity()?;
+                        Some((
+                            identity.get_kind()?.to_str()?.to_owned(),
+                            identity.get_key()?.to_str()?.to_owned(),
+                        ))
+                    } else {
+                        None
+                    },
                     action: a.get_action()?.to_str()?.to_owned(),
                     resource_kind: a.get_resource_kind()?.to_str()?.to_owned(),
                     resource_label: a.get_resource_label()?.to_str()?.to_owned(),
@@ -538,6 +548,12 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                         "word-processor",
                         &[
                             ExportedAction {
+                                semantic_identity: Some(
+                                    runtime_collab::ExportedResourceSemanticIdentity {
+                                        kind: "document".into(),
+                                        key: "source-document:plan".into(),
+                                    },
+                                ),
                                 resource: "word-processor.document".into(),
                                 action: "save".into(),
                                 resource_kind: "document".into(),
@@ -551,6 +567,7 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                                 view: None,
                             },
                             ExportedAction {
+                                semantic_identity: None,
                                 resource: "word-processor.document".into(),
                                 action: "insert-image".into(),
                                 resource_kind: "document".into(),
@@ -579,6 +596,12 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                 assert_eq!(rows.len(), 2);
 
                 assert_eq!(rows[0].action, "save");
+                assert_eq!(rows[0].resource, "word-processor.document");
+                assert_eq!(
+                    rows[0].semantic_identity,
+                    Some(("document".into(), "source-document:plan".into()))
+                );
+                assert!(rows[1].semantic_identity.is_none());
                 // An absent description and an empty one are the same fact,
                 // so `None` has to arrive as the empty string.
                 assert_eq!(rows[0].description, "");

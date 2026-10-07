@@ -40,7 +40,6 @@ class ExternalAssetContextTests(unittest.TestCase):
                          "--build-arg", "BASE_REF=scratch",
                          "--build-arg", "RPMS_REF=scratch",
                          "--build-arg", "KERNEL_RPMS_REF=scratch",
-                         "--build-arg", "WPE_BUILDROOT_REF=scratch",
                          "-f", str(REPO / "os" / name), str(root)],
                         check=True, capture_output=True, text=True, timeout=60,
                     )

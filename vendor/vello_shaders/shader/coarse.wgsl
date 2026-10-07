@@ -124,6 +124,12 @@ fn write_path(tile: Tile, tile_ix: u32, draw_flags: u32) {
     let n_segs = tile.segment_count_or_ix;
     if n_segs != 0u {
         var seg_ix = atomicAdd(&bump.segments, n_segs);
+        // Segments have their own reservation, separate from seg_counts:
+        // past it path_tiling's writes are dropped, so say so like any other
+        // overflow instead of rendering with the geometry missing.
+        if seg_ix + n_segs > config.segments_size {
+            atomicOr(&bump.failed, STAGE_COARSE);
+        }
         tiles[tile_ix].segment_count_or_ix = ~seg_ix;
         alloc_cmd(4u);
         ptcl[cmd_offset] = CMD_FILL;
@@ -245,8 +251,11 @@ fn main(
     // we still want to know this workgroup's memory requirement.
     if local_id.x == 0u {
         var failed = atomicLoad(&bump.failed) & (STAGE_BINNING | STAGE_TILE_ALLOC | STAGE_FLATTEN);
-        if atomicLoad(&bump.seg_counts) > config.seg_counts_size {
+        let seg_counts = atomicLoad(&bump.seg_counts);
+        if seg_counts > config.seg_counts_size {
             failed |= STAGE_PATH_COUNT;
+        } else if seg_counts > config.segments_size {
+            failed |= STAGE_SEGMENTS;
         }
         // Reuse sh_part_count to hold failed flag, shmem is tight
         sh_part_count[0] = u32(failed);

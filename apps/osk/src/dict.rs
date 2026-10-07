@@ -33,6 +33,15 @@ pub enum Language {
 }
 
 impl Language {
+    /// The language's ISO 639-1 code, under which what the keyboard learned
+    /// in it is kept.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::French => "fr",
+        }
+    }
+
     /// The language typed on the letter layout `name`: QWERTY types English
     /// and AZERTY French. `None` for layouts with no word data (symbols,
     /// dialpads).

@@ -38,7 +38,7 @@ class AppSdkWorkflow(unittest.TestCase):
         self.assertEqual(paths("pull_request"), paths("push"))
 
     def test_jobs_test_the_same_main(self) -> None:
-        for name in ("policy", "linux", "web"):
+        for name in ("policy", "linux", "web", "web-size"):
             body = job(name)
             self.assertEqual(body.count("uses: ./.forgejo/actions/merge-main"), 1, name)
             self.assertIn("main: ${{ needs.builder.outputs.main }}", body, name)

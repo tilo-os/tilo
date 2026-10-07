@@ -106,6 +106,55 @@ impl ShellNetwork {
             .map_err(|_| "the relay did not answer in time")?
     }
 
+    /// Send a person's own bounded terminal audit to the exact signed governor.
+    /// Room administration retains its independent same-person owner checks.
+    pub(crate) async fn record_governed_effect_receipt(
+        &self,
+        room: RoomId,
+        invocation: uuid::Uuid,
+        redacted: Vec<u8>,
+    ) -> Result<(), String> {
+        let owner = self.native_owner()?;
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native identity unavailable")?;
+        let (relay, certificate) = owner.with_current(room, |view| {
+            let (certificate, _) = identity.current_native_material(view.workspace())?;
+            if view.device() != &certificate {
+                return Err("effect caller differs from admitted native custody".into());
+            }
+            let (hint, _) =
+                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                    .map_err(|error| error.to_string())?;
+            if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
+                return Err("effect host differs from current admitted governor".into());
+            }
+            Ok((hint.endpoint_addr, certificate))
+        })?;
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        self.cmd_tx
+            .try_send(NetCmd::RoomAdmin {
+                relay,
+                certificate,
+                command: Box::new(RoomCommand::RecordEffectReceipt {
+                    room: room.to_string(),
+                    invocation,
+                    redacted,
+                }),
+                reply,
+            })
+            .map_err(|_| "the network queue is unavailable")?;
+        let response = tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
+            .await
+            .map_err(|_| "effect reply worker stopped")?
+            .map_err(|_| "effect governor did not answer in time; outcome unknown")??;
+        match response {
+            RoomReply::Governance { .. } => Ok(()),
+            _ => Err("effect governor returned an unexpected answer".into()),
+        }
+    }
+
     /// Have the relay issue an invitation to `target`. Answers the
     /// invitation's text, its id and when it expires.
     fn invite_to_relay_room(

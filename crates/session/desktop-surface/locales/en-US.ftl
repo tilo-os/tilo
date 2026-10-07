@@ -218,7 +218,7 @@ activity-brief-underlying = { $count } underlying { $count ->
        *[other] actions
     }
 activity-brief-open-explorer = Open this work session in Explorer →
-activity-brief-show-affected = Show affected resources and actions ⌄
+activity-brief-show-affected = Show affected resources and actions
 activity-browse-by = Browse by
 activity-more-lenses = More lenses…
 activity-first-lenses = First lenses…
@@ -316,7 +316,7 @@ activity-task-composer-title = Create work without leaving the desktop
 activity-task-placeholder = What needs doing?
 activity-task-executor-manual = Executor · You or another collaborator · no model
 activity-task-executor-none = Executor · No agent available · task stays unassigned
-activity-task-executor-agent = Executor · ▣ AGENT · { $agent }
+activity-task-executor-agent = Executor · Agent · { $agent }
 activity-task-no-attachment = No resource attached · task stays workspace-wide
 activity-task-attached = Attached · { $app } · { $resource }
 activity-task-attached-workspace = Workspace
@@ -331,7 +331,7 @@ activity-task-cancel = Cancel task
 activity-task-retry-agent = Retry agent
 activity-task-audit-trail = AUDIT TRAIL
 activity-task-unassigned-by = Unassigned · created by { $creator }
-activity-task-agent-badge = ▣ AGENT · { $name }
+activity-task-agent-badge = Agent · { $name }
 activity-task-status-queued = Queued
 activity-task-status-in-progress = In progress
 activity-task-status-waiting = Waiting
@@ -816,18 +816,18 @@ a11y-shell-workspace-activity-description = Review grouped outcomes and what hap
 
 # Empty-workspace launchpad
 launchpad-title = Make something together
-launchpad-description = Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.
+launchpad-description = Choose a shared conversation, notes, tasks, a call, an invitation, or workspace activity.
 launchpad-open-app = Open an app
 launchpad-discuss = Discuss
 launchpad-notes = Notes
 launchpad-tasks = Tasks
-launchpad-meet = Plan a meeting
+launchpad-meet = Start a call
 launchpad-invite = Invite people
 launchpad-activity = Catch up
 launchpad-discuss-detail = Open the shared conversation
 launchpad-notes-detail = Write ideas together
-launchpad-tasks-detail = Plan work in Calendar
-launchpad-meet-detail = Open Chat, then start a voice or video call
+launchpad-tasks-detail = Open the to-do list in Calendar
+launchpad-meet-detail = Talk with this workspace in Chat
 launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
 
@@ -848,7 +848,9 @@ people-panel-only-you = Only you are here
 people-panel-status-typing = Type a status, then press Enter
 people-panel-status-empty = Set what you're working toward…
 people-panel-own-status = You · { $status }
-people-panel-sharing-auto = ✦ Auto
+people-panel-sharing-auto = Auto
+people-panel-previous-page = Previous people
+people-panel-next-page = Next people
 people-panel-sharing-manual = Manual
 people-panel-sharing-hidden = Hidden
 people-panel-agent-tag = agent
@@ -938,3 +940,47 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
+
+notification-center-read = Read
+notification-center-read-description = Read complete notification
+notification-preview-hidden = Notification preview hidden
+activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }
+activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.
+activity-catch-up-review-goals = Review goals and agent work
+activity-acknowledge-viewed = Acknowledge viewed activity
+activity-acknowledge-description = Mark only the displayed summaries as read. Keep hidden changes and waiting tasks pending.
+activity-catch-up-needs-review = Needs your review · { $count ->
+    [one] one waiting task
+   *[other] { $count } waiting tasks
+    }
+activity-catch-up-waiting-detail = { $task } · { $who }
+
+notification-alarm-snoozed = Snoozed for 5 minutes. Dismiss this entry to cancel the pending snooze.
+notification-alarm-dismiss = Dismiss
+notification-alarm-snooze = Snooze for 5 minutes
+notification-alarm-action-failed = Could not change this alarm
+notification-alarm-action-title = { $action }: { $title }
+notification-alarm-action-subtitle = For this alarm occurrence
+notification-alarm-action-retry = Keep this notification and try again.
+
+activity-task-review-unavailable = Authenticated task controls are unavailable. Existing work history remains readable.
+activity-task-review-history = Review action history
+activity-task-steer = Change instructions
+activity-task-cancel-run = Cancel this run
+activity-task-retry-run = Retry task
+activity-task-direction-send = Send instructions
+activity-task-direction-close = Back to task
+activity-task-direction-label = Public task instructions
+activity-task-direction-placeholder = Describe the change you want the agent to make
+activity-task-direction-observation = Instructions for run { $epoch }, after revision { $revision }. A changed run requires another review.
+activity-task-review-saving = Waiting for the workspace owner to save…
+activity-task-review-saved = Saved by the workspace owner. Agent application is shown separately.
+activity-task-review-refused = Not saved. Your draft is retained. { $detail }
+
+activity-task-next = Next task
+activity-task-previous = Previous task
+activity-task-review-source = Workspace owner · generation { $generation } · sampled { $time }
+activity-task-review-status = { $status } · Agent: { $agent }
+activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
+activity-task-review-direction = { $author }: { $text }
+activity-task-review-missing = This task is no longer available in this workspace.

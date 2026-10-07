@@ -1,11 +1,12 @@
-// Allow the Tilo graphical greeter to reboot / power off from the pre-login
-// screen.
+// Allow the Tilo graphical greeter to suspend, reboot and power off from the
+// pre-login screen.
 //
 // The greeter (`tilo-greeter`) runs as the `greetd` user inside `cage` at the
-// login VT. Its Reboot / Shut down buttons call `systemctl reboot` /
+// login VT. Its power menu calls `systemctl suspend` / `systemctl reboot` /
 // `systemctl poweroff`, which issue the logind D-Bus actions
-// `org.freedesktop.login1.{reboot,power-off}` (and the `-multiple-sessions`
-// variants when another session is present). polkit gates those actions.
+// `org.freedesktop.login1.{suspend,reboot,power-off}` (and the
+// `-multiple-sessions` variants when another session is present). polkit
+// gates those actions.
 //
 // logind's default policy already allows these for an *active* local session
 // (`allow_active = yes`), and greetd's greeter session is normally the
@@ -16,14 +17,16 @@
 // authenticate at a *login* screen. This rule makes the power actions
 // deterministic for the greeter user regardless of seat-active detection.
 //
-// Scope is intentionally narrow: only the `greetd` user, only the four
-// reboot/power-off action ids. It does NOT grant suspend/hibernate or any
+// Scope is intentionally narrow: only the `greetd` user, only the six
+// suspend/reboot/power-off action ids. It does NOT grant hibernate or any
 // other privileged action.
 polkit.addRule(function (action, subject) {
     if (subject.user !== "greetd") {
         return polkit.Result.NOT_HANDLED;
     }
     switch (action.id) {
+        case "org.freedesktop.login1.suspend":
+        case "org.freedesktop.login1.suspend-multiple-sessions":
         case "org.freedesktop.login1.reboot":
         case "org.freedesktop.login1.reboot-multiple-sessions":
         case "org.freedesktop.login1.power-off":

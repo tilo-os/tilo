@@ -18,15 +18,15 @@ package="settings-0.1.0-$arch.tapp"
 collection="tilo-apps-$arch.tar.gz"
 
 release=$work/release
-mkdir -p "$release"/{tapp,runtime/tilo-runtime/2026.07,bin}
+mkdir -p "$release"/{tapp,runtime/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef,bin}
 printf 'fixture package\n' > "$release/tapp/$package"
-printf '\177ELFfixture\n' > "$release/runtime/tilo-runtime/2026.07/libfixture.so"
-cat > "$release/runtime/tilo-runtime/2026.07/bundle.toml" <<'EOF'
-version = "2026.07"
+printf '\177ELFfixture\n' > "$release/runtime/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/libfixture.so"
+cat > "$release/runtime/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/bundle.toml" <<'EOF'
+version = "2026.07+native.0123456789abcdef0123456789abcdef"
 publisher_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 EOF
 cat > "$release/index.json" <<'EOF'
-{"apps":[{"runtime":"tilo-runtime/2026.07"}]}
+{"apps":[{"runtime":"tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef"}]}
 EOF
 (cd "$release" && find tapp runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
     && sha256sum index.json >> SHA256SUMS \
@@ -96,12 +96,40 @@ test ! -e "$stage/usr/lib/tilo-apps/content"
 test ! -e "$stage/usr/lib/tilo-apps/tmp"
 test ! -e "$stage/usr/lib/tilo-apps/.lock"
 test "$(stat -c %a "$stage/usr/share/tilo-apps/registry.toml")" = 644
-test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07/bundle.toml")" = 644
-test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07/libfixture.so")" = 755
+test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/bundle.toml")" = 644
+test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/libfixture.so")" = 755
 test -x "$stage/usr/lib/tilo-apps/bin/settings-cli"
 test "$(stat -c %a "$stage/usr/lib/tilo-apps/bin/settings-cli.tilo-shim")" = 644
 grep -Fqx '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
     "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt"
+# Store updates use the official release runtime signer, independently of the
+# runtime baked into this host RPM. Both authorities must survive staging.
+grep -Fqx "$(cat "$repo_root/os/registry-runtime-publisher.hex")" \
+    "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt"
+test "$(head -n 1 "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt")" = \
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+test "$(wc -l < "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt")" = 2
+# An absent or malformed independently committed pin must fail, rather than
+# silently shipping only the baked key and breaking Store updates again.
+pin_repo=$work/pin-repo
+mkdir -p "$pin_repo/dist/rpm" "$pin_repo/os"
+cp "$repo_root/dist/rpm/stage-app-store.sh" "$pin_repo/dist/rpm/"
+printf 'not-a-public-key\n' > "$pin_repo/os/registry-runtime-publisher.hex"
+if "$pin_repo/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/bad-pin" \
+    >"$work/bad-pin.log" 2>&1; then
+    echo "app-store staging accepted a malformed registry runtime publisher" >&2
+    exit 1
+fi
+grep -Fq 'registry runtime publisher pin is not a 64-character public key' "$work/bad-pin.log"
+test ! -e "$work/bad-pin/etc/tilo/runtime-bundle-trusted-publishers.txt"
+rm "$pin_repo/os/registry-runtime-publisher.hex"
+if "$pin_repo/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/missing-pin" \
+    >"$work/missing-pin.log" 2>&1; then
+    echo "app-store staging accepted a missing registry runtime publisher" >&2
+    exit 1
+fi
+grep -Fq 'registry runtime publisher pin unavailable' "$work/missing-pin.log"
+test ! -e "$work/missing-pin/etc/tilo/runtime-bundle-trusted-publishers.txt"
 # The env-runtime image ships beside the apps with its tree untouched by the
 # mode normalisation, and its publisher becomes a trusted image publisher.
 test "$(stat -c %a "$stage/usr/lib/tilo-apps/pkgs/$image_id/usr/bin/bash")" = 555

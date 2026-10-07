@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>paint-stream layers</title>
+<style>
+  html { background: rgb(250, 250, 245); }
+  body { margin: 0; font: 16px/1.4 sans-serif; color: rgb(20, 20, 20); }
+  header { position: sticky; top: 0; height: 48px; background: rgb(255, 102, 0); color: white; padding: 0 16px; line-height: 48px; }
+  #fab { position: fixed; right: 24px; bottom: 24px; width: 120px; height: 40px; border-radius: 20px; background: rgb(30, 90, 200); color: white; text-align: center; line-height: 40px; }
+  main { display: flex; gap: 24px; padding: 16px; }
+  #side { width: 200px; height: 300px; overflow-y: auto; border: 2px solid rgb(180, 180, 180); }
+  #side p { margin: 0; padding: 8px; border-bottom: 1px solid rgb(220, 220, 220); }
+  #ghost { opacity: 0.5; background: rgb(0, 160, 80); width: 160px; height: 60px; }
+  input { width: 240px; padding: 6px; font-size: 14px; }
+  .card { border: 1px solid rgb(200, 200, 200); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: white; }
+</style>
+</head>
+<body>
+<header>Paint stream <a href="#x" style="color: white">link</a></header>
+<main>
+  <nav id="side">
+    <p>Alpha</p><p>Bravo</p><p>Charlie</p><p>Delta</p><p>Echo</p><p>Foxtrot</p><p>Golf</p><p>Hotel</p><p>India</p><p>Juliet</p><p>Kilo</p><p>Lima</p>
+  </nav>
+  <section>
+    <div id="ghost">half</div>
+    <svg id="icon" viewBox="0 0 16 16" width="32" height="32" style="color: rgb(200, 30, 30)"><path fill="currentColor" d="M8 0L16 16H0Z"/><circle cx="8" cy="11" r="2" fill="white"/></svg>
+    <p><input id="q" placeholder="Search the page"> <input id="pw" type="password"></p>
+    <img alt="dot" width="32" height="32" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP4z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==">
+    <img alt="logo" width="40" height="40" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMCAxMCI+PHJlY3Qgd2lkdGg9IjEwIiBoZWlnaHQ9IjEwIiBmaWxsPSIjMWU1YWM4Ii8+PC9zdmc+">
+    <div class="card">One <b>bold</b> and <i>italic</i> words.</div>
+    <div class="card">Two</div><div class="card">Three</div><div class="card">Four</div>
+    <div class="card">Five</div><div class="card">Six</div><div class="card">Seven</div>
+    <div class="card">Eight</div><div class="card">Nine</div><div class="card">Ten</div>
+    <div class="card">Eleven</div><div class="card">Twelve</div><div class="card">Thirteen</div>
+    <div class="card">Fourteen</div><div class="card">Fifteen</div><div class="card">Sixteen</div>
+  </section>
+</main>
+<div id="fab">Action</div>
+</body>
+</html>

@@ -193,6 +193,17 @@ struct GpuSetup {
     caps: SurfaceCaps,
 }
 
+/// Bounded exact publication request; never a presence or action invocation.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticPresentationTarget {
+    app: String,
+    instance: u64,
+    record: String,
+    resource: String,
+    action: String,
+}
+
 struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     /// Which statuses carry the semantics tree: unchanged trees are omitted,
@@ -217,6 +228,10 @@ struct Mount {
     hidden: bool,
     generation: u64,
     frames: u64,
+    /// Protection sampled only after the corresponding GPU output presents.
+    presented_capture_protected: bool,
+    presentation: std::cell::Cell<bool>,
+    semantic_targets: Vec<SemanticPresentationTarget>,
     status: Function,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     error: Option<String>,
@@ -477,6 +492,8 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
     if let Some(peer) = mount.peer {
         crate::replication::detach(peer, id);
     }
+    mount.semantic_targets.clear();
+    mount.presentation.set(false);
     mount.frame.close_components();
     let reports = mount.frame.take_component_close_reports();
     mount.flush_records();
@@ -895,6 +912,17 @@ fn present_component(
         definition.record_kind.clone(),
     );
     let (checkout, named_new) = match &config.record {
+        Some(existing)
+            if definition.keeps_room_record()
+                && existing == RecordId::package_primary().as_str() =>
+        {
+            (
+                Some(RecordCheckout::package_primary(
+                    definition.record_kind.clone(),
+                )),
+                None,
+            )
+        }
         Some(existing) => (
             Some(RecordCheckout::new(
                 RecordId::parse(existing).ok_or_else(|| error("invalid record id"))?,
@@ -986,6 +1014,18 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hydrated,
         status,
     } = request;
+    // Apps can measure shared controls while constructing their views. Publish
+    // the verified browser fonts first: WASM has no system fonts to fall back
+    // to when those constructor-time renderers shape their labels.
+    let system = ui::font_catalog::FontCatalog::product("", "en-US")
+        .load_browser_startup_bytes(|name| {
+            Reflect::get(&fonts, &name.into())
+                .ok()
+                .filter(|v| !v.is_undefined())
+                .map(|v| Uint8Array::new(&v).to_vec())
+        })
+        .map_err(error)?;
+    let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let definition = definition(config.app.as_deref())?;
     let store = crate::storage::load(&config.profile, &config.device, &hydrated)?;
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
@@ -1003,14 +1043,6 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         Some(definition) => present_component(definition, &config, dyn_store, permissions)?,
         None => present_desktop(id, &config, dyn_store, permissions)?,
     };
-    let system = ui::font_catalog::FontCatalog::product("", "en-US")
-        .load_browser_startup_bytes(|name| {
-            Reflect::get(&fonts, &name.into())
-                .ok()
-                .filter(|v| !v.is_undefined())
-                .map(|v| Uint8Array::new(&v).to_vec())
-        })
-        .map_err(error)?;
     let window = Arc::new(
         event_loop
             .create_window(
@@ -1034,7 +1066,6 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     };
     let viewport = observed.bounded_by(caps);
     let dpr = viewport.dpr;
-    let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let mut frame = match root {
         Root::Component(component) => {
             let wake = proxy()?;
@@ -1128,6 +1159,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hidden: false,
         generation: 1,
         frames: 0,
+        presented_capture_protected: true,
+        presentation: std::cell::Cell::new(false),
+        semantic_targets: Vec::new(),
         status: status.clone(),
         images,
         error: None,
@@ -1601,6 +1635,7 @@ impl Mount {
         handle.queue.submit([encoder.finish()]);
         drop(shared_guard);
         output.present();
+        self.presented_capture_protected = self.frame.capture_protected();
         self.metric_end("render", stage);
         self.viewport.did_present();
         self.pending = false;
@@ -1609,7 +1644,9 @@ impl Mount {
             self.metrics.borrow_mut().presented(reasons);
         }
         let stage = self.metric_start();
+        self.presentation.set(true);
         self.publish(0);
+        self.presentation.set(false);
         self.metric_end("publish", stage);
         Ok(())
     }
@@ -1663,7 +1700,21 @@ impl Mount {
             "id": id,
             "error": self.error,
             "frames": self.frames,
+            "captureProtected": self.presented_capture_protected,
+            "presentation": self.presentation.get(),
+            "componentInstance": self.frame.component_instance_id(),
+            "semanticLoci": self.presentation.get().then(|| self.semantic_targets.iter().map(|target| {
+                let rect = if self.desktop.is_none()
+                    && self.checkout.as_ref().is_some_and(|c| c.id.as_str() == target.record)
+                {
+                    self.frame.published_action_locus(target.instance, &target.app, &target.record,
+                        &tilo_actions::ActionAddress::new(&target.resource, &target.action))
+                        .map(|r| [r.x0, r.y0, r.width(), r.height()])
+                } else { None };
+                serde_json::json!({"target": target, "rect": rect})
+            }).collect::<Vec<_>>()),
             "gpuGeneration": self.generation,
+            "layoutGeneration": self.frame.relayout_frames(),
             "logicalSize": applied.logical_size(),
             "dpr": applied.dpr,
             "surfaceSize": self.gpu.as_ref().map(|g| [g.surface.config.width, g.surface.config.height]),
@@ -1792,6 +1843,106 @@ pub fn component_actions(
     })
 }
 
+/// Publish component aliases through the canonical native publication namespace.
+/// Existing `component_actions` retains its domain-address compatibility.
+///
+/// # Errors
+/// Refuses closed mounts and unavailable component publications.
+#[wasm_bindgen]
+pub fn component_publications(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let resources = m
+            .frame
+            .published_bound_resources_of(None)
+            .map_err(|e| door_error(&e))?;
+        serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
+    })
+}
+
+/// Native catalogue requests, answered by the page's existing certified peer.
+/// Shares the retained request collector with the local media lane.
+/// # Errors
+/// Refuses closed mounts or unencodable requests.
+#[wasm_bindgen]
+pub fn component_catalogue_requests(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let requests = m.media.take_catalogue_requests(&mut m.frame);
+        serde_json::to_string(&requests).map_err(error)
+    })
+}
+
+/// Deliver one certified catalogue answer to this live native app mount.
+/// The app fences the originating request, current resource and timeout.
+/// # Errors
+/// Refuses closed mounts, oversized or non-catalogue answers.
+#[wasm_bindgen]
+pub fn component_catalogue_response(id: u64, response: &str) -> Result<(), JsValue> {
+    if response.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES {
+        return Err(error("catalogue response exceeds its wire budget"));
+    }
+    let message: tilo_actions::remote::RemoteActionMessage =
+        serde_json::from_str(response).map_err(error)?;
+    if !matches!(
+        message,
+        tilo_actions::remote::RemoteActionMessage::CatalogueResponse { .. }
+    ) {
+        return Err(error("not a catalogue response"));
+    }
+    with_mount(id, |m| {
+        // This only reports the originating command's actual system transfer.
+        // The browser's own copy command still refuses absent/expired permission.
+        crate::clipboard::during_input(&m.status, || {
+            m.frame
+                .handle_collaboration_event(&ui::collaboration::CollabEvent::RemoteAction {
+                    message,
+                });
+        });
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// Register/remove an exact read-only target for the next successful presentation.
+/// Requests are local observations and do not establish authenticated admission.
+///
+/// # Errors
+/// Refuses malformed/oversized targets, desktops and more than 32 queued targets.
+#[wasm_bindgen]
+pub fn request_component_locus(id: u64, target: &str, observe: bool) -> Result<(), JsValue> {
+    if target.len() > 17_000 {
+        return Err(error("semantic target exceeds size bound"));
+    }
+    let target: SemanticPresentationTarget = serde_json::from_str(target).map_err(error)?;
+    if target.instance > 9_007_199_254_740_991
+        || [
+            &target.app,
+            &target.record,
+            &target.resource,
+            &target.action,
+        ]
+        .into_iter()
+        .any(|s| s.is_empty() || s.len() > 4096)
+    {
+        return Err(error("invalid semantic target"));
+    }
+    with_mount(id, |m| {
+        if m.desktop.is_some() {
+            return Err(error("semantic presentation requires a single-app mount"));
+        }
+        m.semantic_targets.retain(|t| t != &target);
+        if observe {
+            if m.semantic_targets.len() >= 32 {
+                return Err(error("semantic target capacity exceeded"));
+            }
+            m.semantic_targets.push(target);
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
 /// Invoke one action the mount's application publishes, through the bound
 /// door the palette, agents and assistive technology use: the address must
 /// be published now, the mount's permissions must allow it, its arguments
@@ -1836,10 +1987,10 @@ pub fn invoke_component_action(
         m.pending = true;
         m.window.request_redraw();
         Ok(match started {
-            ui::widget::ResourceOperationStart::Completed(output) => {
+            ui::host_operation::ResourceOperationStart::Completed(output) => {
                 serde_json::json!({"state": "completed", "output": output})
             }
-            ui::widget::ResourceOperationStart::Accepted => {
+            ui::host_operation::ResourceOperationStart::Accepted => {
                 serde_json::json!({"state": "accepted"})
             }
         }
@@ -1945,9 +2096,10 @@ pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
 }
 
 /// Where the desktop shows each member's legacy window right now: `[{key,
-/// rect: [x0, y0, x1, y1]}]` for windows whose active tab shows one in the
-/// shown strip, in the surface's CSS pixels; empty while search covers the
-/// desktop. `None` for a single application.
+/// rect: [x0, y0, x1, y1], focused}]` for windows whose active tab shows one
+/// in the shown strip, in the surface's CSS pixels, `focused` for the
+/// desktop's focused window; empty while search covers the desktop. `None`
+/// for a single application.
 ///
 /// # Errors
 ///
@@ -1961,6 +2113,9 @@ pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
                 let windows: Vec<serde_json::Value> = if d.handle.search_open() {
                     Vec::new()
                 } else {
+                    let focused = d.handle.read(|tree| {
+                        tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab)
+                    });
                     d.handle
                         .shown_tabs()
                         .into_iter()
@@ -1968,6 +2123,7 @@ pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
                             Some(serde_json::json!({
                                 "key": d.shared.peer_window_of(tab)?,
                                 "rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+                                "focused": focused == Some(tab),
                             }))
                         })
                         .collect()
@@ -1975,6 +2131,31 @@ pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
                 serde_json::to_string(&windows).map_err(error)
             })
             .transpose()
+    })
+}
+
+/// Focus the desktop window showing the legacy window `key`: the person
+/// clicked into it, which the page handles, not the desktop.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_focus_peer_window(id: u64, key: &str) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let Some(tab) = desktop.shared.peer_window_tab(key) else {
+            return Ok(());
+        };
+        if desktop.handle.focus_tab(tab) {
+            desktop.shared.wake();
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
     })
 }
 
@@ -2016,6 +2197,53 @@ pub fn desktop_take_node_app_requests(id: u64) -> Result<String, JsValue> {
             .shared
             .take_node_app_requests();
         serde_json::to_string(&requests).map_err(error)
+    })
+}
+
+/// Hand a painted window (`tilo-paint` stream) one reassembled frame of its
+/// stream: a whole page, patches, or an image it references. Returns whether
+/// what the window shows changed; the desktop then draws it again.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_peer_window_paint(id: u64, key: &str, frame: &[u8]) -> Result<bool, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let changed = desktop.shared.paint_page(key).push(frame);
+        if changed {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(changed)
+    })
+}
+
+/// Input the person gave painted windows since the last call, as JSON
+/// `[{key, events}]` with `legacy_window::InputEvent`s in page pixels, for
+/// the page to send to each stream's host.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_take_peer_window_input(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let input: Vec<serde_json::Value> = desktop
+            .shared
+            .take_paint_input()
+            .into_iter()
+            .map(|(key, events)| serde_json::json!({"key": key, "events": events}))
+            .collect();
+        serde_json::to_string(&input).map_err(error)
     })
 }
 

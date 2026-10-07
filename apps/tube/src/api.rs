@@ -116,7 +116,7 @@ pub enum Update {
         channel: Box<Channel>,
         uploads: Vec<Video>,
     },
-    /// Which data source is currently answering (drives the top-bar pill).
+    /// Which data source is currently answering (drives the header status badge).
     Status {
         live: bool,
         label: String,
@@ -1001,12 +1001,12 @@ fn feed_trending(
         fetch(live, offline, Query::Trending, false, up_tx)
         && !vs.is_empty()
     {
-        return Some((vs, "live · trending".into()));
+        return Some((vs, "live trending".into()));
     }
     // Compose the popular feed from whichever backend carries creator avatars —
     // rustypipe when present (its items include the avatar), else the primary.
     let search_backend: Option<&dyn YtBackend> = enrich.or(live);
-    live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live · popular".into()))
+    live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live popular".into()))
 }
 
 /// Compose a "popular right now" home feed: for each broad topic, ask the

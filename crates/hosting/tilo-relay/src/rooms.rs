@@ -17,11 +17,15 @@
 
 mod admin;
 mod admissions;
+#[cfg(feature = "agents")]
+mod applications;
 mod collaboration;
 mod pages;
 mod stewardship;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "agents")]
+mod views;
 mod voice;
 
 use std::collections::BTreeMap;
@@ -41,9 +45,9 @@ pub use admin::{
     RoomSummary,
 };
 pub use collaboration::{
-    CancelInvitationRequest, CollaborationError, GovernanceCompletion, IssueInvitationRequest,
-    IssuedInvitation, PendingInvitation, RemoveMemberRequest, RoomJoinService,
-    SetMemberRoleRequest,
+    CancelInvitationRequest, CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest,
+    IssueInvitationRequest, IssuedInvitation, PendingInvitation, RemoveMemberRequest,
+    RoomJoinService, SetMemberRoleRequest,
 };
 
 use crate::peer::WorkspaceRegistry;

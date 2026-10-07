@@ -137,6 +137,8 @@ impl Denial {
 pub struct ShellView {
     /// Foreign tiles front-to-back, as [`crate::shell::input_policy::foreign_tiles`] enumerates them.
     tiles: Vec<(SurfaceId, Rect)>,
+    /// Compositor grip regions over these surfaces; never remote client input.
+    chrome_regions: Vec<(SurfaceId, Rect)>,
     /// The surface holding keyboard focus, or `None` when shell chrome owns it.
     keyboard_focus: Option<SurfaceId>,
     /// Shell chrome (overlay, palette, permission prompt) is drawn over the tiles and taking input.
@@ -161,6 +163,7 @@ impl ShellView {
     ) -> Self {
         Self {
             tiles,
+            chrome_regions: Vec::new(),
             keyboard_focus,
             chrome_captures,
             overlay_open,
@@ -168,6 +171,13 @@ impl ShellView {
             observed: true,
             pointer_held: false,
         }
+    }
+
+    /// Preserve surface geometry while excluding compositor-owned pointer grips.
+    #[must_use]
+    pub fn chrome_regions(mut self, regions: Vec<(SurfaceId, Rect)>) -> Self {
+        self.chrome_regions = regions;
+        self
     }
 
     /// Mark the session locked; the lock surface isn't part of the tiled tree, so this stops a remote peer driving what's underneath it directly.
@@ -213,7 +223,13 @@ impl ShellView {
         let p = Point::new(point.0, point.1);
         self.tiles
             .iter()
-            .find(|(_, rect)| rect.contains(p))
+            .find(|(id, rect)| {
+                rect.contains(p)
+                    && !self
+                        .chrome_regions
+                        .iter()
+                        .any(|(owner, grip)| owner == id && grip.contains(p))
+            })
             .map(|(id, _)| *id)
     }
 }
@@ -304,6 +320,12 @@ impl RemoteInputFirewall {
     /// Borrow the current view. Diagnostics and tests.
     pub fn view(&self) -> &ShellView {
         &self.view
+    }
+
+    /// Reconcile the seat's focus after an accepted headless-host focus
+    /// transition, without replacing any visibility or host-override flags.
+    pub(crate) fn set_keyboard_focus(&mut self, focus: Option<SurfaceId>) {
+        self.view.keyboard_focus = focus;
     }
 
     /// Re-resolve a participant's last accepted surface-local pointer

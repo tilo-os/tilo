@@ -252,10 +252,6 @@ pub fn event_to_logical(
             let (x, y) = map(x, y);
             BackendEvent::Touch(TouchEvent::Motion { slot, x, y })
         }
-        BackendEvent::TouchTap { x, y } => {
-            let (x, y) = map(x, y);
-            BackendEvent::TouchTap { x, y }
-        }
         other => other,
     }
 }

@@ -42,7 +42,7 @@ support. A completed compile check alone is not a claim of hardware support.
 | Hardware profiles | Declarative definitions, optional DTBs, exact firmware mappings, immutable UKI validation | Live acceptance per board and exact artifact |
 | Build contexts | Actual offline Podman asset-stage builds pass for OS, RPM and CI-builder Containerfiles | Full native builds using the same contexts |
 | Dependency snapshots | Base index has ARM64; native RPM/kernel publication verifies both signed children and their source revision | Produce complete ARM64 dependencies and update existing x86-only pins |
-| Browser | Native ARM64 WPE buildroot built; library probes and pinned source hashes pass; compilation job budget is explicit | Complete the native WPE engine build and runtime acceptance |
+| Browser | Chromium engine runtime built per architecture from the pinned CEF distribution in the image build; the rootfs check resolves every library it loads | Real-boot page-load acceptance on ARM64 hardware |
 | Windows compatibility | Service crates compile on ARM64 | Fedora ARM64 lacks Wine/DXVK RPMs; pinned Proton and VM hardware definitions need an explicit ARM64 implementation |
 | Imager | Native Windows ARM64 executable builds, loads, and renders an offscreen fixture; library tests pass (138); file identity comes from the open native handle; ARM64 packaging checks PE architecture; both Windows release lanes and combined WinGet manifests required | Signed installer and live UI acceptance; investigate host Vulkan loader warnings separately from the successful offscreen render |
 | Desktop packaging | Build scripts contain ARM64 targets | Enable and validate native release lanes and architecture-specific assets |

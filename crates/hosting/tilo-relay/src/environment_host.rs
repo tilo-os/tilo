@@ -200,7 +200,8 @@ fn ush_worker_environments(
             "the relay's device key cannot be inspected; members' tool builds are off"
         ),
     }
-    let launcher = Arc::new(launcher);
+    let route = crate::legacy_route::LegacyLaunchRoute::new();
+    let launcher = Arc::new(launcher.with_legacy_route(route.clone()));
     let host = EnvironmentHost::new(
         EnvironmentHostConfig {
             root: root.to_path_buf(),
@@ -211,9 +212,24 @@ fn ush_worker_environments(
         Arc::clone(&launcher) as Arc<dyn GuestLauncher>,
         Arc::new(TracingMetering),
     );
+    route.set_host(host.downgrade());
+    // Legacy apps run here only where QEMU can use KVM; members' launches
+    // from this worker's environments are routed through the relay either way.
+    let legacy = config
+        .legacy
+        .as_ref()
+        .filter(|_| Path::new("/dev/kvm").exists())
+        .map(|legacy| {
+            crate::legacy_host::LegacyWorker::new(
+                Arc::new(crate::legacy_vm_host::TiloLegacyHost::new(legacy.clone())),
+                root.to_path_buf(),
+                quota,
+            )
+        });
     crate::compute_worker::WorkerEnvironments {
         host: Some(host),
-        legacy: None,
+        legacy,
+        legacy_route: Some(route),
     }
 }
 
@@ -697,6 +713,18 @@ impl EnvironmentHost {
     #[must_use]
     pub fn session_owner(&self, session: &SessionId) -> Option<MemberIdentity> {
         self.sessions().get(session).map(|slot| slot.owner)
+    }
+
+    /// The member's most recently opened live session here, and the
+    /// workspace it belongs to: what a legacy launch from their guest is
+    /// made from.
+    #[must_use]
+    pub fn member_session(&self, user: &[u8; 32]) -> Option<(u64, SessionId)> {
+        self.sessions()
+            .values()
+            .filter(|slot| slot.owner.user == *user && !slot.lock().ended)
+            .max_by_key(|slot| slot.opened_at)
+            .map(|slot| (slot.record.workspace_id, slot.id))
     }
 
     /// The record `session` was opened from, when it runs here.
