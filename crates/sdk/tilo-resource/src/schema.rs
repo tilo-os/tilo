@@ -378,7 +378,7 @@ pub(crate) fn param_schema(param: &ActionParam) -> Value {
         // does not record.
         ParamType::Object => json!({}),
     };
-    let mut schema = match (&param.schema, base) {
+    let mut schema = match (param.schema.as_deref(), base) {
         (Some(Value::Object(declared)), Value::Object(base)) => {
             let mut merged = declared.clone();
             for (key, value) in base {
