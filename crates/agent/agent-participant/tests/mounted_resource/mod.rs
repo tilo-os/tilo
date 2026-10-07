@@ -1,7 +1,7 @@
 //! Mounted acceptance fixture, deliberately separate from the native test suite.
 use super::{
     ActionAddress, Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path,
-    Replica, RevocationList, Seed, common, enrol, record_provider, start_browser,
+    Replica, Seed, common, enrol, record_provider, start_browser,
 };
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -27,9 +27,10 @@ fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
 
 /// Run against an explicitly supplied, compiled web app bundle. Missing tools fail.
 pub async fn run() {
+    use super::resource_support::{admit_person, open_admitted_peer};
     use chat::doc::{ChatDoc, NewMessage};
-    use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-    use tilo_relay::rooms::{IssueInvitationRequest, RemoveMemberRequest};
+    use tilo_peer_state::join::MemberRole;
+    use tilo_relay::rooms::RemoveMemberRequest;
     let bundle = std::env::args()
         .nth(1)
         .expect("compiled web bundle path is required");
@@ -42,9 +43,10 @@ pub async fn run() {
     let option = options.next();
     let disconnect_retry = option.as_deref() == Some("--disconnect-retry");
     let voice_journey = option.as_deref() == Some("--voice");
+    let encrypted_restart = option.as_deref() == Some("--encrypted-restart");
     assert!(
-        option.is_none() || disconnect_retry || voice_journey,
-        "expected --disconnect-retry or --voice"
+        option.is_none() || disconnect_retry || voice_journey || encrypted_restart,
+        "expected --disconnect-retry, --voice or --encrypted-restart"
     );
     assert!(
         options.next().is_none(),
@@ -87,7 +89,16 @@ pub async fn run() {
         "fixture-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let publisher = enrol(&alice, "fixture-publisher", DeviceCapabilities::primary());
+    let (remote_author, _) = tilo_user_identity::UserIdentity::generate("Remote fixture writer", 1);
+    let publisher = enrol(
+        if encrypted_restart {
+            &remote_author
+        } else {
+            &alice
+        },
+        "fixture-publisher",
+        DeviceCapabilities::primary(),
+    );
     let recipient = enrol(&bob, "fixture-reader", DeviceCapabilities::member());
     let (carol, _) = tilo_user_identity::UserIdentity::generate("Fixture second reader", 1);
     let second_device = enrol(
@@ -96,10 +107,19 @@ pub async fn run() {
         DeviceCapabilities::member(),
     );
     let state = tempfile::tempdir().unwrap();
-    let hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
+    let mut hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
     let rooms = hosted.relay.rooms().unwrap();
     let room = rooms.create("Mounted resource acceptance").await.unwrap();
-    let mut native = Browser::open_room(&hosted, &publisher, &host, &room.room).await;
+    let mut native = if encrypted_restart {
+        assert_ne!(
+            publisher.cert.user_public_key, host.cert.user_public_key,
+            "the cold encrypted source belongs to another person"
+        );
+        admit_person(&hosted, &host, &room.room, &publisher, MemberRole::Editor).await;
+        open_admitted_peer(&hosted, &publisher, &host, &room.room).await
+    } else {
+        Browser::open_room(&hosted, &publisher, &host, &room.room).await
+    };
     let seed = if voice_journey {
         rooms
             .prepare_application(&room.room, &host.cert, &common::catalogue(), "so.tilo.chat")
@@ -154,11 +174,7 @@ pub async fn run() {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),
-        record: if source.record() == "@tilo:package-primary" {
-            String::new()
-        } else {
-            source.record().into()
-        },
+        record: source.wire_record().into(),
     };
     let provider = record_provider(&route);
     source
@@ -281,62 +297,50 @@ pub async fn run() {
         .await;
     }
     let readers = if voice_journey {
-        vec![(&recipient, 31_u8), (&second_device, 34_u8)]
+        vec![&recipient, &second_device]
     } else {
-        vec![(&recipient, 31_u8)]
+        vec![&recipient]
     };
-    for (recipient, sequence) in readers {
-        let invitation = rooms
-            .issue(
-                &room.room,
-                &host.cert,
-                IssueInvitationRequest {
-                    request_id: [sequence; 32],
-                    role: if disconnect_retry || voice_journey {
-                        MemberRole::Editor
-                    } else {
-                        MemberRole::Viewer
-                    },
-                    recipient_user_public_key: Some(recipient.cert.user_public_key),
-                    invitee_name: Some("Fixture reader".into()),
-                    inviter_name: None,
-                    expires_at_ns: tilo_clock::unix_now_ns()
-                        .checked_add(600_000_000_000)
-                        .unwrap(),
-                },
-            )
-            .await
-            .unwrap();
-        let verified = decode_and_verify_invitation(
-            &invitation.signed_invitation,
-            None,
-            &RevocationList::new(),
-            tilo_clock::unix_now_ns(),
-        )
-        .unwrap();
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(iroh::SecretKey::from_bytes(&recipient.key.to_bytes()))
-            .bind()
-            .await
-            .unwrap();
-        tilo_relay::workspace_join::WorkspaceJoinClient::new(endpoint)
-            .redeem_hint(
-                verified.grant().transport.first().unwrap(),
-                invitation.signed_invitation.clone(),
-                recipient.cert.clone(),
-                &recipient.key,
-                [sequence.checked_add(1).unwrap(); 32],
-            )
-            .await
-            .unwrap();
+    for recipient in readers {
+        let role = if voice_journey || disconnect_retry {
+            MemberRole::Editor
+        } else {
+            MemberRole::Viewer
+        };
+        admit_person(&hosted, &host, &room.room, recipient, role).await;
     }
+    if encrypted_restart {
+        let barrier = native.peer.barrier().unwrap();
+        barrier.recv().unwrap().unwrap();
+        let retained = hosted
+            .relay
+            .room_records()
+            .retained(room.workspace_id)
+            .await
+            .unwrap();
+        let expected =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+        assert!(retained.iter().any(|body| body.author == publisher.cert.device_public_key &&
+            matches!(postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&body.body),
+                Ok(tilo_peer_state::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
+                if app_id == route.app_id && record_id == route.record &&
+                    envelope.encryption.as_ref().is_some_and(|metadata| metadata.channel == expected))),
+            "the compiled cold journey requires the foreign writer's actual retained ciphertext");
+        native.peer.close();
+        hosted.agents.shutdown();
+        drop(hosted.web);
+        hosted.relay.shutdown().await;
+        hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
+        println!("MOUNTED_RESOURCE_STAGE={{\"stage\":\"remote-encrypted-source-host-restarted\"}}");
+    }
+    let rooms = hosted.relay.rooms().unwrap();
     let reader_identity = hex::encode(recipient.cert.user_public_key);
     let decoy = "ab".repeat(32);
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "room": room.room,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
         "channel": format!("chat.channel:{}", channel.id),
-        "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey,
+        "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart,
         "voiceChannel": voice_channel.id,
         "secondDevice": {"seed": second_device.key.to_bytes(),
             "root": hex::encode(second_device.cert.user_public_key),
