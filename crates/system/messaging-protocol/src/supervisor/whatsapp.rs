@@ -39,6 +39,12 @@ pub struct WhatsappBootstrap {
     pub(super) source: Arc<Client>,
     pub(super) hook: Arc<crate::external_broker::WhatsappInboxHook>,
 }
+struct StateGrant(Arc<dyn super::AccountAuthority>);
+impl crate::whatsapp_store::StateAuthority for StateGrant {
+    fn allowed(&self) -> bool {
+        self.0.check().is_ok()
+    }
+}
 impl WhatsappBootstrap {
     /// Open existing OS-keychain custody on the native supervisor worker.
     /// No key is provisioned and no weaker store or ambient account is used.
@@ -48,12 +54,17 @@ impl WhatsappBootstrap {
         root: &std::path::Path,
         owner: crate::journal::Owner,
         network: Network,
+        authority: Arc<dyn super::AccountAuthority>,
     ) -> Result<Self, SendError> {
         if !root.is_absolute() {
             return Err(SendError::InvalidRequest);
         }
-        let backend = crate::whatsapp_store::EncryptedBackend::open_system(root, owner)
-            .map_err(|_| SendError::Unavailable)?;
+        let backend = crate::whatsapp_store::EncryptedBackend::open_system(
+            root,
+            owner,
+            Arc::new(StateGrant(authority)),
+        )
+        .map_err(|_| SendError::Unavailable)?;
         Self::build(backend, network).await
     }
     /// Build with already owned encrypted custody and supplied native transports.

@@ -105,7 +105,7 @@ fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
 }
 
 fn exercise_app(root: &Path) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac.mp4");
+    let fixture = Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
     let sample = root.join("Moving picture and silent audio.mp4");
     std::fs::copy(fixture, &sample).expect("copy the H.264/AAC fixture");
     let mut app = TestApp::<VideoPlayerShell>::launched(&[&sample.display().to_string()])
