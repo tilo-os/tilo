@@ -82,9 +82,9 @@ impl NativeTaskReview {
     }
 
     pub(crate) fn requires_room(&self, room: &str) -> bool {
-        self.state
-            .lock()
-            .map_or(true, |state| state.native_rooms.contains(room))
+        self.state.lock().map_or(true, |state| {
+            state.native_rooms.contains(room) || !state.snapshots.contains_key(room)
+        })
     }
 
     pub(crate) fn snapshot(

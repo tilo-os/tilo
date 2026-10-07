@@ -87,7 +87,9 @@ impl Worker {
         let snapshot = self.read(room);
         let rooms = self.rooms();
         if let Ok(mut state) = self.state.lock() {
-            state.native_rooms = rooms;
+            // A native workspace cannot become an unguarded model merely
+            // because its binding or credentials are no longer available.
+            state.native_rooms.extend(rooms);
             state.loading.remove(room);
             state.snapshots.insert(room.to_owned(), snapshot);
             if state.snapshots.len() > 16 {
