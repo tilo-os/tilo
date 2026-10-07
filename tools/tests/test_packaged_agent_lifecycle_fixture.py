@@ -1288,6 +1288,54 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn('"last_error"', source)
 
+    def test_return_seat_refresh_requires_exact_native_source_without_frame_regression(self):
+        previous = {"app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 10,
+                    "keyboard_focused": False}
+        focused = {**previous, "keyboard_focused": True}
+        for current, accepted in ((None, False), ({**focused, "surface_id": 8}, False),
+                                  ({**focused, "frame_seq": 9}, False),
+                                  ({**focused, "frame_seq": 11}, True),
+                                  (focused, True), (previous, True)):
+            with self.subTest(current=current), patch.object(
+                    PROOF, "presented_primary_frame", return_value=current) as observe:
+                result = PROOF.current_same_primary_presentation({}, previous)
+            observe.assert_called_once_with({}, "so.tilo.chat")
+            if accepted:
+                self.assertIs(result, current)
+                self.assertEqual(result["keyboard_focused"], current["keyboard_focused"])
+            else:
+                self.assertIsNone(result)
+        self.assertFalse(previous["keyboard_focused"])
+
+    def test_return_diagnostics_are_only_closed_counts_and_actual_bools(self):
+        private = "private-editor-and-native-identity"
+        first = {"frame_seq": 10, "keyboard_focused": False, "surface_id": 7,
+                 "title": private, "output": private}
+        current = {**first, "frame_seq": 11, "keyboard_focused": True}
+        evidence = PROOF.returned_ime_observation(first, current, True, False, True)
+        self.assertTrue(evidence["keyboard_focused"])
+        self.assertFalse(evidence["initial_keyboard_focused"])
+        self.assertFalse(evidence["chat_text_input_active"])
+        self.assertNotIn(private, json.dumps(evidence))
+        self.assertNotIn("surface_id", evidence)
+        self.assertTrue(all(type(value) in (bool, int) or value is None
+                            for value in evidence.values()))
+        missing = PROOF.returned_ime_observation(first, None, False, False, False)
+        self.assertFalse(missing["keyboard_focused"])
+        self.assertFalse(missing["same_source_presented"])
+        self.assertIsNone(missing["current_frame_seq"])
+
+    def test_return_reobserves_after_accessibility_before_strict_focus_assertion(self):
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        ready = source.index('"returned Tide editor during Rime preedit"')
+        refresh = source.index("returned = current_same_primary_presentation(", ready)
+        diagnostic = source.index('"ime-returned-native.json"', refresh)
+        assertion = source.index('returned["keyboard_focused"] is not True', diagnostic)
+        self.assertLess(ready, refresh)
+        self.assertLess(refresh, diagnostic)
+        self.assertLess(diagnostic, assertion)
+        self.assertIn('"ime-returned-first-frame-', source)
+
     def test_native_ime_stage_uses_real_rime_and_preserves_each_handoff_boundary(self):
         source = inspect.getsource(PROOF.native_ime_float_return)
         for forbidden in ("Ime::Preedit", "TrustedInputMethod", "SetText", "AddSelection"):

@@ -1038,6 +1038,30 @@ def fresh_primary_presentation(response, previous):
     return current if current is not None and current["frame_seq"] > previous["frame_seq"] else None
 
 
+def current_same_primary_presentation(response, previous):
+    """Observe current seat state only on the exact retained native source."""
+    current = presented_primary_frame(response, previous["app_id"])
+    if current is None or native_surface_id(current) != native_surface_id(previous) \
+            or current["frame_seq"] < previous["frame_seq"]:
+        return None
+    return current
+
+
+def returned_ime_observation(first, current, same_process, text_input_active, same_input_method):
+    """Closed Return diagnostics never include native IDs, editor text or errors."""
+    return {
+        "first_frame_seq": first["frame_seq"],
+        "current_frame_seq": current["frame_seq"] if current is not None else None,
+        "same_source_presented": current is not None,
+        "initial_keyboard_focused": first.get("keyboard_focused") is True,
+        "keyboard_focused": current.get("keyboard_focused") is True if current is not None else False,
+        "same_chat_process": same_process is True,
+        "chat_text_input_active": text_input_active is True,
+        "same_input_method_process": same_input_method is True,
+        "private_content_recorded": False,
+    }
+
+
 def native_float_return(socket, room, record, output, size, process):
     """Exercise the actual seat, IME and native surface handoff end to end."""
     draft = "Keep this private Tide draft"
@@ -1447,15 +1471,31 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     )
 
     def returned_preedit_frame():
-        current = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+        current = current_same_primary_presentation(
+            call(socket, {"op": "foreign_frames"}), before_return
+        )
         return (current if current is not None
                 and current["frame_seq"] > before_return["frame_seq"] else None)
 
-    returned = wait_for("Rime preedit's returned primary frame", returned_preedit_frame, process)
+    returned_first = wait_for("Rime preedit's returned primary frame", returned_preedit_frame, process)
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-returned-first-frame-{size}.png"
+    )}))
     returned_access = wait_for(
         "returned Tide editor during Rime preedit",
         lambda: agent_conversation_accessibility("Tide"), process,
     )
+    # AT readiness can follow the first source presentation. Observe the seat
+    # now without accepting another primary native source or regressing paint.
+    returned = current_same_primary_presentation(
+        call(socket, {"op": "foreign_frames"}), returned_first
+    )
+    (output / "ime-returned-native.json").write_text(json.dumps(returned_ime_observation(
+        returned_first, returned, returned_access["process"] == chat_process,
+        chat_text_input_active(socket), same_fcitx_process(fcitx_identity),
+    ), indent=2) + "\n")
+    if returned is None:
+        raise RuntimeError("Return's exact native source is no longer presented")
     if returned_access["process"] != chat_process or returned["keyboard_focused"] is not True:
         raise RuntimeError("Return replaced Chat or failed to transfer its keyboard seat")
     if not private_editor_value_matches(returned_access, committed_before) \
