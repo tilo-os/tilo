@@ -2703,7 +2703,6 @@ impl FrameHarness {
             self.discard_layout_tree();
             self.owner_service_layout_retired = true;
         }
-        #[cfg(not(target_arch = "wasm32"))]
         let result = if self.owner_service_layout_retired {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.try_relayout_content()
@@ -2718,8 +2717,6 @@ impl FrameHarness {
         } else {
             self.try_relayout_content()
         };
-        #[cfg(target_arch = "wasm32")]
-        let result = self.try_relayout_content();
         if result.is_ok() {
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original
