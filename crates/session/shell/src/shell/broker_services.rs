@@ -1624,10 +1624,7 @@ pub(crate) fn native_services_with_agent_runtime(
         Arc::new(NativeLauncher(membership.clone(), network.clone()));
     let services = HostServices {
         #[cfg(target_os = "linux")]
-        file_clipboard: membership.as_ref().map(|tree| {
-            Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))
-                as Arc<dyn tilo_action_broker::services::FileClipboardServices>
-        }),
+        file_clipboard: native_file_clipboard(membership.as_ref()),
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
         committed_documents,
@@ -1664,6 +1661,16 @@ pub(crate) fn native_services_with_agent_runtime(
         ..Default::default()
     };
     (services, agent_runtime)
+}
+
+#[cfg(target_os = "linux")]
+fn native_file_clipboard(
+    membership: Option<&WorkspaceTreeHandle>,
+) -> Option<Arc<dyn tilo_action_broker::services::FileClipboardServices>> {
+    membership.map(|tree| {
+        Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))
+            as Arc<dyn tilo_action_broker::services::FileClipboardServices>
+    })
 }
 
 /// Where this session keeps closed apps' launchable actions. Unit tests

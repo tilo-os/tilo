@@ -1816,8 +1816,9 @@ impl CollaborationManager {
                 return Err(CollabSendError::Unavailable);
             }
             None
-            | Some(transport::DocumentRouteState::Ready)
-            | Some(transport::DocumentRouteState::Applying) => {}
+            | Some(
+                transport::DocumentRouteState::Ready | transport::DocumentRouteState::Applying,
+            ) => {}
         }
         // A known committed document route may be refreshing. Its required
         // original custody was checked above; the bounded worker still waits
