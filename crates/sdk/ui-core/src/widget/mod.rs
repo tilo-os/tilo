@@ -3400,3 +3400,5 @@ pub(crate) mod control_result_probe {
 
 /// Logical screen topology canvas shared by local and native peer displays.
 pub mod display_arrangement;
+mod graph_canvas;
+pub use graph_canvas::{GraphCanvas, GraphCanvasConnection, GraphCanvasNode};
