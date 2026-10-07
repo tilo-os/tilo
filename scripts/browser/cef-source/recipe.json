@@ -1,0 +1,170 @@
+{
+  "schema": 1,
+  "status": "NOT_QUALIFIED_DO_NOT_CONSUME",
+  "source": {
+    "chromium": "79460ebecaa5625e57a5fb679a735659e73dc687",
+    "cef": "708dc140cbc3286826a8abef89dc23a44ff9ea72",
+    "depot_tools": "ba8bd9c36425cd550ac6a6c9220808fec73352b7",
+    "patch_sha256": "185bd544fb0dd8fa2616be1be250833521950da8e8658709d828f31292be609c",
+    "upstream_file_sha256": {
+      "editor.cc": "52db1977d36bfa10987329a7f907353c81aa4215d460a14fa6a3afcfddc9d684",
+      "event_handler.cc": "fa93eea4dbfecb77a884831fbc01875abd2517d94719790f57cf79ab4438285e",
+      "event_handler.h": "3ed7ec27cb4c62dc40e59b6c49e3c2eb3b46d97b87646e6da303ac52e42e2523",
+      "input_method_controller.cc": "40248c06952301c2eab0611300fe1d61131bc1f1302834c36bc8c8b70fc7bddf",
+      "input_method_controller.h": "88a121a7a280bdcea83bd60038a02ed2a9245cbfda0d305fd5a812cf82be36ae",
+      "input_method_controller_test.cc": "a62bc094d3e4b381d979de394cf6f956abfd1a02944580025085d3b2c3f440a6"
+    },
+    "candidate_file_sha256": {
+      "input_method_controller.cc": "db182ce4d95aa22583395cb0d988fab5e7e072de10fd82073db1d87f41202e94",
+      "input_method_controller.h": "43b753e204fca7aa66af53b8b50941d316c0fa6ab4ab86d171b3db305675a656",
+      "input_method_controller_test.cc": "e99346a488d726dabee402d30e14e6b5af848abb76a52a4c5ba97991989f4e22",
+      "event_handler.cc": "1c1b4d6a99a090eefa6be797ecaebdf56e692bf89c82426aa70190a8d7b39c0c",
+      "event_handler.h": "1e94afa56ecd59c38093fcf5f86966a145dfb1c69d60f5daed64ac2e8a94e711",
+      "editor.cc": "dd7601b3501e630c6e308bcad51fd8bb67c4aad1aae43576e7e4402a01363b6c"
+    },
+    "repo_paths": {
+      "input_method_controller.cc": "third_party/blink/renderer/core/editing/ime/input_method_controller.cc",
+      "input_method_controller.h": "third_party/blink/renderer/core/editing/ime/input_method_controller.h",
+      "input_method_controller_test.cc": "third_party/blink/renderer/core/editing/ime/input_method_controller_test.cc",
+      "event_handler.cc": "third_party/blink/renderer/core/input/event_handler.cc",
+      "event_handler.h": "third_party/blink/renderer/core/input/event_handler.h",
+      "editor.cc": "third_party/blink/renderer/core/editing/editor.cc"
+    }
+  },
+  "qualification": {
+    "baseline_native_matrix": {
+      "tests": 16,
+      "expected_failures": 14,
+      "passing_controls": 2,
+      "seconds": 15.779
+    },
+    "upstream_baseline": {
+      "qualification_checks": "PASS",
+      "executed_tests": 161,
+      "existing_test_failures": [],
+      "added_assertion_failures": 21,
+      "ordinary_controls": "PASS",
+      "test_source_sha256": "e99346a488d726dabee402d30e14e6b5af848abb76a52a4c5ba97991989f4e22",
+      "summary_sha256": "499c04477b79b49e53b99f75abf50cb8cdd3e49bc9f811ddfdeb93f1adaffd66",
+      "binary_sha256": "f9f1cf49d13d60ed085a127badc33cf3909acc7e79bbe4b54b54ac546b9b42b6"
+    },
+    "upstream_fixed": {
+      "qualification_checks": "PASS",
+      "executed_tests": 161,
+      "added_regression_tests": 26,
+      "failed_tests": [],
+      "test_source_sha256": "e99346a488d726dabee402d30e14e6b5af848abb76a52a4c5ba97991989f4e22",
+      "summary_sha256": "2db9e728fd11b353576030a4f6b43db6b5615f3a389b8e259d58d7f410720dbd",
+      "binary_sha256": "90d2ae3f4b5df212e8aaf94de999bb1ba86e2e9a0d3c53772b801000541263e7"
+    },
+    "native_fixed": "PENDING",
+    "unchanged_owner_guard_and_undo_tests": "PENDING",
+    "repeat_build": "PENDING",
+    "signed_browser": "PENDING",
+    "source_dependencies": "PASS158GitHEADs;29CIPDpackages34255files;5GCSarchives29682members;16bootstrap packages6249files",
+    "public_header_parity": "PASS exact cef_version.h and cef_api_hash.h baseline SDK",
+    "runtime_translation_unit_compile": "PASS all modified runtime files and full upstream Blink target; identical161test suite PASS after/21added assertion failures before.",
+    "CEF_test_support_adapter": {
+      "metadata": "cef-test-support-compatibility.json",
+      "scope": "Two unchanged upstream test-mock files only, required by pinned CEF two-argument NavigationThrottleRegistry API; same adapter before/after; reversed before production A/B; no renderer assertion or runtime source change."
+    },
+    "added_controller_regressions": 26,
+    "CEF_tracing_test_adapter": {
+      "metadata": "restore-chromium-tracing-tests.json",
+      "scope": "Restore exact Chromium HEAD versions of two test-only files changed by pinned CEF base_test_4396276.patch; same before/after; reverse before SDK production. No test or compiler checks disabled."
+    },
+    "production_profile": "PASS serial actual PGO2+ThinLTO runtime compilation; SDK A resumed from preserved checkpoint with freshly admitted4 jobs; SDK completion/repeat/native/signedBrowser pending.",
+    "production_resource_calibration": {
+      "jobs": 4,
+      "prior_peak_session_rss_bytes": 6187044864,
+      "measurement_token": "d51aaf7656f047359afa69b05adfd2ed",
+      "receipt_filename": "d51aaf7656f047359afa69b05adfd2ed.tranche.json",
+      "memory_safety_multiplier": 2,
+      "production_profile": {
+        "pass": "A",
+        "patch_sha256": "185bd544fb0dd8fa2616be1be250833521950da8e8658709d828f31292be609c",
+        "args_sha256": "a1abc2cfe4a8ae1f4b631d8ab7304a625ef52ab7834f46e2280a12d301bbb6fb",
+        "chromium": "79460ebecaa5625e57a5fb679a735659e73dc687",
+        "cef": "708dc140cbc3286826a8abef89dc23a44ff9ea72",
+        "targets": [
+          "obj/third_party/blink/renderer/core/core/input_method_controller.o",
+          "obj/third_party/blink/renderer/core/core/event_handler.o",
+          "obj/third_party/blink/renderer/core/core/editor.o"
+        ],
+        "Ninja_jobs": 1,
+        "status": "COMPILED_ACTUAL_PGO2_PROFILE_FOR_RESOURCE_MEASUREMENT"
+      },
+      "measurement_receipt_sha256": "65b33d493b03785c79d05e0a380a95715ee90de5cb9160344d3c9d12223c04e0",
+      "latest_preflight": {
+        "epoch": 1791415723.1371062,
+        "available_memory_bytes": 159463841792,
+        "free_disk_bytes": 527535243264
+      },
+      "separate_link_allowance_bytes": 32212254720,
+      "memory_reserve_bytes": 68719476736,
+      "resume": "Preserved generationA/objects; no cleanup; fresh RAM selects at most4 jobs, original disk/CPU/memory supervisor unchanged."
+    },
+    "production_checkpoint": {
+      "status": "RESUMED_AFTER_READ_ONLY_CAPACITY_AUDIT",
+      "production_token": "5478a8654cd64ae7ac782bc0ad3daacf",
+      "source_qualified": true,
+      "artifact_qualified": false,
+      "free_bytes_at_checkpoint": 141561638912,
+      "required_production_admission_free_bytes": 176041230336,
+      "owned_output_growth_bytes": 304472064,
+      "peak_RSS_bytes": 4124520448,
+      "remaining_live_processes": [],
+      "container_removed": true,
+      "resume": "Retain production-generation A and completed Ninja objects; rerun production-A only after fresh headroom passes.",
+      "maintenance_dry_run": "50.3 GB unused build units/incremental data eligible under normal policy; zero worktree evictions reported. No cleanup performed.",
+      "approval_block": "Automatic approval review rejected rcargo builder gc --keep-images: actual deletion of shared caches requires explicit approval. No alternate/indirect cleanup attempted.",
+      "pending": [
+        "full production SDK A",
+        "independent clean B and byte comparison",
+        "unchanged owner native/guard regression",
+        "actual signed Browser regression",
+        "remote cargo check -p shell --tests",
+        "normal PR/CI/merge and trusted artifact publication/pin"
+      ],
+      "independently_recovered_free_bytes": 186722574336,
+      "maintenance_action": "Rejected; no cleanup attempted or required for this resume.",
+      "output_preserved_bytes": 5320306688,
+      "latest_read_only_capacity": {
+        "epoch": 1791415196.0371814,
+        "free_disk_bytes": 131384320000,
+        "available_memory_bytes": 151982436352,
+        "normal_gc_dry_run_reclaimable_decimal_GB": 27.6,
+        "normal_gc_dry_run_worktree_evictions": 0,
+        "cleanup_performed": false,
+        "full_production_admission_free_bytes": 176041230336
+      },
+      "source_review_PR": "Authorized independently of heavy build; remote shell compile and artifact delivery still pending.",
+      "latest_resume_admission": {
+        "epoch": 1791415723.1371062,
+        "available_memory_bytes": 159463841792,
+        "free_disk_bytes": 527535243264
+      }
+    },
+    "staged_source_hook": "PASS .githooks/pre-commit on final staged source patch, profiles, before/after evidence and resolved Git dependency lock."
+  },
+  "artifact": null,
+  "production_defaults": "Keep official noncomponent release, pinned PGO/LTO, sysroot, public API headers, resources, locales and licenses.",
+  "remote_execution": "Existing rcargo/SSH builder only; isolated supported scratch root with directory FD/mount GC protection, task-only lock+standard activity/build-slot, pinned private PID/networkless ephemeral containers; no Cargo worktree lock or laptop compiler.",
+  "delivery": "Normal required CI and existing signing/provenance verification. No consumer pin changes until qualification; no binary in Git.",
+  "producer_build_patches": [
+    {
+      "repo_path": "third_party/blink/renderer/bindings/BUILD.gn",
+      "upstream_post_cef_sha256": "d11ccebffce25371c6895225d4818bbc06b353145452a60fa836bd7b1ee56335",
+      "candidate_sha256": "de119d5b50ac21ecc566b702d7f4fae89d07fd63a08b4b4e60a144049600a798",
+      "patch_sha256": "91f892a2c828a3182db7bdced801a1ae2fcf1249057fc2e57fedbc58eb0de98f",
+      "option": "Pinned generate_bindings.py --single_process; preserve all targets, outputs, production optimization and runtime source."
+    },
+    {
+      "repo_path": "build/config/compiler/BUILD.gn",
+      "upstream_post_cef_sha256": "ff7ee114ac19a30ce52ca6911be24d3a7d9d4820fc55d7b02639c114742d66c9",
+      "candidate_sha256": "fac775e5fa60c4e0e93f73887b0cb786665fcaa4ac483020de6d8616aba65fe1",
+      "patch_sha256": "ad3c2e1cf80dc8ccdd031a9cd2c4780c49d312554f25b20a76e2699c0b209167",
+      "option": "Supported pinned LLD ThinLTO8 backend/front-end threads; retain ThinLTO, PGO and all optimization."
+    }
+  ]
+}
