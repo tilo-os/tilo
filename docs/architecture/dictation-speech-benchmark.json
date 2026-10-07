@@ -4753,6 +4753,44 @@
         "log_sha256": "be60d20d21dbbde718fe9699b419ed4eafaf8cf8c4d2de1b2294272ee9756043",
         "decision": "Select quiet boundaries as the next recognition improvement to validate: all three long Base error rates improve and all 18 short transcript fields are unchanged. Remains a diagnostic candidate, not enabled in production; no model selection, cap or catalogue promotion; noisy conversation/older hardware unqualified."
       }
+    },
+    "native_caret_qualification": {
+      "date": "2026-10-07",
+      "configuration": "Actual pinned CEF host; UID 65534; bwrap unshare-all; private loopback public fixtures; no physical devices or external network; production internal inspector connection only",
+      "native_feature": "Strict optional per-tab native_caret_text_input; private Prepare opt-in; original native input/selection snapshot before and after beforeinput; no clipboard/key/value fallback",
+      "executed": {
+        "tests": 39,
+        "seconds": 235.234,
+        "failures": 0,
+        "errors": 0,
+        "ignored": 0,
+        "real_lease_expiry": true,
+        "legacy_refusal_assertions_retained": true
+      },
+      "source_sha256": {
+        "apps/browser/chromium/src/host.cc": "36996dc38a2f647e5fe466aa428044a8d3ecdb6607cdf3f26c6ca3254477b00b",
+        "apps/browser/chromium/src/page_automation.h": "4110c98b415d01a06645f842f79084fbdab1f6c8b0d833fd0410b25994da51e3",
+        "apps/browser/chromium/src/page_automation.js": "01d5e109183a4c733bd7b60a3a824297ea38237264c3eeaaf38e359a451a62f8",
+        "apps/browser/chromium/tests/guarded_text_input.py": "156f91ea5cc64e4326b518aa3ae17c0bb6e616925ed52b06126c0f6a7e04fa27"
+      },
+      "raw_log_sha256": "c6362460f2d4c8ff1bdab11f233e33da328141dbe39afadcb13a3b0543ae9d64",
+      "qualified": [
+        "Email and number selected replacement and empty fields",
+        "Unicode email replacement in original same-origin iframe and open shadow host",
+        "Cancel, repeated Start, native Undo and Redo",
+        "Focus/read-only/beforeinput caret and maxLength changes refuse without mutation",
+        "Invalid or non-finite numeric finals refuse without deleting original value",
+        "Sensitive autocomplete refusal/recovery; page selection-prototype spoof does not alter private getter",
+        "Original fixed real-clock warm/active lease expiry and no sliding"
+      ],
+      "unqualified": [
+        "Complete assembled certified app-broker plus physical-mic journey",
+        "Closed author editor and cross-origin ancestor lifecycle",
+        "Composition already active before private world starts",
+        "Spoken-number and localized-digit normalization",
+        "Noisy conversation, older CPU and ARM device qualification"
+      ],
+      "release_status": "Draft and hold remain; no readiness gate removal, mic/account/trust grant, model/default publication, reboot or deployment"
     }
   }
 }
