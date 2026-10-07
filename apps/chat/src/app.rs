@@ -795,10 +795,9 @@ pub enum ChatRuntime {
     Unavailable,
 }
 
-/// Whether this host offers Chat's native services: attachments imported
-/// from native paths into the on-disk content store, and the shell's voice
-/// service. A browser page has neither.
-pub(crate) fn native_services() -> bool {
+/// Whether this host imports attachments from native paths. Voice support
+/// is reported independently through the host's local media lane.
+pub(crate) fn native_file_access() -> bool {
     matches!(
         tilo_files::availability(tilo_files::Feature::NativePaths),
         tilo_files::Availability::Available
@@ -816,9 +815,8 @@ impl ChatApp {
         app.context_ws.clear();
         app.active_channel.clear();
         app.thread_open = None;
-        app.media_error = (!app.external_services).then(|| {
-            "Calls and screen sharing are unsupported until a media transport is connected".into()
-        });
+        app.media_error =
+            (!app.external_services).then(|| crate::i18n::t("chat-voice-unavailable"));
         app
     }
 
@@ -981,8 +979,13 @@ impl ChatApp {
         match action {
             crate::call::CallAction::Leave => true,
             crate::call::CallAction::Camera | crate::call::CallAction::ShareScreen => false,
-            _ => self.external_services && self.perms.allows(action),
+            _ => self.voice_service_available() && self.perms.allows(action),
         }
+    }
+
+    pub(crate) fn voice_service_available(&self) -> bool {
+        self.external_services
+            || self.native_voice.snapshot.state != ui::native_media::State::Unavailable
     }
 
     /// Whether the local peer may post / react / start a call in the active
