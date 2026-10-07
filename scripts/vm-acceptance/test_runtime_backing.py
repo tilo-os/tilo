@@ -15,12 +15,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from acceptance import runtime_backing as probe
 
 PATH = "/run/tilo-runtime/exact-sdk/lib/libruntime_dylib.so"
+SUBJECT_UID = os.getuid() or 1002
 
 
 class Backing(unittest.TestCase):
     def fixture(self, root):
         process = root / "123"
         (process / "map_files").mkdir(parents=True)
+        if os.getuid() == 0:
+            os.chown(process, SUBJECT_UID, -1)  # Only our owned temporary fixture, never /proc.
         (process / "comm").write_text("store\n")
         (process / "stat").write_text("123 (store) " + " ".join(["1"] * 19 + ["12345"]))
         (process / "maps").write_text(f"1000-2000 r-xp 0000 00:116 456 {PATH}\n")
@@ -36,7 +39,7 @@ class Backing(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             process, resident, namespace = self.fixture(root)
-            value = probe.probe(os.getuid(), "store", root)
+            value = probe.probe(SUBJECT_UID, "store", root)
             row = value["processes"][0]["runtime"][0]
             self.assertEqual(row["sha256"], hashlib.sha256(resident.read_bytes()).hexdigest())
             self.assertNotEqual(row["sha256"], hashlib.sha256(namespace.read_bytes()).hexdigest())
@@ -50,7 +53,7 @@ class Backing(unittest.TestCase):
             self.fixture(root)
             with patch.object(probe, "hash_backing", side_effect=PermissionError("map_files refused")):
                 with self.assertRaises(PermissionError):
-                    probe.probe(os.getuid(), "store", root)
+                    probe.probe(SUBJECT_UID, "store", root)
 
     def test_pid_or_map_change_during_hashing_refuses(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -59,11 +62,11 @@ class Backing(unittest.TestCase):
             for times in (["old", "new"],):
                 with patch.object(probe, "start_time", side_effect=times):
                     with self.assertRaises(RuntimeError):
-                        probe.probe(os.getuid(), "store", root)
+                        probe.probe(SUBJECT_UID, "store", root)
             real = probe.mappings(root / "123")
             with patch.object(probe, "mappings", side_effect=[real, {}]):
                 with self.assertRaises(RuntimeError):
-                    probe.probe(os.getuid(), "store", root)
+                    probe.probe(SUBJECT_UID, "store", root)
 
     def test_changed_duplicate_map_identity_refuses(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -72,19 +75,19 @@ class Backing(unittest.TestCase):
             with (process / "maps").open("a") as output:
                 output.write(f"3000-4000 r--p 0000 00:116 999 {PATH}\n")
             with self.assertRaises(RuntimeError):
-                probe.probe(os.getuid(), "store", root)
+                probe.probe(SUBJECT_UID, "store", root)
 
     def test_unknown_subject_deleted_mapping_and_empty_observation_refuse(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with self.assertRaises(RuntimeError):
-                probe.probe(os.getuid(), "private-app", root)
+                probe.probe(SUBJECT_UID, "private-app", root)
             with self.assertRaises(RuntimeError):
-                probe.probe(os.getuid(), "store", root)
+                probe.probe(SUBJECT_UID, "store", root)
             process, _, _ = self.fixture(root)
             (process / "maps").write_text(f"1000-2000 r-xp 0000 00:116 456 {PATH} (deleted)\n")
             with self.assertRaises(RuntimeError):
-                probe.probe(os.getuid(), "store", root)
+                probe.probe(SUBJECT_UID, "store", root)
 
     def test_bounded_actual_fd_hash_and_changed_metadata_refuse(self):
         with tempfile.TemporaryDirectory() as directory:
