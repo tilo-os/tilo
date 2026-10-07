@@ -121,7 +121,9 @@ containerfile="$repo/os/Containerfile"
 # The offline, signed Flathub descriptor is the one additional payload row.
 # The AppHost service unit moves from a direct context COPY into its component
 # manifest; the installed path, reviewed bytes and 0644 mode are unchanged.
-expected_contract=7a5a82dccbbe1b49c908390530df8027d9bae292fe2dc5cef2120cd892414f48
+# Firstboot account handoff and authenticated startup recovery now ship in the
+# base image too: their three helpers, three units and the greeter baseline.
+expected_contract=4c34b8aec3290e330978a62f3311302ca3b33a250147662e87a45a037a84d3c0
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -79,6 +79,34 @@ class SignalProviderRelease(unittest.TestCase):
                     release.seal(root, proof['source'], '1')
                 execute.assert_not_called()
 
+    def test_sealing_uses_the_existing_payload_bound_native_bundle_builder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proof = self.compiled(root)
+            version = release.RUNTIME.removeprefix('tilo-runtime/') + '+native.' + 'a' * 32
+            environment = {'RUNTIME_BUNDLE_IDENTITY_FILE': '/fixture/existing-runtime',
+                           'TAPP_PUBLISHER_IDENTITY_FILE': '/fixture/existing-app'}
+
+            def built(args, **kwargs):
+                if args[1] != 'build':
+                    self.assertEqual(args[1:3], ['verify', str(root / 'bundle')])
+                    self.assertTrue((root / 'bundle/bundle.toml').exists())
+                    raise RuntimeError('fixture stops before signing packages')
+                self.assertNotIn('--version', args)
+                self.assertEqual(args[args.index('--release') + 1], '2026.10.1-signal')
+                destination = Path(args[args.index('--out-root') + 1]) / version
+                destination.mkdir(parents=True)
+                (destination / 'bundle.toml').write_text('version = "' + version + '"\n')
+                Path(args[args.index('--version-out') + 1]).write_text(version + '\n')
+
+            with patch.dict(os.environ, environment, clear=True), \
+                    patch.object(release.release, 'head', return_value=proof['source']), \
+                    patch.object(release.subprocess, 'check_output',
+                                 return_value=proof['runtime_publisher']), \
+                    patch.object(release.subprocess, 'run', side_effect=built):
+                with self.assertRaisesRegex(RuntimeError, 'stops before signing'):
+                    release.seal(root, proof['source'], '1')
+
     def test_canonical_entrypoint_defaults_keep_the_exact_executable_policy(self):
         source = release.release.head()
         trusted_key = 'f' * 64
@@ -90,7 +118,9 @@ class SignalProviderRelease(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             proof = release.provenance(source)
-            proof.update(package_version=version, app_publisher=trusted_key)
+            runtime_build = release.RUNTIME + '+native.' + 'a' * 32
+            proof.update(package_version=version, app_publisher=trusted_key,
+                         runtime_build=runtime_build)
             proof['packages'] = {}
             for name in ('runtime-package', 'provider-package'):
                 package = root / name
@@ -104,11 +134,12 @@ class SignalProviderRelease(unittest.TestCase):
                 declaration = ('id = "so.tilo.runtime.signal"\nkind = "runtime"\nprovides' if runtime
                                else 'id = "so.tilo.signal-provider"\nkind = "app"\nruntime')
                 return ('--- manifest.toml ---\n[package]\n' + declaration
-                        + ' = "' + release.RUNTIME + '"\nversion = "' + version + '"\n'
+                        + ' = "' + declared_runtime + '"\nversion = "' + version + '"\n'
                         + '[sandbox.net]\nmode = "off"\n'
                         + ('' if runtime else '[entrypoint]\n' + entrypoint)
                         + '--- payload (0 files) ---\n')
 
+            declared_runtime = runtime_build
             for entrypoint in (canonical,
                                canonical.replace('bin/tilo-signal-provider', 'bin/other'),
                                canonical.replace('type = "cli"', 'type = "both"'),
@@ -129,6 +160,24 @@ class SignalProviderRelease(unittest.TestCase):
                     self.assertEqual(verify_signature.call_count, 2)
                     for call in verify_signature.call_args_list:
                         self.assertEqual(call.args[0][1:4], ['verify', '--trusted-key', trusted_key])
+
+            entrypoint = canonical
+            for declared_runtime in (release.RUNTIME,
+                                     release.RUNTIME + '+native.' + 'b' * 32):
+                with self.subTest(declared_runtime=declared_runtime), \
+                        patch.object(release.release, 'head', return_value=source), \
+                        patch.object(release.subprocess, 'run'), \
+                        patch.object(release.subprocess, 'check_output', side_effect=inspected):
+                    with self.assertRaisesRegex(ValueError, 'runtime/network declaration differs'):
+                        release.verify(root, source, '1', trusted_key)
+
+            proof['runtime_build'] = release.RUNTIME
+            (root / 'release.json').write_text(json.dumps(proof))
+            with patch.object(release.release, 'head', return_value=source), \
+                    patch.object(release.subprocess, 'run') as execute:
+                with self.assertRaisesRegex(ValueError, 'exact native build'):
+                    release.verify(root, source, '1', trusted_key)
+                execute.assert_not_called()
 
     def test_inventory_refuses_links(self):
         with tempfile.TemporaryDirectory() as directory:

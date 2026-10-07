@@ -18,7 +18,10 @@ use shell::network::{
     Actor, NeighbourMsg, NetCmd, NetEvent, WorkspaceControlRoute,
     invite::{make_invite_token, validate_invite_token},
 };
-use shell::shell::state::{PeerOrigin, WorkspaceTree};
+use shell::shell::state::{
+    AppKind, PeerOrigin, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId, WorkspaceTree, compose_id,
+};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -216,6 +219,242 @@ async fn warm_exact_target_input_stays_below_the_interactive_p95_budget() {
     assert!(
         p95 < Duration::from_millis(50),
         "warm authenticated input p95 must stay below 50 ms, got {p95:?}; samples={latencies:?}"
+    );
+}
+
+fn percentile(sorted: &[Duration], pct: usize) -> Duration {
+    sorted[(sorted.len().saturating_mul(pct) / 100).min(sorted.len().saturating_sub(1))]
+}
+
+fn report(label: &str, mut samples: Vec<Duration>) -> Duration {
+    samples.sort_unstable();
+    let (p50, p95, max) = (
+        percentile(&samples, 50),
+        percentile(&samples, 95),
+        *samples.last().expect("samples"),
+    );
+    eprintln!(
+        "{label}: p50 {p50:?}, p95 {p95:?}, max {max:?} over {} samples",
+        samples.len()
+    );
+    p95
+}
+
+/// The tab ids of `room`'s first window group, in order, as `tree` holds them.
+fn group_tabs(tree: &WorkspaceTree, room: RoomId) -> Vec<u64> {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .and_then(|workspace| workspace.strips.first())
+        .and_then(|strip| strip.window_groups.first())
+        .map(|group| group.tabs.iter().map(|tab| tab.id).collect())
+        .unwrap_or_default()
+}
+
+fn notes_tab(id: u64) -> Tab {
+    Tab {
+        id,
+        title: format!("Notes {id:x}"),
+        tile: TileContent::Stub {
+            kind: AppKind::Other("so.tilo.notes".into()),
+            label: "Notes".into(),
+        },
+    }
+}
+
+fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
+    let id = |counter: u64| compose_id(salt, counter);
+    let mut a = WorkspaceTree::default();
+    a.set_salt_override(salt);
+    let mut workspace = Workspace::new(WorkspaceId(id(1)), "Live");
+    workspace.room = room;
+    workspace.strips.push(Strip {
+        id: StripId(id(2)),
+        name: "Main".into(),
+        window_groups: vec![WindowGroup {
+            id: id(3),
+            tabs: vec![notes_tab(id(100))],
+            active_tab: id(100),
+            width: WindowWidth::Normal,
+            maximized: false,
+        }],
+    });
+    a.desktop.active = workspace.id;
+    a.desktop.workspaces.push(workspace);
+    a.seed_doc_from_cache();
+
+    a
+}
+
+/// Two devices share one room over real Iroh. Device A opens, moves and
+/// closes tabs; each change is pushed the way the shell pushes it (the room
+/// document's changes since what A last announced, as one `SyncResp`) and is
+/// timed from A's mutation to B's tree holding the same tab order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget() {
+    const SALT_A: u16 = 0xA0A0;
+    const SALT_B: u16 = 0xB0B0;
+    const SAMPLES: usize = 24;
+
+    let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
+    let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_peer_joined(&mut events_a).await;
+    wait_peer_joined(&mut events_b).await;
+
+    let room = RoomId::new();
+    let id = |counter: u64| compose_id(SALT_A, counter);
+    let mut a = room_push_tree(room, SALT_A);
+
+    let mut b = WorkspaceTree::default();
+    b.set_salt_override(SALT_B);
+    let placeholder = b.append_empty_workspace("Placeholder");
+    assert!(b.set_room(placeholder, room));
+
+    let publish = |changes: Vec<Vec<u8>>| NetCmd::Publish {
+        ws: WS,
+        msg: NeighbourMsg::SyncResp {
+            changes,
+            room: room.to_string(),
+        },
+    };
+    let mut receive = async |b: &mut WorkspaceTree, want: &[u64]| {
+        while group_tabs(b, room) != want {
+            let event = events_b.recv().await.expect("B's events");
+            if let NetEvent::Msg {
+                peer,
+                msg: NeighbourMsg::SyncResp { changes, .. },
+                ..
+            } = event
+            {
+                b.apply_room_changes(room, &changes, &PeerOrigin::peer(&peer))
+                    .expect("B applies A's push");
+            }
+        }
+    };
+
+    // Warm-up: B joins with A's whole room, as its first pull would bring.
+    let baseline = a.export_room_changes_since(room, &[]).expect("A's room");
+    let mut announced = a.room_heads(room);
+    cmd_a
+        .send(publish(baseline))
+        .await
+        .expect("baseline queued");
+    let want = group_tabs(&a, room);
+    tilo_test_env::within("B joined A's room", receive(&mut b, &want)).await;
+
+    let mut next = 101;
+    let mut latencies = Vec::with_capacity(SAMPLES);
+    for sample in 0..SAMPLES {
+        let started = Instant::now();
+        {
+            let workspace = &mut a.desktop.workspaces[0];
+            let tabs = &mut workspace.strips[0].window_groups[0].tabs;
+            match sample % 3 {
+                // Open a tab.
+                0 => {
+                    tabs.push(notes_tab(id(next)));
+                    next = next.saturating_add(1);
+                }
+                // Move the last tab to the front.
+                1 => {
+                    let moved = tabs.pop().expect("a tab");
+                    tabs.insert(0, moved);
+                }
+                // Close the first tab, keeping one open.
+                _ if tabs.len() > 1 => {
+                    tabs.remove(0);
+                }
+                _ => tabs.push(notes_tab(id(next))),
+            }
+        }
+        a.seed_doc_from_cache();
+        let changes = a
+            .export_room_changes_since(room, &announced)
+            .expect("A's room");
+        announced = a.room_heads(room);
+        assert!(!changes.is_empty(), "sample {sample} changed the room");
+        cmd_a.send(publish(changes)).await.expect("push queued");
+        let want = group_tabs(&a, room);
+        tilo_test_env::within("B shows A's change", receive(&mut b, &want)).await;
+        latencies.push(started.elapsed());
+    }
+    let p95 = report(
+        "pushed tab change, A mutation -> B tree (loopback Iroh)",
+        latencies,
+    );
+    assert!(
+        p95 < Duration::from_millis(50),
+        "a pushed tab change must reach the other device in under 50 ms at p95, got {p95:?}"
+    );
+}
+
+/// A document edit travels as one signed `AppDocument` on the room topic;
+/// timed from publication to arrival on the other device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget() {
+    const SAMPLES: usize = 24;
+    let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
+    let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_peer_joined(&mut events_a).await;
+    wait_peer_joined(&mut events_b).await;
+
+    let edit = |sequence: u64| {
+        // A typical keystroke-sized Automerge change.
+        let mut doc = automerge::AutoCommit::new();
+        let _ = automerge::transaction::Transactable::put(
+            &mut doc,
+            automerge::ROOT,
+            "text",
+            format!("edit {sequence}"),
+        );
+        NetCmd::Publish {
+            ws: WS,
+            msg: NeighbourMsg::AppDocument {
+                peer: 7,
+                app_id: "so.tilo.notes".into(),
+                cluster_id: RoomId::new().to_string(),
+                record_id: "uuid:notes".into(),
+                envelope: Box::new(collab_types::SignedOp::new_unsigned(
+                    doc.save(),
+                    collab_types::ArtifactId(uuid::Uuid::from_bytes([0x11; 16])),
+                    collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+                    collab_types::AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
+                    collab_types::OpClass::Splice,
+                    std::time::SystemTime::now(),
+                    sequence,
+                )),
+            },
+        }
+    };
+    let arrived = async |events: &mut mpsc::Receiver<NetEvent>, sequence: u64| loop {
+        if let Some(NetEvent::Msg {
+            msg: NeighbourMsg::AppDocument { envelope, .. },
+            ..
+        }) = events.recv().await
+            && envelope.seq == sequence
+        {
+            return;
+        }
+    };
+    cmd_a.send(edit(u64::MAX)).await.expect("warm edit queued");
+    tilo_test_env::within("warm edit arrived", arrived(&mut events_b, u64::MAX)).await;
+    let mut latencies = Vec::with_capacity(SAMPLES);
+    for sequence in 0..SAMPLES as u64 {
+        let started = Instant::now();
+        cmd_a.send(edit(sequence)).await.expect("edit queued");
+        tilo_test_env::within("edit arrived", arrived(&mut events_b, sequence)).await;
+        latencies.push(started.elapsed());
+    }
+    let p95 = report(
+        "document edit, A publish -> B receive (loopback Iroh)",
+        latencies,
+    );
+    assert!(
+        p95 < Duration::from_millis(50),
+        "a document edit must reach the other device in under 50 ms at p95, got {p95:?}"
     );
 }
 

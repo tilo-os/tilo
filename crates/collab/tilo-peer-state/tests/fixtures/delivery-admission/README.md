@@ -17,3 +17,11 @@ The capture used a temporary ignored test invoking the existing `seeded` fixture
 | `operation-id.hex` | 65 | `197d527b60b3f79fef59b7e15ac798eca589dd976ff72e9d9c77088f93b6a121` |
 | `original-app-document.postcard` | 351 | `261a80f19dac244483b7f4c488ba3104e03b6ed21b7c488325e859dd75bc4f4e` |
 | `original-signed-op.postcard` | 288 | `ae959e85e7380f43a4539265e3be7c209f216b528358e6dcc0cada1b352d67b5` |
+
+Persisted byte fixtures are stored as `.hex` files: two lowercase hexadecimal
+digits per byte, separated by spaces, with 16 bytes per LF line. Decode the
+text before passing it to the production reader. The decoded bytes are the
+original capture, including signatures, compression and malformed inputs;
+regenerating them with a newer codec would erase the compatibility regression.
+The byte counts and hashes above refer to decoded bytes; `operation-id.hex`
+remains the digest itself.

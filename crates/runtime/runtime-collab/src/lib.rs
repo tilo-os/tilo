@@ -45,6 +45,8 @@
 #[cfg(feature = "client")]
 use std::rc::Rc;
 
+pub mod file_clipboard;
+
 #[cfg(feature = "client")]
 use runtime_portal::NotAvailable;
 
@@ -1010,6 +1012,37 @@ impl ChannelHandle {
             )));
         }
         Ok(decoded)
+    }
+
+    /// Run a bounded local Files command under its original invocation, if any.
+    /// Submit a local Files command on this admitted channel.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed or unavailable commands and replies.
+    pub async fn local_file_clipboard_command(
+        &self,
+        command: &file_clipboard::Command,
+        parent: Option<[u8; 16]>,
+    ) -> Result<file_clipboard::Reply, NotAvailable> {
+        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
+        if !command.valid() {
+            return Err(failed("invalid local clipboard command".into()));
+        }
+        let bytes = serde_json::to_vec(command).map_err(|error| failed(error.to_string()))?;
+        if bytes.len() > file_clipboard::MAX_WIRE_BYTES {
+            return Err(failed("clipboard command exceeds bound".into()));
+        }
+        let mut request = self.inner.local_file_clipboard_request();
+        request.get().set_command_json(&bytes);
+        request
+            .get()
+            .set_on_behalf_of(parent.as_ref().map_or(&[], |id| id.as_slice()));
+        let response = request.send().promise.await?;
+        let bytes = response.get()?.get_reply_json()?;
+        if bytes.len() > file_clipboard::MAX_WIRE_BYTES {
+            return Err(failed("clipboard reply exceeds bound".into()));
+        }
+        serde_json::from_slice(bytes).map_err(|error| failed(error.to_string()))
     }
 
     /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated

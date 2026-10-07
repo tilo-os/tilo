@@ -220,8 +220,11 @@ fn mark_within_single_multi_width_element_from_fuzz_trace() {
 
 #[test]
 fn load_rejects_historical_zero_width_mark_end_before_begin() {
-    let bytes = include_bytes!("fixtures/broken_zero_width_mark.automerge");
-    let err = Automerge::load(bytes).unwrap_err();
+    let bytes = include_str!("fixtures/broken_zero_width_mark.automerge.hex")
+        .split_ascii_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+        .collect::<Vec<_>>();
+    let err = Automerge::load(&bytes).unwrap_err();
     assert!(
         err.to_string().contains("invalid mark operation order"),
         "unexpected error: {err}"
@@ -230,8 +233,11 @@ fn load_rejects_historical_zero_width_mark_end_before_begin() {
 
 #[test]
 fn rescue_recovers_snapshot_from_historical_zero_width_mark_order() {
-    let bytes = include_bytes!("fixtures/broken_zero_width_mark.automerge");
-    let value = Automerge::rescue(bytes).unwrap();
+    let bytes = include_str!("fixtures/broken_zero_width_mark.automerge.hex")
+        .split_ascii_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+        .collect::<Vec<_>>();
+    let value = Automerge::rescue(&bytes).unwrap();
 
     assert_eq!(
         value,

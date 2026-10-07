@@ -113,6 +113,56 @@ class SignedBoard(unittest.TestCase):
         native = WORKFLOW.split('  build-and-push:\n', 1)[1].split('    steps:', 1)[0]
         self.assertIn('signing-preflight', native)
 
+    def test_sealing_tools_do_not_inherit_device_admission_policy(self):
+        board = (ROOT/'os/Containerfile.board').read_text()
+        production = (ROOT/'os/Containerfile').read_text()
+        self.assertIn('FROM ${BASE_REF} AS uki-tools', production)
+        self.assertIn('FROM ${BASE_REF} AS uki-tools', board)
+        self.assertIn('FROM uki-tools AS cfs-digest', board)
+        self.assertIn('FROM ${BASE_IMAGE} AS board-root', board)
+        self.assertIn('FROM split AS final', board)
+        # Production/installed-device policy remains strict; only the
+        # throwaway construction environment reads its own unsigned layers.
+        original = json.loads((ROOT/'os/etc/containers/policy.json').read_text())
+        self.assertEqual(original['transports']['docker'][policy.REPOSITORY], [{'type': 'reject'}])
+
+    def test_actual_board_build_passes_pinned_tools_to_all_three_phases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root/'calls'
+            auth = root/'empty-test-auth.json'
+            auth.write_text('{}')
+            fake = root/'docker'
+            fake.write_text('#!'+sys.executable+'\n'+textwrap.dedent('''
+                import json, os, pathlib, sys
+                args = sys.argv[1:]
+                with open(os.environ['CALLS'], 'a') as out:
+                    out.write(json.dumps(args)+'\\n')
+                if '--metadata-file' in args:
+                    pathlib.Path(args[args.index('--metadata-file')+1]).write_text(json.dumps({'containerimage.digest':'sha256:'+'a'*64}))
+                if '--target' in args and args[args.index('--target')+1] == 'cfs-digest-out':
+                    dest = next(a.split('dest=',1)[1] for a in args if a.startswith('type=local,dest='))
+                    pathlib.Path(dest).mkdir(parents=True)
+                    (pathlib.Path(dest)/'digest').write_text('b'*128)
+                '''))
+            fake.chmod(0o755)
+            result = subprocess.run(['bash', str(ROOT/'os/dev/build-board-image.sh'),
+                'orangepi-3b-v2-1', 'registry.tilo.so/tilo/tilo-ci@sha256:'+'c'*64,
+                'registry.tilo.so/tilo/tilo-vm:main-fixture-orangepi-3b-v2-1-signed'],
+                cwd=ROOT, capture_output=True, text=True,
+                env={**os.environ, 'PATH':str(root)+os.pathsep+os.environ['PATH'],
+                     'BUILDER_NAME':'fixture', 'RPMS_REF':'fixture', 'BOOTC_HELPER_IMAGE':'fixture',
+                     'TILO_SIGNED_DEVELOPMENT_BOARD':'1', 'REGISTRY_AUTH_FILE':str(auth),
+                     'BASE_REF':'ignored-environment-override', 'CALLS':str(log)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(len(calls), 3)
+            pinned = next(line.split('=',1)[1] for line in (ROOT/'os/base-snapshot.env').read_text().splitlines()
+                          if line.startswith('BASE_REF='))
+            for call in calls:
+                self.assertIn('BASE_REF='+pinned, call)
+                self.assertNotIn('BASE_REF=ignored-environment-override', call)
+
     def test_split_directory_preparation_is_repeatable_but_rejects_stale_kernel(self):
         recipe = (ROOT/'os/Containerfile.board').read_text()
         actual = recipe.split('FROM board-root AS split\nRUN ', 1)[1].split('&& bootc container split-kernel-and-rootfs', 1)[0]
