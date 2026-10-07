@@ -355,10 +355,17 @@ python3 scripts/vm-acceptance/store-chooser.py \
   --tilo-vm /ABS/PATH/tilo-vm --vm yoga --slot YOUR_SLOT \
   --cohort-receipt /ABS/PATH/successful-apps-runtime-receipt.json \
   --fixture /ABS/PATH/verified-offer.json \
-  --directories Downloads official-tapp-acceptance \
+  --initial-up 1 --directories Downloads official-tapp-acceptance \
   --thin calculator-aarch64-thin.tapp --full calculator-aarch64-full.tapp \
   --out target/store-chooser-acceptance
 ```
+
+The normal user picker starts at the existing XDG Documents directory, falling
+back to HOME. Choose `--initial-up 1` only when Documents is directly under HOME;
+use `0` when the initial directory is HOME. These are bounded declared `up`
+actions with fresh inspected state and `can_up`, followed by declared entry IDs;
+the runner does not infer filesystem paths or escape picker scope. Each new
+Import starts from its independently supplied initial directory.
 
 Both Import jobs must stay observable while a new unique chooser request is
 inspected. Each operation rechecks the expected active workspace, unlocked
