@@ -362,3 +362,6 @@ pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use view::{EffectsHandle, ViewCx};
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod headless_results_tests;

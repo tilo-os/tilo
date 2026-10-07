@@ -306,6 +306,8 @@ pub struct Spec {
     pub targets: Option<std::path::PathBuf>,
     /// Write one semantic widget/accessibility snapshot here as JSON.
     pub inspect: Option<std::path::PathBuf>,
+    /// Retain actual semantic invocation outputs and refusals, without input arguments.
+    pub results: Option<std::path::PathBuf>,
 }
 
 /// One node in a developer inspection snapshot.
@@ -494,6 +496,7 @@ pub struct FrameOutput<'a> {
 }
 
 mod caller_palette;
+mod invocation_results;
 mod search_open;
 pub mod system_search;
 pub mod test_support;
@@ -590,6 +593,7 @@ pub struct FrameHarness {
     /// The invoker each job started for someone else runs for, while it
     /// runs ([`FrameHarness::start_bound_job_for`]).
     acting_for: HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>,
+    invocation_results: Option<invocation_results::InvocationResults>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -1475,6 +1479,7 @@ impl FrameHarness {
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
+            invocation_results: None,
             profiler: None,
             last_send_skipped_relayout: false,
             pointer_redraw_diagnostics: false,
@@ -7568,6 +7573,7 @@ impl FrameHarness {
             invocation.confirm,
             invocation.confirmation_phrase.as_deref(),
         );
+        self.retain_invocation_outcome(invocation, &result)?;
         match (result, invocation.expect_error.as_deref()) {
             (Ok(_), None) => Ok(()),
             (Ok(_), Some(code)) => Err(format!(
@@ -8416,6 +8422,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         dump: wire.dump.map(Into::into),
         targets: wire.targets.map(Into::into),
         inspect: wire.inspect.map(Into::into),
+        results: wire.results.map(Into::into),
     })
 }
 
@@ -8492,6 +8499,9 @@ fn drive_spec_actions(
     driver: &mut Driver,
     mut persist: impl FnMut(&mut Driver),
 ) -> Option<String> {
+    if spec.results.is_some() {
+        driver.retain_invocation_results();
+    }
     tilo_startup_metrics::mark("headless-actions-start");
     // Native idle frames admit queued local controls even without input. Use
     // the same host tick here, including fresh permissions and undo recording.
@@ -8553,6 +8563,11 @@ fn audit_spec(spec: &Spec, driver: &Driver, failure: &mut Option<String>) -> Res
 }
 
 fn write_spec_outputs(spec: &Spec, driver: &mut Driver) -> Result<(), String> {
+    if let Some(path) = &spec.results {
+        write_headless_output(path, driver.invocation_results_json()?).map_err(|error| {
+            format!("writing invocation results to {}: {error}", path.display())
+        })?;
+    }
     if let Some(path) = &spec.targets {
         let mut names: Vec<(String, [f64; 4])> = driver
             .targets()
