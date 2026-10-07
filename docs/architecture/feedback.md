@@ -60,7 +60,10 @@ start off. Review shows masked issue/context and PNG before explicit approval;
 redaction, screenshot removal and retry use published effects. Changed issue text
 or consent requires a fresh review. The system-owned `feedback::Composer` freezes
 an approved queued payload and resumes a matching pending outbox report after
-restart. Native/browser desktop entry points are not mounted yet. A host
+restart. Hosts call `FeedbackServices::pump` on storage/transport wakes so the
+current private presentation updates and announces progress without another
+click; its local-state wake belongs to that component's retirement scope.
+Native/browser desktop entry points are not mounted yet. A host
 must supply its existing durable profile store, an admitted
 `Destination { room, provider, channel }`, authenticated action transport,
 content storage, and an explicit focused-surface capture adapter. The composer
