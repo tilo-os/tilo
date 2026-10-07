@@ -53,7 +53,7 @@ impl StatePeer {
         if let Some(agent) = command
             .agent()
             .map(str::to_owned)
-            .or(direction_agent(command, room)?)
+            .or(addressed_agent(command, room)?)
             && agent_role(&agent).is_none_or(|role| role == Role::Denied)
         {
             return Err("workspace task agent is not a current room member".into());
@@ -103,6 +103,7 @@ impl StatePeer {
             }
         };
         require_budget_owner(command, &actor, owner.as_ref())?;
+        require_step_host(command, &actor)?;
         let mut candidate = room.clone();
         let AppliedTaskCommand { changed, result } = crate::workspace_task::apply(
             &mut candidate,
@@ -132,12 +133,27 @@ fn require_budget_owner(
     Ok(())
 }
 
-fn direction_agent(
+fn require_step_host(
+    command: &WorkspaceTaskCommand,
+    actor: &AdmittedTaskActor,
+) -> Result<(), String> {
+    if matches!(
+        command,
+        WorkspaceTaskCommand::PrepareStep { .. } | WorkspaceTaskCommand::CommitStep { .. }
+    ) && !matches!(actor, AdmittedTaskActor::Host { .. })
+    {
+        return Err("only the authenticated host may admit or settle a task step".into());
+    }
+    Ok(())
+}
+
+fn addressed_agent(
     command: &WorkspaceTaskCommand,
     room: &automerge::AutoCommit,
 ) -> Result<Option<String>, String> {
     let (WorkspaceTaskCommand::Direction { task_id, .. }
-    | WorkspaceTaskCommand::DirectionForRun { task_id, .. }) = command
+    | WorkspaceTaskCommand::DirectionForRun { task_id, .. }
+    | WorkspaceTaskCommand::PrepareStep { task_id, .. }) = command
     else {
         return Ok(None);
     };
@@ -174,7 +190,7 @@ mod tests {
         certificate
     }
 
-    fn peer() -> (StatePeer, DeviceCert, DeviceCert, SystemTime) {
+    pub(super) fn peer() -> (StatePeer, DeviceCert, DeviceCert, SystemTime) {
         let governor_root = SigningKey::from_bytes(&[1; 32]);
         let governor_key = SigningKey::from_bytes(&[2; 32]);
         let governor = certificate(&governor_root, &governor_key, "Governor");
@@ -661,3 +677,6 @@ mod tests {
         assert_eq!(task.status, WorkspaceTaskStatus::InProgress);
     }
 }
+
+#[cfg(test)]
+mod step_tests;

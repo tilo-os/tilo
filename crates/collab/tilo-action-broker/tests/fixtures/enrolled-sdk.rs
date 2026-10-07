@@ -181,6 +181,9 @@ pub(super) fn exercise(
         },
     )?;
     frame(&mut model, &serde_json::json!({"stage":"progress"}))?;
+    if mode.starts_with("steps") {
+        steps(&mut recipient, &mut model, &envelope.task, mode)?;
+    }
     finish(&mut recipient, &mut model, &envelope.task, accepted, mode)
 }
 
@@ -192,7 +195,7 @@ fn finish(
     mode: &str,
 ) -> Result<()> {
     gate(model, b'F')?;
-    if mode == "cancelled" {
+    if mode.ends_with("cancelled") {
         if recipient.cancellation(15, task, &task.lease)? != Ok(true) {
             return Err("exact accepted native cancellation was not observed".into());
         }
@@ -209,8 +212,14 @@ fn finish(
             request_id: 4,
             acceptance: accepted,
             sequence: 2,
-            update: runtime_collab::TaskRunUpdate::Succeeded {
-                message: "Fixture complete".into(),
+            update: if mode == "steps-prepare-ack-lost" {
+                runtime_collab::TaskRunUpdate::Failed {
+                    message: "Uncertain prepared step".into(),
+                }
+            } else {
+                runtime_collab::TaskRunUpdate::Succeeded {
+                    message: "Fixture complete".into(),
+                }
             },
         },
     )?;
@@ -290,6 +299,246 @@ fn check_document_refusals(manager: &mut CollaborationManager) -> Result<()> {
     manager.publish_action_directory("so.tilo.agent");
     if !manager.is_connected() {
         return Err("refused publication retired legitimate task custody".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct StepCall<'a> {
+    id: u64,
+    lease: &'a str,
+    index: u32,
+    changed: bool,
+}
+impl Recipient {
+    fn step(
+        &mut self,
+        task: &runtime_collab::TaskRunEnvelope,
+        peer: u64,
+        call: StepCall<'_>,
+    ) -> Result<CollabEvent> {
+        if !self.manager.send(CollabRequest::InvokeTaskAction {
+            request_id: call.id,
+            invocation: tilo_actions::InvocationId::new(),
+            run_id: task.run_id,
+            lease: call.lease.into(),
+            step: Some(call.index),
+            peer_id: peer,
+            resource: "reader:fixture".into(),
+            action: "inspect".into(),
+            arguments: if call.changed {
+                serde_json::from_value(serde_json::json!({"changed":true}))?
+            } else {
+                serde_json::Map::default()
+            },
+        }) {
+            return Err("actual SDK step request refused".into());
+        }
+        self.take(|event| matches!(event, CollabEvent::TaskActionInvocationResult { request_id, .. } if *request_id == call.id))
+    }
+}
+fn step_terminal(event: CollabEvent) -> Result<(tilo_actions::InvocationUpdate, Vec<u8>)> {
+    let CollabEvent::TaskActionInvocationResult {
+        result,
+        continuation,
+        retry_step,
+        ..
+    } = event
+    else {
+        return Err("step reply changed".into());
+    };
+    let (_, update) = result.map_err(|error| format!("actual step failed: {error}"))?;
+    if retry_step || !matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
+        return Err("step did not commit a successful canonical terminal".into());
+    }
+    Ok((update, continuation.ok_or("committed continuation absent")?))
+}
+fn step_refusal(event: CollabEvent) -> Result<String> {
+    let CollabEvent::TaskActionInvocationResult {
+        result: Err(error),
+        continuation: None,
+        ..
+    } = event
+    else {
+        return Err("altered or unauthorized step was accepted".into());
+    };
+    Ok(error)
+}
+fn step_control(model: &mut UnixStream) -> Result<serde_json::Value> {
+    use std::io::Read;
+    let mut length = [0; 4];
+    model.read_exact(&mut length)?;
+    let length = usize::try_from(u32::from_le_bytes(length))?;
+    if length > 4096 {
+        return Err("step control frame exceeds bound".into());
+    }
+    let mut bytes = vec![0; length];
+    model.read_exact(&mut bytes)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+fn first_step(
+    recipient: &mut Recipient,
+    model: &mut UnixStream,
+    task: &runtime_collab::TaskRunEnvelope,
+    peer: u64,
+    mode: &str,
+) -> Result<Option<CollabEvent>> {
+    let mut first = recipient.step(
+        task,
+        peer,
+        StepCall {
+            id: 20,
+            lease: &task.lease,
+            index: 0,
+            changed: false,
+        },
+    )?;
+    if mode == "steps-prepare-ack-lost" {
+        let error = step_refusal(first)?;
+        if !error.contains("injected lost acknowledgement") {
+            return Err(error.into());
+        }
+        let replay = step_refusal(recipient.step(
+            task,
+            peer,
+            StepCall {
+                id: 21,
+                lease: &task.lease,
+                index: 0,
+                changed: false,
+            },
+        )?)?;
+        if !replay.contains("prepared without a retained dispatch record") {
+            return Err(replay.into());
+        }
+        frame(
+            model,
+            &serde_json::json!({"stage":"step-prepare-ack-lost","prepared_without_journal_refused":true}),
+        )?;
+        return Ok(None);
+    }
+    if mode == "steps-commit-ack-lost" {
+        let error = step_refusal(first)?;
+        if !error.contains("injected lost acknowledgement") {
+            return Err(error.into());
+        }
+        first = recipient.step(
+            task,
+            peer,
+            StepCall {
+                id: 27,
+                lease: &task.lease,
+                index: 0,
+                changed: false,
+            },
+        )?;
+    }
+    if mode == "steps-denied" {
+        let refusal = step_refusal(first)?;
+        if !refusal.contains("caller no longer authorized") {
+            return Err(refusal.into());
+        }
+        frame(
+            model,
+            &serde_json::json!({"stage":"step-denied","scoped_read_refused":true}),
+        )?;
+        return Ok(None);
+    }
+    Ok(Some(first))
+}
+
+fn steps(
+    recipient: &mut Recipient,
+    model: &mut UnixStream,
+    task: &runtime_collab::TaskRunEnvelope,
+    mode: &str,
+) -> Result<()> {
+    let target = step_control(model)?;
+    let peer = target
+        .get("peer")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("step target peer absent")?;
+    let Some(first) = first_step(recipient, model, task, peer, mode)? else {
+        return Ok(());
+    };
+    let replay = recipient.step(
+        task,
+        peer,
+        StepCall {
+            id: 21,
+            lease: &task.lease,
+            index: 0,
+            changed: false,
+        },
+    )?;
+    if step_terminal(first)? != step_terminal(replay)? {
+        return Err("step replay changed committed private output".into());
+    }
+    for call in [
+        StepCall {
+            id: 22,
+            lease: &task.lease,
+            index: 0,
+            changed: true,
+        },
+        StepCall {
+            id: 23,
+            lease: "wrong-lease",
+            index: 0,
+            changed: false,
+        },
+        StepCall {
+            id: 24,
+            lease: &task.lease,
+            index: 2,
+            changed: false,
+        },
+    ] {
+        step_refusal(recipient.step(task, peer, call)?)?;
+    }
+    frame(
+        model,
+        &serde_json::json!({"stage":"steps", "replay_same_terminal":true,
+        "changed_arguments_refused":true,"wrong_lease_refused":true,"gap_index_refused":true,"lost_terminal_ack_recovered":mode == "steps-commit-ack-lost"}),
+    )?;
+    if mode == "steps-permission-revoked" {
+        step_control(model)?;
+        let refusal = step_refusal(recipient.step(
+            task,
+            peer,
+            StepCall {
+                id: 25,
+                lease: &task.lease,
+                index: 1,
+                changed: false,
+            },
+        )?)?;
+        if !refusal.contains("caller no longer authorized") {
+            return Err(refusal.into());
+        }
+        frame(
+            model,
+            &serde_json::json!({"stage":"step-revoked","current_scoped_read_refused":true}),
+        )?;
+    }
+    if mode == "steps-cancelled" {
+        let refusal = step_refusal(recipient.step(
+            task,
+            peer,
+            StepCall {
+                id: 26,
+                lease: &task.lease,
+                index: 1,
+                changed: false,
+            },
+        )?)?;
+        if !refusal.contains("cancelled") {
+            return Err(refusal.into());
+        }
+        frame(
+            model,
+            &serde_json::json!({"stage":"step-cancelled","new_admission_refused":true}),
+        )?;
     }
     Ok(())
 }

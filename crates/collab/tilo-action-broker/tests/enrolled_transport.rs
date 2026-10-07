@@ -213,12 +213,14 @@ impl ManagedProcessAuthority for Authority {
 }
 
 struct Broker {
+    configured: Option<tilo_action_broker::collab_broker::BrokerHandle>,
     quit: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     fanout: Arc<FanoutState>,
 }
 impl Drop for Broker {
     fn drop(&mut self) {
+        drop(self.configured.take());
         self.quit.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             let _result = thread.join();
@@ -281,6 +283,7 @@ fn broker_with_document_obligation(
         quit.clone(),
     )?;
     Ok(Broker {
+        configured: None,
         quit,
         thread: Some(thread),
         fanout,
@@ -703,7 +706,11 @@ fn running_fixture_options(
     let root = tempfile::tempdir()?;
     let (native, key, certificate) = native::installed(root.path())?;
     let task = queued(&native, &key, &certificate)?;
-    let broker = broker_with_document_obligation(root.path(), &native, sdk_mode.is_some())?;
+    let broker = if sdk_mode.is_some_and(|mode| mode.starts_with("steps")) {
+        steps::configured_broker(root.path(), &native, sdk_mode.ok_or("step mode absent")?)?
+    } else {
+        broker_with_document_obligation(root.path(), &native, sdk_mode.is_some())?
+    };
     let state = broker
         .fanout
         .capnp_state()
@@ -1046,3 +1053,6 @@ fn require_eq<T: PartialEq<U> + std::fmt::Debug, U: std::fmt::Debug>(
     }
     Ok(())
 }
+
+#[path = "enrolled/steps.rs"]
+mod steps;

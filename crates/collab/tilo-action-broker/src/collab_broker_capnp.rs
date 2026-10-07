@@ -1497,7 +1497,7 @@ impl ContinuingCaller {
                 foreign_restriction: false,
                 direct: None,
             },
-            DurableContext::Local { caller, .. } => {
+            DurableContext::Local { caller, .. } | DurableContext::Enrolled { caller, .. } => {
                 let (room, admitted) = caller.admitted_in();
                 Self::Admitted {
                     room,
@@ -8756,9 +8756,29 @@ impl channel_handle::Server for CapnpChannelHandle {
                 argument: argument.as_deref(),
             };
             if request.get_has_step() {
-                return Err(capnp::Error::failed(
-                    "durable task steps are not served by this host".into(),
-                ));
+                let context = enrolled.ok_or_else(|| {
+                    capnp::Error::failed(
+                        "durable steps require an accepted native enrolled task".into(),
+                    )
+                })?;
+                let caller = durable_local_invocation::LocalCaller::capture(&self)
+                    .map_err(capnp::Error::failed)?;
+                let reply = enrolled_tasks::steps::invoke(
+                    caller,
+                    &context,
+                    request.get_run_id(),
+                    &lease,
+                    request.get_step_index(),
+                    target,
+                )
+                .await
+                .map_err(capnp::Error::failed)?;
+                drop(context);
+                let mut result = results.get();
+                result.set_id(reply.wire);
+                result.set_update_json(&reply.update);
+                result.set_continuation(&reply.continuation);
+                return Ok(());
             }
             let job = match enrolled {
                 Some(context) => enrolled_tasks::start_action(

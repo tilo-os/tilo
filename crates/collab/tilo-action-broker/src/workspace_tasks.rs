@@ -334,7 +334,7 @@ pub(super) fn inspect(
         .ok_or("task control is absent")?;
     let mut output = serde_json::json!({"task":task,"coordination_only":manual(task),
         "managed_route":!manual(task), "run_epoch":control.run_epoch,
-        "execution_budget":control.execution_budget,
+        "execution_budget":control.execution_budget,"steps":control.steps,
         "active_run":control.active_run.is_some(),
         "default_turn_ms":30_000,"default_total_ms":300_000});
     if manual(task) {
@@ -710,5 +710,134 @@ mod tests {
         assert_eq!(observed["execution_budget"], serde_json::Value::Null);
         assert!(observed.get("active_run_token").is_none());
         assert!(observed.get("instruction").is_none());
+    }
+    fn committed_step_snapshot() -> (WorkspaceTaskSnapshot, String, tilo_actions::InvocationId) {
+        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+        use tilo_peer_state::workspace_membership::{
+            AgentMembershipPreset, WorkspaceMembershipCommand,
+        };
+        use tilo_peer_state::workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand};
+        let (_directory, owner, certificate, key) = enrolled_queue_owner();
+        let now = std::time::SystemTime::now();
+        let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        let membership = OwnerCommitRequest {
+            room: room.to_string(),
+            operation: CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: certificate.clone(),
+                command: WorkspaceMembershipCommand::AddAgent {
+                    agent: "scribe".into(),
+                    preset: AgentMembershipPreset::Contributor,
+                },
+            },
+        };
+        owner
+            .commit_workspace_membership_command(membership.clone(), &certificate, &key, now)
+            .unwrap()
+            .validate_for(&membership)
+            .unwrap();
+        let apply = |authority, command| {
+            let request = OwnerCommitRequest {
+                room: room.to_string(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    authority,
+                    command,
+                },
+            };
+            owner
+                .commit_workspace_task_command(request.clone(), now)
+                .unwrap()
+                .validate_for(&request)
+                .unwrap();
+        };
+        apply(
+            WorkspaceTaskAuthority::Person {
+                caller: certificate.clone(),
+            },
+            WorkspaceTaskCommand::Queue {
+                title: "Inspect durable coordination".into(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+        );
+        let task = owner.workspace_task_snapshot(room).unwrap().tasks[0]
+            .id
+            .clone();
+        apply(
+            WorkspaceTaskAuthority::Host {
+                attestor: certificate.clone(),
+            },
+            WorkspaceTaskCommand::StartRun {
+                task_id: task.clone(),
+                agent_id: "scribe".into(),
+            },
+        );
+        let child = tilo_actions::InvocationId::new();
+        apply(
+            WorkspaceTaskAuthority::Host {
+                attestor: certificate.clone(),
+            },
+            WorkspaceTaskCommand::PrepareStep {
+                task_id: task.clone(),
+                run_epoch: 1,
+                index: 0,
+                invocation: child,
+                intent_digest: [3; 32],
+            },
+        );
+        apply(
+            WorkspaceTaskAuthority::Host {
+                attestor: certificate,
+            },
+            WorkspaceTaskCommand::CommitStep {
+                task_id: task.clone(),
+                run_epoch: 1,
+                index: 0,
+                invocation: child,
+                intent_digest: [3; 32],
+                outcome: tilo_desktop_model::WorkspaceTaskStepOutcome::Succeeded,
+                output_digest: [4; 32],
+            },
+        );
+        let snapshot = owner.workspace_task_snapshot(room).unwrap();
+        (snapshot, task, child)
+    }
+
+    #[test]
+    fn public_inspect_retains_actual_owner_step_metadata_without_private_tool_content() {
+        let (snapshot, task, child) = committed_step_snapshot();
+        let action = actions(&snapshot, "Workspace")
+            .into_iter()
+            .find(|row| row.action == "inspect" && row.resource == format!("desktop:{task}"))
+            .unwrap();
+        assert_eq!(
+            action.contract.permission,
+            tilo_actions::PermissionRequirement::Read
+        );
+        let mut request = envelope(&serde_json::json!({}));
+        request.resource = action.resource;
+        request.action = action.action;
+        request.argument = None;
+        let output = inspect(&snapshot, &request).unwrap();
+        assert_eq!(output["steps"][0]["run_epoch"], 1);
+        assert_eq!(output["steps"][0]["index"], 0);
+        assert_eq!(output["steps"][0]["invocation"], child.0.to_string());
+        assert_eq!(
+            output["steps"][0]["state"]["committed"]["outcome"],
+            "succeeded"
+        );
+        let serialized = output["steps"].to_string();
+        for private in [
+            "argument",
+            "continuation",
+            "tool_output",
+            "original",
+            "process",
+            "supervisor",
+        ] {
+            assert!(!serialized.contains(private));
+        }
     }
 }

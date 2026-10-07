@@ -6,7 +6,7 @@ use crate::collab_broker_capnp::{
 use launcher::managed::ManagedLaunchScope;
 use tilo_desktop_model::WorkspaceTaskStatus;
 
-fn observed(handle: &Context, numeric: u64, lease: &str) -> Result<(Run, bool), String> {
+pub(super) fn observed(handle: &Context, numeric: u64, lease: &str) -> Result<(Run, bool), String> {
     let (scope, connection) = handle.connection()?;
     authority(handle, &connection)?;
     let registry = handle

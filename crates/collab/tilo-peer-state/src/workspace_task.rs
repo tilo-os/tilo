@@ -17,6 +17,8 @@ use tilo_desktop_model::{
     WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 
+mod steps;
+
 pub const TASK_CONTROL_KEY: &str = "task_control_v1";
 const MAX_TASK_TITLE_CHARS: usize = 240;
 const MAX_TASK_RECEIPTS: usize = 4096;
@@ -174,6 +176,24 @@ pub enum WorkspaceTaskCommand {
         expected_run_epoch: u64,
         expected_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
         budget: Option<collab_types::task_budget::TaskExecutionBudget>,
+    },
+    /// Host-only step admission, appended to preserve prior command ordinals.
+    PrepareStep {
+        task_id: String,
+        run_epoch: u64,
+        index: u32,
+        invocation: tilo_actions::InvocationId,
+        intent_digest: [u8; 32],
+    },
+    /// Host-only canonical child settlement, with no private result payload.
+    CommitStep {
+        task_id: String,
+        run_epoch: u64,
+        index: u32,
+        invocation: tilo_actions::InvocationId,
+        intent_digest: [u8; 32],
+        outcome: tilo_desktop_model::WorkspaceTaskStepOutcome,
+        output_digest: [u8; 32],
     },
 }
 
@@ -378,6 +398,7 @@ fn dispatch(
             task_id,
             (*run_epoch, *after_revision),
         ),
+        _ => steps::dispatch(tasks, controls, context, command),
     }
 }
 
@@ -1031,8 +1052,13 @@ fn finish(
         || run.agent_id != *agent_id
         || run.epoch != run_epoch
         || run.applied_direction_revision != latest
+        || (outcome == WorkspaceTaskFinish::Done
+            && control.steps.iter().any(|step| {
+                step.run_epoch == run_epoch
+                    && step.state == tilo_desktop_model::WorkspaceTaskStepState::Prepared
+            }))
     {
-        return Err("task finish is stale or has unapplied directions".into());
+        return Err("task finish is stale, has unapplied directions or an unsettled child".into());
     }
     task.status = match outcome {
         WorkspaceTaskFinish::Done => WorkspaceTaskStatus::Done,
@@ -1232,6 +1258,7 @@ pub fn controls_of(
         {
             return Err("task execution phase has no matching active run".into());
         }
+        steps::validate(&control)?;
         controls.insert(key, control);
     }
     Ok(controls)

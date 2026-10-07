@@ -165,6 +165,36 @@ pub struct WorkspaceTaskExecution {
     pub updated_at: i64,
 }
 
+/// Public commitments for a host-admitted child. Private arguments and output
+/// remain in the invocation journal and cannot be certified by an Agent report.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskStep {
+    pub run_epoch: u64,
+    pub index: u32,
+    pub invocation: tilo_actions::InvocationId,
+    pub intent_digest: [u8; 32],
+    pub state: WorkspaceTaskStepState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum WorkspaceTaskStepState {
+    Prepared,
+    Committed {
+        outcome: WorkspaceTaskStepOutcome,
+        output_digest: [u8; 32],
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceTaskStepOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
 /// Result retained beside a task command so an exact retry is deterministic.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -202,6 +232,16 @@ pub enum WorkspaceTaskMutationResult {
     ExecutionBudgetSet {
         task_id: String,
     },
+    /// Appended; a durable preparation is not a completed child.
+    StepPrepared {
+        task_id: String,
+        step: WorkspaceTaskStep,
+    },
+    /// Appended; only the authenticated host commits a canonical terminal.
+    StepCommitted {
+        task_id: String,
+        step: WorkspaceTaskStep,
+    },
 }
 
 /// Exact replay record for one owner-admitted task mutation.
@@ -233,6 +273,9 @@ pub struct WorkspaceTaskControl {
     pub directions: Vec<WorkspaceTaskDirection>,
     #[serde(default)]
     pub receipts: Vec<WorkspaceTaskMutationReceipt>,
+    /// Bounded host-admitted commitments; absent on older room documents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<WorkspaceTaskStep>,
 }
 
 /// Append-only, broker-authenticated record of an external side effect.

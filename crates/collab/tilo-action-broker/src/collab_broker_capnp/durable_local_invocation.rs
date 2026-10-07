@@ -24,7 +24,7 @@ impl LocalCaller {
     pub(super) fn admitted_in(&self) -> (String, AdmittedJoinIdentity) {
         (self.route.cluster_id.clone(), self.admitted.clone())
     }
-    fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
+    pub(super) fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
         let time = channel
             .state
             .registered_policy_time()?
@@ -52,7 +52,7 @@ impl LocalCaller {
         owner.validate()?;
         Ok(owner)
     }
-    fn owner(&self) -> InvocationOwner {
+    pub(super) fn owner(&self) -> InvocationOwner {
         self.owner.clone()
     }
     fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
@@ -109,6 +109,10 @@ impl Request {
 #[derive(Clone, Copy)]
 pub(super) enum DurableContext<'a> {
     Peer(&'a VerifiedActionCaller, &'a CallerInvocation),
+    Enrolled {
+        caller: &'a LocalCaller,
+        step: &'a super::enrolled_tasks::steps::Admission<'a>,
+    },
     Local {
         caller: &'a LocalCaller,
         request: &'a Request,
@@ -120,25 +124,27 @@ impl<'a> DurableContext<'a> {
     pub(super) fn owner(self) -> InvocationOwner {
         match self {
             Self::Peer(c, _) => c.owner(),
-            Self::Local { caller, .. } => caller.owner(),
+            Self::Local { caller, .. } | Self::Enrolled { caller, .. } => caller.owner(),
         }
     }
     pub(super) fn time(self) -> Option<&'a crate::peer_actions::PolicyTime> {
         match self {
             Self::Peer(c, _) => c.policy_time.as_ref(),
-            Self::Local { caller, .. } => Some(&caller.time),
+            Self::Local { caller, .. } | Self::Enrolled { caller, .. } => Some(&caller.time),
         }
     }
     pub(super) fn invocation(self) -> tilo_actions::InvocationId {
         match self {
             Self::Peer(_, r) => r.invocation,
             Self::Local { request, .. } => request.invocation,
+            Self::Enrolled { step, .. } => step.invocation,
         }
     }
     pub(super) fn intent(self) -> serde_json::Value {
         match self {
             Self::Peer(_, r) => r.intent(),
             Self::Local { request, .. } => request.intent(),
+            Self::Enrolled { step, .. } => step.intent.clone(),
         }
     }
     pub(super) fn origin(self) -> InvocationCaller {
@@ -148,13 +154,13 @@ impl<'a> DurableContext<'a> {
                 // This path has only the original signed device restriction.
                 foreign_restriction: false,
             },
-            Self::Local { caller, .. } => caller.origin(),
+            Self::Local { caller, .. } | Self::Enrolled { caller, .. } => caller.origin(),
         }
     }
     pub(super) fn network(self) -> Option<tilo_relay::client::CertifiedAction> {
         match self {
             Self::Peer(c, _) => c.network.clone(),
-            Self::Local { .. } => None,
+            Self::Local { .. } | Self::Enrolled { .. } => None,
         }
     }
     pub(super) fn before_admission(
@@ -167,6 +173,10 @@ impl<'a> DurableContext<'a> {
     ) -> Result<(), String> {
         let current = match self {
             Self::Peer(c, _) => state.current_action_caller(c)?,
+            Self::Enrolled { caller, step } => {
+                step.current(offered)?;
+                caller.current(state)?
+            }
             Self::Local {
                 caller,
                 request,
