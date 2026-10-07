@@ -82,6 +82,13 @@ class Chooser:
                 and re.fullmatch(r"[0-9a-f]{64}", value.get("state", "")), "chooser subject/state unobservable")
         return value
 
+    def ascend(self, count):
+        for _ in range(count):
+            current = self.call("inspect", {"page": 0})
+            require(current.get("completed") is False and current.get("can_up") is True,
+                    "declared chooser parent unavailable; no path inferred")
+            self.call("up", {"state": current["state"]})
+
     def find(self, name, directory):
         component(name)
         first = self.call("inspect", {"page": 0})
@@ -99,7 +106,9 @@ class Chooser:
         return first["state"], matches[0]["id"]
 
 
-def review(door, fixture, filename, directories, out):
+def review(door, fixture, filename, directories, out, initial_up=0):
+    require(isinstance(initial_up, int) and not isinstance(initial_up, bool) and 0 <= initial_up <= 16,
+            "initial parent count must be bounded")
     component(filename)
     for name in directories:
         component(name)
@@ -116,6 +125,7 @@ def review(door, fixture, filename, directories, out):
     identity = wait_until(appeared, 30)
     require(identity is not None, "Import did not publish an observable chooser")
     chooser = Chooser(vm, identity, door.bound[1], out, original)
+    chooser.ascend(initial_up)
     for name in directories:
         state, entry = chooser.find(name, True)
         chooser.call("navigate", {"state": state, "entry": entry})
@@ -141,6 +151,8 @@ def main():
     parser.add_argument("--slot", required=True)
     parser.add_argument("--cohort-receipt", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True, help="canonical verified-offer.json audit receipt")
+    parser.add_argument("--initial-up", type=int, choices=range(17), default=0,
+                        help="explicit declared parent steps before directories (normally 1 from Documents to HOME)")
     parser.add_argument("--directories", nargs="*", default=["Downloads"], help="declared components from initial chooser directory")
     parser.add_argument("--full", required=True, help="already staged filename, not a path")
     parser.add_argument("--thin", required=True, help="already staged filename, not a path")
@@ -157,8 +169,8 @@ def main():
             "expected independently verified official ARM fixture receipt required")
     door = app.store(vm, args.out)
     app.mapped(vm, "store", installed_sdk, vm.slot_uid(), args.out)
-    first = review(door, fixture, args.thin, args.directories, args.out)
-    review(door, fixture, args.full, args.directories, args.out)
+    first = review(door, fixture, args.thin, args.directories, args.out, args.initial_up)
+    review(door, fixture, args.full, args.directories, args.out, args.initial_up)
     result = {"reviewed_full_and_thin": True, "installed_before": first["detail"]["installed"],
               "installation": "not requested", "runtime": fixture["offer"]["target"]["runtime"]}
     if args.install_open:

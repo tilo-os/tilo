@@ -56,6 +56,20 @@ class ChooserSafety(unittest.TestCase):
                 with self.assertRaises(VmError):
                     chooser.call("inspect")
 
+    def test_initial_documents_parent_uses_current_state_and_declared_up(self):
+        chooser = driver.Chooser(None, IDENTITY, "room", Path("."), None)
+        inspected = value(); inspected["can_up"] = True
+        with patch.object(chooser, "call", return_value=inspected) as call:
+            chooser.ascend(1)
+        self.assertEqual(call.call_args_list[0].args, ("inspect", {"page": 0}))
+        self.assertEqual(call.call_args_list[1].args, ("up", {"state": inspected["state"]}))
+        for fields in ({"can_up": False}, {"completed": True}, {}):
+            refused = value(); refused.update(fields)
+            with patch.object(chooser, "call", return_value=refused) as call:
+                with self.assertRaises(VmError):
+                    chooser.ascend(1)
+                self.assertEqual(call.call_count, 1)
+
     def test_paged_entry_uses_actual_opaque_id_and_rejects_listing_changes(self):
         chooser = driver.Chooser(None, IDENTITY, "room", Path("."), None)
         first = value(); first["pages"] = 2
