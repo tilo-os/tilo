@@ -317,6 +317,56 @@ impl TestGovernor {
         Ok(workspace.role_of_agent_at(agent, seconds))
     }
 
+    /// Admit an Agent and queue a task at the real governor before signed member enrollment.
+    /// # Errors
+    /// Refuses invalid commands/current governor custody or checkpoint signing failure.
+    pub fn queue_task(&mut self, agent: &str, title: &str) -> Result<String, String> {
+        use tilo_peer_state::{
+            owner_commit::{CommitOperation, OwnerCommitRequest},
+            workspace_membership::{AgentMembershipPreset, WorkspaceMembershipCommand},
+            workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand},
+        };
+        let now = SystemTime::now();
+        let governor = self.governor().clone();
+        self.peer.apply_workspace_membership_command(
+            &governor,
+            &WorkspaceMembershipCommand::AddAgent {
+                agent: agent.into(),
+                preset: AgentMembershipPreset::Contributor,
+            },
+            &self.governor_key,
+            now,
+        )?;
+        let authority = WorkspaceTaskAuthority::Person { caller: governor };
+        let command = WorkspaceTaskCommand::Queue {
+            title: title.into(),
+            assigned_agent: agent.into(),
+            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+            resource: None,
+        };
+        let invocation = uuid::Uuid::new_v4();
+        let request = OwnerCommitRequest {
+            room: self.room().into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation,
+                authority: authority.clone(),
+                command: command.clone(),
+            },
+        };
+        let (_, result) = self.peer.apply_workspace_task_command(
+            invocation,
+            request.binding()?.request_digest,
+            &authority,
+            &command,
+            now,
+        )?;
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = result else {
+            return Err("actual governor task was not queued".into());
+        };
+        self.refresh_checkpoint()?;
+        Ok(task_id)
+    }
+
     /// Re-sign the room's full checkpoint at the next generation.
     ///
     /// # Errors
