@@ -417,6 +417,45 @@ fn overlapping_agent_marker_opens_only_the_exact_room_bound_choices() {
 }
 
 #[test]
+fn agent_navigation_chooser_survives_search_refresh_until_dismissed() {
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+    host.chrome = Some(ChromeState::new(WorkspaceTree::default()));
+    assert!(host.open_agent_conversation_from_user_navigation(
+        "room-a",
+        &[
+            ("scribe".into(), "Scribe".into()),
+            ("quill".into(), "Quill".into())
+        ],
+    ));
+    let entries: Vec<_> = host
+        .palette
+        .visible_entries()
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect();
+    let doc = automerge::AutoCommit::new();
+    host.refresh_search_results(&doc, &automerge::ROOT);
+    assert!(host.agent_navigation_chooser.is_some());
+    assert_eq!(
+        host.palette
+            .visible_entries()
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>(),
+        entries,
+        "a background search refresh cannot replace a pending Agent choice"
+    );
+
+    host.palette_visible = false;
+    host.refresh_search_results(&doc, &automerge::ROOT);
+    assert!(host.agent_navigation_chooser.is_none());
+    assert_eq!(
+        host.palette.mode(),
+        ui::widget::command_palette::PaletteMode::Search
+    );
+}
+
+#[test]
 fn one_agent_marker_opens_the_room_bound_quick_composer_at_its_exact_anchor() {
     use crate::shell::state::{Workspace, WorkspaceId};
 

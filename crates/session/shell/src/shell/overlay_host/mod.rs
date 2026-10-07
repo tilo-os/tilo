@@ -8760,15 +8760,23 @@ impl ShellOverlayHost {
             .map(|result| (result.provider_id.clone(), result.id.clone()))
     }
 
+    fn keep_agent_navigation_palette(&mut self) -> bool {
+        if self.agent_navigation_chooser.is_none() {
+            return false;
+        }
+        if self.palette_visible {
+            return true;
+        }
+        self.agent_navigation_chooser = None;
+        self.palette
+            .set_mode(ui::widget::command_palette::PaletteMode::Search);
+        self.palette.set_modal(false);
+        false
+    }
+
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
-        if self.agent_navigation_chooser.is_some() {
-            if self.palette_visible {
-                return;
-            }
-            self.agent_navigation_chooser = None;
-            self.palette
-                .set_mode(ui::widget::command_palette::PaletteMode::Search);
-            self.palette.set_modal(false);
+        if self.keep_agent_navigation_palette() {
+            return;
         }
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
@@ -8872,6 +8880,14 @@ impl ShellOverlayHost {
                     .position(|result| result.provider_id == provider && result.id == id)
             })
             .map(|index| format!("result:{index}"));
+        self.replace_search_entries(entries, selected_id.as_deref());
+        self.search_results = results;
+        // New entry count needs a new palette node height on the next
+        // rebuild, or the palette stays pinned at its first-paint size.
+        self.palette_layout_dirty = true;
+    }
+
+    fn replace_search_entries(&mut self, entries: Vec<CommandEntry>, selected_id: Option<&str>) {
         self.palette.set_entries(entries);
         if let Some(id) = selected_id
             && let Some(cursor) = self
@@ -8882,10 +8898,6 @@ impl ShellOverlayHost {
         {
             self.palette.set_cursor(cursor);
         }
-        self.search_results = results;
-        // New entry count needs a new palette node height on the next
-        // rebuild, or the palette stays pinned at its first-paint size.
-        self.palette_layout_dirty = true;
     }
 
     fn poll_pending_action_admissions(&mut self) {
