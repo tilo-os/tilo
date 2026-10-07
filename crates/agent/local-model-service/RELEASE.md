@@ -200,6 +200,18 @@ releases deliver that trust and catalog update.
 
 ## Typed runtime execution
 
+Runtime admission and Settings' hardware recommendation use effective RAM
+capacity: physical RAM capped by every visible cgroup v2 `memory.max` ancestor
+of the supervisor's fixed user `app.slice`. The runtime explicitly retains this
+existing slice placement. The caller's own cgroup does not choose the runtime's
+budget. Unlimited limits preserve physical capacity; an unavailable, malformed
+or redirected observation reports an error rather than a successful fit.
+
+This observes capacity, not current resident headroom. It does not subtract
+`memory.current`, count swap as RAM, reserve memory, or establish model buffer
+placement or performance. Limits may change after observation; the kernel still
+enforces them. In-process models retain their separate installation path.
+
 A runtime source may include signed `execution` settings. Omitting them retains
 legacy vLLM serialization/signing bytes. `engine: "vllm"` requires
 `max_context_tokens` and `cpu_offload_gib`; `engine: "llama_cpp"` requires
