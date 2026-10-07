@@ -1084,6 +1084,7 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
+COPY os/usr/libexec/tilo-session /tilo-components/usr/libexec/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
     /tilo-components/usr/lib/systemd/user/
@@ -2116,7 +2117,6 @@ COPY os/etc/gitconfig /etc/gitconfig
 # absent from this image.
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
-    os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     os/usr/libexec/tilo-firstboot-user \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \
