@@ -30,6 +30,7 @@ client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:
 settings-host = ["client", "dep:settings-store"]
 
 [dependencies]
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 runtime-portal = { version = "0.1.0", path = "../runtime-portal", optional = true }
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }

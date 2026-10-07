@@ -12790,6 +12790,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
+ "collab-types",
  "libc",
  "postcard",
  "runtime-portal",

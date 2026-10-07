@@ -35,6 +35,8 @@ mod published_invocation;
 mod resolved_invocation;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
+#[path = "workspace_tasks.rs"]
+mod workspace_tasks;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
@@ -1271,6 +1273,7 @@ struct TaskRunEnvelope {
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
+    execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     action_context: tilo_actions::ActionContext,
 }
 
@@ -5344,6 +5347,34 @@ impl CapnpBrokerState {
         })
     }
 
+    fn admitted_task_execution_budget(
+        &self,
+        cluster_id: &str,
+        task: &tilo_desktop_model::WorkspaceTask,
+    ) -> Result<Option<collab_types::task_budget::TaskExecutionBudget>, String> {
+        if let Some(owner) = self
+            .services
+            .workspace_memberships
+            .as_ref()
+            .filter(|owner| owner.requires_room(cluster_id))
+        {
+            let native = owner.task_snapshot(cluster_id)?;
+            if !native.tasks.iter().any(|current| current == task) {
+                return Err("the native task changed before budget admission".into());
+            }
+            let control = native
+                .controls
+                .get(&task.id)
+                .ok_or("native task control is absent")?;
+            if let Some(budget) = control.execution_budget {
+                budget.validate()?;
+            }
+            Ok(control.execution_budget)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Mint and deliver one live-only task run. No durable/offline queue is
     /// kept: losing the subscribed agent means Launch remains unavailable.
     ///
@@ -5386,6 +5417,7 @@ impl CapnpBrokerState {
         if task.status.is_finished() {
             return Err("a finished task cannot be launched".into());
         }
+        let execution_budget = self.admitted_task_execution_budget(cluster_id, &task)?;
         let (peer_id, tx) = self
             .task_subscribers
             .lock()
@@ -5415,6 +5447,7 @@ impl CapnpBrokerState {
                     return Err("a manual task cannot be dispatched to an agent".into());
                 }
             },
+            execution_budget,
             action_context: context.clone(),
         })
         .map_err(|_| "the assigned agent task stream closed".to_string())?;
@@ -10510,6 +10543,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 run_id: run.run_id,
                 lease: run.lease,
                 planning: run.planning,
+                execution_budget: run.execution_budget,
                 action_context: serde_json::to_value(run.action_context)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             };
@@ -14101,6 +14135,17 @@ pub mod tests {
         impl crate::services::WorkspaceMemberships for NativeRoom {
             fn requires_room(&self, room: &str) -> bool {
                 room == self.0
+            }
+
+            fn task_snapshot(
+                &self,
+                _: &str,
+            ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>
+            {
+                Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
+                    tasks: Vec::new(),
+                    controls: std::collections::BTreeMap::default(),
+                })
             }
 
             fn execute(
