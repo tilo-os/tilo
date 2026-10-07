@@ -136,6 +136,74 @@ fn connected_manager() -> ui::collaboration::CollaborationManager {
     reason = "each phase keeps one former test's body verbatim, and the duplicate-app phase holds its session and broker handles for the whole scenario on purpose"
 )]
 fn mcp_process_owns_and_reaps_its_children() {
+    fn rpc_clients_retire_before_the_native_writer_lease() {
+        use ed25519_dalek::Signer as _;
+        let Some(root) = isolated_root("rpc_clients_retire_before_the_native_writer_lease") else {
+            return;
+        };
+        let session = Session::start(&root).unwrap();
+        let (key, certificate) =
+            tilo_identity_host::broker::trusted_current_device(&session.room).unwrap();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: session.room.clone(),
+            device_certificate: serde_json::to_vec(&certificate).unwrap(),
+            proof: key
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &session.room,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        let endpoint = session.broker.capnp_socket().to_path_buf();
+        let workspace_id = session.room.clone();
+        let (ready, admitted) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let client = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
+                let fd = runtime_portal::agent_transport::connect_endpoint(&endpoint).unwrap();
+                let connection = runtime_portal::CapnpClient::from_connected_fd(
+                    fd,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                )
+                .unwrap();
+                let broker = runtime_collab::CollabClient::from_raw(connection.bootstrap());
+                let channel = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    broker.join_channel(&workspace_id, &presentation),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                ready.send(()).unwrap();
+                // Deliberately keep the actual imported channel and RPC connection
+                // while the client cannot consume EOF or send capability releases.
+                released
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                drop(channel);
+                drop(broker);
+            }));
+        });
+        let ready = admitted.recv_timeout(std::time::Duration::from_secs(10));
+        if let Err(error) = ready {
+            let _ = release.send(());
+            client.join().unwrap();
+            panic!("the signed client never received its actual channel: {error}");
+        }
+        drop(session);
+        let replacement = Session::start(&root);
+        // Release before asserting so a failed lease assertion cannot orphan the peer.
+        release.send(()).unwrap();
+        client.join().unwrap();
+        drop(replacement.expect("RPC retirement must release the native writer lease without client cooperation or retries"));
+    }
+
     // Phase `zero_app_stdio_is_json_only_and_profile_contention_is_refused`.
     fn zero_app_stdio_is_json_only_and_profile_contention_is_refused() {
         let Some(root) =
@@ -465,4 +533,5 @@ fn mcp_process_owns_and_reaps_its_children() {
     duplicate_app_ids_publish_as_distinct_normal_sdk_instances();
     shutdown_saves_finish_before_the_profile_is_released();
     identity_clients_retire_before_the_native_writer_lease();
+    rpc_clients_retire_before_the_native_writer_lease();
 }

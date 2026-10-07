@@ -11,6 +11,7 @@ mod files_clipboard_tests {
     struct RetiredOwner {
         tree: std::sync::Weak<parking_lot::RwLock<crate::shell::state::WorkspaceTree>>,
         runtime: crate::shell::native_workspace_owner::NativeStateWitness,
+        broker: std::sync::Weak<tilo_action_broker::collab_broker_capnp::CapnpBrokerState>,
     }
 
     thread_local! {
@@ -21,9 +22,10 @@ mod files_clipboard_tests {
         RETIRED.with(|probe| {
             if let Some(owner) = &*probe.borrow() {
                 eprintln!(
-                    "retired native owner: tree refs={}, runtime refs={}",
+                    "retired native owner: tree refs={}, runtime refs={}, broker refs={}",
                     owner.tree.strong_count(),
-                    owner.runtime.retained_owners()
+                    owner.runtime.retained_owners(),
+                    owner.broker.strong_count()
                 );
             }
         });
@@ -1157,6 +1159,7 @@ mod files_clipboard_tests {
         let probe = RetiredOwner {
             tree: std::sync::Arc::downgrade(&tree),
             runtime: tree.read().native_runtime.authority_witness(),
+            broker: std::sync::Arc::downgrade(fixture.broker.state()),
         };
         RETIRED.with(|retired| *retired.borrow_mut() = Some(probe));
         drop(tree);
