@@ -16,6 +16,10 @@ use ui::widget::Element;
 use crate::actions::PasswordsEffect;
 use crate::window::PasswordsSurface;
 
+#[cfg(test)]
+#[path = "credential_owner_tests.rs"]
+mod credential_owner_tests;
+
 /// The password vault resource: the door the vault's rows and effects are
 /// published on.
 pub struct Passwords;
@@ -44,6 +48,9 @@ impl ResourceApp for PasswordsShell {
     const ID: &'static str = "so.tilo.passwords";
     const TITLE: &'static str = "Passwords";
     const ICON: Option<&'static str> = Some("passwords");
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::CATALOG)
+    }
     // The window shows secrets: captures, recordings and remote viewers get
     // a placeholder in every launch.
     const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
@@ -56,6 +63,14 @@ impl ResourceApp for PasswordsShell {
             PasswordsSurface::new(crate::PasswordsModel::closed())
         } else if cx.fixture::<DemoVault>().is_some() {
             PasswordsSurface::demo()
+        } else if let Some(owner) = cx.take_lent::<accounts::CredentialOwner>() {
+            let model = if cx.me() == Some(owner.principal()) && cx.device() == Some(owner.device())
+            {
+                crate::PasswordsModel::shared(owner)
+            } else {
+                crate::PasswordsModel::closed()
+            };
+            PasswordsSurface::new(model)
         } else {
             PasswordsSurface::new(crate::PasswordsModel::open())
         };

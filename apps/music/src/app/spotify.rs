@@ -9,7 +9,6 @@ use crate::{
 pub(super) struct PendingJob {
     invocation: tilo_actions::InvocationId,
     started: ui::time::Instant,
-    retryable: bool,
     remote_play: bool,
     library_page: Option<u32>,
 }
@@ -421,12 +420,6 @@ impl MusicApp {
         } else {
             operation(effect).ok_or("Invalid Spotify operation")?
         };
-        let retryable = !matches!(
-            operation,
-            SpotifyOperation::PlaylistAdd { .. }
-                | SpotifyOperation::PlaylistRemove { .. }
-                | SpotifyOperation::CreatePlaylist { .. }
-        );
         let library_page = if let SpotifyOperation::LibraryPage { offset, .. } = operation {
             Some(offset)
         } else {
@@ -449,7 +442,6 @@ impl MusicApp {
             PendingJob {
                 invocation,
                 started: ui::time::now(),
-                retryable,
                 remote_play,
                 library_page,
             },
@@ -544,7 +536,7 @@ impl MusicApp {
                         code: "music.spotify_operation_failed".into(),
                         message,
                         details: None,
-                        retryable: job.retryable,
+                        retryable: false,
                     },
                 }
             }
@@ -1089,7 +1081,6 @@ mod tests {
             PendingJob {
                 invocation: tilo_actions::InvocationId::new(),
                 started: ui::time::now(),
-                retryable: true,
                 remote_play: false,
                 library_page: None,
             },
@@ -1101,7 +1092,6 @@ mod tests {
             PendingJob {
                 invocation: tilo_actions::InvocationId::new(),
                 started: ui::time::now(),
-                retryable: true,
                 remote_play: false,
                 library_page: None,
             },
@@ -1216,6 +1206,32 @@ mod tests {
     }
 
     #[test]
+    fn source_picker_labels_fit_a_narrow_window_at_double_text_size() {
+        let mut app = MusicApp::without_profile();
+        app.snap_spotify("spotify-home");
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 360.0, 800.0);
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+        let mut text = ui::text_render::TextRenderer::new();
+        app.open_sources_menu();
+        app.context.layout_within(&mut text, &theme);
+        let bounds = app.context.get_rect();
+        assert!(bounds.x0 >= 0.0 && bounds.x1 <= 360.0);
+        let style = theme.text(ui::tokens::TextRole::Body);
+        let available = (bounds.width() - 2.0 * f64::from(theme.tokens.spacing.s3)) as f32;
+        for item in app.context.items() {
+            if let Some(label) = item.label() {
+                assert_eq!(
+                    text.elide_to_width_style(label, available, &style),
+                    label,
+                    "the source choice must stay readable: {label}"
+                );
+            }
+        }
+        assert!(app.source_invocation.is_none());
+        assert!(app.spotify_jobs.is_empty());
+    }
+
+    #[test]
     fn spotify_creation_prompt_cancel_and_reopen_emit_one_host_intent() {
         use ui::tilo_resource::Effect as _;
         let mut app = MusicApp::without_profile();
@@ -1303,7 +1319,6 @@ mod tests {
             PendingJob {
                 invocation,
                 started: ui::time::now(),
-                retryable: true,
                 remote_play: false,
                 library_page: None,
             },
@@ -1425,7 +1440,6 @@ mod tests {
                 started: ui::time::now()
                     .checked_sub(ui::time::Duration::from_secs(121))
                     .expect("expired deadline fixture"),
-                retryable: false,
                 remote_play: false,
                 library_page: None,
             },
