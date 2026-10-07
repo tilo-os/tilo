@@ -280,6 +280,7 @@ pub struct SeedCx<'a> {
     pub(crate) me: &'a str,
     pub(crate) device: &'a str,
     pub(crate) host: Option<&'a HostContext>,
+    pub(crate) room: Option<&'a str>,
 }
 
 impl SeedCx<'_> {
@@ -292,6 +293,16 @@ impl SeedCx<'_> {
     /// The device creating the record.
     pub fn device(&self) -> &str {
         self.device
+    }
+
+    /// The host-selected room of a new record, and its display name. An
+    /// ordinary restore has no creation scope. A windowless room participant
+    /// carries its explicit route without supplying device services or secrets.
+    pub fn creation_workspace(&self) -> Option<(&str, &str)> {
+        self.host
+            .and_then(HostContext::creation_workspace)
+            .map(|workspace| (workspace.id.as_str(), workspace.name.as_str()))
+            .or_else(|| self.room.map(|room| (room, room)))
     }
 
     /// The app's host on this device; `None` for a participant without a
@@ -538,6 +549,7 @@ fn create<A: ResourceApp>(
             me: &author,
             device: context.device_id(),
             host: Some(&context),
+            room: None,
         });
         context
             .initialize_new_record_seeded(
