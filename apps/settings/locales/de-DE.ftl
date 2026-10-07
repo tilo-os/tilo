@@ -1979,3 +1979,12 @@ display-device-screen = { $device } · { $screen } · { $status }
 display-device-online = Online
 display-device-offline = Offline
 display-devices-observed = Beobachtete Bildschirmpositionen. Eingabezugriff wird gesondert erteilt.
+
+display-devices-arrange = Einen verbundenen Gerätebildschirm neben Ihren ziehen. Bildschirme desselben Geräts werden zusammen verschoben. Verschieben erlaubt keine Eingabe.
+display-device-move-requested = Position angefordert. Die Anordnung aktualisiert sich, wenn das Gerät seine neue Position bestätigt.
+display-device-move-pending = Bildschirmposition wird gesendet…
+display-device-move-unavailable = Dieser Bildschirm ist offline oder seine Anordnung kann hier nicht geändert werden.
+
+display-device-move-confirmed = Das Gerät hat seine neue Bildschirmposition bestätigt.
+display-device-move-changed = Die Geräteanordnung wurde vor der Bestätigung geändert. Erneut versuchen.
+display-device-move-unconfirmed = Das Gerät hat diese Position nicht bestätigt. Aktualisieren und erneut versuchen.

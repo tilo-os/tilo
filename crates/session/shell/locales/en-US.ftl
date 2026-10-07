@@ -2416,6 +2416,10 @@ dictation-model-required = Install an approved local speech model before using d
 dictation-language-unavailable = This speech model does not support the requested language.
 dictation-microphone-unavailable = Microphone access is unavailable. Check your input device.
 dictation-audio-interrupted = Microphone audio was interrupted. No text was inserted.
+dictation-live-preview = Draft · { $text }
+dictation-open-settings = Set up
+dictation-edit-rejected = Microphone off · The original field refused the text or changed. Your transcript is kept privately for 10 minutes. Copy exports it to your clipboard; discard removes it.
+dictation-delivery-unknown = Microphone off · Text insertion was not confirmed. Check the original field before inserting again. Your transcript is kept privately for 10 minutes; copy exports it to your clipboard.
 dictation-action-start-detail = Request one-session microphone consent for the focused field, or finish the current recording.
 dictation-action-finish-detail = Stop the microphone and insert the final corrected text into its original field.
 dictation-action-cancel-detail = Stop dictation and discard its private draft.
@@ -2454,11 +2458,8 @@ search-action-tab-drag-cancel = Cancel tab drag
 search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
 search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
 
-dictation-live-preview = Draft · { $text }
-dictation-open-settings = Set up
 
-dictation-edit-rejected = Microphone off · The original field refused the text or changed. Your transcript is kept privately for 10 minutes. Copy exports it to your clipboard; discard removes it.
-dictation-delivery-unknown = Microphone off · Text insertion was not confirmed. Check the original field before inserting again. Your transcript is kept privately for 10 minutes; copy exports it to your clipboard.
+device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
 search-action-activity-acknowledge = Acknowledge viewed activity
 search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
 search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment

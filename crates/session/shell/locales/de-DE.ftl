@@ -2420,6 +2420,10 @@ dictation-model-required = Vor dem Diktat ein freigegebenes lokales Sprachmodell
 dictation-language-unavailable = Das Sprachmodell unterstützt die gewählte Sprache nicht.
 dictation-microphone-unavailable = Mikrofon nicht verfügbar. Eingabegerät prüfen.
 dictation-audio-interrupted = Mikrofonaufnahme unterbrochen. Kein Text wurde eingefügt.
+dictation-live-preview = Entwurf · { $text }
+dictation-open-settings = Einrichten
+dictation-edit-rejected = Mikrofon aus · Das ursprüngliche Feld hat den Text abgelehnt oder wurde geändert. Dein Transkript bleibt 10 Minuten privat aufbewahrt. Kopieren überträgt es in die Zwischenablage; Verwerfen entfernt es.
+dictation-delivery-unknown = Mikrofon aus · Das Einfügen wurde nicht bestätigt. Prüfe das ursprüngliche Feld, bevor du erneut einfügst. Dein Transkript bleibt 10 Minuten privat aufbewahrt; Kopieren überträgt es in die Zwischenablage.
 dictation-action-start-detail = Einmalige Mikrofonfreigabe für das aktive Feld anfragen oder die Aufnahme beenden.
 dictation-action-finish-detail = Mikrofon anhalten und den korrigierten Text ins ursprüngliche Feld einfügen.
 dictation-action-cancel-detail = Diktat anhalten und den privaten Entwurf verwerfen.
@@ -2457,11 +2461,8 @@ search-action-tab-drag-cancel = Tab-Ziehen abbrechen
 search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
 search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
 
-dictation-live-preview = Entwurf · { $text }
-dictation-open-settings = Einrichten
 
-dictation-edit-rejected = Mikrofon aus · Das ursprüngliche Feld hat den Text abgelehnt oder wurde geändert. Dein Transkript bleibt 10 Minuten privat aufbewahrt. Kopieren überträgt es in die Zwischenablage; Verwerfen entfernt es.
-dictation-delivery-unknown = Mikrofon aus · Das Einfügen wurde nicht bestätigt. Prüfe das ursprüngliche Feld, bevor du erneut einfügst. Dein Transkript bleibt 10 Minuten privat aufbewahrt; Kopieren überträgt es in die Zwischenablage.
+device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
 search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
 search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
 search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
