@@ -1517,6 +1517,21 @@ pub struct DisplayRect {
 }
 
 impl DisplayRect {
+    /// Logical geometry shared with the Displays arrangement control.
+    /// Malformed or overflowing screen bounds are never crossing targets.
+    pub fn logical_placement(self) -> Option<settings_store::display_placement::Placement> {
+        let width = i32::try_from(self.width).ok()?;
+        let height = i32::try_from(self.height).ok()?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        self.x.checked_add(width)?;
+        self.y.checked_add(height)?;
+        Some(settings_store::display_placement::Placement::new(
+            self.x, self.y, width, height,
+        ))
+    }
+
     fn contains_x(&self, x: i32) -> bool {
         x >= self.x && x < self.x.saturating_add_unsigned(self.width)
     }
@@ -1660,6 +1675,30 @@ impl InputLease {
         }
         Ok(())
     }
+}
+
+/// The existing target-issued spatial-input gate, shared by the runtime and
+/// native transport fixtures. Same-user identity is never a substitute for a
+/// currently retained lease with the exact controller, target and nonce.
+pub fn permits_spatial_input(
+    lease: Option<&InputLease>,
+    controller: &DeviceId,
+    target: &DeviceId,
+    input: ([u8; 16], FabricInputEvent),
+    now_unix_ms: u64,
+) -> bool {
+    let (nonce, event) = input;
+    lease.is_some_and(|lease| {
+        lease.nonce == nonce
+            && lease.binds(controller, target)
+            && lease.validate_at(now_unix_ms).is_ok()
+            && match event {
+                FabricInputEvent::PointerMotion { .. }
+                | FabricInputEvent::PointerButton { .. }
+                | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
+                FabricInputEvent::Key { .. } => lease.allow_keyboard,
+            }
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1902,7 +1941,12 @@ impl DeviceFabric {
         local_x: i32,
         local_y: i32,
     ) -> Option<EdgeTransition> {
-        let source = self.snapshots.get(from)?.display.as_ref()?;
+        let source_snapshot = self.snapshots.get(from)?;
+        if !source_snapshot.presence.online {
+            return None;
+        }
+        let source = source_snapshot.display.as_ref()?;
+        let source_placement = source.rect.logical_placement()?;
         let max_local_x = i32::try_from(source.rect.width)
             .unwrap_or(i32::MAX)
             .saturating_sub(1);
@@ -1924,6 +1968,12 @@ impl DeviceFabric {
                 caps.display && caps.pointer && snapshot.owner != *from
             })
             .filter_map(|snapshot| snapshot.display.as_ref())
+            .filter(|display| {
+                display
+                    .rect
+                    .logical_placement()
+                    .is_some_and(|rect| rect.touches(source_placement))
+            })
             .filter(|display| match edge {
                 DisplayEdge::Left => {
                     display.rect.x.saturating_add_unsigned(display.rect.width) == source_left

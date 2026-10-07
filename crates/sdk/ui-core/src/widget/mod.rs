@@ -3397,3 +3397,6 @@ pub(crate) mod control_result_probe {
         }
     }
 }
+
+/// Logical screen topology canvas shared by local and native peer displays.
+pub mod display_arrangement;
