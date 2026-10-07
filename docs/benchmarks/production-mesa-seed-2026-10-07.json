@@ -7,14 +7,14 @@
     {
       "index": 0,
       "mesa_seeded": false,
-      "launch_action_return_ms": 0.175872,
+      "launch_action_return_ms": 0.189161,
       "host_load_before": [
-        22.5361328125,
-        29.7734375,
-        35.72216796875
+        25.6923828125,
+        33.71142578125,
+        34.47802734375
       ],
-      "first_frame_observation_lower_ms": 1697.87758,
-      "first_frame_observation_upper_ms": 1726.116929,
+      "first_frame_observation_lower_ms": 1681.752297,
+      "first_frame_observation_upper_ms": 1702.261244,
       "frame": {
         "surface_id": 4294967347,
         "app_id": "io.tilo.startup-frame-probe",
@@ -35,243 +35,243 @@
         "opening": false
       },
       "sdk_startup": {
-        "origin_epoch_ms": 1791346295918,
+        "origin_epoch_ms": 1791352609793,
         "events": [
           {
             "name": "probe-main-start",
-            "ns": 620
+            "ns": 1050
           },
           {
             "name": "text-renderer-init",
-            "ns": 49992381
+            "ns": 50342860
           },
           {
             "name": "text-renderer-init-end",
-            "ns": 76548722
+            "ns": 75328854
           },
           {
             "name": "probe-app-ready",
-            "ns": 87073650
+            "ns": 83931984
           },
           {
             "name": "primary-window-created",
-            "ns": 147293695
+            "ns": 145868319
           },
           {
             "name": "primary-window-show-start",
-            "ns": 149288446
+            "ns": 148107347
           },
           {
             "name": "primary-window-show-done",
-            "ns": 149335986
+            "ns": 148154627
           },
           {
             "name": "primary-window-redraw-requested",
-            "ns": 149356316
+            "ns": 148176297
           },
           {
             "name": "primary-window-resumed-done",
-            "ns": 149372517
+            "ns": 148194748
           },
           {
             "name": "first-frame-redraw-start",
-            "ns": 151237626
+            "ns": 150040813
           },
           {
             "name": "first-redraw-init-render-start",
-            "ns": 151261076
+            "ns": 150066063
           },
           {
             "name": "window-render-context-start",
-            "ns": 151280826
+            "ns": 150088803
           },
           {
             "name": "surface-native-create-start",
-            "ns": 230207973
+            "ns": 228792174
           },
           {
             "name": "surface-native-create-done",
-            "ns": 232022171
+            "ns": 231402566
           },
           {
             "name": "surface-device-select-start",
-            "ns": 232060582
+            "ns": 231481326
           },
           {
             "name": "surface-device-select-done",
-            "ns": 300999346
+            "ns": 303434593
           },
           {
             "name": "surface-capabilities-start",
-            "ns": 301162948
+            "ns": 303569074
           },
           {
             "name": "surface-capabilities-done",
-            "ns": 301972516
+            "ns": 304314060
           },
           {
             "name": "surface-targets-create-start",
-            "ns": 302144698
+            "ns": 304484921
           },
           {
             "name": "surface-targets-create-done",
-            "ns": 303770024
+            "ns": 306231996
           },
           {
             "name": "surface-blitter-create-start",
-            "ns": 303815095
+            "ns": 306286086
           },
           {
             "name": "surface-blitter-create-done",
-            "ns": 306506572
+            "ns": 309497812
           },
           {
             "name": "surface-initial-configure-start",
-            "ns": 306579933
+            "ns": 309613583
           },
           {
             "name": "surface-initial-configure-done",
-            "ns": 314287882
+            "ns": 311665300
           },
           {
             "name": "window-surface-validation-scope-start",
-            "ns": 314352133
+            "ns": 311728820
           },
           {
             "name": "window-surface-checked-configure-start",
-            "ns": 314378343
+            "ns": 311759731
           },
           {
             "name": "window-surface-checked-configure-done",
-            "ns": 315182221
+            "ns": 312627038
           },
           {
             "name": "window-surface-validation-scope-done",
-            "ns": 315262712
+            "ns": 312720218
           },
           {
             "name": "window-vello-init-start",
-            "ns": 315293782
+            "ns": 312751739
           },
           {
             "name": "window-vello-init-done",
-            "ns": 403141910
+            "ns": 402866533
           },
           {
             "name": "window-render-context-done",
-            "ns": 403996879
+            "ns": 404254714
           },
           {
             "name": "first-redraw-init-render-done",
-            "ns": 404049229
+            "ns": 405141722
           },
           {
             "name": "render-worker-start",
-            "ns": 405115810
+            "ns": 405839807
           },
           {
             "name": "first-frame-record-start",
-            "ns": 406361683
+            "ns": 406240021
           },
           {
             "name": "first-frame-record-done",
-            "ns": 407449014
+            "ns": 407280779
           },
           {
             "name": "first-frame-update-start",
-            "ns": 407477674
+            "ns": 407674222
           },
           {
             "name": "first-frame-update-done",
-            "ns": 407500124
+            "ns": 407701713
           },
           {
             "name": "first-frame-sync-start",
-            "ns": 407525535
+            "ns": 408667330
           },
           {
             "name": "first-frame-sync-done",
-            "ns": 410159202
+            "ns": 411996258
           },
           {
             "name": "first-frame-live-regions-start",
-            "ns": 410186702
+            "ns": 412033498
           },
           {
             "name": "first-frame-live-regions-done",
-            "ns": 410210272
+            "ns": 412056518
           },
           {
             "name": "first-frame-build-layout-start",
-            "ns": 410233692
+            "ns": 412079688
           },
           {
             "name": "first-frame-build-layout-done",
-            "ns": 410256073
+            "ns": 412102958
           },
           {
             "name": "first-frame-layout-start",
-            "ns": 411258173
+            "ns": 413748122
           },
           {
             "name": "first-frame-layout-done",
-            "ns": 437056396
+            "ns": 440153977
           },
           {
             "name": "first-frame-submitted",
-            "ns": 445378192
+            "ns": 445624022
           },
           {
             "name": "render-worker-first-frame-received",
-            "ns": 445517783
+            "ns": 445635452
           },
           {
             "name": "render-worker-first-acquire-start",
-            "ns": 445638304
+            "ns": 445846883
           },
           {
             "name": "render-worker-first-acquire-done",
-            "ns": 445701885
+            "ns": 445921254
           },
           {
             "name": "render-worker-first-raster-start",
-            "ns": 445732465
+            "ns": 445952534
           },
           {
             "name": "render-worker-first-raster-done",
-            "ns": 453333573
+            "ns": 455326581
           },
           {
             "name": "render-worker-first-blit-start",
-            "ns": 453500825
+            "ns": 455439912
           },
           {
             "name": "render-worker-first-encoder-done",
-            "ns": 453539765
+            "ns": 455480252
           },
           {
             "name": "render-worker-first-blit-copy-done",
-            "ns": 1611608299
+            "ns": 1587727570
           },
           {
             "name": "render-worker-first-blit-done",
-            "ns": 1613609499
+            "ns": 1588051733
           },
           {
             "name": "render-worker-first-present-start",
-            "ns": 1613716901
+            "ns": 1588120594
           },
           {
             "name": "render-worker-first-present-done",
-            "ns": 1632650224
+            "ns": 1607913545
           },
           {
             "name": "render-worker-first-poll-done",
-            "ns": 1632842606
+            "ns": 1608102616
           },
           {
             "name": "first-frame-presented",
-            "ns": 1632880036
+            "ns": 1608150987
           }
         ]
       },
@@ -280,16 +280,16 @@
     {
       "index": 1,
       "mesa_seeded": true,
-      "launch_action_return_ms": 0.187622,
+      "launch_action_return_ms": 0.157301,
       "host_load_before": [
-        22.5361328125,
-        29.7734375,
-        35.72216796875
+        25.4765625,
+        33.533203125,
+        34.416015625
       ],
-      "first_frame_observation_lower_ms": 274.03024,
-      "first_frame_observation_upper_ms": 300.877735,
+      "first_frame_observation_lower_ms": 255.476002,
+      "first_frame_observation_upper_ms": 282.2371,
       "frame": {
-        "surface_id": 25769803818,
+        "surface_id": 25769803820,
         "app_id": "io.tilo.startup-frame-probe",
         "sheets": [],
         "frame_seq": 1,
@@ -308,243 +308,243 @@
         "opening": false
       },
       "sdk_startup": {
-        "origin_epoch_ms": 1791346297650,
+        "origin_epoch_ms": 1791352611495,
         "events": [
           {
             "name": "probe-main-start",
-            "ns": 560
+            "ns": 600
           },
           {
             "name": "text-renderer-init",
-            "ns": 374244
+            "ns": 424543
           },
           {
             "name": "text-renderer-init-end",
-            "ns": 7294415
+            "ns": 7873774
           },
           {
             "name": "probe-app-ready",
-            "ns": 7633648
+            "ns": 8245347
           },
           {
             "name": "primary-window-created",
-            "ns": 27855795
+            "ns": 25165995
           },
           {
             "name": "primary-window-show-start",
-            "ns": 28020216
+            "ns": 25442367
           },
           {
             "name": "primary-window-show-done",
-            "ns": 28064057
+            "ns": 25487348
           },
           {
             "name": "primary-window-redraw-requested",
-            "ns": 28085207
+            "ns": 25512218
           },
           {
             "name": "primary-window-resumed-done",
-            "ns": 28100617
+            "ns": 25532118
           },
           {
             "name": "first-frame-redraw-start",
-            "ns": 28132377
+            "ns": 25564168
           },
           {
             "name": "first-redraw-init-render-start",
-            "ns": 28151218
+            "ns": 25583238
           },
           {
             "name": "window-render-context-start",
-            "ns": 28178188
+            "ns": 25606878
           },
           {
             "name": "surface-native-create-start",
-            "ns": 65812973
+            "ns": 65541804
           },
           {
             "name": "surface-native-create-done",
-            "ns": 65977894
+            "ns": 65698795
           },
           {
             "name": "surface-device-select-start",
-            "ns": 66003955
+            "ns": 65722245
           },
           {
             "name": "surface-device-select-done",
-            "ns": 99017072
+            "ns": 90216645
           },
           {
             "name": "surface-capabilities-start",
-            "ns": 99168634
+            "ns": 90341456
           },
           {
             "name": "surface-capabilities-done",
-            "ns": 99794060
+            "ns": 94544790
           },
           {
             "name": "surface-targets-create-start",
-            "ns": 100176524
+            "ns": 94612251
           },
           {
             "name": "surface-targets-create-done",
-            "ns": 100235714
+            "ns": 94659771
           },
           {
             "name": "surface-blitter-create-start",
-            "ns": 100263685
+            "ns": 94683591
           },
           {
             "name": "surface-blitter-create-done",
-            "ns": 100942852
+            "ns": 95175275
           },
           {
             "name": "surface-initial-configure-start",
-            "ns": 101060243
+            "ns": 95236556
           },
           {
             "name": "surface-initial-configure-done",
-            "ns": 101786330
+            "ns": 96684128
           },
           {
             "name": "window-surface-validation-scope-start",
-            "ns": 102629889
+            "ns": 96727118
           },
           {
             "name": "window-surface-checked-configure-start",
-            "ns": 102666499
+            "ns": 96750448
           },
           {
             "name": "window-surface-checked-configure-done",
-            "ns": 103321536
+            "ns": 97239282
           },
           {
             "name": "window-surface-validation-scope-done",
-            "ns": 103368126
+            "ns": 97280433
           },
           {
             "name": "window-vello-init-start",
-            "ns": 103391317
+            "ns": 97301083
           },
           {
             "name": "window-vello-init-done",
-            "ns": 188060472
+            "ns": 182525437
           },
           {
             "name": "window-render-context-done",
-            "ns": 188961711
+            "ns": 182745819
           },
           {
             "name": "first-redraw-init-render-done",
-            "ns": 188995691
+            "ns": 182785749
           },
           {
             "name": "render-worker-start",
-            "ns": 189006912
+            "ns": 182820630
           },
           {
             "name": "first-frame-record-start",
-            "ns": 189051152
+            "ns": 182836880
           },
           {
             "name": "first-frame-record-done",
-            "ns": 189205244
+            "ns": 183074612
           },
           {
             "name": "first-frame-update-start",
-            "ns": 189228554
+            "ns": 183098372
           },
           {
             "name": "first-frame-update-done",
-            "ns": 189253724
+            "ns": 183121782
           },
           {
             "name": "first-frame-sync-start",
-            "ns": 189275784
+            "ns": 183142242
           },
           {
             "name": "first-frame-sync-done",
-            "ns": 189319635
+            "ns": 183180893
           },
           {
             "name": "first-frame-live-regions-start",
-            "ns": 189345275
+            "ns": 183203143
           },
           {
             "name": "first-frame-live-regions-done",
-            "ns": 189370325
+            "ns": 183225273
           },
           {
             "name": "first-frame-build-layout-start",
-            "ns": 189393725
+            "ns": 183249323
           },
           {
             "name": "first-frame-build-layout-done",
-            "ns": 189418906
+            "ns": 183277093
           },
           {
             "name": "first-frame-layout-start",
-            "ns": 189450266
+            "ns": 183315064
           },
           {
             "name": "first-frame-layout-done",
-            "ns": 195455457
+            "ns": 190201230
           },
           {
             "name": "first-frame-submitted",
-            "ns": 195575669
+            "ns": 190348121
           },
           {
             "name": "render-worker-first-frame-received",
-            "ns": 195581299
+            "ns": 190357041
           },
           {
             "name": "render-worker-first-acquire-start",
-            "ns": 195661190
+            "ns": 190486902
           },
           {
             "name": "render-worker-first-acquire-done",
-            "ns": 195710070
+            "ns": 190552033
           },
           {
             "name": "render-worker-first-raster-start",
-            "ns": 195736510
+            "ns": 190583983
           },
           {
             "name": "render-worker-first-raster-done",
-            "ns": 196305246
+            "ns": 191323729
           },
           {
             "name": "render-worker-first-blit-start",
-            "ns": 196372107
+            "ns": 191452300
           },
           {
             "name": "render-worker-first-encoder-done",
-            "ns": 196404787
+            "ns": 191492060
           },
           {
             "name": "render-worker-first-blit-copy-done",
-            "ns": 213502492
+            "ns": 207121008
           },
           {
             "name": "render-worker-first-blit-done",
-            "ns": 213776185
+            "ns": 207377540
           },
           {
             "name": "render-worker-first-present-start",
-            "ns": 213828755
+            "ns": 207449551
           },
           {
             "name": "render-worker-first-present-done",
-            "ns": 220647025
+            "ns": 214551649
           },
           {
             "name": "render-worker-first-poll-done",
-            "ns": 220762186
+            "ns": 214690070
           },
           {
             "name": "first-frame-presented",
-            "ns": 220796176
+            "ns": 214728620
           }
         ]
       },
@@ -553,14 +553,14 @@
     {
       "index": 2,
       "mesa_seeded": false,
-      "launch_action_return_ms": 0.111611,
+      "launch_action_return_ms": 0.104011,
       "host_load_before": [
-        22.5361328125,
-        29.7734375,
-        35.72216796875
+        25.4765625,
+        33.533203125,
+        34.416015625
       ],
-      "first_frame_observation_lower_ms": 1416.399464,
-      "first_frame_observation_upper_ms": 1444.204038,
+      "first_frame_observation_lower_ms": 1460.970738,
+      "first_frame_observation_upper_ms": 1481.568315,
       "frame": {
         "surface_id": 47244640298,
         "app_id": "io.tilo.startup-frame-probe",
@@ -581,243 +581,243 @@
         "opening": false
       },
       "sdk_startup": {
-        "origin_epoch_ms": 1791346297977,
+        "origin_epoch_ms": 1791352611796,
         "events": [
           {
             "name": "probe-main-start",
-            "ns": 570
+            "ns": 680
           },
           {
             "name": "text-renderer-init",
-            "ns": 434724
+            "ns": 424443
           },
           {
             "name": "text-renderer-init-end",
-            "ns": 7657108
+            "ns": 7895114
           },
           {
             "name": "probe-app-ready",
-            "ns": 7997762
+            "ns": 8274287
           },
           {
             "name": "primary-window-created",
-            "ns": 18378568
+            "ns": 15602077
           },
           {
             "name": "primary-window-show-start",
-            "ns": 18545369
+            "ns": 15824699
           },
           {
             "name": "primary-window-show-done",
-            "ns": 18570600
+            "ns": 15858829
           },
           {
             "name": "primary-window-redraw-requested",
-            "ns": 18588620
+            "ns": 15881899
           },
           {
             "name": "primary-window-resumed-done",
-            "ns": 18605870
+            "ns": 15901090
           },
           {
             "name": "first-frame-redraw-start",
-            "ns": 18639640
+            "ns": 15937880
           },
           {
             "name": "first-redraw-init-render-start",
-            "ns": 18660160
+            "ns": 15957980
           },
           {
             "name": "window-render-context-start",
-            "ns": 18681831
+            "ns": 15978360
           },
           {
             "name": "surface-native-create-start",
-            "ns": 72821654
+            "ns": 80293844
           },
           {
             "name": "surface-native-create-done",
-            "ns": 72965675
+            "ns": 80431565
           },
           {
             "name": "surface-device-select-start",
-            "ns": 72989316
+            "ns": 80455126
           },
           {
             "name": "surface-device-select-done",
-            "ns": 109761081
+            "ns": 127265357
           },
           {
             "name": "surface-capabilities-start",
-            "ns": 109853282
+            "ns": 127359168
           },
           {
             "name": "surface-capabilities-done",
-            "ns": 110479329
+            "ns": 128008303
           },
           {
             "name": "surface-targets-create-start",
-            "ns": 110643101
+            "ns": 128041493
           },
           {
             "name": "surface-targets-create-done",
-            "ns": 110707171
+            "ns": 128081334
           },
           {
             "name": "surface-blitter-create-start",
-            "ns": 110739741
+            "ns": 128102104
           },
           {
             "name": "surface-blitter-create-done",
-            "ns": 111491649
+            "ns": 128537018
           },
           {
             "name": "surface-initial-configure-start",
-            "ns": 111555870
+            "ns": 128595268
           },
           {
             "name": "surface-initial-configure-done",
-            "ns": 112334838
+            "ns": 129423745
           },
           {
             "name": "window-surface-validation-scope-start",
-            "ns": 112424349
+            "ns": 129463955
           },
           {
             "name": "window-surface-checked-configure-start",
-            "ns": 112466859
+            "ns": 129487505
           },
           {
             "name": "window-surface-checked-configure-done",
-            "ns": 117939815
+            "ns": 130057840
           },
           {
             "name": "window-surface-validation-scope-done",
-            "ns": 117997616
+            "ns": 130091140
           },
           {
             "name": "window-vello-init-start",
-            "ns": 118024996
+            "ns": 130127960
           },
           {
             "name": "window-vello-init-done",
-            "ns": 200391338
+            "ns": 213807752
           },
           {
             "name": "window-render-context-done",
-            "ns": 200569629
-          },
-          {
-            "name": "render-worker-start",
-            "ns": 200613950
+            "ns": 213994084
           },
           {
             "name": "first-redraw-init-render-done",
-            "ns": 200620380
+            "ns": 214050324
+          },
+          {
+            "name": "render-worker-start",
+            "ns": 214071645
           },
           {
             "name": "first-frame-record-start",
-            "ns": 200882483
+            "ns": 214102025
           },
           {
             "name": "first-frame-record-done",
-            "ns": 200914773
+            "ns": 214376607
           },
           {
             "name": "first-frame-update-start",
-            "ns": 200940943
+            "ns": 214402337
           },
           {
             "name": "first-frame-update-done",
-            "ns": 200964463
+            "ns": 214425218
           },
           {
             "name": "first-frame-sync-start",
-            "ns": 200992664
+            "ns": 214450278
           },
           {
             "name": "first-frame-sync-done",
-            "ns": 201036944
+            "ns": 214493258
           },
           {
             "name": "first-frame-live-regions-start",
-            "ns": 201063224
+            "ns": 214518498
           },
           {
             "name": "first-frame-live-regions-done",
-            "ns": 201087455
+            "ns": 214542158
           },
           {
             "name": "first-frame-build-layout-start",
-            "ns": 201110865
+            "ns": 214566429
           },
           {
             "name": "first-frame-build-layout-done",
-            "ns": 201134645
+            "ns": 214588939
           },
           {
             "name": "first-frame-layout-start",
-            "ns": 201167956
+            "ns": 214624009
           },
           {
             "name": "first-frame-layout-done",
-            "ns": 207881084
+            "ns": 221478215
           },
           {
             "name": "first-frame-submitted",
-            "ns": 208024736
+            "ns": 221628896
           },
           {
             "name": "render-worker-first-frame-received",
-            "ns": 208036236
+            "ns": 221717027
           },
           {
             "name": "render-worker-first-acquire-start",
-            "ns": 208172937
+            "ns": 221931669
           },
           {
             "name": "render-worker-first-acquire-done",
-            "ns": 208245168
+            "ns": 222003609
           },
           {
             "name": "render-worker-first-raster-start",
-            "ns": 208276298
+            "ns": 222033300
           },
           {
             "name": "render-worker-first-raster-done",
-            "ns": 208865774
+            "ns": 222661195
           },
           {
             "name": "render-worker-first-blit-start",
-            "ns": 208936335
+            "ns": 222747945
           },
           {
             "name": "render-worker-first-encoder-done",
-            "ns": 208970865
+            "ns": 222782426
           },
           {
             "name": "render-worker-first-blit-copy-done",
-            "ns": 1341023644
+            "ns": 1400724137
           },
           {
             "name": "render-worker-first-blit-done",
-            "ns": 1341363137
+            "ns": 1401072809
           },
           {
             "name": "render-worker-first-present-start",
-            "ns": 1341414018
+            "ns": 1401132600
           },
           {
             "name": "render-worker-first-present-done",
-            "ns": 1368119530
+            "ns": 1423912806
           },
           {
             "name": "render-worker-first-poll-done",
-            "ns": 1368579625
+            "ns": 1424119647
           },
           {
             "name": "first-frame-presented",
-            "ns": 1368618475
+            "ns": 1424168468
           }
         ]
       },
@@ -826,16 +826,16 @@
     {
       "index": 3,
       "mesa_seeded": true,
-      "launch_action_return_ms": 0.191151,
+      "launch_action_return_ms": 0.172391,
       "host_load_before": [
-        22.5361328125,
-        29.7734375,
-        35.72216796875
+        25.4765625,
+        33.533203125,
+        34.416015625
       ],
-      "first_frame_observation_lower_ms": 308.372401,
-      "first_frame_observation_upper_ms": 333.653639,
+      "first_frame_observation_lower_ms": 240.4119,
+      "first_frame_observation_upper_ms": 264.368495,
       "frame": {
-        "surface_id": 68719476776,
+        "surface_id": 68719476780,
         "app_id": "io.tilo.startup-frame-probe",
         "sheets": [],
         "frame_seq": 1,
@@ -854,243 +854,243 @@
         "opening": false
       },
       "sdk_startup": {
-        "origin_epoch_ms": 1791346299523,
+        "origin_epoch_ms": 1791352613307,
         "events": [
           {
             "name": "probe-main-start",
-            "ns": 590
+            "ns": 580
           },
           {
             "name": "text-renderer-init",
-            "ns": 419664
+            "ns": 406714
           },
           {
             "name": "text-renderer-init-end",
-            "ns": 8073653
+            "ns": 7656283
           },
           {
             "name": "probe-app-ready",
-            "ns": 8530477
+            "ns": 7993845
           },
           {
             "name": "primary-window-created",
-            "ns": 16366197
+            "ns": 18098598
           },
           {
             "name": "primary-window-show-start",
-            "ns": 16811702
+            "ns": 18312080
           },
           {
             "name": "primary-window-show-done",
-            "ns": 16856252
+            "ns": 18360470
           },
           {
             "name": "primary-window-redraw-requested",
-            "ns": 16883863
+            "ns": 18380990
           },
           {
             "name": "primary-window-resumed-done",
-            "ns": 16905973
+            "ns": 18398910
           },
           {
             "name": "first-frame-redraw-start",
-            "ns": 16940853
+            "ns": 18433471
           },
           {
             "name": "first-redraw-init-render-start",
-            "ns": 16958763
+            "ns": 18451931
           },
           {
             "name": "window-render-context-start",
-            "ns": 16999674
+            "ns": 18474931
           },
           {
             "name": "surface-native-create-start",
-            "ns": 68401049
+            "ns": 59581396
           },
           {
             "name": "surface-native-create-done",
-            "ns": 68592461
+            "ns": 59745277
           },
           {
             "name": "surface-device-select-start",
-            "ns": 68618381
+            "ns": 59774327
           },
           {
             "name": "surface-device-select-done",
-            "ns": 107786472
+            "ns": 81682296
           },
           {
             "name": "surface-capabilities-start",
-            "ns": 107975534
+            "ns": 81799847
           },
           {
             "name": "surface-capabilities-done",
-            "ns": 108987074
+            "ns": 82531133
           },
           {
             "name": "surface-targets-create-start",
-            "ns": 109041324
+            "ns": 82563253
           },
           {
             "name": "surface-targets-create-done",
-            "ns": 109085835
+            "ns": 82604534
           },
           {
             "name": "surface-blitter-create-start",
-            "ns": 109108825
+            "ns": 82621254
           },
           {
             "name": "surface-blitter-create-done",
-            "ns": 109628540
+            "ns": 83043997
           },
           {
             "name": "surface-initial-configure-start",
-            "ns": 109705661
+            "ns": 83126818
           },
           {
             "name": "surface-initial-configure-done",
-            "ns": 111732182
+            "ns": 83823724
           },
           {
             "name": "window-surface-validation-scope-start",
-            "ns": 111810143
+            "ns": 83859464
           },
           {
             "name": "window-surface-checked-configure-start",
-            "ns": 111833653
+            "ns": 83888964
           },
           {
             "name": "window-surface-checked-configure-done",
-            "ns": 114382639
+            "ns": 84444749
           },
           {
             "name": "window-surface-validation-scope-done",
-            "ns": 114420429
+            "ns": 84525329
           },
           {
             "name": "window-vello-init-start",
-            "ns": 114439920
+            "ns": 84552150
           },
           {
             "name": "window-vello-init-done",
-            "ns": 207325389
+            "ns": 168929657
           },
           {
             "name": "window-render-context-done",
-            "ns": 208384260
+            "ns": 169154219
           },
           {
             "name": "first-redraw-init-render-done",
-            "ns": 208434660
-          },
-          {
-            "name": "first-frame-record-start",
-            "ns": 208482191
-          },
-          {
-            "name": "first-frame-record-done",
-            "ns": 208522021
-          },
-          {
-            "name": "first-frame-update-start",
-            "ns": 208544821
-          },
-          {
-            "name": "first-frame-update-done",
-            "ns": 208567831
-          },
-          {
-            "name": "first-frame-sync-start",
-            "ns": 208588612
-          },
-          {
-            "name": "first-frame-sync-done",
-            "ns": 208627062
-          },
-          {
-            "name": "first-frame-live-regions-start",
-            "ns": 208649732
-          },
-          {
-            "name": "first-frame-live-regions-done",
-            "ns": 208679703
+            "ns": 169200889
           },
           {
             "name": "render-worker-start",
-            "ns": 208662412
+            "ns": 169210210
+          },
+          {
+            "name": "first-frame-record-start",
+            "ns": 169252820
+          },
+          {
+            "name": "first-frame-record-done",
+            "ns": 169485162
+          },
+          {
+            "name": "first-frame-update-start",
+            "ns": 169507022
+          },
+          {
+            "name": "first-frame-update-done",
+            "ns": 169530702
+          },
+          {
+            "name": "first-frame-sync-start",
+            "ns": 169555052
+          },
+          {
+            "name": "first-frame-sync-done",
+            "ns": 169600503
+          },
+          {
+            "name": "first-frame-live-regions-start",
+            "ns": 169623813
+          },
+          {
+            "name": "first-frame-live-regions-done",
+            "ns": 169650013
           },
           {
             "name": "first-frame-build-layout-start",
-            "ns": 208703263
+            "ns": 169673393
           },
           {
             "name": "first-frame-build-layout-done",
-            "ns": 208985376
+            "ns": 169698583
           },
           {
             "name": "first-frame-layout-start",
-            "ns": 209026876
+            "ns": 169731714
           },
           {
             "name": "first-frame-layout-done",
-            "ns": 216061618
+            "ns": 176543219
           },
           {
             "name": "first-frame-submitted",
-            "ns": 216204269
+            "ns": 176719641
           },
           {
             "name": "render-worker-first-frame-received",
-            "ns": 216209799
+            "ns": 176730641
           },
           {
             "name": "render-worker-first-acquire-start",
-            "ns": 216307350
+            "ns": 176918092
           },
           {
             "name": "render-worker-first-acquire-done",
-            "ns": 216355371
+            "ns": 177004943
           },
           {
             "name": "render-worker-first-raster-start",
-            "ns": 216383611
+            "ns": 177036233
           },
           {
             "name": "render-worker-first-raster-done",
-            "ns": 216931697
+            "ns": 177585208
           },
           {
             "name": "render-worker-first-blit-start",
-            "ns": 216992877
+            "ns": 177654718
           },
           {
             "name": "render-worker-first-encoder-done",
-            "ns": 217026278
+            "ns": 177688849
           },
           {
             "name": "render-worker-first-blit-copy-done",
-            "ns": 239078833
+            "ns": 193160305
           },
           {
             "name": "render-worker-first-blit-done",
-            "ns": 239522368
+            "ns": 193441257
           },
           {
             "name": "render-worker-first-present-start",
-            "ns": 239596609
+            "ns": 193499247
           },
           {
             "name": "render-worker-first-present-done",
-            "ns": 249026585
+            "ns": 201756585
           },
           {
             "name": "render-worker-first-poll-done",
-            "ns": 249871273
+            "ns": 201895686
           },
           {
             "name": "first-frame-presented",
-            "ns": 250440509
+            "ns": 201938076
           }
         ]
       },
@@ -1099,16 +1099,16 @@
     {
       "index": 4,
       "mesa_seeded": false,
-      "launch_action_return_ms": 0.212583,
+      "launch_action_return_ms": 0.112951,
       "host_load_before": [
-        22.5361328125,
-        29.7734375,
-        35.72216796875
+        25.4765625,
+        33.533203125,
+        34.416015625
       ],
-      "first_frame_observation_lower_ms": 1359.26184,
-      "first_frame_observation_upper_ms": 1383.431407,
+      "first_frame_observation_lower_ms": 1397.973705,
+      "first_frame_observation_upper_ms": 1418.580712,
       "frame": {
-        "surface_id": 90194313259,
+        "surface_id": 90194313260,
         "app_id": "io.tilo.startup-frame-probe",
         "sheets": [],
         "frame_seq": 1,
@@ -1127,243 +1127,243 @@
         "opening": false
       },
       "sdk_startup": {
-        "origin_epoch_ms": 1791346299901,
+        "origin_epoch_ms": 1791352613596,
         "events": [
           {
             "name": "probe-main-start",
-            "ns": 560
+            "ns": 640
           },
           {
             "name": "text-renderer-init",
-            "ns": 386963
+            "ns": 422214
           },
           {
             "name": "text-renderer-init-end",
-            "ns": 7221043
+            "ns": 7519482
           },
           {
             "name": "probe-app-ready",
-            "ns": 7621727
+            "ns": 7883525
           },
           {
             "name": "primary-window-created",
-            "ns": 27829894
+            "ns": 15015513
           },
           {
             "name": "primary-window-show-start",
-            "ns": 27971695
+            "ns": 15228884
           },
           {
             "name": "primary-window-show-done",
-            "ns": 27996916
+            "ns": 15273075
           },
           {
             "name": "primary-window-redraw-requested",
-            "ns": 28018156
+            "ns": 15292645
           },
           {
             "name": "primary-window-resumed-done",
-            "ns": 28034376
+            "ns": 15309125
           },
           {
             "name": "first-frame-redraw-start",
-            "ns": 28062726
+            "ns": 15341475
           },
           {
             "name": "first-redraw-init-render-start",
-            "ns": 28079787
+            "ns": 15359866
           },
           {
             "name": "window-render-context-start",
-            "ns": 28100677
+            "ns": 15380846
           },
           {
             "name": "surface-native-create-start",
-            "ns": 81823296
+            "ns": 79404178
           },
           {
             "name": "surface-native-create-done",
-            "ns": 81948557
+            "ns": 79535069
           },
           {
             "name": "surface-device-select-start",
-            "ns": 81974337
+            "ns": 79558449
           },
           {
             "name": "surface-device-select-done",
-            "ns": 129909527
+            "ns": 123696419
           },
           {
             "name": "surface-capabilities-start",
-            "ns": 130002988
+            "ns": 123829380
           },
           {
             "name": "surface-capabilities-done",
-            "ns": 130742326
+            "ns": 124559746
           },
           {
             "name": "surface-targets-create-start",
-            "ns": 130773386
+            "ns": 124610526
           },
           {
             "name": "surface-targets-create-done",
-            "ns": 130812336
+            "ns": 124649086
           },
           {
             "name": "surface-blitter-create-start",
-            "ns": 130832156
+            "ns": 124669947
           },
           {
             "name": "surface-blitter-create-done",
-            "ns": 131282581
+            "ns": 125209701
           },
           {
             "name": "surface-initial-configure-start",
-            "ns": 131345062
+            "ns": 125285702
           },
           {
             "name": "surface-initial-configure-done",
-            "ns": 132054769
+            "ns": 126024098
           },
           {
             "name": "window-surface-validation-scope-start",
-            "ns": 132090519
+            "ns": 126065808
           },
           {
             "name": "window-surface-checked-configure-start",
-            "ns": 132111820
+            "ns": 126093348
           },
           {
             "name": "window-surface-checked-configure-done",
-            "ns": 132550834
+            "ns": 126587782
           },
           {
             "name": "window-surface-validation-scope-done",
-            "ns": 132580404
+            "ns": 126622982
           },
           {
             "name": "window-vello-init-start",
-            "ns": 132605115
+            "ns": 126644363
           },
           {
             "name": "window-vello-init-done",
-            "ns": 214521342
+            "ns": 209707160
           },
           {
             "name": "window-render-context-done",
-            "ns": 214707174
-          },
-          {
-            "name": "render-worker-start",
-            "ns": 214734814
+            "ns": 209915771
           },
           {
             "name": "first-redraw-init-render-done",
-            "ns": 214758564
+            "ns": 209953862
+          },
+          {
+            "name": "render-worker-start",
+            "ns": 209968312
           },
           {
             "name": "first-frame-record-start",
-            "ns": 214919626
+            "ns": 210026302
           },
           {
             "name": "first-frame-record-done",
-            "ns": 214949846
+            "ns": 210216524
           },
           {
             "name": "first-frame-update-start",
-            "ns": 214972576
+            "ns": 210241744
           },
           {
             "name": "first-frame-update-done",
-            "ns": 214995577
+            "ns": 210264404
           },
           {
             "name": "first-frame-sync-start",
-            "ns": 215023717
+            "ns": 210290534
           },
           {
             "name": "first-frame-sync-done",
-            "ns": 215062527
+            "ns": 210334965
           },
           {
             "name": "first-frame-live-regions-start",
-            "ns": 215084857
+            "ns": 210359925
           },
           {
             "name": "first-frame-live-regions-done",
-            "ns": 215107318
+            "ns": 210384505
           },
           {
             "name": "first-frame-build-layout-start",
-            "ns": 215129868
+            "ns": 210406835
           },
           {
             "name": "first-frame-build-layout-done",
-            "ns": 215154038
+            "ns": 210430466
           },
           {
             "name": "first-frame-layout-start",
-            "ns": 215187939
+            "ns": 210460876
           },
           {
             "name": "first-frame-layout-done",
-            "ns": 221845637
+            "ns": 216452995
           },
           {
             "name": "first-frame-submitted",
-            "ns": 221980528
+            "ns": 216590166
           },
           {
             "name": "render-worker-first-frame-received",
-            "ns": 221986048
+            "ns": 216596136
           },
           {
             "name": "render-worker-first-acquire-start",
-            "ns": 222076359
+            "ns": 216701497
           },
           {
             "name": "render-worker-first-acquire-done",
-            "ns": 222125919
+            "ns": 216750817
           },
           {
             "name": "render-worker-first-raster-start",
-            "ns": 222154250
+            "ns": 216776117
           },
           {
             "name": "render-worker-first-raster-done",
-            "ns": 222701095
+            "ns": 217340512
           },
           {
             "name": "render-worker-first-blit-start",
-            "ns": 222762186
+            "ns": 217403682
           },
           {
             "name": "render-worker-first-encoder-done",
-            "ns": 222796396
+            "ns": 217435263
           },
           {
             "name": "render-worker-first-blit-copy-done",
-            "ns": 1289128103
+            "ns": 1346155532
           },
           {
             "name": "render-worker-first-blit-done",
-            "ns": 1289416886
+            "ns": 1346443595
           },
           {
             "name": "render-worker-first-present-start",
-            "ns": 1289469956
+            "ns": 1346511845
           },
           {
             "name": "render-worker-first-present-done",
-            "ns": 1310602402
+            "ns": 1366732300
           },
           {
             "name": "render-worker-first-poll-done",
-            "ns": 1310732034
+            "ns": 1366909701
           },
           {
             "name": "first-frame-presented",
-            "ns": 1310770574
+            "ns": 1366953152
           }
         ]
       },
@@ -1372,16 +1372,16 @@
     {
       "index": 5,
       "mesa_seeded": true,
-      "launch_action_return_ms": 0.109331,
+      "launch_action_return_ms": 0.103521,
       "host_load_before": [
-        22.0126953125,
-        29.54443359375,
-        35.6162109375
+        25.4765625,
+        33.533203125,
+        34.416015625
       ],
-      "first_frame_observation_lower_ms": 281.086132,
-      "first_frame_observation_upper_ms": 310.024468,
+      "first_frame_observation_lower_ms": 245.804564,
+      "first_frame_observation_upper_ms": 266.13889,
       "frame": {
-        "surface_id": 111669149738,
+        "surface_id": 111669149739,
         "app_id": "io.tilo.startup-frame-probe",
         "sheets": [],
         "frame_seq": 1,
@@ -1400,243 +1400,243 @@
         "opening": false
       },
       "sdk_startup": {
-        "origin_epoch_ms": 1791346301310,
+        "origin_epoch_ms": 1791352615043,
         "events": [
           {
             "name": "probe-main-start",
-            "ns": 680
+            "ns": 540
           },
           {
             "name": "text-renderer-init",
-            "ns": 400264
+            "ns": 404223
           },
           {
             "name": "text-renderer-init-end",
-            "ns": 7428296
+            "ns": 7769923
           },
           {
             "name": "probe-app-ready",
-            "ns": 7801159
+            "ns": 8128316
           },
           {
             "name": "primary-window-created",
-            "ns": 20547850
+            "ns": 20157164
           },
           {
             "name": "primary-window-show-start",
-            "ns": 20809262
+            "ns": 20312435
           },
           {
             "name": "primary-window-show-done",
-            "ns": 20835613
+            "ns": 20338256
           },
           {
             "name": "primary-window-redraw-requested",
-            "ns": 20855373
+            "ns": 20354936
           },
           {
             "name": "primary-window-resumed-done",
-            "ns": 20874443
+            "ns": 20370826
           },
           {
             "name": "first-frame-redraw-start",
-            "ns": 20912123
+            "ns": 20396146
           },
           {
             "name": "first-redraw-init-render-start",
-            "ns": 20935404
+            "ns": 20415956
           },
           {
             "name": "window-render-context-start",
-            "ns": 20960784
+            "ns": 20456586
           },
           {
             "name": "surface-native-create-start",
-            "ns": 71270538
+            "ns": 67001256
           },
           {
             "name": "surface-native-create-done",
-            "ns": 71483530
+            "ns": 67141337
           },
           {
             "name": "surface-device-select-start",
-            "ns": 71510820
+            "ns": 67167277
           },
           {
             "name": "surface-device-select-done",
-            "ns": 101875381
+            "ns": 93022808
           },
           {
             "name": "surface-capabilities-start",
-            "ns": 102070183
+            "ns": 93112589
           },
           {
             "name": "surface-capabilities-done",
-            "ns": 104674599
+            "ns": 96261934
           },
           {
             "name": "surface-targets-create-start",
-            "ns": 104795211
+            "ns": 96429376
           },
           {
             "name": "surface-targets-create-done",
-            "ns": 104857911
+            "ns": 96497496
           },
           {
             "name": "surface-blitter-create-start",
-            "ns": 104893272
+            "ns": 96523746
           },
           {
             "name": "surface-blitter-create-done",
-            "ns": 105577209
+            "ns": 97209662
           },
           {
             "name": "surface-initial-configure-start",
-            "ns": 105639929
+            "ns": 97306183
           },
           {
             "name": "surface-initial-configure-done",
-            "ns": 107060374
+            "ns": 98018859
           },
           {
             "name": "window-surface-validation-scope-start",
-            "ns": 107115704
+            "ns": 98069889
           },
           {
             "name": "window-surface-checked-configure-start",
-            "ns": 107141425
+            "ns": 98094759
           },
           {
             "name": "window-surface-checked-configure-done",
-            "ns": 108031774
+            "ns": 98601243
           },
           {
             "name": "window-surface-validation-scope-done",
-            "ns": 108140835
+            "ns": 98637814
           },
           {
             "name": "window-vello-init-start",
-            "ns": 108163815
+            "ns": 98660574
           },
           {
             "name": "window-vello-init-done",
-            "ns": 192482007
+            "ns": 181638710
           },
           {
             "name": "window-render-context-done",
-            "ns": 192699789
+            "ns": 181887062
           },
           {
             "name": "first-redraw-init-render-done",
-            "ns": 192736049
+            "ns": 181923293
           },
           {
             "name": "render-worker-start",
-            "ns": 192761299
+            "ns": 181947543
           },
           {
             "name": "first-frame-record-start",
-            "ns": 192778210
+            "ns": 181970123
           },
           {
             "name": "first-frame-record-done",
-            "ns": 193028452
+            "ns": 182228985
           },
           {
             "name": "first-frame-update-start",
-            "ns": 193064452
+            "ns": 182251655
           },
           {
             "name": "first-frame-update-done",
-            "ns": 193086873
+            "ns": 182276495
           },
           {
             "name": "first-frame-sync-start",
-            "ns": 193108773
+            "ns": 182300406
           },
           {
             "name": "first-frame-sync-done",
-            "ns": 193156683
+            "ns": 182347456
           },
           {
             "name": "first-frame-live-regions-start",
-            "ns": 193185094
+            "ns": 182369566
           },
           {
             "name": "first-frame-live-regions-done",
-            "ns": 193207214
+            "ns": 182394236
           },
           {
             "name": "first-frame-build-layout-start",
-            "ns": 193230204
+            "ns": 182417647
           },
           {
             "name": "first-frame-build-layout-done",
-            "ns": 193255014
+            "ns": 182443607
           },
           {
             "name": "first-frame-layout-start",
-            "ns": 193287405
+            "ns": 182474987
           },
           {
             "name": "first-frame-layout-done",
-            "ns": 199957283
+            "ns": 189205332
           },
           {
             "name": "first-frame-submitted",
-            "ns": 200177825
+            "ns": 189342013
           },
           {
             "name": "render-worker-first-frame-received",
-            "ns": 200187395
+            "ns": 189347813
           },
           {
             "name": "render-worker-first-acquire-start",
-            "ns": 200333227
+            "ns": 189452344
           },
           {
             "name": "render-worker-first-acquire-done",
-            "ns": 200396618
+            "ns": 189505334
           },
           {
             "name": "render-worker-first-raster-start",
-            "ns": 200426998
+            "ns": 189600885
           },
           {
             "name": "render-worker-first-raster-done",
-            "ns": 201009544
+            "ns": 190226120
           },
           {
             "name": "render-worker-first-blit-start",
-            "ns": 201094035
+            "ns": 190300511
           },
           {
             "name": "render-worker-first-encoder-done",
-            "ns": 201129215
+            "ns": 190332901
           },
           {
             "name": "render-worker-first-blit-copy-done",
-            "ns": 223608425
+            "ns": 205385384
           },
           {
             "name": "render-worker-first-blit-done",
-            "ns": 223923158
+            "ns": 205626476
           },
           {
             "name": "render-worker-first-present-start",
-            "ns": 224089100
+            "ns": 205677476
           },
           {
             "name": "render-worker-first-present-done",
-            "ns": 230519355
+            "ns": 211362332
           },
           {
             "name": "render-worker-first-poll-done",
-            "ns": 230641257
+            "ns": 211453223
           },
           {
             "name": "first-frame-presented",
-            "ns": 230675857
+            "ns": 211487864
           }
         ]
       },
@@ -1645,14 +1645,14 @@
     {
       "index": 6,
       "mesa_seeded": false,
-      "launch_action_return_ms": 0.133091,
+      "launch_action_return_ms": 0.113251,
       "host_load_before": [
-        22.0126953125,
-        29.54443359375,
-        35.6162109375
+        25.4765625,
+        33.533203125,
+        34.416015625
       ],
-      "first_frame_observation_lower_ms": 1390.083045,
-      "first_frame_observation_upper_ms": 1415.442294,
+      "first_frame_observation_lower_ms": 1630.234678,
+      "first_frame_observation_upper_ms": 1651.163068,
       "frame": {
         "surface_id": 133143986220,
         "app_id": "io.tilo.startup-frame-probe",
@@ -1673,243 +1673,243 @@
         "opening": false
       },
       "sdk_startup": {
-        "origin_epoch_ms": 1791346301650,
+        "origin_epoch_ms": 1791352615344,
         "events": [
           {
             "name": "probe-main-start",
-            "ns": 660
+            "ns": 690
           },
           {
             "name": "text-renderer-init",
-            "ns": 386854
+            "ns": 406014
           },
           {
             "name": "text-renderer-init-end",
-            "ns": 7323225
+            "ns": 7939915
           },
           {
             "name": "probe-app-ready",
-            "ns": 7677838
+            "ns": 8357318
           },
           {
             "name": "primary-window-created",
-            "ns": 19105775
+            "ns": 19286707
           },
           {
             "name": "primary-window-show-start",
-            "ns": 19392668
+            "ns": 19506109
           },
           {
             "name": "primary-window-show-done",
-            "ns": 19445619
+            "ns": 19548710
           },
           {
             "name": "primary-window-redraw-requested",
-            "ns": 19466549
+            "ns": 19567370
           },
           {
             "name": "primary-window-resumed-done",
-            "ns": 19484189
+            "ns": 19584290
           },
           {
             "name": "first-frame-redraw-start",
-            "ns": 19519359
+            "ns": 19618530
           },
           {
             "name": "first-redraw-init-render-start",
-            "ns": 19538740
+            "ns": 19640000
           },
           {
             "name": "window-render-context-start",
-            "ns": 19566380
+            "ns": 19661591
           },
           {
             "name": "surface-native-create-start",
-            "ns": 84221211
+            "ns": 87099820
           },
           {
             "name": "surface-native-create-done",
-            "ns": 84463933
+            "ns": 87244551
           },
           {
             "name": "surface-device-select-start",
-            "ns": 84496333
+            "ns": 87282272
           },
           {
             "name": "surface-device-select-done",
-            "ns": 130929438
+            "ns": 145249704
           },
           {
             "name": "surface-capabilities-start",
-            "ns": 131019849
+            "ns": 145373445
           },
           {
             "name": "surface-capabilities-done",
-            "ns": 131688896
+            "ns": 149552649
           },
           {
             "name": "surface-targets-create-start",
-            "ns": 131810767
+            "ns": 149740731
           },
           {
             "name": "surface-targets-create-done",
-            "ns": 131870588
+            "ns": 149812321
           },
           {
             "name": "surface-blitter-create-start",
-            "ns": 131903718
+            "ns": 149842502
           },
           {
             "name": "surface-blitter-create-done",
-            "ns": 132543954
+            "ns": 150569987
           },
           {
             "name": "surface-initial-configure-start",
-            "ns": 132607185
+            "ns": 150708659
           },
           {
             "name": "surface-initial-configure-done",
-            "ns": 133365983
+            "ns": 151855518
           },
           {
             "name": "window-surface-validation-scope-start",
-            "ns": 133450314
+            "ns": 151991179
           },
           {
             "name": "window-surface-checked-configure-start",
-            "ns": 133485134
+            "ns": 152027249
           },
           {
             "name": "window-surface-checked-configure-done",
-            "ns": 134112800
+            "ns": 152813046
           },
           {
             "name": "window-surface-validation-scope-done",
-            "ns": 134184001
+            "ns": 152888766
           },
           {
             "name": "window-vello-init-start",
-            "ns": 134212171
+            "ns": 152917637
           },
           {
             "name": "window-vello-init-done",
-            "ns": 216306630
+            "ns": 243711977
           },
           {
             "name": "window-render-context-done",
-            "ns": 216517752
+            "ns": 243962259
           },
           {
             "name": "first-redraw-init-render-done",
-            "ns": 216568203
+            "ns": 244018669
           },
           {
             "name": "render-worker-start",
-            "ns": 216569423
+            "ns": 244050189
           },
           {
             "name": "first-frame-record-start",
-            "ns": 216617263
+            "ns": 244072199
           },
           {
             "name": "first-frame-record-done",
-            "ns": 216813855
+            "ns": 244469033
           },
           {
             "name": "first-frame-update-start",
-            "ns": 216837416
+            "ns": 244500913
           },
           {
             "name": "first-frame-update-done",
-            "ns": 216860186
+            "ns": 244529303
           },
           {
             "name": "first-frame-sync-start",
-            "ns": 216883826
+            "ns": 244559713
           },
           {
             "name": "first-frame-sync-done",
-            "ns": 216926317
+            "ns": 244607174
           },
           {
             "name": "first-frame-live-regions-start",
-            "ns": 216948197
+            "ns": 244633974
           },
           {
             "name": "first-frame-live-regions-done",
-            "ns": 216973897
+            "ns": 244662834
           },
           {
             "name": "first-frame-build-layout-start",
-            "ns": 216999047
+            "ns": 244690505
           },
           {
             "name": "first-frame-build-layout-done",
-            "ns": 217022418
+            "ns": 244717655
           },
           {
             "name": "first-frame-layout-start",
-            "ns": 217054068
+            "ns": 244763045
           },
           {
             "name": "first-frame-layout-done",
-            "ns": 222809517
+            "ns": 253700748
           },
           {
             "name": "first-frame-submitted",
-            "ns": 222936888
+            "ns": 253898270
           },
           {
             "name": "render-worker-first-frame-received",
-            "ns": 222947648
+            "ns": 254286193
           },
           {
             "name": "render-worker-first-acquire-start",
-            "ns": 223074889
+            "ns": 254367963
           },
           {
             "name": "render-worker-first-acquire-done",
-            "ns": 223137050
+            "ns": 254418584
           },
           {
             "name": "render-worker-first-raster-start",
-            "ns": 223169350
+            "ns": 254458744
           },
           {
             "name": "render-worker-first-raster-done",
-            "ns": 223795437
+            "ns": 255010629
           },
           {
             "name": "render-worker-first-blit-start",
-            "ns": 223866828
+            "ns": 255079499
           },
           {
             "name": "render-worker-first-encoder-done",
-            "ns": 223900578
+            "ns": 255112229
           },
           {
             "name": "render-worker-first-blit-copy-done",
-            "ns": 1330227493
+            "ns": 255170930
           },
           {
             "name": "render-worker-first-blit-done",
-            "ns": 1330531336
+            "ns": 1551684957
           },
           {
             "name": "render-worker-first-present-start",
-            "ns": 1330680478
+            "ns": 1552806666
           },
           {
             "name": "render-worker-first-present-done",
-            "ns": 1352111617
+            "ns": 1573627806
           },
           {
             "name": "render-worker-first-poll-done",
-            "ns": 1352307479
+            "ns": 1574311952
           },
           {
             "name": "first-frame-presented",
-            "ns": 1352354519
+            "ns": 1574411102
           }
         ]
       },
@@ -1918,16 +1918,16 @@
     {
       "index": 7,
       "mesa_seeded": false,
-      "launch_action_return_ms": 0.186572,
+      "launch_action_return_ms": 0.153562,
       "host_load_before": [
-        22.0126953125,
-        29.54443359375,
-        35.6162109375
+        27.2802734375,
+        33.7734375,
+        34.4892578125
       ],
-      "first_frame_observation_lower_ms": 1397.802874,
-      "first_frame_observation_upper_ms": 1420.330535,
+      "first_frame_observation_lower_ms": 2257.651381,
+      "first_frame_observation_upper_ms": 2311.42888,
       "frame": {
-        "surface_id": 154618822698,
+        "surface_id": 154618822699,
         "app_id": "io.tilo.startup-frame-probe",
         "sheets": [],
         "frame_seq": 1,
@@ -1946,243 +1946,243 @@
         "opening": false
       },
       "sdk_startup": {
-        "origin_epoch_ms": 1791346303093,
+        "origin_epoch_ms": 1791352617178,
         "events": [
           {
             "name": "probe-main-start",
-            "ns": 540
+            "ns": 450
           },
           {
             "name": "text-renderer-init",
-            "ns": 420935
+            "ns": 460414
           },
           {
             "name": "text-renderer-init-end",
-            "ns": 7333575
+            "ns": 8162627
           },
           {
             "name": "probe-app-ready",
-            "ns": 7667649
+            "ns": 8606690
           },
           {
             "name": "primary-window-created",
-            "ns": 13089364
+            "ns": 18034817
           },
           {
             "name": "primary-window-show-start",
-            "ns": 13227245
+            "ns": 18280969
           },
           {
             "name": "primary-window-show-done",
-            "ns": 13259536
+            "ns": 18362410
           },
           {
             "name": "primary-window-redraw-requested",
-            "ns": 13276646
+            "ns": 18413070
           },
           {
             "name": "primary-window-resumed-done",
-            "ns": 13294876
+            "ns": 18483301
           },
           {
             "name": "first-frame-redraw-start",
-            "ns": 13324716
+            "ns": 18573792
           },
           {
             "name": "first-redraw-init-render-start",
-            "ns": 13342387
+            "ns": 18638142
           },
           {
             "name": "window-render-context-start",
-            "ns": 13365767
+            "ns": 18881064
           },
           {
             "name": "surface-native-create-start",
-            "ns": 76564803
+            "ns": 95421528
           },
           {
             "name": "surface-native-create-done",
-            "ns": 76709314
+            "ns": 95944752
           },
           {
             "name": "surface-device-select-start",
-            "ns": 76734075
+            "ns": 96005033
           },
           {
             "name": "surface-device-select-done",
-            "ns": 122433772
+            "ns": 151174032
           },
           {
             "name": "surface-capabilities-start",
-            "ns": 122571303
+            "ns": 151741637
           },
           {
             "name": "surface-capabilities-done",
-            "ns": 123925737
+            "ns": 160414438
           },
           {
             "name": "surface-targets-create-start",
-            "ns": 124095448
+            "ns": 160524259
           },
           {
             "name": "surface-targets-create-done",
-            "ns": 124169389
+            "ns": 160586769
           },
           {
             "name": "surface-blitter-create-start",
-            "ns": 124206580
+            "ns": 160618879
           },
           {
             "name": "surface-blitter-create-done",
-            "ns": 124912367
+            "ns": 161316165
           },
           {
             "name": "surface-initial-configure-start",
-            "ns": 124989738
+            "ns": 161415976
           },
           {
             "name": "surface-initial-configure-done",
-            "ns": 126557664
+            "ns": 162747197
           },
           {
             "name": "window-surface-validation-scope-start",
-            "ns": 126651835
+            "ns": 162830627
           },
           {
             "name": "window-surface-checked-configure-start",
-            "ns": 126698725
+            "ns": 162863708
           },
           {
             "name": "window-surface-checked-configure-done",
-            "ns": 127430003
+            "ns": 163592744
           },
           {
             "name": "window-surface-validation-scope-done",
-            "ns": 127499213
+            "ns": 163669524
           },
           {
             "name": "window-vello-init-start",
-            "ns": 127529324
+            "ns": 163700454
           },
           {
             "name": "window-vello-init-done",
-            "ns": 210788714
+            "ns": 264828539
           },
           {
             "name": "window-render-context-done",
-            "ns": 211028947
+            "ns": 264976510
           },
           {
             "name": "first-redraw-init-render-done",
-            "ns": 211083947
-          },
-          {
-            "name": "render-worker-start",
-            "ns": 211086957
+            "ns": 265023040
           },
           {
             "name": "first-frame-record-start",
-            "ns": 211139068
+            "ns": 265073401
           },
           {
             "name": "first-frame-record-done",
-            "ns": 211346970
+            "ns": 265102691
           },
           {
             "name": "first-frame-update-start",
-            "ns": 211370120
+            "ns": 265124181
           },
           {
             "name": "first-frame-update-done",
-            "ns": 211393211
+            "ns": 265145541
           },
           {
             "name": "first-frame-sync-start",
-            "ns": 211416831
+            "ns": 265172282
           },
           {
             "name": "first-frame-sync-done",
-            "ns": 211463461
+            "ns": 265211732
           },
           {
             "name": "first-frame-live-regions-start",
-            "ns": 211488462
+            "ns": 265235262
           },
           {
             "name": "first-frame-live-regions-done",
-            "ns": 211513632
+            "ns": 265258952
           },
           {
             "name": "first-frame-build-layout-start",
-            "ns": 211537552
+            "ns": 265282972
           },
           {
             "name": "first-frame-build-layout-done",
-            "ns": 211561582
+            "ns": 265306943
+          },
+          {
+            "name": "render-worker-start",
+            "ns": 265318973
           },
           {
             "name": "first-frame-layout-start",
-            "ns": 211592833
+            "ns": 265352023
           },
           {
             "name": "first-frame-layout-done",
-            "ns": 218204890
+            "ns": 274360616
           },
           {
             "name": "first-frame-submitted",
-            "ns": 218379522
+            "ns": 274518858
           },
           {
             "name": "render-worker-first-frame-received",
-            "ns": 218387522
+            "ns": 275408465
           },
           {
             "name": "render-worker-first-acquire-start",
-            "ns": 218499013
+            "ns": 275460105
           },
           {
             "name": "render-worker-first-acquire-done",
-            "ns": 218562484
+            "ns": 275501516
           },
           {
             "name": "render-worker-first-raster-start",
-            "ns": 218592024
+            "ns": 275526926
           },
           {
             "name": "render-worker-first-raster-done",
-            "ns": 219209950
+            "ns": 276533344
           },
           {
             "name": "render-worker-first-blit-start",
-            "ns": 219280901
+            "ns": 276596955
           },
           {
             "name": "render-worker-first-encoder-done",
-            "ns": 219314681
+            "ns": 276629035
           },
           {
             "name": "render-worker-first-blit-copy-done",
-            "ns": 1326803789
+            "ns": 2081094782
           },
           {
             "name": "render-worker-first-blit-done",
-            "ns": 1327092832
+            "ns": 2081520216
           },
           {
             "name": "render-worker-first-present-start",
-            "ns": 1327149142
+            "ns": 2081602866
           },
           {
             "name": "render-worker-first-present-done",
-            "ns": 1349330299
+            "ns": 2113846909
           },
           {
             "name": "render-worker-first-poll-done",
-            "ns": 1349466820
+            "ns": 2115490153
           },
           {
             "name": "first-frame-presented",
-            "ns": 1349510631
+            "ns": 2115608004
           }
         ]
       },
@@ -2190,23 +2190,23 @@
     }
   ],
   "host_load_before": [
-    22.84423828125,
-    29.95556640625,
-    35.8125
+    25.404296875,
+    33.791015625,
+    34.5078125
   ],
   "binary_sha256": {
-    "shell": "171e4c41c9309db1674c8fe86736f7cb121951c5385028dbde7244397bf53dde",
+    "shell": "e299a849cc8e8ae4de287e01bcdf22582d4fd6fe5e28eb7a5b044f140b10b4d7",
     "launcher": "ebd4f88ae7857f21f05f555a9e2724900d75ebe720e8273fa28b145a7d031d32",
-    "probe": "b4115c10941be80b9a67c048e64de404b795a5a5b9f5ccbf1500ec52a5b2ab47"
+    "probe": "42ca7d2a0c4d2694409b4aff625fab95655fbf47d24603e51d9e8fe4e23eebb5"
   },
   "mesa_cache": "ordinary private app cache retained",
   "mesa_seed_source": null,
   "alternate_mesa_seed": false,
-  "compositor_semantic_ready_ms": 305.214408,
+  "compositor_semantic_ready_ms": 392.852442,
   "production_mesa_seed": {
-    "publication_wait_ms": 2455.4327209771145,
+    "publication_wait_ms": 2499.4068819796667,
     "archive_bytes": 154688,
-    "fingerprint": "0c8a485f884b79e1a9c538613d6d1be96bb31a953ff3c78d76b38b1e53af2a93",
+    "fingerprint": "db98b2ff8fe491f5485596c7aafc070078a1f10ec97974fbc7e4d7a58589cc2e",
     "archive_sha256": {
       "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache.foz": "be5e291c98db601db094cc95563e1e5979215129f34866ed070764a60ae685a7",
       "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache_idx.foz": "1625ca1a1f03e1b6e114676080985199178193b9f471dc390d04a774c457b9e2",
@@ -2214,45 +2214,45 @@
       "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache_idx.foz": "22dc071bd62da23752a4758be22c82ae23d1565e66b7313a0b32faae828157db"
     }
   },
-  "live_trace_rows": 1645,
+  "live_trace_rows": 1581,
   "idle_after_publication": {
     "scope": "owned headless compositor after public-seed publication and all probe exits; watcher disabled; not full OS idle",
-    "seconds": 5.000321466999594,
-    "cpu_percent_one_core": 0.39997428429338266,
-    "rss_kib_before": 406956,
-    "rss_kib_after": 406960
+    "seconds": 5.0003507350047585,
+    "cpu_percent_one_core": 0.39997194316772194,
+    "rss_kib_before": 398584,
+    "rss_kib_after": 398584
   },
   "summary": {
     "cold": {
       "count": 3,
-      "sdk_first_present_ms": 1368.618475,
-      "host_first_frame_lower_ms": 1416.399464,
-      "host_first_frame_upper_ms": 1444.204038
+      "sdk_first_present_ms": 1424.168468,
+      "host_first_frame_lower_ms": 1460.970738,
+      "host_first_frame_upper_ms": 1481.568315
     },
     "seed": {
       "count": 3,
-      "sdk_first_present_ms": 230.675857,
-      "host_first_frame_lower_ms": 281.086132,
-      "host_first_frame_upper_ms": 310.024468
+      "sdk_first_present_ms": 211.487864,
+      "host_first_frame_lower_ms": 245.804564,
+      "host_first_frame_upper_ms": 266.13889
     },
     "wrong-driver": {
       "count": 1,
-      "sdk_first_present_ms": 1352.354519,
-      "host_first_frame_lower_ms": 1390.083045,
-      "host_first_frame_upper_ms": 1415.442294
+      "sdk_first_present_ms": 1574.411102,
+      "host_first_frame_lower_ms": 1630.234678,
+      "host_first_frame_upper_ms": 1651.163068
     },
     "corrupt": {
       "count": 1,
-      "sdk_first_present_ms": 1349.510631,
-      "host_first_frame_lower_ms": 1397.802874,
-      "host_first_frame_upper_ms": 1420.330535
+      "sdk_first_present_ms": 2115.608004,
+      "host_first_frame_lower_ms": 2257.651381,
+      "host_first_frame_upper_ms": 2311.42888
     },
-    "sdk_first_present_reduction_percent": 83.14534976593824,
+    "sdk_first_present_reduction_percent": 85.15008099449088,
     "scope": "release synthetic SDK text app through ordinary native launcher; Mesa software rendering; not physical display or full OS startup",
     "publication": {
-      "publication_wait_ms": 2455.4327209771145,
+      "publication_wait_ms": 2499.4068819796667,
       "archive_bytes": 154688,
-      "fingerprint": "0c8a485f884b79e1a9c538613d6d1be96bb31a953ff3c78d76b38b1e53af2a93",
+      "fingerprint": "db98b2ff8fe491f5485596c7aafc070078a1f10ec97974fbc7e4d7a58589cc2e",
       "archive_sha256": {
         "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache.foz": "be5e291c98db601db094cc95563e1e5979215129f34866ed070764a60ae685a7",
         "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache_idx.foz": "1625ca1a1f03e1b6e114676080985199178193b9f471dc390d04a774c457b9e2",
@@ -2262,10 +2262,10 @@
     },
     "idle": {
       "scope": "owned headless compositor after public-seed publication and all probe exits; watcher disabled; not full OS idle",
-      "seconds": 5.000321466999594,
-      "cpu_percent_one_core": 0.39997428429338266,
-      "rss_kib_before": 406956,
-      "rss_kib_after": 406960
+      "seconds": 5.0003507350047585,
+      "cpu_percent_one_core": 0.39997194316772194,
+      "rss_kib_before": 398584,
+      "rss_kib_after": 398584
     }
   },
   "qualification": {
@@ -2274,53 +2274,56 @@
       "samples": [
         {
           "mode": "warm",
-          "qualification_elapsed_ms": 3292.991787981009,
+          "qualification_elapsed_ms": 3272.626261023106,
           "prepared_same_pid_reexec": true,
           "socket_peer_pid_matches_spawned_pid": true,
           "private_seed_files": 4,
           "source_sha256": {
-            "seed.json": "d6225bdabaf687a3251cb18838b53d647c4e62d32ad0659f48bcb058b06bc98f",
-            "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache.foz": "3e4ce5a79c031f8607de0b4d9aaf714616edc26ab59d27441d07787f4de09d98",
+            "seed.json": "e7347da069aa66c24aa1e05d658b1909685ca65fc8b861ec56fd672b9ef0d988",
+            "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache.foz": "8edf16c47643a94c76da2401b9a25a2aec9379f4829b48ac20c663d94b0ad7c0",
             "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache_idx.foz": "22dc071bd62da23752a4758be22c82ae23d1565e66b7313a0b32faae828157db",
             "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache.foz": "be5e291c98db601db094cc95563e1e5979215129f34866ed070764a60ae685a7",
             "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache_idx.foz": "1625ca1a1f03e1b6e114676080985199178193b9f471dc390d04a774c457b9e2"
           },
+          "next_session_requires_production_hash_validation": false,
           "manifest_republished": false
         },
         {
           "mode": "corrupt-fallback",
-          "qualification_elapsed_ms": 2526.2915679777507,
+          "qualification_elapsed_ms": 3182.1948820143007,
           "prepared_same_pid_reexec": false,
           "socket_peer_pid_matches_spawned_pid": true,
           "private_seed_files": 0,
           "source_sha256": {
-            "seed.json": "d6225bdabaf687a3251cb18838b53d647c4e62d32ad0659f48bcb058b06bc98f",
-            "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache.foz": "3e4ce5a79c031f8607de0b4d9aaf714616edc26ab59d27441d07787f4de09d98",
+            "seed.json": "95d972287cbef530873b10e6745cc4b4326ea6da2e3c9f796931ba2fb943f0c6",
+            "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache.foz": "2d121327121dbb686f22e895c0e42c5a7615f7bbc2a750c4ea25d55f7408427c",
             "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache_idx.foz": "22dc071bd62da23752a4758be22c82ae23d1565e66b7313a0b32faae828157db",
             "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache.foz": "be5e291c98db601db094cc95563e1e5979215129f34866ed070764a60ae685a7",
             "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache_idx.foz": "1625ca1a1f03e1b6e114676080985199178193b9f471dc390d04a774c457b9e2"
           },
+          "next_session_requires_production_hash_validation": true,
           "manifest_republished": true
         },
         {
           "mode": "regenerated-warm",
-          "qualification_elapsed_ms": 3204.209151008399,
+          "qualification_elapsed_ms": 3244.6535599883646,
           "prepared_same_pid_reexec": true,
           "socket_peer_pid_matches_spawned_pid": true,
           "private_seed_files": 4,
           "source_sha256": {
-            "seed.json": "d6225bdabaf687a3251cb18838b53d647c4e62d32ad0659f48bcb058b06bc98f",
-            "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache.foz": "3e4ce5a79c031f8607de0b4d9aaf714616edc26ab59d27441d07787f4de09d98",
+            "seed.json": "95d972287cbef530873b10e6745cc4b4326ea6da2e3c9f796931ba2fb943f0c6",
+            "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache.foz": "2d121327121dbb686f22e895c0e42c5a7615f7bbc2a750c4ea25d55f7408427c",
             "7c6ae31cb148678f5e29a029d84388df9706bcae0e1c7a38f1fda4075db79e38/llvmpipe/foz_cache_idx.foz": "22dc071bd62da23752a4758be22c82ae23d1565e66b7313a0b32faae828157db",
             "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache.foz": "be5e291c98db601db094cc95563e1e5979215129f34866ed070764a60ae685a7",
             "415b20f4f852774a98a22504e17c33e155035e7f0589108785ca9b21c5506c02/llvmpipe/foz_cache_idx.foz": "1625ca1a1f03e1b6e114676080985199178193b9f471dc390d04a774c457b9e2"
           },
+          "next_session_requires_production_hash_validation": false,
           "manifest_republished": false
         }
       ]
     },
     "identity-helper": {
-      "scope": "current release read-only identity verification helper with damaged private shader cache",
+      "scope": "current release read-only identity verification helper with damaged owned private shader cache and absent identity",
       "exit": 1,
       "incorrect_shader_cache_inspection_observed": false
     },
@@ -2431,23 +2434,23 @@
       ]
     }
   },
-  "source_base": "3428793458",
-  "post_base_probe_correction": "Use read-only PR_GET_NO_NEW_PRIVS instead of sandbox-denied /proc/self/status.",
-  "excluded_attempts": [
-    {
-      "attempt": 1,
-      "result": "compositor archive published; first app exited because confinement observer read sandbox-denied /proc/self/status; no startup samples completed"
-    },
-    {
-      "attempt": 2,
-      "result": "six cold/seed samples completed; wrong-driver fixture collided when mapping multiple namespaces to zeros; excluded from final medians"
-    }
-  ],
+  "source_base": "e62400f28c044f4c46b66ea327fff68e47733bed",
+  "post_base_source_sha256": {
+    "crates/session/shell/src/shader_seed.rs": "ba39fa07de0150d92f54baf01f44bf22b29276a00886b35f346098cc227c9eb5"
+  },
+  "public_scene": "shared SDK surface::region Content using shipped Theme::dark, no configured settings or fonts",
   "not_run": [
     "full OS image boot with production cache changes",
     "physical GPU or device timings",
     "earliest app launch concurrent with first archive generation",
     "matched cold/warm compositor startup comparison",
     "representative multi-app interaction/frame-rate and app RAM comparisons"
+  ],
+  "excluded_qualification_attempts": [
+    {
+      "attempt": "first current-source session recovery qualification",
+      "result": "publisher regenerated bytes, but observer timed out while requiring byte-identical prior FOZ output; owned processes cleaned up",
+      "correction": "observe atomic republication with unchanged fingerprint and archive shape, then require next ordinary session production hash validation, exact restored-byte hashes, all four private copies, and no republication"
+    }
   ]
 }
