@@ -1474,7 +1474,7 @@ setup, protected SIM permission review, physical SIM hot-swap or a real modem.
 Run it remotely with plain Cargo arguments:
 
 ```sh
-rcargo --no-fallback test --locked -p tilo-messaging-protocol --lib sms_runtime::tests::actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state -- --exact
+cargo test --locked -p tilo-messaging-protocol --lib sms_runtime::tests::actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state -- --exact
 ```
 
 WhatsApp fixtures must next connect the original default first-account owner to
