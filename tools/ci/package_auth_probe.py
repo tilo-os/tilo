@@ -38,6 +38,7 @@ def status(url, credential, method="GET", scheme="token"):
 def main():
     registry = os.environ.get("PACKAGE_TOKEN", "")
     job = os.environ.get("JOB_TOKEN", "")
+    gated = os.environ.get("GATED_PACKAGE_TOKEN", "")
     oidc_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
     oidc_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
     result = {
@@ -48,6 +49,12 @@ def main():
         "oidc_request_token_present": bool(oidc_token),
         "archive_url": ARCHIVE,
     }
+    result["event_name"] = os.environ.get("GITHUB_EVENT_NAME", "")
+    result["gated_package_token_present"] = bool(gated)
+    result["gated_matches_package_token"] = bool(gated) and gated == registry
+    if gated:
+        result["gated_package_token_archive_status"] = status(ARCHIVE, gated)
+    result["invalid_token_archive_status"] = status(ARCHIVE, "invalid-auth-diagnostic-sentinel")
     result["anonymous_archive_get_status"] = status(ARCHIVE, "")
     result["anonymous_archive_head_status"] = status(ARCHIVE, "", method="HEAD")
     for name, token in (("package_token", registry), ("job_token", job)):
