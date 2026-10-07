@@ -1716,6 +1716,62 @@ promotion. No multilingual coverage or natural-environment claim is made.
 receipts: original failures, six-language prototype, one-CPU French, pool
 telemetry, supported one-slot comparison and four English/noise cases.
 No audio, raw transcript, weight artifact or installed model is committed.
-The full goal remains blocked on safe renderer cancellation, recognition
-quality/production resource fitness, broader unseen speech and physical-device
-journeys. All release holds remain in place.
+Renderer cancellation is owned separately. Recognition quality, production
+backend admission, broader unseen speech and physical-device journeys remain
+engineering and acceptance work. All release holds remain in place.
+
+
+### Serial scheduler reservation optimization under the original cap
+
+A second isolated source prototype retains the original **65536-node graph
+capacity**. In a single-backend, nonparallel scheduler every node and source
+uses backend zero, so no cross-backend split or duplicated input copy is
+needed. Reserving one split for that case removes the worst-case split
+metadata reservation; multi-backend/parallel reservations remain unchanged.
+An assertion fails if this serial path ever generates more than one split.
+Default tensor metadata arenas are reduced from 64 to 4 MiB each; allocation
+and graph-capacity guards remain in place. These are native source experiments,
+not supported production settings. Original sources, libraries and object/archive
+intermediates are restored after building, with exact hash receipts.
+
+With the supported one-stream state slot, **all seven exposed development
+runs pass the actual unchanged 1 GiB `RLIMIT_AS` and 960 MiB live-address-space
+guard**. Two-CPU peak virtual space is 946764–947504 KiB (about 925 MiB),
+with peak resident memory 792392–792880 KiB (about 774 MiB). The remaining
+live-guard margin is about 35 MiB. RSS describes resident memory; virtual
+address reservations are what this worker limit constrains. Neither quantity
+establishes whole-device fitness on an older laptop.
+
+| Language | Raw error | First text | Stable prefix | Stop-final |
+|---|---:|---:|---:|---:|
+| English | 21.05% WER | 1.651 s | 2.937 s | 151 ms |
+| German | 5.56% WER | 4.856 s | 5.332 s | 101 ms |
+| French | 0% WER | 3.004 s | 3.782 s | 150 ms |
+| Spanish | 6.90% WER | 2.615 s | 3.572 s | 101 ms |
+| Arabic | 6.67% WER | 1.173 s | 1.812 s | 158 ms |
+| Mandarin | 8.70% CER | 2.613 s | 3.571 s | 150 ms |
+
+One-CPU French also retains 0% WER, with first text 2.977 s, stable prefix
+3.616 s and stop-final 279 ms. All observed drafts remain prefixes of later
+text. These clocks use real 160 ms source pacing, include lazy streaming
+initialization and report constructor work separately. Stability is measured
+retrospectively and does not create a causal confidence gate.
+
+English's four strict word edits include three edits from spoken-cardinal
+versus digit rendering, plus a singular/plural substitution. The raw 21.05%
+score is retained; no reference-aware normalization or altered acceptance
+metric is applied. Formatting needs a separately tested language-aware path.
+Pinned native ITN requires a build with `NEMO_SPEECH_WITH_NORM`, an enabled
+Sparrowhawk normalizer and grammar assets. This reviewed build has no ITN
+support or supplied grammar directory. Toggling `verbatim_transcripts` alone
+would leave normalization disabled, so no such result is claimed.
+
+`dictation-streaming-optimization.json` retains nine no-transcript receipts:
+two separate 2 GiB review runs and seven runs under the actual 1 GiB limit.
+`characterize_nemo_serial_scheduler.py` builds and restores the isolated source
+prototype; `characterize_nemo_serial_matrix.py` replays only the six exposed
+first clips plus one-CPU French. The 742090464-byte Q8 artifact still exceeds
+production's unchanged 256 MiB admission limit, and this native adapter is not
+the production worker. No model is installed or promoted. Unseen speech,
+natural noise, natural language switching, broader session/cache growth and
+physical-device validation remain to be measured; holdout speech is untouched.
