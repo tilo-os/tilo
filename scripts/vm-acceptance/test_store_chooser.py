@@ -80,6 +80,14 @@ class ChooserSafety(unittest.TestCase):
         with self.assertRaises(VmError):
             driver.workspace(vm, "room")
 
+    def test_path_arguments_refuse_before_any_import_or_status_write(self):
+        door = type("Door", (), {"vm": object(), "bound": (driver.app.STORE, "room", "record", "resource")})()
+        for filename, directories in (("../full.tapp", []), ("full.tapp", [".."]), ("full.tapp", ["Downloads/scratch"])):
+            with patch.object(driver, "begin") as start:
+                with self.assertRaises(VmError):
+                    driver.review(door, {}, filename, directories, Path("."))
+                start.assert_not_called()
+
     def test_preexisting_chooser_refuses_before_import_submission(self):
         door = type("Door", (), {"vm": object(), "bound": (driver.app.STORE, "room", "record", "resource")})()
         with patch.object(driver, "workspace"), patch.object(driver, "picker_rows", return_value=[row()]), patch.object(driver, "begin") as start:

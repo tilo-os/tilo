@@ -57,6 +57,12 @@ def request(rows):
     return ids.pop()
 
 
+def component(name):
+    require(isinstance(name, str) and name not in ("", ".", "..") and "/" not in name
+            and "\\" not in name and len(name) <= 255 and "\x00" not in name,
+            "entry must be one declared filename component")
+
+
 class Chooser:
     def __init__(self, vm, identity, room, out, original):
         self.vm, self.identity, self.room, self.out, self.original = vm, identity, room, out, original
@@ -77,8 +83,7 @@ class Chooser:
         return value
 
     def find(self, name, directory):
-        require(name not in ("", ".", "..") and "/" not in name and "\\" not in name,
-                "entry must be one declared filename component")
+        component(name)
         first = self.call("inspect", {"page": 0})
         require(first.get("completed") is False and isinstance(first.get("pages"), int)
                 and 1 <= first["pages"] <= 1024, "active bounded chooser listing unavailable")
@@ -95,6 +100,9 @@ class Chooser:
 
 
 def review(door, fixture, filename, directories, out):
+    component(filename)
+    for name in directories:
+        component(name)
     vm = door.vm
     workspace(vm, door.bound[1])
     require(not picker_rows(vm), "another chooser already active; no Import submitted")
