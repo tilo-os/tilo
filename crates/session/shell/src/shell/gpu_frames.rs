@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use vello::wgpu;
 
+#[cfg(target_os = "linux")]
+mod implicit_fence;
+
 /// How long an image of a superseded frame stays drawable. A scene built
 /// before the newer frame arrived can still be waiting for the presenter.
 const SUPERSEDED_GRACE: Duration = Duration::from_secs(1);
@@ -534,7 +537,11 @@ fn copy_to_owned_observed(
     if let Some(timing) = timing.as_mut() {
         timing.copy_submit = super::capture_timing::now();
     }
-    let submission = present.queue.submit([encoder.finish()]);
+    let commands = encoder.finish();
+    if let Some(timing) = timing.as_mut() {
+        timing.copy_encoder_finish_return = super::capture_timing::now();
+    }
+    let submission = present.queue.submit([commands]);
     if let Some(timing) = timing.as_mut() {
         timing.copy_submit_return = super::capture_timing::now();
     }
@@ -673,10 +680,16 @@ pub(crate) fn import_dmabuf_observed(
     if let Some(timing) = timing.as_mut() {
         timing.fence_start = super::capture_timing::now();
     }
-    wait_readable(fd.as_fd());
+    let fence = implicit_fence::wait(fd.as_fd(), GPU_WAIT);
     if let Some(timing) = timing.as_mut() {
         timing.fence_end = super::capture_timing::now();
+        timing.fence_ready = Some(fence.result.is_ok());
+        timing.fence_poll_calls = Some(fence.poll_calls);
+        timing.fence_poll_events = Some(fence.events);
     }
+    fence
+        .result
+        .map_err(|error| format!("client frame fence wait: {error}"))?;
     let planes = [ui::dmabuf_import::PlaneRef {
         fd: fd.as_fd(),
         offset,
@@ -705,21 +718,6 @@ pub(crate) fn import_dmabuf_observed(
     // The imported aliases go only after the copy completed.
     drop(imported);
     Ok(Arc::new(frame))
-}
-
-/// Block until a dma-buf's pending writes (its implicit fence) are done, at
-/// most [`GPU_WAIT`].
-#[cfg(target_os = "linux")]
-fn wait_readable(fd: std::os::fd::BorrowedFd<'_>) {
-    use std::os::fd::AsRawFd as _;
-    let mut poll = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout = i32::try_from(GPU_WAIT.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: one valid pollfd, borrowed for the duration of the call.
-    let _ = unsafe { libc::poll(&raw mut poll, 1, timeout) };
 }
 
 #[cfg(test)]
@@ -794,7 +792,11 @@ mod tests {
             .copy_submit_return
             .expect("submission returned timestamp");
         let completed = timing.copy_end.expect("completed GPU wait timestamp");
-        assert!(submitted >= submit);
+        let encoded = timing
+            .copy_encoder_finish_return
+            .expect("command encoder finished timestamp");
+        assert!(encoded >= submit);
+        assert!(submitted >= encoded);
         assert!(completed >= submitted);
         assert!(
             timing.fence_start.is_none(),

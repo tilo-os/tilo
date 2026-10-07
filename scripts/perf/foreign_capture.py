@@ -113,9 +113,19 @@ def summarize_foreign_capture(lines, compositor_frames, samples, displays, deliv
         present = presents[cpu]
         intervals['present_return_to_capture_prepare'] = _interval(
             [present['after_host_lo_s'], present['after_host_hi_s']], [points[0] / 1e9] * 2)
+        breakdown = dict(available=False)
+        if capture.get('copy_encoder_finish_return_ns') is not None:
+            encoded = number(capture, 'copy_encoder_finish_return_ns')
+            begin, end = number(capture, 'copy_submit_ns'), number(capture, 'copy_submit_return_ns')
+            if not begin <= encoded <= end:
+                raise ValueError('Command encoder finish is outside its submission bracket')
+            breakdown = dict(available=True, encoder_finish_ms=(encoded - begin) / 1e6,
+                             queue_submit_ms=(end - encoded) / 1e6)
+        if 'fence_ready' in capture and capture['fence_ready'] is not True:
+            raise ValueError('Producer fence did not prove write completion')
         frames.append(dict(input_id=sample['input_id'], cpu_frame_id=cpu, surface_id=surface,
                            capture_token=active['capture_token'], capture_seq=seq, pipe_serial=serial,
-                           intervals_ms=intervals))
+                           intervals_ms=intervals, copy_submit_breakdown=breakdown))
     return dict(available=bool(frames), complete=bool(samples) and len(frames) == len(samples),
                 performance_certified=False, frames=frames,
                 stages={name: {bound: distribution([frame['intervals_ms'][name][index] for frame in frames], scale=1)

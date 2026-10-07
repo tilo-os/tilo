@@ -94,6 +94,16 @@ wall time, GPU completion wait, bump-counter settlement and separate KMS
 retirement wait. Direct scanout collects those bridge phases without staging
 or reading back pixels. These CPU clock intervals locate blocking work; they
 are not GPU timestamp samples or proof of successful physical presentation.
+Foreign capture's exact token record splits command-encoder finishing from
+actual queue submission with `copy_encoder_finish_return_ns`; the older
+`copy_submit_ns` → `copy_submit_return_ns` bracket includes both. The original
+producer-fence wait reports readiness and poll events, and refuses timed-out,
+closed or invalid descriptors instead of importing unfinished producer storage.
+Interrupted waits retain the original one-second deadline. These are CPU clock
+boundaries, not shader durations. Required DMA ownership and copy-completion
+waits are unchanged. The existing session presentation diagnostic action enables
+capture observation live; GPU timestamp queries still require renderer startup.
+
 Vello dispatch timestamps additionally require both `VELLO_GPU_TIMESTAMPS=1`
 and `VELLO_GPU_DISPATCH_TIMESTAMPS=1` before device/renderer creation. Enable
 these fixed options through the greeter's ordinary next-sign-in diagnostics

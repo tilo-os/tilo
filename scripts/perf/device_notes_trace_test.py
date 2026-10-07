@@ -89,6 +89,9 @@ class RollingCollection(unittest.TestCase):
         fixture = ForeignCaptureJoin().fixture()
         for tag, row in fixture:
             row['not_permitted_user_text'] = 'must never leave the device'
+            if row.get('event') == 'imported':
+                row.update(copy_encoder_finish_return_ns=16500, fence_ready=True,
+                           fence_poll_calls=1, fence_poll_events=1)
             if row.get('event') == 'completed':
                 row['physical_presented_time_ns'] = 110000000
                 row['physical_sequence'] = 1
@@ -105,6 +108,11 @@ class RollingCollection(unittest.TestCase):
         self.assertEqual(len(diagnostics), 5)
         self.assertNotIn('must never leave', '\n'.join(diagnostics))
         self.assertNotIn('not_permitted', '\n'.join(diagnostics))
+        imported = next(json.loads(line.split(' ', 1)[1]) for line in diagnostics
+                        if json.loads(line.split(' ', 1)[1]).get('event') == 'imported')
+        self.assertEqual(imported['copy_encoder_finish_return_ns'], 16500)
+        self.assertTrue(imported['fence_ready'])
+        self.assertEqual(imported['fence_poll_calls'], 1)
         self.assertFalse(any(json.loads(line.split(' ', 1)[1]).get('pipe_serial') == 999
                              for line in diagnostics))
 

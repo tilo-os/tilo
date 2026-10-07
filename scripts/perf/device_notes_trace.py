@@ -22,7 +22,7 @@ lifecycle = []
 records = []
 diagnostics = []
 diagnostic_fields = {
- "tilo-foreign-capture ": set("event clock_id surface_id capture_token capture_seq prepare_ns enqueue_ns worker_start_ns fence_start_ns fence_end_ns native_import_end_ns copy_submit_ns copy_submit_return_ns copy_end_ns staged_ns barrier_ns barrier_return_ns activated_ns accepted shared_gpu capture_limit".split()),
+ "tilo-foreign-capture ": set("event clock_id surface_id capture_token capture_seq prepare_ns enqueue_ns worker_start_ns fence_start_ns fence_end_ns fence_ready fence_poll_calls fence_poll_events native_import_end_ns copy_submit_ns copy_encoder_finish_return_ns copy_submit_return_ns copy_end_ns staged_ns barrier_ns barrier_return_ns activated_ns accepted shared_gpu capture_limit".split()),
  "tilo-compositor-feedback ": set("event clock_id event_time_ns composed_time_ns pipe_serial surface_id capture_seq physical_presented_time_ns physical_sequence omitted_pixels".split()),
  "tilo-present-pipe ": set("event clock_id pipe_serial enqueue_ns render_start_ns render_end_ns".split()),
 }
@@ -63,9 +63,9 @@ for line in Path(sys.argv[1]).read_text().splitlines():
         if row.get("event") not in diagnostic_events[index]:
             raise SystemExit("Invalid capture diagnostic event")
         for key, value in row.items():
-            valid = (key == "event" or (key in ("accepted", "shared_gpu") and type(value) is bool)
-                     or (key not in ("event", "accepted", "shared_gpu")
-                         and ((value is None and (key.endswith("_ns") or key == "physical_sequence"))
+            valid = (key == "event" or (key == "fence_ready" and value is None) or (key in ("accepted", "shared_gpu", "fence_ready") and type(value) is bool)
+                     or (key not in ("event", "accepted", "shared_gpu", "fence_ready")
+                         and ((value is None and (key.endswith("_ns") or key in ("physical_sequence", "fence_poll_calls", "fence_poll_events")))
                               or (type(value) is int and 0 <= value <= 2**64 - 1))))
             if not valid:
                 raise SystemExit("Invalid capture diagnostic field")

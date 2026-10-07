@@ -388,6 +388,24 @@ class ForeignCaptureJoin(unittest.TestCase):
         self.assertAlmostEqual(frame['intervals_ms']['barrier_to_activation'][1], .001)
         self.assertAlmostEqual(frame['intervals_ms']['present_return_to_capture_prepare'][0], .008)
 
+    def test_encoder_finish_and_queue_submit_have_separate_exact_brackets(self):
+        records = self.fixture()
+        capture = records[0][1]
+        capture.update(copy_encoder_finish_return_ns=16500, fence_ready=True)
+        breakdown = self.report(records)['frames'][0]['copy_submit_breakdown']
+        self.assertTrue(breakdown['available'])
+        self.assertAlmostEqual(breakdown['encoder_finish_ms'], .0005)
+        self.assertAlmostEqual(breakdown['queue_submit_ms'], .0005)
+        for value in (15999, 17001):
+            capture['copy_encoder_finish_return_ns'] = value
+            with self.assertRaisesRegex(ValueError, 'encoder finish'):
+                self.report(records)
+        capture['copy_encoder_finish_return_ns'] = 16500
+        capture['fence_ready'] = False
+        with self.assertRaisesRegex(ValueError, 'fence'):
+            self.report(records)
+        self.assertFalse(self.report(self.fixture())['frames'][0]['copy_submit_breakdown']['available'])
+
     def test_absent_partial_duplicate_stale_and_omitted_evidence_never_passes(self):
         fixture = self.fixture()
         for index in range(len(fixture)):
