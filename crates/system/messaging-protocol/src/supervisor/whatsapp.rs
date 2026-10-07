@@ -13,7 +13,11 @@ pub struct Network {
     pub http: Arc<dyn HttpClient>,
     pub transport: Arc<dyn TransportFactory>,
 }
+mod linking;
+#[cfg(target_os = "linux")]
+mod native_network;
 mod network;
+pub use linking::WhatsappLinking;
 struct Http(Arc<dyn HttpClient>);
 #[whatsapp_rust::async_trait]
 impl HttpClient for Http {
@@ -46,6 +50,32 @@ impl crate::whatsapp_store::StateAuthority for StateGrant {
     }
 }
 impl WhatsappBootstrap {
+    /// Build with the original protected account key and grant before SDK I/O.
+    /// No key, permission, account or network connection is created here.
+    /// # Errors
+    /// Refuses revoked authority, unsafe paths or unusable encrypted SDK state.
+    pub async fn open_profile(
+        root: &std::path::Path,
+        owner: crate::journal::Owner,
+        key: secret_vault::VaultKey,
+        network: Network,
+        authority: Arc<dyn super::AccountAuthority>,
+    ) -> Result<Self, SendError> {
+        if !root.is_absolute() {
+            return Err(SendError::InvalidRequest);
+        }
+        authority.check()?;
+        let backend = crate::whatsapp_store::EncryptedBackend::open_profile(
+            root,
+            owner,
+            key,
+            Arc::new(StateGrant(authority.clone())),
+        )
+        .map_err(|_| SendError::Unavailable)?;
+        let bootstrap = Self::build(backend, network.guarded(authority.clone())).await?;
+        authority.check()?;
+        Ok(bootstrap)
+    }
     /// Open existing OS-keychain custody on the native supervisor worker.
     /// No key is provisioned and no weaker store or ambient account is used.
     /// # Errors

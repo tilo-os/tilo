@@ -33,6 +33,8 @@ use local_model_service::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod memory_capacity;
+
 #[derive(Parser)]
 #[command(
     name = "tilo-model-manager",
@@ -401,19 +403,8 @@ impl HttpsTransport for ManagerTransport {
     }
 }
 
-fn local_hardware(root: &Path) -> HardwareSnapshot {
-    let memory_mib = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|body| {
-            body.lines().find_map(|line| {
-                line.strip_prefix("MemTotal:")?
-                    .split_whitespace()
-                    .next()?
-                    .parse::<u64>()
-                    .ok()
-            })
-        })
-        .map_or(0, |kib| kib / 1024);
+fn local_hardware(root: &Path) -> Result<HardwareSnapshot, String> {
+    let memory_mib = memory_capacity::runtime_memory_mib()?;
     let free_storage_mib = store_free_storage_mib(root).unwrap_or(0);
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
@@ -474,13 +465,13 @@ fn local_hardware(root: &Path) -> HardwareSnapshot {
             }
         }
     }
-    HardwareSnapshot {
+    Ok(HardwareSnapshot {
         cpu_threads: std::thread::available_parallelism()
             .map_or(1, |count| u16::try_from(count.get()).unwrap_or(u16::MAX)),
         memory_mib,
         free_storage_mib,
         accelerators,
-    }
+    })
 }
 /// Observe the selected store's filesystem, including a normal not-yet-created
 /// store. Only `NotFound` permits bounded ascent; invalid paths and probe errors
@@ -1295,6 +1286,9 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
                 .find(|release| release.id == model)
                 .ok_or_else(|| "model is not in the signed catalog".to_string())?;
             refuse_in_process(release)?;
+            // Refuse before reporting an admitted background start; its worker
+            // observes the same runtime slice again immediately before launch.
+            signed_runtime_for(&catalog, &local_hardware(&root)?, release)?;
             service
                 .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
@@ -1343,7 +1337,11 @@ fn run_start_worker(
         .find(|release| release.id == model)
         .ok_or_else(|| "model is not in the signed catalog".to_string())?;
     refuse_in_process(release)?;
-    let runtime = signed_runtime_for(catalog, &local_hardware(root), release)?;
+    let runtime = local_hardware(root)
+        .and_then(|hardware| signed_runtime_for(catalog, &hardware, release))
+        .inspect_err(|error| {
+            let _ = service.record_failure(model, error);
+        })?;
     if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
         let _ = service.record_failure(model, error.to_string());
         return Err(error.to_string());
@@ -1378,7 +1376,7 @@ fn local_snapshot(
         SystemdSupervisor,
     )
     .map_err(|error| error.to_string())?;
-    let hardware = local_hardware(root);
+    let hardware = local_hardware(root)?;
     let (recommended, runtime) = match recommended_model(&catalog, &hardware) {
         Ok((model, kind)) => (Some(package(model)), Ok(kind)),
         Err(reason) => (None, Err(reason)),
@@ -1462,7 +1460,11 @@ fn run_install_worker(
         }
         return Ok(());
     }
-    let runtime = signed_runtime_for(catalog, &local_hardware(root), release)?;
+    let runtime = local_hardware(root)
+        .and_then(|hardware| signed_runtime_for(catalog, &hardware, release))
+        .inspect_err(|error| {
+            let _ = service.record_failure(model, error);
+        })?;
     if let Err(error) = service
         .install_with_runtime_progress(runtime, release)
         .and_then(|_| {
@@ -1843,6 +1845,58 @@ mod tests {
         assert!(recommended_model(&catalog, &hardware).is_err());
         hardware.free_storage_mib = 2;
         assert!(recommended_model(&catalog, &hardware).is_ok());
+    }
+
+    #[test]
+    fn runtime_selection_and_snapshot_fit_use_effective_slice_capacity() {
+        use agent_provider_config::local::ModelArtifactFormat;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("user.slice/app.slice")).unwrap();
+        std::fs::write(root.path().join("cgroup.controllers"), "memory\n").unwrap();
+        std::fs::write(root.path().join("user.slice/memory.max"), "max\n").unwrap();
+        let limit = root.path().join("user.slice/app.slice/memory.max");
+        std::fs::write(&limit, "21474836480\n").unwrap();
+        let properties = "LoadState=loaded\nControlGroup=/user.slice/app.slice\n";
+        let meminfo = "MemTotal: 33554432 kB\nMemAvailable: 1024 kB\n";
+        let mut model = runtime_model();
+        model.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        model.required_memory_mib = 24576;
+        let mut catalog = catalog_fixture();
+        catalog.models = vec![model];
+        catalog.runtimes = vec![signed_selector_runtime()];
+        let mut hardware = HardwareSnapshot {
+            cpu_threads: 8,
+            memory_mib: memory_capacity::capacity_mib(meminfo, properties, root.path()).unwrap(),
+            free_storage_mib: 1024,
+            accelerators: vec![Accelerator::Nvidia {
+                vram_mib: 8188,
+                driver: "test".into(),
+            }],
+        };
+        assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+        assert!(recommended_model(&catalog, &hardware).is_err());
+        let report = recommendation(
+            &hardware,
+            Err("Insufficient runtime memory capacity".into()),
+            false,
+        );
+        assert!(matches!(report.fit, HardwareFit::Unsupported));
+        assert_eq!(report.memory_gib, 20);
+        // Unlimited limits restore physical capacity, not the 1 MiB headroom.
+        std::fs::write(limit, "max\n").unwrap();
+        hardware.memory_mib =
+            memory_capacity::capacity_mib(meminfo, properties, root.path()).unwrap();
+        assert_eq!(
+            signed_runtime_for(&catalog, &hardware, &catalog.models[0])
+                .unwrap()
+                .release
+                .kind,
+            RuntimeKind::NvidiaCuda
+        );
+        assert_eq!(
+            recommended_model(&catalog, &hardware).unwrap().1,
+            RuntimeKind::NvidiaCuda
+        );
     }
 
     #[test]

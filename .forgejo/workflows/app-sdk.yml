@@ -351,7 +351,7 @@ jobs:
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
-          name: app-sdk-mounted-resource
+          name: app-sdk-mounted-resource-${{ github.run_attempt }}
           path: |
             target/mounted-resource
             target/mounted-resource-recovery
