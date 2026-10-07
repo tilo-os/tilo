@@ -246,3 +246,84 @@ this script does not replace installer signature/closed-graph validation or
 infer source ancestry from a `native.*` name. No Host permission is granted, and
 no actor is relabelled. On a physical device, run it only after the owner has
 confirmed the matched cohort is active and authorized this test.
+
+
+## Store and Browser after a paired cohort update
+
+`app-cohort.py` reuses the same maintained VM transport and tracked job helper
+as `terminal-cohort.py`. It never creates a VM, changes trust, stages a file,
+closes a window, reads Notes, or changes power/session state. Running it does
+install/open the chosen test applications and changes Store filters; the
+operator must authorize that acceptance after the matched cohort is active.
+Do not run the broad `run.py` suite against the user's desktop.
+
+For the independently observable Flatpak and Browser portion:
+
+```bash
+python3 scripts/vm-acceptance/app-cohort.py \
+  --binary /absolute/path/to/qualified/tilo-vm \
+  --vm yoga --slot device --uid 1000 \
+  --cohort-receipt /absolute/path/to/actual-apps-runtime-receipt.json \
+  --flow flatpak --flow browser --out target/yoga-app-acceptance-UNIQUE
+```
+
+Use the owned acceptance VM's name, slot and UID instead to qualify the recipe
+before physical delivery. Each output directory must be new. This explicit
+partial invocation proves only those two flows. Omitting `--flow` requires
+all four flows and refuses missing package fixtures or trusted attestors
+before application actions. There is no automatic skip or trust grant.
+
+The receipt must identify the successful installed closed SDK layer and its
+actual source commit/inventory digest. The matched Shell/control CLI must
+support programmatic action discovery and numeric broker job status. Store
+must include default Flathub browsing (PR2986), catalogue inspection and the
+catalogue import union `ba5fc5c12d` then `be85891c24` (PR3170). Generic unlisted
+import additionally needs `395c9e5f48` (PR3200), matching AppHost/capability SDK,
+the canonical installer, and an **already configured** applicable trusted
+attestor. A self-signed cohort package is not that prerequisite. The source
+receipt and actual mapped ELF hashes, not a version label, establish the SDK
+association; installer/daemon verification remains authoritative.
+
+Flatpak acceptance refuses an already installed Calculator, disabled or
+foreign Flathub collisions, unavailable remotes and ambiguous bindings. It
+requires browse, search, readable details, completed install, account-level
+Flatpak readback and a mapped Calculator window. It never removes an app to
+manufacture a first-install claim. The initial account metadata and completed
+receipts are saved, so a failed post-install Open must not be replayed as a
+fresh installation.
+
+Package flows require `--package-fixtures /absolute/path/to/fixtures.json`:
+
+```json
+{
+  "catalogue": {"app": "so.tilo.calculator", "root": "EXACT_SIGNED_ROOT_HEX", "version": "EXACT_VERSION", "path": "/ALREADY_HANDED/official.tapp"},
+  "local": {"app": "so.tilo.calculator", "root": "EXACT_SIGNED_ROOT_HEX", "version": "EXACT_VERSION", "path": "/ALREADY_HANDED/attested.tapp"}
+}
+```
+
+These are placeholders, not fixtures or trust inputs. Use genuine signed
+packages of the device's native architecture/runtime. Paths must already be
+readable through the ordinary sandbox/file handoff; the runner grants no
+access. Supply different utility apps or run the routes separately, because
+each Open must map a previously unopened utility window. Notes and the Store
+and Browser acceptance workers are refused as package subjects. Review must
+match the exact expected app/root/version and independent trust route before
+Install. Completed installation is followed by Store readback, canonical
+`app list --installed --json` version readback, and normal mapped Open. The
+CLI inventory has no root field: exact root is bound by review and the normal
+Install action, not fabricated from that list. Existing cached/native entries
+are reported as update/reuse rather than first installations.
+
+Browser acceptance first invokes declared `tab.open-beside` without a URL.
+It will not navigate until an additional mapped tab/surface and a distinct
+same-room `browser.page` record appear while every previous Browser tab remains.
+This requires the framework instance-record fix `b576c07ae5` (PR3215). A queued
+Open receipt alone is insufficient. Only that new bound page receives Navigate,
+WaitPageSettled and ReadPage; success requires actual settled HTTPS Example
+Domain content, not a successful job carrying `settled: false`.
+
+`proof.json` records only completed selected flows. Per-invocation contracts,
+receipts/status, public baseline and mapped SDK hashes remain available on
+failure. Accepted, lost, ambiguous or unobservable outcomes fail without
+replaying the effect. Runner unit tests exercise these transitions and stale
+record refusal; they do not claim physical installation or presentation.
