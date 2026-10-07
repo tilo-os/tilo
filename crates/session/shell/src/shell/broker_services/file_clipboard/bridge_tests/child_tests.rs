@@ -300,7 +300,7 @@ fn start_child(fixture: &Fixture, protected_path: PathBuf) {
         root: fixture.directory.path().into(),
         room: fixture.room.clone(),
         identity: fixture.identity.clone(),
-        protected: protected_path.clone(),
+        protected: protected_path,
         sandbox_argv: argv,
     };
     fs::write(
