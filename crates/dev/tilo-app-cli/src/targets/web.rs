@@ -665,7 +665,9 @@ fn app_crate_source(project: &Project) -> Result<String> {
         .unwrap_or("src/lib.rs");
     let lib_source = std::fs::read_to_string(project.app_dir.join(lib_path))
         .with_context(|| format!("reading {lib_path}; the web target links the app's library"))?;
-    let definition = if lib_source.contains("pub fn definition(") {
+    let definition = if lib_source.contains("pub fn definition(")
+        || lib_source.contains("ui::dev_reload_entry!(")
+    {
         "app::definition()"
     } else if lib_source.contains("impl ResourceApp for App") {
         "ui::framework::definition::<app::App>()"
@@ -1616,6 +1618,27 @@ mod tests {
             target_dir: root.join("target"),
             sdk_root: root.into(),
         }
+    }
+
+    #[test]
+    fn web_registers_the_reload_macros_existing_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project = packaging_project(root);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "ui::dev_reload_entry!(ChatShell);\n",
+        )
+        .unwrap();
+        let entry = app_crate_source(&project).unwrap();
+        assert!(entry.contains("registry::register(app::definition())"));
+        assert!(!entry.contains("definition::<app::App>()"));
     }
 
     fn packaging_request(root: &Path) -> TargetPackageRequest {

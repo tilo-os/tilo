@@ -463,3 +463,33 @@ The original isolated native voice-session CI failure closed before the expected
 call-state event. Three bounded exact repeats passed; no race was demonstrated.
 The assertion is preserved and now names its expected stage on closure. No
 blind reconnect or test retry was added.
+
+### Compiled standalone browser acceptance (2026-10-07)
+
+The supported `tilo-app build apps/chat --platform web` path now recognizes
+`ui::dev_reload_entry!` as exporting the SDK's existing `definition()`. The CLI
+previously rejected Chat before generating its browser registry. No SDK macro or
+Chat definition is duplicated. A focused CLI regression covers that production
+source probe, and the actual Chat WASM bundle builds successfully.
+
+Run `node scripts/headless-examples/chat-browser-journey.mjs <chat-bundle>`
+against that generated bundle with the repository browser helper's `CHROME`
+configured for an owned Chromium process. The journey serves only loopback and
+uses a throwaway browser profile. It mounts the compiled Chat, requires a real
+presented frame, creates two conversations through published actions, posts one
+message and one typed live-resource address, reads them through the public
+resource door, verifies conversation isolation and exact provider provenance,
+flushes and reloads the same room, then compares the complete restored results.
+The local compiled-browser journey passed with Chromium's sandbox enabled and
+an owned descendant supervisor. It does not certify peer authentication, native
+clipboard navigation, resource hydration, public hosting or browser voice.
+
+Fresh public reads of the previously audited `https://tilo.coffee/` candidate
+returned 200 for the homepage and config and 403 for
+`/qos-runtime/resource.html`. This is evidence about that candidate only; the
+existing demo's identity and current published resource entry still need
+confirmation. Read-only CloudFormation queries in both documented regions
+reported expired credentials. No login renewal, deployment or access change was
+performed. The actual standalone Chat bundle is ready for local acceptance;
+external acceptance must use the existing authorized demo rather than create a
+replacement deployment.
