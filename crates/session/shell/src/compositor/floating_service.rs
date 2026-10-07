@@ -555,7 +555,7 @@ mod tests {
             version: ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
             id: "conversation".into(),
             title: "Agent conversation".into(),
-            role: ui::floating_surface::FloatingSurfaceProtocolRole::LiveActivity,
+            role: ui::floating_surface::FloatingSurfaceProtocolRole::Conversation,
             source: ui::floating_surface::FloatingSurfaceProtocolSource::AppElement {
                 app_id: "so.tilo.chat".into(),
                 element_id: "conversation".into(),

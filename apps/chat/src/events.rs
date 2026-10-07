@@ -3854,9 +3854,15 @@ mod tests {
             surface.view.composer_main.private_plain().as_deref(),
             Some("Keep the exact private selection")
         );
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("the drag crosses the same compositor adoption door as Float");
+        assert_eq!(
+            request.role,
+            ui::floating_surface::FloatingRole::Conversation
+        );
         assert!(
-            ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app).is_some(),
-            "the drag crosses the same compositor adoption door as Float"
+            request.role.uses_app_owned_host(),
+            "a detached conversation must prepare an interactive app-owned native host"
         );
         feed(
             &mut app,

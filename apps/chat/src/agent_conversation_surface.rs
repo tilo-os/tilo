@@ -92,7 +92,7 @@ impl AgentConversationSurface {
                 .direct_agent
                 .as_deref()
                 .map_or_else(String::new, |agent| self.view.agent_display_name(agent)),
-            role: FloatingRole::LiveActivity,
+            role: FloatingRole::Conversation,
             source: FloatingSource::AppElement {
                 app_id: "so.tilo.chat".into(),
                 element_id: self.id.clone(),

@@ -1621,11 +1621,7 @@ fn pump_floating_surface_service(
                                 frame_builder.foreign_surface_for_app(&app_id).ok_or_else(
                                     || format!("{app_id} has no visible foreign surface"),
                                 )?;
-                            let (transfer_frame, transfer_source) = if matches!(
-                                request.role,
-                                ui::floating_surface::FloatingRole::ActiveCall
-                                    | ui::floating_surface::FloatingRole::Navigation
-                            ) {
+                            let (transfer_frame, transfer_source) = if request.role.uses_app_owned_host() {
                                 validate_app_owned_source(&request.source, &app_id)?;
                                 let source = app_owned_transfer_region(
                                     &request.source,
@@ -1671,11 +1667,7 @@ fn pump_floating_surface_service(
                         });
                     match result {
                         Ok((request, transfer_frame, transfer_source, coordinate_offset)) => {
-                            if matches!(
-                                request.role,
-                                ui::floating_surface::FloatingRole::ActiveCall
-                                    | ui::floating_surface::FloatingRole::Navigation
-                            ) {
+                            if request.role.uses_app_owned_host() {
                                 let content_rect = request.initial_rect.unwrap_or_else(|| {
                                     Rect::from_center_size(desktop.center(), request.preferred_size)
                                 });

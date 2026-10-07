@@ -53,6 +53,19 @@ pub enum FloatingRole {
     ActiveCall,
     Navigation,
     LiveActivity,
+    /// Interactive conversation content retained by its original app.
+    Conversation,
+}
+
+impl FloatingRole {
+    /// Whether interactive content stays rendered by its owning app rather
+    /// than becoming a compositor-owned capture mirror.
+    pub const fn uses_app_owned_host(self) -> bool {
+        match self {
+            Self::ActiveCall | Self::Navigation | Self::Conversation => true,
+            Self::PictureInPicture | Self::LiveActivity => false,
+        }
+    }
 }
 
 /// What a floating surface's body is made of. A surface names its material;
@@ -127,11 +140,15 @@ pub enum FloatingSurfaceProtocolSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Roles are additive wire values: an older peer refuses an unknown role;
+/// it must never reinterpret interactive content as a capture mirror. Adding
+/// a role preserves the existing framing, geometry, and legacy role values.
 pub enum FloatingSurfaceProtocolRole {
     PictureInPicture,
     ActiveCall,
     Navigation,
     LiveActivity,
+    Conversation,
 }
 
 /// Starting mode for an app-requested session-shell chooser. The request only
@@ -801,6 +818,7 @@ impl From<FloatingRole> for FloatingSurfaceProtocolRole {
             FloatingRole::ActiveCall => Self::ActiveCall,
             FloatingRole::Navigation => Self::Navigation,
             FloatingRole::LiveActivity => Self::LiveActivity,
+            FloatingRole::Conversation => Self::Conversation,
         }
     }
 }
@@ -812,6 +830,7 @@ impl From<FloatingSurfaceProtocolRole> for FloatingRole {
             FloatingSurfaceProtocolRole::ActiveCall => Self::ActiveCall,
             FloatingSurfaceProtocolRole::Navigation => Self::Navigation,
             FloatingSurfaceProtocolRole::LiveActivity => Self::LiveActivity,
+            FloatingSurfaceProtocolRole::Conversation => Self::Conversation,
         }
     }
 }
@@ -1510,6 +1529,52 @@ fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_roles_preserve_wire_identity_and_app_host_classification() {
+        for (role, wire, app_owned) in [
+            (FloatingRole::PictureInPicture, "picture_in_picture", false),
+            (FloatingRole::ActiveCall, "active_call", true),
+            (FloatingRole::Navigation, "navigation", true),
+            (FloatingRole::LiveActivity, "live_activity", false),
+            (FloatingRole::Conversation, "conversation", true),
+        ] {
+            let protocol = FloatingSurfaceProtocolRequest {
+                version: FLOATING_SURFACE_PROTOCOL_VERSION,
+                id: "retained-content".into(),
+                title: "Conversation".into(),
+                role: role.into(),
+                source: FloatingSurfaceProtocolSource::AppElement {
+                    app_id: "so.tilo.chat".into(),
+                    element_id: "conversation".into(),
+                    region: [0.0, 0.0, 560.0, 560.0],
+                },
+                preferred_size: [560.0, 560.0],
+                aspect_ratio: None,
+                initial_rect: Some([100.0, 20.0, 660.0, 580.0]),
+                presentation_rect: None,
+            };
+            assert_eq!(
+                serde_json::to_string(&protocol.role).unwrap(),
+                format!("\"{wire}\"")
+            );
+            let message = FloatingSurfaceClientMessage::Present { request: protocol };
+            let json = serde_json::to_string(&message).unwrap();
+            let decoded = serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap();
+            assert_eq!(decoded, message);
+            let FloatingSurfaceClientMessage::Present { request } = decoded else {
+                panic!("a Present frame must retain its lifecycle operation");
+            };
+            let native = FloatingSurfaceRequest::try_from(request).unwrap();
+            assert_eq!(native.role, role);
+            assert_eq!(native.role.uses_app_owned_host(), app_owned);
+            assert_eq!(
+                FloatingSurfaceProtocolRequest::from(&native).role,
+                role.into()
+            );
+        }
+        assert!(serde_json::from_str::<FloatingSurfaceProtocolRole>("\"unknown_role\"").is_err());
+    }
 
     fn instant_ago(duration: crate::time::Duration) -> crate::time::Instant {
         crate::time::now()
