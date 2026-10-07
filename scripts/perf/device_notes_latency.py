@@ -19,8 +19,14 @@ from device_notes_trace import collect_trace
 def require_scratch(state, page, count):
     """Refuse input unless the real editor has adopted this exact scratch body."""
     if any(state.get(key) != page for key in
-           ("selected_page", "main_page", "editor_binding_page")):
+           ("selected_page", "bound_page", "main_page", "editor_binding_page")):
         raise RuntimeError("Notes is not bound to the requested scratch page")
+    ready = ("active_line_present", "active_line_focused", "editor_route_available")
+    blocked = ("active_line_disabled", "editor_read_only", "editor_composing",
+               "sidebar_renaming", "sidebar_menu_open", "editor_menu_open")
+    if (any(state.get(key) is not True for key in ready)
+            or any(state.get(key) is not False for key in blocked)):
+        raise RuntimeError("Scratch active editor route is unavailable or unverified")
     if (state.get("app") != "so.tilo.notes"
             or state.get("editor_focused") is not True
             or state.get("adopted") is not True
@@ -149,6 +155,8 @@ def capture(device, options):
     records = {}
     try:
         for index in range(options.samples):
+            # Revalidate the actual child route on every key. The first key is
+            # a readiness probe: no further input follows an unadopted insertion.
             require_scratch(device.action("inspect-editor", {}), page, index)
             require_keyboard_notes(device.control(["state-dump"]))
             device.run(["input", "--slot", options.slot, "type", "a", "--json"])

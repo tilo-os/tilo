@@ -449,6 +449,14 @@ key families is bounded; increasing quotas without measuring traffic is not.
 
 Compositor observation is live. Native-app presentation diagnostics are inherited
 at app startup, so those must already be enabled for the owned scratch app.
+The maintained physical Notes driver requires the actual `InspectEditor` child
+line to be present, focused and enabled, with an available editor route and no
+composition, rename or open editor/sidebar menu. All four page bindings must
+match the newly verified scratch page. It sends one kernel key, then refuses any
+further input unless canonical/rendered character counts and caret advance by
+exactly one with matching body hashes. Missing child-state fields refuse input;
+an old SDK cannot silently qualify this readiness check. Delivery without that
+insertion remains a failed capture, irrespective of available GPU timings.
 Toggling the compositor observation window does not change an existing app's
 environment or restart its renderer. Analyze the maintained physical capture with
 `physical_notes_stages.py --require-foreign-capture`; absent, partial, duplicate,
