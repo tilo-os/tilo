@@ -177,6 +177,8 @@ mod launcher_action_coverage_tests;
 )]
 #[path = "idle_io_animation_tests.rs"]
 mod idle_io_animation_tests;
+#[cfg(test)]
+mod network_inspection_tests;
 
 /// Draw a relationship line with a visible head at the followed person. This
 /// intentionally encodes direction in geometry, so a room observer does not

@@ -112,7 +112,7 @@ impl QuickSettingsWifiPane {
         Self::hotspot_rect_for(panel)
     }
 
-    fn displayed_network_count(state: &QuickSettingsState) -> usize {
+    pub(super) fn displayed_network_count(state: &QuickSettingsState) -> usize {
         if state.wifi && !state.wifi_scanning && state.wifi_scan_error.is_none() {
             state.wifi_networks.len()
         } else {
@@ -120,7 +120,7 @@ impl QuickSettingsWifiPane {
         }
     }
 
-    fn status_message(state: &QuickSettingsState) -> Option<String> {
+    pub(super) fn status_message(state: &QuickSettingsState) -> Option<String> {
         let key = if state.radio_change_pending {
             "display-confirm-applying"
         } else if !state.wifi {

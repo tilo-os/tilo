@@ -22,6 +22,7 @@ use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, Par
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 mod native_identity;
+mod network_inspection;
 
 const WORKSPACE_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "name",
@@ -210,6 +211,31 @@ fn is_alarm_action(id: &str) -> bool {
         || crate::shell::notification::is_snoozed_alarm_action(id)
 }
 
+const CHROME_VIEW_ACTION_IDS: &[&str] = &[
+    "desktop-tour.open",
+    "settings.open",
+    "settings.members.open",
+    "settings.privacy.open",
+    "settings.apps.open",
+    "quick-settings.open",
+    "quick-settings.clipboard",
+    "quick-settings.devices",
+    "quick-settings.network.inspect",
+    "projection.open",
+    "capture.open",
+    "collaborators.open",
+    "room.activity.open",
+    "room.activity.explore",
+    "room.activity.replay",
+    "room.activity.acknowledge",
+    "room.activity.tasks",
+    "tab.menu",
+    "tab.drag.cancel",
+    "history.compare",
+    "history.undo",
+    "history.restore",
+];
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
@@ -225,29 +251,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
-        "desktop-tour.open"
-        | "settings.open"
-        | "settings.members.open"
-        | "settings.privacy.open"
-        | "settings.apps.open"
-        | "quick-settings.open"
-        | "quick-settings.clipboard"
-        | "quick-settings.devices"
-        | "projection.open"
-        | "capture.open"
-        | "collaborators.open"
-        | "room.activity.open"
-        | "room.activity.explore"
-        | "room.activity.replay"
-        | "room.activity.acknowledge"
-        | "room.activity.tasks"
-        | "tab.menu"
-        | "tab.drag.cancel"
-        | "history.compare"
-        | "history.undo"
-        | "history.restore" => {
-            contract = ActionContract::view();
-        }
+        id if CHROME_VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
         "workspace.create" => contract = workspace_create_contract(),
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.permission = PermissionRequirement::Admin;
@@ -330,6 +334,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "quick-settings.open"
         | "quick-settings.clipboard"
         | "quick-settings.devices"
+        | "quick-settings.network.inspect"
         | "projection.open"
         | "capture.open"
         | "collaborators.open"
@@ -3073,6 +3078,17 @@ impl SearchProvider for ActionsProvider {
                 on_begin_invoke: None,
             });
         }
+        let inspection = network_inspection::row();
+        candidates.record(
+            &inspection.title.to_lowercase(),
+            &inspection
+                .subtitle
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase(),
+            &inspection.id,
+        );
+        out.push(inspection);
         for &(id, label_key, subtitle_key) in QUICK_SETTINGS_ACTIONS {
             let label = t(label_key);
             let subtitle = t(subtitle_key);
@@ -3693,6 +3709,148 @@ mod tests {
             &ActionArgs::none(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn quick_settings_network_inspection_observes_the_painted_cache_without_os_actions() {
+        let chrome = chrome_with_room();
+        let results = action_results(&ActionsProvider::new(), &chrome);
+        let action = results
+            .iter()
+            .find(|row| row.id == "quick-settings.network.inspect")
+            .expect("cached private network status must have a semantic Read door");
+        assert!(action.params.is_empty());
+        assert_eq!(
+            action.contract.as_ref().unwrap().permission,
+            tilo_actions::PermissionRequirement::Read
+        );
+        assert!(
+            action.on_invoke.is_some(),
+            "inspection must return the actual cached value"
+        );
+    }
+
+    #[test]
+    fn quick_settings_network_inspection_rechecks_lock_owner_and_output_bounds() {
+        use crate::shell::quick_settings::WifiNetwork;
+        use crate::shell::search::ActionReceipt;
+        let chrome = chrome_with_room();
+        let action = action_results(&ActionsProvider::new(), &chrome)
+            .into_iter()
+            .find(|row| row.id == "quick-settings.network.inspect")
+            .unwrap();
+        let mut doc = AutoCommit::new();
+        let invoke = |doc: &mut AutoCommit| -> Result<ActionReceipt, ActionError> {
+            action.on_invoke.as_ref().unwrap()(
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+        };
+        let before = doc.save();
+        let revision = chrome.borrow().revision;
+        let receipt = invoke(&mut doc).unwrap();
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
+            panic!("read must complete with a value");
+        };
+        assert_eq!(output.value.unwrap()["source"], "painted-cache");
+        assert_eq!(doc.save(), before);
+        assert_eq!(chrome.borrow().revision, revision);
+        chrome.borrow_mut().set_session_locked(true);
+        assert!(
+            invoke(&mut doc).is_err(),
+            "retained row must not outlive unlock authority"
+        );
+        chrome.borrow_mut().set_session_locked(false);
+        chrome.borrow_mut().quick_settings.wifi_networks = (0..257)
+            .map(|_| WifiNetwork {
+                ssid: "fixture".into(),
+                signal: 1,
+                secure: false,
+                connected: false,
+            })
+            .collect();
+        assert!(
+            invoke(&mut doc).is_err(),
+            "bound cached rows before returning private data"
+        );
+        chrome.borrow_mut().quick_settings.wifi_networks.clear();
+        chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .unwrap()
+            .set_owner("foreign");
+        assert!(
+            invoke(&mut doc).is_err(),
+            "retained row must recheck current room authority"
+        );
+    }
+
+    #[test]
+    fn quick_settings_network_inspection_catalog_refuses_foreign_and_agent_even_with_admin() {
+        use crate::shell::search::{
+            SearchRegistry,
+            action_api::{ActionCatalog, ResourceRef},
+            visibility::CapabilityVisibility,
+        };
+        use crate::shell::state::{Actor, CapOverride, Principal, Scope, Subject, Verb};
+        let chrome = chrome_with_room();
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(ActionsProvider::new()));
+        let mut workspace = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .clone();
+        let owner = workspace.owner.clone().unwrap();
+        let address = ResourceRef::new("actions", "quick-settings.network.inspect");
+        let mut denied = Vec::new();
+        for principal in [
+            Principal::Person("foreign".into()),
+            Principal::Agent("helper".into()),
+            Principal::App("so.tilo.settings".into()),
+            Principal::Token("token".into()),
+        ] {
+            workspace.grant_capability(CapOverride::grant(
+                Subject::Principal(principal.clone()),
+                Scope::Workspace,
+                Verb::Admin,
+            ));
+            denied.push(Actor {
+                principals: vec![principal.clone()],
+                ..Actor::default()
+            });
+            let mut mixed = workspace.actor_for_person(&owner);
+            mixed.principals.push(principal);
+            denied.push(mixed);
+        }
+        let document = AutoCommit::new();
+        for (actor, expected) in std::iter::once((workspace.actor_for_person(&owner), true))
+            .chain(denied.into_iter().map(|actor| (actor, false)))
+        {
+            let gate = CapabilityVisibility::new(&workspace, actor);
+            let state = chrome.borrow();
+            let catalog = ActionCatalog::build_exact(
+                &registry,
+                &address,
+                crate::shell::chrome_state::SearchScope::All,
+                None,
+                &state,
+                &document,
+                &automerge::ROOT,
+                &gate,
+            );
+            assert_eq!(
+                catalog.select(&address).is_some(),
+                expected,
+                "enumeration and exact selection must enforce private owner admission"
+            );
+        }
     }
 
     #[test]

@@ -136,6 +136,28 @@ impl<'a> CapabilityVisibility<'a> {
 
 impl ActionVisibility for CapabilityVisibility<'_> {
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool {
+        // Network names and cached device state are private local chrome,
+        // not shared workspace content or an app/agent capability.
+        if resource.provider == "actions" && resource.id == "quick-settings.network.inspect" {
+            let owner = self.workspace.owner.as_ref();
+            let is_owner = self.actor.principals.iter().any(|principal| {
+                matches!(principal, crate::shell::state::Principal::Person(user) if Some(user) == owner)
+            });
+            let foreign = self
+                .actor
+                .principals
+                .iter()
+                .any(|principal| match principal {
+                    crate::shell::state::Principal::Person(user) => Some(user) != owner,
+                    crate::shell::state::Principal::App(_)
+                    | crate::shell::state::Principal::Agent(_)
+                    | crate::shell::state::Principal::Token(_) => true,
+                    crate::shell::state::Principal::Room(_) => false,
+                });
+            if !is_owner || foreign {
+                return false;
+            }
+        }
         // Personal portal consent is a human administrator decision, not an
         // app/agent capability, even when that principal has an Admin override.
         if resource.provider == super::providers::permission_prompts::PROVIDER_ID

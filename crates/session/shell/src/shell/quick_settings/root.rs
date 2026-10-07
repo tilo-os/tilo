@@ -1114,7 +1114,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::RotationLock => "qs-rotation-lock",
         })
     }
-    fn rendered_label(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
+    pub(super) fn rendered_label(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
         match c {
             QuickSettingsControl::Wifi if !s.radios.wifi_available => t("qs-wired-network"),
             QuickSettingsControl::Wifi => t("qs-wifi"),
@@ -1134,7 +1134,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::RotationLock => ui::icons::Icon::RotateCw,
         }
     }
-    fn on(c: QuickSettingsControl, s: &QuickSettingsState) -> bool {
+    pub(super) fn on(c: QuickSettingsControl, s: &QuickSettingsState) -> bool {
         match c {
             QuickSettingsControl::Wifi if !s.radios.wifi_available => {
                 s.wired.as_ref().is_some_and(|wired| wired.connected)
@@ -1149,7 +1149,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::RotationLock => s.rotation_lock,
         }
     }
-    fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
+    pub(super) fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
         if s.radio_change_pending
             && matches!(
                 c,
