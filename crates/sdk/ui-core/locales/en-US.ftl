@@ -559,6 +559,10 @@ display-arrangement-empty = No displays to arrange
 display-arrangement-item = Display { $number }: { $name }
 display-arrangement-item-primary = Display { $number }: { $name }, primary
 display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }
+
+device-display-session-unavailable = The Tilo session is unavailable.
+device-display-request-pending = A display placement request is already pending.
+device-display-session-disconnected = The Tilo session disconnected.
 music-recommendations-title = Made from your library
 music-recommendations-change-inputs = Change recommendation inputs
 music-recommendations-missing-track = This song is no longer in the library.

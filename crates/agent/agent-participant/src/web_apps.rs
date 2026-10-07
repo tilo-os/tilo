@@ -13,6 +13,7 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         camera::definition(),
         canvas::definition(),
         chat::definition(),
+        chip_design::definition(),
         clocks::definition(),
         contacts::definition(),
         diffmerge::definition(),

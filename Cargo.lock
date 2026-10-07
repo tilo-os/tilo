@@ -1943,6 +1943,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d1275808335c5583ea45a4141d631dafcb36b79fa8a5e10b00e356b6af3e08a"
 
 [[package]]
+name = "chip-design"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15862,6 +15875,7 @@ dependencies = [
  "canvas",
  "channel-crypto",
  "chat",
+ "chip-design",
  "clocks",
  "collab-types",
  "contacts",
@@ -18311,6 +18325,7 @@ dependencies = [
  "camera",
  "canvas",
  "chat",
+ "chip-design",
  "clocks",
  "contacts",
  "diffmerge",

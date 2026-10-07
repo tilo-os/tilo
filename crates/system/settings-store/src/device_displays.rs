@@ -15,6 +15,19 @@ pub struct DeviceDisplay {
     pub width: u32,
     pub height: u32,
     pub scale_milli: u16,
+    /// Owner-authored topology revision; zero denotes a legacy observation.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// A semantic drag over one observed screen. The peer authors the resulting
+/// placement; this request grants no input access.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceDisplayMove {
+    pub screen: DeviceDisplay,
+    pub x: i32,
+    pub y: i32,
 }
 
 impl DeviceDisplay {
@@ -86,6 +99,7 @@ mod tests {
                 width: 1280,
                 height: 720,
                 scale_milli: 1250,
+                revision: 1,
             }],
         };
         std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();

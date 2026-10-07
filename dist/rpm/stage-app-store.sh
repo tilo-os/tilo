@@ -134,18 +134,25 @@ rm -- "$store/registry.toml"
 # installs again, so its content store, staging and writer lock do not ship.
 rm -rf -- "$store/content" "$store/tmp" "$store/.lock"
 
-# The launcher refuses unsigned bundles and pins the system bundle to this
-# collection's publisher.  This is package data, not mutable user state: an
-# RPM upgrade replaces it together with the new runtime.  A locally altered
-# trust policy intentionally makes a mismatched update fail closed.
+# The collection's baked runtime and official Store runtimes have separate
+# signers. Ship both pins, as the OS image does, so ordinary Store updates do
+# not need a manual runtime trust grant. This remains package-owned policy.
 python3 - "$stage/usr/lib/tilo-runtime/$runtime_version/bundle.toml" \
-    "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt" <<'PY'
-import pathlib, sys, tomllib
+    "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt" \
+    "$repo_root/os/registry-runtime-publisher.hex" <<'PY'
+import pathlib, re, sys, tomllib
 manifest = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 publisher = manifest.get("publisher_hex")
-if not isinstance(publisher, str) or len(publisher) != 64:
+if not isinstance(publisher, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", publisher):
     raise SystemExit("runtime bundle has no valid publisher key")
-pathlib.Path(sys.argv[2]).write_text(publisher.lower() + "\n", encoding="utf-8")
+try:
+    registry_publisher = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8").strip()
+except OSError as error:
+    raise SystemExit(f"registry runtime publisher pin unavailable: {error}") from error
+if not re.fullmatch(r"[0-9a-f]{64}", registry_publisher):
+    raise SystemExit("registry runtime publisher pin is not a 64-character public key")
+publishers = dict.fromkeys((publisher.lower(), registry_publisher))
+pathlib.Path(sys.argv[2]).write_text("".join(key + "\n" for key in publishers), encoding="utf-8")
 PY
 
 [[ -s $registry ]]
