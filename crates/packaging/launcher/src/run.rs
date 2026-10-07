@@ -714,6 +714,26 @@ mod managed_service_tests {
     }
 
     #[test]
+    fn signal_source_manifest_is_admitted_as_a_headless_managed_service() {
+        let manifest: MinimalManifest =
+            toml::from_str(include_str!("../signal-provider.toml")).unwrap();
+        let options = RunOptions {
+            app_id: Some("so.tilo.signal-provider".into()),
+            mode: LaunchMode::Service {
+                passthrough_argv: vec![],
+            },
+            no_services: true,
+            identity: IdentitySource::None,
+            ..RunOptions::default()
+        };
+        assert_eq!(
+            manifest.entrypoint.cli_bin(),
+            Some("bin/tilo-signal-provider")
+        );
+        validate_launch_mode(&manifest, &options).unwrap();
+    }
+
+    #[test]
     fn managed_service_launches_are_confined_to_headless_service_packages() {
         // Phase `managed_service_requires_service_kind_and_headless_entrypoint`.
         {

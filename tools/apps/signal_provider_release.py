@@ -37,6 +37,7 @@ def provenance(source):
     require(RUNTIME == 'tilo-runtime/' + pin['runtime'], 'pinned Signal runtime differs')
     manifest = tomllib.loads((ROOT / 'crates/packaging/launcher/signal-provider.toml').read_text())
     require(manifest['package']['runtime'] == RUNTIME, 'provider runtime declaration differs')
+    require(manifest['package']['kind'] == 'service', 'provider must declare its headless service kind')
     publisher = (ROOT / 'os/registry-runtime-publisher.hex').read_text().strip()
     require(re.fullmatch('[0-9a-f]{64}', publisher), 'accepted runtime publisher is missing')
     return {'source': commit, 'architecture': 'x86_64', 'runtime': RUNTIME,
@@ -167,7 +168,7 @@ def verify(out, source, sequence, trusted_key):
             'Signal runtime must bind its exact native build')
     cli = Path(os.environ.get('TILO_SIGNAL_VERIFIER_BIN_DIR', str(out / 'bin'))) / 'tilo-app-package'
     for name, package_id, kind in (('runtime-package', 'so.tilo.runtime.signal', 'runtime'),
-                                   ('provider-package', 'so.tilo.signal-provider', 'app')):
+                                   ('provider-package', 'so.tilo.signal-provider', 'service')):
         package = out / name
         require(inventory(package) == proof['packages'][name], 'Signal package inventory differs')
         tapps = list(package.glob('*.tapp'))
@@ -180,7 +181,7 @@ def verify(out, source, sequence, trusted_key):
         field = 'provides' if kind == 'runtime' else 'runtime'
         require(manifest['package'][field] == runtime_build and manifest['sandbox']['net']['mode'] == 'off',
                 'Signal package runtime/network declaration differs')
-        if kind == 'app':
+        if kind == 'service':
             # Packing serializes Entrypoint's splash defaults into the signed
             # manifest. Match that canonical declaration, including the absence
             # of alternate CLI/GUI binaries, rather than the source TOML shape.
