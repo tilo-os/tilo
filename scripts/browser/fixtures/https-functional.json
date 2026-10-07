@@ -1,0 +1,17 @@
+{
+  "url": "https://wpt.live/html/semantics/document-metadata/the-title-element/",
+  "title": "Directory listing for /html/semantics/document-metadata/the-title-element/",
+  "heading": "Directory listing for /html/semantics/document-metadata/the-title-element/",
+  "links": [
+    {
+      "name": "title-multiple-elements.html",
+      "url": "https://wpt.live/html/semantics/document-metadata/the-title-element/title-multiple-elements.html"
+    },
+    {
+      "name": "title.text-01.html",
+      "url": "https://wpt.live/html/semantics/document-metadata/the-title-element/title.text-01.html"
+    }
+  ],
+  "upstream_documentation": "https://web-platform-tests.org/running-tests/from-web.html",
+  "observed_html_sha256": "6a78cfa91ae6d06bac6ad79429288a99e84f72263fce20e01d8bfc3ba74426db"
+}

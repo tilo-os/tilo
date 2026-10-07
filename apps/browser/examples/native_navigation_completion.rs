@@ -423,13 +423,145 @@ fn engine_edge_cases(
     Ok(())
 }
 
-fn fixture_options() -> Result<(bool, Option<std::path::PathBuf>), Box<dyn std::error::Error>> {
+#[derive(serde::Deserialize)]
+struct HttpsFixture {
+    url: String,
+    title: String,
+    heading: String,
+    links: Vec<HttpsLink>,
+}
+
+#[derive(serde::Deserialize)]
+struct HttpsLink {
+    name: String,
+    url: String,
+}
+
+fn https_roundtrip(app: &mut TestApp<BrowserShell>) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture: HttpsFixture = serde_json::from_str(include_str!(
+        "../../../scripts/browser/fixtures/https-functional.json"
+    ))?;
+    let navigation = invoke(
+        app,
+        &BrowserEffect::Navigate {
+            url: fixture.url.clone(),
+        },
+    )?;
+    verify_equal(
+        &navigation.value,
+        &Some(serde_json::json!(&fixture.url)),
+        "HTTPS owned navigation URI",
+    )?;
+    let settled = invoke(
+        app,
+        &BrowserEffect::WaitPageSettled {
+            quiet_ms: Some(500),
+            timeout_ms: Some(10000),
+        },
+    )?;
+    let settled = settled
+        .value
+        .ok_or("HTTPS settlement did not return evidence")?;
+    verify_equal(
+        settled
+            .get("data")
+            .and_then(|data| data.get("settled"))
+            .ok_or("HTTPS settlement evidence missing")?,
+        &serde_json::json!(true),
+        "HTTPS settled document",
+    )?;
+    let page = invoke(app, &BrowserEffect::ReadPage)?
+        .value
+        .ok_or("HTTPS page read returned no evidence")?;
+    verify_equal(
+        page.get("provenance").ok_or("HTTPS provenance missing")?,
+        &serde_json::json!("web-content"),
+        "HTTPS read provenance",
+    )?;
+    verify_equal(
+        page.get("url").ok_or("HTTPS url missing")?,
+        &serde_json::json!(&fixture.url),
+        "HTTPS read URI",
+    )?;
+    verify_equal(
+        page.get("title").ok_or("HTTPS title missing")?,
+        &serde_json::json!(&fixture.title),
+        "HTTPS page title",
+    )?;
+    let outline = page
+        .get("outline")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("HTTPS live outline missing")?;
+    let heading = format!(
+        "- heading {} level=1",
+        serde_json::to_string(&fixture.heading)?
+    );
+    if !outline.lines().any(|line| line.trim_start() == heading) {
+        return Err("HTTPS fixture H1 missing from the live document".into());
+    }
+    for link in fixture.links {
+        let prefix = format!(
+            "- listitem: link {} [ref=d",
+            serde_json::to_string(&link.name)?
+        );
+        let suffix = format!("] -> {}", link.url);
+        let live = outline.lines().any(|line| {
+            line.trim_start()
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(&suffix))
+                .and_then(|reference| reference.split_once('e'))
+                .is_some_and(|(document, element)| {
+                    !document.is_empty()
+                        && !element.is_empty()
+                        && document.bytes().all(|byte| byte.is_ascii_digit())
+                        && element.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        });
+        if !live {
+            return Err("HTTPS fixture link/ref/target missing from the live document".into());
+        }
+    }
+    println!(
+        "PASS: genuine WPT HTTPS owned Navigate/WaitPageSettled/ReadPage, exact URI/title/web-content/H1/two links; no latency claim"
+    );
+    Ok(())
+}
+
+fn fixture_failure_diagnostics() {
+    let Some(root) = std::env::var_os("TILO_TEST_ENVIRONMENT").map(std::path::PathBuf::from) else {
+        eprintln!("No owned fixture environment; no profile diagnostics read");
+        return;
+    };
+    let Some(data) = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    if !data.starts_with(&root) {
+        eprintln!("Profile is outside the owned fixture environment; not read");
+        return;
+    }
+    let log = data.join("tilo-browser/chromium/cef.log");
+    match std::fs::read_to_string(log) {
+        Ok(log) => {
+            eprintln!("Owned CEF failure diagnostics:");
+            for line in log.lines().rev().take(40) {
+                eprintln!("{}", line.chars().take(512).collect::<String>());
+            }
+        }
+        Err(error) => eprintln!("Owned CEF diagnostics unavailable: {error}"),
+    }
+}
+
+fn fixture_options() -> Result<(bool, bool, Option<std::path::PathBuf>), Box<dyn std::error::Error>>
+{
     let mut built_host = false;
+    let mut run_https = false;
     let mut selected_host = None;
     let mut arguments = std::env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
         if argument == "--built-host" {
             built_host = true;
+        } else if argument == "--https-acceptance" {
+            run_https = true;
         } else if argument == "--host" {
             if selected_host.is_some() {
                 return Err("the native fixture accepts one host path".into());
@@ -445,11 +577,11 @@ fn fixture_options() -> Result<(bool, Option<std::path::PathBuf>), Box<dyn std::
             .into());
         }
     }
-    Ok((built_host, selected_host))
+    Ok((built_host, run_https, selected_host))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (built_host, selected_host) = fixture_options()?;
+    let (built_host, run_https, selected_host) = fixture_options()?;
     if !built_host && selected_host.is_none() {
         let built = std::process::Command::new("python3")
             .arg("scripts/browser/build-host.py")
@@ -478,6 +610,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .arg("--built-host")
             .arg("--host")
             .arg(&host)
+            .args(run_https.then_some("--https-acceptance"))
             .status()?;
         return if status.success() {
             Ok(())
@@ -492,6 +625,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .arg("--built-host")
             .arg("--host")
             .arg(&host)
+            .args(run_https.then_some("--https-acceptance"))
             .status()?;
         return if status.success() {
             Ok(())
@@ -506,6 +640,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("native fixture host SHA256: {host_hash}");
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set(ui::webview::chromium::runtime::HOST_OVERRIDE_ENV, &host);
+    if run_https {
+        let mut app = TestApp::<BrowserShell>::new()?;
+        let outcome = https_roundtrip(&mut app);
+        if outcome.is_err() {
+            fixture_failure_diagnostics();
+        }
+        return outcome;
+    }
     let server = FixtureServer::start()?;
     let url = format!("http://{}/", server.address);
     let mut app = TestApp::<BrowserShell>::new()?;
