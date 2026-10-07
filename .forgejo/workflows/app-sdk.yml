@@ -280,6 +280,9 @@ jobs:
       image: ${{ needs.builder.outputs.image }}
     env:
       CDP_PORT: "9333"
+      # Three isolated browsers fit the existing 6-CPU/22-GiB job budget.
+      # Set this back to "2" to roll back without changing any probe.
+      TILO_WEB_SMOKE_SHARDS: "3"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
