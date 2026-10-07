@@ -355,6 +355,8 @@ pub struct LaunchReadiness {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchAdoption {
+    /// Host-issued identity of this exact Wayland resource lifetime; not a grant.
+    pub adoption_id: uuid::Uuid,
     pub surface_id: u64,
     pub package_id: String,
     pub room: String,

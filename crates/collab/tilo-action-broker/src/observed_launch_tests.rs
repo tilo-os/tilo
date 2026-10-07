@@ -172,6 +172,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                     "adopted" | "foreign_room" | "foreign_package" | "zero_surface"
                 ) {
                     *launcher.adoption.lock().unwrap() = Some(crate::services::LaunchAdoption {
+                        adoption_id: uuid::Uuid::new_v4(),
                         surface_id: if scenario == "zero_surface" { 0 } else { 73 },
                         package_id: if scenario == "foreign_package" {
                             "so.tilo.foreign"
@@ -242,7 +243,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                         if scenario == "adopted" {
                             let value = output.value.as_ref().unwrap();
                             assert_eq!(value["adopted_window"]["surface_id"], 73);
-                            assert_eq!(value["adopted_window"].as_object().unwrap().len(), 3);
+                            assert_eq!(value["adopted_window"].as_object().unwrap().len(), 4);
                         } else {
                             assert!(output.value.is_none());
                         }

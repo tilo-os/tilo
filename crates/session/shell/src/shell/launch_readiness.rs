@@ -179,6 +179,7 @@ mod tests {
         let (token, ready) = observations.reserve().unwrap();
         observations.started(Some(token), std::process::id());
         let window = tilo_action_broker::services::LaunchAdoption {
+            adoption_id: uuid::Uuid::new_v4(),
             surface_id: 55,
             package_id: "so.tilo.calculator".into(),
             room: "room".into(),
@@ -189,7 +190,7 @@ mod tests {
             Some(window.clone())
         );
         let encoded = serde_json::to_value(window).unwrap();
-        assert_eq!(encoded.as_object().unwrap().len(), 3);
+        assert_eq!(encoded.as_object().unwrap().len(), 4);
         assert!(encoded.get("pid").is_none());
         assert!(observations.0.lock().unwrap().is_empty());
     }
@@ -210,6 +211,7 @@ mod tests {
         observations.adopted_window(
             pid,
             Some(tilo_action_broker::services::LaunchAdoption {
+                adoption_id: uuid::Uuid::new_v4(),
                 surface_id: 55,
                 package_id: "so.tilo.calculator".into(),
                 room: "room".into(),
