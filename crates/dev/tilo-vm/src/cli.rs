@@ -249,6 +249,12 @@ pub enum Command {
         #[arg(long)]
         source_inventory: Option<PathBuf>,
     },
+    /// Build the canonical matched cohort in one remote admission.
+    #[command(hide = true)]
+    UserspacePack {
+        #[arg(long)]
+        source_inventory: PathBuf,
+    },
     /// Package one app on the architecture-configured remote builder.
     #[command(hide = true)]
     AppPack {
@@ -388,6 +394,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         None | Some(
             Command::Status { .. }
                 | Command::LayerPack { .. }
+                | Command::UserspacePack { .. }
                 | Command::AppPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }

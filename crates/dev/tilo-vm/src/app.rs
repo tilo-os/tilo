@@ -50,6 +50,7 @@ mod kernel;
 mod reach;
 mod scenario;
 mod userspace;
+mod userspace_builder;
 
 #[derive(Debug, Clone, Copy)]
 struct ForeignRect {
@@ -901,12 +902,7 @@ impl App {
                     "tilo-vm status",
                 ]))
             }
-            Some(Command::Logs { slot, lines, .. }) => {
-                let slot = self.slot_name(slot)?;
-                let vm = self.resolve_vm(None)?;
-                let result = self.connect(&vm)?.call(Logs { slot, lines })?;
-                Ok(Outcome::new(result.text.clone(), json!(result)))
-            }
+            Some(Command::Logs { slot, lines, .. }) => self.remote_logs(slot, lines),
             Some(Command::Seat(command)) => self.seat(command),
             Some(Command::Shot { slot, output, .. }) => self.shot(slot, &output),
             Some(Command::Control { slot, args }) => self.control(slot, &args),
@@ -923,6 +919,9 @@ impl App {
                 &features,
                 source_inventory.as_deref(),
             )),
+            Some(Command::UserspacePack { source_inventory }) => {
+                Self::packed(crate::builderlayer::pack_userspace(&source_inventory))
+            }
             Some(Command::AppPack {
                 app,
                 source_inventory,
@@ -936,6 +935,13 @@ impl App {
                 min_age,
             }) => self.gc(dry_run, keep, keep_targets, min_age),
         }
+    }
+
+    fn remote_logs(&mut self, slot: Option<String>, lines: u32) -> Result<Outcome, CliError> {
+        let slot = self.slot_name(slot)?;
+        let vm = self.resolve_vm(None)?;
+        let result = self.connect(&vm)?.call(Logs { slot, lines })?;
+        Ok(Outcome::new(result.text.clone(), json!(result)))
     }
 
     fn packed(result: Result<(), CliError>) -> Result<Outcome, CliError> {

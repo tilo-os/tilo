@@ -1,7 +1,7 @@
 //! The normal swap story, with a single matched session cohort admission.
 
-use super::{App, Builder, CliError, Instant, Outcome, Status, VM_SLOT, describe_apply, json};
-use tilo_vm_protocol::{USERSPACE_COMPONENTS, UserspaceApply};
+use super::{App, Builder, CliError, Outcome, Status, VM_SLOT, describe_apply, json};
+use tilo_vm_protocol::UserspaceApply;
 
 impl App {
     pub(super) fn swap_userspace(
@@ -66,24 +66,8 @@ impl App {
             .filter(|line| !line.is_empty())
             .cloned()
             .ok_or_else(|| self.no_remote_builder(&remote.hello.arch))?;
-        let mut members = Vec::new();
-        for name in USERSPACE_COMPONENTS {
-            inputs.unchanged(&worktree.root)?;
-            self.check_vm_space(&mut remote, &vm)?;
-            let component = manifest
-                .get(name)
-                .ok_or_else(|| CliError::UnknownComponent {
-                    name: (*name).into(),
-                    known: manifest.components.keys().cloned().collect(),
-                })?;
-            let start = Instant::now();
-            let member =
-                self.build_layer_remote_inventory(&mut remote, &vm, component, &command, &inputs)?;
-            self.receipt
-                .record(&format!("stage-{name}"), start.elapsed().as_secs_f64());
-            members.push(member);
-            self.receipt.set("cohort_members", &members);
-        }
+        let members =
+            self.build_userspace_remote(&mut remote, &vm, &manifest, &command, &inputs)?;
         inputs.unchanged(&worktree.root)?;
         remote = self.connect(&vm)?;
         let result = self.receipt.phase("apply", || {

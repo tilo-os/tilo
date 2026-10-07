@@ -18,7 +18,7 @@ use crate::error::CliError;
 use crate::hypervisor;
 use crate::remote::Remote;
 
-fn build_header<T>(
+pub(super) fn build_header<T>(
     remote: &mut Remote,
     device: bool,
     build: impl FnOnce() -> std::io::Result<T>,
@@ -33,7 +33,7 @@ fn build_header<T>(
     Ok(header)
 }
 
-fn start_builder(
+pub(super) fn start_builder(
     line: &hypervisor::CommandLine,
     root: &std::path::Path,
 ) -> Result<std::process::Child, CliError> {
@@ -256,7 +256,7 @@ impl App {
 }
 
 /// Every failure path terminates and reaps only its owned builder process.
-struct AppBuilder(std::process::Child);
+pub(super) struct AppBuilder(pub(super) std::process::Child);
 
 impl Drop for AppBuilder {
     fn drop(&mut self) {

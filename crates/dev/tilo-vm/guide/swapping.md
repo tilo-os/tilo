@@ -67,8 +67,13 @@ it is never reported as a successful install. There is no reboot.
 The aggregate receipt includes ordered build, transfer and import phases, each
 component's stage total, and daemon validation, closure preparation, selection
 and refresh timings. Stage and apply totals contain their child timings; do not
-sum nested entries. A cohort currently uses the canonical per-component remote
-builder admissions and does not promise a cold-build or 60-second update time.
+sum nested entries. The cohort uses one remote builder admission and one metadata
+snapshot on each side for its nine component builds. Each build still uses its canonical
+profile, features, installer and independently verified archive. Transfer and
+import can overlap the following build, so component stage time includes the
+remaining build wait, not necessarily that component's entire build duration.
+The receipt records the admission count; this does not promise a cold-build or
+60-second update time.
 
 ## Build profile
 

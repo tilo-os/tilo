@@ -82,6 +82,67 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
     command
 }
 
+/// One existing remote Cargo admission for the canonical userspace producer.
+pub(crate) fn userspace_command(builder: &[String], inventory: &Path) -> CommandLine {
+    let (program, prefix) = builder
+        .split_first()
+        .map_or(("cargo", &[][..]), |(p, r)| (p.as_str(), r));
+    let mut line = CommandLine::new(program, &[]);
+    line.args = prefix.to_vec();
+    line.args.extend(
+        [
+            "run",
+            "--locked",
+            "-p",
+            "tilo-vm",
+            "--bin",
+            "tilo-vm",
+            "--",
+            "userspace-pack",
+            "--source-inventory",
+        ]
+        .map(str::to_owned),
+    );
+    line.arg(inventory.display().to_string())
+}
+
+/// Each member still uses its normal build, assembler and framed archive.
+pub(crate) fn pack_userspace(inventory: &Path) -> Result<(), CliError> {
+    let root = std::env::current_dir().map_err(CliError::io("find the worktree"))?;
+    crate::source_inputs::verify(&root, inventory)?;
+    let path = root.join("os/components.toml");
+    let manifest = tilo_vm_protocol::Manifest::load(&path)
+        .map_err(|e| CliError::Config {
+            path: path.display().to_string(),
+            detail: e.to_string(),
+        })?
+        .ok_or_else(|| CliError::NoManifest {
+            path: path.display().to_string(),
+        })?;
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let metadata = cargo_metadata(&cargo);
+    for name in tilo_vm_protocol::USERSPACE_COMPONENTS {
+        let component = manifest
+            .get(name)
+            .ok_or_else(|| CliError::UnknownComponent {
+                name: (*name).into(),
+                known: manifest.components.keys().cloned().collect(),
+            })?;
+        let extra = build::dev_features(&metadata, &component.packages);
+        pack_component(&root, component.clone(), &extra, Some(inventory), &metadata)?;
+    }
+    Ok(())
+}
+
+fn cargo_metadata(cargo: &str) -> serde_json::Value {
+    Command::new(cargo)
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// `tilo-vm layer-pack`, on the builder: build `name` from the worktree in
 /// the current directory, lay it out, and write the framed layer to stdout.
 /// The build's own output goes to stderr.
@@ -99,9 +160,6 @@ pub(crate) fn pack_with_source(
     inventory: Option<&Path>,
 ) -> Result<(), CliError> {
     let root = std::env::current_dir().map_err(CliError::io("find the worktree"))?;
-    let source_digest = inventory
-        .map(|path| crate::source_inputs::verify(&root, path))
-        .transpose()?;
     let manifest_path = root.join("os/components.toml");
     let manifest = tilo_vm_protocol::Manifest::load(&manifest_path)
         .map_err(|e| CliError::Config {
@@ -120,6 +178,21 @@ pub(crate) fn pack_with_source(
             known: manifest.components.keys().cloned().collect(),
         })?
         .with_profile(Some(profile));
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let metadata = cargo_metadata(&cargo);
+    pack_component(&root, component, extra, inventory, &metadata)
+}
+
+fn pack_component(
+    root: &Path,
+    component: Component,
+    extra: &[String],
+    inventory: Option<&Path>,
+    metadata: &serde_json::Value,
+) -> Result<(), CliError> {
+    let source_digest = inventory
+        .map(|path| crate::source_inputs::verify(root, path))
+        .transpose()?;
     // `cargo run` sets CARGO to the cargo that runs this program.
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     if !component.image_assembled {
@@ -129,13 +202,7 @@ pub(crate) fn pack_with_source(
             "no maintained assembler for this image component".into(),
         ));
     }
-    let metadata = Command::new(&cargo)
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .output()
-        .ok()
-        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
-        .unwrap_or(serde_json::Value::Null);
-    let target = build::target_dir(&metadata);
+    let target = build::target_dir(metadata);
     let staging_parent = Path::new(&target).join("tilo-vm-layers");
     std::fs::create_dir_all(&staging_parent)
         .map_err(CliError::io(format!("create {}", staging_parent.display())))?;
@@ -166,7 +233,7 @@ pub(crate) fn pack_with_source(
         )?;
     }
     if let Some(inventory) = inventory
-        && crate::source_inputs::verify(&root, inventory)?
+        && crate::source_inputs::verify(root, inventory)?
             != source_digest.clone().unwrap_or_default()
     {
         return Err(CliError::InvalidInput(
@@ -298,6 +365,49 @@ impl<R: BufRead> Stream<R> {
     /// The stream ended without a layer (the build failed), or I/O.
     pub fn header(&mut self, passthrough: &mut dyn Write) -> std::io::Result<Packed> {
         self.header_as(passthrough)
+    }
+
+    /// Advance only after the previous archive's complete, verified END.
+    pub(crate) fn next_layer(&mut self) -> std::io::Result<()> {
+        if !self.done || self.at < self.decoded.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "previous layer is not fully verified",
+            ));
+        }
+        self.decoded.clear();
+        self.at = 0;
+        self.hasher = Sha256::new();
+        self.bytes = 0;
+        self.done = false;
+        Ok(())
+    }
+
+    /// Drain ordinary tool output, refusing unexpected extra archives.
+    pub(crate) fn finish(&mut self, passthrough: &mut dyn Write) -> std::io::Result<()> {
+        if !self.done || self.at < self.decoded.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "last layer is not fully verified",
+            ));
+        }
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if self.input.read_line(&mut line)? == 0 {
+                return Ok(());
+            }
+            if [BEGIN, DATA, END]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unexpected extra cohort archive",
+                ));
+            }
+            passthrough.write_all(line.as_bytes())?;
+        }
     }
 
     pub(crate) fn header_as<T: serde::de::DeserializeOwned>(
@@ -446,3 +556,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "builderlayer_batch_tests.rs"]
+mod batch_tests;
