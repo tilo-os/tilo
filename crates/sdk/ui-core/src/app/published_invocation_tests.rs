@@ -120,6 +120,7 @@ fn published_authorization_delayed_original_remote_grant_denies_before_document_
     )));
     let request = remote_request(851, "bump");
     let mut app = app();
+    app.collaboration.manager = admitted_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(original_remote_authorizer(request.clone(), grant))
         .unwrap();
@@ -141,6 +142,7 @@ fn published_authorization_missing_unknown_or_mismatched_request_never_executes(
         let expected = remote_request(852, "bump");
         let mut delivered = expected.clone();
         let mut app = app();
+        app.collaboration.manager = admitted_delivery_manager();
         app.require_published_invocation_authorizer();
         if case != 0 {
             app.install_published_invocation_authorizer(original_remote_authorizer(
@@ -166,6 +168,7 @@ fn published_authorization_wrong_lease_never_executes() {
     use std::sync::Arc;
     let request = remote_request(853, "bump");
     let mut app = app();
+    app.collaboration.manager = admitted_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(Arc::new(move |delivered| {
         let mut wrong = delivered.clone();
@@ -210,6 +213,7 @@ fn published_authorization_accepted_continuation_retains_failed_custody() {
     let request = remote_request(855, "async-bump");
     let (mut app, store, checkout, _temp) =
         owned_counter(CounterCard::with_async_post_bump_reset());
+    app.collaboration.manager = disconnected_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(original_remote_authorizer(
         request.clone(),
@@ -312,6 +316,11 @@ fn owned_counter(
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(tile));
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
+    app.collaboration.manager = admitted_delivery_manager();
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+        epoch: uuid::Uuid::new_v4(),
+    });
     app.init_layout();
     (app, store, checkout, temp)
 }

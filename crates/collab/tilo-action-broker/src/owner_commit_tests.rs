@@ -721,6 +721,7 @@ mod owner_commit_tests {
                 context,
                 last_activity: std::time::Instant::now(),
                 cancellation_requested_at: None,
+                cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
         (key, rx)
@@ -1770,6 +1771,7 @@ mod owner_commit_tests {
                     ),
                     last_activity: std::time::Instant::now(),
                     cancellation_requested_at: None,
+                    cancellation_fence: Arc::new(AtomicBool::new(false)),
                 };
                 let update = tilo_actions::InvocationUpdate::Succeeded {
                     invocation,

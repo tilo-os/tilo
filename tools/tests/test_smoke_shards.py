@@ -145,8 +145,31 @@ class SmokeShards(unittest.TestCase):
                 'echo $$ >"$RUNNER_TEMP/ready"\n'
                 'while :; do sleep .02; done\n'
             )
+            # The child can become ready before spawn returns to the parent.
+            # Deliver the real signal in that window, rather than depending
+            # on scheduler load to expose missing signal watchers.
+            preload = root / "signal-during-spawn.mjs"
+            preload.write_text(
+                "import childProcess from 'node:child_process';\n"
+                "import {syncBuiltinESMExports} from 'node:module';\n"
+                "import {existsSync} from 'node:fs';\n"
+                "const spawn=childProcess.spawn;\n"
+                "childProcess.spawn=(...args)=>{\n"
+                " const child=spawn(...args);\n"
+                " const deadline=performance.now()+1000;\n"
+                " while(!existsSync(`${process.env.RUNNER_TEMP}/ready`)){\n"
+                "  if(performance.now()>=deadline)throw Error('driver never started');\n"
+                " }\n"
+                " process.kill(process.pid,'SIGTERM');\n"
+                " return child;\n"
+                "};\n"
+                "syncBuiltinESMExports();\n"
+            )
             environment = dict(os.environ, CI="true", CHROME="fixture", RUNNER_TEMP=directory,
                                TILO_WEB_SMOKE_WORKER="", CDP_PORT="9333")
+            environment["NODE_OPTIONS"] = (
+                f"{environment.get('NODE_OPTIONS', '')} --import {preload.as_uri()}"
+            ).strip()
             process = subprocess.Popen([shutil.which("node"), str(ENTRY), "http://fixture", "desktop"],
                                        cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
