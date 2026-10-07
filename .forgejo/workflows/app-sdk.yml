@@ -317,11 +317,18 @@ jobs:
         run: |
           cargo run --locked -p tilo-agent-participant --example mounted-resource -- \
             target/tilo-app/web/calculator/bundle
+      - name: Compiled Chat browser disconnect and retry
+        run: |
+          target/debug/tilo-app build apps/chat --platform web
+          cargo run --locked -p tilo-agent-participant --example mounted-resource -- \
+            target/tilo-app/web/chat/bundle --disconnect-retry
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: app-sdk-mounted-resource
-          path: target/mounted-resource
+          path: |
+            target/mounted-resource
+            target/mounted-resource-recovery
           if-no-files-found: error
       - name: Mount every registered app
         shell: bash

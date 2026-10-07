@@ -493,3 +493,19 @@ reported expired credentials. No login renewal, deployment or access change was
 performed. The actual standalone Chat bundle is ready for local acceptance;
 external acceptance must use the existing authorized demo rather than create a
 replacement deployment.
+
+### Governed compiled browser recovery
+
+The existing native `mounted-resource` fixture now also qualifies the actual
+Chat browser bundle over its temporary certified HTTPS host. The default Viewer
+journey passed resource opening, browser Copy/Open, explicit account choice,
+Leave and owner revocation. Its optional `--disconnect-retry` journey uses an
+ordinary temporary Editor invitation, observes the real browser carrier lose
+authentication, queues one original browser post while a native post becomes
+durable, invokes the existing retry control, then verifies both original posts
+exactly once in the browser and native replica. It requires a newly presented
+frame and keeps the same certified device. The SDK web lane preserves its
+Viewer journey and adds the actual Chat build/recovery journey with separate
+receipts. See `docs/native-chat-browser-acceptance.md` for scope and reproduction.
+These loopback fixture results do not establish public demo access, browser
+voice, a full profile restart with queued edits or cross-app Follow.
