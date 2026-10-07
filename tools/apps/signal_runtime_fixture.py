@@ -13,6 +13,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.request
 
@@ -50,45 +51,46 @@ def command(bundle, profile):
             "org.asamk.signal.Main", "--data-dir", str(profile)]
 
 
-def probe(work):
+def probe(work, prefix=()):
     bundle = work / "bundle"
     profile = work / "empty-fixture-profile"
     profile.mkdir(mode=0o700)
     environment = {"LD_LIBRARY_PATH": str(bundle / "lib"), "LANG": "C.UTF-8"}
-    base = command(bundle, profile)
+    base = [*prefix, *command(bundle, profile)]
     version = subprocess.run(base + ["--version"], env=environment,
                              capture_output=True, timeout=20, check=True)
     staging.require(version.stdout.strip() == b"signal-cli 0.14.8", "fixture Signal version differs")
-    endpoint = work / "fixture.sock"
-    daemon = subprocess.Popen(base + ["daemon", "--socket", str(endpoint), "--receive-mode", "manual"],
-                              env=environment, stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              start_new_session=True)
-    try:
-        deadline = time.monotonic() + 20
-        while not endpoint.exists():
-            staging.require(daemon.poll() is None, "empty fixture daemon exited before binding")
-            staging.require(time.monotonic() < deadline, "empty fixture daemon did not bind")
-            time.sleep(0.02)
-        with socket.socket(socket.AF_UNIX) as stream:
-            stream.settimeout(5)
-            stream.connect(str(endpoint))
-            stream.sendall(b'{"jsonrpc":"2.0","id":"fixture-empty","method":"listAccounts","params":{}}\n')
-            with stream.makefile("rb") as reader:
-                reply = reader.readline(65537)
-            staging.require(len(reply) <= 65536 and reply.endswith(b"\n"), "invalid fixture reply frame")
-            decoded = json.loads(reply)
-            staging.require(decoded.get("id") == "fixture-empty" and decoded.get("result") == [],
-                            "fixture must contain no authenticated accounts")
-    finally:
-        if daemon.poll() is None:
-            os.killpg(daemon.pid, signal.SIGTERM)
-            try:
-                daemon.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                os.killpg(daemon.pid, signal.SIGKILL)
-                daemon.wait(timeout=3)
-    print("signed Signal/Java runtime: exact version, owned empty daemon and bounded JSON-RPC passed")
+    with tempfile.TemporaryDirectory(prefix="tilo-signal-fixture-", dir="/tmp") as socket_directory:
+        endpoint = Path(socket_directory) / "fixture.sock"
+        daemon = subprocess.Popen(base + ["daemon", "--socket", str(endpoint), "--receive-mode", "manual"],
+                                  env=environment, stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  start_new_session=True)
+        try:
+            deadline = time.monotonic() + 20
+            while not endpoint.exists():
+                staging.require(daemon.poll() is None, "empty fixture daemon exited before binding")
+                staging.require(time.monotonic() < deadline, "empty fixture daemon did not bind")
+                time.sleep(0.02)
+            with socket.socket(socket.AF_UNIX) as stream:
+                stream.settimeout(5)
+                stream.connect(str(endpoint))
+                stream.sendall(b'{"jsonrpc":"2.0","id":"fixture-empty","method":"listAccounts","params":{}}\n')
+                with stream.makefile("rb") as reader:
+                    reply = reader.readline(65537)
+                staging.require(len(reply) <= 65536 and reply.endswith(b"\n"), "invalid fixture reply frame")
+                decoded = json.loads(reply)
+                staging.require(decoded.get("id") == "fixture-empty" and decoded.get("result") == [],
+                                "fixture must contain no authenticated accounts")
+        finally:
+            if daemon.poll() is None:
+                os.killpg(daemon.pid, signal.SIGTERM)
+                try:
+                    daemon.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(daemon.pid, signal.SIGKILL)
+                    daemon.wait(timeout=3)
+    print("Signal/Java runtime: exact version, owned empty daemon and bounded JSON-RPC passed")
 
 
 def main():
