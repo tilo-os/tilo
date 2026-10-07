@@ -24,6 +24,135 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    @staticmethod
+    def permission_action():
+        return {"provider": "broker:1", "id": "offered-message", "application": "so.tilo.chat",
+                "room": "room", "record": "", "resource": "agent-resource", "operation": "message"}
+
+    def test_hidden_offer_observation_requires_current_independent_read_evidence(self):
+        original = self.permission_action()
+        opposite = {**original, "provider": "broker:2", "id": "offered-queue",
+                    "application": "so.tilo.desktop", "record": "tasks",
+                    "resource": "desktop:tasks", "operation": "queue"}
+        read = {**original, "id": "offered-open", "operation": "open-agent-conversation"}
+        access = {"bus": "bus", "process": 7, "window": "/window"}
+        with patch.object(PROOF, "actions", return_value=[{}, opposite, read]), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF.time, "monotonic", return_value=100):
+            observed = PROOF.observe_hidden_permission_offer(
+                "socket", original, opposite, "open-agent-conversation",
+                access, access, (7, "start"),
+            )
+        self.assertEqual(observed.original, PROOF.permission_offer_identity(original))
+        self.assertEqual(observed.observed_at, 100)
+        for catalogue in ([original, opposite, read], [read], [opposite],
+                          [opposite, {**read, "room": "foreign"}],
+                          [opposite, {**read, "resource": "other"}],
+                          [opposite, {**read, "provider": "foreign"}],
+                          [opposite, read, read]):
+            with self.subTest(catalogue=catalogue), \
+                    patch.object(PROOF, "actions", return_value=catalogue), \
+                    patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                    self.assertRaises(RuntimeError):
+                PROOF.observe_hidden_permission_offer(
+                    "socket", original, opposite, "open-agent-conversation",
+                    access, access, (7, "start"),
+                )
+        with patch.object(PROOF, "actions") as catalogue, self.assertRaises(RuntimeError):
+            PROOF.observe_hidden_permission_offer(
+                "socket", original, opposite, "open-agent-conversation",
+                access, {**access, "window": "/other"}, (7, "start"),
+            )
+        catalogue.assert_not_called()
+        with patch.object(PROOF, "actions") as catalogue, \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "replaced")), \
+                self.assertRaises(RuntimeError):
+            PROOF.observe_hidden_permission_offer(
+                "socket", original, opposite, "open-agent-conversation",
+                access, access, (7, "start"),
+            )
+        catalogue.assert_not_called()
+        private = "private-catalogue-error"
+        with patch.object(PROOF, "actions", side_effect=RuntimeError(private)), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                self.assertRaises(RuntimeError) as raised:
+            PROOF.observe_hidden_permission_offer(
+                "socket", original, opposite, "open-agent-conversation",
+                access, access, (7, "start"),
+            )
+        self.assertNotIn(private, str(raised.exception))
+
+    def test_stale_immediate_errors_are_not_permission_refusals(self):
+        action = self.permission_action()
+        observed = PROOF.HiddenOfferObservation(PROOF.permission_offer_identity(action), 100)
+        private = "private-action-error"
+        for error in ({"code": "unavailable", "message": private},
+                      {"code": "invalid_arguments", "message": private},
+                      {"code": "action_failed", "message": private},
+                      {"code": "permission_denied", "message": private},
+                      {"code": "other", "message": private}, private, None):
+            with self.subTest(error=error), patch.object(PROOF.time, "monotonic", return_value=100), \
+                    patch.object(PROOF, "call", return_value={"err": error}), \
+                    self.assertRaises(RuntimeError) as raised:
+                PROOF.require_stale_action_refused(
+                    "socket", action, {"value": private}, None, observation=observed
+                )
+            self.assertNotIn(private, str(raised.exception))
+
+    def test_stale_unknown_protocol_shapes_are_not_refusals(self):
+        action = self.permission_action()
+        observed = PROOF.HiddenOfferObservation(PROOF.permission_offer_identity(action), 100)
+        for response in (None, [], "private-response", {}, {"answer": []},
+                         {"err": {"code": "unknown_action"}, "answer": {"receipt": {}}}):
+            with self.subTest(response=response), \
+                    patch.object(PROOF.time, "monotonic", return_value=100), \
+                    patch.object(PROOF, "call", return_value=response), \
+                    self.assertRaises(RuntimeError) as raised:
+                PROOF.require_stale_action_refused(
+                    "socket", action, {}, None, observation=observed,
+                )
+            self.assertNotIn("private-response", str(raised.exception))
+
+    def test_unknown_action_requires_exact_fresh_hidden_offer_context(self):
+        action = self.permission_action()
+        identity = PROOF.permission_offer_identity(action)
+        for observed in (None, PROOF.HiddenOfferObservation(("foreign",), 100),
+                         PROOF.HiddenOfferObservation(identity, 97),
+                         PROOF.HiddenOfferObservation(identity, 101)):
+            with self.subTest(observed=observed), \
+                    patch.object(PROOF.time, "monotonic", return_value=100), \
+                    patch.object(PROOF, "call") as invoke, self.assertRaises(RuntimeError):
+                PROOF.require_stale_action_refused(
+                    "socket", action, {}, None, observation=observed
+                )
+            invoke.assert_not_called()
+        with patch.object(PROOF.time, "monotonic", return_value=100), \
+                patch.object(PROOF, "call", return_value={"err": {"code": "unknown_action"}}):
+            self.assertEqual(PROOF.require_stale_action_refused(
+                "socket", action, {}, None,
+                observation=PROOF.HiddenOfferObservation(identity, 100),
+            ), "hidden_action_refused")
+
+    def test_permission_selection_waits_without_replaying_physical_keys(self):
+        access = {"bus": "bus"}
+        output = pathlib.Path("/proof")
+        selected = {"selection": [2, 6], "caret": 2, "draft_matches": True}
+        with patch.object(PROOF, "wait_for", side_effect=[{}, True]), \
+                patch.object(PROOF, "presented_content_geometry", return_value={}), \
+                patch.object(PROOF, "physically_click_editor"), \
+                patch.object(PROOF, "require_chat_keyboard_focus_after_click"), \
+                patch.object(PROOF, "physical_chord"), \
+                patch.object(PROOF, "set_physical_modifiers") as modifiers, \
+                patch.object(PROOF, "call", return_value={"ok": {}}) as input_call, \
+                patch.object(PROOF, "wait_for_private_selection", return_value=selected) as observe:
+            self.assertEqual(PROOF.prepare_private_permission_draft(
+                "socket", access, "abcdef", 4, output, None,
+            ), selected)
+        self.assertEqual(sum(row.args[1] == {"op": "key", "key": "ArrowLeft"}
+                             for row in input_call.call_args_list), 4)
+        observe.assert_called_once_with("socket", access, "abcdef", [2, 6], None, output)
+        self.assertEqual(modifiers.call_args_list[-1].kwargs, {})
+
     def test_native_person_inspector_is_private_and_fail_closed(self):
         class Result:
             returncode = 0
@@ -116,24 +245,24 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertNotIn(private_person, serialized)
         self.assertEqual(order, ["chat", "task"])
 
-    def test_stale_action_transport_uncertainty_is_not_refusal(self):
-        receipt = {
-            "broker_invocation_id": 9,
-            "update": {"invocation": "original", "state": "accepted"},
-        }
-
-        def advance(_label, predicate, _process):
-            predicate()
-
-        with patch.object(PROOF, "call", side_effect=[
-                {"answer": {"receipt": receipt}}, {"err": {"code": "unavailable"}},
-        ]), patch.object(PROOF, "wait_for", side_effect=advance), self.assertRaises(
-                RuntimeError
-        ) as raised:
-            PROOF.require_stale_action_refused(
-                "socket", {"provider": "p", "id": "a"}, {"value": "private"}, None
-            )
-        self.assertIn("uncertain", str(raised.exception))
+    def test_admitted_lifecycle_never_counts_as_hidden_permission_refusal(self):
+        for state in ("accepted", "progress", "item", "failed", "cancelled", "succeeded"):
+            receipt = {"broker_invocation_id": 9, "update": {
+                "invocation": "original", "state": state, "output": "private-result",
+            }}
+            with self.subTest(state=state), \
+                    patch.object(PROOF, "call", return_value={"answer": {"receipt": receipt}}) as invoke, \
+                    patch.object(PROOF.time, "monotonic", return_value=100), \
+                    self.assertRaises(RuntimeError) as raised:
+                PROOF.require_stale_action_refused(
+                    "socket", self.permission_action(), {"value": "private"}, None,
+                    observation=PROOF.HiddenOfferObservation(
+                        PROOF.permission_offer_identity(self.permission_action()), 100,
+                    ),
+                )
+            self.assertIn("admitted", str(raised.exception))
+            self.assertNotIn("private-result", str(raised.exception))
+            invoke.assert_called_once()
 
     def test_component_target_retains_exact_client_and_global_geometry(self):
         class Client:

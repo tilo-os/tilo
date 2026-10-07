@@ -10,6 +10,7 @@ package/roster evidence; it explicitly does not claim detachable Chat works.
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import http.server
 import json
@@ -2304,46 +2305,103 @@ def assign_expiring_app_write_restriction(
     }
 
 
-def require_stale_action_refused(socket, action, args, process):
+def permission_offer_identity(action):
+    fields = ("provider", "id", "application", "room", "record", "resource", "operation")
+    if not isinstance(action, dict) or any(not isinstance(action.get(field), str)
+                                          for field in fields):
+        raise RuntimeError("permission evidence has no exact offered action identity")
+    if any(not action[field] for field in fields if field != "record"):
+        raise RuntimeError("permission evidence has an empty offered action identity")
+    return tuple(action[field] for field in fields)
+
+
+def permission_offer_matches(action, identity):
+    fields = ("provider", "id", "application", "room", "record", "resource", "operation")
+    return isinstance(action, dict) and tuple(action.get(field) for field in fields) == identity
+
+
+def chat_process_identity(access):
+    """Kernel identity is compared only in memory, never added to evidence files."""
+    pid = access.get("process")
+    if not isinstance(pid, int) or isinstance(pid, bool) or process_program(pid) != "chat":
+        raise RuntimeError("permission evidence has no live Chat process")
+    try:
+        started = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        raise RuntimeError("permission evidence cannot verify Chat process continuity") from None
+    return pid, started
+
+
+class HiddenOfferObservation(collections.namedtuple(
+        "HiddenOfferObservationFields", "original observed_at")):
+    """Immutable in-memory evidence; not a permission or execution capability."""
+    __slots__ = ()
+
+
+def observe_hidden_permission_offer(socket, original, opposite, read_operation,
+                                    initial_access, current_access, initial_identity):
+    """Qualify hidden-address refusal using a current catalogue and mounted restriction.
+
+    The caller obtains current_access only after the exact mounted restriction
+    passes. This observation is evidence, never an action capability.
+    """
+    identity = permission_offer_identity(original)
+    opposite_identity = permission_offer_identity(opposite)
+    if opposite_identity[2] == identity[2] or opposite_identity[3] != identity[3]:
+        raise RuntimeError("permission evidence does not compare independent apps in the same room")
+    if any(current_access.get(field) != initial_access.get(field)
+           for field in ("bus", "process", "window")) \
+            or chat_process_identity(current_access) != initial_identity:
+        raise RuntimeError("permission evidence changed its mounted Chat process or view")
+    try:
+        catalogue = actions(socket)
+    except (RuntimeError, KeyError, TypeError):
+        raise RuntimeError("permission evidence catalogue is unavailable") from None
+    if not isinstance(catalogue, list) or any(not isinstance(row, dict) for row in catalogue):
+        raise RuntimeError("permission evidence catalogue has no valid public action rows")
+    if any(permission_offer_matches(row, identity) for row in catalogue):
+        raise RuntimeError("the permission-restricted offer is still visible")
+    if not any(permission_offer_matches(row, opposite_identity) for row in catalogue):
+        raise RuntimeError("the independent opposite-app offer is no longer visible")
+    read = [row for row in catalogue if row.get("operation") == read_operation
+            and all(row.get(field) == original[field]
+                    for field in ("provider", "application", "room", "record", "resource"))]
+    if len(read) != 1:
+        raise RuntimeError("the same live resource has no unique current Read control")
+    return HiddenOfferObservation(identity, time.monotonic())
+
+
+def require_stale_action_refused(socket, action, args, process, *, observation=None):
     """Require a saved public offer to refuse, without treating uncertainty as refusal."""
+    if not isinstance(observation, HiddenOfferObservation) \
+            or observation.original != permission_offer_identity(action) \
+            or not 0 <= time.monotonic() - observation.observed_at <= 2:
+        raise RuntimeError("stale action has no fresh qualified hidden-offer evidence")
     response = call(socket, {
         "op": "actions_invoke", "provider": action["provider"],
         "id": action["id"], "args": args,
     })
+    if not isinstance(response, dict) or ("err" in response and "answer" in response):
+        raise RuntimeError("stale action refusal has no unambiguous protocol response")
     if "err" in response:
-        return "immediate_refusal"
-    receipt = response.get("answer", {}).get("receipt")
+        error = response["err"]
+        if isinstance(error, dict) and error.get("code") == "unknown_action" \
+                and isinstance(observation, HiddenOfferObservation) \
+                and observation.original == permission_offer_identity(action) \
+                and 0 <= time.monotonic() - observation.observed_at <= 2:
+            # Production intentionally makes hidden and nonexistent addresses
+            # indistinguishable. Only qualified current evidence names this a
+            # hidden-offer refusal; it is not a permission_denied wire code.
+            return "hidden_action_refused"
+        raise RuntimeError("stale action invocation has no qualified definite refusal")
+    answer = response.get("answer")
+    receipt = answer.get("receipt") if isinstance(answer, dict) else None
     if not isinstance(receipt, dict):
         raise RuntimeError("stale action refusal has no observable receipt")
-    update = receipt.get("update")
-    original = update.get("invocation") if isinstance(update, dict) else None
-    if not isinstance(original, str) or not original:
-        raise RuntimeError("stale action refusal lost its invocation identity")
-
-    def refused():
-        nonlocal receipt
-        update = receipt.get("update")
-        if not isinstance(update, dict) or update.get("invocation") != original:
-            raise RuntimeError("stale action refusal changed its invocation identity")
-        state = update.get("state")
-        if state in {"failed", "cancelled"}:
-            return "terminal_refusal"
-        if state == "succeeded":
-            raise RuntimeError("a stale permission-gated action unexpectedly succeeded")
-        if state not in {"accepted", "progress", "item"}:
-            raise RuntimeError("stale action refusal has no truthful lifecycle state")
-        broker_id = receipt.get("broker_invocation_id")
-        if not isinstance(broker_id, int) or isinstance(broker_id, bool) or broker_id <= 0:
-            raise RuntimeError("stale action refusal has no broker observation")
-        observed = call(socket, {"op": "actions_status", "invocation_id": broker_id})
-        if "err" in observed:
-            raise RuntimeError("stale action refusal became uncertain")
-        receipt = observed.get("answer", {}).get("receipt")
-        if not isinstance(receipt, dict):
-            raise RuntimeError("stale action refusal lost its receipt")
-        return None
-
-    return wait_for("saved permission-gated action refusal", refused, process)
+    # A current hidden address must refuse before admission. An admitted job's
+    # Failed/Cancelled result says nothing about permission denial, and status
+    # transport uncertainty cannot turn it into qualified refusal evidence.
+    raise RuntimeError("stale hidden action was admitted rather than refused")
 
 
 def read_task(socket, room, task_id, process):
@@ -3271,10 +3329,9 @@ def prepare_private_permission_draft(socket, access, draft, selection_length, ou
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
     finally:
         set_physical_modifiers(socket)
-    before = private_editor_observation(access, draft)
-    if before["selection"] != [len(draft) - selection_length, len(draft)]:
-        raise RuntimeError("physical permission selection did not reach the private editor")
-    return before
+    return wait_for_private_selection(
+        socket, access, draft, [len(draft) - selection_length, len(draft)], process, output
+    )
 
 
 def same_private_editor_state(left, right):
@@ -3287,12 +3344,14 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
     message_draft = "Keep this Message draft through permission loss"
     message_access = wait_for("Message editor before Chat restriction", lambda:
                               agent_conversation_accessibility("Tide"), process)
+    initial_identity = chat_process_identity(message_access)
     message_before = prepare_private_permission_draft(
         socket, message_access, message_draft, 8, output, process
     )
     stale_message = wait_for("fresh Message offer before Chat restriction", lambda:
                              offered_agent_action(socket, room, record, "tide", "message"), process)
-    if offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
+    opposite = offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue")
+    if opposite is None:
         raise RuntimeError("independent Queue offer is absent before Chat restriction")
     chat_profile = assign_expiring_app_write_restriction(
         socket, room, person, "so.tilo.chat", "Native Chat write restriction", process
@@ -3306,19 +3365,28 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
         return agent_write_restricted_accessibility("Tide", message_draft)
 
     restricted_chat = wait_for("mounted Chat.Write restriction", chat_restricted, process)
+    observation = observe_hidden_permission_offer(
+        socket, stale_message, opposite, "open-agent-conversation",
+        message_access, restricted_chat, initial_identity,
+    )
     message_refusal = require_stale_action_refused(
-        socket, stale_message, {"value": message_draft}, process
+        socket, stale_message, {"value": message_draft}, process, observation=observation
     )
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"person-chat-write-restricted-{size}.png"
     )}))
 
     def chat_restored():
-        if offered_agent_action(socket, room, record, "tide", "message") is None:
+        restored = offered_agent_action(socket, room, record, "tide", "message")
+        if restored is None:
             return None
+        if not permission_offer_matches(restored, permission_offer_identity(stale_message)):
+            raise RuntimeError("Chat.Write restoration changed the original offered capability")
         access = agent_conversation_accessibility("Tide")
         if access is None:
             return None
+        if chat_process_identity(access) != initial_identity:
+            raise RuntimeError("Chat.Write restoration replaced the original Chat process")
         observed = private_editor_observation(access, message_draft)
         return (access, observed) if same_private_editor_state(
             observed, message_before
@@ -3333,9 +3401,7 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
         "chat_write_restricted": True,
         "chat_read_only_notice_presented": restricted_chat["notice_present"],
         "chat_mutable_controls_removed": restricted_chat["mutable_controls"] == 0,
-        "chat_stale_offer_refused": message_refusal in {
-            "immediate_refusal", "terminal_refusal",
-        },
+        "chat_stale_offer_refused": message_refusal == "hidden_action_refused",
         "task_offer_remained_during_chat_restriction": True,
         "chat_profile_expired": True,
         "chat_draft_restored": message_restored["draft_matches"],
@@ -3355,6 +3421,7 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                             agent_conversation_accessibility(
                                 "Tide", composer_name="Task instruction composer"
                             ), process)
+    initial_identity = chat_process_identity(queue_access)
     queue_draft = "Keep this Queue draft through permission loss"
     queue_before = prepare_private_permission_draft(
         socket, queue_access, queue_draft, 8, output, process
@@ -3363,7 +3430,8 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                            offered_desktop_action(
                                socket, room, "tasks", "desktop:tasks", "queue"
                            ), process)
-    if offered_agent_action(socket, room, record, "tide", "message") is None:
+    opposite = offered_agent_action(socket, room, record, "tide", "message")
+    if opposite is None:
         raise RuntimeError("independent Message offer is absent before Task restriction")
     task_profile = assign_expiring_app_write_restriction(
         socket, room, person, "so.tilo.desktop", "Native Task write restriction", process
@@ -3387,25 +3455,34 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
             observed, queue_before
         ) else None
 
-    _, queue_restricted = wait_for("mounted Task.Write restriction", task_restricted, process)
+    restricted_access, queue_restricted = wait_for("mounted Task.Write restriction", task_restricted, process)
+    observation = observe_hidden_permission_offer(
+        socket, stale_queue, opposite, "read-current-tasks",
+        queue_access, restricted_access, initial_identity,
+    )
     queue_refusal = require_stale_action_refused(socket, stale_queue, {
         "instruction": queue_draft,
         "title": "Permission proof task",
         "agent": "tide",
         "route": "model",
-    }, process)
+    }, process, observation=observation)
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"person-task-write-restricted-{size}.png"
     )}))
 
     def task_restored():
-        if offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
+        restored = offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue")
+        if restored is None:
             return None
+        if not permission_offer_matches(restored, permission_offer_identity(stale_queue)):
+            raise RuntimeError("Task.Write restoration changed the original offered capability")
         access = agent_conversation_accessibility(
             "Tide", composer_name="Task instruction composer"
         )
         if access is None:
             return None
+        if chat_process_identity(access) != initial_identity:
+            raise RuntimeError("Task.Write restoration replaced the original Chat process")
         observed = private_editor_observation(access, queue_draft)
         return observed if same_private_editor_state(observed, queue_before) else None
 
@@ -3417,9 +3494,7 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
     return {
         "task_write_restricted": True,
         "task_queue_control_removed": True,
-        "task_stale_offer_refused": queue_refusal in {
-            "immediate_refusal", "terminal_refusal",
-        },
+        "task_stale_offer_refused": queue_refusal == "hidden_action_refused",
         "message_offer_remained_during_task_restriction": True,
         "task_profile_expired": True,
         "task_draft_retained_while_restricted": queue_restricted["draft_matches"],
