@@ -44,6 +44,8 @@ impl std::fmt::Debug for SimChoice {
 pub type SimChoicesFuture =
     Pin<Box<dyn Future<Output = Result<Vec<SimChoice>, SendError>> + Send + 'static>>;
 pub trait EnrollmentHost: Send + Sync {
+    /// Prepare private storage review before a service can create device keys.
+    /// The original protected credential owner still decides its grant.
     fn prepare(&self, _service: String) -> EnrollmentReviewFuture {
         Box::pin(async { Err(SendError::Unavailable) })
     }
@@ -132,7 +134,7 @@ impl EnrollmentClient {
         self.host.cancel_sim_selection();
     }
     /// # Errors
-    /// Refuses unsupported storage review or foreign unpublished identity.
+    /// Refuses unsupported storage preparation or a foreign private identity.
     pub async fn prepare(&self, service: String) -> Result<EnrollmentReview, SendError> {
         if !matches!(service.as_str(), "tilo" | "whatsapp") {
             return Err(SendError::InvalidRequest);

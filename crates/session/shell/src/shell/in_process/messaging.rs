@@ -33,6 +33,7 @@ pub use working_profile::NativeSignalWorkingProfile;
 pub(super) mod sms;
 mod sms_first;
 pub mod whatsapp;
+mod whatsapp_first;
 pub use activation::NativeSignalActivation;
 pub use enrollment::{NativeSignalEnrollment, NativeVerifiedSignalEnrollment};
 

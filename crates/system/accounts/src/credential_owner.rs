@@ -55,7 +55,8 @@ impl CredentialOwner {
             for byte in bytes.iter() {
                 write!(encoded, "{byte:02x}").map_err(|_| BrokerError::Randomness)?;
             }
-            let mut item = SecretItem::login("Signal profile encryption key", "", encoded.as_str());
+            let mut item =
+                SecretItem::login("Messages account encryption key", "", encoded.as_str());
             item.kind = SecretItemKind::Other;
             item.origins.insert(origin);
             item.fields

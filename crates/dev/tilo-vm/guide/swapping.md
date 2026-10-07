@@ -273,8 +273,9 @@ the existing RPC protocol and works with older compatible daemons.
 ### Layer transfer
 
 Host-built layers travel over the existing authenticated daemon connection.
-The client keeps at most four 1 MiB chunks in flight and verifies every reply's
-request id and cumulative byte count before requesting an import. This uses
+The client sends one 1 MiB chunk at a time and verifies each reply's request
+id and cumulative byte count before sending the next chunk or requesting an
+import. An incorrect acknowledgment stops the transfer. This uses
 the existing protocol and works with already-installed development daemons.
 An import still validates and hashes the staged tree before atomically
 publishing it; applying or rolling back a generation uses the same paths.
