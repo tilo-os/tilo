@@ -1503,7 +1503,26 @@
     },
     {
       "evidence": "voice-nemo-canonical-adapter-runtime-checked.log",
-      "reason": "correct fixture rebuilt, replay stopped by >5% pressure before native execution; negative-language case remains unrun"
+      "reason": "correct fixture rebuilt, first replay stopped by >5% pressure before native execution; later isolated negative-language case passed after independent work and a fresh guarded recovery check"
     }
-  ]
+  ],
+  "unsupported_language_preflight": {
+    "exit": 2,
+    "guarded": null,
+    "memory_peak": {
+      "VmPeak": 328172,
+      "VmSize": 328172,
+      "VmHWM": 87936,
+      "VmRSS": 86776,
+      "Threads": 2
+    },
+    "cpu_seconds": 0.02,
+    "binary_sha256": "99a45768ba5ba841f1ad09803fc52b139dedda06806f36279dca56623ef9ad31",
+    "evidence": "voice-nemo-language-rejection-checked.log",
+    "evidence_sha256": "8119d598e58aeb6b1fc0897eda68c9e70ed965500d121c6daea7d3398eb0bcc7",
+    "pass_result": true,
+    "no_streaming_started": true,
+    "selected_tag": "not-a-supported-language",
+    "actual_address_space_limit_bytes": 2147483648
+  }
 }
