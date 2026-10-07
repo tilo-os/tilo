@@ -100,7 +100,7 @@ fn the_apply_descriptor_names_every_edit_with_its_fields() {
         panic!("apply takes one parameter");
     };
     assert_eq!(param.name, APPLY_PARAM);
-    assert_eq!(param.schema.as_ref(), Some(&schema()));
+    assert_eq!(param.schema.as_deref(), Some(&schema()));
 
     let described: std::collections::BTreeMap<String, Value> =
         variants(&schema()).into_iter().collect();
