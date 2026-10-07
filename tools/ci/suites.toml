@@ -137,6 +137,7 @@ suites = [
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
+  "os/tests/test_installer_firstboot_runtime.py",
   "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_code_refresh.py",
