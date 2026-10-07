@@ -4126,6 +4126,29 @@ mod tests {
         return_node.and_then(|node| node.action_target.clone())
     }
 
+    fn assert_agent_placeholder_controls(app: &ChatApp, return_expected: bool) {
+        assert_eq!(
+            count_hits(app, |hit| matches!(
+                hit,
+                Hit::FocusMain | Hit::Send | Hit::AgentIntent(_)
+            )),
+            0,
+            "the primary placeholder owns no duplicate editor or Agent actions"
+        );
+        assert_eq!(
+            count_hits(app, |hit| matches!(hit, Hit::AgentWindow)),
+            usize::from(return_expected)
+        );
+        assert_eq!(
+            count_hits(app, |hit| matches!(
+                hit,
+                Hit::StartCall | Hit::ToggleRightFlap | Hit::AgentDragHandle
+            )),
+            0,
+            "an Agent placeholder never falls through to human or duplicate drag controls"
+        );
+    }
+
     fn adopt_agent_surface(app: &mut ChatApp, id: &str, rect: vello::kurbo::Rect) {
         for message in [
             ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
@@ -4173,6 +4196,8 @@ mod tests {
         );
         type_str(&mut app, &mut doc, "Private draft stays singular");
         app.composer_main.select(8, 13);
+        write_progress_shots(&mut app, "detached-placeholder-before");
+        render_frame(&mut app, 800.0, 600.0);
         app.float_agent_conversation("ws_home", "scribe")
             .expect("the exact retained conversation floats");
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
@@ -4187,16 +4212,9 @@ mod tests {
         );
 
         render_frame(&mut app, 800.0, 600.0);
-        assert_eq!(
-            count_hits(&app, |hit| matches!(
-                hit,
-                Hit::FocusMain | Hit::Send | Hit::AgentIntent(_)
-            )),
-            0,
-            "the primary placeholder owns no duplicate editor or Agent actions"
-        );
-        assert_eq!(count_hits(&app, |hit| matches!(hit, Hit::AgentWindow)), 0);
+        assert_agent_placeholder_controls(&app, false);
         assert_agent_placeholder_accessibility(&app, "Moving Scribe’s conversation", false);
+        write_progress_shots(&mut app, "detached-placeholder-moving");
 
         let rect = request.initial_rect.expect("exact source rect");
         adopt_agent_surface(&mut app, &request.id, rect);
@@ -4205,12 +4223,14 @@ mod tests {
             Some(("Scribe".into(), true))
         );
         render_frame(&mut app, 800.0, 600.0);
+        assert_agent_placeholder_controls(&app, true);
         let target = assert_agent_placeholder_accessibility(
             &app,
             "Scribe’s conversation is in another window",
             true,
         )
         .expect("the adopted placeholder exposes one Return action");
+        write_progress_shots(&mut app, "detached-placeholder-adopted");
 
         app.room_agents.clear();
         assert!(Widget::perform_semantic_action(
