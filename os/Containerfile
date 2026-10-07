@@ -1618,6 +1618,7 @@ RUN grep -q '^video:' /etc/group || echo "video:x:39:greetd" >> /etc/group; \
 # Adwaita Sans is not a product font of the catalog, so it stays a package.
 # `fontconfig` is named because this step indexes the catalog with it.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifacts \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/usr/share/fontconfig/conf.avail/57-tilo-fonts.conf,target=/tilo-src/57-tilo-fonts.conf,ro \
@@ -1625,8 +1626,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         fontconfig \
         adwaita-sans-fonts \
     && dnf clean all && ${FINALIZE_RPMDB} \
-    && python3 /tilo-src/tools/font-catalog.py stage \
+    && python3 /tilo-src/tools/font-catalog.py prepare \
         /tilo-src/crates/sdk/ui-core/assets/fonts /usr/share/fonts/tilo --scope os \
+        --cache /var/cache/tilo-font-artifacts \
     && install -D -m 0644 /tilo-src/57-tilo-fonts.conf /usr/share/fontconfig/conf.avail/57-tilo-fonts.conf \
     && ln -s ../../../usr/share/fontconfig/conf.avail/57-tilo-fonts.conf /etc/fonts/conf.d/57-tilo-fonts.conf \
     && fc-cache -s \

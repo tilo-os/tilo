@@ -91,6 +91,8 @@ impl SharedRepo {
             tags: self.tags,
             stashes: self.stashes,
             remotes: self.remotes,
+            worktrees: Vec::new(),
+            worktree_error: None,
             graph_width: self.graph_width,
             author_name: self.author_name,
             author_email: self.author_email,
