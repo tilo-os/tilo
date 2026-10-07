@@ -832,12 +832,8 @@ scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fca
 
 [[cargo]]
 package = "notes"
-inputs = ["apps/settings/shots/settings.png"]
-readers = [
-  "apps/notes/src/app.rs",
-  "apps/notes/src/scenario.rs",
-  "apps/notes/tests/effects.rs",
-]
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs", "apps/settings/shots/artifacts.json"]
+readers = ["apps/notes/build.rs"]
 
 
 [[cargo]]
@@ -1429,3 +1425,8 @@ by = "tools/tests/test_font_artifacts.py"
 package = "ebook"
 inputs = ["tools/test-assets.py"]
 readers = ["apps/ebook/src/app/interaction_tests.rs"]
+
+[[cargo]]
+package = "store"
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/store/build.rs"]
