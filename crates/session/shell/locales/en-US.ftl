@@ -2512,3 +2512,5 @@ task-review-cancel = Cancel task run
 task-review-retry = Retry task
 task-review-status = Inspect task review availability
 task-review-provider = Task review
+
+portal-chooser-file-grant-unavailable = The selected file is no longer available. Choose it again.

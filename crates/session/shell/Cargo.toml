@@ -312,6 +312,11 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Exercise owner-selected bytes against the actual Store signed-package review.
+store = { path = "../../../apps/store" }
+app-cli = { path = "../../packaging/app-cli" }
+registry-types = { path = "../../packaging/registry-types" }
+flate2.workspace = true
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }

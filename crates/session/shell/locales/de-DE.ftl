@@ -2515,3 +2515,5 @@ task-review-cancel = Aufgabenlauf abbrechen
 task-review-retry = Aufgabe erneut versuchen
 task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
 task-review-provider = Aufgabenprüfung
+
+portal-chooser-file-grant-unavailable = Die ausgewählte Datei ist nicht mehr verfügbar. Wähle sie erneut aus.
