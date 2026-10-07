@@ -105,3 +105,126 @@ fn projection_uses_the_committed_basis_and_its_declared_result_contract() {
         })
         .unwrap();
 }
+
+fn fixture_submission(room: &str) -> Submission {
+    Submission {
+        id: "0123456789abcdef0123456789abcdef".into(),
+        destination: Destination {
+            room: room.into(),
+            provider: "record:so.tilo.chat:".into(),
+            channel: "feedback".into(),
+        },
+        feedback: ReviewedFeedback {
+            text: "The reader loses my position".into(),
+            context: Vec::new(),
+            screenshot: None,
+        },
+    }
+}
+
+fn mounted_fixture() -> (tempfile::TempDir, Submission, ui::headless::FrameHarness) {
+    use std::{cell::RefCell, rc::Rc};
+    use ui::application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
+    use ui::record::{RecordCheckout, RecordKind, RecordOwners};
+
+    let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    let temp = tempfile::tempdir().unwrap();
+    let mut owners = RecordOwners::new(temp.path().join("profile"));
+    let records = owners.open(crate::definition().app_id, room).unwrap();
+    let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+    let submission = fixture_submission(room);
+    records
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            crate::doc::ChatDoc::seed_workspace(
+                doc, room, "Fixture", "visitor", "Visitor", "V", 0,
+            )?;
+            crate::doc::ChatDoc::insert_category(doc, "feedback-category", room, "Feedback");
+            crate::doc::ChatDoc::insert_channel(
+                doc,
+                "feedback",
+                room,
+                "feedback-category",
+                "Feedback",
+                crate::model::ChannelKind::Text,
+            );
+            crate::actions::apply_as(
+                doc,
+                "visitor",
+                &crate::actions::ChatAction::Feedback(crate::feedback::FeedbackAction::Submit {
+                    submission: submission.clone(),
+                    ts: 123,
+                }),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    records.try_flush().unwrap();
+    let views = Rc::new(
+        ui::application_view::InstanceViewStore::new(temp.path().join("profile"), "device", room)
+            .unwrap(),
+    );
+    let target = LaunchTarget::Record {
+        checkout,
+        reveal: None,
+    };
+    let context = HostContext::prepare(
+        crate::definition(),
+        HostContextInputs {
+            records,
+            views,
+            device_id: "device".into(),
+            instance_id: 42,
+            permissions: Rc::new(RefCell::new(
+                ui::permissions::PermissionContext::from_capabilities(
+                    ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "visitor"),
+                    vec![],
+                ),
+            )),
+            author: ui::permissions::UserId("visitor".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
+        &target,
+    )
+    .unwrap();
+    let component = crate::definition()
+        .instantiate(context, target, RestoreInput::None)
+        .unwrap();
+    let frame = ui::headless::FrameHarness::from_component(
+        component,
+        (1280, 720),
+        ComponentRunnerInputs::from_native_process(),
+    )
+    .unwrap();
+    (temp, submission, frame)
+}
+
+#[test]
+fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
+    let (_temp, submission, mut frame) = mounted_fixture();
+    let started = frame
+        .invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: 42,
+                address: tilo_actions::ActionAddress::new(
+                    format!("chat.feedback:{}", submission.id),
+                    "read-feedback-receipt",
+                ),
+            },
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    let output = started
+        .completed()
+        .expect("the registered read must complete immediately");
+    let value = output.value.unwrap();
+    assert_eq!(value["record"]["roomId"], submission.destination.room);
+    assert_eq!(value["record"]["appId"], crate::definition().app_id);
+    assert_eq!(value["record"]["recordId"], "");
+    let receipt: Receipt = serde_json::from_value(value["content"].clone()).unwrap();
+    assert_eq!(receipt.digest, submission.digest().unwrap());
+    assert_eq!(receipt.destination, submission.destination);
+}

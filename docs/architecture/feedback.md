@@ -84,8 +84,16 @@ through this adapter; never derive it from report payloads or URLs. The submitti
 host feeds the receipt to `Outbox::confirm_durable_receipt` with that identity.
 Persist masked screenshot bytes before allowing its immutable payload to send.
 
-For remote delivery, invoke `read-feedback-receipt` through the existing admitted
-action transport. Check the returned SDK record stamp against the retained Chat
+The browser room-action server currently catalogues and invokes **document
+operations only** through `Participant`/`Replica`; it also discards action output.
+It therefore does not serve this reader yet. Its shared SDK/server integration
+must serve registered read-only operations from a qualified canonical owner,
+return their stamped output and retain the existing refusal of device effects.
+Simply enabling all effects or running a raw projection on an arbitrary replica
+does not preserve that boundary. This seam is tracked in #3269.
+
+Once that integration is qualified, invoke `read-feedback-receipt` through the
+existing admitted action transport. Check the returned SDK record stamp against the retained Chat
 record, and the receipt identity, digest and destination against the outbox.
 This projection alone is **not** a durability witness. Accept it only from the
 authenticated destination owner's existing durable action service, after that
