@@ -6367,6 +6367,13 @@ mod tests {
             // A bare window opening a file marks it up on the file's own
             // record, the one a launch on the file opens.
             let mut bare = app.relaunch(&[]).expect("a bare window");
+            assert!(
+                bare.harness()
+                    .wait_until(tilo_test_env::hang_bound(), |harness| {
+                        harness.a11y_node_named("Page 1 of 3").is_some()
+                    }),
+                "the bare window finishes reopening its pinned document"
+            );
             bare.effect_confirmed(&open(&b))
                 .expect("the bare window opens b.pdf");
             bare.harness().relayout();

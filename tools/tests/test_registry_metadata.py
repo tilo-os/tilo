@@ -37,10 +37,10 @@ class RegistryMetadataTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 entries = sorted(output.glob("*.json"))
-                self.assertEqual(len(entries), 58)
-                # 23 archived images remain in the public gallery, alongside
-                # 58 locally generated icons and the Notes image fixture.
-                self.assertEqual(len(list(media.glob("*"))), 59)
+                self.assertEqual(len(entries), 59)
+                # Archived gallery images remain remote; generate the 59 app
+                # icons and the Notes image fixture locally.
+                self.assertEqual(len(list(media.glob("*"))), 60)
                 image_count = 0
                 for path in entries:
                     entry = json.loads(path.read_text(encoding="utf-8"))
@@ -63,13 +63,14 @@ class RegistryMetadataTests(unittest.TestCase):
                             else:
                                 self.assertEqual(image["kind"], "screenshot")
                                 self.assertIn(image["url"], archive_urls)
-                self.assertEqual(image_count, 82)
+                self.assertEqual(image_count, 83)
         with self.subTest(phase='audit reports the intended generic fleet'):
             result = self.run_tool("audit")
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
-            self.assertEqual(report["count"], 58)
+            self.assertEqual(report["count"], 59)
             self.assertIn("browser", report["apps"])
+            self.assertIn("messages", report["apps"])
             self.assertIn("chip-design", report["apps"])
 
     def test_archive_rejects_unpinned_urls_and_invalid_records(self):
