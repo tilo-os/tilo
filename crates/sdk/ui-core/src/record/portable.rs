@@ -89,6 +89,24 @@ impl RecordSet {
         );
         Ok(RecordOpenOutcome::Loaded)
     }
+    pub(super) fn offer_portable_record(&mut self, id: &RecordId) -> Result<(), String> {
+        let cache = self
+            .portable
+            .as_ref()
+            .ok_or("portable persistence unavailable")?;
+        let slot = self
+            .open
+            .get_mut(id)
+            .ok_or_else(|| format!("{id}: record is not open"))?;
+        let doc = slot
+            .doc
+            .as_mut()
+            .ok_or_else(|| format!("{id}: record is busy"))?;
+        slot.action_state.commit_for_save(doc);
+        let actor = doc.get_actor().to_bytes().to_vec();
+        cache.put_document(key(&self.package_id, &self.home, id), doc, Some(actor))
+    }
+
     pub(super) fn flush_portable(&mut self, only: Option<&RecordId>) -> Result<(), String> {
         let cache = self
             .portable
