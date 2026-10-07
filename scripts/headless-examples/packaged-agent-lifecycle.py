@@ -60,10 +60,10 @@ def accessible_subtree(client, root, limit):
     return result
 
 
-def process_program(pid):
+def process_program(pid, proc_root=pathlib.Path("/proc")):
     """Return the complete executable basename, never a truncated comm."""
     try:
-        argv0 = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0", 1)[0]
+        argv0 = (proc_root / str(pid) / "cmdline").read_bytes().split(b"\0", 1)[0]
     except OSError:
         return ""
     return pathlib.Path(os.fsdecode(argv0)).name
@@ -1588,10 +1588,10 @@ def physical_send_release_revision(output, byte_offset):
     return {"revision": value} if value is not None else None
 
 
-def owned_agent_identities(shell_pid):
+def owned_agent_identities(shell_pid, proc_root=pathlib.Path("/proc")):
     """Observe owned actual processes and kernel starttimes only in memory."""
     rows = {}
-    for entry in pathlib.Path("/proc").iterdir():
+    for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
         try:
@@ -1601,7 +1601,7 @@ def owned_agent_identities(shell_pid):
             continue
     owned = []
     for pid, (_, started) in rows.items():
-        if process_program(pid) != "agent":
+        if process_program(pid, proc_root) != "tilo-agent":
             continue
         ancestor, seen = pid, set()
         while ancestor in rows and ancestor not in seen and ancestor != shell_pid:

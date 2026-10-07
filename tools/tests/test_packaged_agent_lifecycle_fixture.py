@@ -286,6 +286,25 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     previous,
                 )
 
+    def test_owned_agent_observer_matches_the_packaged_binary_and_shell_ancestry(self):
+        def process(root, pid, parent, started, program):
+            directory = root / str(pid)
+            directory.mkdir()
+            fields = ["S", str(parent), *("0" for _ in range(17)), str(started)]
+            (directory / "stat").write_text(f"{pid} ({program}) " + " ".join(fields))
+            (directory / "cmdline").write_bytes(
+                f"/runtime/payload/bin/{program}\0--managed\0".encode()
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            proc = pathlib.Path(directory)
+            process(proc, 100, 1, 10, "shell")
+            process(proc, 200, 100, 20, "tilo-launcher")
+            process(proc, 300, 200, 777, "tilo-agent")
+            process(proc, 301, 200, 778, "agent")
+            process(proc, 302, 999, 779, "tilo-agent")
+            self.assertEqual(PROOF.owned_agent_identities(100, proc), [(300, "777")])
+
     def test_final_lifecycle_requires_structured_float_return_success(self):
         self.assertTrue(PROOF.float_return_evidence_proven({"proven": True}))
         for evidence in (True, {"proven": 1}, {"proven": False}, {}, {"frame_seq": 9}):
