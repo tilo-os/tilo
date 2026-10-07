@@ -254,7 +254,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "offered_membership_action", "wait_terminal", "owned_agent_identities",
                 "agent_read_only_accessibility", "start_managed_agent",
                 "agent_conversation_accessibility", "private_editor_observation",
-                "provider.request_count() != 4"):
+                "provider.request_count() != 4", "provider.overflow_count() != 0"):
             self.assertIn(required, source)
         for forbidden in ("provider.release_exact(5)", "SetText", "AddSelection", "stage_scenario"):
             self.assertNotIn(forbidden, source)

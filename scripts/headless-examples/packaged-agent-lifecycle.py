@@ -1681,7 +1681,8 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
 def native_agent_membership_revocation(
         socket, room, record, provider, output, size, process, old_identity):
     """Revoke and freshly re-admit Tide through the existing owner actions."""
-    if provider.request_count() != 4 or owned_agent_identity(process.pid) != old_identity:
+    if provider.request_count() != 4 or provider.overflow_count() != 0 \
+            or owned_agent_identity(process.pid) != old_identity:
         raise RuntimeError("membership revocation requires the completed four-turn lifecycle")
     draft = "Keep this private draft across revocation"
     access = wait_for(
@@ -1739,7 +1740,7 @@ def native_agent_membership_revocation(
         "detached Tide read-only revocation presentation",
         lambda: agent_read_only_accessibility("Tide", detached=True), process,
     )
-    if provider.request_count() != 4:
+    if provider.request_count() != 4 or provider.overflow_count() != 0:
         raise RuntimeError("membership revocation initiated an unauthorized model turn")
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-membership-revoked-{size}.png"
@@ -1770,7 +1771,7 @@ def native_agent_membership_revocation(
     replacement_identity = wait_for(
         "fresh managed Tide process after re-admission", replacement_identity, process
     )
-    if provider.request_count() != 4:
+    if provider.request_count() != 4 or provider.overflow_count() != 0:
         raise RuntimeError("fresh idle Agent launch initiated an unauthorized model turn")
     restored_access = wait_for(
         "restored detached Tide editor",
@@ -1798,7 +1799,8 @@ def native_agent_membership_revocation(
     if offered_agent_action(socket, room, record, "tide", "message") is None \
             or offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
         raise RuntimeError("re-admission did not restore fresh Message and Queue offers")
-    if owned_agent_identity(process.pid) != replacement_identity or provider.request_count() != 4:
+    if owned_agent_identity(process.pid) != replacement_identity \
+            or provider.request_count() != 4 or provider.overflow_count() != 0:
         raise RuntimeError("restored editor changed process custody or initiated model work")
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-membership-restored-{size}.png"
@@ -1817,6 +1819,7 @@ def native_agent_membership_revocation(
         "selection_restored": attached["selection"] == before["selection"],
         "returned_to_primary": True,
         "provider_request_count": provider.request_count(),
+        "provider_overflow_count": provider.overflow_count(),
         "private_content_recorded": False,
         "test_owned_draft_rendered": True,
     }
@@ -2896,6 +2899,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             and revocation_evidence.get("caret_restored") is True
             and revocation_evidence.get("selection_restored") is True
             and revocation_evidence.get("provider_request_count") == 4
+            and revocation_evidence.get("provider_overflow_count") == 0
         )
         (output / "bootstrap.json").write_text(json.dumps({
             "stage": "native-bootstrap-only" if native else "legacy-bootstrap-only",
