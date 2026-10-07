@@ -43,6 +43,24 @@ class AppResourceActionContractTests(unittest.TestCase):
         self.assertIn("fn f<'a>(s: &'a str)", code)
         self.assertNotIn('"', code)
 
+    def test_repeated_audits_observe_source_changes_at_the_same_path(self):
+        valid = (
+            "pub struct Note;\n"
+            "impl Resource for Note { fn register(registry: &mut ActionRegistry) {} }\n"
+            "struct Sample;\n"
+            "impl ResourceApp for Sample { type Resource = Note; }\n"
+        )
+        root = self.fixture(valid)
+        source = root / "apps/sample/src/lib.rs"
+        (source.parent / "main.rs").write_text("ui::main!(sample::Sample);\n")
+        self.assertEqual(contract.audit(root), ([], 1))
+        source.write_text("struct Sample;\nimpl ResourceApp for Sample {}\n")
+        violations, apps = contract.audit(root)
+        self.assertEqual(apps, 1)
+        self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        source.write_text(valid)
+        self.assertEqual(contract.audit(root), ([], 1))
+
     def test_resource_surface_requires_a_real_nonempty_resource_provider(self):
         with self.subTest(phase='resource action app passes'):
             root = self.fixture(

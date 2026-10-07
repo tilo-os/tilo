@@ -99,3 +99,6 @@ Power-description increment: verified source 2e9349c8d64f0252bf4ad6cdc43cd449c52
 ## Overview stable selection follow-up
 
 Overview binds the shared focus ring and accessibility key to stable tab IDs. A surviving preview keeps focus when another closes; a vanished selection restores the current workspace and consumes one interrupted activation. [Original inspected evidence](evidence/overview-window-identity/README.md) is preserved with its original source revision and Library identities. Fresh validation of the rebased head is in progress; exact-head CI and normal landing/main postchecks remain required.
+## Window switcher live candidate follow-up
+
+Alt+Tab now reconciles the open candidate snapshot with live tab identities, preserves the intended selection, refreshes moved addresses and cancels a vanished armed window. Geometry changes consume old-position presses until paint. [Before/after evidence](evidence/window-switcher-live/README.md) covers themes, text/UI scales and a narrow output. Branch validation passed 11 desktop cases, seven native integration cases, shell tests compile and desktop/shell Clippy; refreshed-current-main verification is running. Normal CI, protected landing and merged-main postchecks remain required.
