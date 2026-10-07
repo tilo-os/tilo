@@ -47,5 +47,28 @@ def strengthen(root: Path) -> None:
     path.write_text(json.dumps(policy, indent=2) + '\n')
 
 
+def maintenance(root: Path) -> None:
+    """Derive the board maintenance flavour from production component bytes."""
+    flavour = root / 'usr/lib/tilo/image-flavour'
+    if flavour.exists() or flavour.is_symlink():
+        raise ValueError('maintenance board requires a production-flavour base')
+    if any((root/name).exists() or (root/name).is_symlink() for name in VM_ONLY_PATHS):
+        raise ValueError('production maintenance base contains VM access routes')
+    key = root / 'usr/share/tilo/cosign.pub'
+    path = root / 'etc/containers/policy.json'
+    if key.is_symlink() or not key.is_file() or path.is_symlink() or not path.is_file():
+        raise ValueError('production key/policy is missing or redirected')
+    policy = json.loads(path.read_text())
+    docker = policy['transports']['docker']
+    if docker.get(REPOSITORY) != [{'type': 'reject'}]:
+        raise ValueError('production base must reject the development repository')
+    docker[REPOSITORY] = REQUIREMENT
+    path.write_text(json.dumps(policy, indent=2) + '\n')
+    flavour.write_text('dev\n')
+
+
 if __name__ == '__main__':
-    strengthen(Path(sys.argv[1]))
+    if sys.argv[1:] and sys.argv[1] == '--maintenance':
+        maintenance(Path(sys.argv[2]))
+    else:
+        strengthen(Path(sys.argv[1]))
