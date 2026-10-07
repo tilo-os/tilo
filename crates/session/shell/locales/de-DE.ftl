@@ -2486,3 +2486,7 @@ task-review-cancel = Aufgabenlauf abbrechen
 task-review-retry = Aufgabe erneut versuchen
 task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
 task-review-provider = Aufgabenprüfung
+search-action-workspace-create = Arbeitsbereich erstellen
+search-action-workspace-create-subtitle = Einen neuen leeren Arbeitsbereich erstellen und dorthin wechseln
+search-action-workspace-create-default-name = Unbenannt
+search-action-workspace-create-invalid-name = Gib einen Namen mit 1 bis 120 Zeichen ohne Steuerzeichen ein.

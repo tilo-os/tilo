@@ -2483,3 +2483,7 @@ task-review-cancel = Cancel task run
 task-review-retry = Retry task
 task-review-status = Inspect task review availability
 task-review-provider = Task review
+search-action-workspace-create = Create a workspace
+search-action-workspace-create-subtitle = Create and switch to a new empty workspace
+search-action-workspace-create-default-name = Untitled
+search-action-workspace-create-invalid-name = Enter a workspace name of 1 to 120 characters without control characters.
