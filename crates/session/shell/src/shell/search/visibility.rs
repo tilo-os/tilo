@@ -31,6 +31,7 @@ pub fn required_capability(
 ) -> Option<(CapResource, Verb)> {
     if resource.provider == super::providers::permission_prompts::PROVIDER_ID
         || resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+        || resource.provider == super::providers::file_picker::PROVIDER_ID
     {
         return Some((
             CapResource::Action {
@@ -151,7 +152,8 @@ impl ActionVisibility for CapabilityVisibility<'_> {
         {
             return false;
         }
-        if resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+        if (resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+            || resource.provider == super::providers::file_picker::PROVIDER_ID)
             && (self.actor.principals.iter().any(|principal| {
                 matches!(
                     principal,
@@ -286,6 +288,61 @@ mod tests {
         actor.principals.push(Principal::Agent("helper".into()));
         assert!(
             !CapabilityVisibility::new(&workspace, actor).can_see(&resource, &ResourceKind::Action)
+        );
+    }
+
+    #[test]
+    fn file_picker_personal_grant_refuses_agent_app_token_and_foreign_person() {
+        let owner = "owner".to_string();
+        let mut workspace = Workspace::new(WorkspaceId::new(), "picker-gate");
+        workspace.owner = Some(owner.clone());
+        let selected = resource(
+            super::super::providers::file_picker::PROVIDER_ID,
+            "confirm@request",
+        );
+        assert!(
+            CapabilityVisibility::new(&workspace, workspace.actor_for_person(&owner))
+                .can_see(&selected, &ResourceKind::Action)
+        );
+        for principal in [
+            Principal::Agent("helper".into()),
+            Principal::App("so.tilo.store".into()),
+            Principal::Token("token".into()),
+            Principal::Person("foreign".into()),
+        ] {
+            let _ = workspace.grant_capability(CapOverride::grant(
+                Subject::Principal(principal.clone()),
+                Scope::Workspace,
+                Verb::Admin,
+            ));
+            if !matches!(principal, Principal::Person(_)) {
+                let mut mixed = workspace.actor_for_person(&owner);
+                mixed.principals.push(principal.clone());
+                assert!(
+                    !CapabilityVisibility::new(&workspace, mixed)
+                        .can_see(&selected, &ResourceKind::Action)
+                );
+            }
+            let alone = Actor {
+                principals: vec![principal],
+                ..Actor::default()
+            };
+            // A foreign Person with a genuine Admin capability is an authorized human;
+            // non-human principals cannot turn an Admin override into a personal file grant.
+            if !matches!(alone.principals.first(), Some(Principal::Person(_))) {
+                assert!(
+                    !CapabilityVisibility::new(&workspace, alone)
+                        .can_see(&selected, &ResourceKind::Action)
+                );
+            }
+        }
+        let foreign = Actor {
+            principals: vec![Principal::Person("ungranted".into())],
+            ..Actor::default()
+        };
+        assert!(
+            !CapabilityVisibility::new(&workspace, foreign)
+                .can_see(&selected, &ResourceKind::Action)
         );
     }
 

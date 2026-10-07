@@ -17,6 +17,8 @@
 //! every path mutation against them so the user can't `..` out of the
 //! sandbox boundary.
 
+pub mod semantic;
+
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::fs;

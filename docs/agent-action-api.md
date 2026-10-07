@@ -527,3 +527,25 @@ payload already in the canonical content store; Store does not invent an
 untrusted download source. The review reports actual installed state separately
 from the candidate, and successful installation requires the reviewed root to
 be the selected installed package.
+
+## Operating a portal file chooser
+
+When an application requests the normal portal chooser, the authenticated owner
+can discover its `file-picker` actions on the same control socket. Each opaque
+action ID includes the current request UUID. Inspect returns the requesting
+application, mode, a bounded page of entries, and a state token. Selection and
+navigation accept only entry IDs from that actual listing, together with its
+latest state token; they do not accept arbitrary paths. Inspect again after an
+operation before using the returned state for the next one.
+
+Confirming Open/Save and approving a replacement require `confirm: true`.
+Cancellation uses the same request-bound action. The original application's
+portal request resolves through the ordinary chooser/grant path. A successful
+chooser receipt is not an application install receipt: track the original
+application job and inspect its reviewed state separately.
+
+The chooser refuses expired requests, stale selections, entries escaping its
+permitted roots, unsupported mode operations, and queued operations whose
+workspace owner or lock state changed. Agent, app and bearer-token principals
+cannot approve personal file access through an Admin override. Staging a file in
+Downloads does not grant an application access to it.
