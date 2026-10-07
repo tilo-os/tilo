@@ -1672,11 +1672,19 @@ mod tests {
             shortcuts: vec![GlobalShortcut {
                 id: "talk".into(),
                 description: None,
-                preferred_trigger: Some("Ctrl+Shift+T".into()),
+                preferred_trigger: Some("Ctrl+Shift+M".into()),
             }],
         };
+        assert!(
+            service.is_reserved("CTRL+SHIFT+KEYT"),
+            "reopen is owned by the shell"
+        );
+        assert!(
+            !service.is_reserved("CTRL+SHIFT+KEYM"),
+            "the grant fixture is unreserved"
+        );
         assert_eq!(service.install_approved(&request), vec!["talk"]);
-        let key = PhysicalKey::Code(KeyCode::KeyT);
+        let key = PhysicalKey::Code(KeyCode::KeyM);
         let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
         assert!(service.claims(&key, chord));
         assert!(!service.claims(&key, Modifiers::from(ModifiersState::CONTROL)));
