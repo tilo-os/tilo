@@ -1112,14 +1112,19 @@ impl WindowGroup {
     /// gestures cannot race; this matters especially for a one-group strip,
     /// where this grip is the only resize affordance.
     pub fn resize_grab_hit(&self, p: Point) -> bool {
-        !self.maximized
-            && Rect::new(
+        self.resize_grab_rect().is_some_and(|rect| rect.contains(p))
+    }
+
+    /// Painted trailing-edge grip, shared with compositor input admission.
+    pub fn resize_grab_rect(&self) -> Option<Rect> {
+        (!self.maximized).then(|| {
+            Rect::new(
                 self.rect.x1 - RESIZE_HANDLE_PX,
                 self.rect.y0,
                 self.rect.x1,
                 self.rect.y1,
             )
-            .contains(p)
+        })
     }
 
     pub fn drop_index_for(&self, release_point: Point) -> usize {

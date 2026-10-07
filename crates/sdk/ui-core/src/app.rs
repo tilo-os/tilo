@@ -1850,6 +1850,7 @@ impl App {
                 self.continuation.owner_view.last_generation = 0;
             }
             self.continuation.last_published = None;
+            self.continuation.publication_initialized = false;
             self.last_published_playback = None;
             self.last_playback_publish = None;
             self.continuation.last_private_route = Some(witness.clone());

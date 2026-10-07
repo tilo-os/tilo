@@ -55,6 +55,7 @@ suites = ["os/tests/flight_recorder_test.py"]
 name = "os"
 inputs = ["os/"]
 suites = [
+  "os/dev/test-assemble-app-runtime.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",
@@ -543,6 +544,7 @@ inputs = [
   "tools/test-assets.py",
 ]
 readers = [
+  "crates/sdk/ui-core/build.rs",
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
@@ -715,9 +717,10 @@ readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 package = "tilo-fs"
 inputs = [
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
-  "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/sample.docx",
+  "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
+  "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
-readers = ["crates/system/fs/src/main.rs", "crates/system/fs/src/tests/mod.rs"]
+readers = ["crates/system/fs/src/main.rs", "crates/system/fs/build.rs"]
 
 [[cargo]]
 package = "system-extension"
@@ -770,9 +773,8 @@ readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
 package = "tilo-doc-codecs"
-inputs = ["crates/doc/fixtures/"]
-readers = ["crates/doc/tilo-doc-codecs/src/bulk_equivalence.rs", "crates/doc/tilo-doc-codecs/tests/office_roundtrip.rs",
-           "crates/doc/tilo-doc-codecs/tests/binary_inputs.rs", "crates/doc/tilo-doc-codecs/tests/office_fidelity.rs"]
+inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["crates/doc/tilo-doc-codecs/build.rs"]
 
 [[cargo]]
 package = "ush"
@@ -798,13 +800,8 @@ readers = ["crates/sdk/font-catalog/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
-# The reader's tests open the engine's typeset fixtures.
-inputs = ["crates/platform/tilo-pdf/tests/fixtures/"]
-readers = [
-  "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
-  "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",
-  "apps/pdf-viewer/tests/capture.rs",
-]
+inputs = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/pdf-viewer/build.rs"]
 
 [[cargo]]
 package = "tilo-agent-participant"
@@ -832,12 +829,8 @@ scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fca
 
 [[cargo]]
 package = "notes"
-inputs = ["apps/settings/shots/settings.png"]
-readers = [
-  "apps/notes/src/app.rs",
-  "apps/notes/src/scenario.rs",
-  "apps/notes/tests/effects.rs",
-]
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs", "apps/settings/shots/artifacts.json"]
+readers = ["apps/notes/build.rs"]
 
 
 [[cargo]]
@@ -877,8 +870,8 @@ readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
 package = "tilo-browser-peer"
 # The actual microphone fixture serves the production web modules and pinned
 # MoQ bundle to two isolated Chromium profiles.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"]
-readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
+readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo-exempt]]
@@ -1427,5 +1420,34 @@ by = "tools/tests/test_font_artifacts.py"
 
 [[cargo]]
 package = "ebook"
-inputs = ["tools/test-assets.py"]
-readers = ["apps/ebook/src/app/interaction_tests.rs"]
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/ebook/src/app/interaction_tests.rs", "apps/ebook/build.rs"]
+
+[[cargo]]
+package = "store"
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/store/build.rs"]
+
+[[cargo]]
+package = "tilo-pdf"
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["crates/platform/tilo-pdf/build.rs"]
+
+[[group]]
+name = "browser-fixture-assets"
+inputs = ["tools/web/fixture-assets.mjs", "tools/test-assets.py"]
+suites = ["tools/web/fixture-assets.test.mjs"]
+
+[[cargo]]
+package = "video-editor"
+inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+readers = ["apps/video-editor/build.rs"]
+
+[[cargo]]
+package = "video-player"
+inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+readers = ["apps/video-player/build.rs"]
+
+[[covered]]
+suite = "tools/android/mediation/prepare-res.py"
+by = "tools/tests/test_android_fixture_resources.py"

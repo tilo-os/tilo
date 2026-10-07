@@ -149,6 +149,8 @@ pub(crate) struct DisplayLayouts {
     /// settings is never reported as the answer to a new choice.
     staged: Option<u64>,
     notice: Option<String>,
+    answer: Option<crate::shell::display_persistence::PendingAnswer>,
+    staging: Option<crate::shell::display_persistence::PendingLayout>,
 }
 
 impl DisplayLayouts {
@@ -162,7 +164,47 @@ impl DisplayLayouts {
         self.polled_at = Some(now);
     }
 
+    fn poll_completions(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        if let Some(staging) = self.staging.as_ref() {
+            match staging.poll() {
+                Ok(None) => {}
+                Ok(Some(transaction)) => {
+                    changed = true;
+                    self.staging = None;
+                    self.staged = Some(transaction.id);
+                    self.transaction = Some(transaction);
+                    self.notice = None;
+                }
+                Err(error) => {
+                    changed = true;
+                    self.staging = None;
+                    self.notice = Some(error.to_string());
+                }
+            }
+        }
+        if let Some(answer) = self.answer.as_ref() {
+            match answer.poll() {
+                Ok(None) => {}
+                Ok(Some(())) => {
+                    changed = true;
+                    self.answer = None;
+                    self.notice = None;
+                    self.refresh(now);
+                }
+                Err(error) => {
+                    changed = true;
+                    self.answer = None;
+                    self.notice = Some(error.to_string());
+                    self.refresh(now);
+                }
+            }
+        }
+        changed
+    }
+
     fn poll(&mut self, now: Instant) {
+        self.poll_completions(now);
         if self
             .polled_at
             .is_none_or(|at| now.duration_since(at) >= DISPLAY_POLL)
@@ -201,10 +243,12 @@ impl DisplayLayouts {
     }
 
     fn apply(&mut self, mode: DisplayLayoutMode, now: Instant) {
-        match display_mode::stage_layout(mode) {
-            Ok(transaction) => {
-                self.staged = Some(transaction.id);
-                self.transaction = Some(transaction);
+        if self.staging.is_some() {
+            return;
+        }
+        match crate::shell::display_persistence::stage_layout(mode) {
+            Ok(staging) => {
+                self.staging = Some(staging);
                 self.notice = None;
             }
             Err(error) => {
@@ -216,18 +260,28 @@ impl DisplayLayouts {
     }
 
     fn keep(&mut self) {
-        if let Some(transaction) = self.transaction.as_mut()
-            && let Err(error) = transaction.request_confirmation()
-        {
-            self.notice = Some(error.to_string());
-        }
+        self.queue_answer(crate::shell::display_persistence::Answer::Keep);
     }
 
     fn revert(&mut self) {
-        if let Some(transaction) = self.transaction.as_mut()
-            && let Err(error) = transaction.request_revert()
-        {
-            self.notice = Some(error.to_string());
+        self.queue_answer(crate::shell::display_persistence::Answer::Revert);
+    }
+
+    fn queue_answer(&mut self, answer: crate::shell::display_persistence::Answer) {
+        if self.answer.is_some() {
+            return;
+        }
+        let Some(transaction) = self.transaction.as_ref() else {
+            return;
+        };
+        match crate::shell::display_persistence::answer_for(answer, Some(transaction.id)) {
+            Ok(answer) => {
+                self.answer = Some(answer);
+                self.notice = None;
+            }
+            Err(error) => {
+                self.notice = Some(error.to_string());
+            }
         }
     }
 
@@ -392,6 +446,13 @@ impl ProjectionOverlay {
         Some(Rect::new(field.x0, field.y0, field.x1 + slide, field.y1))
     }
 
+    /// Drain storage receipts on the ordinary host update, even at rest.
+    /// Waiting itself is not animation; the existing native wake schedules
+    /// this update and only a completed receipt invalidates the sheet.
+    pub(crate) fn poll_storage(&mut self) -> bool {
+        self.displays.poll_completions(Instant::now())
+    }
+
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
         self.transition.is_animating(now)
             || matches!(
@@ -417,6 +478,9 @@ impl ProjectionOverlay {
     /// Whether choosing `mode` does anything: it can be planned for the
     /// attached displays, or the selected receiver can stream it.
     fn layout_enabled(&self, mode: DisplayLayoutMode) -> bool {
+        if self.displays.staging.is_some() {
+            return false;
+        }
         self.displays.plan_error(mode).is_none()
             || (!self.controller.devices.is_empty()
                 && wireless_mode_for(mode)
@@ -821,7 +885,15 @@ impl ProjectionOverlay {
 
         let mut sheet = AccessNode::new(Role::Dialog)
             .with_name(t("display-sheet-title"))
-            .with_description(t("display-sheet-a11y-description"))
+            .with_description(if self.displays.staging.is_some() {
+                format!(
+                    "{}. {}",
+                    t("display-sheet-saving-layout"),
+                    t("display-sheet-a11y-description")
+                )
+            } else {
+                t("display-sheet-a11y-description")
+            })
             .with_bounds(self.sheet_rect())
             .with_state(AccessState::new().modal(true));
         let active = self.active_layout();
@@ -864,7 +936,11 @@ impl ProjectionOverlay {
                         .with_name(t(key))
                         .with_description(t("display-confirm-title"))
                         .with_bounds(rect)
-                        .with_state(AccessState::new().focused(self.focus == focus)),
+                        .with_state(
+                            AccessState::new()
+                                .focused(self.focus == focus)
+                                .disabled(self.displays.answer.is_some()),
+                        ),
                 );
             }
         }
@@ -1026,7 +1102,10 @@ impl ProjectionOverlay {
     /// Top of the wireless section; the confirmation band or a rejection
     /// notice pushes it down while visible.
     fn wireless_top(&self) -> f64 {
-        let band = if self.confirming() || self.displays.rejection().is_some() {
+        let band = if self.displays.staging.is_some()
+            || self.confirming()
+            || self.displays.rejection().is_some()
+        {
             Self::confirm_band_height() + 10.0
         } else {
             0.0
@@ -1285,10 +1364,28 @@ impl ProjectionOverlay {
             r.x1 - 16.0,
             top + Self::confirm_band_height(),
         );
-        if self.confirming() {
-            let status = crate::shell::display_confirm::countdown_status(
-                self.displays.seconds_left(tilo_clock::unix_now_ms()),
+        if self.displays.staging.is_some() {
+            text_renderer.draw_style(
+                scene,
+                &t("display-sheet-saving-layout"),
+                colors.text_dim,
+                transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
+                Some(f64_to_f32_lossy(band.width() - 8.0)),
+                &type_scale.style(TextRole::Caption),
             );
+        } else if self.confirming() {
+            let status = if self.displays.answer.is_some() {
+                t("display-confirm-answer-pending")
+            } else if let Some(notice) = self.displays.notice.as_ref() {
+                t_args(
+                    "display-confirm-answer-failed",
+                    &[("reason", ArgValue::Text(notice.clone()))],
+                )
+            } else {
+                crate::shell::display_confirm::countdown_status(
+                    self.displays.seconds_left(tilo_clock::unix_now_ms()),
+                )
+            };
             let focus = match self.focus {
                 SheetFocus::Keep => Some(crate::shell::display_confirm::BandFocus::Keep),
                 SheetFocus::Revert => Some(crate::shell::display_confirm::BandFocus::Revert),
@@ -1302,7 +1399,10 @@ impl ProjectionOverlay {
                 band,
                 &t("display-confirm-title"),
                 &status,
-                focus,
+                crate::shell::display_confirm::BandState {
+                    focus,
+                    disabled: self.displays.answer.is_some(),
+                },
             );
             self.keep_rect = buttons.keep;
             self.revert_rect = buttons.revert;
