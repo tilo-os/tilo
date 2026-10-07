@@ -151,21 +151,23 @@ mod tests {
     #[test]
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn compiled_baseline_programs_match_the_pinned_golden_files() {
-        let cases: [(SeccompProfile, &[u8]); 3] = [
+        let cases: [(SeccompProfile, &str); 3] = [
             (
                 SeccompProfile::TiloDefault,
-                include_bytes!("../tests/fixtures/seccomp/tilo-default.x86_64.bpf"),
+                include_str!("../tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex"),
             ),
             (
                 SeccompProfile::TiloJit,
-                include_bytes!("../tests/fixtures/seccomp/tilo-jit.x86_64.bpf"),
+                include_str!("../tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex"),
             ),
             (
                 SeccompProfile::TiloWebEngine,
-                include_bytes!("../tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf"),
+                include_str!("../tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex"),
             ),
         ];
-        for (profile, golden) in cases {
+        for (profile, golden_hex) in cases {
+            let golden = hex::decode(golden_hex.lines().collect::<String>())
+                .expect("decode pinned BPF hex fixture");
             let compiled = compile_baseline(profile).expect("compile");
             assert!(
                 compiled == golden,
