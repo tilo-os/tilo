@@ -1,0 +1,29 @@
+name: Dev / native reusable package auth probe
+on:
+  workflow_call:
+    inputs:
+      probe_kind:
+        type: string
+        required: true
+    secrets:
+      REGISTRY_TOKEN:
+        required: true
+
+jobs:
+  probe:
+    runs-on: runner-large
+    timeout-minutes: 5
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/ci/package_auth_probe.py
+          sparse-checkout-cone-mode: false
+      - name: Probe reusable package and broker authentication
+        env:
+          PROBE_KIND: ${{ inputs.probe_kind }}
+          PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          JOB_TOKEN: ${{ github.token }}
+          COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
+        run: python3 tools/ci/package_auth_probe.py
