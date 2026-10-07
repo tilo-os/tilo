@@ -134,8 +134,8 @@ fn apply_landlock(info: &ChildInfo) {
 async fn child_journey(info: &ChildInfo) {
     let source = info.root.join("source");
     let receiving = info.root.join("receiving");
-    let a = inherited_connection(info, "TILO_PROOF_SOURCE_FD", "sandbox-source").await;
-    let b = inherited_connection(info, "TILO_PROOF_RECEIVING_FD", "sandbox-receiving").await;
+    let a = inherited_connection(info, "sandbox-source").await;
+    let b = inherited_connection(info, "sandbox-receiving").await;
     for cut in [false, true] {
         let ticket = a.capture(&source, false).await;
         let offer = a.publish(ticket, cut).await;
@@ -189,13 +189,9 @@ fn run_sandbox(info: &ChildInfo) -> std::process::ExitStatus {
     use std::os::unix::process::CommandExt as _;
     let mut source =
         std::os::unix::net::UnixStream::connect(&info.socket).expect("launcher service socket");
-    let mut receiving =
-        std::os::unix::net::UnixStream::connect(&info.socket).expect("launcher service socket");
-    for stream in [&mut source, &mut receiving] {
-        launcher::services::write_collab_handoff(stream, APP, &info.room)
-            .expect("production launcher handoff");
-    }
-    let descriptors = [source.as_raw_fd(), receiving.as_raw_fd()];
+    launcher::services::write_collab_executing_handoff(&mut source, APP, &info.room)
+        .expect("production launcher handoff");
+    let descriptors = [source.as_raw_fd()];
     let mut command = std::process::Command::new("bwrap");
     let mut argv = info.sandbox_argv.clone();
     let entry = argv
@@ -207,11 +203,11 @@ fn run_sandbox(info: &ChildInfo) -> std::process::ExitStatus {
         entry..entry,
         [
             "--setenv".into(),
-            "TILO_PROOF_SOURCE_FD".into(),
+            "TILO_SVC_COLLAB_FD".into(),
             descriptors[0].to_string(),
             "--setenv".into(),
-            "TILO_PROOF_RECEIVING_FD".into(),
-            descriptors[1].to_string(),
+            runtime_portal::process_binding::ENV.into(),
+            "1".into(),
         ],
     );
     command.args(argv);
@@ -234,15 +230,12 @@ fn run_sandbox(info: &ChildInfo) -> std::process::ExitStatus {
     clippy::future_not_send,
     reason = "Cap'n Proto runs on the disposable child LocalSet"
 )]
-async fn inherited_connection(info: &ChildInfo, variable: &str, record: &str) -> Connection {
-    let raw: i32 = std::env::var(variable)
-        .expect("inherited service descriptor")
-        .parse()
-        .expect("descriptor number");
-    assert!(raw >= 3);
-    // SAFETY: the launcher transferred this owned service socket once under its
-    // dedicated descriptor variable, using the production inherited-FD route.
-    let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(raw) };
+async fn inherited_connection(info: &ChildInfo, record: &str) -> Connection {
+    // Exercise the production SDK inherited-service hub, including its one-time
+    // executing-task handshake, rather than completing that protocol in a helper.
+    let stream = std::os::unix::net::UnixStream::from(
+        runtime_portal::connect_service_fd("collab").expect("production inherited SDK connection"),
+    );
     stream.set_nonblocking(true).expect("async socket");
     let stream = tokio::net::UnixStream::from_std(stream).expect("async service descriptor");
     connect_stream(stream, &info.room, &info.identity, record).await
