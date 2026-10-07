@@ -239,7 +239,8 @@ def input_key(args):
     # change a cached public artifact or import an external signing authority.
     overrides = ('IDENTITY_JSON', 'TAPP_DIR', 'EXPECTED_PUBKEY', 'STAGE',
                  'TILO_IMAGE_BUILD', 'SOURCE_DATE_EPOCH', 'TILO_LAUNCHER_PATH',
-                 'MAX_TAPP_BYTES', 'APP_VERSION', 'VERSION_OVERRIDE')
+                 'MAX_TAPP_BYTES', 'APP_VERSION', 'VERSION_OVERRIDE', 'APP_DIR',
+                 'TAPP_OUT')
     if any(os.environ.get(name) for name in overrides):
         raise ValueError('component cache requires canonical packaging inputs')
     repo, target = args.repo.resolve(), args.target_dir.resolve()

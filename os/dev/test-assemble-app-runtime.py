@@ -113,9 +113,10 @@ class InputFingerprint(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'complete source inventory'):
                 ASSEMBLER.input_key(args)
             args.source_digest = 'a' * 64
-            with patch.dict(os.environ, {'IDENTITY_JSON': '/private/never-read'}):
-                with self.assertRaisesRegex(ValueError, 'canonical packaging inputs'):
-                    ASSEMBLER.input_key(args)
+            for variable in ('IDENTITY_JSON', 'APP_DIR', 'TAPP_OUT'):
+                with patch.dict(os.environ, {variable: '/private/never-read'}):
+                    with self.assertRaisesRegex(ValueError, 'canonical packaging inputs'):
+                        ASSEMBLER.input_key(args)
 
 
 class AssemblyNamespaces(unittest.TestCase):
