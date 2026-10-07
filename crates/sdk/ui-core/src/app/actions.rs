@@ -624,6 +624,13 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
+        if self.collaboration.manager.is_connected() {
+            self.refresh_document_routes();
+        }
+        self.publish_action_surface_after_refresh();
+    }
+
+    fn publish_action_surface_after_refresh(&mut self) {
         #[cfg(test)]
         {
             self.actions.action_surface_publication_attempts = self
@@ -631,7 +638,9 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
-        if !self.collaboration.manager.is_connected() {
+        if !self.collaboration.manager.is_connected()
+            || !self.published_action_history_ready_after_refresh()
+        {
             return;
         }
         if self.collaboration.manager.take_action_surface_failed() {
@@ -1664,11 +1673,42 @@ impl App {
             })
     }
 
+    fn published_action_directory_page(
+        &mut self,
+        query: runtime_collab::ActionDirectoryQuery,
+    ) -> runtime_collab::ActionDirectoryPage {
+        if self.published_action_history_ready() {
+            self.action_directory_page(query)
+        } else {
+            runtime_collab::ActionDirectoryPage {
+                revision: String::new(),
+                rows: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: false,
+                stale_cursor: !query.revision.is_empty(),
+                budget_exhausted: true,
+            }
+        }
+    }
+
+    fn published_action_directory_resolution(
+        &mut self,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> runtime_collab::ActionDirectoryResolution {
+        if self.published_action_history_ready() {
+            self.resolve_action_directory(revision, resource, action)
+        } else {
+            runtime_collab::ActionDirectoryResolution::Unavailable
+        }
+    }
+
     fn pump_action_directory_requests(&mut self) {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.action_directory_page(query));
+                    let _ = reply.send(self.published_action_directory_page(query));
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,
@@ -1676,8 +1716,9 @@ impl App {
                     action,
                     reply,
                 } => {
-                    let _ =
-                        reply.send(self.resolve_action_directory(&revision, &resource, &action));
+                    let _ = reply.send(
+                        self.published_action_directory_resolution(&revision, &resource, &action),
+                    );
                 }
             }
         }
@@ -1693,6 +1734,15 @@ impl App {
         ambient_context: Option<&tilo_actions::ActionContext>,
     ) {
         if self.action_publication_failure.is_some() {
+            return;
+        }
+        if !self.published_action_history_ready() {
+            // An already accepted delivery lost its original owner-history
+            // custody. Run no handler; disconnect retains admitted uncertainty.
+            self.action_publication_failure = Some(
+                "Original document history is unavailable; action outcome unknown. Reconnect and reconcile before retrying.".into(),
+            );
+            self.collaboration.manager.stop_after_publication_failure();
             return;
         }
         let address = tilo_actions::ActionAddress::new(resource, action);
