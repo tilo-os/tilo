@@ -3025,7 +3025,9 @@ jobs:
           fi
 
           if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
-            if [[ '${{ needs.plan.outputs.hardware-profile }}' != generic ]]; then
+            # Imported Lenovo firmware keeps its explicit owner-visibility gate.
+            # Orange Pi uses repository-pinned public inputs and normal release trust.
+            if [[ '${{ needs.plan.outputs.hardware-profile }}' == lenovo-83ed ]]; then
               REGISTRY_TOKEN="$TILO_REGISTRY_TOKEN" \
                 python3 os/dev/require-private-oci-owner.py
             fi
@@ -3874,7 +3876,11 @@ jobs:
           WINDOWS_GUEST_CANDIDATE: ${{ github.event.inputs.windows_guest_candidate }}
         run: |
           set -euo pipefail
-          python3 os/dev/require-private-oci-owner.py
+          case "$HARDWARE_PROFILE" in
+            lenovo-83ed) python3 os/dev/require-private-oci-owner.py ;;
+            orangepi-3b-v2-1) ;;
+            *) echo '::error::unsupported board publication profile'; exit 1 ;;
+          esac
           child=release-child/aarch64.json
           digest="$(jq -er --arg source "$GITHUB_SHA" '
             select(.architecture == "aarch64" and .sourceRevision == $source and .generation == 1)

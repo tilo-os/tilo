@@ -88,6 +88,12 @@ pub enum PersonalFabricPayload {
         offset: u64,
         bytes: Vec<u8>,
     },
+    /// Optional owner-authored screen observation extension. Appended to keep
+    /// every existing payload discriminant and schema-6 checkpoint unchanged.
+    DisplayConnectors {
+        stamp: crate::shell::device_fabric::FabricStamp,
+        outputs: Vec<crate::shell::device_fabric::DisplayConnectorPlacement>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -4236,6 +4242,48 @@ mod tests {
             .await
             .unwrap();
         (endpoint, lookup)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn personal_fabric_unknown_extension_preserves_following_streams() {
+        let (a, _) = endpoint().await;
+        let (b, _) = endpoint().await;
+        let (internal_tx, mut events) = mpsc::channel(8);
+        let router = Router::builder(b.clone())
+            .accept(
+                PERSONAL_FABRIC_ALPN,
+                PersonalFabricProtocol {
+                    internal_tx,
+                    next_connection_incarnation: Arc::new(AtomicU64::new(1)),
+                },
+            )
+            .spawn();
+        let connection = a.connect(b.addr(), PERSONAL_FABRIC_ALPN).await.unwrap();
+        let frame = PersonalFabricWireFrame {
+            workspace: 43,
+            user_public_key: [0xA5; 32],
+            payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+        };
+        let valid = postcard::to_allocvec(&frame).unwrap();
+        assert_eq!(valid[33], 1, "the legacy Snapshot payload tag stays fixed");
+        let mut future = valid.clone();
+        future[33] = 9; // First unsupported tag after optional connector observations.
+        assert!(postcard::from_bytes::<PersonalFabricWireFrame>(&future).is_err());
+        for bytes in [&future, &valid] {
+            let mut stream = connection.open_uni().await.unwrap();
+            stream.write_all(bytes).await.unwrap();
+            stream.finish().unwrap();
+        }
+        let event =
+            tilo_test_env::within("valid checkpoint after unknown extension", events.recv())
+                .await
+                .unwrap();
+        assert!(matches!(event, InternalEvent::PersonalFabric {
+            ws: 43, payload: PersonalFabricPayload::Snapshot(bytes), ..
+        } if bytes == vec![1, 2, 3]));
+        connection.close(0u32.into(), b"fixture complete");
+        router.shutdown().await.unwrap();
+        a.close().await;
     }
 
     #[tokio::test]

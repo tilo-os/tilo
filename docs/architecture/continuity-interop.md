@@ -330,7 +330,8 @@ neither ownership nor capture authorization. HLS encryption is not claimed.
 The anchors and retained schemas come from Google's Open Screen repository at
 revision `1c526caf732881bd0aa1ab9479c36861bb225ba6`, fetched through ordinary
 certificate-validated HTTPS and matched to its trust-store includes. DER hashes
-below pin the exact certificate bytes. This records repository provenance; it
+below pin the exact certificate bytes, embedded as UTF-8/LF Rust byte arrays in
+`chromecast_auth/authorities.rs` without binary-source exceptions. This records repository provenance; it
 is not independent verification of a Google-signed trust bundle or Git commit
 signature. `LICENSE.OpenScreen` retains the full BSD-3-Clause license.
 
