@@ -1590,8 +1590,12 @@ fn preferred_rect_at_grip(from: Rect, preferred: Size, grip: Vec2, desktop: Rect
         .min(((desktop.height() - 1.0) / 2.0).max(0.0));
     let safe = desktop.inset(inset);
     let size = Size::new(
-        preferred.width.min(safe.width()).max(1.0),
-        preferred.height.min(safe.height()).max(1.0),
+        preferred.width.min(from.width()).min(safe.width()).max(1.0),
+        preferred
+            .height
+            .min(from.height())
+            .min(safe.height())
+            .max(1.0),
     );
     let anchor = Point::new(
         from.x0 + from.width() * grip.x,
@@ -1936,6 +1940,21 @@ mod tests {
         assert_eq!(compact.size(), preferred);
         assert_eq!(compact.x0 + compact.width() / 2.0, prepared.center().x);
         assert_eq!(compact.y0, prepared.y0);
+
+        // The shared opt-in is intrinsically shrink-only. A host may prepare
+        // a smaller transfer rect than the request (for example on a compact
+        // output), and an oversized preferred value cannot enlarge it.
+        let prepared_small = Rect::new(420.0, 180.0, 900.0, 460.0);
+        let mut oversized = FloatingPlacement::attached(app.size());
+        oversized.settle_detached_to_preferred_size(Size::new(1_200.0, 900.0));
+        oversized.detach_to_desktop(app);
+        oversized.prepare_desktop_rect(prepared_small);
+        oversized.confirm_desktop_adoption_within(desktop);
+        assert_eq!(oversized.rect(app, desktop), prepared_small);
+        assert!(
+            oversized.settle_motion.is_none(),
+            "a preferred destination never enlarges prepared geometry"
+        );
     }
 
     #[test]
