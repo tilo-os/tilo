@@ -232,6 +232,35 @@ impl SecureNearbySource {
         Ok(Self { file, name })
     }
 
+    /// Pin a granted directory before a pending user selection can replace it.
+    pub(crate) fn anchor_directory(grant: &Path) -> Result<File, String> {
+        let canonical = fs::canonicalize(grant).map_err(display)?;
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(canonical)
+            .map_err(display)
+    }
+
+    /// Resolve a selection using the exact admitted directory descriptor.
+    pub(crate) fn open_in_directory(
+        root: &File,
+        grant: &Path,
+        requested: &Path,
+    ) -> Result<Self, String> {
+        let name = portable_name(requested)?;
+        let relative = requested
+            .strip_prefix(grant)
+            .map_err(|_| crate::shell::i18n::t("nearby-error-outside-grant"))?;
+        validate_relative(relative)?;
+        let file = openat2_beneath(root, relative, false)?;
+        let metadata = file.metadata().map_err(display)?;
+        if !metadata.is_file() {
+            return Err(crate::shell::i18n::t("nearby-error-one-item"));
+        }
+        Ok(Self { file, name })
+    }
+
     pub(crate) fn metadata(&self) -> Result<fs::Metadata, String> {
         self.file.metadata().map_err(display)
     }
