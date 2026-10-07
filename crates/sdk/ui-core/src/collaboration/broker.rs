@@ -3836,6 +3836,28 @@ async fn ensure_sdk_route(
         tracing::info!("managed Agent action catalogue subscribed");
     }
     let committed = committed_document::install(&channel, spec, inbound_tx).await?;
+    if native_document_source {
+        tracing::debug!(
+            target: "tilo_agent_delivery",
+            "native-delivery:source_signer:enabled"
+        );
+    } else {
+        tracing::debug!(
+            target: "tilo_agent_delivery",
+            "native-delivery:source_signer:disabled"
+        );
+    }
+    if committed {
+        tracing::debug!(
+            target: "tilo_agent_delivery",
+            "native-delivery:source_owner:enabled"
+        );
+    } else {
+        tracing::debug!(
+            target: "tilo_agent_delivery",
+            "native-delivery:source_owner:disabled"
+        );
+    }
     // A committed route's owner admits and applies each edit itself, and a
     // committing host holds no channel keys: it could neither open a sealed
     // edit nor accept cleartext on the route after one. Committed routes
@@ -4082,12 +4104,51 @@ async fn spawn_invocation_stream(
         tokio::task::spawn_local(async move {
             let lifetime = crate::invocation_scope::NativeMessageStreamLifetime::new();
             loop {
+                if native_document_source {
+                    tracing::debug!(
+                        target: "tilo_agent_delivery",
+                        "native-delivery:source_read:in_flight"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "tilo_agent_delivery",
+                        "native-delivery:legacy_read:in_flight"
+                    );
+                }
                 let received = if native_document_source {
                     stream.read_with_document_source().await
                 } else {
                     stream.read().await
                 };
-                let Ok(invocation) = received else { break };
+                let Ok(invocation) = received else {
+                    if native_document_source {
+                        tracing::debug!(
+                            target: "tilo_agent_delivery",
+                            "native-delivery:source_read:uncertain"
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "tilo_agent_delivery",
+                            "native-delivery:legacy_read:uncertain"
+                        );
+                    }
+                    break;
+                };
+                if native_document_source {
+                    tracing::debug!(
+                        target: "tilo_agent_delivery",
+                        "native-delivery:source_read:complete"
+                    );
+                    tracing::debug!(
+                        target: "tilo_agent_delivery",
+                        "native-delivery:source_decode:in_flight"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "tilo_agent_delivery",
+                        "native-delivery:legacy_read:complete"
+                    );
+                }
                 let id = invocation.id;
                 let context = parse_invocation_context(id, &invocation.context_json);
                 let source = crate::invocation_scope::NativeInvocationSource::from_delivery(
@@ -4097,9 +4158,21 @@ async fn spawn_invocation_stream(
                     &lifetime,
                 );
                 let Ok(native_source) = source else {
+                    if native_document_source {
+                        tracing::debug!(
+                            target: "tilo_agent_delivery",
+                            "native-delivery:source_decode:definitive_refusal"
+                        );
+                    }
                     tx.state.fail_closed("native Message source decoding");
                     break;
                 };
+                if native_document_source {
+                    tracing::debug!(
+                        target: "tilo_agent_delivery",
+                        "native-delivery:source_decode:complete"
+                    );
+                }
                 if !tx.send_durable(CollabEvent::Invocation {
                     id,
                     invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(

@@ -1810,10 +1810,15 @@ def managed_child_diagnostic(profile):
 
 
 NATIVE_DELIVERY_STAGES = {
+    "source_signer", "source_owner", "source_read", "legacy_read", "broker_original",
+    "broker_facts", "broker_guards", "broker_stream_missing", "broker_stream_replaced",
+    "broker_lease_missing", "broker_lease_retired", "broker_lease_unavailable",
+    "broker_worker_registry", "broker_worker_missing", "source_output", "source_decode",
     "source_stage", "prepare", "sign", "upload_open", "upload_write", "owner_send",
 }
 NATIVE_DELIVERY_OUTCOMES = {
-    "in_flight", "complete", "definitive_refusal", "uncertain", "saved",
+    "enabled", "disabled", "in_flight", "complete", "definitive_refusal", "uncertain",
+    "saved",
 }
 
 
@@ -1822,34 +1827,56 @@ def native_delivery_diagnostic(output):
     log = output / "shell.log"
     if not log.is_file():
         return {"log_count": 0, "marker_count": 0,
-                "markers": [], "stage": None, "outcome": "unobserved"}
+                "markers": [], "source": None, "stage": None,
+                "outcome": "unobserved", "log_truncated": False}
     with log.open("rb") as stream:
         stream.seek(0, os.SEEK_END)
         length = stream.tell()
-        stream.seek(max(0, length - 256 * 1024))
-        tail = stream.read(256 * 1024).decode(errors="replace")
+        window = 512 * 1024
+        if length <= 2 * window:
+            stream.seek(0)
+            chunks = [(stream.read(2 * window), False, False)]
+        else:
+            stream.seek(0)
+            head = stream.read(window)
+            stream.seek(length - window)
+            tail = stream.read(window)
+            chunks = [(head, False, True), (tail, True, False)]
+    lines = []
+    lines_truncated = False
+    for chunk, drop_first, drop_last in chunks:
+        chunk_lines = chunk.decode(errors="replace").splitlines()
+        if drop_first and chunk_lines:
+            chunk_lines = chunk_lines[1:]
+        if drop_last and chunk_lines and not chunk.endswith((b"\n", b"\r")):
+            chunk_lines = chunk_lines[:-1]
+        lines_truncated = lines_truncated or len(chunk_lines) > 4096
+        lines.extend(chunk_lines[-4096:])
+    log_truncated = length > 2 * window or lines_truncated
     observed = []
     ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
     marker = re.compile(
-        r"^\[app so\.tilo\.chat (?:stdout|stderr)\]\s+"
+        r"^(\[app so\.tilo\.chat (?:stdout|stderr)\]\s+)?"
         r"(?:\d{4}-\d\d-\d\dT\S+\s+)?DEBUG\s+tilo_agent_delivery:\s+"
         r"native-delivery:([a-z_]+):([a-z_]+)\s*$"
     )
-    for line in tail.splitlines()[-4096:]:
+    for line in lines:
         matched = marker.fullmatch(ansi.sub("", line))
         if matched is None:
             continue
-        stage, outcome = matched.groups()
+        app_prefix, stage, outcome = matched.groups()
         if stage in NATIVE_DELIVERY_STAGES and outcome in NATIVE_DELIVERY_OUTCOMES:
-            observed.append((stage, outcome))
+            observed.append(("chat_app" if app_prefix else "shell_broker", stage, outcome))
     if not observed:
         return {"log_count": 1, "marker_count": 0,
-                "markers": [], "stage": None, "outcome": "unobserved"}
-    stage, outcome = observed[-1]
+                "markers": [], "source": None, "stage": None,
+                "outcome": "unobserved", "log_truncated": log_truncated}
+    source, stage, outcome = observed[-1]
     return {"log_count": 1, "marker_count": len(observed),
-            "markers": [{"stage": marker[0], "outcome": marker[1]}
+            "markers": [{"source": marker[0], "stage": marker[1], "outcome": marker[2]}
                         for marker in observed[-32:]],
-            "stage": stage, "outcome": outcome}
+            "source": source, "stage": stage, "outcome": outcome,
+            "log_truncated": log_truncated}
 
 
 def finalize_fixture(profile, output, processes, logs, provider, runtime_owner):

@@ -7,6 +7,15 @@ use crate::collab_broker_capnp::{
 };
 use std::{collections::HashMap, sync::Arc};
 
+macro_rules! delivery_marker {
+    ($stage:literal, $outcome:literal) => {{
+        tracing::debug!(
+            target: "tilo_agent_delivery",
+            concat!("native-delivery:", $stage, ":", $outcome)
+        )
+    }};
+}
+
 pub(super) struct MessageSource {
     pub(super) peer: u64,
     pub(super) route: CrdtRoute,
@@ -263,52 +272,105 @@ impl CapnpBrokerState {
         }
     }
 
+    fn native_message_guard(
+        &self,
+        peer: u64,
+        delivered_stream: &Arc<MessagePublisherStream>,
+    ) -> Result<
+        (
+            Arc<MessagePublisherStream>,
+            tilo_joined_room::AgentMessagePublisherLease,
+            PrivateWorkerRegistration,
+        ),
+        String,
+    > {
+        delivery_marker!("broker_guards", "in_flight");
+        let stream = self.message_publisher_stream(peer).ok_or_else(|| {
+            delivery_marker!("broker_stream_missing", "definitive_refusal");
+            delivery_marker!("broker_guards", "definitive_refusal");
+            "native Message stream unavailable"
+        })?;
+        if !Arc::ptr_eq(&stream, delivered_stream) {
+            delivery_marker!("broker_stream_replaced", "definitive_refusal");
+            delivery_marker!("broker_guards", "definitive_refusal");
+            return Err("delivered Message publisher stream changed".into());
+        }
+        let lease = stream.lease().inspect_err(|error| {
+            match error.as_str() {
+                "Message publisher owner custody unavailable" => {
+                    delivery_marker!("broker_lease_missing", "definitive_refusal");
+                }
+                "Message publisher stream retired" => {
+                    delivery_marker!("broker_lease_retired", "definitive_refusal");
+                }
+                _ => delivery_marker!("broker_lease_unavailable", "definitive_refusal"),
+            }
+            delivery_marker!("broker_guards", "definitive_refusal");
+        })?;
+        let worker = self
+            .host_workers
+            .lock()
+            .map_err(|_| {
+                delivery_marker!("broker_worker_registry", "definitive_refusal");
+                delivery_marker!("broker_guards", "definitive_refusal");
+                "worker registry unavailable"
+            })?
+            .get(&peer)
+            .and_then(|worker| worker.worker_registration.clone())
+            .ok_or_else(|| {
+                delivery_marker!("broker_worker_missing", "definitive_refusal");
+                delivery_marker!("broker_guards", "definitive_refusal");
+                "native Message worker unavailable"
+            })?;
+        delivery_marker!("broker_guards", "complete");
+        Ok((stream, lease, worker))
+    }
+
     pub(in crate::collab_broker_capnp) fn native_message_source(
         &self,
         peer: u64,
         invocation: &InvocationEnvelope,
         delivered_stream: &Arc<MessagePublisherStream>,
     ) -> Result<Option<([u8; 32], String)>, String> {
-        let _admission = self
-            .admission_lock
-            .lock()
-            .map_err(|_| "Message admission unavailable")?;
+        delivery_marker!("broker_original", "in_flight");
+        let _admission = self.admission_lock.lock().map_err(|_| {
+            delivery_marker!("broker_original", "definitive_refusal");
+            "Message admission unavailable"
+        })?;
         let original = {
-            let registry = self
-                .pending_invocations
-                .lock()
-                .map_err(|_| "invocation registry unavailable")?;
+            let registry = self.pending_invocations.lock().map_err(|_| {
+                delivery_marker!("broker_original", "definitive_refusal");
+                "invocation registry unavailable"
+            })?;
             let Some(pending) = registry.get(&invocation.id) else {
+                delivery_marker!("broker_original", "definitive_refusal");
                 return Err("delivered invocation is no longer retained".into());
             };
             if pending.peer_id != peer || pending.update.invocation() != invocation.invocation {
+                delivery_marker!("broker_original", "definitive_refusal");
                 return Err("delivered Message original changed".into());
             }
             let original = pending.original.clone();
             drop(registry);
             original
         };
+        delivery_marker!("broker_original", "complete");
         let Some(original) = original.filter(|original| original.is_addressed_message()) else {
             return Ok(None);
         };
-        let facts = original.message_facts(self, invocation)?;
-        let stream = self
-            .message_publisher_stream(peer)
-            .ok_or("native Message stream unavailable")?;
-        if !Arc::ptr_eq(&stream, delivered_stream) {
-            return Err("delivered Message publisher stream changed".into());
-        }
-        let lease = stream.lease()?;
-        let worker = self
-            .host_workers
-            .lock()
-            .map_err(|_| "worker registry unavailable")?
-            .get(&peer)
-            .and_then(|worker| worker.worker_registration.clone())
-            .ok_or("native Message worker unavailable")?;
-        let spec = serde_json::to_string(&facts.spec)
-            .map_err(|_| "Message dispatch specification encoding failed")?;
+        delivery_marker!("broker_facts", "in_flight");
+        let facts = original.message_facts(self, invocation).inspect_err(|_| {
+            delivery_marker!("broker_facts", "definitive_refusal");
+        })?;
+        delivery_marker!("broker_facts", "complete");
+        let (stream, lease, worker) = self.native_message_guard(peer, delivered_stream)?;
+        delivery_marker!("source_output", "in_flight");
+        let spec = serde_json::to_string(&facts.spec).map_err(|_| {
+            delivery_marker!("source_output", "definitive_refusal");
+            "Message dispatch specification encoding failed"
+        })?;
         if spec.len() > runtime_collab::document_contribution::MAX_SOURCE_SPEC_BYTES {
+            delivery_marker!("source_output", "definitive_refusal");
             return Err("Message dispatch specification exceeds capacity".into());
         }
         let source = Arc::new(MessageSource {
@@ -321,24 +383,27 @@ impl CapnpBrokerState {
             lease,
             facts,
         });
-        let mut sources = self
-            .message_sources
-            .lock()
-            .map_err(|_| "Message source registry unavailable")?;
+        let mut sources = self.message_sources.lock().map_err(|_| {
+            delivery_marker!("source_output", "definitive_refusal");
+            "Message source registry unavailable"
+        })?;
         if let Some((token, _)) = sources.tokens.iter().find(|(_, retained)| {
             retained.peer == peer
                 && retained.worker == source.worker
                 && Arc::ptr_eq(&retained.original, &source.original)
                 && Arc::ptr_eq(&retained.stream, &source.stream)
         }) {
+            delivery_marker!("source_output", "complete");
             return Ok(Some((*token, spec)));
         }
         if sources.tokens.len() >= crate::host_documents::LIMIT {
+            delivery_marker!("source_output", "definitive_refusal");
             return Err("native Message source registry is full".into());
         }
         let token = fresh_token(&sources.tokens);
         sources.tokens.insert(token, source);
         drop(sources);
+        delivery_marker!("source_output", "complete");
         Ok(Some((token, spec)))
     }
 }

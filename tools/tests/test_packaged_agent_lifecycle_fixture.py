@@ -43,11 +43,14 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "log_count": 1,
                 "marker_count": 2,
                 "markers": [
-                    {"stage": "sign", "outcome": "in_flight"},
-                    {"stage": "sign", "outcome": "definitive_refusal"},
+                    {"source": "chat_app", "stage": "sign", "outcome": "in_flight"},
+                    {"source": "chat_app", "stage": "sign",
+                     "outcome": "definitive_refusal"},
                 ],
+                "source": "chat_app",
                 "stage": "sign",
                 "outcome": "definitive_refusal",
+                "log_truncated": False,
             })
             self.assertNotIn(private, json.dumps(result))
 
@@ -67,18 +70,105 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertEqual(PROOF.native_delivery_diagnostic(output), {
                 "log_count": 1,
                 "marker_count": 1,
-                "markers": [{"stage": "owner_send", "outcome": "in_flight"}],
+                "markers": [{"source": "chat_app", "stage": "owner_send",
+                             "outcome": "in_flight"}],
+                "source": "chat_app",
                 "stage": "owner_send",
                 "outcome": "in_flight",
+                "log_truncated": False,
             })
             log.unlink()
             self.assertEqual(PROOF.native_delivery_diagnostic(output), {
                 "log_count": 0,
                 "marker_count": 0,
                 "markers": [],
+                "source": None,
                 "stage": None,
                 "outcome": "unobserved",
+                "log_truncated": False,
             })
+
+    def test_native_delivery_diagnostic_accepts_only_unprefixed_shell_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            (output / "shell.log").write_text(
+                "DEBUG tilo_agent_delivery: native-delivery:source_signer:enabled\n"
+                "DEBUG tilo_agent_delivery: native-delivery:broker_original:in_flight\n"
+                "[app so.tilo.agent stderr] DEBUG tilo_agent_delivery: "
+                "native-delivery:broker_original:complete\n"
+                "shell payload DEBUG tilo_agent_delivery: "
+                "native-delivery:broker_original:definitive_refusal\n"
+            )
+            self.assertEqual(PROOF.native_delivery_diagnostic(output), {
+                "log_count": 1,
+                "marker_count": 2,
+                "markers": [
+                    {"source": "shell_broker", "stage": "source_signer",
+                     "outcome": "enabled"},
+                    {"source": "shell_broker", "stage": "broker_original",
+                     "outcome": "in_flight"},
+                ],
+                "source": "shell_broker",
+                "stage": "broker_original",
+                "outcome": "in_flight",
+                "log_truncated": False,
+            })
+
+    def test_native_delivery_diagnostic_retains_observed_middle_of_bounded_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            marker = (
+                "DEBUG tilo_agent_delivery: "
+                "native-delivery:broker_stream_replaced:definitive_refusal\n"
+            )
+            spoof = (
+                "[app so.tilo.agent stderr] DEBUG tilo_agent_delivery: "
+                "native-delivery:broker_worker_missing:definitive_refusal\n"
+            )
+            (output / "shell.log").write_bytes(
+                b"x" * (171 * 1024) + b"\n" + marker.encode()
+                + b"y" * (509 * 1024) + b"\n" + spoof.encode()
+            )
+            result = PROOF.native_delivery_diagnostic(output)
+            self.assertEqual(result["marker_count"], 1)
+            self.assertEqual(result["markers"], [{
+                "source": "shell_broker",
+                "stage": "broker_stream_replaced",
+                "outcome": "definitive_refusal",
+            }])
+            self.assertFalse(result["log_truncated"])
+
+    def test_native_delivery_diagnostic_reports_bounded_head_and_tail_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            head = (
+                "DEBUG tilo_agent_delivery: native-delivery:source_signer:enabled\n"
+            )
+            tail = (
+                "[app so.tilo.chat stderr] DEBUG tilo_agent_delivery: "
+                "native-delivery:broker_worker_missing:definitive_refusal\n"
+            )
+            (output / "shell.log").write_bytes(
+                head.encode() + b"x" * (1100 * 1024) + b"\n" + tail.encode()
+            )
+            result = PROOF.native_delivery_diagnostic(output)
+            self.assertEqual(result["marker_count"], 2)
+            self.assertEqual(result["markers"][0]["stage"], "source_signer")
+            self.assertEqual(result["markers"][1]["stage"], "broker_worker_missing")
+            self.assertTrue(result["log_truncated"])
+
+    def test_native_delivery_diagnostic_reports_bounded_line_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            marker = (
+                "DEBUG tilo_agent_delivery: native-delivery:broker_lease_missing:"
+                "definitive_refusal\n"
+            )
+            (output / "shell.log").write_text("filler\n" * 4097 + marker)
+            result = PROOF.native_delivery_diagnostic(output)
+            self.assertEqual(result["marker_count"], 1)
+            self.assertEqual(result["stage"], "broker_lease_missing")
+            self.assertTrue(result["log_truncated"])
 
     def test_native_delivery_diagnostic_failure_still_cleans_owned_state(self):
         class Closed:
