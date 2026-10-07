@@ -1,6 +1,8 @@
 //! One remote admission, still independently verified and imported layers.
 
 use std::io::BufReader;
+
+mod space;
 use std::time::Instant;
 
 use tilo_vm_protocol::manifest::Component;
@@ -49,22 +51,27 @@ impl App {
                 CliError::InvalidInput("remote cohort builder has no stdout".into())
             })?;
         let mut stream = Stream::new(BufReader::with_capacity(2 << 20, stdout));
-        let mut members = Vec::new();
+        let spool_parent = worktree.root.join("target/tilo-vm");
+        std::fs::create_dir_all(&spool_parent)
+            .map_err(CliError::io("create cohort spool parent"))?;
+        let spool = tempfile::Builder::new()
+            .prefix("cohort-")
+            .tempdir_in(&spool_parent)
+            .map_err(CliError::io("create private cohort spool"))?;
+        let mut staged = Vec::new();
         for name in USERSPACE_COMPONENTS {
             inputs.unchanged(&worktree.root)?;
-            self.check_vm_space(remote, vm)?;
             let component = manifest
                 .get(name)
                 .ok_or_else(|| CliError::UnknownComponent {
                     name: (*name).into(),
                     known: manifest.components.keys().cloned().collect(),
                 })?;
-            if !members.is_empty() {
+            if !staged.is_empty() {
                 stream
                     .next_layer()
                     .map_err(CliError::io("advance the cohort stream"))?;
             }
-            let start = Instant::now();
             let packed = self.receipt.phase(&format!("build-{name}"), || {
                 build_header(
                     remote,
@@ -73,33 +80,8 @@ impl App {
                 )
             })?;
             validate_member(&packed, component, &inputs.digest, &remote.hello.arch)?;
-            *remote = self.connect(vm)?;
-            let upload = self
-                .receipt
-                .phase(&format!("transfer-{name}"), || remote.upload(&mut stream))?;
-            inputs.unchanged(&worktree.root)?;
-            let mut provenance = inputs.provenance.clone();
-            provenance.component.clone_from(&component.name);
-            provenance.cargo_profile = Some(component.profile.clone());
-            let extra = crate::build::dev_features(&metadata, &component.packages);
-            provenance.features = component.build_features(&extra);
-            provenance.target = packed.target;
-            provenance.toolchain = packed.toolchain;
-            let imported = self.receipt.phase(&format!("import-{name}"), || {
-                remote.call(LayerImport {
-                    source: LayerSource::Upload(upload),
-                    provenance: Box::new(provenance.clone()),
-                })
-            })?;
-            members.push(UserspaceMember {
-                component: component.name.clone(),
-                layer: imported.hash,
-                build: provenance,
-                source_inventory: inputs.digest.clone(),
-            });
-            self.receipt
-                .record(&format!("stage-{name}"), start.elapsed().as_secs_f64());
-            self.receipt.set("cohort_members", &members);
+            let archive = space::Archive::receive(&mut stream, spool.path())?;
+            staged.push((packed, archive));
         }
         stream
             .finish(&mut std::io::stderr())
@@ -113,8 +95,69 @@ impl App {
             return Err(CliError::CommandFailed {
                 command: line.display(),
                 status: status.to_string(),
-                stderr: "the remote cohort builder failed; no cohort was activated".into(),
+                stderr: "the remote cohort builder failed; no cohort was transferred".into(),
             });
+        }
+        inputs.unchanged(&worktree.root)?;
+        let floor = self.registry()?.min_free_bytes();
+        let budget = space::Budget::new(staged.iter().map(|(_, archive)| archive), floor)?;
+        *remote = self.connect(vm)?;
+        let storage = remote.call(super::Status { slot: None })?.storage;
+        self.receipt.set("cohort_space_budget", &budget);
+        budget.admit(storage.free_bytes)?;
+        self.import_userspace_members(remote, vm, manifest, inputs, &metadata, staged)
+    }
+
+    fn import_userspace_members(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        manifest: &Manifest,
+        inputs: &Snapshot,
+        metadata: &serde_json::Value,
+        staged: Vec<(Packed, space::Archive)>,
+    ) -> Result<Vec<UserspaceMember>, CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        let mut members = Vec::new();
+        for (packed, mut archive) in staged {
+            self.check_vm_space(remote, vm)?;
+            inputs.unchanged(&worktree.root)?;
+            let component = manifest.get(&packed.component).ok_or_else(|| {
+                CliError::InvalidInput("prepared cohort component disappeared".into())
+            })?;
+            let start = Instant::now();
+            let upload = self
+                .receipt
+                .phase(&format!("transfer-{}", component.name), || {
+                    remote.upload(&mut archive.file)
+                })?;
+            inputs.unchanged(&worktree.root)?;
+            let mut provenance = inputs.provenance.clone();
+            provenance.component.clone_from(&component.name);
+            provenance.cargo_profile = Some(component.profile.clone());
+            let extra = crate::build::dev_features(metadata, &component.packages);
+            provenance.features = component.build_features(&extra);
+            provenance.target = packed.target;
+            provenance.toolchain = packed.toolchain;
+            let imported = self
+                .receipt
+                .phase(&format!("import-{}", component.name), || {
+                    remote.call(LayerImport {
+                        source: LayerSource::Upload(upload),
+                        provenance: Box::new(provenance.clone()),
+                    })
+                })?;
+            members.push(UserspaceMember {
+                component: component.name.clone(),
+                layer: imported.hash,
+                build: provenance,
+                source_inventory: inputs.digest.clone(),
+            });
+            self.receipt.record(
+                &format!("stage-{}", component.name),
+                start.elapsed().as_secs_f64(),
+            );
+            self.receipt.set("cohort_members", &members);
         }
         inputs.unchanged(&worktree.root)?;
         Ok(members)

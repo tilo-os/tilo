@@ -263,3 +263,21 @@ prerequisites.
 runtime checks. A standalone package whose authored runtime is absent is refused;
 use the paired component above for an unpublished worktree toolkit rather than
 relabeling it as the VM's existing ABI.
+
+### Userspace capacity preflight
+
+The userspace command first receives and verifies all nine framed archives in private
+host temporary files under this worktree’s `target/tilo-vm/`, using the same single remote builder admission. Before the first
+VM upload it observes available storage and reports the whole-cohort estimate: all
+unpacked payloads (4 KiB allocation rounding plus 16 KiB metadata allowance per entry
+and 1 MiB per layer), the largest simultaneous upload, and the unchanged configured
+free-space reserve. Uploads are removed after each import. Existing layers are counted
+conservatively even if the importer later reuses them. The receipt retains this budget.
+Missing capacity observations, malformed archives and insufficient capacity refuse
+without transferring or selecting any cohort layer. Host temporary files are released
+on failure or completion; ensure the host has space for the bounded archives too.
+
+This is a preflight observation, not an exclusive disk reservation: other writers can
+consume space afterward. Existing per-member free-space checks remain. A refusal
+reports the byte shortfall and the ordinary `tilo-vm gc --dry-run` / `tilo-vm gc` route;
+it never lowers the reserve or deletes user files.
