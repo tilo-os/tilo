@@ -24,6 +24,8 @@ mod app_settings_tests;
 mod canonical_route;
 mod committed_document;
 mod durable_local_invocation;
+#[path = "enrolled_tasks.rs"]
+mod enrolled_tasks;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
@@ -525,6 +527,7 @@ fn cert_capped_in(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AdmittedJoinIdentity {
+    managed_scope: Option<uuid::Uuid>,
     /// Only an actual broker-allocated private descriptor can carry this scope.
     host_scope: Option<LocalHostWorkerScope>,
     worker_registration: Option<PrivateWorkerRegistration>,
@@ -744,6 +747,7 @@ fn admit_verified_join_at(
             CapRole::Owner
         };
         return Ok(AdmittedJoinIdentity {
+            managed_scope: None,
             host_scope: None,
             worker_registration: None,
             certificate: None,
@@ -769,6 +773,7 @@ fn admit_verified_join_at(
         return Err("certified collaboration identity is blocked in this workspace".into());
     }
     Ok(AdmittedJoinIdentity {
+        managed_scope: None,
         host_scope: None,
         worker_registration: None,
         certificate: None,
@@ -2729,6 +2734,7 @@ struct PrivateWorkerRegistration {
 /// Host-owned admission for one private SDK descriptor. Never serialized on the wire.
 #[derive(Clone)]
 struct WorkerBinding {
+    managed_scope: Option<uuid::Uuid>,
     host_scope: Option<LocalHostWorkerScope>,
     registration: Option<PrivateWorkerRegistration>,
     route: CrdtRoute,
@@ -2848,6 +2854,7 @@ pub struct CapnpBrokerState {
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
+    enrolled_tasks: Mutex<enrolled_tasks::Registry>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
     task_run_id: AtomicU64,
     invocation_id: AtomicU64,
@@ -3041,6 +3048,9 @@ impl CapnpBrokerState {
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
+        if let Ok(mut enrolled) = self.enrolled_tasks.lock() {
+            enrolled.close();
+        }
         clear!(self.pending_task_runs);
         clear!(self.workers);
         #[cfg(test)]
@@ -3101,6 +3111,14 @@ impl CapnpBrokerState {
         certificate: &tilo_user_identity::DeviceCert,
         registration: Option<uuid::Uuid>,
     ) -> Result<std::os::unix::net::UnixStream, String> {
+        self.while_live(|state| state.admit_local_worker(route, certificate, registration))
+    }
+    fn admit_local_worker(
+        &self,
+        route: CrdtRoute,
+        certificate: &tilo_user_identity::DeviceCert,
+        registration: Option<uuid::Uuid>,
+    ) -> Result<std::os::unix::net::UnixStream, String> {
         self.owner_health()?;
         if route.app_id.is_empty() || !route.is_publishable() {
             return Err("worker needs an exact app route".into());
@@ -3146,6 +3164,7 @@ impl CapnpBrokerState {
         workers.push(PendingWorker {
             stream: server,
             binding: WorkerBinding {
+                managed_scope: None,
                 host_scope,
                 registration: registration.map(|identity| PrivateWorkerRegistration {
                     identity,
@@ -3612,6 +3631,7 @@ impl CapnpBrokerState {
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
+                enrolled_tasks: Mutex::new(enrolled_tasks::Registry::default()),
                 pending_task_runs: Mutex::new(HashMap::new()),
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(next_invocation),
@@ -5656,6 +5676,7 @@ impl CapnpBrokerState {
     }
 
     fn remove_connection(&self, peer_id: u64) {
+        enrolled_tasks::disconnect(self, peer_id);
         if let Ok(mut directories) = self.canonical_directories.lock() {
             directories.remove(peer_id);
         }
@@ -5771,6 +5792,9 @@ impl CapnpBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
     ) -> Result<AdmittedJoinIdentity, capnp::Error> {
+        if admitted.managed_scope.is_some() {
+            return enrolled_tasks::revalidate(self, route, admitted).map_err(capnp::Error::failed);
+        }
         let now = self.policy_now_ns().map_err(capnp::Error::failed)?;
         if let Some(cert) = &admitted.certificate {
             tilo_user_identity::verify_device_cert_at(cert, now)
@@ -6656,8 +6680,21 @@ impl collab_service::Server for CapnpCollabService {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
             let record_kind = joined_record_kind(reader.get_record_kind()?)?;
-            if (verified_identity.host_scope.is_some()
-                || verified_identity.worker_registration.is_some())
+            if let Some(scope) = self.worker.as_ref().and_then(|worker| worker.managed_scope) {
+                enrolled_tasks::join(
+                    &state,
+                    scope,
+                    peer_id,
+                    &route,
+                    &mut verified_identity,
+                    participant_kind,
+                    participant_handle,
+                )
+                .map_err(capnp::Error::failed)?;
+            }
+            if verified_identity.managed_scope.is_none()
+                && (verified_identity.host_scope.is_some()
+                    || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
             {
                 return Err(capnp::Error::failed(
@@ -6665,6 +6702,7 @@ impl collab_service::Server for CapnpCollabService {
                 ));
             }
             match participant_kind {
+                "agent" if verified_identity.managed_scope.is_some() => {}
                 "" | "person" => {
                     // A Person handle is presentation, not its certified identity.
                     let participant_handle = participant_handle
@@ -8474,6 +8512,54 @@ impl channel_handle::Server for CapnpChannelHandle {
         });
         results.get().set_stream(client);
         Promise::ok(())
+    }
+
+    fn subscribe_enrolled_tasks(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeEnrolledTasksParams,
+        mut results: channel_handle::SubscribeEnrolledTasksResults,
+    ) -> Promise<(), capnp::Error> {
+        match enrolled_tasks::subscribe(&self) {
+            Ok(stream) => {
+                results.get().set_stream(stream);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
+
+    fn accept_enrolled_task(
+        self: Rc<Self>,
+        params: channel_handle::AcceptEnrolledTaskParams,
+        _results: channel_handle::AcceptEnrolledTaskResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let request = params.get()?;
+            enrolled_tasks::accept(
+                &enrolled_tasks::Context::from_channel(&self).map_err(capnp::Error::failed)?,
+                request.get_acceptance_json()?.to_str()?,
+            )
+            .await
+            .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn report_enrolled_task(
+        self: Rc<Self>,
+        params: channel_handle::ReportEnrolledTaskParams,
+        _results: channel_handle::ReportEnrolledTaskResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let request = params.get()?;
+            enrolled_tasks::report(
+                &enrolled_tasks::Context::from_channel(&self).map_err(capnp::Error::failed)?,
+                request.get_acceptance_json()?.to_str()?,
+                request.get_sequence(),
+                request.get_update_json()?.to_str()?,
+            )
+            .await
+            .map_err(capnp::Error::failed)
+        })
     }
 
     fn subscribe_task_runs(
@@ -11397,7 +11483,18 @@ async fn serve_broker_thread(
             });
         }
         state.drain_action_directory_bridge(&directories);
+        if let Err(error) = enrolled_tasks::retire(&state, false).await {
+            if let Ok(mut failure) = state.owner_commit_failure.lock() {
+                failure.get_or_insert(error);
+            }
+            break;
+        }
         if quit.load(Ordering::Relaxed) {
+            if let Err(error) = enrolled_tasks::retire(&state, true).await
+                && let Ok(mut failure) = state.owner_commit_failure.lock()
+            {
+                failure.get_or_insert(error);
+            }
             break;
         }
         let deadline = state.next_invocation_deadline();
@@ -11783,6 +11880,9 @@ async fn drive_connection(
         directories: Rc::clone(&directories),
         peer_id,
     };
+    if let Some(scope) = worker.as_ref().and_then(|binding| binding.managed_scope) {
+        enrolled_tasks::bind_transport(&state, scope, peer_id).map_err(capnp::Error::failed)?;
+    }
     let mut stream = stream;
     let local_media = if worker.is_none() {
         match authenticate_launcher_handoff(&mut stream, &state.services).await {
@@ -12960,6 +13060,7 @@ pub mod tests {
                 channel_id: self.route.channel_key(),
                 peer_id: self.peer_id,
                 verified_identity: AdmittedJoinIdentity {
+                    managed_scope: None,
                     host_scope: None,
                     worker_registration: None,
                     certificate: None,
@@ -17207,6 +17308,7 @@ mod host_worker_capacity_tests {
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
         AdmittedJoinIdentity {
+            managed_scope: None,
             host_scope: Some(LocalHostWorkerScope {
                 route: CrdtRoute::from_channel_key(&format!(
                     "{}#app:so.tilo.notes#record:tab:{record:016x}",

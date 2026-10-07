@@ -120,6 +120,27 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .workspace_task_snapshot(room)
     }
 
+    fn task_agent_authority(
+        &self,
+        invocation: &tilo_action_broker::services::WorkspaceTaskAgentInvocation,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskAuthority, String> {
+        if !tilo_action_broker::services::WorkspaceMemberships::requires_room(
+            self,
+            invocation.room(),
+        ) {
+            return Err("native task agent workspace is unavailable".into());
+        }
+        let (_, attestor) =
+            tilo_identity_host::broker::trusted_current_device(invocation.room())
+                .map_err(|error| format!("native task host custody unavailable: {error}"))?;
+        Ok(
+            tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Agent {
+                attestor,
+                agent_id: invocation.agent_id().into(),
+            },
+        )
+    }
+
     fn execute(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,

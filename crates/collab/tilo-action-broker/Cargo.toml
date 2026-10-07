@@ -6,6 +6,19 @@ license.workspace = true
 publish.workspace = true
 [features]
 test-support = []
+enrolled-task-test = ["test-support", "runtime-collab/client"]
+[[bin]]
+name = "enrolled-task-fixture"
+path = "tests/fixtures/enrolled-task.rs"
+test = false
+bench = false
+required-features = ["enrolled-task-test"]
+
+[[test]]
+name = "enrolled_transport"
+path = "tests/enrolled_transport.rs"
+required-features = ["enrolled-task-test"]
+
 [dependencies]
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
@@ -54,6 +67,9 @@ tracing.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
+package-store = { path = "../../packaging/package-store" }
+runtime-bundle = { path = "../../packaging/runtime-bundle" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-joined-room = { path = "../tilo-joined-room", features = ["test-support"] }
 iroh.workspace = true
 tempfile.workspace = true
