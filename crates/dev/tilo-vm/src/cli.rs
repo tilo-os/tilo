@@ -246,14 +246,20 @@ pub enum Command {
         /// Extra cargo features, comma separated.
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
+        /// Attested source inventory used to verify the builder inputs.
         #[arg(long)]
         source_inventory: Option<PathBuf>,
     },
     /// Package one app on the architecture-configured remote builder.
-    #[command(hide = true)]
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm app-pack --app so.tilo.notes --source-inventory target/source-inventory.json   # on the architecture-configured builder"
+    )]
     AppPack {
+        /// App id to package from the attested source inventory.
         #[arg(long)]
         app: String,
+        /// Attested source inventory used to verify the builder inputs.
         #[arg(long)]
         source_inventory: PathBuf,
     },

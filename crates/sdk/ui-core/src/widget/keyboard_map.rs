@@ -513,7 +513,7 @@ impl KeyboardMap {
             if self.inspected_key.as_deref() == Some(key.name.as_str()) {
                 colours.border_focus
             } else {
-                colours.border_standard
+                crate::surface::edge_on(fill)
             },
             None,
             &path,
