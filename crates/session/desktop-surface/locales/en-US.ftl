@@ -946,3 +946,7 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
+
+notification-center-read = Read
+notification-center-read-description = Read complete notification
+notification-preview-hidden = Notification preview hidden

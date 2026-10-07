@@ -106,6 +106,10 @@ fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
 fn phone_tools_live_below_the_artwork_and_survive_rotation() {
     let mut app =
         TestApp::<App>::capture_at(Some("landscape"), (390, 844)).expect("the actual artwork view");
+    assert!(
+        !app.harness().root_widget().has_pending_visual_work(),
+        "capture staging must await the landscape's paint workers before returning"
+    );
     for viewport in [(390, 844), (844, 390)] {
         app.harness().resize(viewport).expect("rotation lays out");
         assert!(

@@ -409,11 +409,12 @@ if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
    && grep -Fq '[a-z_]* ) valid_user=1' "$firstboot_user" \
    && grep -Fq 'valid_sha512_crypt "$hash"' "$firstboot_user" \
    && grep -Fq 'rounds=([1-9][0-9]{3,8})' "$firstboot_user" \
-   && grep -Fq 'useradd -m -p "$hash"' "$firstboot_user" \
-   && ! grep -Fq 'chpasswd -e' "$firstboot_user"; then
-  ok "first boot revalidates credentials and creates a password-bearing account atomically"
+   && grep -Fq "useradd -m -p '!'" "$firstboot_user" \
+   && ! grep -Fq -- '-p "$hash"' "$firstboot_user" \
+   && grep -Fq '| chpasswd --encrypted' "$firstboot_user"; then
+  ok "first boot revalidates credentials and installs the hash through stdin into a locked account"
 else
-  bad "installer can reset a privileged account or leave a new account without its password"
+  bad "installer can reset a privileged account, expose its hash in argv, or create an unlocked account"
 fi
 if bash "$repo_root/os/tests/firstboot_password_hash.sh" >/dev/null; then
   ok "first boot accepts only complete SHA-512 crypt password hashes"

@@ -286,6 +286,10 @@ pub struct TileHost {
     /// while its application runs. Stamped by the owning `WindowGroup`.
     panic_scope: std::cell::Cell<Option<u64>>,
     rect: Rect,
+    /// How far [`Self::offset_layout`] moved the tile from where layout put
+    /// it. The content keeps its own layout rect, so it is drawn this much
+    /// further right instead.
+    content_shift: f64,
     pub focused: bool,
     /// Adjacent canvas windows own exactly their layout rectangle, including
     /// their border; neither outlines nor shadows may spill into a sibling.
@@ -330,6 +334,17 @@ const OPENING_SPINNER_PX_F32: f32 = 36.0;
 const OPENING_SPINNER_GAP: f64 = 24.0;
 
 impl TileHost {
+    /// Move the tile by `dx`; see
+    /// [`super::window_group::WindowGroup::offset_layout`]. The content keeps
+    /// the rect it was laid out at and is drawn translated instead.
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        self.rect = self.rect + vello::kurbo::Vec2::new(dx, 0.0);
+        self.content_shift += dx;
+    }
+
     fn install_live_custody(&mut self, attachment: crate::control_custody::CustodyAttachment) {
         let Some(parent) = self.custody_parent.clone() else {
             return;
@@ -527,6 +542,7 @@ impl TileHost {
             content_was_presented: std::cell::Cell::new(false),
             panic_scope: std::cell::Cell::new(None),
             rect: Rect::ZERO,
+            content_shift: 0.0,
             focused: false,
             flush_edges: false,
             spawned_at: None,
@@ -2763,6 +2779,13 @@ impl TileHost {
                     detail,
                 );
             } else {
+                // The app and its history were laid out where the tile
+                // was; a moved tile draws them moved with it.
+                let content_transform = if self.content_shift == 0.0 {
+                    transform
+                } else {
+                    transform.pre_translate(vello::kurbo::Vec2::new(self.content_shift, 0.0))
+                };
                 match &mut self.content {
                     TileContent::App(w) => {
                         if self
@@ -2770,10 +2793,10 @@ impl TileHost {
                             .as_ref()
                             .is_none_or(|history| history.live_visible())
                         {
-                            w.draw(scene, transform, tr, theme, presence);
+                            w.draw(scene, content_transform, tr, theme, presence);
                         }
                         if let Some(history) = &mut self.history {
-                            history.draw(scene, transform, tr, theme, presence);
+                            history.draw(scene, content_transform, tr, theme, presence);
                         }
                     }
                     TileContent::Stub { kind, label } => {
@@ -4634,6 +4657,83 @@ mod tests {
         fn permission_hint(&self) -> Option<AppKind> {
             None
         }
+    }
+
+    /// A presented app that remembers the transform it was drawn with.
+    struct TransformProbe {
+        rect: Rect,
+        drawn_with: std::rc::Rc<std::cell::Cell<Option<Affine>>>,
+    }
+
+    impl Widget for TransformProbe {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &Theme,
+            _m: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.leaf_node(Style::default())
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+            self.drawn_with.set(Some(transform));
+        }
+        fn name(&self) -> &'static str {
+            "TransformProbe"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for TransformProbe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &'static str {
+            "Transform probe"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("T")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_moved_tile_draws_its_app_where_the_tile_went() {
+        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+        let drawn_with = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut host = TileHost::new(TileContent::App(Box::new(TransformProbe {
+            rect,
+            drawn_with: std::rc::Rc::clone(&drawn_with),
+        })));
+        host.rect = rect;
+        let theme = Theme::default();
+        let _ = paint(&mut host, &theme);
+        assert_eq!(drawn_with.get(), Some(Affine::IDENTITY));
+
+        host.offset_layout(40.0);
+        assert_eq!(host.rect, rect + vello::kurbo::Vec2::new(40.0, 0.0));
+        let _ = paint(&mut host, &theme);
+        assert_eq!(
+            drawn_with.get(),
+            Some(Affine::translate((40.0, 0.0))),
+            "the app keeps its layout rect and is drawn translated with the tile"
+        );
+
+        host.offset_layout(-40.0);
+        assert_eq!(host.rect, rect);
+        let _ = paint(&mut host, &theme);
+        assert_eq!(drawn_with.get(), Some(Affine::IDENTITY));
     }
 
     /// Loud and unmistakable, so a single sampled pixel says whether the

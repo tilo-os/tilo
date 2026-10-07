@@ -214,9 +214,31 @@ impl RoomRecordsLink for RelayRecordsLink {
 ///
 /// Returns why the relay did not start or the agent state could not be read.
 pub async fn start(
+    cfg: crate::RelayConfig,
+    identity: RelayIdentity,
+    options: AgentOptions,
+) -> Result<(Relay, AgentHost), RelayError> {
+    start_inner(cfg, identity, options, None).await
+}
+
+/// Start the app-serving host with an explicit transport relay policy.
+///
+/// # Errors
+/// The same as [`start`].
+pub async fn start_with_relay_mode(
+    cfg: crate::RelayConfig,
+    identity: RelayIdentity,
+    options: AgentOptions,
+    relay_mode: iroh::RelayMode,
+) -> Result<(Relay, AgentHost), RelayError> {
+    start_inner(cfg, identity, options, Some(relay_mode)).await
+}
+
+async fn start_inner(
     mut cfg: crate::RelayConfig,
     identity: RelayIdentity,
     options: AgentOptions,
+    relay_mode: Option<iroh::RelayMode>,
 ) -> Result<(Relay, AgentHost), RelayError> {
     let host_cert = identity.device_cert.clone();
     let catalogue = options
@@ -234,7 +256,13 @@ pub async fn start(
         rooms: RoomActions::new(catalogue),
     }));
     let browser_page = cfg.resource_browser_page.clone();
-    let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
+    let relay = match relay_mode {
+        Some(mode) => {
+            Relay::start_with_app_serving_and_relay_mode(cfg, identity, Some(plane.clone()), mode)
+                .await?
+        }
+        None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
+    };
     plane
         .0
         .rooms

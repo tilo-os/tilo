@@ -3252,10 +3252,19 @@ impl FrameHarness {
         if condition(self) {
             return true;
         }
-        let background = crate::background::Background::current();
         let Some(deadline) = clock().checked_add(timeout) else {
             return false;
         };
+        self.wait_until_deadline(deadline, clock, condition)
+    }
+
+    fn wait_until_deadline(
+        &mut self,
+        deadline: crate::time::Instant,
+        clock: impl Fn() -> crate::time::Instant,
+        mut condition: impl FnMut(&Self) -> bool,
+    ) -> bool {
+        let background = crate::background::Background::current();
         loop {
             let now = clock();
             if now >= deadline {
@@ -3287,20 +3296,39 @@ impl FrameHarness {
     /// bound is measured on it too: an executor with a virtual clock (a
     /// pumped test) cannot run the bound out before an entrance has ended.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
-        let settled = self.wait_until_on(bound, crate::time::now, |driver| {
-            !driver.frame_schedule().needs_animation_frame
-                && !driver.root.has_pending_visual_work()
-                && crate::image_store::loads_in_flight() == 0
-        });
-        if !settled {
+        let Some(deadline) = crate::time::now().checked_add(bound) else {
             return false;
+        };
+        loop {
+            self.relayout();
+            self.idle_control_tick();
+            self.relayout();
+            if crate::time::now() > deadline {
+                return false;
+            }
+            if !self.capture_is_ready()
+                && !self.wait_until_deadline(deadline, crate::time::now, |driver| {
+                    crate::time::now() <= deadline && driver.capture_is_ready()
+                })
+            {
+                return false;
+            }
+            // Endpoint draw can invalidate layout or start another finite
+            // image/detail job. Flush it, then await that work within the
+            // same deadline rather than treating a newly queued job as failure.
+            if self.try_relayout().is_err() || crate::time::now() > deadline {
+                return false;
+            }
+            if self.capture_is_ready() {
+                return true;
+            }
+            if crate::time::now() >= deadline {
+                return false;
+            }
         }
-        // An animation may land at its endpoint during draw, after the
-        // current frame's layout and pixels were produced. Flush that final
-        // invalidation through the normal pipeline before capturing them.
-        if self.try_relayout().is_err() {
-            return false;
-        }
+    }
+
+    fn capture_is_ready(&self) -> bool {
         !self.frame_schedule().needs_animation_frame
             && !self.root.has_pending_visual_work()
             && crate::image_store::loads_in_flight() == 0
@@ -8709,6 +8737,144 @@ mod tests {
                 ("Root/Panel/Spinner".to_owned(), FrameDemand::Animation),
             ]
         );
+    }
+
+    struct FinalFrameWork {
+        draws: std::rc::Rc<std::cell::Cell<usize>>,
+        pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        completes: bool,
+        rect: Rect,
+    }
+
+    impl Widget for FinalFrameWork {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Style::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy
+                .layout(node)
+                .expect("the actual visual worker has layout");
+            self.rect = Rect::from_origin_size(
+                origin,
+                (f64::from(layout.size.width), f64::from(layout.size.height)),
+            );
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+            let draws = self.draws.get().saturating_add(1);
+            self.draws.set(draws);
+            if draws == 3 {
+                self.pending
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                if self.completes {
+                    let pending = std::sync::Arc::clone(&self.pending);
+                    crate::background::Background::current()
+                        .spawn("capture-final-frame", move || {
+                            pending.store(false, std::sync::atomic::Ordering::SeqCst);
+                        })
+                        .expect("the production background executor accepts the visual job");
+                }
+            }
+        }
+        fn has_pending_visual_work(&self) -> bool {
+            self.pending.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn name(&self) -> &str {
+            "FinalFrameWork"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    #[test]
+    fn capture_awaits_visual_work_started_by_the_final_frame() {
+        let pumped = crate::background::Pumped::new();
+        let _entered = pumped.background().enter();
+        let draws = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
+        let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut harness = FrameHarness::new(
+            State::new(),
+            Box::new(FinalFrameWork {
+                draws: std::rc::Rc::clone(&draws),
+                pending: std::sync::Arc::clone(&pending),
+                completes: true,
+                rect: Rect::ZERO,
+            }),
+            (200, 100),
+        );
+        draws.set(0);
+        assert!(harness.settle_for_capture(crate::time::Duration::from_millis(100)));
+        assert!(
+            draws.get() > 3,
+            "capture drew the completed final-frame job"
+        );
+        assert!(!pending.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn capture_bound_includes_the_initial_frame_pipeline() {
+        let draws = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
+        let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut harness = FrameHarness::new(
+            State::new(),
+            Box::new(FinalFrameWork {
+                draws: std::rc::Rc::clone(&draws),
+                pending: std::sync::Arc::clone(&pending),
+                completes: false,
+                rect: Rect::ZERO,
+            }),
+            (200, 100),
+        );
+        draws.set(0);
+        assert!(!harness.settle_for_capture(crate::time::Duration::ZERO));
+        assert_eq!(
+            draws.get(),
+            2,
+            "an expired capture cannot flush another frame"
+        );
+        assert!(!pending.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn capture_final_frame_work_cannot_reset_the_original_deadline() {
+        let draws = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
+        let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut harness = FrameHarness::new(
+            State::new(),
+            Box::new(FinalFrameWork {
+                draws: std::rc::Rc::clone(&draws),
+                pending: std::sync::Arc::clone(&pending),
+                completes: false,
+                rect: Rect::ZERO,
+            }),
+            (200, 100),
+        );
+        draws.set(0);
+        let bound = crate::time::Duration::from_millis(30);
+        let started = crate::time::now();
+        assert!(!harness.settle_for_capture(bound));
+        assert!(crate::time::now().duration_since(started) >= bound);
+        assert!(pending.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     /// Animates for `length` from the first time it is asked whether it
