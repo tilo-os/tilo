@@ -2270,7 +2270,7 @@ impl ChatApp {
 
     /// The leading navigation drawer: the workspace rail beside the channel
     /// list, at the shell's sidebar and rail metrics. It docks only while the
-    /// conversation column keeps the shared content minimum; below that it
+    /// conversation column keeps the shared detail minimum; below that it
     /// becomes a floating drawer.
     fn navigation_drawer() -> SidebarDrawer {
         let m = ui::tokens::Metrics::BASE;
@@ -2278,7 +2278,7 @@ impl ChatApp {
         // the channel list (text-sized) beside it.
         SidebarDrawer::new()
             .with_rail()
-            .content_min_width(f64::from(m.content_min_width))
+            .content_min_width(f64::from(m.detail_min_width))
     }
 
     /// The trailing detail drawer, summoned on demand. It docks while the
