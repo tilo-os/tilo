@@ -24,6 +24,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 fnv.workspace = true
+tilo-feedback = { path = "../../crates/collab/feedback" }
 emoji = { path = "../../crates/text/emoji" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-files = { path = "../../crates/platform/tilo-files" }

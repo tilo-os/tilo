@@ -1813,6 +1813,7 @@ dependencies = [
  "tilo-content",
  "tilo-doc",
  "tilo-document",
+ "tilo-feedback",
  "tilo-files",
  "tilo-paths",
  "tilo-reference",
@@ -16543,6 +16544,20 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-feedback"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "durable-store",
+ "image",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-feedback-review",
  "workspace-hack",
 ]
 
