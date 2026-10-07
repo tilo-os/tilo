@@ -5871,6 +5871,7 @@ impl ShellNetwork {
     /// outbound message via `cmd_tx`. Non-blocking — never stalls the
     /// render loop even on a starved channel.
     pub fn tick(&self) {
+        self.remote_action_replies.expire(std::time::Instant::now());
         // Local room changes go out the tick they land; the periodic pull
         // repairs whatever a peer missed.
         self.push_room_changes();
@@ -6732,6 +6733,28 @@ impl ShellNetwork {
             );
             return;
         }
+        // Codec adverts ride the heartbeat on every joined topic, including
+        // the default topic and the person's own lane. They describe the
+        // sender's own device, already bound to its transport above, not a
+        // room, so no room authority applies. Two devices of one person
+        // that share no room still learn what the other can decode.
+        if let NeighbourMsg::MediaCapabilities {
+            peer: advertiser,
+            hardware_decode,
+            software_decode,
+            hardware_encode,
+            software_encode,
+        } = &msg
+        {
+            crate::network::media_caps::record(
+                *advertiser,
+                hardware_decode,
+                software_decode,
+                hardware_encode,
+                software_encode,
+            );
+            return;
+        }
         if self.dispatch_personal_continuity(ws, &origin, &msg)
             || self.dispatch_personal_workspaces(ws, &origin, &msg)
         {
@@ -6862,19 +6885,6 @@ impl ShellNetwork {
             | NeighbourMsg::PermissionGrant { .. }) => {
                 self.queue_legacy_message_from(ws, Some(peer), message);
             }
-            NeighbourMsg::MediaCapabilities {
-                peer: advertiser,
-                hardware_decode,
-                software_decode,
-                hardware_encode,
-                software_encode,
-            } => crate::network::media_caps::record(
-                advertiser,
-                &hardware_decode,
-                &software_decode,
-                &hardware_encode,
-                &software_encode,
-            ),
             NeighbourMsg::MlsGovernance { room, frame, .. } => {
                 if let Some(room) = RoomId::parse(&room) {
                     self.queue_channel_governance(InboundChannelGovernance::Frame { room, frame });
@@ -7810,6 +7820,19 @@ pub(crate) fn shell_network_for_test(
     (net, cmd_rx)
 }
 
+/// Read-service custody fixture; transport is proved by the real native actor separately.
+#[cfg(test)]
+pub(crate) fn native_read_network_for_test(
+    tree: WorkspaceTreeHandle,
+    identity: HostIdentity,
+) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
+    let (mut network, commands) = shell_network_for_test(tree, 1);
+    network.keypair = iroh::SecretKey::from_bytes(&identity.device_signing_key.to_bytes());
+    network.local_peer_id = network.keypair.public();
+    network.host_identity = Some(identity);
+    (network, commands)
+}
+
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
     fn request(
         &self,
@@ -7992,6 +8015,62 @@ mod tests {
             }
         }
         assert!(found, "the action must be handed to the personal transport");
+    }
+
+    #[test]
+    fn a_codec_advert_outside_a_room_is_recorded() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x45; 32]);
+        let user = root.verifying_key().to_bytes();
+        let (net, mut commands) = personal_continuity_network_for_test(user);
+        let device = iroh::SecretKey::from_bytes(&[0x23; 32]);
+        authenticated_personal_peer(&net, &root, &device);
+        while commands.try_recv().is_ok() {}
+        let advertiser = crate::network::behaviour::peer_liveness_handle(&device.public());
+        for ws in [DEFAULT_WS_TOPIC, personal_continuity_topic_id(&user)] {
+            net.dispatch_neighbour_msg(
+                ws,
+                device.public(),
+                None,
+                false,
+                NeighbourMsg::MediaCapabilities {
+                    peer: advertiser,
+                    hardware_decode: vec!["h264".into()],
+                    software_decode: Vec::new(),
+                    hardware_encode: Vec::new(),
+                    software_encode: Vec::new(),
+                },
+            );
+        }
+        assert!(
+            crate::network::media_caps::capabilities(advertiser)
+                .hardware_decode
+                .iter()
+                .any(|codec| codec.wire_label() == "h264"),
+            "a codec advert from an authenticated device is recorded without a shared room"
+        );
+        assert!(commands.try_recv().is_err());
+
+        let stranger = iroh::SecretKey::from_bytes(&[0x24; 32]);
+        let unproven = crate::network::behaviour::peer_liveness_handle(&stranger.public());
+        net.dispatch_neighbour_msg(
+            DEFAULT_WS_TOPIC,
+            stranger.public(),
+            None,
+            false,
+            NeighbourMsg::MediaCapabilities {
+                peer: unproven,
+                hardware_decode: vec!["h264".into()],
+                software_decode: Vec::new(),
+                hardware_encode: Vec::new(),
+                software_encode: Vec::new(),
+            },
+        );
+        assert!(
+            crate::network::media_caps::capabilities(unproven)
+                .hardware_decode
+                .is_empty(),
+            "an unauthenticated device's advert is not recorded"
+        );
     }
 
     #[test]

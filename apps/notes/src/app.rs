@@ -3428,7 +3428,7 @@ mod tests {
         eprintln!("phase images_beside_a_launched_file_join_the_notebook");
         {
             let source = TempDir::new().unwrap();
-            let bytes = include_bytes!("../../settings/shots/settings.png");
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
             std::fs::write(source.path().join("photo.png"), bytes).unwrap();
             std::fs::write(source.path().join("outside.png"), bytes).unwrap();
             let markdown = "![Portable](photo.png)\n![Kept](https://example.test/a.png)\n";
@@ -3446,7 +3446,11 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let image = tmp.path().join("image.png");
-            std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
+            std::fs::write(
+                &image,
+                include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")),
+            )
+            .unwrap();
             let markdown = "![Repeated](image.png)\n".repeat(10);
 
             let (imported, assets) =
@@ -3463,7 +3467,7 @@ mod tests {
         ui::i18n::I18nManager::init("en-US");
         let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
         let page = PageId::new_v4();
-        let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+        let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")).to_vec();
         let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
         for action in [
             actions::new_page_action(page, None, "a".into(), "Shots"),
@@ -3945,7 +3949,7 @@ mod tests {
     fn exported_notes_carry_their_images_and_import_them_again() {
         eprintln!("phase an_exported_note_carries_its_images_and_imports_them_again");
         {
-            let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")).to_vec();
             let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
             let assets = HashMap::from([(source.clone(), bytes.clone())]);
             let markdown = format!("Intro\n\n![Diagram]({source})\n![Elsewhere](asset:missing)\n");

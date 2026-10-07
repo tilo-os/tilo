@@ -13,10 +13,11 @@ function fixture({room='room',app='notes',record='one',width=100,height=50}={}) 
  let valid=true, clock=0;
  const listeners=new Set(), members=new Set(['agent']);
  const layer={members:()=>[...members], onMember:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},remoteState:()=>[{publisher:'agent',seq:1,receivedAtMs:clock,focus:{app,record},pointer:[20,10],participant:{kind:'agent',label:'A01',color:'#123456'}}]};
- const source=createPresentedSource({audience:room,app,canvas:canvas(width,height),layer:()=>layer,valid:()=>valid,now:()=>clock,makeCanvas:canvas});
+ const copies=[];
+ const source=createPresentedSource({audience:room,app,canvas:canvas(width,height),layer:()=>layer,valid:()=>valid,now:()=>clock,makeCanvas:(w,h)=>{const copy=canvas(w,h);copies.push(copy);return copy;}});
  const output=canvas();
  const view=createPanorama({canvas:output,sources:[{source:source.handle,rect:[200,100,100,50]}],width:400,height:200,now:()=>clock});
- return {source,view,output,layer,present:(frames=1)=>source.present({phase:'presented',frames,gpuGeneration:1,record,logicalSize:[width,height],surfaceSize:[width,height]}),set time(t){clock=t;},invalidate(){valid=false;},member(active){if(active)members.add('agent');else members.delete('agent');for(const fn of listeners)fn({publisher:'agent',active});}};
+ return {source,view,output,layer,copies,present:(frames=1)=>source.present({phase:'presented',captureProtected:false,frames,gpuGeneration:1,record,logicalSize:[width,height],surfaceSize:[width,height]}),set time(t){clock=t;},invalidate(){valid=false;},member(active){if(active)members.add('agent');else members.delete('agent');for(const fn of listeners)fn({publisher:'agent',active});}};
 }
 
 test('panorama refuses a source until an actual presented frame arrives',()=>{
@@ -89,7 +90,7 @@ test('synthetic-only 80 presences in 20 panes preserve identities through zoom',
 
 test('a relayout, old frame or conflicting generation cannot mix new geometry with old pixels',()=>{
  const f=fixture();f.present(3);
- f.source.present({phase:'presented',frames:2,gpuGeneration:1,record:'one',logicalSize:[100,50],surfaceSize:[100,50]});
+ f.source.present({phase:'presented',captureProtected:false,frames:2,gpuGeneration:1,record:'one',logicalSize:[100,50],surfaceSize:[100,50]});
  assert.throws(()=>f.view.render({cx:200,cy:100,scale:1}),/order/);
  assert.equal(f.output.calls.at(-1)[0],'clearRect','refusal blanks stale output');
  f.view.close();
@@ -131,4 +132,18 @@ test('external output resizing cannot bypass capture bounds or falsify the recei
  const f=fixture();f.present();f.output.width=100000;
  assert.throws(()=>f.view.render({cx:200,cy:100,scale:1}),/output dimensions/);
  assert.equal(f.output.width,400);assert.equal(f.output.height,200);f.view.close();
+});
+
+
+test('protected or unknown presentations retire capture before copying any pixels',()=>{
+ for(const protection of [true,undefined]) {
+  const f=fixture();f.present();f.view.render({cx:200,cy:100,scale:1});
+  const copied=f.copies[0].calls.filter(c=>c[0]==='drawImage').length;
+  f.source.present({phase:'presented',captureProtected:protection,frames:2,gpuGeneration:1,record:'one',logicalSize:[100,50],surfaceSize:[100,50]});
+  assert.equal(f.copies[0].calls.filter(c=>c[0]==='drawImage').length,copied);
+  const draws=f.output.calls.filter(c=>c[0]==='drawImage').length;
+  assert.throws(()=>f.view.render({cx:200,cy:100,scale:1}),/capture protection/);
+  assert.equal(f.output.calls.filter(c=>c[0]==='drawImage').length,draws);
+  f.present(3);assert.doesNotThrow(()=>f.view.render({cx:200,cy:100,scale:1}));f.view.close();
+ }
 });

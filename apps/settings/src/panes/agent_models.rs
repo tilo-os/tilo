@@ -12,7 +12,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use agent_provider_config::{
-    EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
+    EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig, ProviderProfile,
+    ProviderProtocol,
 };
 use serde::{Deserialize, Serialize};
 use ui::LocalState;
@@ -160,6 +161,18 @@ pub enum AgentModelsEffect {
         #[param("The model agents use")]
         model: Option<String>,
     },
+    /// Set this model's request allowance; omit both values to restore defaults.
+    #[effect(row, idempotent)]
+    SetModelRequestLimits {
+        provider: String,
+        model: String,
+        max_output_tokens: Option<u32>,
+        runtime_context_tokens: Option<u32>,
+        plan_timeout_ms: Option<u32>,
+    },
+    /// Read source context and this model's configured deployment limits.
+    #[effect(row, returns, permission = "read")]
+    InspectModelRequestLimits { provider: String, model: String },
     /// Make a provider the one agents use unless told otherwise.
     #[effect(row, idempotent, label = "Use by default")]
     SetDefaultProvider {
@@ -245,6 +258,27 @@ pub(crate) fn answer(
     let mut model = shared.borrow_mut();
     model.changed = true;
     match effect {
+        AgentModelsEffect::InspectModelRequestLimits {
+            provider,
+            model: id,
+        } => {
+            let config = model.providers.get().config.clone();
+            let selected = config
+                .profiles
+                .iter()
+                .find(|item| item.id == provider)
+                .and_then(|profile| profile.models.iter().find(|item| item.id == id))
+                .ok_or_else(|| t("agent-model-gone"))?;
+            Ok(Effected::value(serde_json::json!({
+                "provider":provider, "model":id,
+                "source_context_tokens":selected.context_window,
+                "request_limits":selected.request_limits,
+                "plan_timeout_ceiling_ms":selected.request_limits.as_ref()
+                    .and_then(|limits| limits.plan_timeout_ms).unwrap_or(60_000),
+                "caller_may_request_shorter_deadline":true,
+                "runtime_context_attested":false, "prompt_fit_proven":false
+            })))
+        }
         AgentModelsEffect::ReviewModelDownload { show } => {
             model.reviewing.set(show);
             Ok(Effected::done())
@@ -408,6 +442,43 @@ pub struct AgentModelsArea {
     model: std::cell::OnceCell<Shared<AgentModelsModel>>,
 }
 
+fn request_limit_rows(profile: &ProviderProfile) -> Vec<LiveRow> {
+    let mut result = Vec::new();
+    let offer = |effect: AgentModelsEffect| SettingsEffect::from(effect).bound();
+    for selected in &profile.models {
+        result.push(
+            LiveRow::new(
+                format!(
+                    "settings.agent-provider-model:{}:{}",
+                    hex::encode(&profile.id),
+                    hex::encode(&selected.id)
+                ),
+                "settings.agent-provider-model",
+                selected.display_label().to_owned(),
+            )
+            .operation(offer(AgentModelsEffect::InspectModelRequestLimits {
+                provider: profile.id.clone(),
+                model: selected.id.clone(),
+            }))
+            .operation(
+                SettingsEffect::from(AgentModelsEffect::SetModelRequestLimits {
+                    provider: profile.id.clone(),
+                    model: selected.id.clone(),
+                    max_output_tokens: None,
+                    runtime_context_tokens: None,
+                    plan_timeout_ms: None,
+                })
+                .bound_asking(&[
+                    "max_output_tokens",
+                    "runtime_context_tokens",
+                    "plan_timeout_ms",
+                ]),
+            ),
+        );
+    }
+    result
+}
+
 impl AgentModelsArea {
     pub fn new(cx: &PaneCx) -> Self {
         Self {
@@ -514,6 +585,7 @@ impl AgentModelsArea {
                 row
             };
             rows.push(row);
+            rows.extend(request_limit_rows(profile));
         }
         rows
     }
@@ -540,6 +612,7 @@ pub struct AgentModelsModel {
     /// accepts or rejects them.
     provider_key_buffers: Mutex<HashMap<String, Arc<Mutex<String>>>>,
     provider_field_buffers: Mutex<HashMap<String, HostedFieldBuffers>>,
+    limit_field_buffers: Mutex<HashMap<(String, String), LimitFieldBuffers>>,
     /// Whether this device's vault holds each hosted provider's key, or why
     /// that could not be told.
     keys: HashMap<String, Result<bool, String>>,
@@ -573,6 +646,7 @@ impl AgentModelsModel {
             last_poll: ui::time::now(),
             provider_key_buffers: Mutex::new(HashMap::new()),
             provider_field_buffers: Mutex::new(HashMap::new()),
+            limit_field_buffers: Mutex::new(HashMap::new()),
             keys: HashMap::new(),
             changed: false,
         };
@@ -763,6 +837,24 @@ impl AgentModelsModel {
     fn change_providers(&mut self, effect: AgentModelsEffect) -> Result<(), String> {
         let mut config = self.providers.get().config.clone();
         match effect {
+            AgentModelsEffect::SetModelRequestLimits {
+                provider,
+                model,
+                max_output_tokens,
+                runtime_context_tokens,
+                plan_timeout_ms,
+            } => {
+                set_model_limits(
+                    &mut config,
+                    &provider,
+                    &model,
+                    (max_output_tokens, runtime_context_tokens, plan_timeout_ms),
+                )?;
+                self.limit_field_buffers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&(provider, model));
+            }
             AgentModelsEffect::AddProvider { protocol: slug } => {
                 config.upsert(ProviderProfile::hosted(protocol(&slug)?));
             }
@@ -1488,6 +1580,127 @@ impl AgentModelsModel {
         card(&t("agent-hosted-title"), rows(body))
     }
 
+    fn request_limit_buffers(
+        &self,
+        profile: &ProviderProfile,
+        selected: &ModelDescriptor,
+    ) -> LimitFieldBuffers {
+        let key = (profile.id.clone(), selected.id.clone());
+        let mut buffers = self
+            .limit_field_buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fields = buffers
+            .entry(key)
+            .or_insert_with(|| LimitFieldBuffers {
+                output: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .map_or_else(String::new, |limits| limits.max_output_tokens.to_string()),
+                )),
+                runtime: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .and_then(|limits| limits.runtime_context_tokens)
+                        .map_or_else(String::new, |value| value.to_string()),
+                )),
+                deadline: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .and_then(|limits| limits.plan_timeout_ms)
+                        .map_or_else(String::new, |value| value.to_string()),
+                )),
+            })
+            .clone();
+        drop(buffers);
+        fields
+    }
+
+    fn request_limits_card(&self) -> El {
+        let config = self.providers.get().config.clone();
+        let mut body = vec![caption(&t("agent-request-limits-caption"))];
+        for profile in &config.profiles {
+            for selected in &profile.models {
+                body.push(value_row(profile.display_label(), selected.display_label()));
+                body.push(value_row(
+                    &t("agent-source-context"),
+                    &selected
+                        .context_window
+                        .map_or_else(|| t("agent-context-unknown"), |value| value.to_string()),
+                ));
+                let fields = self.request_limit_buffers(profile, selected);
+                let widget_id =
+                    format!("{}-{}", hex::encode(&profile.id), hex::encode(&selected.id));
+                for (name, label, buffer) in [
+                    (
+                        "output",
+                        "agent-output-allowance",
+                        Arc::clone(&fields.output),
+                    ),
+                    (
+                        "runtime",
+                        "agent-runtime-context",
+                        Arc::clone(&fields.runtime),
+                    ),
+                    (
+                        "deadline",
+                        "agent-plan-timeout",
+                        Arc::clone(&fields.deadline),
+                    ),
+                ] {
+                    let initial = buffer.lock().map(|value| value.clone()).unwrap_or_default();
+                    body.push(value_row(&t(label), ""));
+                    body.push(Box::new(
+                        TextInput::local()
+                            .with_id(&format!("agent-model-limit-{name}-{widget_id}"))
+                            .with_accessible_name(t(label))
+                            .with_external_buffer(buffer)
+                            .with_initial_value(&initial)
+                            .with_placeholder(&t("agent-context-unknown")),
+                    ));
+                }
+                let provider = profile.id.clone();
+                let model = selected.id.clone();
+                body.push(Box::new(
+                    Row::new()
+                        .push(Box::new(self.cx.bind(
+                            Button::new(
+                                &format!("agent-model-limit-save-{widget_id}"),
+                                &t("agent-save-details"),
+                            ),
+                            effect(AgentModelsEffect::SET_MODEL_REQUEST_LIMITS).map(move |()| {
+                                (
+                                    provider.clone(),
+                                    model.clone(),
+                                    limit_input(&fields.output),
+                                    limit_input(&fields.runtime),
+                                    limit_input(&fields.deadline),
+                                )
+                            }),
+                        )))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new(
+                                &format!("agent-model-limit-clear-{widget_id}"),
+                                &t("agent-request-limits-clear"),
+                            ),
+                            AgentModelsEffect::SetModelRequestLimits {
+                                provider: profile.id.clone(),
+                                model: selected.id.clone(),
+                                max_output_tokens: None,
+                                runtime_context_tokens: None,
+                                plan_timeout_ms: None,
+                            },
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
+            }
+        }
+        card(&t("agent-request-limits-title"), rows(body))
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
         let private_title = t("agent-private-title");
         let local_inf = t("agent-local-inference");
@@ -1508,6 +1721,7 @@ impl AgentModelsModel {
                 caption(&t("agent-service-down-body")),
             ));
             cards.push(self.hosted_profiles());
+            cards.push(self.request_limits_card());
             return crate::widgets::cards(cards);
         }
         if let Some(notice) = &self.notice {
@@ -1542,8 +1756,39 @@ impl AgentModelsModel {
             }
         }
         cards.push(self.hosted_profiles());
+        cards.push(self.request_limits_card());
         crate::widgets::cards(cards)
     }
+}
+
+/// Change only the selected model's policy, retaining other profile metadata.
+fn set_model_limits(
+    config: &mut ProviderConfig,
+    provider: &str,
+    model: &str,
+    tokens: (Option<u32>, Option<u32>, Option<u32>),
+) -> Result<(), String> {
+    let selected = find(config, provider)?
+        .models
+        .iter_mut()
+        .find(|item| item.id == model)
+        .ok_or_else(|| t("agent-model-gone"))?;
+    let limits = match tokens.0 {
+        Some(max_output_tokens) => Some(ModelRequestLimits {
+            max_output_tokens,
+            runtime_context_tokens: tokens.1,
+            plan_timeout_ms: tokens.2,
+        }),
+        None if tokens.1.is_none() && tokens.2.is_none() => None,
+        None => return Err(t("agent-request-limits-invalid")),
+    };
+    if let Some(limits) = &limits {
+        limits
+            .validate(selected.context_window)
+            .map_err(|_| t("agent-request-limits-invalid"))?;
+    }
+    selected.request_limits = limits;
+    Ok(())
 }
 
 /// The provider `id` of `config`.
@@ -1619,6 +1864,24 @@ struct HostedFieldBuffers {
     label: Arc<Mutex<String>>,
     endpoint: Arc<Mutex<String>>,
     model: Arc<Mutex<String>>,
+}
+
+#[derive(Clone)]
+struct LimitFieldBuffers {
+    output: Arc<Mutex<String>>,
+    runtime: Arc<Mutex<String>>,
+    deadline: Arc<Mutex<String>>,
+}
+
+fn limit_input(buffer: &Arc<Mutex<String>>) -> Option<u32> {
+    let text = buffer
+        .lock()
+        .map_or_else(|_| "0".into(), |value| value.trim().to_owned());
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.parse().unwrap_or(0))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2030,7 +2293,16 @@ fn synced_local_profile(
         .map(|model| ModelDescriptor {
             id: model.package.id.clone(),
             label: model.package.name.clone(),
-            context_window: None,
+            context_window: profile
+                .models
+                .iter()
+                .find(|old| old.id == model.package.id)
+                .and_then(|old| old.context_window),
+            request_limits: profile
+                .models
+                .iter()
+                .find(|old| old.id == model.package.id)
+                .and_then(|old| old.request_limits.clone()),
             revision: Some(model.package.revision.clone()),
             vision: model.package.vision,
             face_recognition: model.package.face_recognition,
@@ -2141,6 +2413,7 @@ impl LocalModelControl for SampleManager {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Mutex;
 
     use super::*;
@@ -2587,6 +2860,115 @@ mod tests {
         assert!(profile.models[0].vision);
         assert!(profile.models[0].face_recognition);
         assert!(profile.enabled);
+        let mut configured = profile;
+        configured.models[0].context_window = Some(262_144);
+        configured.models[0].request_limits = Some(ModelRequestLimits {
+            max_output_tokens: 512,
+            runtime_context_tokens: Some(4096),
+            plan_timeout_ms: Some(120_000),
+        });
+        let refreshed = synced_local_profile(Some(configured.clone()), &models).unwrap();
+        assert_eq!(
+            refreshed.models[0].request_limits,
+            configured.models[0].request_limits
+        );
+        assert_eq!(refreshed.models[0].context_window, Some(262_144));
+    }
+
+    #[test]
+    fn model_request_limits_use_the_published_settings_effects() {
+        use ui::framework::testing::TestApp;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+        profile.models = vec![
+            ModelDescriptor::new("test-model"),
+            ModelDescriptor::new("test_model"),
+        ];
+        profile.models[0].context_window = Some(262_144);
+        let profile_id = profile.id.clone();
+        ProviderConfig {
+            profiles: vec![profile],
+            default_profile: None,
+        }
+        .save_at(&path)
+        .unwrap();
+        let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        app.surface_mut::<SettingsApp>()
+            .attach_host(PaneCx::in_file(path.clone()), None);
+        app.surface_mut::<SettingsApp>()
+            .agent_models()
+            .model()
+            .borrow_mut()
+            .follow_local_profile = false;
+        let open = crate::effects::open_pane_address(crate::categories::Category::AgentModels);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        let resource = format!(
+            "settings.agent-provider-model:{}:{}",
+            hex::encode(&profile_id),
+            hex::encode("test-model")
+        );
+        app.call_on(
+            &resource,
+            "set-model-request-limits",
+            serde_json::json!({"max_output_tokens":512,"runtime_context_tokens":4096,"plan_timeout_ms":120_000}),
+        )
+        .unwrap();
+        app.settle();
+        let value = app
+            .call_on(
+                &resource,
+                "inspect-model-request-limits",
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["request_limits"]["max_output_tokens"], 512);
+        assert_eq!(value["request_limits"]["plan_timeout_ms"], 120_000);
+        assert_eq!(value["plan_timeout_ceiling_ms"], 120_000);
+        assert_eq!(value["caller_may_request_shorter_deadline"], true);
+        assert_eq!(value["source_context_tokens"], 262_144);
+        assert_eq!(value["runtime_context_attested"], false);
+        assert_eq!(value["prompt_fit_proven"], false);
+        let other = format!(
+            "settings.agent-provider-model:{}:{}",
+            hex::encode(&profile_id),
+            hex::encode("test_model")
+        );
+        let other_value = app
+            .call_on(
+                &other,
+                "inspect-model-request-limits",
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(other_value["request_limits"].is_null());
+        assert_eq!(other_value["plan_timeout_ceiling_ms"], 60_000);
+        let saved = fs::read(&path).unwrap();
+        for invalid in [
+            serde_json::json!({"max_output_tokens":4096,"runtime_context_tokens":4096}),
+            serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":0}),
+            serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":900_001}),
+            serde_json::json!({"plan_timeout_ms":120_000}),
+            serde_json::json!({"model":"absent-model","max_output_tokens":512}),
+        ] {
+            assert!(
+                app.call_on(&resource, "set-model-request-limits", invalid)
+                    .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), saved);
+        }
+        app.call_on(&resource, "set-model-request-limits", serde_json::json!({}))
+            .unwrap();
+        assert!(
+            ProviderConfig::load_at(&path).profiles[0].models[0]
+                .request_limits
+                .is_none()
+        );
+        assert!(app.harness().component_contract_violations().is_empty());
     }
 
     /// Providers are the person's settings: added, renamed, made default

@@ -118,6 +118,7 @@ pub mod group;
 pub mod history;
 pub mod items;
 pub mod kind;
+mod low_mutation;
 pub mod model;
 pub mod order;
 pub mod reader;
@@ -136,6 +137,7 @@ pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use kind::{Kinds, ResourceKind};
+pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
 };

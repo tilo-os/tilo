@@ -107,6 +107,23 @@ impl App {
             .focused_node
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root_widget.callback_binding());
+        if self.collaboration.manager.is_connected()
+            && let Some(binding) = &binding
+        {
+            match binding.history_uses_compensation(&mut self.state.doc) {
+                Ok(true) => {
+                    if let Err(error) = self.invoke_bound_history(binding, request) {
+                        tracing::warn!(%error, "document history admission refused");
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(?error, "document history owner unavailable");
+                    return;
+                }
+            }
+        }
         let owned_target = binding.is_some()
             || self
                 .focused_node

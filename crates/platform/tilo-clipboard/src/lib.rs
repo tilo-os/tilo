@@ -158,6 +158,15 @@ pub trait ClipboardBackend: Send + Sync {
     /// something that is not text.
     fn text(&self, target: ClipboardTarget) -> Option<String>;
 
+    /// Request text for an explicit paste. A native transfer may finish after
+    /// this call returns; the backend must wake its owner when it answers.
+    /// No answer may substitute text from an older selection or focus owner.
+    fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        let (reply, result) = std::sync::mpsc::channel();
+        let _ = reply.send(self.text(target));
+        result
+    }
+
     /// Read HTML and its plain fallback from one Ctrl+V clipboard offer.
     /// Optional: unsupported backends return `None` without reading plain text.
     /// A successful read consumes event-scoped offers; use the captured plain
