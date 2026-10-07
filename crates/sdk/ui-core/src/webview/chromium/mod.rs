@@ -36,6 +36,7 @@ struct Shared {
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
+    native_caret_text_input: AtomicBool,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
     frames: FrameSlot,
     events: Mutex<VecDeque<WebViewEvent>>,
@@ -466,6 +467,7 @@ impl UnavailableEngine {
                 text_input: Mutex::default(),
                 native_edit_history: AtomicBool::new(false),
                 guarded_edit_history: AtomicBool::new(false),
+                native_caret_text_input: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
@@ -1014,6 +1016,11 @@ impl WebViewEngine for ChromiumEngine {
         }
         let (receipt, mut value) = self.shared.text_input.lock().ok()?.admit(request)?;
         value["tab"] = json!(self.tab);
+        if value["action"] == "prepare_text_input"
+            && self.shared.native_caret_text_input.load(Ordering::Acquire)
+        {
+            value["native_caret"] = json!(true);
+        }
         if self.tx.push(value).is_err() {
             receipt.complete(Err(super::text_input::Failure::Rejected));
         }
@@ -1315,6 +1322,10 @@ fn route_native_event(
     };
     if let Some(shared) = endpoint {
         if matches!(event_name, "ready" | "tab_ready") {
+            shared.native_caret_text_input.store(
+                value["native_caret_text_input"].as_bool() == Some(true),
+                Ordering::Release,
+            );
             shared.guarded_edit_history.store(
                 value["guarded_edit_history"].as_bool() == Some(true),
                 Ordering::Release,
@@ -1554,7 +1565,10 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_some_and(|error| error.len() <= 1024)
         }
         "ready" => {
-            text("cef_version")
+            value
+                .get("native_caret_text_input")
+                .is_none_or(Value::is_boolean)
+                && text("cef_version")
                 && text("chromium_version")
                 && value
                     .get("guarded_edit_history")
@@ -1565,8 +1579,11 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         }
         "tab_ready" => {
             value
-                .get("guarded_edit_history")
+                .get("native_caret_text_input")
                 .is_none_or(Value::is_boolean)
+                && value
+                    .get("guarded_edit_history")
+                    .is_none_or(Value::is_boolean)
                 && value
                     .get("native_edit_history")
                     .is_none_or(Value::is_boolean)

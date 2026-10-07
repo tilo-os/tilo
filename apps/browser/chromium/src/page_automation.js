@@ -535,11 +535,25 @@ globalThis.__tiloPage ||= (() => {
   // edit consumes its lease before page handlers run and uses Chromium's undo
   // path; unlike fill(), it must never fall back to setting another value.
   let textLease = null, committingTextLease = null, composing = false;
+  let nativeTextElement = null, nativeTextEditor = null;
+  const nativeSelection = ShadowRoot.prototype.getSelection;
+  function nativeTextInputElement() { return nativeTextElement; }
+  function configureNativeTextEditor(editor) {
+    const root = editor?.getRootNode();
+    // UA roots are internal, not author 'open'/'closed' roots. Reading their
+    // public mode getter hits Blink's unreachable branch; bind by native host.
+    if (!nativeTextElement || nativeTextElement !== activeTextElement() ||
+        !nativeTextElement.isConnected || root?.host !== nativeTextElement ||
+        !['email', 'number'].includes(type(nativeTextElement)) ||
+        typeof nativeSelection !== 'function') return false;
+    nativeTextEditor = editor;
+    return true;
+  }
   const retireTextLease = () => {
     if (textLease) {
       textLease.revoked = true; clearTimeout(textLease.timer); textLease.observer.disconnect();
     }
-    textLease = null;
+    textLease = null; nativeTextElement = null; nativeTextEditor = null;
     if (committingTextLease) committingTextLease.revoked = true;
   };
   addEventListener('blur', retireTextLease);
@@ -572,22 +586,41 @@ globalThis.__tiloPage ||= (() => {
     }
     return false;
   }
-  function textSnapshot(element) {
+  function textSnapshot(element, allowNative = false) {
     if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element || composing)
       throw failure('text_input_changed', 'The original text field is no longer available');
     const textSecurity = getComputedStyle(element).webkitTextSecurity;
-    if (secret(element) || /(^|\s)(cc-[a-z-]+|one-time-code)(\s|$)/i.test(element.getAttribute('autocomplete') || '') ||
+    if (secret(element) || /(^|\s)(cc-[a-z-]+|one-time-code|current-password|new-password)(\s|$)/i.test(element.getAttribute('autocomplete') || '') ||
         (textSecurity && textSecurity !== 'none'))
       throw failure('secret_field', 'This field cannot accept deferred text input');
     if (element.matches(':disabled') || element.readOnly ||
         composedReadOnly(element))
       throw failure('not_editable', 'This field is disabled or read-only');
     const field = element.localName === 'textarea' ||
-      (element.localName === 'input' && ['text', 'search', 'email', 'url', 'tel'].includes(type(element)));
+      (element.localName === 'input' && ['text', 'search', 'email', 'url', 'tel', 'number'].includes(type(element)));
     if (field) {
-      if (!Number.isInteger(element.selectionStart) || !Number.isInteger(element.selectionEnd))
-        throw failure('not_editable', 'This field does not expose an editable selection');
       if (element.value.length > 262144) throw failure('text_input_large', 'This field is too large for deferred input');
+      if (!Number.isInteger(element.selectionStart) || !Number.isInteger(element.selectionEnd)) {
+        if (!allowNative || !['email', 'number'].includes(type(element)))
+          throw failure('not_editable', 'This field does not expose an editable selection');
+        if (nativeTextElement !== element || !nativeTextEditor?.isConnected ||
+            nativeTextEditor.getRootNode().host !== element) {
+          nativeTextElement = element; nativeTextEditor = null;
+          throw failure('text_input_native_required', 'The original field requires a native caret');
+        }
+        const root = nativeTextEditor.getRootNode();
+        const selection = Reflect.apply(nativeSelection, root, []);
+        if (!selection || selection.rangeCount !== 1 ||
+            !nativeTextEditor.contains(selection.anchorNode) ||
+            !nativeTextEditor.contains(selection.focusNode))
+          throw failure('not_editable', 'The native field has no local editable selection');
+        const raw = nativeTextEditor.textContent;
+        if (raw.length > 262144)
+          throw failure('text_input_large', 'This field is too large for deferred input');
+        return {field: true, native: true, editor: nativeTextEditor, root,
+          value: element.value, raw, anchor: selection.anchorNode, focus: selection.focusNode,
+          start: selection.anchorOffset, end: selection.focusOffset};
+      }
       return {field: true, value: element.value, start: element.selectionStart,
         end: element.selectionEnd, direction: element.selectionDirection};
     }
@@ -600,10 +633,32 @@ globalThis.__tiloPage ||= (() => {
     return {field: false, value: element.innerHTML, anchor: selection.anchorNode,
       focus: selection.focusNode, start: selection.anchorOffset, end: selection.focusOffset};
   }
+  function validateNativeReplacement(lease, text) {
+    const snapshot = lease.snapshot;
+    if (!snapshot.native) return;
+    const prefixLength = (node, offset) => {
+      const range = document.createRange();
+      range.selectNodeContents(snapshot.editor); range.setEnd(node, offset);
+      return range.toString().length;
+    };
+    const anchor = prefixLength(snapshot.anchor, snapshot.start);
+    const focus = prefixLength(snapshot.focus, snapshot.end);
+    const value = snapshot.raw.slice(0, Math.min(anchor, focus)) + text +
+      snapshot.raw.slice(Math.max(anchor, focus));
+    if (lease.element.maxLength >= 0 && value.length > lease.element.maxLength)
+      throw failure('rejected', 'The original field cannot accept that much text');
+    // Native number editing filters invalid characters and can otherwise
+    // acknowledge an edit that silently deletes the selected original value.
+    // Validate the complete prospective value before dispatching page handlers.
+    if (type(lease.element) === 'number' &&
+        (!/^-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/.test(value) ||
+         !Number.isFinite(Number(value))))
+      throw failure('rejected', 'The original number field requires a finite number');
+  }
   function sameTextSnapshot(lease) {
     if (lease.revoked || performance.now() >= lease.expires) return false;
     if (lease.observer.takeRecords().some(record => touchesTextLease(lease, record))) return false;
-    const current = textSnapshot(lease.element), original = lease.snapshot;
+    const current = textSnapshot(lease.element, lease.snapshot.native === true), original = lease.snapshot;
     return Object.keys(original).every(key => current[key] === original[key]);
   }
   function touchesTextLease(lease, record) {
@@ -626,7 +681,7 @@ globalThis.__tiloPage ||= (() => {
     if (textLease && performance.now() >= textLease.expires) retireTextLease();
     if (command.action === 'prepare_text_input') {
       if (textLease || committingTextLease) throw failure('busy', 'A text-input lease is already active');
-      const element = activeTextElement(), snapshot = textSnapshot(element);
+      const element = activeTextElement(), snapshot = textSnapshot(element, command.native_caret === true);
       const bytes = crypto.getRandomValues(new Uint8Array(16));
       const lease = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
       textLease = {element, snapshot, lease, expires: performance.now() + 180000, revoked: false, started: false};
@@ -640,6 +695,7 @@ globalThis.__tiloPage ||= (() => {
           'aria-readonly', 'aria-disabled', 'inert', 'style', 'class', 'hidden', 'slot', 'name']};
       // Observe every composed root: nested shadow hosts carry eligibility too.
       const roots = new Set([document]);
+      if (snapshot.native) roots.add(snapshot.root);
       owned.ancestors = new Set();
       for (let node = element; node; node = composedParent(node)) {
         owned.ancestors.add(node);
@@ -688,17 +744,20 @@ globalThis.__tiloPage ||= (() => {
       throw failure('invalid_request', 'The final text is empty or too large');
     textLease = null; clearTimeout(owned.timer); committingTextLease = owned;
     try {
+      validateNativeReplacement(owned, command.text);
       const event = new InputEvent('beforeinput', {bubbles: true, composed: true,
         cancelable: true, inputType: 'insertText', data: command.text});
       if (!owned.element.dispatchEvent(event) || Date.now() >= command.expires_ms || !sameTextSnapshot(owned))
         throw failure('text_input_changed', 'The page rejected or changed the original field');
+      validateNativeReplacement(owned, command.text);
       if (!document.execCommand('insertText', false, command.text))
         throw failure('rejected', 'The original field did not accept the text');
       return {ok: true, message: 'Text input committed'};
-    } finally { owned.observer.disconnect(); committingTextLease = null; }
+    } finally { owned.observer.disconnect(); committingTextLease = null; nativeTextElement = null; nativeTextEditor = null; }
   }
 
   return {
+    nativeTextInputElement, configureNativeTextEditor,
     run(command) {
       try {
         if (!doc) doc = command.doc;
