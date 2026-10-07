@@ -8473,6 +8473,7 @@ dependencies = [
  "cc",
  "clap",
  "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
  "hex",
  "libc",
  "reqwest 0.13.4",
@@ -8483,6 +8484,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-advisory-lock",
  "tilo-files",
  "tilo-net",
  "tilo-sandbox-core",
@@ -8617,8 +8619,8 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-content",
  "tilo-contact-directory",
+ "tilo-content",
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-net",
@@ -14103,9 +14105,9 @@ dependencies = [
  "thiserror 2.0.18",
  "threshold-identity",
  "tilo-action-broker",
- "tilo-agent-participant",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-agent-participant",
  "tilo-app-state",
  "tilo-automation",
  "tilo-automerge",
@@ -16172,6 +16174,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-contact-directory"
+version = "0.1.0"
+dependencies = [
+ "tilo-resource",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-content"
 version = "0.1.0"
 dependencies = [
@@ -16184,15 +16195,6 @@ dependencies = [
  "tilo-paths",
  "tilo-xdg-paths",
  "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-contact-directory"
-version = "0.1.0"
-dependencies = [
- "tilo-resource",
- "uuid",
  "workspace-hack",
 ]
 
@@ -17274,11 +17276,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-actions",
  "tilo-agent-participant",
- "tilo-browser-peer",
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-browser-peer",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-doc",
