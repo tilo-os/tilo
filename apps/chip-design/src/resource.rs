@@ -445,7 +445,23 @@ fn flow_children(report: &str, record: &VerificationRecord) -> Vec<PublishedReso
     };
     flow.stages
         .iter()
-        .map(|stage| flow_child(report, "stage", &stage.id, &stage.title))
+        .map(|stage| {
+            let macros: Vec<_> = stage
+                .placement
+                .iter()
+                .flat_map(|placement| {
+                    placement.macros.iter().map(|instance| {
+                        flow_child(
+                            report,
+                            "placement",
+                            &format!("{}/{}", stage.id, instance.id),
+                            &instance.name,
+                        )
+                    })
+                })
+                .collect();
+            flow_child(report, "stage", &stage.id, &stage.title).with_children(macros)
+        })
         .chain(
             flow.subflows
                 .iter()
@@ -461,8 +477,10 @@ fn flow_children(report: &str, record: &VerificationRecord) -> Vec<PublishedReso
         .collect()
 }
 fn flow_search(report: &str, record: &VerificationRecord) -> Vec<SearchEntry> {
-    flow_children(report, record)
-        .into_iter()
+    let children = flow_children(report, record);
+    children
+        .iter()
+        .chain(children.iter().flat_map(|child| child.children.iter()))
         .map(|child| SearchEntry {
             anchor: Some(
                 child
@@ -472,7 +490,7 @@ fn flow_search(report: &str, record: &VerificationRecord) -> Vec<SearchEntry> {
                     .unwrap_or_default()
                     .to_owned(),
             ),
-            title: child.label,
+            title: child.label.clone(),
             text: "reported_unverified".into(),
             ..Default::default()
         })
