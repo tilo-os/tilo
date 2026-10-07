@@ -535,21 +535,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf",
-    "oid": "a441693965d6043514cf5f481c0427dd056dc660",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf",
-    "oid": "fe8c95fa8c87b6c94ec807a1524b32714025e9d9",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf",
-    "oid": "e63215236791c26a837bab6116c9100488adaaca",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/platform/tilo-pdf/tests/fixtures/arabic.pdf",
     "oid": "09aeb80f0e04f7efbfc338e81b341f66e9730ceb",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
@@ -587,11 +572,6 @@
   {
     "path": "crates/platform/tilo-pdf/tests/fixtures/multipage.pdf",
     "oid": "d8e9f6dd5ca790680a582cca355a349783b837fe",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/runtime/ush/tests/fixtures/seccomp/ush.x86_64.bpf",
-    "oid": "a4c8030427b0b2f85c88592c6d5e676229bdd879",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
