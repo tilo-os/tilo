@@ -58,6 +58,9 @@ it to your app. [Templates and examples](../examples.md) describes each.
 
 The new directory is a complete Cargo project with its own git repository:
 
+- `AGENTS.md` is a compact guide for coding agents: where to start, how to
+  add a resource action, and which commands verify the result. It travels
+  with the app, including apps created from an example.
 - `src/` holds the app: a `#[derive(Model)]` resource, its `#[action]`
   methods, and a view whose controls invoke those actions.
 - `tilo-app.toml` is the package manifest: id, title, entrypoints and the
