@@ -54,6 +54,15 @@ macro_rules! settings_effects {
                 }
             }
 
+            // A row binds one area's effect. Flattening every area's
+            // declarations here repeats unrelated metadata work for each row.
+            // The child vocabulary shares this union's operation and payload.
+            fn bound(&self) -> tilo_actions::ActionSpec {
+                match self {
+                    $(Self::$variant(effect) => effect.bound(),)*
+                }
+            }
+
             fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
                 match self {
                     $(Self::$variant(effect) => effect.arguments(),)*
@@ -222,6 +231,89 @@ fn answer_navigation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Flattened(SettingsEffect);
+
+    impl Effect for Flattened {
+        const OPERATION: &'static str = super::OPERATION;
+
+        fn declarations() -> Vec<EffectDecl> {
+            SettingsEffect::declarations()
+        }
+
+        fn id(&self) -> &'static str {
+            self.0.id()
+        }
+
+        fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
+            self.0.arguments()
+        }
+
+        fn decode(
+            id: &str,
+            arguments: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<Self, String> {
+            SettingsEffect::decode(id, arguments).map(Self)
+        }
+    }
+
+    #[test]
+    fn mounted_live_row_bindings_preserve_flattened_metadata_and_payloads() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let resource_rows = app.surface::<SettingsApp, _>(|app| rows(app)).unwrap();
+        let mut compared = 0;
+        for row in resource_rows {
+            for spec in row.into_resource().actions {
+                if spec.operation_type.as_deref() != Some(super::OPERATION)
+                    || !spec.params().is_empty()
+                {
+                    continue;
+                }
+                let published = spec.build_json(&serde_json::Map::new()).unwrap();
+                let effect = SettingsEffect::from_payload(&published.payload).unwrap();
+                let direct = effect.bound();
+                let flattened = Flattened(effect).bound();
+                assert_eq!(
+                    tilo_actions::door::survey(&[tilo_actions::Resource::new(
+                        "comparison",
+                        "comparison",
+                        "comparison"
+                    )
+                    .with_action(direct.clone())]),
+                    tilo_actions::door::survey(&[tilo_actions::Resource::new(
+                        "comparison",
+                        "comparison",
+                        "comparison"
+                    )
+                    .with_action(flattened.clone())]),
+                    "all published metadata including role/risk/result and confirmation is preserved"
+                );
+                assert_eq!(
+                    direct.permission_for_json(&serde_json::Map::new()),
+                    flattened.permission_for_json(&serde_json::Map::new()),
+                    "invocation permission classification is unchanged",
+                );
+                assert_eq!(
+                    direct.confirmation_for_json(&serde_json::Map::new()),
+                    flattened.confirmation_for_json(&serde_json::Map::new()),
+                    "bound dynamic risk retains the same confirmation policy",
+                );
+                let actual = direct.build_json(&serde_json::Map::new()).unwrap();
+                let reference = flattened.build_json(&serde_json::Map::new()).unwrap();
+                assert_eq!(actual.type_id, reference.type_id);
+                assert_eq!(actual.payload, reference.payload);
+                assert_eq!(
+                    actual.payload, published.payload,
+                    "the actual published row carries the same effect arguments"
+                );
+                compared += 1;
+            }
+        }
+        assert!(
+            compared >= Category::ALL.len(),
+            "the actual mounted pane/live rows are observed"
+        );
+    }
 
     /// One vocabulary: every effect id names exactly one effect, and each
     /// decodes back to the value that encoded it.
