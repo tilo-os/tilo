@@ -38,7 +38,8 @@ impl DeviceDisplaySnapshot {
 
     /// Read an observation only while its compositor owns the runtime lease.
     pub fn load_at(path: &std::path::Path) -> Option<Self> {
-        let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let bytes = tilo_files::native::bounded::read(path, 2_097_152).ok()??;
+        let snapshot: Self = serde_json::from_slice(&bytes).ok()?;
         crate::hardware::publisher_live_in(
             path.parent()?,
             snapshot.publisher_pid,
@@ -58,7 +59,8 @@ impl DeviceDisplaySnapshot {
 }
 
 fn snapshot_path() -> Option<std::path::PathBuf> {
-    tilo_paths::xdg::runtime_dir().map(|path| path.join("tilo/device-display-state.json"))
+    crate::hardware::display_snapshot_path()
+        .map(|path| path.with_file_name("device-display-state.json"))
 }
 
 #[cfg(test)]
