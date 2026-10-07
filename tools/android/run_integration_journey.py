@@ -10,7 +10,6 @@ import json
 import os
 from pathlib import Path
 import signal
-import select
 import subprocess
 import tempfile
 import time
@@ -47,14 +46,7 @@ def stop_bus_helpers(runtime):
                 if (entry / 'comm').read_text().strip() not in names: continue
                 handle = os.pidfd_open(int(entry.name))
                 try:
-                    if select.select([handle], [], [], 0)[0]: continue
-                    try:
-                        environment = (entry / 'environ').read_bytes().split(b'\0')
-                    except PermissionError:
-                        # Exit can revoke /proc access after pidfd_open. A live
-                        # helper whose ownership is unreadable must still fail.
-                        if select.select([handle], [], [], 0)[0]: continue
-                        raise
+                    environment = (entry / 'environ').read_bytes().split(b'\0')
                     if os.fsencode('XDG_RUNTIME_DIR=' + runtime) not in environment: continue
                     signal.pidfd_send_signal(handle, signal.SIGTERM)
                     handles.append(handle)
@@ -64,6 +56,7 @@ def stop_bus_helpers(runtime):
             except (FileNotFoundError, ProcessLookupError):
                 continue
         # Readiness on pidfds means exit, without relying on reusable process IDs.
+        import select
         pending = set(handles)
         deadline = time.monotonic() + 3
         while pending and time.monotonic() < deadline:
