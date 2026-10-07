@@ -10569,6 +10569,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "settings-store",
  "swipe",
  "taffy",
  "tempfile",
@@ -14056,6 +14057,7 @@ dependencies = [
  "tilo-files",
  "tilo-paths",
  "tilo-test-env",
+ "unicode-normalization",
  "workspace-hack",
 ]
 
@@ -21750,6 +21752,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tempfile",
  "tilo-actions",
