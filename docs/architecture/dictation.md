@@ -1844,3 +1844,17 @@ covered by actual frontend journeys. This fixed public native experiment
 neither creates a second dictionary store nor promotes the larger backend.
 The native Q8 artifact still exceeds production admission; no model, release
 hold, recording permission or worker default changed.
+
+
+### Supported model delivery and native vocabulary follow-up
+
+The [delivery integration plan](dictation-model-delivery.md) separates the existing
+constant-space verified downloader from the current Whisper consumer’s 256 MiB
+admission boundary. Cached receipt verification now checks the same opened regular
+file, refuses Unix symlinks and bounds concurrent growth; no model or cap is promoted.
+The exposed German native vocabulary comparison is complete: default fusion scored
+0% WER, versus 5.56% with off/weak fusion, with no unspoken TiLo in drafts or final.
+First meaningful stable text remained about 5.33 seconds. The sanitized three-row
+ledger preserves all pressure stops; this one clip does not qualify general names
+or production shared-dictionary integration. Six native stress cases remain pending
+a pressure-safe window.

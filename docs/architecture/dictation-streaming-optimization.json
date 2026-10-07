@@ -955,6 +955,15 @@
       "decoder_started": false,
       "evidence": "voice-nemo-serial-stress-recovery.log",
       "evidence_sha256": "be59279bbce1fb1acabd8e6416cde8360852c95ffac144fac2846990127a8cdf"
+    },
+    {
+      "case": "development-synthetic-noise-20db-ar_eg-0",
+      "available_kib": 172019576,
+      "pressure_some_avg10": 9.95,
+      "actual_cap_bytes": 1073741824,
+      "evidence": "voice-nemo-serial-stress-continuation.log",
+      "evidence_sha256": "26860b913666cec143612344dd9c268bd4799685b33e1cb6dfa1c21871e5fa2d",
+      "decoder_started": false
     }
   ],
   "stress_expected_cases": 14,
