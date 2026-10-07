@@ -27,7 +27,6 @@ pub(crate) struct Sources {
     directory: Option<PersonRecord<ContactDirectory>>,
     accounts: Option<PersonRecord<PersonAccounts>>,
     fixture: Rc<CapturePeople>,
-    own: Option<String>,
 }
 
 impl Sources {
@@ -122,36 +121,23 @@ pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
     let accounts = sources.accounts();
     let mut result = Vec::new();
     for service in ["tilo", "whatsapp", "signal", "sms"] {
-        let senders: Vec<_> = if service == "tilo" {
-            sources
-                .own
-                .iter()
-                .map(|id| routing::SenderAccount {
-                    id: Id::from_raw(id),
-                    service: service.into(),
-                    scope: "tilo".into(),
-                    enabled: true,
-                })
-                .collect()
-        } else {
-            accounts
-                .accounts
-                .iter()
-                .filter(|(_, account)| account.enabled && account.type_id == service)
-                .map(|(id, account)| routing::SenderAccount {
-                    id: id.clone(),
-                    service: service.into(),
-                    enabled: account.enabled,
-                    scope: account
-                        .config
-                        .0
-                        .get("messaging_scope")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                })
-                .collect()
-        };
+        let senders: Vec<_> = accounts
+            .accounts
+            .iter()
+            .filter(|(_, account)| account.enabled && account.type_id == service)
+            .map(|(id, account)| routing::SenderAccount {
+                id: id.clone(),
+                service: service.into(),
+                enabled: account.enabled,
+                scope: account
+                    .config
+                    .0
+                    .get("messaging_scope")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .into(),
+            })
+            .collect();
         let routes = routing::routes(&contacts, &person, service, &senders);
         if routes.is_empty() {
             // Metadata can describe an unavailable account. It never supplies
@@ -289,23 +275,19 @@ fn confirm_account(
         return Err(CATALOG.t("messages-identity-unavailable"));
     }
     let accounts = sources.accounts();
-    let valid_sender = if choice.service == "tilo" {
-        sources.own.as_deref() == Some(choice.account.as_str()) && choice.scope == "tilo"
-    } else {
-        accounts
-            .accounts
-            .get(&Id::from_raw(&choice.account))
-            .is_some_and(|account| {
-                account.enabled
-                    && account.type_id == choice.service
-                    && account
-                        .config
-                        .0
-                        .get("messaging_scope")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(choice.scope.as_str())
-            })
-    };
+    let valid_sender = accounts
+        .accounts
+        .get(&Id::from_raw(&choice.account))
+        .is_some_and(|account| {
+            account.enabled
+                && account.type_id == choice.service
+                && account
+                    .config
+                    .0
+                    .get("messaging_scope")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(choice.scope.as_str())
+        });
     if !valid_sender {
         return Err(CATALOG.t("messages-no-account"));
     }
@@ -345,7 +327,6 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
             None
         },
         fixture: cx.fixture::<CapturePeople>().unwrap_or_default(),
-        own: cx.me().map(str::to_owned),
     }
 }
 
@@ -889,7 +870,6 @@ mod route_tests {
                 directory: ContactDirectory::default(),
                 accounts,
             }),
-            own: None,
         };
         let selection = LocalState::new(Selection {
             person: PERSON.into(),
@@ -976,7 +956,6 @@ mod route_tests {
                 directory: ContactDirectory::default(),
                 accounts,
             }),
-            own: None,
         };
         let selection = LocalState::new(Selection {
             person: PERSON.into(),

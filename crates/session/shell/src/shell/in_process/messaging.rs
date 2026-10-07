@@ -22,6 +22,8 @@ use ui::launch::LaunchError;
 pub(crate) mod activation;
 mod enrollment;
 pub(super) mod first_account;
+pub(crate) mod native;
+pub(crate) mod native_first;
 pub(super) mod network;
 pub(super) mod provider;
 pub mod records;
