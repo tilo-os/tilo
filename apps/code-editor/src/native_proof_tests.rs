@@ -233,6 +233,70 @@ fn native_text_continuation_restores_shared_resource_selection_and_view_after_of
     assert_eq!(after["editor_focused"], false);
 }
 
+#[test]
+fn independent_cold_editors_keep_one_text_object_and_both_offline_edits() {
+    let (directory, mut source, manifest) = loaded_fixture();
+    let path = directory.path().join("fixture.rs");
+    // No checked install or source snapshot: both actual apps create the same
+    // file's record independently in their own fresh profile.
+    let mut target = ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched(&[path
+        .to_str()
+        .unwrap()])
+    .unwrap();
+    target.settle();
+    let mut source_document = source.peer_document();
+    let mut target_document = target.peer_document();
+    assert_ne!(source_document.get_actor(), target_document.get_actor());
+    let before = cold_editor_snapshot(&mut source);
+    let other = cold_editor_snapshot(&mut target);
+    assert_eq!(before["buffer_id"], other["buffer_id"]);
+    let key = before["buffer_id"].as_str().unwrap();
+    assert_eq!(
+        EditorDoc::buffer_text_key(&source_document, key),
+        EditorDoc::buffer_text_key(&target_document, key),
+        "cold replicas must address the same CRDT Text before exchanging edits"
+    );
+    assert_eq!(other["body_hash"], manifest.body_hash);
+    for (app, text) in [(&mut source, "from A\n"), (&mut target, "from B\n")] {
+        crate::test_support::with_doc(app, move |app, doc| {
+            app.editor.set_caret_for_test(0, 0);
+            app.editor.insert_for_test(doc, text);
+            app.dispatch_editor_text_edits(doc);
+        });
+    }
+    // Local typing may focus the editor; explicitly leave it before the
+    // network merge so the merge's lack of a focus grant is observable.
+    crate::test_support::with_doc(&mut target, |app, _| app.editor.set_focus(false));
+    assert_eq!(cold_editor_snapshot(&mut target)["editor_focused"], false);
+    source_document = source.peer_document();
+    target_document = target.peer_document();
+    target.merge_peer(&mut source_document).unwrap();
+    source.merge_peer(&mut target_document).unwrap();
+    assert_eq!(
+        cold_editor_snapshot(&mut source)["body_hash"],
+        cold_editor_snapshot(&mut target)["body_hash"]
+    );
+    let merged = source.peer_document();
+    let body = EditorDoc::read_buffer_key(&merged, key).unwrap();
+    assert!(body.contains("from A\n"));
+    assert!(body.contains("from B\n"));
+    assert_eq!(body.matches("pub fn transform_0000").count(), 1);
+    assert!(
+        !cold_editor_snapshot(&mut target)["editor_focused"]
+            .as_bool()
+            .unwrap()
+    );
+}
+
+fn cold_editor_snapshot(
+    app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>,
+) -> serde_json::Value {
+    crate::test_support::with_doc(app, |app, doc| {
+        app.native_input_snapshot(doc.doc(), &automerge::ROOT)
+            .unwrap()
+    })
+}
+
 fn assert_foreign_view_refused(
     app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>,
     metadata: &ui::collaboration::ContinuationMetadata,

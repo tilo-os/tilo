@@ -76,6 +76,9 @@ impl EditorDoc {
     /// Get-or-create the durable file-record namespace. Unlike `buffers`, this
     /// is the collaborative project tree rather than a cache of editor panes.
     pub fn files_map(doc: &mut AutoCommit) -> Option<ObjId> {
+        if ui::record::genesis_actor(doc).is_some() {
+            return ui::record::bootstrap::object(doc, &ROOT, "files", ObjType::Map);
+        }
         match doc.get(&ROOT, "files") {
             Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
             _ => doc.put_object(&ROOT, "files", ObjType::Map).ok(),
@@ -148,7 +151,12 @@ impl EditorDoc {
         if doc.get(&files, &file.id).ok().flatten().is_some() {
             return false;
         }
-        let Ok(item) = doc.put_object(&files, &file.id, ObjType::Map) else {
+        let item = if ui::record::genesis_actor(doc).is_some() {
+            ui::record::bootstrap::object(doc, &files, &file.id, ObjType::Map)
+        } else {
+            doc.put_object(&files, &file.id, ObjType::Map).ok()
+        };
+        let Some(item) = item else {
             return false;
         };
         let _ = doc.put(&item, "name", file.name.as_str());
@@ -228,6 +236,9 @@ impl EditorDoc {
     /// Get-or-create the top-level `buffers` Map.
     ///
     pub fn buffers_map(doc: &mut AutoCommit) -> Option<ObjId> {
+        if ui::record::genesis_actor(doc).is_some() {
+            return ui::record::bootstrap::object(doc, &ROOT, "buffers", ObjType::Map);
+        }
         match doc.get(&ROOT, "buffers") {
             Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
             _ => doc.put_object(&ROOT, "buffers", ObjType::Map).ok(),
@@ -267,6 +278,11 @@ impl EditorDoc {
         if let Ok(Some((Value::Object(ObjType::Text), t))) = doc.get(&buffers, key) {
             Some(t)
         } else {
+            if ui::record::genesis_actor(doc).is_some() {
+                let text = ui::record::bootstrap::object(doc, &buffers, key, ObjType::Text)?;
+                ui::record::bootstrap::seed_text(doc, &text, seed)?;
+                return Some(text);
+            }
             let t = doc.put_object(&buffers, key, ObjType::Text).ok()?;
             if !seed.is_empty() {
                 let _ = doc.splice_text(&t, 0, 0, seed);
