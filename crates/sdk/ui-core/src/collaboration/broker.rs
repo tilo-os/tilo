@@ -4132,6 +4132,10 @@ async fn spawn_invocation_stream(
                             "native-delivery:legacy_read:uncertain"
                         );
                     }
+                    // Losing an established publisher stream leaves admitted
+                    // calls unresolved; never invent a terminal result or
+                    // silently keep advertising a healthy action transport.
+                    tx.state.fail_closed("application invocation stream read");
                     break;
                 };
                 if native_document_source {
@@ -6712,6 +6716,7 @@ mod tests {
 
     #[cfg(unix)]
     include!("directory_client_tests.rs");
+    include!("invocation_stream_health_tests.rs");
     use crate::collaboration::{
         CollaborationState, HostDocumentCommit, SignedSendError, SigningIdentity,
     };
