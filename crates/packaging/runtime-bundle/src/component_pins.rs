@@ -100,7 +100,7 @@ pub fn load_for_bundle(
     let Some(identity) = RetainedBundleTrust::from_verified(&manifest) else {
         return Ok(keys);
     };
-    if let Some(bytes) = read_immutable(&identity.installed_path(), 8192)? {
+    if let Some(bytes) = read_immutable(&identity.installed_path(), 8192, "retained-runtime")? {
         crate::verify_bundle_metadata_with(
             bundle,
             &crate::VerifyOptions {
@@ -109,13 +109,18 @@ pub fn load_for_bundle(
             },
         )
         .map_err(std::io::Error::other)?;
-        let retained: Vec<RetainedBundleTrust> =
-            serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        let retained: Vec<RetainedBundleTrust> = serde_json::from_slice(&bytes).map_err(|_| {
+            failure(
+                "retained-runtime",
+                "retention_identity",
+                std::io::ErrorKind::Other,
+            )
+        })?;
         if retained.is_empty()
             || retained.len() > 32
             || retained.iter().any(|record| !record.matches(&manifest))
         {
-            return Err(denied());
+            return Err(denied("retained-runtime", "retention_identity"));
         }
         for record in retained.iter().filter(|record| record.matches(&manifest)) {
             let keys = keys.get_or_insert_with(Vec::new);
@@ -127,92 +132,130 @@ pub fn load_for_bundle(
     Ok(keys)
 }
 
-fn denied() -> std::io::Error {
+fn failure(role: &'static str, guard: &'static str, kind: std::io::ErrorKind) -> std::io::Error {
     std::io::Error::new(
-        std::io::ErrorKind::PermissionDenied,
-        "installed runtime publisher pin is not immutable and root-owned",
+        kind,
+        format!("installed runtime publisher pin admission failed [role={role} guard={guard}]"),
     )
 }
 
+fn denied(role: &'static str, guard: &'static str) -> std::io::Error {
+    failure(role, guard, std::io::ErrorKind::PermissionDenied)
+}
+
+fn io_failure(error: &std::io::Error, role: &'static str, guard: &'static str) -> std::io::Error {
+    failure(role, guard, error.kind())
+}
+
 #[cfg(unix)]
-fn read_immutable(path: &Path, bound: u64) -> std::io::Result<Option<Vec<u8>>> {
+fn read_immutable(path: &Path, bound: u64, role: &'static str) -> std::io::Result<Option<Vec<u8>>> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+        Err(error) => return Err(io_failure(&error, role, "file_metadata")),
     };
     if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-        return Err(denied());
+        return Err(denied(role, "file_metadata"));
     }
-    let canonical = path.canonicalize()?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| io_failure(&error, role, "canonical_path"))?;
     let expected = Path::new("/usr")
-        .canonicalize()?
-        .join(path.strip_prefix("/usr").map_err(|_| denied())?);
+        .canonicalize()
+        .map_err(|error| io_failure(&error, role, "canonical_path"))?
+        .join(
+            path.strip_prefix("/usr")
+                .map_err(|_| denied(role, "canonical_path"))?,
+        );
     if canonical != expected {
-        return Err(denied());
+        return Err(denied(role, "canonical_path"));
     }
     let mut ancestor = canonical.parent();
     while let Some(path) = ancestor {
-        let metadata = std::fs::symlink_metadata(path)?;
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| io_failure(&error, role, "ancestor_metadata"))?;
         if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-            return Err(denied());
+            return Err(denied(role, "ancestor_metadata"));
         }
         ancestor = path.parent();
     }
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&canonical)?;
-    let opened = file.metadata()?;
+        .open(&canonical)
+        .map_err(|error| io_failure(&error, role, "opened_identity"))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| io_failure(&error, role, "opened_identity"))?;
     if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
-        return Err(denied());
+        return Err(denied(role, "opened_identity"));
     }
     let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     // SAFETY: the owned file descriptor is live; fstatvfs initializes this struct.
     if unsafe { libc::fstatvfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
-        return Err(std::io::Error::last_os_error());
+        return Err(io_failure(
+            &std::io::Error::last_os_error(),
+            role,
+            "readonly_mount",
+        ));
     }
     // SAFETY: successful fstatvfs initialized the structure.
     if unsafe { filesystem.assume_init() }.f_flag & libc::ST_RDONLY == 0 {
-        return Err(denied());
+        return Err(denied(role, "readonly_mount"));
     }
     let mut bytes = Vec::new();
-    file.take(bound.saturating_add(1)).read_to_end(&mut bytes)?;
+    file.take(bound.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_failure(&error, role, "byte_bound"))?;
     if u64::try_from(bytes.len()).map_err(std::io::Error::other)? > bound {
-        return Err(denied());
+        return Err(denied(role, "byte_bound"));
     }
     Ok(Some(bytes))
 }
 
 #[cfg(not(unix))]
-fn read_immutable(path: &Path, _bound: u64) -> std::io::Result<Option<Vec<u8>>> {
+fn read_immutable(
+    path: &Path,
+    _bound: u64,
+    role: &'static str,
+) -> std::io::Result<Option<Vec<u8>>> {
     if path.try_exists()? {
-        Err(denied())
+        Err(denied(role, "readonly_mount"))
     } else {
         Ok(None)
     }
 }
 
 fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
-    read_immutable(path, 258)?
-        .map(|bytes| decode(&bytes, path == Path::new(PINS[1])))
+    let role = if path == Path::new(PINS[0]) {
+        "runtime-bundle-publisher"
+    } else if path == Path::new(PINS[1]) {
+        "browser-runtime-publisher"
+    } else {
+        "registry-runtime-publisher"
+    };
+    read_immutable(path, 258, role)?
+        .map(|bytes| decode(&bytes, path == Path::new(PINS[1]), role))
         .transpose()
         .map(Option::flatten)
 }
 
-fn decode(bytes: &[u8], optional_engine: bool) -> std::io::Result<Option<String>> {
+fn decode(
+    bytes: &[u8],
+    optional_engine: bool,
+    role: &'static str,
+) -> std::io::Result<Option<String>> {
     // An explicitly empty optional-engine pin is the existing image contract.
     if bytes.is_empty() && optional_engine {
         return Ok(None);
     }
-    let text = std::str::from_utf8(bytes).map_err(|_| denied())?.trim();
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| denied(role, "utf8"))?
+        .trim();
     if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "installed runtime publisher pin is malformed",
-        ));
+        return Err(failure(role, "format", std::io::ErrorKind::InvalidData));
     }
     Ok(Some(text.to_ascii_lowercase()))
 }
@@ -266,7 +309,20 @@ mod tests {
     fn assert_retained_namespace_case(case: &str) {
         let old = load_for_bundle(Path::new("/operator.txt"), Path::new("/old"));
         match case {
-            "mutable" | "malformed" => assert!(old.is_err()),
+            "mutable" | "malformed" | "mismatch" => {
+                let error = old.unwrap_err();
+                let guard = if case == "mutable" {
+                    "readonly_mount"
+                } else {
+                    "retention_identity"
+                };
+                assert_eq!(
+                    error.to_string(),
+                    format!(
+                        "installed runtime publisher pin admission failed [role=retained-runtime guard={guard}]"
+                    )
+                );
+            }
             "valid" => {
                 let old = old.unwrap().unwrap();
                 let manifest = crate::verify_bundle(Path::new("/old")).unwrap();
@@ -336,6 +392,10 @@ mod tests {
         std::fs::write(&record, serde_json::to_vec(&vec![proof.clone()]).unwrap()).unwrap();
         let malformed = temp.path().join("malformed.json");
         std::fs::write(&malformed, "not a record").unwrap();
+        let mismatch = temp.path().join("mismatch.json");
+        let mut changed = proof.clone();
+        changed.root_hash = "00".repeat(32);
+        std::fs::write(&mismatch, serde_json::to_vec(&vec![changed]).unwrap()).unwrap();
         let pin = temp.path().join("pin");
         std::fs::write(
             &pin,
@@ -345,7 +405,7 @@ mod tests {
         let operator = temp.path().join("operator");
         std::fs::write(&operator, "").unwrap();
         let executable = std::env::current_exe().unwrap();
-        for case in ["valid", "mutable", "malformed"] {
+        for case in ["valid", "mutable", "malformed", "mismatch"] {
             let mut command = namespace(&executable, &operator);
             command.args(["--dir", "/usr/share/tilo/runtime-retained"]);
             command.arg("--ro-bind").arg(&pin).arg(PINS[0]);
@@ -360,6 +420,8 @@ mod tests {
                 })
                 .arg(if case == "malformed" {
                     &malformed
+                } else if case == "mismatch" {
+                    &mismatch
                 } else {
                     &record
                 })
@@ -376,22 +438,45 @@ mod tests {
         }
     }
 
+    fn assert_installed_namespace_case(case: &str) {
+        let loaded = load_with_components(Path::new("/operator.txt"));
+        match case {
+            "readonly" | "optional_empty" => {
+                let keys = loaded.unwrap().unwrap();
+                assert!(keys.contains(&"11".repeat(32)));
+                assert!(keys.contains(&"22".repeat(32)));
+            }
+            "mutable" | "malformed" | "symlink" | "escape" | "empty" | "writebits" | "utf8"
+            | "oversize" | "ancestor" => {
+                let error = loaded.unwrap_err();
+                let (guard, kind) = match case {
+                    "mutable" => ("readonly_mount", std::io::ErrorKind::PermissionDenied),
+                    "malformed" | "empty" => ("format", std::io::ErrorKind::InvalidData),
+                    "symlink" | "writebits" => {
+                        ("file_metadata", std::io::ErrorKind::PermissionDenied)
+                    }
+                    "escape" => ("canonical_path", std::io::ErrorKind::PermissionDenied),
+                    "utf8" => ("utf8", std::io::ErrorKind::PermissionDenied),
+                    "oversize" => ("byte_bound", std::io::ErrorKind::PermissionDenied),
+                    _ => ("ancestor_metadata", std::io::ErrorKind::PermissionDenied),
+                };
+                assert_eq!(error.kind(), kind);
+                assert_eq!(
+                    error.to_string(),
+                    format!(
+                        "installed runtime publisher pin admission failed [role=runtime-bundle-publisher guard={guard}]"
+                    )
+                );
+            }
+            other => panic!("unexpected fixture case: {other}"),
+        }
+    }
+
     #[test]
     fn installed_component_pins_use_real_readonly_files_and_fail_closed() {
         const CASE: &str = "TILO_TEST_INSTALLED_PIN_CASE";
         if let Ok(case) = std::env::var(CASE) {
-            let loaded = load_with_components(Path::new("/operator.txt"));
-            match case.as_str() {
-                "readonly" => {
-                    let keys = loaded.unwrap().unwrap();
-                    assert!(keys.contains(&"11".repeat(32)));
-                    assert!(keys.contains(&"22".repeat(32)));
-                }
-                "mutable" | "malformed" | "symlink" | "escape" | "empty" | "writebits" => {
-                    assert!(loaded.is_err());
-                }
-                other => panic!("unexpected fixture case: {other}"),
-            }
+            assert_installed_namespace_case(&case);
             return;
         }
         let fixture = tempfile::tempdir().unwrap();
@@ -400,6 +485,10 @@ mod tests {
         let operator = fixture.path().join("operator");
         let empty = fixture.path().join("empty");
         let writable = fixture.path().join("writable");
+        let utf8 = fixture.path().join("utf8");
+        let oversize = fixture.path().join("oversize");
+        std::fs::write(&utf8, [0xff]).unwrap();
+        std::fs::write(&oversize, vec![b'1'; 259]).unwrap();
         std::fs::write(&pin, "11".repeat(32)).unwrap();
         std::fs::write(&malformed, "not a publisher").unwrap();
         std::fs::write(&operator, "22".repeat(32)).unwrap();
@@ -415,8 +504,18 @@ mod tests {
             "escape",
             "empty",
             "writebits",
+            "utf8",
+            "oversize",
+            "ancestor",
+            "optional_empty",
         ] {
             let mut command = namespace(&executable, &operator);
+            if case == "ancestor" {
+                command.args(["--chmod", "0777", "/usr/share/tilo"]);
+            }
+            if case == "optional_empty" {
+                command.arg("--ro-bind").arg(&empty).arg(PINS[1]);
+            }
             match case {
                 "symlink" => {
                     command.args(["--symlink", "/operator.txt", PINS[0]]);
@@ -440,6 +539,8 @@ mod tests {
                             "malformed" => &malformed,
                             "empty" => &empty,
                             "writebits" => &writable,
+                            "utf8" => &utf8,
+                            "oversize" => &oversize,
                             _ => &pin,
                         })
                         .arg(PINS[0]);
