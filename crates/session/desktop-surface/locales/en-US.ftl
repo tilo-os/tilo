@@ -961,3 +961,25 @@ notification-alarm-action-failed = Could not change this alarm
 notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = For this alarm occurrence
 notification-alarm-action-retry = Keep this notification and try again.
+
+activity-task-review-unavailable = Authenticated task controls are unavailable. Existing work history remains readable.
+activity-task-review-history = Review action history
+activity-task-steer = Change instructions
+activity-task-cancel-run = Cancel this run
+activity-task-retry-run = Retry task
+activity-task-direction-send = Send instructions
+activity-task-direction-close = Back to task
+activity-task-direction-label = Public task instructions
+activity-task-direction-placeholder = Describe the change you want the agent to make
+activity-task-direction-observation = Instructions for run { $epoch }, after revision { $revision }. A changed run requires another review.
+activity-task-review-saving = Waiting for the workspace owner to save…
+activity-task-review-saved = Saved by the workspace owner. Agent application is shown separately.
+activity-task-review-refused = Not saved. Your draft is retained. { $detail }
+
+activity-task-next = Next task
+activity-task-previous = Previous task
+activity-task-review-source = Workspace owner · generation { $generation } · sampled { $time }
+activity-task-review-status = { $status } · Agent: { $agent }
+activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
+activity-task-review-direction = { $author }: { $text }
+activity-task-review-missing = This task is no longer available in this workspace.

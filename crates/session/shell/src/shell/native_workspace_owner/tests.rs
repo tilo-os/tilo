@@ -16,7 +16,7 @@ struct Fixture {
     now: SystemTime,
 }
 /// The state tree the owner publishes into.
-pub(super) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
+pub(crate) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
     let store: Arc<dyn std::any::Any + Send + Sync> = tilo_joined_room::testing::store(owner);
     store
         .downcast::<TreeStore>()

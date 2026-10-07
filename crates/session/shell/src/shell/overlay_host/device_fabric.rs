@@ -107,6 +107,8 @@ pub struct DeviceFabricView {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceFabricUiAction {
+    /// Move a peer's native screens from an exact observed revision.
+    MoveDisplay(settings_store::device_displays::DeviceDisplayMove),
     Snapshot,
     /// Bypass presentation caching for semantic action revalidation.
     SnapshotFresh,
