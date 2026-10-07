@@ -1157,6 +1157,16 @@ impl VerifiedManagedExit {
 }
 #[cfg(target_os = "linux")]
 pub(crate) trait EnrolledProcessObserver {
+    fn reviewed_network_hosts(&self) -> std::io::Result<Option<Vec<String>>> {
+        Ok(None)
+    }
+
+    fn namespace_init_fd(&self) -> Option<std::os::fd::RawFd> {
+        None
+    }
+    fn owns_process_group(&self) -> bool {
+        false
+    }
     fn before_spawn(&self) -> std::io::Result<()>;
     fn child_created(&self);
     fn supervise(&self, child: std::process::Child) -> std::io::Result<std::process::ExitStatus>;

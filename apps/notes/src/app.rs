@@ -2468,7 +2468,6 @@ impl Widget for NotesApp {
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
             || self.shell.needs_animation_frame()
-            || !self.transfer_toasts.is_empty()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
