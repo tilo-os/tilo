@@ -611,7 +611,10 @@ inputs = [
   "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
   "os/usr/libexec/tilo-seat-session",
 ]
-readers = ["crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs"]
+readers = [
+  "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
+  "crates/dev/tilo-vmd/src/daemon/userspace.rs",
+]
 
 [[cargo]]
 package = "tilo-app-cli"
@@ -844,8 +847,15 @@ readers = [
 
 
 [[cargo]]
+package = "browser"
+inputs = ["scripts/browser/fixtures/https-functional.json"]
+readers = ["apps/browser/examples/native_navigation_completion.rs"]
+
+[[cargo]]
 package = "shell"
 inputs = [
+  "apps/store/fixtures/published/snapshot379.json.gz.b64",
+  "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64",
   "apps/browser/tilo-app.toml",
   "tools/protocols/airdrop_sender.py",
   "tools/test-assets.py",
@@ -857,6 +867,7 @@ inputs = [
   "scripts/headless-examples/",
 ]
 readers = [
+  "crates/session/shell/src/compositor/chooser_service.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",

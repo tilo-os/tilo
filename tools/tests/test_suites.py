@@ -233,6 +233,19 @@ class CargoReaderTests(unittest.TestCase):
                 (root / name).write_text(text)
             return suites.audit_cargo(root, sorted(tree), suites.parse(manifest))
 
+    def test_userspace_and_signed_browser_chooser_inputs_select_actual_consumers(self):
+        manifest = suites.load(ROOT)
+        cases = (
+            ("os/components.toml", "tilo-vmd"),
+            ("scripts/browser/fixtures/https-functional.json", "browser"),
+            ("apps/store/fixtures/published/snapshot379.json.gz.b64", "shell"),
+            ("apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64", "shell"),
+        )
+        for path, package in cases:
+            with self.subTest(path=path):
+                self.assertIn(package, suites.select_packages(manifest, [path]))
+                self.assertIsNone(suites.select_package_scopes(manifest, [path])[package])
+
     def test_reader_manifest_parses_strictly_and_selects_reading_package(self):
         with self.subTest(phase='parse rejects malformed entries'):
             for text in (
