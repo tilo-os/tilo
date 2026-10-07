@@ -441,6 +441,30 @@ def package_cost(pkg: dict) -> int:
     return score
 
 
+def has_native_tests(package: dict) -> bool:
+    """Conservatively retain runnable targets; whole-crate wasm gates are native-empty."""
+    for target in package.get("targets", []):
+        if target.get("test") is False or "custom-build" in target.get("kind", []):
+            continue
+        source = target.get("src_path")
+        if source is None:
+            return True
+        try:
+            with Path(source).open(encoding="utf-8") as stream:
+                for _, line in zip(range(128), stream):
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("//"):
+                        continue
+                    if not re.fullmatch(r'#!\[\s*cfg\(\s*target_arch\s*=\s*"wasm32"\s*\)\s*\]', stripped):
+                        return True
+                    break
+                else:
+                    return True
+        except (OSError, UnicodeError):
+            return True
+    return False
+
+
 def direct_dependants_within_budget(
     seeds: set[str],
     reverse: dict[str, set[str]],
@@ -734,6 +758,9 @@ def make_plan(
         dependants, deferred_dependants = direct_dependants_within_budget(
             seeds, reverse, packages, tested)
         tested |= dependants & selected
+    # The native build of a whole-crate wasm-only target is an empty library.
+    # Keep its all-target compile and wasm job; never schedule a zero-test run.
+    tested = {name for name in tested if has_native_tests(packages[name])}
     if only is not None:
         selected &= set(only["packages"])
         tested &= selected

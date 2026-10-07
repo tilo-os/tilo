@@ -218,7 +218,7 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
 
 /// The image the image scenarios show: a checked-in PNG, so the real decoder
 /// draws it without network access.
-const IMAGE: &[u8] = include_bytes!("../../settings/shots/settings.png");
+const IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
 
 /// What the scenario's launch checklist says, when it differs from the
 /// sample's.
