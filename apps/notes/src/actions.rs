@@ -617,15 +617,25 @@ fn move_page_tree(
     page: PageId,
     command: PageTreeCommand,
 ) -> Option<bool> {
-    Some(match command {
-        PageTreeCommand::MoveUp => workspace.move_sibling(page, -1),
-        PageTreeCommand::MoveDown => workspace.move_sibling(page, 1),
+    let plan = page_tree_plan(workspace, page, command)?;
+    workspace.apply_page_move_plan(plan);
+    Some(true)
+}
+
+fn page_tree_plan(
+    workspace: &crate::Workspace,
+    page: PageId,
+    command: PageTreeCommand,
+) -> Option<Vec<PageMeta>> {
+    match command {
+        PageTreeCommand::MoveUp => workspace.plan_move_sibling(page, -1),
+        PageTreeCommand::MoveDown => workspace.plan_move_sibling(page, 1),
         PageTreeCommand::Indent => {
             let current = workspace.get(page)?;
             let siblings = workspace.children_of(current.parent);
             let index = siblings.iter().position(|candidate| candidate.id == page)?;
             let previous = siblings.get(index.checked_sub(1)?)?.id;
-            workspace.move_to(page, Some(previous), None)
+            workspace.plan_move_to(page, Some(previous), None)
         }
         PageTreeCommand::Outdent => {
             let current = workspace.get(page)?;
@@ -636,9 +646,9 @@ fn move_page_tree(
                 .skip_while(|candidate| candidate.id != parent.id)
                 .nth(1)
                 .map(|candidate| candidate.id);
-            workspace.move_to(page, parent.parent, before)
+            workspace.plan_move_to(page, parent.parent, before)
         }
-    })
+    }
 }
 
 /// Rewrite the display text of every UUID-backed reference after its target is
@@ -1451,6 +1461,7 @@ struct PageTreeSnapshot<'a> {
     pages: Vec<&'a PageMeta>,
     encoded: Vec<Box<serde_json::value::RawValue>>,
     before: Box<serde_json::value::RawValue>,
+    positions: HashMap<PageId, usize>,
 }
 
 impl<'a> PageTreeSnapshot<'a> {
@@ -1463,10 +1474,16 @@ impl<'a> PageTreeSnapshot<'a> {
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         let before = serde_json::value::to_raw_value(&encoded).ok()?;
+        let positions = pages
+            .iter()
+            .enumerate()
+            .map(|(index, page)| (page.id, index))
+            .collect();
         Some(Self {
             pages,
             encoded,
             before,
+            positions,
         })
     }
 
@@ -1478,45 +1495,126 @@ impl<'a> PageTreeSnapshot<'a> {
         id: &str,
         label: &str,
     ) -> Option<ActionSpec> {
+        if self.positions.len() != self.pages.len() {
+            return self.dense_spec(workspace, page, command, id, label);
+        }
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("page_tree_action");
+        let updates = {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("tree_metadata_plan");
+            page_tree_plan(workspace, page, command)?
+        };
+        let changed = {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("tree_metadata_delta");
+            updates
+                .iter()
+                .filter_map(|after| {
+                    let index = *self.positions.get(&after.id)?;
+                    (self.pages.get(index).copied()? != after).then_some((index, after))
+                })
+                .map(|(index, after)| {
+                    serde_json::value::to_raw_value(&PageData::from_meta(after))
+                        .map(|value| (index, value))
+                })
+                .collect::<Result<HashMap<_, _>, _>>()
+                .ok()?
+        };
+        let after = self
+            .encoded
+            .iter()
+            .enumerate()
+            .map(|(index, original)| changed.get(&index).unwrap_or(original).as_ref())
+            .collect();
+        let encoded = {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("tree_metadata_encode");
+            EncodedAction::encode_operation(
+                NOTES_ACTION_TYPE,
+                &TreeAction::UpdatePageTree {
+                    before: &self.before,
+                    after,
+                },
+            )
+            .ok()?
+        };
+        Some(
+            ActionSpec::immediate_encoded(id, label, ExecutionLocus::ClientLocal, encoded)
+                .reversible(),
+        )
+    }
+
+    fn dense_spec(
+        &self,
+        workspace: &crate::Workspace,
+        page: PageId,
+        command: PageTreeCommand,
+        id: &str,
+        label: &str,
+    ) -> Option<ActionSpec> {
         #[cfg(test)]
         let _profile = crate::cpu_profile::Phase::start("page_tree_action");
         // Tree operations only read and mutate metadata. Rich-text bodies and
         // tag assignments never participate in authoring a tree operation.
-        let mut moved = crate::Workspace::default();
-        moved.data.pages = workspace.pages().to_vec();
-        if !move_page_tree(&mut moved, page, command)? {
+        let mut moved = {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("tree_metadata_clone");
+            let mut moved = crate::Workspace::default();
+            moved.data.pages = workspace.pages().to_vec();
+            moved
+        };
+        let changed = {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("tree_metadata_move");
+            move_page_tree(&mut moved, page, command)?
+        };
+        if !changed {
             return None;
         }
-        let moved_pages = moved
-            .pages()
-            .iter()
-            .map(|page| (page.id, page))
-            .collect::<HashMap<_, _>>();
-        let changed = self
-            .pages
-            .iter()
-            .enumerate()
-            .filter_map(|(index, original)| {
-                let after = *moved_pages.get(&original.id)?;
-                (after != *original).then_some((index, PageData::from_meta(after)))
-            })
-            .map(|(index, page)| serde_json::value::to_raw_value(&page).map(|value| (index, value)))
-            .collect::<Result<HashMap<_, _>, _>>()
-            .ok()?;
+        let moved_pages = {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("tree_metadata_index");
+            moved
+                .pages()
+                .iter()
+                .map(|page| (page.id, page))
+                .collect::<HashMap<_, _>>()
+        };
+        let changed = {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("tree_metadata_delta");
+            self.pages
+                .iter()
+                .enumerate()
+                .filter_map(|(index, original)| {
+                    let after = *moved_pages.get(&original.id)?;
+                    (after != *original).then_some((index, PageData::from_meta(after)))
+                })
+                .map(|(index, page)| {
+                    serde_json::value::to_raw_value(&page).map(|value| (index, value))
+                })
+                .collect::<Result<HashMap<_, _>, _>>()
+                .ok()?
+        };
         let after = self
             .encoded
             .iter()
             .enumerate()
             .map(|(index, before)| changed.get(&index).unwrap_or(before).as_ref())
             .collect::<Vec<_>>();
-        let encoded = EncodedAction::encode_operation(
-            NOTES_ACTION_TYPE,
-            &TreeAction::UpdatePageTree {
-                before: &self.before,
-                after,
-            },
-        )
-        .ok()?;
+        let encoded = {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("tree_metadata_encode");
+            EncodedAction::encode_operation(
+                NOTES_ACTION_TYPE,
+                &TreeAction::UpdatePageTree {
+                    before: &self.before,
+                    after,
+                },
+            )
+            .ok()?
+        };
         Some(
             ActionSpec::immediate_encoded(id, label, ExecutionLocus::ClientLocal, encoded)
                 .reversible(),
@@ -2437,6 +2535,57 @@ mod tests {
                 .unwrap(),
             encode(&expected)
         );
+    }
+
+    fn fixed_tree_command_projection() -> serde_json::Value {
+        let mut rows = Vec::new();
+        for tied in [false, true] {
+            let keys = ui::tilo_resource::order::sequence(None, None, 3);
+            let mut workspace = Workspace::default();
+            for index in 0..5 {
+                let id = PageId::from_u128(index + 1);
+                let parent = match index {
+                    3 => Some(PageId::from_u128(2)),
+                    4 => Some(PageId::from_u128(4)),
+                    _ => None,
+                };
+                workspace.data.pages.push(PageMeta {
+                    id,
+                    parent,
+                    title: format!("Quoted \" {index}\n雪"),
+                    order: keys.get(index as usize).unwrap_or(&keys[0]).clone(),
+                });
+            }
+            if tied {
+                workspace.data.pages[2].order = workspace.data.pages[1].order.clone();
+            }
+            workspace.check_invariants().unwrap();
+            let snapshot = PageTreeSnapshot::new(workspace.pages()).unwrap();
+            for page in workspace.pages() {
+                for (id, command) in [
+                    ("move-up", PageTreeCommand::MoveUp),
+                    ("move-down", PageTreeCommand::MoveDown),
+                    ("indent", PageTreeCommand::Indent),
+                    ("outdent", PageTreeCommand::Outdent),
+                ] {
+                    let operation = snapshot.spec(&workspace, page.id, command, id, "Move").map(|spec| {
+                        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+                        serde_json::json!({"type_id":encoded.type_id,"payload":String::from_utf8(encoded.payload).unwrap(),"contract":spec.contract,"locus":spec.locus})
+                    });
+                    rows.push(serde_json::json!({"tied":tied,"page":page.id,"command":id,"operation":operation}));
+                }
+            }
+        }
+        serde_json::Value::Array(rows)
+    }
+
+    #[test]
+    fn fixed_tree_command_projection_matches_recorded_eager_baseline() {
+        let actual = fixed_tree_command_projection();
+        assert_eq!(actual.as_array().unwrap().len(), 40);
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/page-tree-eager.json")).unwrap();
+        assert_eq!(actual, expected);
     }
 
     fn registry() -> ActionRegistry {
