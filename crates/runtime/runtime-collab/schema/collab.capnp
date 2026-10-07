@@ -402,6 +402,11 @@ interface ChannelHandle {
   # is returned. The closed command is bounded to 32 KiB and 20 ms stereo PCM.
   audioOutputCommand @57 (command :Data) -> (reply :Data);
 
+  # Execute a host-approved check only for this actual target worker's retained
+  # accepted invocation. Request has correlation + check ID, never argv/path/env.
+  # Unsupported brokers refuse; clients must not fall back to raw execution.
+  approvedCheck @58 (request :Data) -> (receipt :Data);
+
 
 }
 
