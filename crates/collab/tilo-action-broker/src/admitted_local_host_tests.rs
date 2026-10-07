@@ -599,3 +599,121 @@ async fn a_certified_local_continuation_ends_with_its_certificate() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_person_context_uses_signed_owner_device_and_current_execution() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut env = Environment::new();
+            env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
+            env.membership.write().workspaces[0].room =
+                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                env.publisher.clone(),
+                Some(env.membership.clone()),
+                None,
+            );
+            assert!(
+                state
+                    .certificate_authority
+                    .set(env.authority.clone())
+                    .is_ok()
+            );
+            let (caller, evidence) = local_host_evidence(&env);
+            let context = state.certified_person_context(&caller, &evidence).unwrap();
+            assert_eq!(context.principal(), hex::encode(env.cert.user_public_key));
+            assert_eq!(
+                context.device(),
+                hex::encode(caller.device_public_key().unwrap())
+            );
+            context.revalidate().unwrap();
+            let forged = tilo_actions::remote::Caller::local_person(context.principal())
+                .in_room(&env.route.cluster_id)
+                .in_new_execution();
+            assert!(state.certified_person_context(&forged, &evidence).is_err());
+            assert!(
+                state
+                    .certified_person_context(&caller.clone().from_foreign_device(true), &evidence)
+                    .is_err()
+            );
+            caller.retire_execution();
+            assert!(context.revalidate().is_err());
+            let (fresh, evidence) = member_device_evidence(&env, 94, false);
+            let context = state.certified_person_context(&fresh, &evidence).unwrap();
+            context.revalidate().unwrap();
+            env.authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .clear();
+            assert!(context.revalidate().is_err());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_person_context_refuses_other_rooms_and_expired_original_policy() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut env = Environment::new();
+            env.route.cluster_id = uuid::Uuid::new_v4().to_string();
+            env.membership.write().workspaces[0].room =
+                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+
+            let fanout = Arc::new(FanoutState::new());
+            let (ordinary, _) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                env.publisher.clone(),
+                Some(env.membership.clone()),
+                None,
+            );
+            assert!(
+                ordinary
+                    .certificate_authority
+                    .set(env.authority.clone())
+                    .is_ok()
+            );
+            let (caller, evidence) = local_host_evidence(&env);
+            ordinary
+                .certified_local_action_host(&caller, &evidence)
+                .unwrap();
+            assert!(
+                ordinary
+                    .certified_person_context(&caller, &evidence)
+                    .is_err()
+            );
+            env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
+            env.membership.write().workspaces[0].room =
+                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let (state, _) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                env.publisher.clone(),
+                Some(env.membership.clone()),
+                None,
+            );
+            assert!(
+                state
+                    .certificate_authority
+                    .set(env.authority.clone())
+                    .is_ok()
+            );
+            let (caller, evidence) = member_device_evidence(&env, 95, false);
+            let context = state.certified_person_context(&caller, &evidence).unwrap();
+            context.revalidate().unwrap();
+            env.control.advance_monotonic(Duration::from_secs(7));
+            assert!(context.revalidate().is_err());
+            assert!(state.certified_person_context(&caller, &evidence).is_err());
+        })
+        .await;
+}

@@ -4691,3 +4691,91 @@ fn a_launch_link_plays_from_the_start_or_opens_its_page() {
     assert_eq!(app.view, View::Album("al_glasslight".into()));
     assert!(app.pb.current.is_none(), "opening a page plays nothing");
 }
+
+#[test]
+fn live_album_tracks_are_discoverable_and_queue_through_the_resource_door() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    let surface = app.surface_mut::<MusicApp>();
+    surface.absorb_album(&crate::backend::AlbumPage {
+        id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+        tracks: vec![crate::backend::TrackHit {
+            video_id: track.into(),
+            title: "An admitted catalogue track".into(),
+            artist: "Catalogue artist".into(),
+            artist_id: None,
+            album: Some("Catalogue album".into()),
+            album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+            duration_s: 213,
+            cover_url: String::new(),
+        }],
+        ..Default::default()
+    });
+    app.settle();
+    let address = crate::actions::track_resource_id(track);
+    let published = app.agent_surface().to_string();
+    assert!(published.contains(&address), "{published}");
+    assert!(published.contains("Play track"), "{published}");
+    assert!(!app.state().tracks.contains_key(track));
+    app.effect_on(
+        &address,
+        &crate::actions::MusicEffect::AddToQueue {
+            track: track.into(),
+        },
+    )
+    .expect("a live album track exposes its bound queue action");
+    assert!(
+        !app.state().tracks.contains_key(track),
+        "queueing is device-local"
+    );
+    assert!(
+        app.agent_surface()
+            .to_string()
+            .contains(&crate::actions::queue_item_resource_id(0, track))
+    );
+}
+
+#[test]
+fn playback_status_reports_observations_without_mutating_the_library() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    let before = app.read_document(|doc| doc.clone().get_heads());
+    let output = app
+        .effect_on(
+            "music.player:player",
+            &crate::actions::MusicEffect::PlaybackStatus,
+        )
+        .expect("read-only playback observations are available on the player");
+    let observed = output
+        .value
+        .expect("the declared result contains observations");
+    assert_eq!(observed["confirmed_playing"], false);
+    assert_eq!(observed["rendered_buffers"], 0);
+    assert!(observed["sink"].is_null());
+    assert!(observed["spotify_stage"].is_null());
+    assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
+}
+
+#[test]
+fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
+    use ui::tilo_resource::Effect as _;
+    let (mut app, _) = app_with_doc();
+    let invocation = tilo_actions::InvocationId::new();
+    app.pb.current = Some("tk_g1".into());
+    app.active_resolve_request = Some(42);
+    app.begin_resource_stream_invocation(invocation, 42);
+    app.apply_resolve_failure("tk_g1", 42, "Spotify did not confirm Premium eligibility");
+    let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
+        app.take_effect_result(invocation)
+    else {
+        panic!("the actual resolver failure must settle its pending invocation");
+    };
+    let contract = crate::actions::MusicEffect::Play {
+        track: "tk_g1".into(),
+        queued: None,
+    }
+    .bound()
+    .contract;
+    assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+    assert!(!error.retryable);
+    assert!(error.message.contains("Premium eligibility"));
+}

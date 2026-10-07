@@ -29,6 +29,9 @@ use crate::shell::network::{
 #[cfg(test)]
 use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
+mod personal_session;
+pub(crate) use personal_session::{NativePersonalSession, NativePersonalSource};
+
 /// What a room calls the peers in it, keyed by the handle presence
 /// frames identify their sender by. Same shape as
 /// [`crate::shell::peer_presence::PeerLabels`].
@@ -131,6 +134,7 @@ pub use tilo_action_broker::collab_broker::{
 pub struct BrokerHandle {
     inner: tilo_action_broker::collab_broker::BrokerHandle,
     local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
+    _personal_source: Option<Arc<NativePersonalSource>>,
     native_media: Option<super::native_media::NativeMediaService>,
     task_review: Option<super::task_review::NativeTaskReview>,
     realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
@@ -782,6 +786,7 @@ fn spawn_inner(
             tree.clone(),
         )) as tilo_action_broker::services::WorkspaceAuthorityHandle
     });
+    let personal_socket = capnp_socket_path.clone();
     let inner = match certificate_provisioning {
         CertificateProvisioning::Production => {
             tilo_action_broker::collab_broker::spawn_with_services(
@@ -824,10 +829,17 @@ fn spawn_inner(
             .try_send(crate::network::actor::NetCmd::AttachActionBroker { queue, host, rooms })
             .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
     }
+    let personal_source = inner
+        .app_action_broker()
+        .zip(peer_sync.and_then(|network| network.messaging_host_identity()))
+        .and_then(|(broker, host)| {
+            NativePersonalSource::install(personal_socket, broker, local_session.lifecycle(), host)
+        });
     Ok(BrokerHandle {
         task_review: None,
         inner,
         local_session,
+        _personal_source: personal_source,
         native_media,
         realtime_fabric: realtime_fabric.map(|(_, bridge)| bridge),
         drain_thread,
