@@ -210,6 +210,7 @@ impl Progress {
 /// unanswered fails the effect.
 pub struct EffectReply {
     progress: Progress,
+    completion: bool,
 }
 
 impl EffectReply {
@@ -232,7 +233,18 @@ impl EffectReply {
     /// Answer with `result`, a failure carrying its code (`portal_failed`,
     /// `device_busy`) for programs and whether trying again may help.
     pub fn answer(self, result: Result<ActionOutput, ActionFailure>) {
-        self.progress.finish(Box::new(result));
+        if self.completion {
+            match result {
+                Ok(output) => self.progress.finish(Box::new(output)),
+                Err(error) => {
+                    if self.progress.events.send(JobEvent::Failed(error)).is_ok() {
+                        self.progress.wake.wake();
+                    }
+                }
+            }
+        } else {
+            self.progress.finish(Box::new(result));
+        }
     }
 }
 
@@ -502,7 +514,25 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// [`Effected::Pending`] and keep the reply until then.
     pub fn reply(&mut self) -> EffectReply {
         let (progress, _) = self.track(None);
-        EffectReply { progress }
+        EffectReply {
+            progress,
+            completion: false,
+        }
+    }
+
+    /// Answer later, then settle the successful receipt on the UI thread
+    /// under this effect's retained invocation. Refusal skips the completion
+    /// and preserves its structured failure. Cancellation and current custody
+    /// are checked by the same job path as [`Self::spawn`].
+    pub fn reply_then(
+        &mut self,
+        then: impl FnOnce(&mut H, ActionOutput, &mut Self) -> EffectAnswer + 'static,
+    ) -> EffectReply {
+        let (progress, _) = self.track(Some(Self::then(then)));
+        EffectReply {
+            progress,
+            completion: true,
+        }
     }
 
     /// Run `then` on the UI thread with what `receiver` delivers, `None`

@@ -26,7 +26,17 @@ cleanup() {
   for pid in "${workers[@]}" "${browsers[@]}"; do
     wait "$pid" 2>/dev/null || true
   done
-  rm -rf "$profiles"
+  # A Chromium descendant can finish its profile flush just after its parent
+  # exits. Retry that short removal race, but keep permanent cleanup failures
+  # fatal and retain the probe's original exit status when cleanup succeeds.
+  for ((attempt=0; attempt<10; attempt++)); do
+    if rm -rf -- "$profiles"; then
+      return 0
+    fi
+    sleep .1
+  done
+  echo 'could not remove browser profiles after child exit' >&2
+  return 1
 }
 trap cleanup EXIT
 trap 'exit 130' INT
