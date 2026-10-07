@@ -15,7 +15,44 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
 
 /// Supplied by the desktop host, never resolved from a URL or draft content.
 #[derive(Clone)]
-pub struct FeedbackServices(pub Rc<RefCell<Composer>>);
+pub struct FeedbackServices {
+    controller: Rc<RefCell<Composer>>,
+    presentation: Rc<RefCell<Option<LocalState<String>>>>,
+}
+
+impl FeedbackServices {
+    #[must_use]
+    pub fn new(controller: Rc<RefCell<Composer>>) -> Self {
+        Self {
+            controller,
+            presentation: Rc::default(),
+        }
+    }
+
+    /// Pump after a host storage/transport wake, publishing progress to the
+    /// current private presentation. Its `LocalState` retains the component's
+    /// retirement scope, so a late completion cannot wake a closed component.
+    ///
+    /// # Errors
+    /// Reports a busy controller or the actual storage/transport failure.
+    pub fn pump(&self) -> Result<(), crate::feedback::Error> {
+        let result = self
+            .controller
+            .try_borrow_mut()
+            .map_err(|_| crate::feedback::Error::Invalid("composer busy"))
+            .and_then(|mut controller| controller.pump());
+        if let Ok(presentation) = self.presentation.try_borrow()
+            && let Some(status) = presentation.as_ref()
+        {
+            if let Err(error) = &result {
+                status.set(error_label(error).to_owned());
+            } else {
+                restore_progress(self, status);
+            }
+        }
+        result
+    }
+}
 
 /// Ephemeral CRDT state, admitted only into a private component host.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
@@ -197,7 +234,9 @@ impl ResourceApp for FeedbackComposer {
                     &FeedbackEffect::RemoveScreenshot
                 ),
                 cx.effect_button("feedback-submit", &FeedbackEffect::Submit),
-                Text::from_state(&status, Clone::clone).with_id("feedback-status"),
+                Text::from_state(&status, Clone::clone)
+                    .with_id("feedback-status")
+                    .with_live(crate::a11y::Politeness::Polite),
                 cx.effect_button("feedback-retry", &FeedbackEffect::Retry),
             ])),
         )
@@ -217,6 +256,7 @@ fn install_effects(
         .then(|| cx.take_lent::<FeedbackServices>())
         .flatten();
     if let Some(services) = &services {
+        *services.presentation.borrow_mut() = Some(status.clone());
         restore_progress(services, status);
     }
     let preview = shown.clone();
@@ -234,7 +274,7 @@ fn install_effects(
             screenshot: draft.include_screenshot,
         };
         let mut composer = services
-            .0
+            .controller
             .try_borrow_mut()
             .map_err(|_| "feedback-busy".to_owned())?;
         let result = match effect {
@@ -290,7 +330,7 @@ fn error_label(error: &crate::feedback::Error) -> &'static str {
 }
 
 fn restore_progress(services: &FeedbackServices, status: &LocalState<String>) {
-    match services.0.try_borrow() {
+    match services.controller.try_borrow() {
         Ok(composer) => match composer.state() {
             Ok(Some(state)) => status.set(delivery_label(&state).to_owned()),
             Ok(None) => {}
@@ -389,13 +429,9 @@ mod tests {
             )
             .expect("admitted destination"),
         ));
-        let component = prepare(
-            Some(FeedbackServices(controller.clone())),
-            "device",
-            "guest",
-            42,
-        )
-        .expect("private composer");
+        let services = FeedbackServices::new(controller.clone());
+        let component =
+            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
         let mut frame = FrameHarness::from_component(
             component,
             (720, 720),
@@ -442,7 +478,14 @@ mod tests {
             destination: submission.destination,
             report: "chat.message:m_feedback_test".into(),
         });
-        call(&mut frame, "retry", &json!({})).expect("confirm durable receipt");
+        services.pump().expect("host receipt wake");
+        frame.relayout();
+        assert!(
+            serde_json::to_string(&frame.inspection())
+                .expect("real component inspection")
+                .contains("Feedback received"),
+            "the private UI must show receipt progress without another click"
+        );
         assert_eq!(
             controller.borrow().state().expect("state"),
             Some(DeliveryState::Sent {
