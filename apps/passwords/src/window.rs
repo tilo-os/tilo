@@ -77,8 +77,12 @@ impl Core {
             })
             .collect();
         let mut access = NavItem::new("app-access", "App access").icon(Icon::Monitor);
-        if !self.app_grants.is_empty() {
-            access = access.count(count(self.app_grants.len()));
+        let access_count = self
+            .app_grants
+            .len()
+            .saturating_add(self.app_proposals.len());
+        if access_count > 0 {
+            access = access.count(count(access_count));
         }
         vec![
             NavSection::new("vault", "Vault", vault),
@@ -251,6 +255,7 @@ impl PasswordsSurface {
     /// content page, the overview, its title, the front pane and the
     /// search index.
     pub(crate) fn settle(&mut self) {
+        self.core.borrow_mut().refresh_model();
         loop {
             let requests = std::mem::take(&mut *self.requests.borrow_mut());
             if requests.is_empty() {
@@ -372,6 +377,7 @@ impl PasswordsSurface {
                     core.items.clear();
                     core.selected = None;
                     core.app_grants.clear();
+                    core.app_proposals.clear();
                 }
                 _ => {}
             }
@@ -539,7 +545,9 @@ impl ui::widget::Decorator for PasswordsSurface {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.toast_changed() || Widget::needs_redraw(&self.shell)
+        self.core.borrow().model_changed()
+            || self.toast_changed()
+            || Widget::needs_redraw(&self.shell)
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {

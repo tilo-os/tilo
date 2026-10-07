@@ -43,6 +43,8 @@ pub mod priority_contacts;
 mod runtime_host_tests;
 pub mod security;
 pub mod session_runtime;
+#[cfg(target_os = "linux")]
+pub mod shader_seed;
 pub mod shell;
 // Room and workspace admission decodes peer bytes in automerge worker
 // processes started from this test binary; this serves them.

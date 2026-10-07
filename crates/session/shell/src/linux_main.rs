@@ -378,11 +378,27 @@ pub fn run() -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
+    let early_args: Vec<String> = std::env::args().collect();
+    if let Some(code) = shell::shader_seed::dispatch(&early_args) {
+        return code;
+    }
     // Answered before identity, GPU or session setup, so asking a host what
     // it has installed touches none of them.
     if let Some(version) = version_request(std::env::args().skip(1)) {
         println!("{version}");
         return std::process::ExitCode::SUCCESS;
+    }
+    if !early_args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--portal-server-only"
+                | "--firstboot-only"
+                | "--provision-identity"
+                | "--verify-collaboration-identity"
+        )
+    }) && let Err(error) = shell::shader_seed::prepare_session()
+    {
+        eprintln!("session shader seed unavailable ({error}); compiling normally");
     }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
