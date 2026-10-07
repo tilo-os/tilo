@@ -56,7 +56,7 @@ def subjects(pid):
         visited.add(current)
         try:
             name = Path(f'/proc/{current}/comm').read_text().strip()
-            if name in ('nemo-speech', 'asr-whisper-com', 'asr-nemo-compar'):
+            if name in ('nemo-speech', 'asr-whisper-com', 'asr-nemo-compar', 'tilo-speech-wor'):
                 found.append(current)
             pending.extend(map(int, Path(f'/proc/{current}/task/{current}/children').read_text().split()))
         except (FileNotFoundError, ProcessLookupError):

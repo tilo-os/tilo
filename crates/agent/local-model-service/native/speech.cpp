@@ -3,6 +3,9 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <cerrno>
+#include <stdexcept>
+#include <unistd.h>
 #include <limits>
 #include <new>
 #include <string>
@@ -57,6 +60,51 @@ extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept try 
     // The confined worker reports a typed failure and exits; no automatic retry.
     return nullptr;
 }
+
+// Descriptor callbacks remain entirely in C++. The caller owns an immutable
+// sealed file, retained only for this synchronous parse; no path is reopened.
+extern "C" void * tilo_speech_load_fd(int fd, size_t length) noexcept try {
+    if (fd < 0 || length < 64 || length > 256 * 1024 * 1024) return nullptr;
+    struct Reader { int fd; size_t length; size_t offset; } reader{fd, length, 0};
+    whisper_model_loader loader{};
+    loader.context = &reader;
+    loader.read = [](void * raw, void * output, size_t count) -> size_t {
+        auto & input = *static_cast<Reader *>(raw);
+        // The pinned parser probes three header fields at exact EOF before
+        // checking eof(). Return initialized empty reads there; crossing EOF
+        // inside an actual field or tensor still fails closed.
+        if (input.offset == input.length) {
+            if (count) std::memset(output, 0, count);
+            return 0;
+        }
+        if (count > input.length - input.offset)
+            throw std::runtime_error("speech descriptor bounds");
+        size_t copied = 0;
+        while (copied < count) {
+            const auto read = ::pread(input.fd, static_cast<uint8_t *>(output) + copied,
+                count - copied, static_cast<off_t>(input.offset + copied));
+            if (read < 0 && errno == EINTR) continue;
+            if (read <= 0) throw std::runtime_error("speech descriptor read");
+            copied += static_cast<size_t>(read);
+        }
+        input.offset += copied;
+        return copied;
+    };
+    loader.eof = [](void * raw) {
+        const auto & input = *static_cast<Reader *>(raw);
+        return input.offset == input.length;
+    };
+    loader.close = [](void *) {};
+    whisper_log_set(discard_log, nullptr);
+    auto params = whisper_context_default_params();
+    params.use_gpu = false;
+    params.flash_attn = false;
+    auto * model = whisper_init_with_params_no_state(&loader, params);
+    if (!model) return nullptr;
+    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2};
+    if (!context) whisper_free(model);
+    return context;
+} catch (...) { return nullptr; }
 
 extern "C" bool tilo_speech_threads(void * context, int threads) noexcept {
     auto * ctx = static_cast<SpeechContext *>(context);

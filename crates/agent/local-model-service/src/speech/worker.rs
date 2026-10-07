@@ -1,7 +1,7 @@
 //! One confined child serving a private speech pipe. No microphone is opened.
 use super::{
     FRAME, RequestKind, SpeechConfig, SpeechEngine, SpeechError, SpeechInput, SpeechRecognition,
-    SpeechReply, speech_model_bytes,
+    SpeechReply, speech_model_file,
 };
 use crate::catalog::VerifiedCatalog;
 use std::io::{Read, Write};
@@ -68,7 +68,9 @@ pub fn serve(
     input: &mut impl Read,
     output: &mut impl Write,
 ) -> Result<(), SpeechError> {
-    let (model, revision, mut bytes) = speech_model_bytes(root, verified)?;
+    let sealed = speech_model_file(root, verified)?;
+    let model = sealed.id().to_owned();
+    let revision = sealed.revision().to_owned();
     let frame = zeroize::Zeroizing::new(
         FRAME
             .with_max_len(super::MAX_CONFIG_BYTES + 9)
@@ -84,12 +86,12 @@ pub fn serve(
     let config: SpeechConfig =
         serde_json::from_slice(payload).map_err(|_| SpeechError::Protocol)?;
     drop(frame);
-    // The exact signed object is now in memory; all files are closed before
-    // native parsing. Unsupported confinement fails before Ready and capture.
+    // Only an immutable, receipt-checked descriptor survives confinement.
+    // Native parsing has no path access; failures precede Ready and capture.
     let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(2));
     super::confine_worker()?;
-    let mut engine = SpeechEngine::load(&mut bytes)?;
-    drop(bytes);
+    let mut engine = SpeechEngine::load_file(&sealed)?;
+    drop(sealed);
     engine.set_threads(threads)?;
     engine.set_vocabulary(&config.vocabulary)?;
     engine.prepare()?;
