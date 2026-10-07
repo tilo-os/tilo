@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -1238,22 +1238,37 @@ fn validate_sha256(value: &str) -> Result<(), ServiceError> {
     }
 }
 fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), ServiceError> {
-    let metadata = fs::metadata(path)?;
-    if metadata.len() != artifact.size_bytes {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != artifact.size_bytes {
         return Err(ServiceError::DigestMismatch);
     }
-    let mut file = File::open(path)?;
+    // Hash the same descriptor whose size was checked. Reading one extra byte
+    // detects growth without letting a concurrently extended object turn a
+    // pinned receipt into an unbounded read. Large delivery stays constant-space.
+    let maximum = artifact
+        .size_bytes
+        .checked_add(1)
+        .ok_or(ServiceError::InvalidArtifact)?;
+    let mut reader = (&mut file).take(maximum);
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 32 * 1024];
+    let mut total = 0_u64;
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
-        // `Read` never reports more bytes than the buffer holds.
+        total = total
+            .checked_add(u64::try_from(read).map_err(|_| ServiceError::DigestMismatch)?)
+            .ok_or(ServiceError::DigestMismatch)?;
         hasher.update(buffer.get(..read).ok_or(ServiceError::DigestMismatch)?);
     }
-    if hex::encode(hasher.finalize()) == artifact.sha256 {
+    if total == artifact.size_bytes && hex::encode(hasher.finalize()) == artifact.sha256 {
         Ok(())
     } else {
         Err(ServiceError::DigestMismatch)
@@ -2347,6 +2362,30 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_delivery_refuses_cached_links_and_non_files() {
+        let bytes = b"pinned object";
+        let dir = tempfile::tempdir().unwrap();
+        let pin = artifact(bytes);
+        let mut service = service_for(dir.path(), bytes);
+        let path = service.object_path(&pin.sha256).unwrap();
+        let outside = dir.path().join("outside-object");
+        fs::write(&outside, bytes).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        assert!(service.transport.starts.is_empty());
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(service.fetch_verified(&pin).unwrap(), path);
+        assert!(service.transport.starts.is_empty());
+        fs::write(&path, b"pinned object extra").unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
     }
 
     /// A verified snapshot is safely extracted to a content-addressed directory; the path policy
