@@ -3850,6 +3850,36 @@ mod tests {
     }
 
     #[test]
+    fn canonical_open_refuses_missing_pages_and_blocks_before_projection_adoption() {
+        use ui::tilo_resource::Resource as _;
+        let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
+        let current = crate::resource::Notebook::read(&state.doc).unwrap();
+        let pending = app.pending_events.len();
+        assert_eq!(
+            app.open_block(&current, page, Some("missing-block".into())),
+            Err("the block no longer exists".into())
+        );
+        assert_eq!(app.pending_events.len(), pending);
+        let delete = actions::delete_page_action(page);
+        tilo_actions::apply_local(&mut state.doc, &delete, actions::encode(&delete)).unwrap();
+        let current = crate::resource::Notebook::read(&state.doc).unwrap();
+        assert!(current.get(page).is_none());
+        assert!(
+            app.workspace.get(page).is_some(),
+            "the prior presentation still contains the page"
+        );
+        assert_eq!(
+            app.open_block(&current, page, None),
+            Err("the note no longer exists".into())
+        );
+        assert_eq!(
+            app.pending_events.len(),
+            pending,
+            "refused Open cannot queue a selection"
+        );
+    }
+
+    #[test]
     fn search_snapshot_tracks_remote_rich_edits_and_removed_link_targets() {
         use tilo_automerge::ApplyIncoming as _;
         let (mut app, mut state, _tmp, source) = app_seeded_into_doc();

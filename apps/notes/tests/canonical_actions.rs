@@ -1526,3 +1526,82 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
     );
     close_driver(&mut a);
 }
+
+#[test]
+fn newly_created_note_opens_before_the_next_presentation_frame() {
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
+    let mut app = driver(&f, 11, &checkout);
+    let address = |resource: String, action: &str| ui::bound_dispatch::BoundActionAddress {
+        instance_id: 11,
+        address: tilo_actions::ActionAddress::new(resource, action),
+    };
+    let arguments = serde_json::json!({"value": "Immediate canonical open"})
+        .as_object()
+        .unwrap()
+        .clone();
+    let create = app.invoke_bound_action(&address("notes.notebook".into(), "new-page"), &arguments);
+    assert!(create.is_ok(), "normal declared creation: {create:?}");
+    let page = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::list_pages(doc)
+                .into_iter()
+                .find(|page| page.title == "Immediate canonical open")
+                .map(|page| page.id)
+        })
+        .unwrap()
+        .expect("creation already exists in canonical state");
+    // No presentation frame is forced between the two admitted operations.
+    // Open must validate against canonical state, including the newly committed note.
+    let created_revision = revision(&f, &checkout);
+    let rich = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_stored_blocks(doc, f.child)
+        })
+        .unwrap();
+    let opened = app.invoke_bound_action(
+        &address(actions::page_resource_id(page), "open"),
+        &serde_json::Map::new(),
+    );
+    let observed = opened.as_ref().ok().map(|_| {
+        app.relayout();
+        app.invoke_bound_action(
+            &address("notes.notebook".into(), "inspect-editor"),
+            &serde_json::Map::new(),
+        )
+        .unwrap()
+        .completed()
+        .unwrap()
+        .value
+        .unwrap()
+    });
+    close_driver(&mut app);
+    assert!(
+        opened
+            .as_ref()
+            .ok()
+            .cloned()
+            .is_some_and(|started| started.completed().is_some()),
+        "new canonical note opens with actual terminal completion: {opened:?}"
+    );
+    let observed = observed.expect("the completed Open can be inspected");
+    for key in ["selected_page", "main_page", "editor_binding_page"] {
+        assert_eq!(observed[key], page.to_string());
+    }
+    assert_eq!(observed["pending_page_events"], 0);
+    assert_eq!(
+        revision(&f, &checkout),
+        created_revision,
+        "Open is a local view operation"
+    );
+    assert_eq!(
+        f.records
+            .read(&checkout.id, |doc| NotesDoc::page_stored_blocks(
+                doc, f.child
+            ))
+            .unwrap(),
+        rich
+    );
+}
