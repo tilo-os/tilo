@@ -1251,3 +1251,179 @@ fn tab_drag_cancel_action_clears_the_gesture_and_refuses_locked_requests() {
     ));
     assert!(!h.chrome.borrow_mut().take_tab_drag_cancel_request());
 }
+
+fn tab_menu_output_scene(
+    menu: &mut super::tab_menu::TabMenuLayer,
+    viewport: Rect,
+    theme: &Theme,
+) -> vello::Scene {
+    use super::layers::{LayerGeometry, LayerPaint, ShellLayer as _};
+    let mut scene = vello::Scene::new();
+    let mut text = ui::text_render::TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let outputs = [viewport];
+    menu.draw(&mut LayerPaint {
+        scene: &mut scene,
+        transform: vello::kurbo::Affine::IDENTITY,
+        text_renderer: &mut text,
+        theme,
+        presence: &ui::presence::PresenceCtx::default(),
+        geometry: LayerGeometry {
+            viewport,
+            outputs: &outputs,
+            focused_output: Some(viewport),
+        },
+        thumbnails: &mut tilo_desktop::window_switcher::NoThumbnails,
+    });
+    scene
+}
+
+fn menu_opened_near_the_output_edge() -> super::tab_menu::TabMenuLayer {
+    let mut menu = super::tab_menu::TabMenuLayer::default();
+    menu.open(
+        super::tab_menu::TabMenuTarget {
+            strip: StripId::new(),
+            group: GROUP,
+            tab: TAB_A,
+        },
+        2,
+        Point::new(620.0, 300.0),
+        "Files".into(),
+        Rect::new(0.0, 0.0, 1280.0, 800.0),
+    );
+    menu
+}
+
+#[test]
+fn tab_menu_current_output_resize_keeps_the_armed_action_visible() {
+    use super::layers::{LayerGeometry, ShellLayer as _};
+    let mut menu = menu_opened_near_the_output_edge();
+    assert!(menu.focus_accessibility(&[1]));
+    let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
+    let outputs = [viewport];
+    let geometry = LayerGeometry {
+        viewport,
+        outputs: &outputs,
+        focused_output: Some(viewport),
+    };
+    let before = menu.accessibility(geometry).unwrap().children[1]
+        .action_target
+        .clone();
+    assert!(
+        before.is_some(),
+        "the armed action must expose its semantic target"
+    );
+    let _ = tab_menu_output_scene(&mut menu, viewport, &Theme::dark());
+    let rect = menu.rect().unwrap();
+    assert!(rect.x0 >= viewport.x0 && rect.y0 >= viewport.y0);
+    assert!(
+        rect.x1 <= viewport.x1 && rect.y1 <= viewport.y1,
+        "a resized output must not leave the shared menu outside its visible bounds: {rect:?}"
+    );
+    let after = menu.accessibility(geometry).unwrap();
+    assert!(after.children[1].state.focused);
+    assert_eq!(after.children[1].action_target, before);
+    let row = menu.accessibility_rect(geometry, &[1]).unwrap();
+    assert!(viewport.contains(row.center()));
+    assert!(menu.dismiss());
+    assert!(!menu.is_open());
+}
+
+#[test]
+fn tab_menu_current_output_removal_reanchors_without_reopening() {
+    use super::layers::{LayerGeometry, LayerPaint, ShellLayer as _};
+    let old_output = Rect::new(640.0, 0.0, 1280.0, 800.0);
+    let mut menu = menu_opened_near_the_output_edge();
+    menu.open(
+        super::tab_menu::TabMenuTarget {
+            strip: StripId::new(),
+            group: GROUP,
+            tab: TAB_A,
+        },
+        2,
+        Point::new(1100.0, 300.0),
+        "Files".into(),
+        old_output,
+    );
+    assert!(menu.focus_accessibility(&[1]));
+    let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
+    let outputs = [viewport];
+    let geometry = LayerGeometry {
+        viewport,
+        outputs: &outputs,
+        focused_output: Some(viewport),
+    };
+    let mut scene = vello::Scene::new();
+    menu.draw(&mut LayerPaint {
+        scene: &mut scene,
+        transform: vello::kurbo::Affine::IDENTITY,
+        text_renderer: &mut ui::text_render::TextRenderer::new(),
+        theme: &Theme::dark(),
+        presence: &ui::presence::PresenceCtx::default(),
+        geometry,
+        thumbnails: &mut tilo_desktop::window_switcher::NoThumbnails,
+    });
+    let rect = menu.rect().unwrap();
+    assert!(
+        rect.x0 >= viewport.x0 && rect.x1 <= viewport.x1,
+        "the shared menu must follow the remaining focused output: {rect:?}"
+    );
+    assert!(
+        menu.accessibility(geometry).unwrap().children[1]
+            .state
+            .focused
+    );
+    assert!(menu.is_open(), "relocation must preserve the open flow");
+}
+
+#[test]
+fn tab_menu_current_output_capture_matrix_is_written() {
+    use super::layers::ShellLayer as _;
+    let out = std::env::var_os("TILO_TAB_MENU_SHOTS").map_or_else(
+        || std::path::PathBuf::from("target/tab-menu-current-output"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    for (name, theme, width) in [
+        ("dark", Theme::dark(), 640_u32),
+        ("light", Theme::light(), 640),
+        ("high-contrast", Theme::high_contrast(), 640),
+        ("large-text", Theme::dark().with_text_scale(2.0), 640),
+        (
+            "ui-text-scaled",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            640,
+        ),
+        ("narrow", Theme::dark().with_text_scale(2.0), 320),
+    ] {
+        let mut menu = menu_opened_near_the_output_edge();
+        menu.open(
+            super::tab_menu::TabMenuTarget {
+                strip: StripId::new(),
+                group: GROUP,
+                tab: TAB_A,
+            },
+            2,
+            Point::new(f64::from(width) - 20.0, 300.0),
+            "Files".into(),
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        assert!(menu.focus_accessibility(&[1]));
+        let viewport = Rect::new(0.0, 0.0, f64::from(width), 480.0);
+        let scene = tab_menu_output_scene(&mut menu, viewport, &theme);
+        let pixels = ui::offscreen::OffscreenRenderer::new(width, 480)
+            .render(&scene, theme.tokens.colors.surfaces.base);
+        assert!(
+            pixels.chunks_exact(4).any(|pixel| pixel != &pixels[..4]),
+            "the production menu must be observable in the capture"
+        );
+        image::save_buffer(
+            out.join(format!("{name}-resized-output.png")),
+            &pixels,
+            width,
+            480,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+    }
+}
