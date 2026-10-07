@@ -21,7 +21,9 @@ def selected_layer(receipt, shown, vm, slot):
             and receipt.get("component") in ("apps+runtime", "userspace"),
             "successful addressed canonical cohort activation receipt required")
     require(isinstance(source, dict) and hex_value(source.get("source_commit"), 40)
-            and hex_value(source.get("dirty_tree_hash"), 64), "full source provenance required")
+            and "dirty_tree_hash" in source
+            and (source["dirty_tree_hash"] is None or hex_value(source["dirty_tree_hash"], 64)),
+            "full source provenance required")
     current = shown.get("slot")
     require(isinstance(current, dict) and current.get("name") == slot
             and current.get("session") == "active" and isinstance(current.get("components"), dict),
@@ -56,7 +58,7 @@ def selected_layer(receipt, shown, vm, slot):
                 "userspace member order, layer or inventory differs")
         build = member.get("build")
         require(isinstance(build, dict) and build.get("component") == component
-                and all(build.get(key) == source[key] for key in SOURCE_FIELDS)
+                and all(key in build and build[key] == source[key] for key in SOURCE_FIELDS)
                 and build.get("authority") == "local" and build.get("builder") == "remote"
                 and build.get("target") in ("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu")
                 and isinstance(build.get("toolchain"), str) and bool(build["toolchain"])

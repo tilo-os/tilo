@@ -110,6 +110,49 @@ class ActivatedCohort(unittest.TestCase):
             self.assertEqual(current, shown)
             self.assertEqual(installed["/run/tilo-runtime/native/lib/libruntime_dylib.so"], "e" * 64)
 
+    def test_clean_source_explicit_null_selects_the_exact_installed_sdk(self):
+        for login in (True, False):
+            receipt, shown = self.fixture(login)
+            receipt["cohort_source"]["dirty_tree_hash"] = None
+            for member in receipt["cohort_members"]:
+                member["build"]["dirty_tree_hash"] = None
+            original, current, installed = self.run_cohort(receipt, shown)
+            self.assertEqual(original, receipt)
+            self.assertIsNone(original["cohort_source"]["dirty_tree_hash"])
+            self.assertEqual(current, shown)
+            self.assertEqual(installed["/run/tilo-runtime/native/lib/libruntime_dylib.so"], "e" * 64)
+            individual = {"tool": "tilo-vm", "status": "success", "component": "apps+runtime",
+                          "vm": "owned", "slot": "device",
+                          "cohort_source": dict(receipt["cohort_source"], component="apps+runtime"),
+                          "layer": shown["slot"]["components"]["apps+runtime"]}
+            self.assertEqual(self.run_cohort(individual, shown)[0], individual)
+
+    def test_missing_or_malformed_dirty_provenance_refuses(self):
+        for value in ("", "b" * 63, "B" * 64, False, 0, [], {}):
+            receipt, shown = self.fixture()
+            receipt["cohort_source"]["dirty_tree_hash"] = value
+            for member in receipt["cohort_members"]:
+                member["build"]["dirty_tree_hash"] = value
+            with self.subTest(value=value), self.assertRaises(VmError):
+                self.run_cohort(receipt, shown)
+        receipt, shown = self.fixture()
+        receipt["cohort_source"].pop("dirty_tree_hash")
+        with self.assertRaises(VmError):
+            self.run_cohort(receipt, shown)
+
+    def test_clean_source_requires_explicit_matching_member_provenance(self):
+        for missing in (True, False):
+            receipt, shown = self.fixture()
+            receipt["cohort_source"]["dirty_tree_hash"] = None
+            for member in receipt["cohort_members"]:
+                member["build"]["dirty_tree_hash"] = None
+            if missing:
+                receipt["cohort_members"][0]["build"].pop("dirty_tree_hash")
+            else:
+                receipt["cohort_members"][0]["build"]["dirty_tree_hash"] = "b" * 64
+            with self.subTest(missing=missing), self.assertRaises(VmError):
+                self.run_cohort(receipt, shown)
+
     def test_individual_apps_runtime_wire_receipt_remains_supported(self):
         receipt, shown = self.fixture()
         receipt = {"tool": "tilo-vm", "status": "success", "component": "apps+runtime",
