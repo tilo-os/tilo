@@ -206,22 +206,37 @@ class InstalledOpen(unittest.TestCase):
                "offer": {"version": "official", "tapp_root_hash_hex": "f" * 64,
                          "target": {"runtime": "tilo-runtime/official"}}}
 
-    def subject(self):
-        return {"workspace_tree": {"local_app_records": {"7": {
+    def subject(self, opened=True):
+        state = {"workspace_tree": {"local_app_records": {"7": {
             "room": "room", "app_id": "so.tilo.calculator", "record_instance": 11}},
             "workspaces": [{"room": "room", "strips": [{"window_groups": [{"tabs": [
                 {"id": 7, "tile": {"Foreign": {"app_id": "so.tilo.calculator", "surface_id": 99}}}
             ]}]}]}]}}
+        if opened:
+            state["workspace_tree"]["local_app_records"]["8"] = {
+                "room": "room", "app_id": "so.tilo.calculator", "record_instance": 12}
+            tabs = state["workspace_tree"]["workspaces"][0]["strips"][0]["window_groups"][0]["tabs"]
+            tabs.append({"id": 8, "tile": {"Foreign": {"app_id": "so.tilo.calculator", "surface_id": 100}}})
+        state["chrome"] = {"native_window_provenance": {"method": "authenticated-wayland-peer", "omitted": 0,
+            "windows": [{"room": "room", "tab_id": 8, "surface_id": 100, "package_id": "so.tilo.calculator",
+                         "record_instance": 12, "peer_pid": 222, "peer_start_time_ticks": "999"}] if opened else []}}
+        return state
 
     def door(self):
         from unittest.mock import Mock
         vm = Mock()
-        vm.state.side_effect = lambda: self.subject()
+        opened = []
+        vm.state.side_effect = lambda: self.subject(bool(opened))
         vm.slot_uid.return_value = 1000
         vm.run.return_value = __import__("json").dumps({"uid": 1000,
             "runtime": "tilo-runtime/official", "files": {"signed-file": "sha"}, "executable_sha256": "app-sha"})
         door = Mock(vm=vm, bound=(driver.app.STORE, "room", "record", "resource"))
         door.settled.return_value = {"detail": {"installed": True}}
+        def call(operation, *_):
+            if operation == "open":
+                opened.append(True)
+                return {"launch": {"adopted_window": {"package_id": "so.tilo.calculator", "room": "room", "surface_id": 100}}}
+        door.call.side_effect = call
         return door
 
     def test_existing_window_update_requires_official_backing_without_close(self):
@@ -229,11 +244,14 @@ class InstalledOpen(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(driver.app, "mapped") as mapped:
             value = driver.install_open(door, self.fixture, True, Path(directory))
         self.assertEqual(value["installation"], "update/reuse")
-        self.assertEqual(value["window"], "reuse")
-        self.assertEqual(value["record"], "derived:default@tab:000000000000000b")
+        self.assertEqual(value["window"], "new")
+        self.assertEqual(value["record"], "derived:default@tab:000000000000000c")
         self.assertEqual([call.args[0] for call in door.call.call_args_list],
                          ["install-imported-package", "open"])
         self.assertEqual(mapped.call_args.args[1:4], ("calculator", {"signed-file": "sha"}, 1000))
+        self.assertEqual(mapped.call_args.kwargs["selected"]["peer_pid"], 222)
+        self.assertEqual(value["tab"], ("room", "8", "100"))
+        self.assertIn(("room", "7", "99"), driver.app.windows(door.vm.state(), "so.tilo.calculator"))
 
     def test_old_resident_sdk_and_missing_association_fail_without_closing(self):
         for missing in (False, True):
@@ -258,6 +276,41 @@ class InstalledOpen(unittest.TestCase):
             with self.assertRaises(VmError):
                 driver.install_open(door, self.fixture, True, Path(directory))
         self.assertEqual([call.args[0] for call in door.call.call_args_list], ["install-imported-package"])
+
+    def test_closed_replaced_foreign_and_unobservable_windows_do_not_qualify(self):
+        import copy
+        window = {"package_id": "so.tilo.calculator", "room": "room", "surface_id": 100}
+        for kind in ("closed", "record", "package", "room", "missing", "duplicate"):
+            with self.subTest(kind=kind):
+                state = copy.deepcopy(self.subject())
+                proof = state["chrome"]["native_window_provenance"]
+                if kind == "closed":
+                    state["workspace_tree"]["workspaces"][0]["strips"][0]["window_groups"][0]["tabs"].pop()
+                elif kind == "record": proof["windows"][0]["record_instance"] = 99
+                elif kind == "package": proof["windows"][0]["package_id"] = "foreign-package"
+                elif kind == "room": proof["windows"][0]["room"] = "foreign-room"
+                elif kind == "missing": state["chrome"].clear()
+                elif kind == "duplicate": proof["windows"].append(copy.deepcopy(proof["windows"][0]))
+                if kind in ("closed", "room"):
+                    self.assertIsNone(driver.opened_subject(state, window))
+                else:
+                    with self.assertRaises(VmError): driver.opened_subject(state, window)
+
+    def test_association_change_during_fd_audit_fails_without_closing(self):
+        door = self.door()
+        current = door.vm.state.side_effect
+        altered = []
+        def state():
+            value = current()
+            if altered:
+                value["chrome"]["native_window_provenance"]["windows"][0]["peer_start_time_ticks"] = "1000"
+            return value
+        door.vm.state.side_effect = state
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(driver.app, "mapped", side_effect=lambda *_args, **_kwargs: altered.append(True)):
+            with self.assertRaisesRegex(VmError, "association changed"):
+                driver.install_open(door, self.fixture, True, Path(directory))
+        self.assertEqual([call.args[0] for call in door.call.call_args_list], ["install-imported-package", "open"])
 
 
 if __name__ == "__main__":

@@ -167,6 +167,32 @@ class FreshBrowser(unittest.TestCase):
 
 
 class ResidentPackage(unittest.TestCase):
+    def test_selected_worker_requires_exact_pid_lifetime_and_preserves_unrelated_report(self):
+        import copy
+        import json
+        from unittest.mock import Mock
+        vm = Mock()
+        selected = {"peer_pid": 222, "peer_start_time_ticks": "999"}
+        data = {"method": "proc-map-files-fd", "reader_uid": 0, "uid": 1000,
+                "processes": [{"pid": 222, "start_time_ticks": "999", "runtime": [
+                    {"path": "/run/tilo-runtime/sdk/lib/libruntime_dylib.so", "sha256": "sdk"}],
+                    "executable": {"sha256": "app"}}],
+                "unrelated_processes": [{"pid": 111, "status": "unrelated_not_verified_against_selected_offer"}]}
+        for field, value in (("pid", 111), ("start_time_ticks", "1000")):
+            foreign = copy.deepcopy(data)
+            foreign["processes"][0][field] = value
+            vm.root_exec.return_value = json.dumps(foreign)
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(VmError, "foreign worker"):
+                    app.mapped(vm, "calculator", {}, 1000, Path(directory), selected=selected)
+        vm.root_exec.return_value = json.dumps(data)
+        with tempfile.TemporaryDirectory() as directory:
+            app.mapped(vm, "calculator", {"/run/tilo-runtime/sdk/lib/libruntime_dylib.so": "sdk"},
+                       1000, Path(directory), executable="app", selected=selected)
+            report = json.loads((Path(directory) / "calculator-mapped-sdk.json").read_text())
+            self.assertEqual(report["unrelated_processes"], data["unrelated_processes"])
+            self.assertIn(" 222 999", vm.root_exec.call_args.args[0])
+
     def test_old_executable_fails_even_when_runtime_matches(self):
         import json
         from unittest.mock import Mock

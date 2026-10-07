@@ -60,6 +60,7 @@ pub(super) fn fail_current(detail: String) {
 struct Pending {
     process: Option<(u32, u64)>,
     reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    adoption: tokio::sync::oneshot::Sender<Option<tilo_action_broker::services::LaunchAdoption>>,
 }
 
 #[derive(Clone, Default)]
@@ -81,11 +82,13 @@ impl StartupObservations {
             })
             .map_err(|_| "application startup identity exhausted")?;
         let (reply, receiver) = tokio::sync::oneshot::channel();
+        let (adoption, adopted) = tokio::sync::oneshot::channel();
         pending.insert(
             token,
             Pending {
                 process: None,
                 reply,
+                adoption,
             },
         );
         drop(pending);
@@ -97,7 +100,8 @@ impl StartupObservations {
                     .upgrade()
                     .and_then(|observations| observations.lock().ok()?.remove(&token));
                 drop(removed);
-            }),
+            })
+            .with_adoption(adopted),
         ))
     }
 
@@ -121,7 +125,16 @@ impl StartupObservations {
         }
     }
 
-    pub fn adopted(&self, mut pid: u32) {
+    #[cfg(test)]
+    pub fn adopted(&self, pid: u32) {
+        self.adopted_window(pid, None);
+    }
+
+    pub fn adopted_window(
+        &self,
+        mut pid: u32,
+        adoption: Option<tilo_action_broker::services::LaunchAdoption>,
+    ) {
         // Match the same bounded ancestry and PID-reuse rule as the launcher's
         // ordinary service and Wayland admission. Never hold our lock during
         // filesystem reads or while waking a receiver.
@@ -136,6 +149,7 @@ impl StartupObservations {
                 pending.remove(&token)
             });
             if let Some(observation) = observation {
+                let _ = observation.adoption.send(adoption);
                 let _ = observation.reply.send(Ok(()));
                 return;
             }
@@ -158,6 +172,59 @@ pub(super) fn command_token(command: &super::launcher::LaunchCommand) -> Option<
 #[cfg(target_os = "linux")]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn exact_adoption_returns_public_window_identity_without_kernel_pid() {
+        let observations = StartupObservations::default();
+        let (token, ready) = observations.reserve().unwrap();
+        observations.started(Some(token), std::process::id());
+        let window = tilo_action_broker::services::LaunchAdoption {
+            surface_id: 55,
+            package_id: "so.tilo.calculator".into(),
+            room: "room".into(),
+        };
+        observations.adopted_window(std::process::id(), Some(window.clone()));
+        assert_eq!(
+            ready.wait_with_adoption().await.unwrap(),
+            Some(window.clone())
+        );
+        let encoded = serde_json::to_value(window).unwrap();
+        assert_eq!(encoded.as_object().unwrap().len(), 3);
+        assert!(encoded.get("pid").is_none());
+        assert!(observations.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_launcher_lifetime_cannot_produce_adoption_provenance() {
+        let observations = StartupObservations::default();
+        let (token, ready) = observations.reserve().unwrap();
+        let pid = std::process::id();
+        observations.started(Some(token), pid);
+        {
+            let mut pending = observations.0.lock().unwrap();
+            let entry = pending.get_mut(&token).unwrap();
+            let (pid, start) = entry.process.unwrap();
+            entry.process = Some((pid, start.checked_add(1).unwrap()));
+            drop(pending);
+        }
+        observations.adopted_window(
+            pid,
+            Some(tilo_action_broker::services::LaunchAdoption {
+                surface_id: 55,
+                package_id: "so.tilo.calculator".into(),
+                room: "room".into(),
+            }),
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                ready.wait_with_adoption()
+            )
+            .await
+            .is_err()
+        );
+        assert!(observations.0.lock().unwrap().is_empty());
+    }
     use std::io::{BufRead, BufReader};
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};

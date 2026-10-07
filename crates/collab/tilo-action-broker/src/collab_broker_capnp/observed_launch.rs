@@ -201,14 +201,27 @@ impl CapnpChannelHandle {
         actor: String,
         parent: Option<InvocationId>,
         id: u64,
-        outcome: Result<(), String>,
+        outcome: Result<Option<crate::services::LaunchAdoption>, String>,
     ) -> tilo_actions::InvocationUpdate {
-        let outcome = outcome.and_then(|()| self.current_launch_authority(app, parent));
+        let outcome = outcome.and_then(|adoption| {
+            self.current_launch_authority(app, parent)?;
+            if let Some(window) = &adoption
+                && (window.package_id != app
+                    || window.room != self.route().cluster_id
+                    || window.surface_id == 0)
+            {
+                return Err("the adopted application window has foreign custody".into());
+            }
+            Ok(adoption)
+        });
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let update = match outcome {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+            Ok(adoption) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: tilo_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput {
+                    value: adoption.map(|window| serde_json::json!({"adopted_window": window})),
+                    ..tilo_actions::ActionOutput::default()
+                },
             },
             Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -228,11 +241,11 @@ impl CapnpChannelHandle {
 
 pub(super) async fn wait_for_startup(
     started: Result<LaunchReadiness, String>,
-) -> Result<(), String> {
+) -> Result<Option<crate::services::LaunchAdoption>, String> {
     match started {
         Ok(readiness) => tokio::time::timeout(
             crate::services::APPLICATION_STARTUP_TIMEOUT,
-            readiness.wait(),
+            readiness.wait_with_adoption(),
         )
         .await
         .unwrap_or_else(|_| Err("the application did not open a window in time".into())),
