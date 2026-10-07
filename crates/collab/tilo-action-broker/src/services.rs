@@ -358,6 +358,19 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Admit kernel-attested executing custody only beneath this exact launch.
+    /// This grants no new identity or filesystem permissions.
+    #[cfg(target_os = "linux")]
+    fn attest_executing_process(
+        &self,
+        launcher_pid: u32,
+        peer: &runtime_portal::process_binding::ExecutingPeer,
+        app: &str,
+        room: &str,
+    ) -> bool {
+        let _ = (launcher_pid, peer, app, room);
+        false
+    }
     /// Original declarations of this exact live launch, not the currently
     /// installed replacement package. Unsupported hosts grant no creation.
     ///
@@ -723,6 +736,72 @@ pub trait NearbyTransferServices: Send + Sync {
     /// Forgets every handle issued to `peer_id`.
     fn disconnect(&self, peer_id: u64);
 }
+
+/// A descriptor source sealed to the kernel-attested local process.
+pub(crate) type SelectedDescriptorSource =
+    Arc<dyn Fn(u32) -> Result<std::fs::File, String> + Send + Sync>;
+
+/// Sealed local Files admission. Its callback rechecks the original caller,
+/// live connection and existing workspace policy, never a JSON-claimed actor.
+#[derive(Clone)]
+pub struct FileClipboardContext {
+    pub(crate) peer: u64,
+    pub(crate) window: String,
+    pub(crate) duplicate: SelectedDescriptorSource,
+    pub(crate) workspace: String,
+    pub(crate) owner: String,
+    pub(crate) history_compensation: bool,
+    pub(crate) check:
+        Arc<dyn Fn(tilo_actions::PermissionRequirement) -> Result<(), String> + Send + Sync>,
+}
+impl FileClipboardContext {
+    pub fn window(&self) -> &str {
+        &self.window
+    }
+    /// Duplicate an object retained by this exact launcher-attested Files process.
+    ///
+    /// # Errors
+    /// Refuses retired authority or unavailable peer descriptors.
+    pub fn duplicate_selected(&self, descriptor: u32) -> Result<std::fs::File, String> {
+        self.authorize(tilo_actions::PermissionRequirement::Read)?;
+        let file = (self.duplicate)(descriptor)?;
+        self.authorize(tilo_actions::PermissionRequirement::Read)?;
+        Ok(file)
+    }
+    pub fn peer(&self) -> u64 {
+        self.peer
+    }
+    pub fn workspace(&self) -> &str {
+        &self.workspace
+    }
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+    /// Whether the broker admitted this command through a declared document Undo.
+    /// This is minted from original invocation custody, never caller parameters.
+    pub fn is_history_compensation(&self) -> bool {
+        self.history_compensation
+    }
+    /// Recheck the exact caller against live custody and workspace policy.
+    ///
+    /// # Errors
+    /// Refuses retired, revoked, expired or insufficient authority.
+    pub fn authorize(&self, permission: tilo_actions::PermissionRequirement) -> Result<(), String> {
+        (self.check)(permission)
+    }
+}
+pub trait FileClipboardServices: Send + Sync {
+    /// Perform a bounded command under the sealed local admission.
+    ///
+    /// # Errors
+    /// Refuses invalid, unavailable or unauthorized clipboard operations.
+    fn command(
+        &self,
+        context: &FileClipboardContext,
+        command: runtime_collab::file_clipboard::Command,
+    ) -> Result<runtime_collab::file_clipboard::Reply, String>;
+    fn disconnect(&self, peer: u64);
+}
 /// Where grants a person gives an application for another app's action are
 /// recorded. The broker decides whether to ask and builds the grant; the
 /// host owns the workspace records it lands in.
@@ -777,6 +856,7 @@ pub struct HostServices {
     pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
+    pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
     /// What each application declared it may do on the action door under
     /// its own identity. Without it no application declared anything.
     pub app_action_access: Option<crate::app_actions::AppActionAccessResolver>,
