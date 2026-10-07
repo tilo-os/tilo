@@ -341,3 +341,20 @@ timestamps alone do not. This is whole-layer reuse, not a binary delta, so a
 wrapper-only change still uploads its newly assembled layer. Imported content
 must match the local digest before it can proceed to swap. A cache hit uses
 the existing RPC protocol and works with older compatible daemons.
+
+### Layer transfer
+
+Host-built layers travel over the existing authenticated daemon connection.
+The client sends one 1 MiB chunk at a time and verifies each reply's request
+id and cumulative byte count before sending the next chunk or requesting an
+import. An incorrect acknowledgment stops the transfer. This uses
+the existing protocol and works with already-installed development daemons.
+An import still validates and hashes the staged tree before atomically
+publishing it; applying or rolling back a generation uses the same paths.
+
+Host-build receipts record `assemble`, `digest`, `layer_lookup`, `pack`,
+`transfer` and `import` separately. Use those phases to distinguish packaging,
+transport and validation costs. CI layers are cached by image digest on the
+host. Source builds hash the assembled tree and check the device for matching
+component content before packaging or sending bytes. A cache hit skips both
+packaging and upload; changed content uses the full uncompressed archive.

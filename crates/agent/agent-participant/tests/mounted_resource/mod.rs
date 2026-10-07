@@ -142,11 +142,16 @@ pub async fn run() {
     } else {
         Seed::New
     };
+    let source_author = if encrypted_restart {
+        hex::encode(publisher.cert.user_public_key)
+    } else {
+        "Fixture owner".to_string()
+    };
     let mut source = Replica::open(
         &common::catalogue(),
         "so.tilo.chat",
         &room.room,
-        "Fixture owner",
+        &source_author,
         false,
         seed,
     )
@@ -161,7 +166,7 @@ pub async fn run() {
         &mut doc,
         &channel.id,
         NewMessage {
-            author: "Fixture owner".into(),
+            author: source_author.clone(),
             text: "Hello é, mounted natively".into(),
             ..NewMessage::default()
         },
@@ -340,7 +345,9 @@ pub async fn run() {
         "origin": hosted.web.origin, "room": room.room,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
         "channel": format!("chat.channel:{}", channel.id),
-        "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart,
+        "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart, "sourceAuthor": source_author,
+        "sourcePeople": source.read(|doc| ChatDoc::list_users(doc).into_iter().map(|person|
+            serde_json::json!({"id":person.id,"name":person.name})).collect::<Vec<_>>()).unwrap(),
         "voiceChannel": voice_channel.id,
         "secondDevice": {"seed": second_device.key.to_bytes(),
             "root": hex::encode(second_device.cert.user_public_key),
@@ -437,7 +444,9 @@ pub async fn run() {
                     .unwrap();
                 println!("MOUNTED_RESOURCE_STAGE={event}");
             } else if event["stage"] == "revoke" {
-                rooms
+                let started = std::time::Instant::now();
+                println!("MOUNTED_RESOURCE_REVOCATION={{\"state\":\"requested\"}}");
+                let completion = rooms
                     .remove_member(
                         &room.room,
                         &host.cert,
@@ -448,7 +457,16 @@ pub async fn run() {
                     )
                     .await
                     .unwrap();
-                input.write_all(b"{\"revoked\":true}\n").await.unwrap();
+                let acknowledgement = serde_json::json!({
+                    "revoked": true,
+                    "generation": completion.generation,
+                    "elapsedMs": started.elapsed().as_millis(),
+                });
+                println!("MOUNTED_RESOURCE_REVOCATION={acknowledgement}");
+                input
+                    .write_all(format!("{acknowledgement}\n").as_bytes())
+                    .await
+                    .unwrap();
             } else {
                 println!("MOUNTED_RESOURCE_STAGE={event}");
             }
