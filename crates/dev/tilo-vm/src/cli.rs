@@ -246,6 +246,16 @@ pub enum Command {
         /// Extra cargo features, comma separated.
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
+        #[arg(long)]
+        source_inventory: Option<PathBuf>,
+    },
+    /// Package one app on the architecture-configured remote builder.
+    #[command(hide = true)]
+    AppPack {
+        #[arg(long)]
+        app: String,
+        #[arg(long)]
+        source_inventory: PathBuf,
     },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
@@ -378,6 +388,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         None | Some(
             Command::Status { .. }
                 | Command::LayerPack { .. }
+                | Command::AppPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }

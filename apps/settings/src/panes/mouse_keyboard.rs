@@ -20,7 +20,7 @@ use settings_store::hardware::{
     TouchpadScrollMethod,
 };
 use taffy::{NodeId, TaffyTree};
-use ui::framework::{ActionControl, EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{ActionControl, Effect as _, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::text_assistance::TextAssistancePrefs;
 use ui::theme::Theme;
@@ -831,6 +831,32 @@ pub enum InputEffect {
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
+    /// Inspect this device's mounted keyboard map and current physical feedback.
+    #[effect(returns, idempotent, device_only, permission = "read")]
+    InspectKeyboardMap,
+    /// Inspect any installed XKB layout without changing what the keyboard types.
+    #[effect(idempotent)]
+    PreviewLayout { source: String },
+    /// Show the actual focused keyboard group and modifier state.
+    #[effect(idempotent)]
+    ShowLiveKeyboardMap,
+    /// Inspect XKB levels 5–8 when the selected layout supplies them.
+    #[effect(idempotent)]
+    SetPreviewExtraLevels { on: bool },
+    /// Inspect one of the compiled native modifier levels without applying it.
+    #[effect(idempotent)]
+    SetPreviewLevel { level: String },
+    /// Read a physical key’s complete legends without applying a layout.
+    #[effect(idempotent)]
+    InspectKeyboardKey { key: String },
+    /// Choose an explicit physical model for the preview and keyboard.
+    #[effect(idempotent)]
+    SetKeyboardModel {
+        #[param("The physical model", choices = ["pc104", "pc105", "jp106", "kr106"])]
+        model: String,
+    },
+    /// Type with the inspected layout, adding it when space is available.
+    ApplyPreview,
     /// Add an installed input source and type with it.
     AddSource {
         #[param("The source's id, such as `us` or `de`")]
@@ -1053,6 +1079,92 @@ fn apply(
             }
             input.keyboard_layout = source;
         }
+        E::PreviewLayout { source } => {
+            if !installed(&source)
+                || settings_store::hardware::KeyboardInputSource::parse(&source).is_none()
+            {
+                return Err("the source is not an installed XKB layout".into());
+            }
+            input.keyboard_preview = Some(source);
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::ShowLiveKeyboardMap => {
+            input.keyboard_preview = None;
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::SetPreviewExtraLevels { on } => {
+            input
+                .keyboard_preview
+                .get_or_insert_with(|| input.keyboard_layout.clone());
+            input.keyboard_preview_extra_levels = on;
+            input.keyboard_preview_level = 0;
+        }
+        E::SetPreviewLevel { level } => {
+            let level = level
+                .parse::<usize>()
+                .ok()
+                .filter(|level| *level < 32)
+                .ok_or("invalid keyboard preview level")?;
+            let source = input
+                .keyboard_preview
+                .as_deref()
+                .unwrap_or(&input.keyboard_layout);
+            let map = crate::keyboard_preview::map_with_options(
+                source,
+                &input.keyboard_model,
+                String::new(),
+                Some(""),
+            )?;
+            if level >= map.level_count() {
+                return Err("the layout does not supply this level".into());
+            }
+            input.keyboard_preview = Some(source.to_owned());
+            input.keyboard_preview_level = level;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::InspectKeyboardKey { key } => {
+            let source = input
+                .keyboard_preview
+                .as_deref()
+                .unwrap_or(&input.keyboard_layout);
+            let map = crate::keyboard_preview::map_with_options(
+                source,
+                &input.keyboard_model,
+                String::new(),
+                Some(""),
+            )?;
+            if map.inspection_values(&key).is_none() {
+                return Err("the physical model does not supply this key".into());
+            }
+            input.keyboard_inspected_key = key;
+        }
+        E::SetKeyboardModel { model } => {
+            if !crate::keyboard_preview::valid_model(&model) {
+                return Err("unknown physical keyboard model".into());
+            }
+            input.keyboard_model = model;
+            input.keyboard_inspected_key = "AD01".into();
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::ApplyPreview => {
+            let source = input
+                .keyboard_preview
+                .clone()
+                .unwrap_or_else(|| input.keyboard_layout.clone());
+            let next = if input.keyboard_layouts.contains(&source) {
+                E::SetActiveSource { source }
+            } else {
+                E::AddSource { source }
+            };
+            apply(input, next, catalog)?;
+            input.keyboard_preview = None;
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+            return Ok(());
+        }
         E::AddSource { source } => {
             if !installed(&source) {
                 return Err(format!("`{source}` is not an installed input source"));
@@ -1155,7 +1267,8 @@ fn apply(
                 dial_for_id(&action).ok_or_else(|| format!("`{action}` is not a dial choice"))?;
             tablet_entry(input, &device)?.set_dial_action(dial, mode, action);
         }
-        E::SetSpellChecking { .. }
+        E::InspectKeyboardMap
+        | E::SetSpellChecking { .. }
         | E::SetAutoCorrect { .. }
         | E::SetSpellingLanguage { .. }
         | E::AddDictionaryWord { .. }
@@ -1180,6 +1293,9 @@ pub(crate) fn answer(
     effect: InputEffect,
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if effect == InputEffect::InspectKeyboardMap {
+        return app.keyboard_inspection().map(Effected::value);
+    }
     let host = app.host();
     match effect {
         InputEffect::AddDictionaryWord {
@@ -1329,8 +1445,14 @@ impl InputArea {
 
     /// One live row per attached drawing tablet and pad, by device id.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let inspection = LiveRow::new(
+            "settings.keyboard-map",
+            "settings.keyboard-map",
+            t("input-map-title"),
+        )
+        .operation(crate::effects::SettingsEffect::from(InputEffect::InspectKeyboardMap).bound());
         let Some(devices) = self.devices() else {
-            return Vec::new();
+            return vec![inspection];
         };
         let row = |device: &InputDeviceSnapshot, id: String, kind: &str| {
             LiveRow::new(id, kind, device_title(device)).presentation(ResourcePresentation {
@@ -1338,15 +1460,20 @@ impl InputArea {
                 ..ResourcePresentation::default()
             })
         };
-        devices
-            .of_kind(InputDeviceKind::Tablet)
-            .into_iter()
-            .map(|device| row(device, tablet_resource_id(&device.key), "settings.tablet"))
+        std::iter::once(inspection)
             .chain(
                 devices
-                    .of_kind(InputDeviceKind::TabletPad)
+                    .of_kind(InputDeviceKind::Tablet)
                     .into_iter()
-                    .map(|device| row(device, pad_resource_id(&device.key), "settings.tablet-pad")),
+                    .map(|device| row(device, tablet_resource_id(&device.key), "settings.tablet"))
+                    .chain(
+                        devices
+                            .of_kind(InputDeviceKind::TabletPad)
+                            .into_iter()
+                            .map(|device| {
+                                row(device, pad_resource_id(&device.key), "settings.tablet-pad")
+                            }),
+                    ),
             )
             .collect()
     }
@@ -1376,6 +1503,16 @@ fn sample_catalog() -> Vec<CatalogEntry> {
 type DictionaryKey = (String, Option<String>);
 type DictionaryFields = (ui::LocalState<String>, ui::LocalState<String>);
 
+pub(crate) struct KeyboardPreviewCache {
+    source: String,
+    model: String,
+    options: Option<String>,
+    map: ui::KeyboardMap,
+}
+
+pub(crate) type KeyboardPreviewCacheHandle =
+    std::rc::Rc<std::cell::RefCell<Option<KeyboardPreviewCache>>>;
+
 pub struct MouseKeyboardPane {
     cx: PaneCx,
     input: Followed<InputPrefs>,
@@ -1401,6 +1538,8 @@ pub struct MouseKeyboardPane {
     composed_text_growth_bits: u32,
     composed_locale_revision: u64,
     rect: Rect,
+    map_cache: KeyboardPreviewCacheHandle,
+    map_input: ui::KeyboardMapInput,
 }
 
 impl MouseKeyboardPane {
@@ -1431,10 +1570,197 @@ impl MouseKeyboardPane {
             composed_text_growth_bits: 1.0_f32.to_bits(),
             composed_locale_revision: ui::i18n::I18nManager::revision(),
             rect: Rect::ZERO,
+            map_cache: std::rc::Rc::default(),
+            map_input: ui::KeyboardMapInput::default(),
         };
         pane.observe_devices(area.devices().as_ref());
         pane.structure_dirty = false;
         pane
+    }
+
+    /// Share only ephemeral physical positions with the owning Settings page.
+    pub(crate) fn with_map_input(mut self, input: ui::KeyboardMapInput) -> Self {
+        self.map_input = input;
+        self
+    }
+
+    /// Retain one compiled preview while search reconstructs the page widgets.
+    pub(crate) fn with_map_cache(mut self, cache: KeyboardPreviewCacheHandle) -> Self {
+        self.map_cache = cache;
+        self
+    }
+
+    fn keyboard_preview(&self, source: &str) -> Result<ui::KeyboardMap, String> {
+        let options = settings_store::hardware::RichInputConfig {
+            compose_key: self.last.compose_key.clone(),
+            caps_lock: self.last.caps_lock.clone(),
+            ..Default::default()
+        }
+        .xkb_options()
+        .join(",");
+        let options = Some(options);
+        let mut cache = self.map_cache.borrow_mut();
+        if let Some(cache) = cache.as_ref()
+            && cache.source == source
+            && cache.model == self.last.keyboard_model
+            && cache.options == options
+        {
+            return Ok(cache.map.clone());
+        }
+        let map = crate::keyboard_preview::map_with_options(
+            source,
+            &self.last.keyboard_model,
+            t("input-map-title"),
+            options.as_deref(),
+        )?
+        .with_input(self.map_input.clone());
+        *cache = Some(KeyboardPreviewCache {
+            source: source.to_owned(),
+            model: self.last.keyboard_model.clone(),
+            options,
+            map: map.clone(),
+        });
+        Ok(map)
+    }
+
+    fn keyboard_inspection_controls(&self, map: ui::KeyboardMap) -> Vec<El> {
+        let mut content = Vec::new();
+        content.push(choice_row(
+            &t("input-map-level"),
+            Box::new(
+                id_dropdown(
+                    (0..map.level_count())
+                        .map(|level| {
+                            (
+                                level.to_string(),
+                                format!("{} {}", t("input-map-level"), level + 1),
+                            )
+                        })
+                        .collect(),
+                    &self.last.keyboard_preview_level.to_string(),
+                    "input.map.level",
+                    &t("input-map-level"),
+                )
+                .bound(&self.cx, effect(InputEffect::SET_PREVIEW_LEVEL)),
+            ),
+        ));
+        let inspected = self.last.keyboard_inspected_key.clone();
+        content.push(choice_row(
+            &t("input-map-inspect-key"),
+            Box::new(
+                id_dropdown(
+                    map.inspection_keys(),
+                    &inspected,
+                    "input.map.inspect-key",
+                    &t("input-map-inspect-key"),
+                )
+                .bound(&self.cx, effect(InputEffect::INSPECT_KEYBOARD_KEY)),
+            ),
+        ));
+        let details = map
+            .clone()
+            .with_live_layout(self.last.keyboard_preview.is_none());
+        let selected = inspected.clone();
+        let live = self.last.keyboard_preview.is_none();
+        content.push(Box::new(
+            Text::dynamic(move || match details.inspection_values(&selected) {
+                Some(values) if values.iter().any(|value| !value.is_empty()) => {
+                    format!(
+                        "{}\n{}",
+                        selected,
+                        values
+                            .iter()
+                            .enumerate()
+                            .map(|(level, value)| {
+                                if live {
+                                    format!("{}: {}", t("input-map-current-symbols"), value)
+                                } else {
+                                    format!("{} {}: {}", t("input-map-level"), level + 1, value)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                }
+                _ => t("input-map-inspection-unavailable"),
+            })
+            .with_id("input.keyboard-map.details"),
+        ));
+        content.push(Box::new(
+            map.with_inspected_key(&inspected)
+                .with_extra_levels(self.last.keyboard_preview_extra_levels)
+                .with_preview_level(self.last.keyboard_preview_level)
+                .with_live_layout(self.last.keyboard_preview.is_none())
+                .selectable()
+                .bound(&self.cx, effect(InputEffect::INSPECT_KEYBOARD_KEY)),
+        ));
+        content
+    }
+
+    fn keyboard_map_card(&self) -> El {
+        let source = self
+            .last
+            .keyboard_preview
+            .as_deref()
+            .unwrap_or(&self.last.keyboard_layout);
+        let choices = self
+            .catalog
+            .iter()
+            .filter(|entry| {
+                settings_store::hardware::KeyboardInputSource::parse(&entry.id).is_some()
+            })
+            .map(|entry| (entry.id.clone(), entry.label.clone()))
+            .collect();
+        let mut content = vec![
+            choice_row(
+                &t("input-map-layout"),
+                Box::new(
+                    id_dropdown(choices, source, "input.map.preview", &t("input-map-layout"))
+                        .bound(&self.cx, effect(InputEffect::PREVIEW_LAYOUT)),
+                ),
+            ),
+            choice_row(
+                &t("input-map-model"),
+                Box::new(
+                    id_dropdown(
+                        vec![
+                            ("pc104".into(), t("input-map-ansi")),
+                            ("pc105".into(), t("input-map-iso")),
+                            ("jp106".into(), t("input-map-jis")),
+                            ("kr106".into(), t("input-map-korean")),
+                        ],
+                        &self.last.keyboard_model,
+                        "input.map.model",
+                        &t("input-map-model"),
+                    )
+                    .bound(&self.cx, effect(InputEffect::SET_KEYBOARD_MODEL)),
+                ),
+            ),
+            caption(&t("input-map-instructions")),
+            caption(&t(if self.last.keyboard_preview.is_none() {
+                "input-map-live-description"
+            } else {
+                "input-map-preview-description"
+            })),
+        ];
+        match self.keyboard_preview(source) {
+            Ok(map) => content.extend(self.keyboard_inspection_controls(map)),
+            Err(_) => content.push(error_caption(&t("input-map-unavailable"))),
+        }
+        content.push(Box::new(self.cx.bind_invocation(
+            Button::new("input.map.live", &t("input-map-live")),
+            InputEffect::ShowLiveKeyboardMap,
+        )));
+        content.push(caption(&format!(
+            "{} {}",
+            t("input-map-levels"),
+            t("input-map-dead-keys")
+        )));
+        content.push(Box::new(self.cx.bind_invocation(
+            Button::new("input.map.apply", &t("input-map-apply")),
+            InputEffect::ApplyPreview,
+        )));
+        card(&t("input-map-title"), rows(content))
     }
 
     fn source_label(&self, id: &str) -> String {
@@ -1448,6 +1774,7 @@ impl MouseKeyboardPane {
         // The keyboard layout comes first: it is what most people open this
         // pane to change.
         let mut cards = vec![
+            self.keyboard_map_card(),
             self.input_sources_card(),
             self.keyboard_card(),
             self.spell_checker_card(),
@@ -3052,6 +3379,265 @@ mod tests {
         assert_eq!(click_method_for_id("Button areas"), None);
         let labels = localized_choices(&CLICK_METHOD_CHOICES);
         assert_eq!(labels[1], ("areas".into(), "Bottom-right corner".into()));
+    }
+
+    #[test]
+    fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let before = app.settings::<InputPrefs>().get();
+        let preview = InputEffect::PreviewLayout {
+            source: "de".into(),
+        };
+        let model = InputEffect::SetKeyboardModel {
+            model: "pc104".into(),
+        };
+        let levels = InputEffect::SetPreviewExtraLevels { on: true };
+        let effects = [
+            preview.clone(),
+            model.clone(),
+            levels.clone(),
+            InputEffect::SetPreviewLevel { level: "1".into() },
+            InputEffect::ShowLiveKeyboardMap,
+            InputEffect::ApplyPreview,
+        ];
+        let actions = app.actions().unwrap();
+        for effect in &effects {
+            assert!(
+                actions
+                    .iter()
+                    .any(|action| action.address.action == effect.id()),
+                "the actual Settings publisher must advertise {}",
+                effect.id()
+            );
+        }
+        assert!(set(&mut app, preview));
+        assert!(set(&mut app, model));
+        assert!(set(&mut app, levels));
+        let inspected = app.settings::<InputPrefs>().get();
+        assert_eq!(inspected.keyboard_layout, before.keyboard_layout);
+        assert_eq!(inspected.keyboard_layouts, before.keyboard_layouts);
+        assert_eq!(inspected.keyboard_model, "pc104");
+        assert_eq!(inspected.keyboard_preview.as_deref(), Some("de"));
+        assert!(inspected.keyboard_preview_extra_levels);
+        assert!(set(&mut app, InputEffect::ApplyPreview));
+        assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "de");
+        assert!(!set(
+            &mut app,
+            InputEffect::PreviewLayout {
+                source: "../../private".into()
+            }
+        ));
+        assert!(!set(
+            &mut app,
+            InputEffect::SetKeyboardModel {
+                model: "../../private".into()
+            }
+        ));
+        assert!(!set(
+            &mut app,
+            InputEffect::SetPreviewLevel { level: "99".into() }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::SetPreviewLevel { level: "1".into() }
+        ));
+        assert_eq!(app.settings::<InputPrefs>().get().keyboard_preview_level, 1);
+        assert!(set(&mut app, InputEffect::ShowLiveKeyboardMap));
+        let input = app.settings::<InputPrefs>().get();
+        assert!(input.keyboard_preview.is_none());
+        assert_eq!(input.keyboard_preview_level, 0);
+        assert_eq!(input.keyboard_layout, "de");
+    }
+
+    #[test]
+    fn keyboard_map_read_is_published_device_scoped_and_never_changes_preferences() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        let effect = InputEffect::InspectKeyboardMap;
+        let actions = app.actions().unwrap();
+        let action = actions
+            .iter()
+            .find(|action| action.address.action == effect.id())
+            .unwrap();
+        assert_eq!(
+            action.contract.permission,
+            ui::tilo_actions::PermissionRequirement::Read
+        );
+        assert!(
+            action
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
+        );
+        let address = action.address.clone();
+        let before = app.settings::<InputPrefs>().get();
+        let value = app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["page_visible"], false);
+        assert_eq!(value["pressed_physical_keys"], serde_json::json!([]));
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        let denied = app.call_by(
+            ui::tilo_actions::ActionInvoker {
+                actor: "unrelated-collaborator".into(),
+                participant: None,
+            },
+            &address.resource,
+            &address.action,
+            serde_json::json!({}),
+        );
+        assert!(
+            matches!(denied, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only")
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+    }
+
+    #[test]
+    fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let read = |app: &mut TestApp<SettingsShell>| {
+            app.call_on(
+                "settings.keyboard-map",
+                InputEffect::InspectKeyboardMap.id(),
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let open = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        assert!(set(
+            &mut app,
+            InputEffect::PreviewLayout {
+                source: "de".into()
+            }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::InspectKeyboardKey { key: "AD06".into() }
+        ));
+        let before = app.settings::<InputPrefs>().get();
+        app.harness().dispatch_to_root(&WindowEvent::Focused(true));
+        let preview = read(&mut app);
+        assert_eq!(preview["mode"], "preview");
+        assert_eq!(preview["available"], true);
+        assert_eq!(preview["source"], "de");
+        assert_eq!(preview["inspected_key"], "AD06");
+        assert!(
+            preview["selected_symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|symbol| symbol == "z")
+        );
+        let key = |state| WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            is_synthetic: false,
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::KeyY,
+                    ),
+                    state,
+                },
+                winit::keyboard::Key::Character("z".into()),
+                Some("z".into()),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                Some("z".into()),
+                winit::keyboard::Key::Character("z".into()),
+            ),
+        };
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Pressed));
+        assert_eq!(
+            read(&mut app)["pressed_physical_keys"],
+            serde_json::json!(["AD06"])
+        );
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Released));
+        assert_eq!(
+            read(&mut app)["pressed_physical_keys"],
+            serde_json::json!([])
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        assert!(set(&mut app, InputEffect::ShowLiveKeyboardMap));
+        let live = read(&mut app);
+        assert_eq!(live["mode"], "live");
+        assert_eq!(
+            live["available"], false,
+            "native evidence is mandatory, never preferred-layout fallback"
+        );
+        assert_eq!(live["selected_symbols"], serde_json::json!([]));
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Pressed));
+        app.harness().dispatch_to_root(&WindowEvent::Focused(false));
+        let blurred = read(&mut app);
+        assert_eq!(blurred["foreground"], false);
+        assert_eq!(blurred["pressed_physical_keys"], serde_json::json!([]));
+        let about = crate::effects::open_pane_address(crate::categories::Category::About);
+        app.call_on(&about.resource, &about.action, serde_json::json!({}))
+            .unwrap();
+        let off_page = read(&mut app);
+        assert_eq!(off_page["page_visible"], false);
+        assert_eq!(off_page["selected_symbols"], serde_json::json!([]));
+        assert_eq!(off_page["pressed_physical_keys"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn physical_key_inspection_is_published_validated_and_never_applies_layout() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let before = app.settings::<InputPrefs>().get();
+        let inspect = InputEffect::InspectKeyboardKey { key: "AD06".into() };
+        assert!(
+            app.actions()
+                .unwrap()
+                .iter()
+                .any(|action| action.address.action == inspect.id())
+        );
+        assert!(set(&mut app, inspect));
+        let inspected = app.settings::<InputPrefs>().get();
+        assert_eq!(inspected.keyboard_inspected_key, "AD06");
+        assert_eq!(inspected.keyboard_layout, before.keyboard_layout);
+        assert_eq!(inspected.keyboard_layouts, before.keyboard_layouts);
+        assert_eq!(inspected.keyboard_preview, before.keyboard_preview);
+        assert!(!set(
+            &mut app,
+            InputEffect::InspectKeyboardKey {
+                key: "../../private".into()
+            }
+        ));
+        assert!(!set(
+            &mut app,
+            InputEffect::InspectKeyboardKey { key: "AE13".into() }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::SetKeyboardModel {
+                model: "jp106".into()
+            }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::InspectKeyboardKey { key: "AE13".into() }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::SetKeyboardModel {
+                model: "pc104".into()
+            }
+        ));
+        assert_eq!(
+            app.settings::<InputPrefs>().get().keyboard_inspected_key,
+            "AD01",
+            "a model switch must not leave an absent JIS position selected"
+        );
     }
 
     fn set(app: &mut TestApp<SettingsShell>, effect: InputEffect) -> bool {

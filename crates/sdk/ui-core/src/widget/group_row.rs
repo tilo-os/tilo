@@ -1143,6 +1143,24 @@ impl GroupRow {
         self.fullscreen_idx().is_some()
     }
 
+    /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
+    /// The viewport clips grips, and promoted or hidden groups have none.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        if self.hidden {
+            return None;
+        }
+        let (index, group) = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(_, group)| group.id == group_id)?;
+        if self.layout_hides_group(index) || self.fullscreen_group == Some(group_id) {
+            return None;
+        }
+        let rect = group.resize_grab_rect()?.intersect(self.rect);
+        (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
+    }
+
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
     /// lane's leading gutter (a maximize, beside the wheel) or covers it (a
     /// client fullscreen).

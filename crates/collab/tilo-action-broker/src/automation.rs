@@ -82,10 +82,13 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
             ParamType::Object,
             "The shortcut, as JSON: id, name, inputs, steps, output and grant",
         );
-        param.schema = Some(serde_json::json!({
-            "type": "object",
-            "required": ["id", "name", "steps"]
-        }));
+        param.schema = Some(
+            serde_json::json!({
+                "type": "object",
+                "required": ["id", "name", "steps"]
+            })
+            .into(),
+        );
         param
     };
     let saved = ResultSpec::Resource {

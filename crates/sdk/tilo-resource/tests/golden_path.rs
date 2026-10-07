@@ -582,6 +582,10 @@ fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
             .unwrap()
     };
     assert_eq!(schema(&empty), schema(&populated));
+    assert!(
+        std::sync::Arc::ptr_eq(&schema(&empty), &schema(&populated)),
+        "type schemas share immutable storage while live children refresh"
+    );
     let board = tilo_resource::publish::<Board>("board", "Board", &replica.state().unwrap());
     assert_ne!(
         schema(&board),
