@@ -564,6 +564,59 @@ pub(crate) fn resolve_child(model: &RepoModel, id: &str) -> Option<Resource> {
         .map(remote_resource)
 }
 
+/// Linked working directories are live device resources, not shared paths.
+pub(crate) fn worktree_rows(model: &RepoModel) -> LiveRow {
+    let mut collection = LiveRow::new(
+        "git_client.worktrees",
+        "git_client.worktrees",
+        t("git-section-worktrees"),
+    );
+    if let Some(error) = &model.worktree_error {
+        collection = collection.row(LiveRow::new(
+            "git_client.worktrees:error",
+            "git_client.error",
+            crate::i18n::t_args(
+                "git-worktree-read-error",
+                &[("error", error.as_str().into())],
+            ),
+        ));
+    }
+    for worktree in &model.worktrees {
+        collection = collection.row(LiveRow::new(
+            format!("git_client.worktree:{}", stable_component(&worktree.path)),
+            "git_client.worktree",
+            format!("{} — {}", worktree.head, worktree.path),
+        ));
+    }
+    collection
+}
+
+pub(crate) fn worktree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
+    if id == "git_client.worktrees" {
+        return Some(worktree_rows(model));
+    }
+    if id == "git_client.worktrees:error" {
+        return model.worktree_error.as_ref().map(|error| {
+            LiveRow::new(
+                id,
+                "git_client.error",
+                crate::i18n::t_args(
+                    "git-worktree-read-error",
+                    &[("error", error.as_str().into())],
+                ),
+            )
+        });
+    }
+    let worktree = model.worktrees.iter().find(|worktree| {
+        id == format!("git_client.worktree:{}", stable_component(&worktree.path))
+    })?;
+    Some(LiveRow::new(
+        id,
+        "git_client.worktree",
+        format!("{} — {}", worktree.head, worktree.path),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,57 +798,4 @@ mod tests {
             omitted
         );
     }
-}
-
-/// Linked working directories are live device resources, not shared paths.
-pub(crate) fn worktree_rows(model: &RepoModel) -> LiveRow {
-    let mut collection = LiveRow::new(
-        "git_client.worktrees",
-        "git_client.worktrees",
-        t("git-section-worktrees"),
-    );
-    if let Some(error) = &model.worktree_error {
-        collection = collection.row(LiveRow::new(
-            "git_client.worktrees:error",
-            "git_client.error",
-            crate::i18n::t_args(
-                "git-worktree-read-error",
-                &[("error", error.as_str().into())],
-            ),
-        ));
-    }
-    for worktree in &model.worktrees {
-        collection = collection.row(LiveRow::new(
-            format!("git_client.worktree:{}", stable_component(&worktree.path)),
-            "git_client.worktree",
-            format!("{} — {}", worktree.head, worktree.path),
-        ));
-    }
-    collection
-}
-
-pub(crate) fn worktree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
-    if id == "git_client.worktrees" {
-        return Some(worktree_rows(model));
-    }
-    if id == "git_client.worktrees:error" {
-        return model.worktree_error.as_ref().map(|error| {
-            LiveRow::new(
-                id,
-                "git_client.error",
-                crate::i18n::t_args(
-                    "git-worktree-read-error",
-                    &[("error", error.as_str().into())],
-                ),
-            )
-        });
-    }
-    let worktree = model.worktrees.iter().find(|worktree| {
-        id == format!("git_client.worktree:{}", stable_component(&worktree.path))
-    })?;
-    Some(LiveRow::new(
-        id,
-        "git_client.worktree",
-        format!("{} — {}", worktree.head, worktree.path),
-    ))
 }
