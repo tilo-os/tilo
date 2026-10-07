@@ -154,10 +154,11 @@ def libtest_outcome(output, check):
         if len(matches) != 1:
             raise ValueError(f"missing or duplicate completion for {name}")
         completed.append(matches[0])
-    return (all(result == "ok" for result in completed)
+    passed = (all(result == "ok" for result in completed)
             and all(status == "ok" and int(failed) == 0 and int(ignored) == 0
                     for status, count, failed, ignored in summaries)
-            and sum(int(count) for status, count, failed, ignored in summaries) >= len(completed))
+              and sum(int(count) for status, count, failed, ignored in summaries) >= len(completed))
+    return passed, [name for name, result in zip(check["expected_tests"], completed) if result == "FAILED"]
 
 
 def junit_outcome(output, check):
@@ -176,16 +177,20 @@ def junit_outcome(output, check):
             raise ValueError(f"missing or duplicate completion for {name}")
     bad_tags = {"failure", "error", "skipped", "rerunFailure", "rerunError",
                 "flakyFailure", "flakyError"}
+    failed = [case.get("name") for case in cases
+              if (case.get("classname"), case.get("name")) in {
+                  (check["expected_binary"], name) for name in check["expected_tests"]
+              } and case.find("failure") is not None]
     if any(node.tag in bad_tags for case in cases for node in case.iter()):
-        return False
+        return False, failed
     for suite in [root, *root.iter("testsuite")]:
         for attribute in ("failures", "errors", "disabled", "skipped"):
             value = suite.get(attribute, "0")
             if not value.isdigit():
                 raise ValueError(f"invalid nextest suite {attribute}")
             if int(value):
-                return False
-    return True
+                return False, failed
+    return True, failed
 
 
 def nextest_text_outcome(output, check):
@@ -206,8 +211,9 @@ def nextest_text_outcome(output, check):
         completed.append(matches[0])
     # Filtered-out tests are normal; skipped expected tests never count as PASS.
     unhealthy = re.search(r"(?:[1-9]\d* (?:failed|flaky|leaked|timed out)|canceled|not run)", tail)
-    return (all(status == "PASS" for status in completed) and not unhealthy
-            and int(total) == int(passed) and int(total) >= len(completed))
+    healthy = (all(status == "PASS" for status in completed) and not unhealthy
+               and int(total) == int(passed) and int(total) >= len(completed))
+    return bool(healthy), [name for name, status in zip(check["expected_tests"], completed) if status == "FAIL"]
 
 
 def test_outcome(check, observed, artifact_root):
@@ -235,8 +241,10 @@ def test_outcome(check, observed, artifact_root):
                "nextest_text": nextest_text_outcome}
     if format_name not in check.get("formats", ["libtest_text"]):
         raise ValueError("observed format differs from acceptance contract")
-    passed = parsers[format_name](output, check) and observed["returncode"] == 0
+    tests_passed, failed = parsers[format_name](output, check)
+    passed = tests_passed and observed["returncode"] == 0
     return {"id": check["id"], "passed": passed, "format": format_name,
+            "failed_expected_tests": failed,
             "observed_tests": len(check["expected_tests"]),
             "log_sha256": observed["log_sha256"]}
 

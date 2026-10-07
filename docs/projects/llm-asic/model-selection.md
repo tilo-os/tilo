@@ -83,9 +83,19 @@ weights and serving artifacts must be separately pinned for actual execution.
 The initial Qwen27B record pins revision
 `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`:
 [immutable config](https://huggingface.co/Qwen/Qwen3.8-27B/resolve/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/config.json).
-Its captured complete tensor inventory is 27,781,427,952 parameters; this
-differs from the nominal 27B language-model count. Neither is a verified
-text-only per-tensor inventory.
+The bounded checkpoint inventory validates 1,199 tensors in 18 shards,
+containing 27,781,427,952 stored BF16 elements (55,562,855,904 payload bytes).
+This includes auxiliary components and differs from the nominal 27B
+language-model count. It is a header-derived storage inventory, not a traced
+text-only executable parameter inventory or full-payload integrity check.
+
+Grouping that inventory by its recorded tensor names gives 26,895,998,464
+stored elements in `model.language_model.*` plus `lm_head.weight`,
+460,730,096 in `model.visual.*`, and 424,699,392 in `mtp.*`. The language
+backbone contains 192 feed-forward matrices totaling 17,112,760,320 elements.
+These sums reconcile to the complete stored count. Names identify storage
+components; a runtime trace must still establish which paths execute for the
+selected coding workload and whether speculative generation uses MTP.
 
 | Derived quantity | Calculation/assumption | Result |
 |---|---|---|
@@ -97,9 +107,10 @@ text-only per-tensor inventory.
 | Untied embedding and output matrices | 2 × 248,320 vocabulary × 5,120 hidden dimensions | 2,542,796,800 parameters |
 
 These are configuration-derived estimates. Recurrent matrix shape follows the
-[reference implementation](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py);
-it must be pinned and checked against actual runtime traces before becoming an
-execution contract. The config specifies FP32 SSM state. Lower weight precision
+[pinned reference implementation](https://github.com/huggingface/transformers/blob/c633787a7acb9bd11e57cd8d599be2b767bbdbaa/src/transformers/models/qwen3_5/modeling_qwen3_5.py)
+and its fallback casts/allocation. The [recurrent contract](../../../hardware/llm-asic/RECURRENT_CONTRACT.md)
+checks source identities and provides an independent mathematical core; actual
+runtime traces and finite-precision equivalence remain unverified. Lower weight precision
 does not establish safe lower recurrent-state precision. Convolution state,
 quantization scales, alignment, temporary activations, MTP and vision work are
 excluded from the nominal calculations. The current CLI's cache calculation

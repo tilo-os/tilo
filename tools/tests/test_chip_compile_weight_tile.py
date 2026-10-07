@@ -41,7 +41,7 @@ class WeightCompilerTests(unittest.TestCase):
         metadata = {"tensors": {MODULE.TENSOR: {"shape": MODULE.SHAPE, "dtype": dtype, "shard": "model.safetensors"}},
                     "shards": {"model.safetensors": {"source_url": url, "header_sha256": header_digest or MODULE.sha(header),
                                                     "payload_bytes": descriptor["data_offsets"][1]}},
-                    "config_sha256": "c" * 64, "index_canonical_sha256": "d" * 64}
+                    "config_sha256": "137754ebd46991bec0c0d9e660dc98256be0b20f0e825b28c95c31de6142d041", "index_canonical_sha256": "d" * 64}
         calls = []
         def read_range(_url, start, end):
             calls.append((start, end))
@@ -122,6 +122,25 @@ class WeightCompilerTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 MODULE.verify_existing(out, run_out=missing)
             self.assertEqual(json.loads((missing / "verification.json").read_text())["status"], "failed")
+
+    def test_rehashed_marker_only_bench_is_rejected_by_verification_entrypoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "compiled"
+            self.compile(out)
+            bench = b'module tb; initial begin $display("RTL_PASS forged"); $finish; end endmodule\n'
+            (out / "tb.sv").write_bytes(bench)
+            manifest = json.loads((out / "sample.json").read_text())
+            manifest["artifact_sha256"]["tb.sv"] = MODULE.sha(bench)
+            (out / "sample.json").write_text(json.dumps(manifest))
+            run = Path(directory) / "rejected-run"
+            with patch("shutil.which") as tool:
+                with self.assertRaisesRegex(ValueError, "independent regeneration"):
+                    MODULE.verify_existing(out, run_out=run)
+                tool.assert_not_called()
+            result = json.loads((run / "verification.json").read_text())
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["input_validation"], "failed")
+            self.assertEqual(result["checks"], {})
 
     def test_changed_size_header_unknown_dtype_and_unpinned_revision_fail(self):
         with tempfile.TemporaryDirectory() as directory:

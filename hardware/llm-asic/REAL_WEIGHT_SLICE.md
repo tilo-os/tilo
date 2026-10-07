@@ -56,11 +56,14 @@ receipt never describes the new invocation; use its explicitly named run directo
 
 Mount the compiler, hardware and compiled sample read-only and only the run
 output directory writable, disable container networking, and follow the narrow mount
-instructions in README.md. The verifier checks artifact identities, runs the
+instructions in README.md. The verifier checks artifact identities and independently
+decodes the raw BF16 sample, regenerates its quantization, coefficient wrapper,
+activation vectors and oracle testbench, then runs the
 production RTL against the independent answers, synthesizes it with Yosys, and
 runs the synthesized netlist against those answers. Missing tools fail.
 The new run's `verification.json` records individual results, tool versions and executable
-hashes, log/netlist hashes, and the caller-declared image identity. These
+hashes, artifact-validator identity, log/netlist hashes, and the caller-declared
+image identity. These
 outputs and compiled simulators belong under `target/`, not in Git.
 
 This checks generation and exact integer execution for a real weight sample.

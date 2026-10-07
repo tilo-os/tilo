@@ -67,6 +67,7 @@ class CodingEvalTests(unittest.TestCase):
                          "test result: ok. 1 passed; 0 failed; 0 ignored;\n")
         self.observed["returncode"] = 1
         self.assertEqual(self.score()["passed_tasks"], 0)
+        self.assertEqual(self.score()["tasks"][0]["checks"][0]["failed_expected_tests"], [])
 
     def test_changed_logs_or_acceptance_source_are_rejected(self):
         self.log.write_text("changed evidence")
@@ -155,6 +156,23 @@ class CodingEvalTests(unittest.TestCase):
         self.replace_log("     Summary [   0.006s] 1 tests run: 1 passed, 44 skipped\n")
         with self.assertRaisesRegex(ValueError, "missing"):
             self.score()
+
+    def test_junit_failure_evidence_excludes_infrastructure_and_unrelated_tests(self):
+        self.check.update(formats=["nextest_junit"], expected_binary="agent::it")
+        self.observed["format"] = "nextest_junit"
+        self.replace_log('<testsuites><testsuite>'
+                         '<testcase classname="agent::it" name="acceptance::real_path"/>'
+                         '<testcase classname="agent::it" name="other"><failure/></testcase>'
+                         '</testsuite></testsuites>')
+        outcome = self.score()["tasks"][0]["checks"][0]
+        self.assertFalse(outcome["passed"])
+        self.assertEqual(outcome["failed_expected_tests"], [])
+        self.replace_log('<testsuites><testsuite><testcase classname="agent::it" '
+                         'name="acceptance::real_path"><error type="timeout"/></testcase>'
+                         '</testsuite></testsuites>')
+        outcome = self.score()["tasks"][0]["checks"][0]
+        self.assertFalse(outcome["passed"])
+        self.assertEqual(outcome["failed_expected_tests"], [])
 
     def test_bool_schema_and_nonstring_log_fail_cleanly(self):
         self.pack["schema_version"] = True

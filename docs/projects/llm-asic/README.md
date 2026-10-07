@@ -18,8 +18,13 @@ This directory provides a research baseline, captured model metadata and an
 candidate model outcomes. It does not establish measured model quality,
 quantization quality, full-model RTL correctness, physical area, power,
 timing closure or a manufacturing quote.
-A working test tile would supply evidence toward the complete ASIC objective;
-it would not complete that objective.
+The [arithmetic tile](../../../hardware/llm-asic/README.md),
+[bounded real-weight compiler](../../../hardware/llm-asic/REAL_WEIGHT_SLICE.md),
+[recurrent contract](../../../hardware/llm-asic/RECURRENT_CONTRACT.md) and
+[research-library mapper](../../../hardware/llm-asic/RESEARCH_MAPPING.md)
+provide executable experiments toward that objective. They cover limited
+contracts; they do not complete the ASIC. [Private task calibration](task-pack.md)
+provides the acceptance gates for future common coding evaluations.
 
 ## Reproducible inputs
 
@@ -69,7 +74,8 @@ records source URLs and digests. It refuses servers that do not honor ranges.
 The initial Qwen capture contains 1,199 tensors in 18 shards: 27,781,427,952
 BF16 storage elements and 55,562,855,904 payload bytes. These describe the
 complete stored checkpoint, including components outside the text backbone.
-No payload bytes were fetched or verified. Stored elements in packed formats
+This inventory CLI fetches or verifies no payload bytes. The separate real-weight
+compiler fetches a bounded sample, with its own evidence. Stored elements in packed formats
 must not be relabeled as logical model parameters.
 
 ## Tilo application model

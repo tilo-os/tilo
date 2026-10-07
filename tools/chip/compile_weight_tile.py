@@ -192,6 +192,12 @@ def verify_existing(out, toolchain_image=None, run_out=None):
             if len(raw) > inventory.MAX_HEADER or sha(raw) != record["artifact_sha256"][name]:
                 raise ValueError("compiled artifact identity changed")
             (inputs / name).write_bytes(raw)
+        from weight_tile_artifact import validate_artifacts
+        record = validate_artifacts(raw_manifest, {
+            name: (inputs / name).read_bytes()
+            for name in ["sample.bf16", "fixed_linear_fixture.sv", "tb.sv", "vectors.json"]
+        })
+        result["artifact_validator_sha256"] = sha((Path(__file__).parent / "weight_tile_artifact.py").read_bytes())
         rtl = HARDWARE / "rtl/integer_group_tile.sv"
         raw_rtl = rtl.read_bytes()
         if sha(raw_rtl) != record["source_sha256"]["hardware/llm-asic/rtl/integer_group_tile.sv"]:
