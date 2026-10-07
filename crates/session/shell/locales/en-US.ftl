@@ -2459,3 +2459,10 @@ search-action-activity-acknowledge-keywords = catch up read seen review acknowle
 search-action-activity-tasks = Review workspace goals and agent work
 search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
 search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
+
+task-review-inspect = Inspect task evidence
+task-review-steer = Change task instructions
+task-review-cancel = Cancel task run
+task-review-retry = Retry task
+task-review-status = Inspect task review availability
+task-review-provider = Task review

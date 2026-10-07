@@ -2463,3 +2463,10 @@ search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen
 search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
 search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
 search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
+
+task-review-inspect = Aufgabennachweise prüfen
+task-review-steer = Aufgabenanweisungen ändern
+task-review-cancel = Aufgabenlauf abbrechen
+task-review-retry = Aufgabe erneut versuchen
+task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
+task-review-provider = Aufgabenprüfung

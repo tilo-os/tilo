@@ -132,6 +132,7 @@ pub struct BrokerHandle {
     inner: tilo_action_broker::collab_broker::BrokerHandle,
     local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
     native_media: Option<super::native_media::NativeMediaService>,
+    task_review: Option<super::task_review::NativeTaskReview>,
     realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
@@ -161,6 +162,10 @@ impl std::ops::Deref for BrokerHandle {
 }
 
 impl BrokerHandle {
+    pub(crate) fn task_review(&self) -> Option<super::task_review::NativeTaskReview> {
+        self.task_review.clone()
+    }
+
     pub(crate) fn native_media_service(&self) -> Option<super::native_media::NativeMediaService> {
         self.native_media.clone()
     }
@@ -261,6 +266,8 @@ pub fn spawn_native(
             crate::shell::record_hydration::NetworkSource(Arc::clone(network)),
         ));
     }
+    let task_review =
+        super::task_review::NativeTaskReview::new(membership.clone(), peer_sync.clone()).ok();
     let publisher = PeerPublisher::with_optional_owner_commit(
         peer_sync
             .clone()
@@ -270,14 +277,16 @@ pub fn spawn_native(
             peer_sync.clone(),
         )),
     );
-    spawn_inner(
+    let mut handle = spawn_inner(
         capnp_socket_path,
         peer_sync.as_ref(),
         &publisher,
         Some(membership),
         CertificateProvisioning::Production,
         None,
-    )
+    )?;
+    handle.task_review = task_review;
+    Ok(handle)
 }
 
 /// Spawn the production broker pipeline with an explicit enrolled-device set.
@@ -816,6 +825,7 @@ fn spawn_inner(
             .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
     }
     Ok(BrokerHandle {
+        task_review: None,
         inner,
         local_session,
         native_media,
