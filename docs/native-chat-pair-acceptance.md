@@ -19,16 +19,17 @@ short real-daemon check: the owned bus exits and an adjacent private bus survive
 Its receipt remains `qualified: false`, with `mode: cleanup-proof`, because it
 proves cleanup rather than the native pair journey.
 
-Build and run in an owned disposable builder environment. With the remote
-`rcargo` client, keep the whole journey inside its supported on-builder session:
+Build and run in an owned disposable builder environment. For a remote
+Cargo drop-in supporting `--on-builder` and `--fetch`, set `CARGO` to that client
+and keep the whole journey inside its supported on-builder session:
 
 ```sh
-rcargo build --locked -p shell -p tilo-control --bin shell --bin tilo-control
-rcargo build --locked -p launcher --bin tilo-launcher \
+"$CARGO" build --locked -p shell -p tilo-control --bin shell --bin tilo-control
+"$CARGO" build --locked -p launcher --bin tilo-launcher \
   -p tilo-app-package-cli --bin tilo-app-package \
   -p tilo-app-cli --bin tilo-app -p install --bin tilo-install \
   -p runtime-bundle --bin tilo-runtime-bundle
-rcargo --on-builder --fetch native-pair-proof/journey.json run --locked \
+"$CARGO" --on-builder --fetch native-pair-proof/journey.json run --locked \
   -p shell --example native_pair_host -- \
   --journey --out target/native-pair-proof --pipewire /private/pipewire-payload
 ```
@@ -36,7 +37,7 @@ rcargo --on-builder --fetch native-pair-proof/journey.json run --locked \
 `--on-builder` holds the worktree session lock through SDK package assembly,
 runtime-library collection, the native windows and cleanup. Raw `podman exec`
 builds do not hold that lock or record their Cargo units. Under disk pressure,
-rcargo can therefore prune their newly built thin-app fingerprints and `.rlib`
+the remote artifact collector can therefore prune their newly built thin-app fingerprints and `.rlib`
 files while the packager is still using them. This caused two native assembly
 failures; the supported session completed the same signed voice journey.
 Use `--no-fetch` for remote compile/check validation only when no local fixture

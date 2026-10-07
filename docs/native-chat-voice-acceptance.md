@@ -33,10 +33,10 @@ Run the existing `native_pair_host` example with `--journey --voice-proof`,
 `--out target/<receipt-dir>` and `--pipewire <private-fixture-prefix>` through the
 configured remote Cargo runner. Build the normal shell, launcher, control,
 package and runtime tools first, as described in
-[native pair acceptance](native-chat-pair-acceptance.md). With `rcargo`, run:
+[native pair acceptance](native-chat-pair-acceptance.md). With the same configured `CARGO` drop-in supporting remote execution, run:
 
 ```sh
-rcargo --on-builder --fetch native-voice-proof/journey.json run --locked \
+"$CARGO" --on-builder --fetch native-voice-proof/journey.json run --locked \
   -p shell --example native_pair_host -- \
   --journey --voice-proof --out target/native-voice-proof \
   --pipewire /private/pipewire-payload
