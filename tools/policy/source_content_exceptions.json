@@ -635,23 +635,8 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/session/shell/tests/snapshots/e2e/e2e-maximized-tile-controls.png",
-    "oid": "c24cce8ad434a0913543d8707de442b301ab250b",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
     "oid": "7a7696681bad4f83fd92680fe7699ea263549022",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/shell/tests/snapshots/e2e/e2e-tab-drag-reorder-settled.png",
-    "oid": "d1c327807e82da9a206fba8f83abf6700fb17424",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/shell/tests/snapshots/wheel_disc/three-spokes.png",
-    "oid": "8ac03e6fd56f0bf9ca6504014a5586486c21f265",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {

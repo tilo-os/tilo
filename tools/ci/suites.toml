@@ -844,6 +844,7 @@ package = "shell"
 inputs = [
   "apps/browser/tilo-app.toml",
   "tools/protocols/airdrop_sender.py",
+  "tools/test-assets.py",
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
@@ -855,6 +856,7 @@ readers = [
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",
+  "crates/session/shell/tests/support/snapshot.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
 ]
