@@ -14791,6 +14791,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-desktop-entry",
  "tilo-files",
  "tilo-net",
  "tilo-test-env",
