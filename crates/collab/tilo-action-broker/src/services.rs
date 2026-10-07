@@ -6,8 +6,9 @@ use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub use crate::collab_broker_capnp::{
-    CertifiedPersonContext, DocumentBytes, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
+    AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes,
+    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeMediaFuture,
+    NativeMediaRequestContext, NativeMediaServices,
 };
 
 /// One read-only host view lookup. The original admitted channel and exact
@@ -751,6 +752,7 @@ pub struct HostServices {
     pub resource_views: Option<Arc<dyn NativeResourceViews>>,
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
+    pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     /// Documents proposed into the room and the owner's answers. Without it

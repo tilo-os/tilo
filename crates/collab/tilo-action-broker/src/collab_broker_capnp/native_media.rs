@@ -40,6 +40,22 @@ impl NativeMediaRequestContext {
 
 pub type NativeMediaFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Snapshot, String>> + Send>>;
+pub type AudioOutputFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<runtime_collab::audio_output::Snapshot, String>>
+            + Send,
+    >,
+>;
+
+pub trait AudioOutputServices: Send + Sync {
+    fn output(
+        &self,
+        context: NativeMediaRequestContext,
+        command: runtime_collab::audio_output::Command,
+    ) -> AudioOutputFuture;
+    /// Fence output belonging to this exact connected process.
+    fn disconnect(&self, peer_id: u64);
+}
 
 pub trait NativeMediaServices: Send + Sync {
     fn command(&self, context: NativeMediaRequestContext, request: Request) -> NativeMediaFuture;
@@ -170,10 +186,13 @@ impl ProcessMonitor {
             let state = Arc::downgrade(state);
             let stop: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 checked.stop();
-                if let Some(state) = state.upgrade()
-                    && let Some(service) = state.services.native_media.as_ref()
-                {
-                    service.disconnect(peer);
+                if let Some(state) = state.upgrade() {
+                    if let Some(service) = state.services.native_media.as_ref() {
+                        service.disconnect(peer);
+                    }
+                    if let Some(service) = state.services.audio_output.as_ref() {
+                        service.disconnect(peer);
+                    }
                 }
             });
             match watch_death(connection.process.clone(), stop) {
@@ -211,6 +230,34 @@ impl Drop for ProcessMonitor {
 }
 
 impl CapnpChannelHandle {
+    pub(super) fn audio_output_dispatch(
+        self: Rc<Self>,
+        bytes: &[u8],
+    ) -> Result<AudioOutputFuture, capnp::Error> {
+        let command = runtime_collab::audio_output::Command::decode(bytes)
+            .map_err(|error| capnp::Error::failed(error.into()))?;
+        let context = self.native_media_context(matches!(
+            command,
+            runtime_collab::audio_output::Command::Close { .. }
+        ));
+        let context = match context {
+            Ok(context) => context,
+            Err(error) => {
+                if let Some(service) = &self.state.services.audio_output {
+                    service.disconnect(self.peer_id);
+                }
+                return Err(error);
+            }
+        };
+        let service = self
+            .state
+            .services
+            .audio_output
+            .as_ref()
+            .ok_or_else(|| capnp::Error::failed("governed audio output unavailable".into()))?;
+        Ok(service.output(context, command))
+    }
+
     #[expect(
         clippy::suspicious_operation_groupings,
         reason = "a route's cluster is the connection's workspace; the names differ by layer"
