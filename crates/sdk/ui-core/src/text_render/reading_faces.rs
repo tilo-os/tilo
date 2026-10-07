@@ -74,7 +74,7 @@ fn new_computer_modern_is_set_in_the_cut_each_size_calls_for() {
 #[cfg(unix)]
 #[test]
 fn the_standalone_catalog_sets_titles_in_book() {
-    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+    let checkout = crate::font_catalog::checkout_root();
     let tmp = tempfile::tempdir().unwrap();
     let standalone = tmp.path();
     std::os::unix::fs::symlink(
