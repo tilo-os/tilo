@@ -100,9 +100,35 @@ class SignedBoard(unittest.TestCase):
         missing = []
         for copy_input in context_copies(logical_lines(recipe.read_text())):
             for source in copy_input.sources:
+                self.assertTrue((ROOT/source).exists(), 'Board COPY source is missing: '+source)
                 if not any(source == p or source.startswith(p+'/') for p in allowed):
                     missing.append(source)
         self.assertEqual(missing, [], 'Board COPY sources excluded by its sparse Docker context')
+
+    def test_board_input_regression_gates_native_build(self):
+        preflight = WORKFLOW.split('  signing-preflight:\n', 1)[1].split('\n  ensure-rpms:', 1)[0]
+        step = preflight.split('      - name: Validate signed board inputs before native build\n', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn("if: needs.plan.outputs.signed-development-board == 'true'", step)
+        self.assertIn('run: python3 os/tests/test_signed_development_board.py', step)
+        native = WORKFLOW.split('  build-and-push:\n', 1)[1].split('    steps:', 1)[0]
+        self.assertIn('signing-preflight', native)
+
+    def test_split_directory_preparation_is_repeatable_but_rejects_stale_kernel(self):
+        recipe = (ROOT/'os/Containerfile.board').read_text()
+        actual = recipe.split('FROM board-root AS split\nRUN ', 1)[1].split('&& bootc container split-kernel-and-rootfs', 1)[0]
+        actual = actual.strip().removesuffix('\\').rstrip()
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)/'kernel'
+            shell = actual.replace('/kernel', str(output))
+            for _ in range(2):
+                result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(list(output.iterdir()), [])
+            stale = output/'old-kernel'
+            stale.write_bytes(b'preserve unexpected input')
+            result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(stale.read_bytes(), b'preserve unexpected input')
 
     def make_root(self, root):
         for directory in ['usr/lib/tilo', 'usr/share/tilo', 'etc/containers']:
@@ -113,6 +139,44 @@ class SignedBoard(unittest.TestCase):
         original['transports']['docker'][policy.REPOSITORY] = [{'type': 'insecureAcceptAnything'}]
         (root/'etc/containers/policy.json').write_text(json.dumps(original))
         return original
+
+    def test_signed_board_restores_sealed_kernel_before_board_initramfs(self):
+        recipe = (ROOT/'os/Containerfile.board').read_text()
+        maintenance_case = recipe.split('case "$TILO_SIGNED_DEVELOPMENT_BOARD" in', 1)[1].split('esac', 1)[0]
+        actual = maintenance_case.split('1)', 1)[1].split('&& dnf install', 1)[0].strip()
+        # Run the actual sealed-base restoration commands against a private
+        # fixture root. No fake restorer hides the inherited /kernel failure.
+        for layout in ['sealed', 'wrong-kernel', 'empty-kernel', 'extra-kernel']:
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                modules = root/'usr/lib/modules/7.2.8'
+                modules.mkdir(parents=True)
+                boot = root/'boot/EFI/Linux'
+                boot.mkdir(parents=True)
+                inherited = boot/'7.2.8.efi'
+                inherited.write_bytes(b'old generic UKI fixture')
+                split = root/('kernel/7.2.7' if layout == 'wrong-kernel' else 'kernel/7.2.8')
+                split.mkdir(parents=True)
+                original = b'' if layout == 'empty-kernel' else b'exact production kernel'
+                (split/'vmlinuz').write_bytes(original)
+                if layout == 'extra-kernel':
+                    (root/'kernel/7.2.9').mkdir()
+                shell = actual.rstrip().removesuffix('&&').rstrip().removesuffix('\\').rstrip()
+                for path in ['/usr/lib/modules', '/kernel', '/boot/EFI/Linux']:
+                    shell = shell.replace(path, str(root)+path)
+                result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True,
+                                        env={**os.environ, 'TILO_HARDWARE_PROFILE': 'orangepi-3b-v2-1'})
+                if layout != 'sealed':
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual((split/'vmlinuz').read_bytes(), original)
+                    self.assertTrue(inherited.exists())
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((modules/'vmlinuz').read_bytes(), original)
+                self.assertEqual(list(boot.iterdir()), [])
+                self.assertFalse((root/'kernel').exists())
+                (root/'kernel').mkdir()
+                self.assertEqual(list((root/'kernel').iterdir()), [])
 
     def test_maintenance_flavour_changes_only_signed_scope_and_marker(self):
         with tempfile.TemporaryDirectory() as temp:
