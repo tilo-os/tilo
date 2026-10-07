@@ -363,6 +363,29 @@ mod component_adapter {
                 })
                 .unwrap_or(false)
         }
+
+        fn restore_live_continuation_metadata(
+            &mut self,
+            metadata: &crate::collaboration::ContinuationMetadata,
+            state: &AutoCommit,
+            _path: &ObjId,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(state, |document, record_root| {
+                    self.component.root.as_deref_mut().is_some_and(|root| {
+                        crate::widget::capability::capability_mut::<dyn Continuable>(root)
+                            .is_some_and(|continuable| {
+                                continuable.restore_live_continuation_metadata(
+                                    metadata,
+                                    document,
+                                    record_root,
+                                )
+                            })
+                    })
+                })
+                .unwrap_or(false)
+        }
     }
 
     impl FloatingSurfaceProvider for BoundAppWidget {
