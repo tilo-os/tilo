@@ -2575,7 +2575,6 @@ impl SearchProvider for ActionsProvider {
         reason = "the catalog lists every shell action with its contract in one table-like pass"
     )]
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        self.governance_hierarchies.borrow_mut().clear();
         const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
             (
                 QS_BRIGHTNESS_ID,
@@ -2613,6 +2612,7 @@ impl SearchProvider for ActionsProvider {
                 "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
             ),
         ];
+        self.governance_hierarchies.borrow_mut().clear();
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }

@@ -7332,7 +7332,6 @@ impl RoomActivityPane {
             | ActivityFocus::PendingTaskCancelEdit
             | ActivityFocus::PendingTaskCancel => return outcome,
             ActivityFocus::TaskRoute(route) => self.task_route = route,
-            ActivityFocus::DirectionField => {}
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
             ActivityFocus::TaskAction(action) => return self.apply_task_action(action, tree),
@@ -7341,7 +7340,7 @@ impl RoomActivityPane {
                 self.reinstall_filter();
             }
             ActivityFocus::MoreLenses => self.advance_lenses(),
-            ActivityFocus::Detail(_) => {}
+            ActivityFocus::DirectionField | ActivityFocus::Detail(_) => {}
             ActivityFocus::ExplorerPane(pane) => self.explorer_pane = pane,
             ActivityFocus::Timeline => self.timeline.set_focus(true),
             ActivityFocus::ReplayBack => self.step_replay(false),
