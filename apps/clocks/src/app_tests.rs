@@ -374,3 +374,37 @@ fn narrow_custom_timer_fields_fit_and_start_through_real_controls() {
         7_384_000
     );
 }
+
+#[test]
+fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        surface.remember_due(crate::DueEvent::Alarm {
+            id: ui::prelude::Id::from_raw("owned-alarm"),
+            label: "Wake up".into(),
+            scheduled_for: chrono::Utc::now(),
+            native_scheduled: true,
+        });
+        assert!(
+            surface.notice.get().is_some(),
+            "the app still explains the due alarm"
+        );
+        assert!(
+            surface
+                .shell_snapshot(chrono::Utc::now())
+                .notification_id
+                .is_none(),
+            "the shell must not notify again after the scheduler's delivery"
+        );
+    })
+    .unwrap();
+    app.effect(&crate::resource::ClocksEffect::DismissNotice)
+        .unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        assert!(
+            surface.notice.get().is_none(),
+            "semantic dismissal clears the device's notice"
+        );
+    })
+    .unwrap();
+}

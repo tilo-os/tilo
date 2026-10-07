@@ -6,7 +6,11 @@
 //! antialiasing differently, so the comparison refuses to run on them.
 //! Regenerate intentional changes with the "Render visual baseline
 //! candidates" workflow (`dev-visual-baselines.yml`), which pins the
-//! builder image and llvmpipe, and review its candidates before committing.
+//! builder image and llvmpipe. Review candidates, publish their immutable
+//! artifacts, and update `artifacts.json`; generated PNGs stay out of Git.
+//! Baselines resolve through `tools/test-assets.py`, which verifies their exact
+//! length and SHA-256 on every cache read. Prewarm for offline test runs with
+//! that tool and set `TILO_TEST_ASSETS_OFFLINE=1`.
 //! Locally, inside that image:
 //! `UPDATE_TYPOGRAPHY_BASELINES=1 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 //! WGPU_ADAPTER_NAME=llvmpipe cargo test -p tilo-ui --test it typography_visual_regression`
@@ -173,9 +177,25 @@ pub(crate) fn frame_size(case: Case) -> (u32, u32) {
 }
 
 pub(crate) fn baseline_path(case: Case) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/typography")
-        .join(format!("{}.png", case.name))
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixtures = root.join("tests/fixtures/typography");
+    let filename = format!("{}.png", case.name);
+    let result = std::process::Command::new("python3")
+        .arg(root.join("../../../tools/test-assets.py"))
+        .arg(fixtures.join("artifacts.json"))
+        .args(["--file", &filename])
+        .output()
+        .expect("run pinned typography asset resolver");
+    assert!(
+        result.status.success(),
+        "resolve immutable typography baseline {filename}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    PathBuf::from(
+        String::from_utf8(result.stdout)
+            .expect("UTF-8 asset path")
+            .trim(),
+    )
 }
 
 fn render(case: Case) -> Frame {
@@ -227,7 +247,7 @@ fn write_png(path: &Path, frame: &Frame) {
 fn read_png(path: &Path) -> Frame {
     let bytes = std::fs::read(path).unwrap_or_else(|error| {
         panic!(
-            "missing typography baseline {}: {error}; regenerate with UPDATE_TYPOGRAPHY_BASELINES=1",
+            "missing verified typography baseline {}: {error}",
             path.display()
         )
     });
@@ -304,13 +324,16 @@ fn multilingual_gallery_matches_scale_matrix() {
     for &case in CASES {
         let actual = render(case);
         record_evidence(case, &actual);
-        let baseline = baseline_path(case);
         if update {
-            write_png(&baseline, &actual);
-            eprintln!("updated {}", baseline.display());
+            let candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/typography")
+                .join(format!("{}.png", case.name));
+            write_png(&candidate, &actual);
+            eprintln!("updated {}", candidate.display());
             continue;
         }
 
+        let baseline = baseline_path(case);
         let expected = read_png(&baseline);
         if (actual.width, actual.height) != (expected.width, expected.height) {
             let actual_path = diagnostics.join(format!("{}-actual.png", case.name));

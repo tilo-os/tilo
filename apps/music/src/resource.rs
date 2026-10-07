@@ -74,17 +74,34 @@ impl Resource for Music {
     }
 
     fn children(state: &Library) -> Vec<tilo_actions::Resource> {
-        document_children(&MusicResourceCtx::from_library(state))
+        let mut children = document_children(&MusicResourceCtx::from_library(state));
+        children.extend(crate::recommendations::resources(state));
+        children
     }
 
     fn child(state: &Library, id: &str) -> Option<tilo_actions::Resource> {
+        if id.starts_with("music.recommendation") {
+            return crate::recommendations::resource_by_id(state, id);
+        }
         let ctx = MusicResourceCtx::for_document_id(state, id)?;
         crate::actions::resource_by_id(&ctx, id)
     }
 
     /// Songs, albums, artists, playlists and what each playlist holds.
     fn search(state: &Library) -> Vec<SearchEntry> {
-        crate::search_type::library_entries(state)
+        let mut entries = crate::search_type::library_entries(state);
+        entries.push(
+            SearchEntry::new(
+                ui::i18n!("music-recommendations-tune"),
+                ui::i18n!("music-recommendations-help"),
+            )
+            .anchored(crate::recommendations::PREFERENCES)
+            .invoking(tilo_actions::ActionAddress::new(
+                crate::recommendations::PREFERENCES,
+                "open",
+            )),
+        );
+        entries
     }
 }
 
@@ -117,6 +134,10 @@ const SCENARIOS: &[&str] = &[
     "spotify-error",
     "spotify-queue",
     "spotify-create",
+    "recommendations",
+    "recommendations-home",
+    "recommendations-feedback",
+    "recommendations-empty",
 ];
 
 /// Framework app: the music widget is the surface over [`Music`].
@@ -148,6 +169,7 @@ impl ResourceApp for MusicShell {
             name,
             Some(
                 "empty"
+                    | "recommendations-empty"
                     | "spotify-home"
                     | "spotify-devices"
                     | "spotify-error"
@@ -157,7 +179,20 @@ impl ResourceApp for MusicShell {
         ) {
             return Vec::new();
         }
-        crate::seed::sample_actions()
+        let mut actions = crate::seed::sample_actions();
+        if name == Some("recommendations-feedback") {
+            actions.extend([
+                MusicAction::SetRecommendationDismissed {
+                    track: "tk_g2".into(),
+                    dismissed: true,
+                },
+                MusicAction::SetRecommendationArtist {
+                    artist: "ar_kavi".into(),
+                    preferred: true,
+                },
+            ]);
+        }
+        actions
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
             .collect()
@@ -256,6 +291,109 @@ impl ResourceSurface<Music, MusicEffect> for MusicApp {
 mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
+
+    #[test]
+    fn recommendations_preferences_are_addressable_on_an_empty_library() {
+        let resource = Music::child(
+            &Library::default(),
+            "music.recommendation-preferences:library",
+        )
+        .expect("recommendation inputs must be available without any music or account");
+        assert_eq!(resource.kind, "music.recommendation-preferences");
+    }
+
+    #[test]
+    fn recommendations_feedback_uses_framework_history_and_undo() {
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        app.invoke(Invoke::apply(&imported("yt:abc123")).unwrap())
+            .unwrap();
+        app.invoke(
+            Invoke::apply(&MusicAction::SetRecommendationDismissed {
+                track: "yt:abc123".into(),
+                dismissed: true,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(app.state().recommendations.dismissed.contains("yt:abc123"));
+        assert!(app.undo());
+        assert!(!app.state().recommendations.dismissed.contains("yt:abc123"));
+    }
+
+    #[test]
+    fn recommendations_viewers_cannot_change_inputs_or_feedback() {
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        app.invoke(Invoke::apply(&imported("yt:abc123")).unwrap())
+            .unwrap();
+        let before = app.state().recommendations;
+        app.set_role(ui::permissions::Role::Viewer);
+        for action in [
+            MusicAction::SetRecommendationInput {
+                input: crate::recommendations::Input::Likes,
+                enabled: false,
+            },
+            MusicAction::SetRecommendationDismissed {
+                track: "yt:abc123".into(),
+                dismissed: true,
+            },
+            MusicAction::SetRecommendationArtist {
+                artist: "ytc_aurora".into(),
+                preferred: true,
+            },
+        ] {
+            assert!(app.invoke(Invoke::apply(&action).unwrap()).is_err());
+        }
+        assert_eq!(app.state().recommendations, before);
+        let mut visible = TestApp::<MusicShell>::capture(Some("recommendations")).unwrap();
+        visible.set_role(ui::permissions::Role::Viewer);
+        visible.settle();
+        let name = crate::recommendations::Input::Likes.label();
+        assert!(visible.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.label() == Some(name.as_str())
+                && node.role() == ui::accesskit::Role::Switch
+                && node.is_disabled()
+        }));
+    }
+
+    #[test]
+    fn recommendations_input_is_named_and_operable_by_assistive_technology() {
+        let mut app = TestApp::<MusicShell>::capture(Some("recommendations")).unwrap();
+        let name = crate::recommendations::Input::Likes.label();
+        let target = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.label() == Some(name.as_str()) && node.role() == ui::accesskit::Role::Switch
+            })
+            .map(|(id, _)| id)
+            .expect("the input is an accessible shared switch");
+        app.harness()
+            .perform_a11y_action(target, &ui::a11y::Action::ToggleCheck)
+            .unwrap();
+        assert!(!app.state().recommendations.likes);
+        assert!(app.undo());
+        assert!(app.state().recommendations.likes);
+    }
+
+    #[test]
+    fn recommendations_hidden_feedback_is_inspectable_and_restorable_through_accessibility() {
+        let mut app =
+            TestApp::<MusicShell>::capture_at(Some("recommendations-feedback"), (1280, 2400))
+                .unwrap();
+        assert!(app.state().recommendations.dismissed.contains("tk_g2"));
+        let label = ui::i18n!("music-recommendations-restore");
+        let target = app
+            .harness()
+            .a11y_node_named(&label)
+            .expect("Show again is exposed in the feedback section");
+        app.harness()
+            .perform_a11y_action(target, &ui::a11y::Action::Activate)
+            .unwrap();
+        assert!(!app.state().recommendations.dismissed.contains("tk_g2"));
+        assert!(app.undo());
+        assert!(app.state().recommendations.dismissed.contains("tk_g2"));
+    }
 
     fn imported(id: &str) -> MusicAction {
         let track = crate::model::Track {

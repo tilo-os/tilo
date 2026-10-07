@@ -92,6 +92,7 @@ fn cover_request() -> PickRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum View {
     Home,
+    Recommendations,
     Songs,
     Albums,
     Artists,
@@ -111,6 +112,7 @@ pub enum View {
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     Nav(View),
+    Recommendation(crate::actions::MusicAction),
     Back,
     /// Open the platform search for this app, prefilled with a genre: the
     /// Browse tiles route here.
@@ -974,6 +976,7 @@ impl MusicApp {
     fn top_level_view(id: &str) -> Option<View> {
         match id {
             "home" => Some(View::Home),
+            "recommendations" => Some(View::Recommendations),
             "songs" => Some(View::Songs),
             "albums" => Some(View::Albums),
             "artists" => Some(View::Artists),
@@ -2301,9 +2304,19 @@ impl MusicApp {
         self.dispatch(commit, state);
     }
 
+    fn recommendation_action(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        action: &crate::actions::MusicAction,
+    ) {
+        self.perform_action(state, action);
+        self.reload_library(state);
+    }
+
     fn dispatch(&mut self, action: Action, state: &mut ui::widget::Edits<'_>) {
         self.dirty = true;
         match action {
+            Action::Recommendation(action) => self.recommendation_action(state, &action),
             Action::Nav(v) => self.on_nav(v),
             Action::Back => self.on_back(),
             Action::BrowseGenre(genre) => self.on_browse_genre(&genre),
@@ -4182,6 +4195,10 @@ impl MusicApp {
     /// library is in place.
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
+            "recommendations" | "recommendations-feedback" | "recommendations-empty" => {
+                self.view = View::Recommendations;
+            }
+            "recommendations-home" => self.view = View::Home,
             "sidebar" => self.snap_sidebar(true),
             "collapsed" => self.snap_sidebar(false),
             "context" => self.snap_track_menu(),
@@ -5281,6 +5298,7 @@ pub(crate) fn image_fetcher() -> ui::Fetcher {
 mod local_files;
 mod media_grid;
 mod page_part;
+mod recommendations;
 mod render;
 mod spotify;
 mod track_table;

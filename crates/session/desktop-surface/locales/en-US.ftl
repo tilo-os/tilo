@@ -944,3 +944,13 @@ browser-new-workspace-name = Workspace { $number }
 notification-center-read = Read
 notification-center-read-description = Read complete notification
 notification-preview-hidden = Notification preview hidden
+activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }
+activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.
+activity-catch-up-review-goals = Review goals and agent work
+activity-acknowledge-viewed = Acknowledge viewed activity
+activity-acknowledge-description = Mark only the displayed summaries as read. Keep hidden changes and waiting tasks pending.
+activity-catch-up-needs-review = Needs your review · { $count ->
+    [one] one waiting task
+   *[other] { $count } waiting tasks
+    }
+activity-catch-up-waiting-detail = { $task } · { $who }
