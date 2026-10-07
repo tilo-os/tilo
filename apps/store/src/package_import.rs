@@ -33,8 +33,6 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
     if tapp.meta.manifest.package.kind != Kind::App {
         return Err(ui::i18n!("store-package-app-only"));
     }
-    let canonical = tilo_app_package::tapp::to_bytes(&tapp.meta, None)
-        .map_err(|_| ui::i18n!("store-package-invalid"))?;
     let manifest = &tapp.meta.manifest.package;
     for item in offers {
         let StoreSource::Tilo { registry_name } = &item.source else {
@@ -53,10 +51,14 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
         let Ok(publisher) = <[u8; 32]>::try_from(key) else {
             continue;
         };
+        // The offer's size describes the installer's canonical download,
+        // not this file's full/thin representation. Identity is bound by the
+        // signed root; preserve the independently authenticated transport size.
         for version in &item.versions {
             if version.version != manifest.version
                 || version.root_hash_hex.as_deref() != Some(tapp.meta.id.to_hex().as_str())
-                || version.size_bytes != canonical.len() as u64
+                || version.size_bytes == 0
+                || version.size_bytes > tilo_app_package::MAX_APP_TAPP_BYTES
                 || !matches!(
                     tilo_app_package::verify(&tapp.meta, &[publisher]),
                     Verification::Trusted { .. }
@@ -124,6 +126,79 @@ impl Input {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn published_bytes(encoded: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        use std::io::Read as _;
+        let packed = base64::engine::general_purpose::STANDARD
+            .decode(encoded.lines().collect::<String>())
+            .unwrap();
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(packed.as_slice())
+            .take(8 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    pub(crate) fn published_fixture() -> (Vec<u8>, StoreItem) {
+        let snapshot_bytes = published_bytes(include_str!(
+            "../fixtures/published/snapshot379.json.gz.b64"
+        ));
+        let snapshot = registry_types::CatalogueSnapshot::from_json(&snapshot_bytes).unwrap();
+        // Historical fixture time, not a runtime freshness override. The owner
+        // anchor is independently recorded in the booted production OS history.
+        let entries = app_cli::client::classify_snapshot(
+            &snapshot,
+            "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06",
+            1_791_214_328,
+        )
+        .unwrap();
+        let verified = entries
+            .iter()
+            .find(|entry| entry.entry.package_id == "so.tilo.store")
+            .unwrap();
+        let bytes = published_bytes(include_str!(
+            "../fixtures/published/store70738-x86_64.tapp.gz.b64"
+        ));
+        let offered = verified
+            .entry
+            .versions
+            .iter()
+            .find(|version| {
+                version.version.starts_with("0.1.70738+") && version.target.architecture == "x86_64"
+            })
+            .unwrap();
+        assert_eq!(bytes.len() as u64, offered.tapp_size_bytes);
+        assert_eq!(tilo_content::hash_bytes(&bytes), offered.tapp_blake3_hex);
+        let mut item = crate::sources::tilo_to_store_item(verified, "Tilo historical fixture", &[]);
+        item.versions.retain(|version| {
+            version.root_hash_hex.as_deref() == Some(offered.tapp_root_hash_hex.as_str())
+        });
+        assert_eq!(
+            item.versions.len(),
+            1,
+            "the real native target remains offered"
+        );
+        (bytes, item)
+    }
+
+    #[test]
+    fn package_import_published_full_and_thin_preserve_actual_offer_size() {
+        let (bytes, item) = published_fixture();
+        let full = review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
+        let decoded = tilo_app_package::tapp::read(bytes.as_slice(), &mut DiscardBlobs).unwrap();
+        assert!(
+            decoded.is_complete(),
+            "the actual public archive carries all payloads"
+        );
+        let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None).unwrap();
+        assert!(thin.len() < bytes.len());
+        let thin_review = review(thin, std::slice::from_ref(&item)).unwrap();
+        assert_eq!(thin_review.expected, full.expected);
+        assert_eq!(full.expected.size_bytes, bytes.len() as u64);
+        assert_eq!(full.expected.package_root, decoded.meta.id);
+    }
 
     pub(crate) fn signed_fixture() -> (Vec<u8>, StoreItem) {
         let dir = tempfile::tempdir().unwrap();
@@ -206,12 +281,15 @@ type = "gui"
                 0 => wrong.id = "so.tilo.other".into(),
                 1 => wrong.versions[0].version = "2.0.0".into(),
                 2 => wrong.versions[0].root_hash_hex = Some("00".repeat(32)),
-                3 => wrong.versions[0].size_bytes += 1,
+                3 => wrong.versions[0].size_bytes = 0,
                 4 => wrong.publisher_pubkey_hex = Some("11".repeat(32)),
                 _ => wrong.trust = StoreTrust::ConfiguredRemote,
             }
             assert!(review(bytes.clone(), &[wrong]).is_err(), "field {changed}");
         }
+        let mut oversized_offer = item;
+        oversized_offer.versions[0].size_bytes = tilo_app_package::MAX_APP_TAPP_BYTES + 1;
+        assert!(review(bytes.clone(), &[oversized_offer]).is_err());
         assert!(
             review(bytes, &[]).is_err(),
             "archive key does not authorize itself"

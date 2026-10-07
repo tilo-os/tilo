@@ -470,8 +470,10 @@ is a preflight refusal hint for oversized handoffs; it never replaces independen
 byte bounds, archive verification or the repository offer size.
 
 Full and thin archives use the same review: every carried payload is hash-checked,
-then canonical signed metadata is matched to an independently verified configured
-repository offer (app, version, root, publisher and thin-package size). An archive's
+then signed metadata is matched to an independently verified configured
+repository offer (app, version, root and publisher). The independently authenticated
+offer size is retained for the installer's exact download-size check; full and thin
+local files can encode the same identity at different lengths. An archive's
 own key never creates publisher trust. Unlisted private development packages are
 refused; component and runtime archives use the system updater.
 
