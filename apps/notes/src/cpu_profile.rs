@@ -166,6 +166,12 @@ fn mounted_typing_observes_canonical_projection_scaling() {
             ] {
                 assert!(rows.iter().any(|row| row.phase == phase));
             }
+            assert!(rows.iter().any(|row| row.phase == "tree_metadata_plan"));
+            if pages > 1 {
+                for phase in ["tree_metadata_delta", "tree_metadata_encode"] {
+                    assert!(rows.iter().any(|row| row.phase == phase));
+                }
+            }
             assert!(!frames.is_empty(), "actual frame-pass observations");
             for phase in [
                 "framework.publication",
