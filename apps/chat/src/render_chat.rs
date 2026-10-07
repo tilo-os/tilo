@@ -297,16 +297,25 @@ impl ChatApp {
             } else {
                 "chat-agent-moving-message"
             });
-            EmptyState::paint(
+            let action = detached.then(|| crate::i18n::t("chat-agent-return"));
+            let action_rect = EmptyState::paint(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 area,
                 &EmptyStateContent {
-                    icon: Some(Icon::ExternalLink),
+                    icon: Some(if detached {
+                        Icon::CornerDownLeft
+                    } else {
+                        Icon::ExternalLink
+                    }),
                     message: Some(&message),
+                    action_label: action.as_deref(),
                     ..EmptyStateContent::new(&title)
                 },
                 self.last_mouse,
             );
+            if let Some(action_rect) = action_rect {
+                ChatApp::push_hit(hits, action_rect, Hit::AgentWindow);
+            }
             self.draw_header(scene, tf, tr, theme, hits);
             return;
         }

@@ -4126,7 +4126,7 @@ mod tests {
         return_node.and_then(|node| node.action_target.clone())
     }
 
-    fn assert_agent_placeholder_controls(app: &ChatApp, return_expected: bool) {
+    fn assert_agent_placeholder_controls(app: &ChatApp, return_count: usize) {
         assert_eq!(
             count_hits(app, |hit| matches!(
                 hit,
@@ -4137,7 +4137,7 @@ mod tests {
         );
         assert_eq!(
             count_hits(app, |hit| matches!(hit, Hit::AgentWindow)),
-            usize::from(return_expected)
+            return_count
         );
         assert_eq!(
             count_hits(app, |hit| matches!(
@@ -4212,7 +4212,7 @@ mod tests {
         );
 
         render_frame(&mut app, 800.0, 600.0);
-        assert_agent_placeholder_controls(&app, false);
+        assert_agent_placeholder_controls(&app, 0);
         assert_agent_placeholder_accessibility(&app, "Moving Scribe’s conversation", false);
         write_progress_shots(&mut app, "detached-placeholder-moving");
 
@@ -4223,7 +4223,10 @@ mod tests {
             Some(("Scribe".into(), true))
         );
         render_frame(&mut app, 800.0, 600.0);
-        assert_agent_placeholder_controls(&app, true);
+        assert_agent_placeholder_controls(&app, 2);
+        assert!(app.hits.iter().any(|(rect, hit)| {
+            matches!(hit, Hit::AgentWindow) && rect.y0 >= app.header_rect().y1
+        }));
         let target = assert_agent_placeholder_accessibility(
             &app,
             "Scribe’s conversation is in another window",
