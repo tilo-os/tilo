@@ -16548,6 +16548,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-feedback-review"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-file-provider"
 version = "0.1.0"
 dependencies = [
