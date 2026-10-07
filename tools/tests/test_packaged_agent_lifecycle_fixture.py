@@ -72,6 +72,54 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertIs(raised.exception, timeout)
             self.assertNotIn("private", " ".join(raised.exception.__notes__))
 
+    def test_message_terminal_timeout_saves_only_closed_evidence_and_failure_scene(self):
+        original = "00000000-0000-0000-0000-000000000063"
+        private = "private direct Message text and model output"
+        pending = {"broker_invocation_id": 41, "update": {
+            "invocation": original, "state": "accepted", "result": private,
+            "error": private, "text": private}, "private": private}
+        timeout = PROOF.ProofTimeout("original Message timeout")
+
+        def expire(_label, completed, _process):
+            self.assertIsNone(completed())
+            raise timeout
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+
+            def respond(_socket, request):
+                if request.get("op") == "snapshot":
+                    return {"ok": True}
+                return {"answer": {"receipt": pending}}
+
+            with patch.object(PROOF, "wait_for", side_effect=expire), \
+                    patch.object(PROOF, "call", side_effect=respond) as calls, \
+                    self.assertRaises(PROOF.ProofTimeout) as raised:
+                PROOF.wait_for_direct_message_terminal(
+                    "socket", {"receipt": pending}, None, output
+                )
+            self.assertIs(raised.exception, timeout)
+            diagnostic = output / "managed-message-terminal-timeout.json"
+            self.assertEqual(json.loads(diagnostic.read_text()), {
+                "original_invocation": original,
+                "broker_invocation_id": 41,
+                "states_seen": {"accepted": 1},
+                "original_unchanged": True,
+            })
+            self.assertNotIn(private, diagnostic.read_text())
+            self.assertEqual(calls.call_args_list[-1].args, ("socket", {
+                "op": "snapshot",
+                "path": str(output / "managed-message-terminal-timeout.png"),
+            }))
+
+            succeeded = {"update": {"invocation": original, "state": "succeeded"}}
+            with patch.object(PROOF, "wait_terminal", return_value=succeeded), \
+                    patch.object(PROOF, "call") as calls:
+                self.assertIs(PROOF.wait_for_direct_message_terminal(
+                    "socket", {"receipt": pending}, None, output
+                ), succeeded)
+            calls.assert_not_called()
+
     def test_native_delivery_diagnostic_is_bounded_closed_and_content_free(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory)

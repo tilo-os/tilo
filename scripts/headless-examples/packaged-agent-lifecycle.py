@@ -1490,6 +1490,24 @@ def wait_for_agent_reply(socket, room, record, parent, agent, process, output):
         raise
 
 
+def wait_for_direct_message_terminal(socket, receipt, process, output):
+    """Preserve closed waiter state and a fresh scene when Message stalls."""
+    try:
+        return wait_terminal(
+            socket,
+            receipt,
+            process,
+            diagnostic_path=output / "managed-message-terminal-timeout.json",
+        )
+    except ProofTimeout as error:
+        try:
+            require_ok(call(socket, {"op": "snapshot", "path": str(
+                output / "managed-message-terminal-timeout.png")}))
+        except Exception:
+            error.add_note("fresh Message terminal timeout snapshot could not be captured")
+        raise
+
+
 def canonical_physical_message(socket, room, record, expected, process):
     """Derive the original from an actual saved row; keep fixture text in memory."""
     saved = {}
@@ -2452,9 +2470,9 @@ def managed_task_and_message_lifecycle(
 
     message_action = wait_for("authenticated direct Message action", lambda: offered_agent_action(
         socket, room, record, agent, "message"), process)
-    message_receipt = wait_terminal(socket, invoke(socket, message_action, {
+    message_receipt = wait_for_direct_message_terminal(socket, invoke(socket, message_action, {
         "value": "Reply while the queued task remains active.",
-    }), process)
+    }), process, output)
     message_invocation = terminal_invocation(message_receipt)
     if re.fullmatch(r"[0-9a-fA-F-]{36}", message_invocation) is None:
         raise RuntimeError("direct Message lost its canonical invocation UUID")
