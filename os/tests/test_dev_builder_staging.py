@@ -15,6 +15,8 @@ EXPECTED_COPIES = (
     "COPY .cargo /build/.cargo",
     "COPY crates /build/crates",
     "COPY apps /build/apps",
+    "COPY scripts/browser/fixtures/https-functional.json "
+    "/build/scripts/browser/fixtures/https-functional.json",
     "COPY examples /build/examples",
     "COPY vendor /build/vendor",
     "COPY dist /build/dist",
