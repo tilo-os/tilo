@@ -1154,8 +1154,10 @@ personal spelling file round-trip regressions also passed.
 Dictionary integration remains incomplete. The existing spellcheck file now
 preserves accepted capitalization and offers `user_spellings()` without a
 second store; lookup remains case-insensitive and old lowercase files work.
-Sandboxed text fields still have app-scoped config, and OSK's learned predictor
-is a separate subsystem. The existing shared text-assistance channel is
+Sandboxed text fields still have app-and-room-scoped config: the launcher
+binds the package's room root as its config directory. OSK's learned predictor
+uses a separate per-app personal record. Neither path is the shared system
+dictionary, and scanning other apps' private roots would bypass their boundary. The existing shared text-assistance channel is
 read-only for ordinary apps. Do not turn generic settings updates into a
 personal-dictionary write bypass or bind the full host config directory into
 apps. A typed shared dictionary service must connect existing Add-to-dictionary

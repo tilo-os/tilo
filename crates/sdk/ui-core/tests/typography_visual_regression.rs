@@ -131,7 +131,7 @@ fn lay_out(case: Case) -> Laid {
     widget.sync(&state.doc, &state.root);
 
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
     let mut text_renderer =

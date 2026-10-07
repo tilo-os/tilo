@@ -33,7 +33,6 @@ use super::{
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const RUNTIME: &str = "crates/browser/tilo-browser-runtime";
 const DESKTOP: &str = "crates/browser/tilo-web-desktop";
-const FONTS: &str = "crates/sdk/ui-core/assets/fonts";
 const MOQ_BROWSER: &str = "scripts/moq-browser";
 const MOQ_LIBRARY: &str = "media-moq-library.mjs";
 
@@ -938,7 +937,7 @@ fn resource_entry_asset(name: &str) -> bool {
 /// The product fonts and `fonts.json`, as `build.sh` writes them. Fonts are
 /// linked, not copied: they are 40 MB and never change in place.
 fn copy_fonts(sdk_root: &Path, bundle: &Path) -> Result<()> {
-    let source = sdk_root.join(FONTS);
+    let source = crate::font_assets::prepared_fonts(sdk_root, "product")?;
     let manifest_source = std::fs::read_to_string(source.join("manifest.toml"))
         .context("reading the font manifest")?;
     let manifest: toml::Table = manifest_source
@@ -985,6 +984,7 @@ fn copy_fonts(sdk_root: &Path, bundle: &Path) -> Result<()> {
     }
     copy_tree(&source.join("LICENSES"), &fonts.join("LICENSES"))?;
     link_or_copy(&source.join("manifest.toml"), &fonts.join("manifest.toml"))?;
+    link_or_copy(&source.join("PROVENANCE.md"), &fonts.join("PROVENANCE.md"))?;
     let catalog = manifest
         .get("catalog_id")
         .and_then(toml::Value::as_str)
@@ -1319,6 +1319,42 @@ fn write_registry_zip(archive: &Path, output: &Path, manifest: &Path, digest: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_font_bundle_preserves_the_pinned_product_bytes_and_notices() {
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let bundle = tempfile::tempdir().unwrap();
+        copy_fonts(&sdk, bundle.path()).unwrap();
+        let descriptor: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(bundle.path().join("fonts.json")).unwrap())
+                .unwrap();
+        let assets = descriptor["assets"].as_array().unwrap();
+        assert_eq!(assets.len(), 35);
+        for asset in assets {
+            let name = asset["name"].as_str().unwrap();
+            let bytes = std::fs::read(bundle.path().join("fonts").join(name)).unwrap();
+            assert_eq!(
+                bytes.len() as u64,
+                asset["bytes"].as_u64().unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                hex_digest(&bytes),
+                asset["sha256"].as_str().unwrap(),
+                "{name}"
+            );
+        }
+        let source = sdk.join("crates/sdk/ui-core/assets/fonts");
+        for name in ["manifest.toml", "PROVENANCE.md", "LICENSES/UPSTREAM.md"] {
+            assert_eq!(
+                std::fs::read(bundle.path().join("fonts").join(name)).unwrap(),
+                std::fs::read(source.join(name)).unwrap(),
+                "{name}"
+            );
+        }
+        assert!(!bundle.path().join("fonts/NewCM10-Regular.otf").exists());
+        assert!(!bundle.path().join("fonts/AdwaitaSans-Regular.ttf").exists());
+    }
 
     fn file(name: &str, size: u64) -> VersionFile {
         VersionFile {
