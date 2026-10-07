@@ -184,6 +184,82 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     relay.shutdown().await;
 }
 
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays live through retained publication checks and its consuming shutdown"
+)]
+async fn governor_application_authoring_survives_publication_tail_rollover() {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Native authoring rollover").await.unwrap();
+    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    rooms
+        .prepare_application(&created.room, &cert, &catalogue, "so.tilo.chat")
+        .await
+        .unwrap();
+    let source = tilo_browser_peer::DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: created.room.clone(),
+        record: String::new(),
+    };
+    let caller =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    for index in 1..=MAX_PUBLICATION_TAIL {
+        let mut request_id = [0; 32];
+        request_id[..8].copy_from_slice(&u64::try_from(index).unwrap().to_le_bytes());
+        rooms
+            .grant_app_authorship(
+                &created.room,
+                &cert,
+                GrantAppAuthorshipRequest {
+                    request_id,
+                    app: format!("so.tilo.rollover-fixture-{index}"),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let current = rooms.room(&created.room).await.unwrap();
+    let tail = current
+        .lock()
+        .await
+        .record
+        .outgoing
+        .iter()
+        .rev()
+        .take_while(|publication| !publication.checkpoint)
+        .count();
+    assert!(
+        tail >= MAX_PUBLICATION_TAIL,
+        "real governance writes reach rollover"
+    );
+    rooms
+        .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |doc| {
+            doc.put(ROOT, "rollover_counter", 1_u64)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+    let retained = rooms
+        .resource_view_document(created.workspace_id, &caller, &source)
+        .await
+        .expect("the mutation crossing rollover must be immediately replayable");
+    let doc = automerge::AutoCommit::load(&retained.bytes).unwrap();
+    assert_eq!(
+        doc.get(ROOT, "rollover_counter")
+            .unwrap()
+            .map(|(value, _)| value.as_u64()),
+        Some(Some(1)),
+        "rollover must publish the new governor mutation into the retained source"
+    );
+    relay.shutdown().await;
+}
+
 #[test]
 fn a_created_room_restores_with_its_governance_and_publication() {
     let dir = tempfile::tempdir().unwrap();
@@ -493,6 +569,133 @@ async fn assert_canonical_chat_preparation(
                 .unwrap(),
             prepared,
             "preparing again must preserve the actual original document"
+        );
+    }
+}
+
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays live through retained publication checks and its consuming shutdown"
+)]
+async fn governor_application_authoring_preserves_native_view_and_voice_binding() {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Native governor authoring").await.unwrap();
+    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    assert_unprepared_authoring_refused(rooms, &created.room, &cert, &catalogue).await;
+    rooms
+        .prepare_application(&created.room, &cert, &catalogue, "so.tilo.chat")
+        .await
+        .unwrap();
+    let source = tilo_browser_peer::DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: created.room.clone(),
+        record: String::new(),
+    };
+    let caller =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let original = rooms
+        .resource_view_document(created.workspace_id, &caller, &source)
+        .await
+        .unwrap();
+    assert_eq!(
+        rooms
+            .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |_| Ok(42))
+            .await
+            .unwrap(),
+        42
+    );
+    let mut different = cert.clone();
+    different.device_label = "different current certificate".into();
+    sign_device_cert(&mut different, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    assert!(
+        rooms
+            .author_application::<()>(
+                &created.room,
+                &different,
+                &catalogue,
+                "so.tilo.chat",
+                |_| { panic!("another certificate must never reach the trusted change") }
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        rooms
+            .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |doc| {
+                doc.put(ROOT, "rollback_marker", true).unwrap();
+                Err::<(), _>("the authoring callback failed".into())
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        rooms
+            .resource_view_document(created.workspace_id, &caller, &source)
+            .await
+            .unwrap()
+            .bytes,
+        original.bytes,
+        "a refused or failed authoring callback cannot publish a partial graph"
+    );
+    let voice = rooms
+        .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |doc| {
+            chat::doc::ChatDoc::create_workspace(doc, "Fixture call");
+            doc.put(ROOT, "preserved_native_marker", true)
+                .map_err(|error| error.to_string())?;
+            Ok(chat::doc::ChatDoc::list_channels(doc)
+                .into_iter()
+                .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
+                .unwrap()
+                .id)
+        })
+        .await
+        .unwrap();
+    let retained = rooms
+        .resource_view_document(created.workspace_id, &caller, &source)
+        .await
+        .expect("native replay accepts the actual governor-authored publication");
+    let mut doc = automerge::AutoCommit::load(&retained.bytes).unwrap();
+    assert!(doc.get(ROOT, "preserved_native_marker").unwrap().is_some());
+    let current = rooms.room(&created.room).await.unwrap();
+    let guard = current.lock().await;
+    let binding = guard
+        .peer()
+        .resolve_media_binding("so.tilo.chat", "", &voice)
+        .expect("the same native source resolves through production voice admission");
+    assert_eq!(binding.channel_id, voice);
+    assert_eq!(
+        doc.get_heads(),
+        guard
+            .peer()
+            .plaintext_complete_heads("so.tilo.chat", "")
+            .unwrap(),
+        "native view bytes and the governor's voice binding share the committed graph"
+    );
+    drop(guard);
+    relay.shutdown().await;
+}
+
+#[cfg(feature = "agents")]
+async fn assert_unprepared_authoring_refused(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    catalogue: &tilo_agent_participant::AppCatalogue,
+) {
+    for app in ["so.tilo.chat", "so.tilo.unregistered"] {
+        assert!(
+            rooms
+                .author_application::<()>(room, cert, catalogue, app, |_| {
+                    panic!("missing or unregistered records must refuse before the callback")
+                })
+                .await
+                .is_err()
         );
     }
 }
