@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import subprocess
@@ -248,6 +249,15 @@ class AdmissionTests(unittest.TestCase):
         with patch.object(admission, 'PROFILE_FIX_CHANGED', {'os/Containerfile'}):
             with self.assertRaisesRegex(ValueError, 'input closure differs'):
                 admission.assembly_compatibility(generic, board)
+
+    def test_sealed_diff_pins_do_not_depend_on_git_abbreviation(self):
+        for abbreviation in ('7', '12', '40'):
+            with self.subTest(abbreviation=abbreviation), patch.dict(os.environ, {
+                    'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'core.abbrev',
+                    'GIT_CONFIG_VALUE_0': abbreviation}):
+                record = admission.assembly_compatibility(*admission.SEALED_FIX_PAIR)
+                self.assertEqual(record['file_diff_sha256'], admission.SEALED_FIX_DIFFS)
+                self.assertEqual(record['runtime_file_sha256'], admission.SEALED_FIX_BLOBS)
 
     def test_pagefile_is_only_a_shrink_gate(self):
         common = admission.module('common_gate', 'windows-direct-common.py')
