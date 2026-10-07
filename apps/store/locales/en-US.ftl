@@ -61,3 +61,7 @@ store-package-reinstall = Already installed; the reviewed offer will be verified
 store-package-new-install = Not installed on this device.
 store-package-file-type = Tilo package
 store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.
+
+store-package-local-trust = Verified by an existing trusted attestor
+store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
+store-package-local-source = Local package
