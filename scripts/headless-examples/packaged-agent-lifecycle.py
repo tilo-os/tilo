@@ -1809,6 +1809,82 @@ def managed_child_diagnostic(profile):
     }
 
 
+NATIVE_DELIVERY_STAGES = {
+    "source_stage", "prepare", "sign", "upload_open", "upload_write", "owner_send",
+}
+NATIVE_DELIVERY_OUTCOMES = {
+    "in_flight", "complete", "definitive_refusal", "uncertain", "saved",
+}
+
+
+def native_delivery_diagnostic(profile):
+    """Return only the closed native-delivery state from one bounded log tail."""
+    logs = list(profile.rglob("launcher-debug-output.log"))
+    if len(logs) != 1:
+        return {"log_count": len(logs), "marker_count": 0,
+                "markers": [], "stage": None, "outcome": "unobserved"}
+    with logs[0].open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        length = stream.tell()
+        stream.seek(max(0, length - 256 * 1024))
+        tail = stream.read(256 * 1024).decode(errors="replace")
+    observed = []
+    marker = re.compile(
+        r"^(?:\x1b\[[0-9;]*m)*\s*"
+        r"(?:\d{4}-\d\d-\d\dT\S+\s+)?DEBUG\s+tilo_agent_delivery:\s+"
+        r"native-delivery:([a-z_]+):([a-z_]+)\s*"
+        r"(?:\x1b\[[0-9;]*m)*$"
+    )
+    for line in tail.splitlines()[-4096:]:
+        matched = marker.fullmatch(line)
+        if matched is None:
+            continue
+        stage, outcome = matched.groups()
+        if stage in NATIVE_DELIVERY_STAGES and outcome in NATIVE_DELIVERY_OUTCOMES:
+            observed.append((stage, outcome))
+    if not observed:
+        return {"log_count": 1, "marker_count": 0,
+                "markers": [], "stage": None, "outcome": "unobserved"}
+    stage, outcome = observed[-1]
+    return {"log_count": 1, "marker_count": len(observed),
+            "markers": [{"stage": marker[0], "outcome": marker[1]}
+                        for marker in observed[-32:]],
+            "stage": stage, "outcome": outcome}
+
+
+def finalize_fixture(profile, output, processes, logs, provider, runtime_owner):
+    """Save the closed classifier, then always tear down test-owned state."""
+    try:
+        try:
+            diagnostic = native_delivery_diagnostic(profile)
+            (output / "native-message-delivery-final.json").write_text(
+                json.dumps(diagnostic, indent=2) + "\n"
+            )
+        except OSError:
+            raise RuntimeError("native delivery diagnostic unavailable") from None
+    finally:
+        for process in reversed(processes):
+            # Each test-owned process gets its own session. Confined launcher
+            # descendants inherit this group; terminate the whole owned group,
+            # not a pattern that might match an operator's real desktop.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=8)
+        for log in logs:
+            log.close()
+        if provider is not None:
+            provider.close()
+        if runtime_owner is not None:
+            runtime_owner.cleanup()
+        shutil.rmtree(profile)
+
+
 def managed_task_and_message_lifecycle(
         socket, room, record, provider, output, process, profile, task_only=False):
     """Prove one installed Agent services Task and Message concurrently."""
@@ -2289,6 +2365,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
         shell_env["RUST_LOG"] = (
             "warn,tilo_action_broker::collab_broker_capnp=debug,"
             "tilo_agent=info,"
+            "tilo_agent_delivery=debug,"
             "shell::shell::search::providers::live_app_actions=debug,"
             "shell::shell::search::action_api=debug,tilo_native_action_gate=debug"
         )
@@ -2588,26 +2665,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             print("NOT PROVEN: the managed Agent start capability has no semantic action door")
         return lifecycle_proven
     finally:
-        for process in reversed(processes):
-            # Each test-owned process gets its own session. Confined launcher
-            # descendants inherit this group; terminate the whole owned group,
-            # not a pattern that might match an operator's real desktop.
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=8)
-        for log in logs:
-            log.close()
-        if provider is not None:
-            provider.close()
-        if runtime_owner is not None:
-            runtime_owner.cleanup()
-        shutil.rmtree(profile)
+        finalize_fixture(profile, output, processes, logs, provider, runtime_owner)
 
 
 def evidence_directory(stage, size):

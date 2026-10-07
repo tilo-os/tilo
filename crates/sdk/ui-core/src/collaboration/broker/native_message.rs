@@ -8,6 +8,15 @@ use runtime_collab::document_contribution::{
 };
 use std::sync::{Arc, Mutex};
 
+macro_rules! delivery_marker {
+    ($stage:literal, $outcome:literal) => {{
+        tracing::debug!(
+            target: "tilo_agent_delivery",
+            concat!("native-delivery:", $stage, ":", $outcome)
+        )
+    }};
+}
+
 /// One shovel-wide charge, shared by every route and retained through unknown
 /// publication outcomes. This is memory accounting, not an authority guard.
 #[derive(Clone, Default)]
@@ -57,6 +66,20 @@ impl NativeDocumentQueue {
         route: &SdkRoute,
         contribution: Arc<NativeExecutedContribution>,
     ) -> Result<(), String> {
+        delivery_marker!("source_stage", "in_flight");
+        let result = self.stage_exact(route, contribution);
+        match &result {
+            Ok(()) => delivery_marker!("source_stage", "complete"),
+            Err(_) => delivery_marker!("source_stage", "definitive_refusal"),
+        }
+        result
+    }
+
+    fn stage_exact(
+        &mut self,
+        route: &SdkRoute,
+        contribution: Arc<NativeExecutedContribution>,
+    ) -> Result<(), String> {
         if self.prepared.is_some() || self.contributions.len() >= MAX_REFERENCES {
             return Err("native Message publication already pending".into());
         }
@@ -100,13 +123,22 @@ impl NativeDocumentQueue {
             // Reserve all transient DTO/signing copies BEFORE encoding.
             // Shared route accounting remains charged throughout await.
             self.resize_charge(preparation_charge(mutation, &self.contributions)?)?;
-            let prepared = PreparedNativeMessagePublication::prepare(
+            delivery_marker!("prepare", "in_flight");
+            let prepared = match PreparedNativeMessagePublication::prepare(
                 route,
                 signer,
                 mutation,
                 &self.contributions,
             )
-            .await?;
+            .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    delivery_marker!("prepare", "uncertain");
+                    return Err(error);
+                }
+            };
+            delivery_marker!("prepare", "complete");
             let bytes = prepared
                 .retained_bytes()
                 .and_then(|n| {
@@ -319,12 +351,18 @@ impl PreparedNativeMessagePublication {
                     .ok_or("native Message upload is incomplete")?,
             );
         }
-        route
+        delivery_marker!("owner_send", "in_flight");
+        if route
             .channel
             .send_with_contributions(&self.op, &references)
             .await
-            .map_err(|_| "native Message send outcome is uncertain")?;
+            .is_err()
+        {
+            delivery_marker!("owner_send", "uncertain");
+            return Err("native Message send outcome is uncertain".into());
+        }
         self.saved = true;
+        delivery_marker!("owner_send", "saved");
         Ok(())
     }
 }
@@ -372,24 +410,43 @@ async fn sign_complete_native_document(
     signer: &mut LocalSdkDocumentSigner,
     mutation: &DocumentMutation,
 ) -> Result<Vec<u8>, String> {
+    fn refused(reason: &'static str) -> String {
+        delivery_marker!("sign", "definitive_refusal");
+        reason.into()
+    }
+
+    fn uncertain(reason: &'static str) -> String {
+        delivery_marker!("sign", "uncertain");
+        reason.into()
+    }
+
+    delivery_marker!("sign", "in_flight");
     if !route.committed {
-        return Err("native Message requires an installed committed document owner".into());
+        return Err(refused(
+            "native Message requires an installed committed document owner",
+        ));
     }
     if !route
         .encryption
         .lock()
         .is_ok_and(|keys| matches!(keys.keys, crate::collaboration::route_keys::Keys::Plain))
     {
-        return Err("native Message cannot bypass encrypted document admission".into());
+        return Err(refused(
+            "native Message cannot bypass encrypted document admission",
+        ));
     }
     if mutation.data().len() > MAX_SIGNED_OP_BYTES {
-        return Err("native Message requires one bounded complete signed document".into());
+        return Err(refused(
+            "native Message requires one bounded complete signed document",
+        ));
     }
     let payload = mutation
         .encode()
-        .map_err(|_| "native Message document will not encode")?;
+        .map_err(|_| refused("native Message document will not encode"))?;
     if payload.len() > MAX_SIGNED_OP_BYTES {
-        return Err("native Message requires one bounded complete signed document".into());
+        return Err(refused(
+            "native Message requires one bounded complete signed document",
+        ));
     }
     let workspace = route.spec.cluster_id.to_string();
     let record = route.spec.record.as_deref().unwrap_or("");
@@ -400,7 +457,11 @@ async fn sign_complete_native_document(
         LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
         LocalSdkDocumentSigner::Inherited(
             SdkDocumentSigner::Host(_) | SdkDocumentSigner::Harness(_),
-        ) => return Err("native Message requires a certified native document signer".into()),
+        ) => {
+            return Err(refused(
+                "native Message requires a certified native document signer",
+            ));
+        }
     };
     let now = crate::time::wall();
     let mut op = SignedOp::new_unsigned(
@@ -412,26 +473,33 @@ async fn sign_complete_native_document(
         now,
         super::next_certified_document_seq(now),
     );
-    let unsigned =
-        postcard::to_stdvec(&op).map_err(|_| "native Message unsigned document will not encode")?;
+    let unsigned = postcard::to_stdvec(&op)
+        .map_err(|_| refused("native Message unsigned document will not encode"))?;
     let signature = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => identity
             .sign_collaboration_op(&workspace, &route.spec.app_id, record, &unsigned)
-            .map_err(|_| "native Message certified signing refused")?,
+            .map_err(|_| uncertain("native Message certified signing outcome is uncertain"))?,
         LocalSdkDocumentSigner::Host(identity) => identity
             .sign_collaboration_op(&workspace, &route.spec.app_id, record, &unsigned)
             .await
-            .map_err(|_| "native Message host signing refused")?,
+            .map_err(|_| uncertain("native Message host signing outcome is uncertain"))?,
         LocalSdkDocumentSigner::Inherited(
             SdkDocumentSigner::Host(_) | SdkDocumentSigner::Harness(_),
-        ) => return Err("native Message requires a certified native document signer".into()),
+        ) => {
+            return Err(refused(
+                "native Message requires a certified native document signer",
+            ));
+        }
     };
     op.signature = collab_types::Signature::from_bytes(signature);
-    let bytes =
-        postcard::to_stdvec(&op).map_err(|_| "native Message signed document will not encode")?;
+    let bytes = postcard::to_stdvec(&op)
+        .map_err(|_| refused("native Message signed document will not encode"))?;
     if bytes.len() > MAX_SIGNED_OP_BYTES {
-        return Err("native Message signed document exceeds native frame capacity".into());
+        return Err(refused(
+            "native Message signed document exceeds native frame capacity",
+        ));
     }
+    delivery_marker!("sign", "complete");
     Ok(bytes)
 }
 
@@ -498,30 +566,36 @@ async fn upload_exact(route: &SdkRoute, pending: &mut PendingUpload) -> Result<(
         .as_ref()
         .ok_or("native Message upload body retired")?;
     if pending.writer.is_none() {
-        pending.writer = Some(
-            route
-                .channel
-                .open_document_contribution(
-                    pending.contribution.source().transport_source(),
-                    body.len(),
-                )
-                .await
-                .map_err(|_| "native Message upload reservation refused")?,
-        );
+        delivery_marker!("upload_open", "in_flight");
+        let writer = route
+            .channel
+            .open_document_contribution(
+                pending.contribution.source().transport_source(),
+                body.len(),
+            )
+            .await;
+        let Ok(writer) = writer else {
+            delivery_marker!("upload_open", "uncertain");
+            return Err("native Message upload reservation outcome is uncertain".into());
+        };
+        pending.writer = Some(writer);
+        delivery_marker!("upload_open", "complete");
     }
     let writer = pending
         .writer
         .as_mut()
         .ok_or("native Message upload writer absent")?;
     for chunk in body[pending.offset..].chunks(MAX_CHUNK_BYTES) {
-        writer
-            .write(chunk)
-            .await
-            .map_err(|_| "native Message chunk outcome is uncertain")?;
+        delivery_marker!("upload_write", "in_flight");
+        if writer.write(chunk).await.is_err() {
+            delivery_marker!("upload_write", "uncertain");
+            return Err("native Message chunk outcome is uncertain".into());
+        }
         pending.offset = pending
             .offset
             .checked_add(chunk.len())
             .ok_or("native Message upload offset overflow")?;
+        delivery_marker!("upload_write", "complete");
     }
     pending.reference = Some(
         writer

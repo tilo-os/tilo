@@ -1,5 +1,6 @@
 import importlib.util
 import inspect
+import io
 import pathlib
 import sys
 import tempfile
@@ -23,6 +24,86 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_native_delivery_diagnostic_is_bounded_closed_and_content_free(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            log = profile / "launcher-debug-output.log"
+            private = "private prompt and model output must not escape"
+            log.write_text(
+                private + "\n"
+                + "DEBUG tilo_agent_delivery: native-delivery:sign:in_flight\n"
+                + "WARN unrelated raw error details\n"
+                + "DEBUG tilo_agent_delivery: native-delivery:sign:definitive_refusal\n"
+            )
+            result = PROOF.native_delivery_diagnostic(profile)
+            self.assertEqual(result, {
+                "log_count": 1,
+                "marker_count": 2,
+                "markers": [
+                    {"stage": "sign", "outcome": "in_flight"},
+                    {"stage": "sign", "outcome": "definitive_refusal"},
+                ],
+                "stage": "sign",
+                "outcome": "definitive_refusal",
+            })
+            self.assertNotIn(private, json.dumps(result))
+
+    def test_native_delivery_diagnostic_preserves_ambiguity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            log = profile / "launcher-debug-output.log"
+            log.write_text(
+                "DEBUG tilo_agent_delivery: native-delivery:owner_send:in_flight\n"
+                "private tilo_agent_delivery: native-delivery:owner_send:saved\n"
+                "native-delivery:owner_send:not_a_closed_outcome\n"
+            )
+            self.assertEqual(PROOF.native_delivery_diagnostic(profile), {
+                "log_count": 1,
+                "marker_count": 1,
+                "markers": [{"stage": "owner_send", "outcome": "in_flight"}],
+                "stage": "owner_send",
+                "outcome": "in_flight",
+            })
+            log.unlink()
+            self.assertEqual(PROOF.native_delivery_diagnostic(profile), {
+                "log_count": 0,
+                "marker_count": 0,
+                "markers": [],
+                "stage": None,
+                "outcome": "unobserved",
+            })
+
+    def test_native_delivery_diagnostic_failure_still_cleans_owned_state(self):
+        class Closed:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+            def cleanup(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            profile = root / "profile"
+            output = root / "output"
+            profile.mkdir()
+            output.mkdir()
+            log = io.StringIO()
+            provider = Closed()
+            runtime_owner = Closed()
+            with patch.object(pathlib.Path, "write_text", side_effect=OSError("refused")):
+                with self.assertRaisesRegex(
+                        RuntimeError, "^native delivery diagnostic unavailable$"):
+                    PROOF.finalize_fixture(
+                        profile, output, [], [log], provider, runtime_owner
+                    )
+            self.assertTrue(log.closed)
+            self.assertTrue(provider.closed)
+            self.assertTrue(runtime_owner.closed)
+            self.assertFalse(profile.exists())
+
     def test_exact_new_pointer_release_retains_revision_after_later_ack_frame(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory)
