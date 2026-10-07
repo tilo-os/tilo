@@ -254,6 +254,27 @@ python3 tools/dev.py check installer
 python3 tools/dev.py check app-packaging
 ```
 
+Give unrelated tasks their own worktree before starting validation:
+
+```sh
+python3 tools/dev.py worktree music-fix --base origin/main
+```
+
+The command prints the new path, branch and exact source commit. It creates the
+worktree in `.worktrees/` beside the shared Git directory, so invoking it from a
+temporary checkout does not place another checkout on `/tmp`'s user quota. It
+uses committed source; existing uncommitted edits stay where they are. An
+existing destination or branch is an error.
+
+Each task has its own Cargo target directory and remote source-sync lock. Remote
+Cargo drop-ins can use the shared Git identity to seed dependency artifacts and
+reuse compiler/download caches. Never share `target/` or set `CARGO_TARGET_DIR`. Run related checks
+sequentially within a task, combine related test targets where appropriate, and
+keep required integration checks. For diagnostics-only builds/checks use
+the remote Cargo drop-in's option to skip artifact downloads; leave fetching
+enabled for rust-analyzer and request artifacts when needed locally. Heavy non-Cargo work runs on the
+builder through SSH; keep only orchestration and small checks on the laptop.
+
 The repository-policy command is the same deterministic suite used by the
 fast-quality workflow. It checks live workflow triggers and timeouts in
 addition to running the policy unit tests, so testing a checker without

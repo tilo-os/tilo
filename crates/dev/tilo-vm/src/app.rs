@@ -4649,7 +4649,7 @@ impl App {
                     stderr: String::new(),
                 });
             }
-            build::pack(&staging.tree(), &staging.archive())
+            Ok(())
         });
         assembled?;
         // A build can outlast an idle SSH connection (a release shell takes
@@ -4663,6 +4663,37 @@ impl App {
             features,
             &staging.tree(),
         );
+        self.import_host_layer(remote, &staging, provenance)
+    }
+
+    /// Reuse an already imported content-identical layer before packing or sending it.
+    fn import_host_layer(
+        &mut self,
+        remote: &mut Remote,
+        staging: &build::Staging,
+        provenance: tilo_vm_protocol::Provenance,
+    ) -> Result<String, CliError> {
+        let hash = self.receipt.phase("digest", || {
+            tilo_vm_protocol::layer_hash::tree_hash(&staging.tree())
+                .map_err(CliError::io("hash assembled layer"))
+        })?;
+        let cached = self
+            .receipt
+            .phase("layer_lookup", || remote.call(LayerList {}))?;
+        if cached
+            .iter()
+            .any(|layer| layer.hash == hash && layer.provenance.component == provenance.component)
+        {
+            self.receipt.set("upload", "skipped");
+            self.receipt.set("layer_reused", &hash);
+            eprintln!(
+                "tilo-vm: device already holds layer {}; no pack or upload",
+                short(&hash)
+            );
+            return Ok(hash);
+        }
+        self.receipt
+            .phase("pack", || build::pack(&staging.tree(), &staging.archive()))?;
         let archive = staging.archive();
         let upload = self
             .receipt
@@ -4677,6 +4708,12 @@ impl App {
                 provenance: Box::new(provenance),
             })
         })?;
+        if imported.hash != hash {
+            return Err(CliError::InvalidInput(format!(
+                "imported layer {} does not match assembled layer {hash}",
+                imported.hash
+            )));
+        }
         Ok(imported.hash)
     }
 
@@ -6488,6 +6525,9 @@ fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod host_layer_tests;
 
 #[cfg(test)]
 mod tests {
