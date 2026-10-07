@@ -16234,6 +16234,7 @@ dependencies = [
  "pollster",
  "skrifa 0.42.1",
  "smallvec",
+ "tilo-font-catalog",
  "tilo-vello",
  "tilo-vello-encoding",
  "vello_cpu 0.3.0",
