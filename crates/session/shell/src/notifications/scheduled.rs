@@ -254,6 +254,34 @@ impl ScheduleStore {
             .collect()
     }
 
+    pub fn snoozed_alarms(&self, room: &str) -> Vec<super::SnoozedAlarm> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                let active = entry.active.as_ref()?;
+                if entry.room != room
+                    || entry.calendar.is_none()
+                    || entry.snooze_at_ms.is_none()
+                    || active.action != Some(ScheduledAction::Snooze)
+                {
+                    return None;
+                }
+                Some(super::SnoozedAlarm {
+                    app_id: entry.app.clone(),
+                    title: entry.title.clone(),
+                    target: tilo_desktop::notifications::ScheduledNotificationTarget {
+                        room: entry.room.clone(),
+                        token: entry.token.clone(),
+                        occurrence_ms: active.at_ms,
+                        calendar_alarm: true,
+                        snoozed: true,
+                        uri: entry.activation.clone(),
+                    },
+                })
+            })
+            .collect()
+    }
+
     pub fn next_at_ms(&self) -> Option<i64> {
         self.entries.iter().filter_map(Entry::next_at_ms).min()
     }
@@ -383,6 +411,7 @@ impl ScheduleStore {
                 token: entry.token.clone(),
                 occurrence_ms: at_ms,
                 calendar_alarm: entry.calendar.is_some(),
+                snoozed: false,
                 uri: entry.activation.clone(),
             };
             due.push((
@@ -898,7 +927,10 @@ mod tests {
                 .borrow()
                 .notification_log()
                 .history_entry(id)
-                .is_none()
+                .is_some_and(|notice| notice
+                    .scheduled_target
+                    .as_ref()
+                    .is_some_and(|target| target.snoozed))
         );
         store
             .lock()
@@ -906,15 +938,190 @@ mod tests {
             .service_step(&bridge, &(due + chrono::Duration::minutes(5)), None)
             .expect("snoozed ring");
         chrome.borrow_mut().pump_dbus_notifications();
-        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        assert_eq!(chrome.borrow().notification_history().len(), 2);
         assert_eq!(
-            chrome.borrow().notification_history()[0]
+            chrome
+                .borrow()
+                .notification_history()
+                .last()
+                .expect("new snoozed ring")
                 .scheduled_target
                 .as_ref()
                 .expect("same exact resource")
                 .occurrence_ms,
             (due + chrono::Duration::minutes(5)).timestamp_millis()
         );
+    }
+
+    fn invoke_fixture_alarm_action(
+        chrome: &crate::shell::chrome_state::Chrome,
+        id: &str,
+    ) -> crate::shell::search::PendingInvocation {
+        use crate::shell::search::{
+            InvocationDisposition, ResourceKind, SearchContext, SearchProvider,
+        };
+        let mut document = automerge::AutoCommit::new();
+        let row = crate::shell::search::providers::ActionsProvider::new()
+            .resolve(
+                id,
+                SearchContext {
+                    query_scope: None,
+                    include_programmatic: true,
+                    needle: "",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &chrome.borrow(),
+                    doc: &document,
+                    doc_root: &automerge::ROOT,
+                },
+            )
+            .expect("actual published alarm action");
+        let disposition = row.on_begin_invoke.as_ref().expect("lifecycle action")(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            chrome,
+            &crate::shell::search::action_api::ActionArgs::none(),
+        )
+        .expect("begin action");
+        let InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("must wait for durable receipt");
+        };
+        ticket
+    }
+
+    fn reload_fixture_history(
+        fixture: &AlarmFixture,
+        path: std::path::PathBuf,
+    ) -> (crate::shell::chrome_state::Chrome, u64) {
+        let history = crate::shell::notification_history::NotificationHistoryStore::at(path);
+        history
+            .save(fixture.chrome.borrow().notification_history())
+            .expect("persist snoozed history");
+        let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+            fixture.chrome.borrow().tree_handle(),
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        chrome
+            .borrow_mut()
+            .set_notification_bridge(fixture.bridge.clone());
+        chrome.borrow_mut().set_dnd(true);
+        let restored = history.load().pop().expect("snoozed history reload");
+        assert!(restored.scheduled_target.as_ref().expect("target").snoozed);
+        let id = chrome.borrow_mut().push_notification_full(restored);
+        (chrome, id)
+    }
+
+    #[test]
+    fn snoozed_history_dismiss_cancels_before_ringing_through_the_public_action() {
+        let temp = tempfile::tempdir().expect("private fixture");
+        let path = temp.path().join("schedules.json");
+        let due = at("2026-04-14T12:00:00+00:00");
+        let fixture = alarm_fixture(due, 0, Some(path.clone()));
+        let snooze = invoke_fixture_alarm_action(
+            &fixture.chrome,
+            &format!("notification.{}.snooze", fixture.id),
+        );
+        fixture
+            .store
+            .lock()
+            .expect("store")
+            .service_step(&fixture.bridge, &due, None)
+            .expect("snooze commit");
+        fixture.chrome.borrow_mut().pump_dbus_notifications();
+        assert!(snooze().expect("snooze receipt").is_some());
+        assert!(fixture.chrome.borrow().notifications().is_empty());
+        assert!(
+            fixture
+                .chrome
+                .borrow()
+                .notification_log()
+                .history_entry(fixture.id)
+                .expect("reachable snooze")
+                .scheduled_target
+                .as_ref()
+                .expect("state")
+                .snoozed
+        );
+        let (chrome, id) = reload_fixture_history(&fixture, temp.path().join("history.json"));
+        let dismiss = invoke_fixture_alarm_action(&chrome, &format!("notification.{id}.dismiss"));
+        assert!(dismiss().expect("pending").is_none());
+        fixture
+            .store
+            .lock()
+            .expect("store")
+            .service_step(&fixture.bridge, &(due + chrono::Duration::minutes(1)), None)
+            .expect("dismiss commit");
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(dismiss().expect("dismiss receipt").is_some());
+        assert!(
+            chrome
+                .borrow()
+                .notification_log()
+                .history_entry(id)
+                .is_none()
+        );
+        drop(fixture.store);
+        let mut restarted = ScheduleStore::open(Some(path)).expect("restart");
+        restarted
+            .service_step(&fixture.bridge, &(due + chrono::Duration::minutes(6)), None)
+            .expect("after canceled deadline");
+        assert!(fixture.bridge.drain_incoming().is_empty());
+        assert!(restarted.next_at_ms().is_none());
+    }
+
+    #[test]
+    fn durable_snooze_cancellation_is_published_after_restart_without_notification_history() {
+        let temp = tempfile::tempdir().expect("private fixture");
+        let path = temp.path().join("schedules.json");
+        let due = at("2026-04-14T12:00:00+00:00");
+        let fixture = alarm_fixture(due, 0, Some(path.clone()));
+        let snooze = invoke_fixture_alarm_action(
+            &fixture.chrome,
+            &format!("notification.{}.snooze", fixture.id),
+        );
+        fixture
+            .store
+            .lock()
+            .expect("store")
+            .service_step(&fixture.bridge, &due, None)
+            .expect("snooze commit");
+        fixture.chrome.borrow_mut().pump_dbus_notifications();
+        assert!(snooze().expect("receipt").is_some());
+        let address = crate::shell::notification::snoozed_alarm_dismiss_id(&fixture.target);
+        let tree = fixture.chrome.borrow().tree_handle();
+        drop(fixture);
+        let store = std::sync::Arc::new(std::sync::Mutex::new(
+            ScheduleStore::open(Some(path.clone())).expect("service restart"),
+        ));
+        let bridge = NotificationBridge::new();
+        bridge.attach_schedule_controller(&store, crate::idle_wake::IdleWake::default());
+        let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+            tree,
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        assert!(chrome.borrow().notification_history().is_empty());
+        let dismiss = invoke_fixture_alarm_action(&chrome, &address);
+        assert!(dismiss().expect("pending").is_none());
+        store
+            .lock()
+            .expect("store")
+            .service_step(&bridge, &(due + chrono::Duration::minutes(1)), None)
+            .expect("commit cancellation");
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(dismiss().expect("durable receipt").is_some());
+        drop(store);
+        let mut restarted = ScheduleStore::open(Some(path)).expect("second service restart");
+        restarted
+            .service_step(&bridge, &(due + chrono::Duration::minutes(6)), None)
+            .expect("past deadline");
+        assert!(bridge.drain_incoming().is_empty());
+        assert!(restarted.next_at_ms().is_none());
     }
 
     #[test]

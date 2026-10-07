@@ -154,16 +154,21 @@ fn alarm_action_contract() -> tilo_actions::ActionContract {
     }
 }
 
+fn is_alarm_action(id: &str) -> bool {
+    crate::shell::notification::alarm_action_address(id).is_some()
+        || crate::shell::notification::is_snoozed_alarm_action(id)
+}
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
     };
 
+    if is_alarm_action(id) {
+        return alarm_action_contract();
+    }
     let mut contract = ActionContract::default();
     match id {
-        id if crate::shell::notification::alarm_action_address(id).is_some() => {
-            contract = alarm_action_contract();
-        }
         "shortcut-help.toggle" | "overview.toggle" => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;

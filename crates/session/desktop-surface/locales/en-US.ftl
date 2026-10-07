@@ -955,6 +955,7 @@ activity-catch-up-needs-review = Needs your review · { $count ->
     }
 activity-catch-up-waiting-detail = { $task } · { $who }
 
+notification-alarm-snoozed = Snoozed for 5 minutes. Dismiss this entry to cancel the pending snooze.
 notification-alarm-dismiss = Dismiss
 notification-alarm-snooze = Snooze for 5 minutes
 notification-alarm-action-failed = Could not change this alarm

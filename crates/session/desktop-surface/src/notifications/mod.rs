@@ -137,3 +137,8 @@ pub fn alarm_action_title(action: &str, title: &str) -> String {
 pub fn alarm_action_subtitle() -> String {
     crate::i18n::t("notification-alarm-action-subtitle")
 }
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn alarm_snoozed_label() -> String {
+    crate::i18n::t("notification-alarm-snoozed")
+}
