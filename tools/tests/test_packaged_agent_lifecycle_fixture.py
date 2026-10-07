@@ -750,6 +750,66 @@ class PresentedEditorTargetTests(unittest.TestCase):
             finally:
                 provider.close()
 
+    def test_marker_provider_finishes_third_turn_without_releasing_superseded_second(self):
+        provider = PROOF.HeldProvider(marker_agent="tide")
+        provider.require_owner_admission(
+            lambda: {"phase": "planning", "sequence": 1, "run_epoch": 7}
+        )
+        operation = "broker:42:chat.person:tide#open-agent-conversation"
+        payload = {
+            "model": "bounded-fixture",
+            "messages": [{"role": "user", "content":
+                          "Operations published right now:\n\n"
+                          "In so.tilo.chat: Tide (chat.agent) — resource chat.person:tide\n"
+                          f"  {operation} — Open conversation\n"
+                          "The request:\n\nOpen that conversation."}],
+        }
+
+        def post():
+            request = urllib.request.Request(
+                provider.endpoint + "/chat/completions", json.dumps(payload).encode(),
+                {"Authorization": "Bearer isolated-fixture-not-a-real-provider-key"},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read())
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            try:
+                first = pool.submit(post)
+                PROOF.wait_for("first marker turn", lambda: provider.request_count() == 1,
+                               timeout=5)
+                provider.release_through(1)
+                self.assertEqual(
+                    first.result(timeout=5)["choices"][0]["message"]["tool_calls"][0]
+                    ["function"]["name"], "invoke",
+                )
+
+                second = pool.submit(post)
+                PROOF.wait_for("held marker continuation", provider.marker_second_held,
+                               timeout=5)
+                third = pool.submit(post)
+                PROOF.wait_for("superseding marker turn", provider.marker_second_superseded,
+                               timeout=5)
+                provider.release_marker_terminal()
+                self.assertEqual(
+                    third.result(timeout=5)["choices"][0]["message"]["tool_calls"][0]
+                    ["function"]["name"], "plan",
+                )
+                self.assertFalse(second.done())
+                self.assertEqual(provider.allowed, 1)
+                self.assertEqual(provider.exact_releases, {3})
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    post()
+                self.assertEqual(refused.exception.code, 429)
+                refused.exception.close()
+                provider.release_through(2)
+                self.assertEqual(
+                    second.result(timeout=5)["choices"][0]["message"]["tool_calls"][0]
+                    ["function"]["name"], "plan",
+                )
+            finally:
+                provider.close()
+
     def test_marker_operation_refuses_absent_ambiguous_or_noncanonical_targets(self):
         expected = "broker:9:chat.person:tide#open-agent-conversation"
         self.assertEqual(PROOF.marker_operation_from_request(
@@ -806,10 +866,34 @@ class PresentedEditorTargetTests(unittest.TestCase):
         for required in (
                 "start_managed_agent", "agent_marker_accessibility",
                 "activate_shell_accessibility_control", "Agent quick composer",
-                "provider.request_count() != 1", "full_lifecycle_proven"):
+                "exercise_agent_quick_composer", "provider.request_count() != 3",
+                "provider.marker_second_held", "provider.marker_second_superseded",
+                "provider.release_marker_terminal", 'interaction["receipt_revision"]',
+                'third_admission["applied_revision"] != interaction["receipt_revision"]',
+                'admission["sequence"] < second_admission["sequence"]',
+                "full_lifecycle_proven"):
             self.assertIn(required, stage)
         for forbidden in ("open_agent_quick_composer_for_shots", "stage_scenario"):
             self.assertNotIn(forbidden, stage)
+
+    def test_marker_composer_uses_physical_private_drafts_and_exact_owner_frontier(self):
+        source = inspect.getsource(PROOF.exercise_agent_quick_composer)
+        for required in (
+                '"op": "click_named"', '"op": "type"',
+                '"agent-quick-editor"', '"agent-quick-send"', '"agent-quick-close"',
+                'for intent in ("message", "queue", "steer")',
+                'activate_agent_quick_composer_control(access, intent)',
+                'activate_agent_quick_composer_control(access, "steer")',
+                'activate_agent_quick_composer_control(access, "message")',
+                '"status") != "in_progress"', 'task.get("run_epoch") != run_epoch',
+                'revision > before_revision', '"ui_invocation_uuid_observable": False',
+                'task.get("applied_revision")', 'applied_revision == receipt_revision',
+                '"owner_direction_applied": True',
+                '"message_submission_proven": False', '"queue_submission_proven": False',
+                '"independent_permission_gates_proven": False'):
+            self.assertIn(required, source)
+        for forbidden in ("SetText", "open_agent_quick_composer_for_shots", "invoke(socket"):
+            self.assertNotIn(forbidden, source)
 
     def test_fourth_response_does_not_release_the_original_third_turn(self):
         provider = object.__new__(PROOF.HeldProvider)

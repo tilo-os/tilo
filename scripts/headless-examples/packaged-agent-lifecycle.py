@@ -263,6 +263,87 @@ def shell_accessibility_control(label):
     return matches[0] if matches else None
 
 
+def agent_quick_composer_accessibility(agent):
+    """Find the one exact compositor composer without reading its draft."""
+    address = atspi.atspi_address()
+    expected = {
+        "message": "Message",
+        "queue": "Queue",
+        "steer": "Steer",
+        "send": "Send",
+        "close": "Close",
+        "open_conversation": "Open conversation",
+        "open_tasks": "Open Task Center",
+    }
+    matches = []
+    for bus, proxy_pid in atspi.bus_pids(address).items():
+        pid = atspi.app_process(proxy_pid)
+        if process_program(pid) != "shell":
+            continue
+        client = atspi.AtspiClient(address, bus)
+        try:
+            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
+                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                for root in client.named(tree, "Agent quick composer"):
+                    subtree = accessible_subtree(client, root, atspi.APP_TREE_NODE_LIMIT)
+                    controls = {}
+                    complete = True
+                    for key, label in expected.items():
+                        nodes = client.named(subtree, label)
+                        if len(nodes) != 1:
+                            complete = False
+                            break
+                        controls[key] = nodes[0]
+                    editors = [
+                        path for path in client.named(subtree, "Message or instruction")
+                        if "org.a11y.atspi.EditableText" in client.interfaces(path)
+                    ]
+                    agents = client.named(
+                        {path: name.casefold() for path, name in subtree.items()},
+                        agent.casefold(),
+                    )
+                    kinds = client.named(subtree, "Agent")
+                    tasks = client.named(subtree, "Task")
+                    if len(tasks) > 1:
+                        raise RuntimeError("the Agent quick composer published duplicate task pickers")
+                    if complete and len(editors) == 1 and len(agents) == 1 and len(kinds) == 1:
+                        matches.append({
+                            "bus": bus, "window": window, "root": root,
+                            "composer": editors[0], "controls": controls,
+                            "task": tasks[0] if tasks else None,
+                            "private_content_recorded": False,
+                        })
+        except atspi.GateError:
+            continue
+    if len(matches) > 1:
+        raise RuntimeError("the compositor published duplicate exact Agent quick composers")
+    return matches[0] if matches else None
+
+
+def activate_agent_quick_composer_control(access, control):
+    """Activate one named control inside the already-bound exact composer."""
+    path = access["controls"].get(control)
+    if path is None:
+        raise RuntimeError(f"the Agent quick composer has no {control} control")
+    activate_shell_accessibility_control(
+        {"bus": access["bus"], "control": path}, control,
+    )
+
+
+def agent_quick_composer_status(agent, labels):
+    """Return a known localized status from the exact composer subtree."""
+    access = agent_quick_composer_accessibility(agent)
+    if access is None:
+        return None
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    subtree = accessible_subtree(client, access["root"], atspi.APP_TREE_NODE_LIMIT)
+    present = [label for label in labels if len(client.named(subtree, label)) == 1]
+    if len(present) > 1:
+        raise RuntimeError("the Agent quick composer published conflicting task receipts")
+    return present[0] if present else None
+
+
 def agent_marker_accessibility(agent):
     """Find one fresh compositor marker for the exact canonical Agent."""
     pattern = re.compile(rf"^Agent action: {re.escape(agent)}(?: · Agent)?$", re.IGNORECASE)
@@ -1402,7 +1483,7 @@ class HeldProvider:
                 probe = owner.owner_admission_probe
                 admission = probe() if probe is not None else None
                 with owner.request_lock:
-                    limit = 1 if owner.marker_agent is not None else 4
+                    limit = 3 if owner.marker_agent is not None else 4
                     if owner.requests >= limit:
                         owner.refused_requests += 1
                         self.send_error(429)
@@ -1421,13 +1502,14 @@ class HeldProvider:
                     owner.waiting_ordinals.add(ordinal)
                     released = owner.request_lock.wait_for(
                         lambda: owner.closed or owner.allowed >= ordinal
-                        or ordinal in owner.exact_releases, timeout=120 if ordinal == 3 else 30
+                        or ordinal in owner.exact_releases,
+                        timeout=120 if ordinal >= 2 else 30,
                     )
                     owner.waiting_ordinals.discard(ordinal)
                 if not released or owner.closed:
                     self.send_error(504)
                     return
-                if owner.marker_agent is None:
+                if owner.marker_agent is None or ordinal > 1:
                     tool_name = "plan"
                     arguments = {"reply": "Fixture response.", "done": True}
                 else:
@@ -1485,6 +1567,18 @@ class HeldProvider:
         with self.request_lock:
             return self.allowed == 2 and 3 in self.waiting_ordinals
 
+    def marker_second_held(self):
+        """The first invoke continued, but its next model turn remains unreleased."""
+        with self.request_lock:
+            return self.marker_agent is not None and self.requests == 2 \
+                and self.allowed == 1 and 2 in self.waiting_ordinals
+
+    def marker_second_superseded(self):
+        """A third turn began while the prior HTTP response remained unreleased."""
+        with self.request_lock:
+            return self.marker_agent is not None and self.requests == 3 \
+                and self.allowed == 1 and {2, 3}.issubset(self.waiting_ordinals)
+
     def require_owner_admission(self, probe):
         """Require a content-free durable owner phase at request admission."""
         with self.request_lock:
@@ -1510,6 +1604,17 @@ class HeldProvider:
             if ordinal != 4 or self.requests != 4 or self.allowed != 2:
                 raise RuntimeError("exact release requires the fourth turn and held original third")
             self.exact_releases.add(ordinal)
+            self.request_lock.notify_all()
+
+    def release_marker_terminal(self):
+        """Finish turn three without answering the superseded held second turn."""
+        with self.request_lock:
+            if self.marker_agent is None or self.requests != 3 or self.allowed != 1 \
+                    or 2 not in self.waiting_ordinals or 3 not in self.waiting_ordinals:
+                raise RuntimeError(
+                    "marker terminal requires the superseded second and current third turns"
+                )
+            self.exact_releases.add(3)
             self.request_lock.notify_all()
 
     def release_through(self, ordinal):
@@ -2027,6 +2132,137 @@ def current_agent_tasks(socket, room, agent, process):
     ))
 
 
+def exercise_agent_quick_composer(socket, agent, marker, exact_task, process):
+    """Use the actual shell controls while one genuine Agent run is current."""
+    fixture_drafts = {
+        "message": "Keep this marker Message draft private.",
+        "queue": "Queue this marker follow-up later.",
+        "steer": "Keep this exact marker task focused.",
+    }
+
+    def composer():
+        return agent_quick_composer_accessibility(agent)
+
+    def draft_matches(expected):
+        current = composer()
+        return current is not None and private_editor_value_matches(current, expected)
+
+    access = wait_for("exact Agent quick composer controls", composer, process)
+    targets = require_ok(call(socket, {"op": "list_targets"})).get("targets")
+    if not isinstance(targets, list):
+        raise RuntimeError("the compositor did not publish quick composer targets")
+    names = [row.get("name") for row in targets if isinstance(row, dict)]
+    for name in ("agent-quick-editor", "agent-quick-send", "agent-quick-close"):
+        if names.count(name) != 1:
+            raise RuntimeError(f"the compositor did not publish one exact {name} target")
+
+    for intent in ("message", "queue", "steer"):
+        if intent != "message":
+            activate_agent_quick_composer_control(access, intent)
+            access = wait_for(f"{intent} composer controls", composer, process)
+        if not private_editor_value_matches(access, ""):
+            raise RuntimeError(f"the new {intent} draft was not initially private and empty")
+        require_ok(call(socket, {"op": "click_named", "name": "agent-quick-editor"}))
+        require_ok(call(socket, {"op": "type", "text": fixture_drafts[intent]}))
+        wait_for(
+            f"physical {intent} draft handoff",
+            lambda intent=intent: draft_matches(fixture_drafts[intent]),
+            process,
+        )
+
+    activate_agent_quick_composer_control(access, "message")
+    access = wait_for("restored Message composer", composer, process)
+    wait_for("exact Message draft restoration", lambda: draft_matches(fixture_drafts["message"]),
+             process)
+
+    require_ok(call(socket, {"op": "click_named", "name": "agent-quick-close"}))
+    wait_for("quick composer close", lambda: agent_quick_composer_accessibility(agent) is None,
+             process)
+    current_marker = wait_for("same genuine Agent marker after close", lambda:
+                              agent_marker_accessibility(agent), process)
+    if current_marker["label"] != marker["label"]:
+        raise RuntimeError("closing the composer changed the authenticated Agent marker")
+    activate_shell_accessibility_control(current_marker, current_marker["label"])
+    access = wait_for("reopened exact Agent quick composer", composer, process)
+    wait_for("Message draft retained across close and reopen", lambda:
+             draft_matches(fixture_drafts["message"]), process)
+
+    activate_agent_quick_composer_control(access, "steer")
+    access = wait_for("reopened Steer composer", composer, process)
+    if access["task"] is None:
+        raise RuntimeError("Steer did not publish its current Task picker")
+    wait_for("Steer draft retained across close and reopen", lambda:
+             draft_matches(fixture_drafts["steer"]), process)
+    before = exact_task()
+    if not isinstance(before, dict) or before.get("status") != "in_progress":
+        raise RuntimeError("the genuine marker task is not current before physical Steer")
+    run_epoch = before.get("run_epoch")
+    before_revision = before.get("after_revision")
+    if type(run_epoch) is not int or run_epoch <= 0 \
+            or type(before_revision) is not int or before_revision < 0:
+        raise RuntimeError("the genuine marker task has no exact owner frontier")
+
+    require_ok(call(socket, {"op": "click_named", "name": "agent-quick-send"}))
+
+    def owner_direction_receipt():
+        task = exact_task()
+        if not isinstance(task, dict):
+            return None
+        if task.get("run_epoch") != run_epoch:
+            raise RuntimeError("physical Steer crossed into a replacement Agent run")
+        revision = task.get("after_revision")
+        return task if type(revision) is int and revision > before_revision else None
+
+    received = wait_for("physical Steer's exact owner frontier receipt",
+                        owner_direction_receipt, process)
+    receipt_revision = received["after_revision"]
+
+    def owner_direction_applied():
+        task = exact_task()
+        if not isinstance(task, dict):
+            return None
+        if task.get("run_epoch") != run_epoch:
+            raise RuntimeError("physical Steer application crossed into a replacement Agent run")
+        after_revision = task.get("after_revision")
+        applied_revision = task.get("applied_revision")
+        if type(after_revision) is not int or type(applied_revision) is not int:
+            raise RuntimeError("physical Steer application lacks an owner frontier")
+        if after_revision != receipt_revision:
+            raise RuntimeError("physical Steer application no longer names the exact receipt")
+        return task if applied_revision == receipt_revision else None
+
+    applied = wait_for("physical Steer's exact owner DirectionApplied frontier",
+                       owner_direction_applied, process)
+    receipt_label = wait_for(
+        "physical Steer's localized visible owner outcome",
+        lambda: agent_quick_composer_status(agent, {
+            "Earlier direction was saved in Task Center.",
+            "The agent applied earlier direction.",
+        }),
+        process,
+    )
+    wait_for("confirmed Steer clears only its fixture draft", lambda: draft_matches(""),
+             process)
+    return {
+        "physical_input": True,
+        "intent_drafts_restored": True,
+        "close_reopen_retained_draft": True,
+        "task_id": received.get("task_id"),
+        "run_epoch": run_epoch,
+        "before_revision": before_revision,
+        "receipt_revision": receipt_revision,
+        "applied_revision": applied["applied_revision"],
+        "owner_direction_applied": True,
+        "task_choice": "automatic_single_current",
+        "visible_outcome": "applied" if receipt_label.startswith("The agent") else "saved",
+        "ui_invocation_uuid_observable": False,
+        "message_submission_proven": False,
+        "queue_submission_proven": False,
+        "independent_permission_gates_proven": False,
+        "private_fixture_content_recorded": False,
+    }
+
+
 def latest_chat_task_frontier(output, task_id, run_epoch, phase):
     """Read the opt-in native diagnostic without retaining private UI state."""
     path = output / "shell.log"
@@ -2183,19 +2419,29 @@ def managed_agent_marker_stage(socket, room, provider, output, process, size):
         sequence = execution.get("sequence")
         if type(epoch) is not int or epoch <= 0 or execution.get("run_epoch") != epoch:
             return None
-        if (phase == "accepted" and sequence == 0) \
-                or (phase == "planning" and type(sequence) is int and sequence > 0):
-            return {"run_epoch": epoch, "phase": phase, "sequence": sequence}
+        revision = task.get("after_revision")
+        applied_revision = task.get("applied_revision")
+        if phase == "planning" and type(sequence) is int and sequence > 0 \
+                and type(revision) is int and revision >= 0 \
+                and type(applied_revision) is int and 0 <= applied_revision <= revision:
+            return {"run_epoch": epoch, "phase": phase, "sequence": sequence,
+                    "after_revision": revision, "applied_revision": applied_revision}
         return None
 
     provider.require_owner_admission(accepted_marker_task)
     startup = start_managed_agent(socket, room, agent, process)
-    wait_for("marker task's single controlled model request",
+    wait_for("marker task's first controlled model request",
              lambda: provider.request_count() == 1, process)
     admission = provider.owner_admission(1)
     if admission is None:
         raise RuntimeError("marker provider request lacked owner task custody")
     provider.release_through(1)
+
+    wait_for("marker task's normal held continuation",
+             provider.marker_second_held, process)
+    second_admission = provider.owner_admission(2)
+    if second_admission is None:
+        raise RuntimeError("marker continuation lacked owner task custody")
 
     marker = wait_for("actual compositor Agent action marker",
                       lambda: agent_marker_accessibility(agent), process)
@@ -2208,6 +2454,25 @@ def managed_agent_marker_stage(socket, room, provider, output, process, size):
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-quick-composer-after-{size}.png"
     )}))
+    interaction = exercise_agent_quick_composer(
+        socket, agent, marker, exact_task, process,
+    )
+
+    wait_for("post-Steer normal third model turn",
+             provider.marker_second_superseded, process)
+    third_admission = provider.owner_admission(3)
+    admissions = [admission, second_admission, third_admission]
+    if third_admission is None \
+            or any(row.get("run_epoch") != admission["run_epoch"] for row in admissions) \
+            or [row.get("phase") for row in admissions] != ["planning"] * 3 \
+            or not admission["sequence"] < second_admission["sequence"] \
+            < third_admission["sequence"] \
+            or third_admission["after_revision"] != interaction["receipt_revision"] \
+            or third_admission["applied_revision"] != interaction["receipt_revision"] \
+            or interaction["applied_revision"] != interaction["receipt_revision"] \
+            or not provider.marker_second_superseded():
+        raise RuntimeError("marker continuation lost its exact owner run or report ordering")
+    provider.release_marker_terminal()
 
     def completed():
         task = read_task(socket, room, task_id, process)
@@ -2217,18 +2482,23 @@ def managed_agent_marker_stage(socket, room, provider, output, process, size):
         return task if status == "done" else None
 
     terminal = wait_for("marker task's durable owner completion", completed, process)
-    if provider.request_count() != 1 or provider.overflow_count() != 0:
-        raise RuntimeError("marker proof used more than one controlled model request")
+    if provider.request_count() != 3 or provider.overflow_count() != 0:
+        raise RuntimeError("marker proof did not use exactly three controlled model requests")
+    provider.release_through(2)
     evidence = {
         "queue_invocation": terminal_invocation(queued_receipt),
         "start_invocation": startup["invocation"],
         "run_epoch": admission["run_epoch"],
         "owner_phase_at_request": admission["phase"],
-        "provider_request_count": 1,
+        "provider_request_count": 3,
+        "held_continuation_cancelled_by_direction": True,
+        "owner_planning_sequences": [row["sequence"] for row in admissions],
+        "direction_revision": interaction["receipt_revision"],
         "exact_action_scope": grant["scope"],
         "marker_accessible": True,
         "marker_activated": True,
         "quick_composer_accessible": composer is not None,
+        "quick_composer_interaction": interaction,
         "terminal_status": terminal["status"],
         "full_lifecycle_proven": False,
         "private_fixture_content_recorded": False,
