@@ -547,7 +547,7 @@ impl ResourceApp for StoreShell {
                 // Oversized handoffs must reach the normal action refusal even
                 // when the bounded content store cannot retain their bytes.
                 let hash = if file.bytes().len() > crate::package_import::MAX_IMPORT_BYTES {
-                    tilo_content::hash_bytes(file.bytes())
+                    ui::framework::content::hash_bytes(file.bytes())
                 } else {
                     let Ok(hash) = content.put(file.bytes()) else {
                         return Vec::new();

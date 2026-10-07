@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use app_host::install::InstallExpectation;
-use tilo_app_package::{DiscardBlobs, Kind, Verification};
 
 use crate::{StoreItem, StoreSource, StoreTrust};
 
@@ -29,17 +28,17 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
     if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
         return Err(ui::i18n!("store-package-size-refused"));
     }
-    let tapp = tilo_app_package::tapp::read(bytes.as_slice(), &mut DiscardBlobs)
-        .map_err(|_| ui::i18n!("store-package-invalid"))?;
-    if tapp.meta.manifest.package.kind != Kind::App {
-        return Err(ui::i18n!("store-package-app-only"));
-    }
-    let manifest = &tapp.meta.manifest.package;
+    let archive = app_host::local_package::review_archive(&bytes).map_err(|error| match error {
+        app_host::local_package::ArchiveReviewError::Invalid => ui::i18n!("store-package-invalid"),
+        app_host::local_package::ArchiveReviewError::NotApplication => {
+            ui::i18n!("store-package-app-only")
+        }
+    })?;
     for item in offers {
         let StoreSource::Tilo { registry_name } = &item.source else {
             continue;
         };
-        if item.trust != StoreTrust::PublisherSigned || item.id != manifest.id {
+        if item.trust != StoreTrust::PublisherSigned || item.id != archive.app_id() {
             continue;
         }
         let Some(key) = item
@@ -56,25 +55,25 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
         // not this file's full/thin representation. Identity is bound by the
         // signed root; preserve the independently authenticated transport size.
         for version in &item.versions {
-            if version.version != manifest.version
-                || version.root_hash_hex.as_deref() != Some(tapp.meta.id.to_hex().as_str())
-                || version.size_bytes == 0
-                || version.size_bytes > tilo_app_package::MAX_APP_TAPP_BYTES
-                || !matches!(
-                    tilo_app_package::verify(&tapp.meta, &[publisher]),
-                    Verification::Trusted { .. }
-                )
-            {
+            let Some(package_root) = version
+                .root_hash_hex
+                .as_deref()
+                .and_then(|root| format!("tapp:{root}").parse().ok())
+            else {
+                continue;
+            };
+            let expected = InstallExpectation {
+                package_root,
+                publisher,
+                app_id: item.id.clone(),
+                version: version.version.clone(),
+                size_bytes: version.size_bytes,
+            };
+            if !archive.accepts_offer(&expected) {
                 continue;
             }
             return Ok(ImportedPackage {
-                expected: InstallExpectation {
-                    package_root: tapp.meta.id,
-                    publisher,
-                    app_id: item.id.clone(),
-                    version: version.version.clone(),
-                    size_bytes: version.size_bytes,
-                },
+                expected,
                 item: {
                     let mut reviewed = item.clone();
                     reviewed.versions = vec![version.clone()];
@@ -102,12 +101,7 @@ pub fn review_local(
     }
     let checked = host.review_local(&bytes)?;
     let package = &checked.manifest.package;
-    let root = format!("tapp:{}", checked.root)
-        .parse::<tilo_app_package::PackageId>()
-        .map_err(|_| ui::i18n!("store-package-invalid"))?;
-    let publisher: [u8; 32] = hex::decode(&checked.publisher)
-        .map_err(|_| ui::i18n!("store-package-invalid"))?
-        .try_into()
+    let expected = app_host::local_package::local_expectation(&checked, bytes.len() as u64)
         .map_err(|_| ui::i18n!("store-package-invalid"))?;
     let item = StoreItem {
         id: package.id.clone(),
@@ -144,13 +138,7 @@ pub fn review_local(
         ),
     };
     Ok(ImportedPackage {
-        expected: InstallExpectation {
-            package_root: root,
-            publisher,
-            app_id: package.id.clone(),
-            version: package.version.clone(),
-            size_bytes: bytes.len() as u64,
-        },
+        expected,
         item,
         registry: String::new(),
         local: Some(checked),
@@ -162,7 +150,7 @@ pub fn review_local(
 #[derive(Clone, Debug)]
 pub enum Input {
     Path(std::path::PathBuf),
-    Content(tilo_content::ContentStore, String),
+    Content(ui::framework::content::ContentStore, String),
     Bytes(Vec<u8>),
 }
 
@@ -197,6 +185,7 @@ impl Input {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use tilo_app_package::DiscardBlobs;
 
     fn published_bytes(encoded: &str) -> Vec<u8> {
         use base64::Engine as _;
@@ -241,7 +230,10 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(bytes.len() as u64, offered.tapp_size_bytes);
-        assert_eq!(tilo_content::hash_bytes(&bytes), offered.tapp_blake3_hex);
+        assert_eq!(
+            ui::framework::content::hash_bytes(&bytes),
+            offered.tapp_blake3_hex
+        );
         let mut item = crate::sources::tilo_to_store_item(verified, "Tilo historical fixture", &[]);
         item.versions.retain(|version| {
             version.root_hash_hex.as_deref() == Some(offered.tapp_root_hash_hex.as_str())
@@ -383,9 +375,12 @@ type = "gui"
         let dir = tempfile::tempdir().unwrap();
         assert!(Input::Path(dir.path().join("missing.tapp")).read().is_err());
         assert!(
-            Input::Content(tilo_content::ContentStore::memory(), "ab".repeat(32))
-                .read()
-                .is_err()
+            Input::Content(
+                ui::framework::content::ContentStore::memory(),
+                "ab".repeat(32)
+            )
+            .read()
+            .is_err()
         );
     }
 }
