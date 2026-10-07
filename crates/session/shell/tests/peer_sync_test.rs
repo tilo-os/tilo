@@ -416,6 +416,12 @@ fn native_snapshot(
             stamp: stamp.clone(),
         },
         display: Some(native_fabric::DisplayPlacement {
+            outputs: vec![native_fabric::DisplayConnectorPlacement {
+                connector: "eDP-1".into(),
+                label: "Synthetic panel".into(),
+                rect: native_fabric::DisplayRect { x: 0, y: 0, ..rect },
+                scale_milli,
+            }],
             device: device.clone(),
             rect,
             scale_milli,
@@ -468,22 +474,15 @@ async fn send_native_payload(
 
 /// The existing certified personal-fabric lane carries placement and leased
 /// input to the native seat. No surface share, stream, enrollment or new router.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
-    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
-    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
-    let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
-    let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
-    let endpoint_a = addr_a.id;
-    let endpoint_b = addr_b.id;
-    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
-    wait_certified_native_peer(&mut events_a).await;
-    wait_certified_native_peer(&mut events_b).await;
+fn native_pair_fabrics(
+    source: &DeviceId,
+    target: &DeviceId,
+) -> (native_fabric::DeviceFabric, native_fabric::DeviceFabric) {
     let mut source_fabric = native_fabric::DeviceFabric::default();
     let mut target_fabric = native_fabric::DeviceFabric::default();
     source_fabric
         .upsert(native_snapshot(
-            &source,
+            source,
             2000,
             native_fabric::DisplayRect {
                 x: 0,
@@ -495,7 +494,7 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
         .unwrap();
     target_fabric
         .upsert(native_snapshot(
-            &target,
+            target,
             1000,
             native_fabric::DisplayRect {
                 x: 960,
@@ -505,6 +504,60 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
             },
         ))
         .unwrap();
+    (source_fabric, target_fabric)
+}
+
+async fn send_native_connector_observation(
+    command: &tokio::sync::mpsc::Sender<NetCmd>,
+    target: iroh::EndpointId,
+    events: &mut tokio::sync::mpsc::Receiver<NetEvent>,
+    source: iroh::EndpointId,
+    fabrics: (
+        &native_fabric::DeviceFabric,
+        &mut native_fabric::DeviceFabric,
+    ),
+    owner: &DeviceId,
+) {
+    let display = fabrics
+        .0
+        .snapshots()
+        .get(owner)
+        .unwrap()
+        .display
+        .as_ref()
+        .unwrap();
+    send_native_payload(
+        command,
+        target,
+        PersonalFabricPayload::DisplayConnectors {
+            stamp: display.stamp.clone(),
+            outputs: display.outputs.clone(),
+        },
+    )
+    .await;
+    let PersonalFabricPayload::DisplayConnectors { stamp, outputs } =
+        wait_native_payload(events, source).await
+    else {
+        panic!("expected native connector observation")
+    };
+    fabrics
+        .1
+        .observe_display_connectors(owner, &stamp, outputs)
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
+    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
+    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
+    let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
+    let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
+    let endpoint_a = addr_a.id;
+    let endpoint_b = addr_b.id;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_certified_native_peer(&mut events_a).await;
+    wait_certified_native_peer(&mut events_b).await;
+    let (mut source_fabric, mut target_fabric) = native_pair_fabrics(&source, &target);
     send_native_payload(
         &cmd_b,
         endpoint_a,
@@ -520,6 +573,16 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
     assert_eq!(received.snapshots().len(), 1);
     let remote = received.snapshots().get(&target).unwrap().clone();
     source_fabric.upsert(remote.clone()).unwrap();
+    send_native_connector_observation(
+        &cmd_b,
+        endpoint_a,
+        &mut events_a,
+        endpoint_b,
+        (&target_fabric, &mut source_fabric),
+        &target,
+    )
+    .await;
+    let remote = source_fabric.snapshots().get(&target).unwrap().clone();
     let mut advertised_source = native_fabric::DeviceFabric::default();
     advertised_source
         .upsert(source_fabric.snapshots().get(&source).unwrap().clone())
@@ -540,6 +603,15 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
     target_fabric
         .upsert(received.snapshots().get(&source).unwrap().clone())
         .unwrap();
+    send_native_connector_observation(
+        &cmd_a,
+        endpoint_b,
+        &mut events_b,
+        endpoint_a,
+        (&advertised_source, &mut target_fabric),
+        &source,
+    )
+    .await;
     assert_eq!(
         source_fabric, target_fabric,
         "both native replicas converge on the same logical topology"
@@ -806,5 +878,162 @@ fn native_screen_geometry_rejects_offline_sources_and_invalid_bounds() {
         }
         .logical_placement()
         .is_none()
+    );
+}
+
+#[test]
+fn native_connector_discovery_preserves_owner_scale_and_offline_state() {
+    use shell::shell::device_fabric_runtime::observed_device_displays;
+    let source = DeviceId::new("source").unwrap();
+    let target = DeviceId::new("target").unwrap();
+    let mut fabric = native_fabric::DeviceFabric::default();
+    let rect = native_fabric::DisplayRect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 540,
+    };
+    fabric.upsert(native_snapshot(&source, 2000, rect)).unwrap();
+    let mut peer = native_snapshot(&target, 1000, native_fabric::DisplayRect { x: 960, ..rect });
+    peer.display.as_mut().unwrap().rect.width = 1920;
+    peer.display
+        .as_mut()
+        .unwrap()
+        .outputs
+        .push(native_fabric::DisplayConnectorPlacement {
+            connector: "DP-1".into(),
+            label: "Second panel".into(),
+            scale_milli: 1250,
+            rect: native_fabric::DisplayRect { x: 960, ..rect },
+        });
+    fabric.upsert(peer.clone()).unwrap();
+    let observed = observed_device_displays(&fabric, Some(&source));
+    assert_eq!(observed.len(), 3);
+    assert_ne!(
+        observed[0].key(),
+        observed[1].key(),
+        "matching eDP names retain exact device identity"
+    );
+    assert_eq!(
+        (observed[0].scale_milli, observed[1].scale_milli),
+        (2000, 1000)
+    );
+    assert_eq!(
+        (observed[2].connector.as_str(), observed[2].x),
+        ("DP-1", 1920)
+    );
+    peer.presence.online = false;
+    peer.presence.stamp.counter += 1;
+    fabric.upsert(peer.clone()).unwrap();
+    let offline = observed_device_displays(&fabric, Some(&source));
+    assert!(offline[0].online && offline[0].local);
+    assert!(
+        offline[1..]
+            .iter()
+            .all(|display| !display.online && !display.local)
+    );
+    peer.display.as_mut().unwrap().outputs[1].connector = "eDP-1".into();
+    assert!(
+        peer.validate().is_err(),
+        "duplicate connectors cannot enter authenticated topology"
+    );
+    peer.display.as_mut().unwrap().outputs[1].connector = "DP-1".into();
+    peer.display.as_mut().unwrap().outputs[1].rect.x = i32::MAX;
+    assert!(
+        peer.validate().is_err(),
+        "overflowing connector bounds fail closed"
+    );
+}
+
+#[test]
+fn native_crossing_uses_connector_edges_and_destination_seat_coordinates() {
+    let source = DeviceId::new("source").unwrap();
+    let target = DeviceId::new("target").unwrap();
+    let mut fabric = native_fabric::DeviceFabric::default();
+    let source_rect = native_fabric::DisplayRect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 1080,
+    };
+    fabric
+        .upsert(native_snapshot(&source, 2000, source_rect))
+        .unwrap();
+    let mut peer = native_snapshot(
+        &target,
+        1000,
+        native_fabric::DisplayRect {
+            x: 960,
+            width: 1920,
+            ..source_rect
+        },
+    );
+    peer.display.as_mut().unwrap().outputs = vec![
+        native_fabric::DisplayConnectorPlacement {
+            connector: "upper".into(),
+            label: "Upper screen".into(),
+            scale_milli: 1000,
+            rect: native_fabric::DisplayRect {
+                x: 0,
+                y: 0,
+                width: 960,
+                height: 540,
+            },
+        },
+        native_fabric::DisplayConnectorPlacement {
+            connector: "lower".into(),
+            label: "Lower screen".into(),
+            scale_milli: 1250,
+            rect: native_fabric::DisplayRect {
+                x: 0,
+                y: 540,
+                width: 960,
+                height: 540,
+            },
+        },
+    ];
+    fabric.upsert(peer.clone()).unwrap();
+    let crossing = fabric.cross_right_edge(&source, 700).unwrap();
+    assert_eq!(
+        (crossing.to, crossing.target_x, crossing.target_y),
+        (target, 0, 700),
+        "the lower connector receives its actual seat coordinate, not y=160"
+    );
+    peer.presence.stamp.counter += 1;
+    peer.display.as_mut().unwrap().outputs[1].rect.x = 960;
+    fabric.upsert(peer).unwrap();
+    assert!(
+        fabric.cross_right_edge(&source, 700).is_none(),
+        "a device bounding box cannot bridge the empty space between connectors"
+    );
+}
+
+#[test]
+fn native_crossing_preserves_negative_connector_coordinates() {
+    let source = DeviceId::new("source").unwrap();
+    let target = DeviceId::new("target").unwrap();
+    let rect = native_fabric::DisplayRect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 540,
+    };
+    let mut own = native_snapshot(&source, 2000, rect);
+    own.display.as_mut().unwrap().outputs[0].rect.x = -960;
+    let mut peer = native_snapshot(
+        &target,
+        1250,
+        native_fabric::DisplayRect { x: -1920, ..rect },
+    );
+    peer.display.as_mut().unwrap().outputs[0].rect.y = -100;
+    let mut fabric = native_fabric::DeviceFabric::default();
+    fabric.upsert(own).unwrap();
+    fabric.upsert(peer).unwrap();
+    let crossing = fabric
+        .cross_edge(&source, native_fabric::DisplayEdge::Left, -960, 205)
+        .unwrap();
+    assert_eq!(
+        (crossing.to, crossing.target_x, crossing.target_y),
+        (target, 959, 205)
     );
 }
