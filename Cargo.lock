@@ -14101,6 +14101,7 @@ dependencies = [
  "tilo-action-broker",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-app",
  "tilo-app-state",
  "tilo-automation",
  "tilo-automerge",

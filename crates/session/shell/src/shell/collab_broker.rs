@@ -419,6 +419,7 @@ impl DrainQueues {
         if let Some(service) = &self.channel_encryption {
             service.pump(&*self.net);
         }
+        self.drain_owner_views();
         self.drain_presence(labels, announced)
             && self.drain_documents(labels, announced)
             && self.drain_person_snapshot_requests()
@@ -426,6 +427,26 @@ impl DrainQueues {
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
             && self.drain_record_content()
+    }
+
+    fn drain_owner_views(&self) {
+        for (view, source_route) in self.net.pump_owner_views() {
+            let route = tilo_action_broker::route::CrdtRoute::record(
+                &view.app,
+                &view.room,
+                format!("continuation:{}", view.instance),
+            );
+            let event = CollabEvent::Handoff {
+                request: ui::collaboration::handoff::HandoffRequest::OwnerView { view },
+            };
+            if let Some(source) = source_route {
+                let _ = self.net.with_current_personal_route(&source, || {
+                    self.table.fanout_to_route(&event, u64::MAX, &route);
+                });
+            } else {
+                self.table.fanout_to_route(&event, u64::MAX, &route);
+            }
+        }
     }
 
     fn drain_record_content(&self) -> bool {
