@@ -934,6 +934,7 @@ pub struct TreeView<T, M = TreeNode<T>> {
     /// Set by changes the view signature cannot see (model content, layout,
     /// input the tree acted on); cleared once the tree is drawn.
     paint_dirty: bool,
+    layout_theme: Option<Theme>,
     /// [`Self::paint_signature`] as of the last completed draw.
     drawn_signature: Option<u64>,
     /// Set by `NavList`: rows paint as navigation rows.
@@ -1161,6 +1162,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             indent_guides: false,
             pending_reveal: None,
             paint_dirty: true,
+            layout_theme: None,
             drawn_signature: None,
             nav: None,
             laid_out: false,
@@ -2886,9 +2888,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         theme: &Theme,
         node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        // A layout pass may carry a new theme or text scale; the next draw
-        // repaints every row with it.
-        self.paint_dirty = true;
+        // Preserve invalidation for every theme/text-scale change, without
+        // repainting the whole tree when a sibling merely needs layout.
+        if self.layout_theme.as_ref() != Some(theme) {
+            self.layout_theme = Some(theme.clone());
+            self.paint_dirty = true;
+        }
         self.transition_duration = theme.tokens.motion.durations.base();
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
@@ -2947,7 +2952,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.paint_dirty = true;
         let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -5026,6 +5030,68 @@ mod tests {
             .unwrap();
         view.apply_layout(&taffy, node, Point::ZERO);
         (taffy, node)
+    }
+
+    #[test]
+    fn unchanged_layout_preserves_tree_paint_while_theme_and_extent_invalidate() {
+        fn layout(view: &mut TreeView<()>, theme: &Theme, width: f32) {
+            let mut taffy = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let node = view.build_layout(&mut taffy, theme, &mut nodes);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(width),
+                        height: taffy::AvailableSpace::Definite(240.0),
+                    },
+                )
+                .unwrap();
+            view.apply_layout(&taffy, node, Point::ZERO);
+        }
+        fn paint(view: &mut TreeView<()>, theme: &Theme, text: &mut TextRenderer) -> Scene {
+            let mut scene = Scene::new();
+            view.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                text,
+                theme,
+                &PresenceCtx::empty(),
+            );
+            scene
+        }
+        let dark = Theme::dark().with_reduce_motion(true);
+        let light = Theme::light().with_reduce_motion(true);
+        let mut view = TreeView::new(sample_tree()).hide_root();
+        let mut text = TextRenderer::new();
+        view.sync(&AutoCommit::new(), &automerge::ROOT);
+        layout(&mut view, &dark, 280.0);
+        let initial = paint(&mut view, &dark, &mut text);
+        view.mark_drawn();
+        layout(&mut view, &dark, 280.0);
+        assert!(
+            !view.needs_redraw(),
+            "an identical layout must not dirty the sidebar"
+        );
+        let mut damage = Vec::new();
+        view.collect_damage(&mut damage);
+        assert!(damage.is_empty());
+        assert!(initial.encoding_eq(&paint(&mut view, &dark, &mut text)));
+        view.mark_drawn();
+        layout(&mut view, &light, 280.0);
+        assert!(
+            view.needs_redraw(),
+            "theme changes must invalidate retained ink"
+        );
+        let themed = paint(&mut view, &light, &mut text);
+        assert!(!initial.encoding_eq(&themed));
+        view.mark_drawn();
+        layout(&mut view, &light, 360.0);
+        assert!(
+            view.needs_redraw(),
+            "changed bounds must invalidate retained ink"
+        );
+        assert!(!themed.encoding_eq(&paint(&mut view, &light, &mut text)));
     }
 
     pub(super) fn cursor_moved(x: f64, y: f64) -> WindowEvent {
