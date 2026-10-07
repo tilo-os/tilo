@@ -1389,6 +1389,7 @@ inputs = [
   "tools/apps/browser_runtime_release.py",
   "tools/apps/signal_runtime_fixture.py",
   "tools/apps/signal_provider_release.py",
+  "tools/apps/signal_zero_runtime.py",
   "os/dev/cache-github-assets.sh",
   "tools/apps/pack-signal-provider.sh",
   "os/scripts/prepare-signal-provider.py",
