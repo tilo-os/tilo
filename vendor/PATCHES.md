@@ -336,3 +336,15 @@ per process and made every build of a binary that expands the macro different.
 It is not part of the Tilo workspace. The OS image's bootc build uses it
 through `[patch.crates-io]` (os/external-assets/bootc-runtime/0002-*.patch), so
 bootc builds reproducibly.
+
+## `vendor/winit`: focused native keyboard configuration
+
+The ordinary Wayland seat publishes an immutable `KeyboardLayoutChanged`
+configuration at keymap, focus-enter and modifier transitions. It preserves the
+received XKB masks/group and resolves effective symbols using that exact state,
+with bounded keycode, symbol and string counts. This is keymap configuration,
+not entered text or compose history; unfocused clients receive no new snapshots.
+Settings uses it to label its foreground physical keyboard map independently
+from logical key events. A real Smithay-to-Winit wire regression covers initial
+keymap/focus and several queued modifier/group changes; no global capture or new
+protocol/socket is introduced.

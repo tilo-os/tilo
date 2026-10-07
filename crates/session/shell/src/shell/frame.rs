@@ -585,6 +585,7 @@ pub struct FrameBuilder {
     next_scene_revision: u64,
     /// Capacity of this builder's actual presenter; absent for dense captures.
     retained_layer_width: Option<u32>,
+    workspace_clip_supported: bool,
     /// HDR layers of the latest [`Self::paint`], until taken.
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
     /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
@@ -827,6 +828,7 @@ impl FrameBuilder {
             last_produced_sections: None,
             next_scene_revision: 1,
             retained_layer_width: None,
+            workspace_clip_supported: false,
             painted_hdr_layers: Vec::new(),
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
@@ -1816,12 +1818,21 @@ impl FrameBuilder {
         scene
     }
 
+    /// Enable clip-only transition frames only for a presenter which retains and
+    /// replays workspace pixels. Refresh this capability after output changes.
+    pub fn set_workspace_clip_supported(&mut self, supported: bool) {
+        self.workspace_clip_supported = supported;
+    }
+
     /// A transition frame is the clip, not a new encoding of both displays.
     /// `None` when the desktop itself has to be drawn.
     fn paint_content_clip(&mut self) -> Option<FramePaint> {
         // Reduced motion is a settled frame, not a clip run. The retained
         // oracle has to see the new workspace's commands.
-        if self.theme.reduce_motion || !self.host.presents_on_content_clip() {
+        if !self.workspace_clip_supported
+            || self.theme.reduce_motion
+            || !self.host.presents_on_content_clip()
+        {
             return None;
         }
         self.host
@@ -1834,8 +1845,11 @@ impl FrameBuilder {
             .map(|last| last.revision);
         let overview_patch = self.host.take_overview_fast_patch();
         let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
-        let workspace_hold = self.host.workspace_switch_holding();
-        let workspace_clip = self.host.workspace_switch_clip();
+        let workspace_hold = self.workspace_clip_supported && self.host.workspace_switch_holding();
+        let workspace_clip = self
+            .workspace_clip_supported
+            .then(|| self.host.workspace_switch_clip())
+            .flatten();
         Some(FramePaint {
             scene: Scene::new(),
             revision,
@@ -2069,8 +2083,11 @@ impl FrameBuilder {
         });
         let overview_patch = self.host.take_overview_fast_patch();
         let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
-        let workspace_hold = self.host.workspace_switch_holding();
-        let workspace_clip = self.host.workspace_switch_clip();
+        let workspace_hold = self.workspace_clip_supported && self.host.workspace_switch_holding();
+        let workspace_clip = self
+            .workspace_clip_supported
+            .then(|| self.host.workspace_switch_clip())
+            .flatten();
         FramePaint {
             scene,
             revision,
@@ -6860,6 +6877,7 @@ mod tests {
 
     fn both_directions_hold_the_scanout() {
         let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_workspace_clip_supported(true);
         let _ = fb.paint_settled();
         let mut switched = false;
         fb.with_chrome(|st| {
@@ -6984,6 +7002,7 @@ mod tests {
         use crate::shell::output_scene::OutputGeometry;
 
         let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_workspace_clip_supported(true);
         fb.set_output_geometry(vec![
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
             OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
@@ -7045,6 +7064,7 @@ mod tests {
 
         fn overview_open_is_a_clip() {
             let mut fb = FrameBuilder::new((3200, 1080));
+            fb.set_workspace_clip_supported(true);
             fb.set_output_geometry(vec![
                 OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
                 OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
@@ -7071,6 +7091,7 @@ mod tests {
 
         fn workspace_open_is_a_clip() {
             let mut fb = FrameBuilder::new((3200, 1080));
+            fb.set_workspace_clip_supported(true);
             fb.set_output_geometry(vec![
                 OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
                 OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
@@ -7110,6 +7131,7 @@ mod tests {
         use crate::shell::render::paint::VelloDrmBridge;
 
         let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_workspace_clip_supported(true);
         fb.set_output_geometry(vec![
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
             OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),

@@ -4813,7 +4813,7 @@ pub struct KeyboardXkb {
     /// The layouts, variants and options this keymap was compiled from, so
     /// a settings reload that only moves the active source switches groups
     /// instead of recompiling and dropping held modifiers.
-    compiled: (String, String, Option<String>),
+    compiled: (String, String, String, Option<String>),
 }
 
 /// What translating one key event yields: an optional `KeyboardInput` (absent for keys with no logical mapping, e.g. bare modifiers) and an optional `ModifiersChanged` (present only when the mask flips).
@@ -4841,8 +4841,8 @@ impl KeyboardXkb {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_names(
             &context,
-            "", // rules -> XKB_DEFAULT_RULES (normally evdev)
-            "", // model -> XKB_DEFAULT_MODEL
+            "",              // rules -> XKB_DEFAULT_RULES (normally evdev)
+            &settings.model, // explicit physical model
             &settings.layouts,
             &settings.variants,
             settings.options.clone(),
@@ -4860,8 +4860,9 @@ impl KeyboardXkb {
         })
     }
 
-    fn keymap_names(settings: &KeyboardSettings) -> (String, String, Option<String>) {
+    fn keymap_names(settings: &KeyboardSettings) -> (String, String, String, Option<String>) {
         (
+            settings.model.clone(),
             settings.layouts.clone(),
             settings.variants.clone(),
             settings.options.clone(),
@@ -5772,6 +5773,7 @@ mod tests {
         // Phase `xkb_uses_the_persisted_active_group_without_reordering_sources`.
         fn xkb_uses_the_persisted_active_group_without_reordering_sources() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["us".into(), "de".into()],
                 layouts: "us,de".into(),
                 variants: ",".into(),
@@ -5797,6 +5799,7 @@ mod tests {
         // pre-translated character fixture.
         fn german_xkb_shift_and_punctuation_keep_physical_positions() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de".into()],
                 layouts: "de".into(),
                 variants: String::new(),
@@ -5864,6 +5867,7 @@ mod tests {
         // Phase `switching_the_active_source_keeps_held_modifiers`.
         fn switching_the_active_source_keeps_held_modifiers() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["us".into(), "de".into()],
                 layouts: "us,de".into(),
                 variants: ",".into(),
@@ -5900,6 +5904,7 @@ mod tests {
         // Phase `xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes`.
         fn xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de:nodeadkeys".into()],
                 layouts: "de".into(),
                 variants: "nodeadkeys".into(),
@@ -5945,6 +5950,7 @@ mod tests {
         // Phase `german_altgr_produces_text_without_becoming_a_shell_alt_chord`.
         fn german_altgr_produces_text_without_becoming_a_shell_alt_chord() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de:nodeadkeys".into()],
                 layouts: "de".into(),
                 variants: "nodeadkeys".into(),

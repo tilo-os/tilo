@@ -27,3 +27,10 @@ outside an admitted dictation session.
 crate that matches every `WindowEvent` does not build against this fork. The
 workspace has none: Smithay's `backend_winit`, the one that did, is not
 enabled.
+
+`WindowEvent::KeyboardLayoutChanged` carries an immutable, bounded snapshot of
+the actual focused Wayland seat keymap's effective symbols and received modifier
+masks/group. It contains configuration for physical positions, never composed
+text or key history. Keymap, focus-enter and modifier events enqueue their exact
+snapshot before further state changes; unavailable keymaps revoke it. Other
+platforms do not invent a snapshot.
