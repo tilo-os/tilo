@@ -1210,11 +1210,25 @@ mod tests {
                 published_before, published_after,
                 "private host controls never join app publication"
             );
-            assert!(
-                driver
-                    .resources()
-                    .iter()
-                    .all(|resource| !resource.id.as_str().starts_with("tilo.host:"))
+            let host_resources: Vec<_> = driver
+                .resources()
+                .into_iter()
+                .filter(|resource| resource.id.as_str().starts_with("tilo.host:"))
+                .collect();
+            assert_eq!(
+                host_resources.len(),
+                1,
+                "private history controls stay local"
+            );
+            assert_eq!(host_resources[0].id.as_str(), "tilo.host:search");
+            assert!(host_resources[0].children.is_empty());
+            assert_eq!(
+                serde_json::to_value(tilo_actions::door::survey(&host_resources)).unwrap(),
+                serde_json::to_value(tilo_actions::door::survey(&[
+                    crate::search::search_resource()
+                ]))
+                .unwrap(),
+                "only the canonical public search contract is exposed"
             );
             let local = driver.local_history_resources().unwrap();
             let session = local

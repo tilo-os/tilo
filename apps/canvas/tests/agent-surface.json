@@ -3944,6 +3944,37 @@
     "params": []
   },
   {
+    "resource": "tilo.host:search",
+    "action": "open",
+    "resource_kind": "tilo.host.search",
+    "label": "Search",
+    "description": null,
+    "operation": "View",
+    "params": [
+      {
+        "name": "query",
+        "ty": "text",
+        "required": false,
+        "description": "Text to search for",
+        "nullable": false
+      },
+      {
+        "name": "scope",
+        "ty": "text",
+        "required": false,
+        "description": "Resource id of the part of the app to search",
+        "nullable": false
+      },
+      {
+        "name": "scope_label",
+        "ty": "text",
+        "required": false,
+        "description": "Name of that part, shown on the scope pill",
+        "nullable": false
+      }
+    ]
+  },
+  {
     "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dadd%2Dpicture",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
