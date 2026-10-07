@@ -35,12 +35,31 @@ PY
 skopeo inspect --raw "docker://$IMAGE" > "$OUTPUT/image-manifest.json"
 actual="sha256:$(sha256sum "$OUTPUT/image-manifest.json" | awk '{print $1}')"
 [[ $IMAGE == "registry.tilo.so/tilo/tilo-vm@$actual" ]]
+# The nested runner filesystem cannot provide native overlay. Use the existing
+# disposable ext4 store, including a separate rootful configuration that sudo
+# does not inherit from the rootless helper. Verify the actual root driver
+# before pulling the multi-gigabyte source; a relocated VFS store is insufficient.
+store_conf=$(TILO_PODMAN_STORE_SIZE=60G bash os/dev/ci-native-podman-store.sh)
+root_store="${store_conf%/*}/root-store"
+mkdir -p "$root_store"
+printf '[storage]\ndriver="overlay"\ngraphroot="%s/containers/storage"\nrunroot="%s/run"\n[storage.options.overlay]\nmount_program=""\n' \
+  "$root_store" "$root_store" > "$root_store/storage.conf"
+sudo -n env CONTAINERS_STORAGE_CONF="$root_store/storage.conf" podman info --format json \
+  > "$OUTPUT/root-podman-storage.json"
+jq -e --arg graph "$root_store/containers/storage" '
+  .store.graphDriverName == "overlay" and .store.graphRoot == $graph
+  and .store.graphStatus["Backing Filesystem"] == "extfs"
+' "$OUTPUT/root-podman-storage.json" >/dev/null
+[[ $(sudo -n cat "$root_store/containers/storage/overlay/.has-mount-program") == false ]]
+echo 'Root Podman native overlay on disposable ext4 verified before source pull'
 # The existing image builder establishes the same 16 MiB Rockchip gap and
 # systemd-boot chain. The physical device's already-working loader is retained
 # separately by the operator, rather than rebuilt or uploaded to this runner.
 # A 58 GiB image fits the observed 63,281,561,600-byte card and starts with
 # enough root space for a retained signed update. No first-boot growth claim.
-TILO_DISTROBOX= os/dev/disk-image.sh "$IMAGE" "$OUTPUT/install" \
+TILO_DISTROBOX= TILO_ROOT_PODMAN_STORE="$root_store" \
+  TILO_ROOT_PODMAN_STORAGE_CONF="$root_store/storage.conf" \
+  os/dev/disk-image.sh "$IMAGE" "$OUTPUT/install" \
   --composefs --bootloader systemd --size 58G --root-min 54G --esp 2G \
   --boot-gap 16M --target-imgref "$IMAGE" --sealed-source-imgref "$IMAGE" --raw
 loop=$(sudo -n losetup --find --show --partscan "$OUTPUT/install/disk.raw")
