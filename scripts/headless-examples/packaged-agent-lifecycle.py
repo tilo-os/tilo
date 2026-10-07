@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 
 from _control import call, require_ok
 from reaper import die_with_parent
@@ -684,7 +685,10 @@ class HeldProvider:
     def __init__(self):
         self.received = threading.Event()
         self.requests = 0
+        self.refused_requests = 0
         self.allowed = 0
+        self.exact_releases = set()
+        self.waiting_ordinals = set()
         self.owner_admissions = {}
         self.owner_admission_probe = None
         self.closed = False
@@ -720,6 +724,7 @@ class HeldProvider:
                 admission = probe() if probe is not None else None
                 with owner.request_lock:
                     if owner.requests >= 4:
+                        owner.refused_requests += 1
                         self.send_error(429)
                         return
                     owner.requests += 1
@@ -731,9 +736,12 @@ class HeldProvider:
                     self.send_error(409)
                     return
                 with owner.request_lock:
+                    owner.waiting_ordinals.add(ordinal)
                     released = owner.request_lock.wait_for(
-                        lambda: owner.closed or owner.allowed >= ordinal, timeout=30
+                        lambda: owner.closed or owner.allowed >= ordinal
+                        or ordinal in owner.exact_releases, timeout=120 if ordinal == 3 else 30
                     )
+                    owner.waiting_ordinals.discard(ordinal)
                 if not released or owner.closed:
                     self.send_error(504)
                     return
@@ -774,6 +782,14 @@ class HeldProvider:
         with self.request_lock:
             return self.requests
 
+    def overflow_count(self):
+        with self.request_lock:
+            return self.refused_requests
+
+    def original_third_held(self):
+        with self.request_lock:
+            return self.allowed == 2 and 3 in self.waiting_ordinals
+
     def require_owner_admission(self, probe):
         """Require a content-free durable owner phase at request admission."""
         with self.request_lock:
@@ -785,6 +801,21 @@ class HeldProvider:
         with self.request_lock:
             value = self.owner_admissions.get(ordinal)
             return dict(value) if isinstance(value, dict) else None
+
+    def require_fourth_message_admission(self, probe):
+        """Replace only the post-Stop fourth request's content-free probe."""
+        with self.request_lock:
+            if self.requests != 3 or self.allowed != 2 or self.owner_admission_probe is None:
+                raise RuntimeError("fourth Message admission requires the original held third turn")
+            self.owner_admission_probe = probe
+
+    def release_exact(self, ordinal):
+        """Release the supplemental Message without releasing the stale Task turn."""
+        with self.request_lock:
+            if ordinal != 4 or self.requests != 4 or self.allowed != 2:
+                raise RuntimeError("exact release requires the fourth turn and held original third")
+            self.exact_releases.add(ordinal)
+            self.request_lock.notify_all()
 
     def release_through(self, ordinal):
         with self.request_lock:
@@ -1317,6 +1348,267 @@ def agent_reply_observation(socket, room, record, parent, agent, process):
     return None
 
 
+def canonical_physical_message(socket, room, record, expected, process):
+    """Derive the original from an actual saved row; keep fixture text in memory."""
+    saved = {}
+    for read in actions(socket):
+        if read.get("application") != "so.tilo.chat" or read.get("room") != room \
+                or read.get("record") != record or read.get("operation") != "read-messages":
+            continue
+        receipt = wait_terminal(socket, invoke(socket, read, {"pageSize": 32}), process)
+        content = terminal_value(receipt).get("content")
+        messages = content.get("messages") if isinstance(content, dict) else None
+        if not isinstance(messages, list):
+            continue
+        count_hits = sum(isinstance(row, dict) and row.get("text") == expected for row in messages)
+        if count_hits > 1:
+            raise RuntimeError("physical Send duplicated the canonical request in one channel")
+        for row in messages:
+            if not isinstance(row, dict) or row.get("text") != expected:
+                continue
+            row_id = row.get("id")
+            if not isinstance(row_id, str) or re.fullmatch(r"m_[0-9a-f]{32}", row_id) is None \
+                    or row.get("parent") not in (None, "") \
+                    or row.get("agentIntent") != "message" \
+                    or not isinstance(row.get("author"), str) \
+                    or not row["author"] or row["author"].startswith("agent:") \
+                    or row.get("complete") is not True:
+                raise RuntimeError("physical Send saved malformed canonical Person request metadata")
+            original = uuid.UUID(hex=row_id[2:])
+            if original.int == 0:
+                raise RuntimeError("physical Send saved a nil original")
+            saved[row_id] = {"invocation": str(original), "request_row": row_id,
+                             "channel": content.get("channel")}
+    if len(saved) > 1:
+        raise RuntimeError("physical Send saved duplicate canonical requests")
+    return next(iter(saved.values())) if saved else None
+
+
+def latest_chat_input_state(output):
+    """Read only the latest fixed Chat snapshot, never other app diagnostics."""
+    log = output / "shell.log"
+    if not log.exists():
+        return None
+    for line in reversed(log.read_text(errors="replace").splitlines()):
+        if not line.startswith("[app so.tilo.chat stderr] "):
+            continue
+        for marker, key in [("tilo-physical-input ", "after"),
+                            ("tilo-physical-frame ", "state")]:
+            if marker not in line:
+                continue
+            try:
+                row = json.loads(line.split(marker, 1)[1])
+            except json.JSONDecodeError:
+                continue
+            state = row.get(key) if isinstance(row, dict) else None
+            if isinstance(state, dict) and state.get("app") == "so.tilo.chat":
+                return state
+    return None
+
+
+def chat_public_message_progress(state, original, phase):
+    """Require one fresh mounted-reader milestone for this saved canonical parent."""
+    entries = state.get("agent_message_progress") if isinstance(state, dict) else None
+    if not isinstance(entries, list) or len(entries) > 32:
+        return None
+    matches = [entry for entry in entries if isinstance(entry, dict)
+               and entry.get("original_invocation") == original["invocation"]]
+    if len(matches) > 1:
+        raise RuntimeError("Chat projected duplicate progress for one original")
+    if not matches:
+        return None
+    entry = matches[0]
+    allowed = {"original_invocation", "request_row", "generation", "phase",
+               "unavailable", "reply_row"}
+    if set(entry) - allowed or entry.get("request_row") != original["request_row"] \
+            or type(entry.get("unavailable")) is not bool:
+        raise RuntimeError("Chat public progress correlation is malformed")
+    if entry.get("generation") is None and entry.get("phase") is None and "reply_row" not in entry:
+        return None  # An initial/unknown read is not a delivery milestone.
+    if type(entry.get("generation")) is not int or entry["generation"] <= 0:
+        raise RuntimeError("Chat public progress generation is malformed")
+    if entry["unavailable"]:
+        raise RuntimeError("Chat's public original milestone is unavailable, not current proof")
+    if entry.get("phase") == "needs_attention":
+        raise RuntimeError("the actual original Message needs attention")
+    if entry.get("phase") != phase:
+        return None
+    if phase == "committed":
+        if not isinstance(entry.get("reply_row"), str) \
+                or re.fullmatch(r"m_[0-9a-f]{32}", entry["reply_row"]) is None \
+                or uuid.UUID(hex=entry["reply_row"][2:]).int == 0:
+            raise RuntimeError("Chat's committed milestone lacks a canonical reply row")
+    elif "reply_row" in entry:
+        raise RuntimeError("an uncommitted Chat milestone asserts a reply row")
+    return dict(entry)
+
+
+def pending_draft_revision(state):
+    """Observe exact submission/editor correlation without exporting the draft."""
+    pending = state.get("agent_message_submission") if isinstance(state, dict) else None
+    if pending is None:
+        return None
+    if not isinstance(pending, dict) \
+            or set(pending) != {"draft_revision", "current_revision", "draft_empty"} \
+            or type(pending["draft_revision"]) is not int \
+            or type(pending["current_revision"]) is not int \
+            or pending["draft_revision"] < 0 \
+            or pending["draft_revision"] != pending["current_revision"] \
+            or pending["draft_empty"] is not False:
+        raise RuntimeError("physical Send did not retain the exact current private draft revision")
+    return pending["draft_revision"]
+
+
+def physical_send_release_revision(output, byte_offset):
+    """Use the real Send release's synchronous snapshot, not a later raced frame."""
+    log = output / "shell.log"
+    if not log.exists():
+        return None
+    with log.open("rb") as stream:
+        stream.seek(byte_offset)
+        lines = stream.read().decode(errors="replace").splitlines()
+    releases = []
+    marker = "tilo-physical-input "
+    for line in lines:
+        if not line.startswith("[app so.tilo.chat stderr] ") or marker not in line:
+            continue
+        try:
+            row = json.loads(line.split(marker, 1)[1])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("kind") == "pointer_released":
+            releases.append(row)
+    if len(releases) > 1:
+        raise RuntimeError("physical Send release observation is ambiguous")
+    if not releases:
+        return None
+    row = releases[0]
+    before, after = row.get("before"), row.get("after")
+    if not isinstance(before, dict) or before.get("app") != "so.tilo.chat" \
+            or before.get("agent_message_submission") is not None \
+            or not isinstance(after, dict) or after.get("app") != "so.tilo.chat":
+        raise RuntimeError("physical Send release does not bind a new Chat submission")
+    value = pending_draft_revision(after)
+    return {"revision": value} if value is not None else None
+
+
+def owned_agent_identity(shell_pid):
+    """Compare an owned actual process and kernel starttime only in memory."""
+    rows = {}
+    for entry in pathlib.Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            rows[int(entry.name)] = (int(fields[1]), fields[19])
+        except (OSError, IndexError, ValueError):
+            continue
+    owned = []
+    for pid, (_, started) in rows.items():
+        if process_program(pid) != "agent":
+            continue
+        ancestor, seen = pid, set()
+        while ancestor in rows and ancestor not in seen and ancestor != shell_pid:
+            seen.add(ancestor)
+            ancestor = rows[ancestor][0]
+        if ancestor == shell_pid:
+            owned.append((pid, started))
+    if len(owned) != 1:
+        raise RuntimeError("the proof cannot observe one owned managed Agent process")
+    return owned[0]
+
+
+def physical_send_after_stop(socket, room, record, provider, output, size, process, identity):
+    """Supplement, never replace, the semantic lifecycle and physical editor journey."""
+    if provider.request_count() != 3 or not provider.original_third_held() \
+            or owned_agent_identity(process.pid) != identity:
+        raise RuntimeError("physical Send requires the same live Agent and original held third turn")
+    draft = "Reply after Stop using this physical Send."
+
+    def admission():
+        if owned_agent_identity(process.pid) != identity:
+            return None
+        # The authenticated model POST is the execution boundary. UI polling
+        # may legitimately lag it; require mounted progress before release,
+        # not as new authority to admit model execution.
+        return canonical_physical_message(socket, room, record, draft, process)
+
+    provider.require_fourth_message_admission(admission)
+    access = wait_for("returned physical Send editor",
+                      lambda: agent_conversation_accessibility("Tide"), process)
+    frame = wait_for("physical Send presented Chat", lambda: presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+    physically_click_editor(socket, access, presented_content_geometry(frame))
+    require_chat_keyboard_focus_after_click(socket, output)
+    physical_chord(socket, "a", ctrl=True)
+    require_ok(call(socket, {"op": "type", "text": draft}))
+    wait_for("physical Send fixture draft", lambda: private_editor_value_matches(access, draft), process)
+    access = wait_for("current physical Send view", lambda: agent_conversation_accessibility("Tide"), process)
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+    buttons = client.named(tree, "Send message")
+    if len(buttons) != 1:
+        raise RuntimeError("the exact direct-agent editor has no unique physical Send control")
+    frame = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+    if frame is None:
+        raise RuntimeError("physical Send's presentation disappeared")
+    x, y = component_global_center(access, buttons[0], presented_content_geometry(frame), "Send message")
+    require_ok(call(socket, {"op": "snapshot", "path": str(output / f"before-physical-send-{size}.png")}))
+    log = output / "shell.log"
+    if not log.is_file() or chat_input_observer_enabled(output) is not True:
+        raise RuntimeError("physical Send's actual Chat input observer is unavailable")
+    send_log_offset = log.stat().st_size
+    require_ok(call(socket, {"op": "click_at", "x": x, "y": y}))
+    revision = wait_for("actual Send-release private draft revision", lambda: physical_send_release_revision(
+        output, send_log_offset), process)["revision"]
+
+    def sample():
+        current = agent_conversation_accessibility("Tide")
+        current_frame = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+        if current is None or current_frame is None:
+            return None
+        physically_click_editor(socket, current, presented_content_geometry(current_frame))
+        require_chat_keyboard_focus_after_click(socket, output)
+        require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+        return latest_chat_input_state(output)
+
+    original = wait_for("physical Send's actual canonical request",
+                        lambda: canonical_physical_message(socket, room, record, draft, process), process)
+    wait_for("new authenticated model request after Stop", lambda: provider.request_count() == 4, process)
+    admitted = provider.owner_admission(4)
+    if admitted != original or not provider.original_third_held():
+        raise RuntimeError("fourth model request did not retain this original while the third stayed held")
+    wait_for("exact owner receipt clears the captured private draft",
+             lambda: private_editor_value_matches(access, ""), process)
+    waiting = wait_for("mounted Chat's original WaitingForReply",
+                       lambda: chat_public_message_progress(sample(), original, "waiting_for_reply"), process)
+    if not task_phase_accessibility(access, "Waiting for reply"):
+        raise RuntimeError("the mounted original Message has no actual Waiting for reply label")
+    require_ok(call(socket, {"op": "snapshot", "path": str(output / f"physical-send-waiting-{size}.png")}))
+    provider.release_exact(4)
+    reply = wait_for("same Agent's canonical physical Send reply", lambda: agent_reply_observation(
+        socket, room, record, original["request_row"], "tide", process), process)
+    committed = wait_for("mounted Chat's exact committed reply", lambda: chat_public_message_progress(
+        sample(), original, "committed"), process)
+    if committed["reply_row"] != reply["reply_id"] or not provider.original_third_held() \
+            or owned_agent_identity(process.pid) != identity \
+            or provider.request_count() != 4 or provider.overflow_count() != 0:
+        raise RuntimeError("physical Send replayed work, changed process or lost exact canonical reply custody")
+    if not private_editor_value_matches(access, ""):
+        raise RuntimeError("physical Send changed the empty acknowledged private draft")
+    require_ok(call(socket, {"op": "snapshot", "path": str(output / f"physical-send-replied-{size}.png")}))
+    provider.release_through(3)
+    evidence = {"physical_send": True, "same_managed_process": True,
+                "original_invocation": original["invocation"], "request_row": original["request_row"],
+                "captured_draft_revision": revision, "exact_draft_cleared": True,
+                "reply_actor": reply["typed_actor"], "reply_parent": reply["parent"],
+                "reply_row": reply["reply_id"], "waiting": waiting, "committed": committed,
+                "old_task_response_still_held_until_reply": True, "provider_request_count": 4,
+                "private_content_recorded": False, "test_owned_draft_rendered": True}
+    (output / "physical-send-after-stop.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    return evidence
+
+
 def managed_child_diagnostic(profile):
     """Classify bounded managed output without retaining task/model content."""
     logs = list(profile.rglob("launcher-debug-output.log"))
@@ -1775,6 +2067,7 @@ def managed_task_and_message_lifecycle(
         raise RuntimeError("Stop did not bind the acknowledged current frontier")
     stop = wait_for("exact-run Stop action", lambda: offered_desktop_action(
         socket, room, "tasks", f"desktop:task:{task_id}", "stop"), process)
+    before_stop_identity = owned_agent_identity(process.pid)
     stop_receipt = wait_terminal(socket, invoke(socket, stop, {
         "run_epoch": epoch,
         "after_revision": stop_after,
@@ -1807,6 +2100,8 @@ def managed_task_and_message_lifecycle(
     (output / "managed-task-message-lifecycle.json").write_text(
         json.dumps(evidence, indent=2) + "\n"
     )
+    # Inert process correlation is kept only in memory, never the evidence file.
+    evidence["_owned_process_identity"] = before_stop_identity
     return evidence
 
 
@@ -1931,6 +2226,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
     runtime_owner = None
     lifecycle_evidence = None
     float_return_proven = False
+    physical_send_evidence = None
     try:
         # Keep Unix socket paths short enough for the production private IME
         # displays. This is still an exclusively owned mode-0700 directory,
@@ -2250,6 +2546,10 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                 float_return_proven = native_float_return(
                     socket, enrollment["room"], category[0]["record"], output, size, shell
                 )
+                physical_send_evidence = physical_send_after_stop(
+                    socket, enrollment["room"], category[0]["record"], provider, output,
+                    size, shell, lifecycle_evidence["_owned_process_identity"],
+                )
             time.sleep(0.5)
         else:
             invite = require_action(socket, "agent.invite", "agent")
@@ -2266,6 +2566,10 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             and lifecycle_evidence.get("applied_revision")
                 == lifecycle_evidence.get("saved_revision")
             and lifecycle_evidence.get("terminal_status") == "cancelled"
+            and physical_send_evidence is not None
+            and physical_send_evidence.get("same_managed_process") is True
+            and physical_send_evidence.get("reply_actor") == "agent:tide"
+            and physical_send_evidence.get("provider_request_count") == 4
         )
         (output / "bootstrap.json").write_text(json.dumps({
             "stage": "native-bootstrap-only" if native else "legacy-bootstrap-only",

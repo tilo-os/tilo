@@ -4,6 +4,12 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import threading
+import concurrent.futures
+import json
+import urllib.request
+import urllib.error
+from unittest.mock import patch
 
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -17,6 +23,193 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_exact_new_pointer_release_retains_revision_after_later_ack_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            log = output / "shell.log"
+            old = {"kind": "pointer_released", "before": {"app": "so.tilo.chat"},
+                   "after": {"app": "so.tilo.chat", "agent_message_submission": {
+                       "draft_revision": 99, "current_revision": 99, "draft_empty": False}}}
+            log.write_text('[app so.tilo.chat stderr] tilo-physical-input ' + json.dumps(old) + "\n")
+            offset = log.stat().st_size
+            release = {"kind": "pointer_released", "before": {"app": "so.tilo.chat"},
+                       "after": {"app": "so.tilo.chat", "agent_message_submission": {
+                           "draft_revision": 7, "current_revision": 7, "draft_empty": False}}}
+            with log.open("a") as stream:
+                stream.write('[app so.tilo.chat stderr] tilo-physical-input ' + json.dumps(release) + "\n")
+                stream.write('[app so.tilo.chat stderr] tilo-physical-frame ' + json.dumps({
+                    "state": {"app": "so.tilo.chat", "agent_message_submission": None}}) + "\n")
+                stream.write('[app so.tilo.store stderr] tilo-physical-input ' + json.dumps(release) + "\n")
+            self.assertEqual(PROOF.physical_send_release_revision(output, offset), {"revision": 7})
+            with log.open("a") as stream:
+                stream.write('[app so.tilo.chat stderr] tilo-physical-input ' + json.dumps(release) + "\n")
+            with self.assertRaises(RuntimeError):
+                PROOF.physical_send_release_revision(output, offset)
+
+    def test_supplement_uses_actual_seat_send_after_unchanged_journeys(self):
+        source = inspect.getsource(PROOF.physical_send_after_stop)
+        for forbidden in ("SetText", "AddSelection", "DoAction", "GrabFocus", "invoke(socket, message"):
+            self.assertNotIn(forbidden, source)
+        for required in ('"op": "type"', '"op": "click_at"', "component_global_center",
+                         "canonical_physical_message", "owned_agent_identity", "release_exact(4)",
+                         '"waiting_for_reply"', '"committed"', "overflow_count() != 0"):
+            self.assertIn(required, source)
+        bootstrap = inspect.getsource(PROOF.bootstrap)
+        self.assertLess(bootstrap.index("managed_task_and_message_lifecycle("),
+                        bootstrap.index("native_float_return("))
+        self.assertLess(bootstrap.index("native_float_return("),
+                        bootstrap.index("physical_send_after_stop("))
+
+    def test_public_progress_requires_current_exact_original_and_canonical_reply(self):
+        original = {"invocation": "00000000-0000-0000-0000-000000000031",
+                    "request_row": "m_00000000000000000000000000000031"}
+        entry = {"original_invocation": original["invocation"], "request_row": original["request_row"],
+                 "generation": 9, "phase": "waiting_for_reply", "unavailable": False}
+        state = {"agent_message_progress": [entry]}
+        self.assertEqual(PROOF.chat_public_message_progress(state, original, "waiting_for_reply"), entry)
+        self.assertIsNone(PROOF.chat_public_message_progress({"agent_message_progress": [
+            dict(entry, phase=None, generation=None, unavailable=True)]}, original, "waiting_for_reply"))
+        for changed in [{"unavailable": True}, {"generation": None}, {"generation": True},
+                        {"request_row": "foreign-row"}, {"prepared_text": "private"},
+                        {"phase": "needs_attention"}, {"reply_row": "uncommitted-row"}]:
+            with self.subTest(changed=changed), self.assertRaises(RuntimeError):
+                PROOF.chat_public_message_progress(
+                    {"agent_message_progress": [dict(entry, **changed)]}, original, "waiting_for_reply")
+        with self.assertRaises(RuntimeError):
+            PROOF.chat_public_message_progress({"agent_message_progress": [entry, entry]},
+                                               original, "waiting_for_reply")
+        committed = dict(entry, phase="committed", reply_row="m_00000000000000000000000000000032")
+        self.assertEqual(PROOF.chat_public_message_progress(
+            {"agent_message_progress": [committed]}, original, "committed"), committed)
+        with self.assertRaises(RuntimeError):
+            PROOF.chat_public_message_progress(
+                {"agent_message_progress": [dict(committed, reply_row="foreign")]}, original, "committed")
+
+    def test_pending_capture_requires_exact_revision_without_private_payload(self):
+        state = {"agent_message_submission": {"draft_revision": 7, "current_revision": 7,
+                                               "draft_empty": False}}
+        self.assertEqual(PROOF.pending_draft_revision(state), 7)
+        for changed in [{"current_revision": 8}, {"draft_empty": True}, {"text": "private"},
+                        {"draft_revision": True}]:
+            with self.subTest(changed=changed), self.assertRaises(RuntimeError):
+                PROOF.pending_draft_revision({"agent_message_submission": dict(
+                    state["agent_message_submission"], **changed)})
+        self.assertIsNone(PROOF.pending_draft_revision({}))
+
+    def test_latest_mounted_snapshot_does_not_reuse_old_fresh_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            newest = {"app": "so.tilo.chat", "agent_message_progress": [], "unavailable": True}
+            (output / "shell.log").write_text(
+                '[app so.tilo.chat stderr] tilo-physical-input ' + json.dumps({
+                    "after": {"app": "so.tilo.chat", "old": True}}) + "\n"
+                + '[app so.tilo.chat stderr] tilo-physical-frame ' + json.dumps({"state": newest}) + "\n"
+                + '[app so.tilo.store stderr] tilo-physical-input ' + json.dumps({
+                    "after": {"app": "so.tilo.chat", "foreign": True}}) + "\n")
+            self.assertEqual(PROOF.latest_chat_input_state(output), newest)
+
+    def test_physical_message_original_is_derived_from_saved_canonical_person_row(self):
+        request = {"id": "m_00000000000000000000000000000021", "author": "person:fixture",
+                   "parent": "", "agentIntent": "message", "text": "fixture",
+                   "complete": True}
+        messages = [request]
+        action = {"application": "so.tilo.chat", "room": "room", "record": "",
+                  "operation": "read-messages"}
+        with patch.object(PROOF, "actions", return_value=[action]), \
+                patch.object(PROOF, "invoke", return_value={}), \
+                patch.object(PROOF, "wait_terminal", return_value={}), \
+                patch.object(PROOF, "terminal_value", return_value={
+                    "content": {"channel": "actual-direct-channel", "messages": messages}}):
+            self.assertEqual(PROOF.canonical_physical_message("socket", "room", "", "fixture", None),
+                             {"invocation": "00000000-0000-0000-0000-000000000021",
+                              "request_row": request["id"], "channel": "actual-direct-channel"})
+            for changed in [{"id": "caller-asserted-row"}, {"parent": "another-parent"},
+                            {"author": "agent:tide"}, {"agentIntent": "queue"},
+                            {"complete": False}]:
+                original = request.copy()
+                request.update(changed)
+                with self.subTest(changed=changed), self.assertRaises(RuntimeError):
+                    PROOF.canonical_physical_message("socket", "room", "", "fixture", None)
+                request.clear()
+                request.update(original)
+            messages.append(dict(request))
+            with self.assertRaises(RuntimeError):
+                PROOF.canonical_physical_message("socket", "room", "", "fixture", None)
+
+    def test_real_provider_fourth_post_settles_while_original_third_stays_held(self):
+        provider = PROOF.HeldProvider()
+        provider.require_owner_admission(lambda: {"phase": "accepted"})
+
+        def post():
+            request = urllib.request.Request(
+                provider.endpoint + "/chat/completions",
+                json.dumps({"model": "bounded-fixture"}).encode(),
+                {"Authorization": "Bearer isolated-fixture-not-a-real-provider-key"},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            try:
+                original = [pool.submit(post) for _ in range(3)]
+                PROOF.wait_for("three actual bounded POSTs",
+                               lambda: provider.request_count() == 3, timeout=5)
+                provider.release_through(2)
+                # Two completed requests do not release the third.
+                PROOF.wait_for("the two released original responses",
+                               lambda: sum(future.done() for future in original) == 2, timeout=5)
+                provider.require_fourth_message_admission(lambda: {"phase": "WaitingForReply"})
+                fourth = pool.submit(post)
+                PROOF.wait_for("actual fourth POST",
+                               lambda: provider.request_count() == 4, timeout=5)
+                provider.release_exact(4)
+                self.assertEqual(fourth.result(timeout=5), 200)
+                self.assertEqual(sum(future.done() for future in original), 2)
+                self.assertEqual(provider.allowed, 2)
+                self.assertEqual(provider.overflow_count(), 0)
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    post()
+                self.assertEqual(refused.exception.code, 429)
+                refused.exception.close()
+                self.assertEqual(provider.request_count(), 4)
+                self.assertEqual(provider.overflow_count(), 1)
+                provider.release_through(3)
+                self.assertEqual([future.result(timeout=5) for future in original], [200] * 3)
+            finally:
+                provider.close()
+
+    def test_fourth_response_does_not_release_the_original_third_turn(self):
+        provider = object.__new__(PROOF.HeldProvider)
+        provider.request_lock = threading.Condition()
+        provider.requests = 3
+        provider.allowed = 2
+        provider.exact_releases = set()
+        provider.owner_admission_probe = lambda: {"original_task": True}
+        probe = lambda: {"original_message": True}
+        provider.require_fourth_message_admission(probe)
+        self.assertIs(provider.owner_admission_probe, probe)
+        with self.assertRaises(RuntimeError):
+            provider.release_exact(4)
+        provider.requests = 4
+        provider.release_exact(4)
+        self.assertEqual(provider.allowed, 2)
+        self.assertEqual(provider.exact_releases, {4})
+        self.assertFalse(provider.allowed >= 3 or 3 in provider.exact_releases)
+        provider.release_through(3)
+        self.assertEqual(provider.allowed, 3)
+        self.assertEqual(provider.exact_releases, {4})
+
+    def test_fourth_probe_cannot_replace_any_original_request_admission(self):
+        for requests, allowed in [(0, 0), (1, 0), (2, 1), (3, 3), (4, 2)]:
+            provider = object.__new__(PROOF.HeldProvider)
+            provider.request_lock = threading.Condition()
+            provider.requests = requests
+            provider.allowed = allowed
+            provider.owner_admission_probe = lambda: {"original_task": True}
+            with self.subTest(requests=requests, allowed=allowed):
+                with self.assertRaises(RuntimeError):
+                    provider.require_fourth_message_admission(lambda: {})
+
     def test_float_return_uses_only_physical_editor_and_surface_input(self):
         source = inspect.getsource(PROOF.native_float_return)
         for forbidden in ("SetText", "AddSelection", "DoAction", "GrabFocus"):
