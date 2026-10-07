@@ -27,6 +27,10 @@ class VmError(RuntimeError):
 
 
 def first_json(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
     for line in text.splitlines():
         line = line.strip()
         if line.startswith(("{", "[")):
