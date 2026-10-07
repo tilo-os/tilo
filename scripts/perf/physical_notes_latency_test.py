@@ -46,6 +46,32 @@ class PhysicalNotesLatency(unittest.TestCase):
                      discarded=False, presented_time_ns=1))]
         self.assertTrue(self.report(timeline)['latency_complete'])
 
+    def test_discarded_buffer_needs_an_exact_drawn_and_presented_successor(self):
+        timeline = copy.deepcopy(self.timeline()[:4])
+        first_feedback = timeline[3][1]
+        first_feedback.clear()
+        first_feedback.update(backend='wayland', cpu_frame_id=1, process_id=123,
+                              observer_session=timeline[1][1]['observer_session'], discarded=True)
+        redraw = copy.deepcopy(timeline[2][1])
+        redraw['cpu_frame_id'] = 5
+        shown = copy.deepcopy(self.timeline()[3][1])
+        shown['cpu_frame_id'] = 5
+        timeline += [('tilo-physical-frame ', redraw), ('tilo-display-frame ', shown)]
+        report = self.report(timeline)
+        self.assertEqual(report['samples'][0]['cpu_frame_id'], 5)
+        self.assertEqual(report['samples'][0]['latency_ms'], 10)
+        for mutation in ('missing_feedback', 'different_body', 'no_positive_feedback'):
+            with self.subTest(mutation=mutation):
+                invalid = copy.deepcopy(timeline)
+                if mutation == 'missing_feedback':
+                    invalid.pop(3)
+                elif mutation == 'different_body':
+                    invalid[2][1]['state']['body_hash'] = 'f' * 64
+                else:
+                    invalid[-1][1]['discarded'] = True
+                with self.assertRaises(ValueError):
+                    self.report(invalid)
+
     def test_indirect_missing_coalesced_wrong_note_and_foreign_effects_fail(self):
         for prefix, change in [
             ('tilo-physical-delivery ', dict(clock_id=0)),
