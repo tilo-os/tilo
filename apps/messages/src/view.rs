@@ -479,7 +479,7 @@ fn register_effects(
         if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::Back) { effect_setup.close(); }
 
         if matches!(effect, MessagesEffect::ListAccountStates) {
-            let values: Vec<_> = effect_sources.accounts().accounts.iter().filter(|(_, account)| matches!(account.type_id.as_str(), "whatsapp" | "signal" | "sms")).map(|(id, account)| {
+            let values: Vec<_> = effect_sources.accounts().accounts.iter().filter(|(_, account)| matches!(account.type_id.as_str(), "tilo" | "whatsapp" | "signal" | "sms")).map(|(id, account)| {
                 let choice = Choice {service: account.type_id.clone(), account: id.as_str().into(), recipient: String::new(), association: String::new(), scope: String::new(), revision: String::new()};
                 serde_json::json!({"service": choice.service, "account": choice.account, "enabled": account.enabled, "state": effect_sending.account_state(&choice).as_str()})
             }).collect();
@@ -634,7 +634,7 @@ fn detail(
     if let Some(choice) = chosen {
         let label = choice.label(sources);
         body = body.push(Box::new(Text::dynamic(move || label.clone())));
-        if choice.service != "tilo" {
+        {
             let key = if choice.account.is_empty() {
                 "messages-account-unconfigured".into()
             } else {

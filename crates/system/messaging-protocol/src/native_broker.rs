@@ -219,7 +219,9 @@ impl NativeBroker {
         Ok(SendReceipt {
             route: request.route,
             operation: request.operation,
-            delivery: Delivery::RecipientDelivered,
+            // Submission replies follow the SDK contract; the durable peer ACK
+            // is separately projected as RecipientDelivered in encrypted history.
+            delivery: Delivery::Submitted,
         })
     }
 }

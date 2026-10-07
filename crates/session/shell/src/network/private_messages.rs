@@ -303,6 +303,7 @@ fn verify(certificate: &Material, peer: EndpointId, root: [u8; 32]) -> Result<()
     let now_ns = tilo_clock::unix_now_ns();
     if certificate.cert.device_public_key != *peer.as_bytes()
         || certificate.cert.user_public_key != root
+        || certificate.cert.capabilities.foreign
     {
         return Err(SendError::Revoked);
     }
@@ -411,6 +412,27 @@ mod tests {
     async fn actual_router_private_text_reconnect_pin_and_revocation() {
         let (a, lookup_a, cert_a) = endpoint(31).await;
         let (b, lookup_b, cert_b) = endpoint(41).await;
+        let mut foreign = cert_b.clone();
+        foreign.capabilities.foreign = true;
+        sign_device_cert(
+            &mut foreign,
+            &ed25519_dalek::SigningKey::from_bytes(&[41; 32]),
+        )
+        .unwrap();
+        assert!(
+            tilo_user_identity::verify_device_cert_at(&foreign, tilo_clock::unix_now_ns()).is_ok()
+        );
+        assert_eq!(
+            verify(
+                &Material {
+                    cert: foreign,
+                    revocations: Vec::new()
+                },
+                b.id(),
+                cert_b.user_public_key
+            ),
+            Err(SendError::Revoked)
+        );
         lookup_a.add_endpoint_info(b.addr());
         lookup_b.add_endpoint_info(a.addr());
         let (cmd_a, task_a) = super::super::Actor::spawn(a.clone(), lookup_a);
