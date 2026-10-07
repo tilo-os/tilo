@@ -36,7 +36,7 @@ for name, value in [('provenance', provenance), ('freshness', freshness)]:
  (work/f'{name}.json').write_text(json.dumps(value)+'\n')
 PY
 ./os/dev/install-cached-syft.sh
-syft "$image" -o spdx-json > "$work/sbom.spdx.json"
+"$RUNNER_TEMP/tilo-syft-tools/syft" "$image" -o spdx-json > "$work/sbom.spdx.json"
 # Existing main workflow, role, audience and pinned signer. Stop on denials.
 python3 - "$work" <<'PY'
 import hashlib, json, pathlib, sys
