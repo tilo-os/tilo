@@ -25,6 +25,14 @@ defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
 (`python3 os/scripts/install-components.py --list`).
 
+A canonical `vmd`-only change merges the management binary for the next RPC
+without restarting running desktops. This applies to its first addition,
+replacement and removal. Unexpected layer files, executable/link metadata,
+declared services or other changed components retain normal refresh behavior.
+Explicit slot restart commands still refresh sessions. Installing this behavior
+through an older daemon uses that older daemon's activation policy once; the
+receipt reports any desktop refresh it performed.
+
 ## Matched userspace cohort
 
 ```sh

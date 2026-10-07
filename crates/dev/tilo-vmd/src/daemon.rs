@@ -29,6 +29,8 @@ use crate::targets::TargetStore;
 /// The domain of a greetd session unless the image says otherwise.
 pub const DEFAULT_DOMAIN: &str = "unconfined_t";
 
+#[cfg(test)]
+mod management_refresh_tests;
 mod runtime_retention;
 /// Layers and uploads younger than this survive gc: they may belong to a
 /// swap that is still in flight on another connection.
@@ -1358,6 +1360,50 @@ impl Daemon {
         self.transition(&mut record, &from, &to)
     }
 
+    /// Management binaries are invoked outside the owner's frozen namespace.
+    /// Only their exact canonical inventory can avoid a desktop refresh.
+    fn management_only_transition(
+        &self,
+        from: &Generation,
+        to: &Generation,
+    ) -> Result<bool, DaemonError> {
+        let names: BTreeSet<_> = from.components.keys().chain(to.components.keys()).collect();
+        let changed: Vec<_> = names
+            .into_iter()
+            .filter(|name| from.components.get(*name) != to.components.get(*name))
+            .collect();
+        if changed.len() != 1 || changed.first().is_none_or(|name| name.as_str() != "vmd") {
+            return Ok(false);
+        }
+        for entry in from
+            .components
+            .get("vmd")
+            .into_iter()
+            .chain(to.components.get("vmd"))
+        {
+            if entry.info.scope != Scope::Vm
+                || entry.info.reboot
+                || !entry.info.units.is_empty()
+                || !entry.info.user_units.is_empty()
+            {
+                return Ok(false);
+            }
+            let files = self.layers.files(&entry.layer)?;
+            if files.len() != 2
+                || !files.iter().any(|file| {
+                    file.path == "/usr/libexec/tilo-vmd" && file.executable && file.link.is_none()
+                })
+                || !files.iter().any(|file| {
+                    file.path == "/usr/bin/tilo-vmd"
+                        && file.link.as_deref() == Some("../libexec/tilo-vmd")
+                })
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn transition(
         &mut self,
         record: &mut SlotRecord,
@@ -1365,6 +1411,8 @@ impl Daemon {
         to: &Generation,
     ) -> Result<ApplyResult, DaemonError> {
         let (policy, restarts) = apply::policy(record, from, to)?;
+        let preserve_sessions =
+            policy == Policy::VmRefresh && self.management_only_transition(from, to)?;
         let layers = self.system_layers(record, self.layer_paths(to)?)?;
         self.slots.mark_pending(&record.name, to.number)?;
         let mut actions = apply::activate(
@@ -1381,7 +1429,9 @@ impl Daemon {
         match policy {
             Policy::VmRefresh => {
                 self.slots.set_current(record, to.number)?;
-                actions.extend(self.restart_all_sessions(&restarts.user_units)?);
+                if !preserve_sessions {
+                    actions.extend(self.restart_all_sessions(&restarts.user_units)?);
+                }
                 let sessions = self.sessions()?;
                 self.verify_parity(sessions)?;
             }
