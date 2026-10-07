@@ -79,6 +79,12 @@ jobs:
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
+      - name: Verify commit messages and exact new blob contents
+        run: >-
+          python3 tools/policy/check_commit_policy.py
+          '${{ steps.merge.outputs.main }}'
+          '${{ github.event.before }}'
+
       - name: Repository policy suite
         run: bash tools/policy/run.sh
 
