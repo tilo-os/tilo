@@ -50,7 +50,14 @@ class AndroidBusCleanup(unittest.TestCase):
     def test_unreadable_live_helper_fails(self):
         with tempfile.TemporaryDirectory() as runtime:
             process = self.helper(runtime, hidden=True)
-            with self.assertRaises(PermissionError):
+            read_bytes = Path.read_bytes
+            def unavailable_environment(path):
+                if path == Path('/proc') / str(process.pid) / 'environ':
+                    # Privileged CI may read nondumpable processes. Control only
+                    # that read failure; retain real process identity/liveness.
+                    raise PermissionError('live helper environment is unavailable')
+                return read_bytes(path)
+            with patch.object(Path, 'read_bytes', unavailable_environment), self.assertRaises(PermissionError):
                 self.cleanup_one(process, runtime)
             self.assertIsNone(process.poll())
 

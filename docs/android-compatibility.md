@@ -474,7 +474,8 @@ registration, new persistent access grant, device takeover or reboot was needed.
 Native execution exposed a helper-cleanup race: `/proc/<pid>/environ` can become
 unreadable after the process exits. Cleanup now proves exit through the captured
 pidfd before treating that process as gone. An unreadable live helper still fails;
-five real-process regression tests cover ownership, preservation and exit races.
+five real-process/pidfd regression tests cover ownership, preservation and exit
+races, with injected environment-read errors for privilege-independent coverage.
 
 `build_arm64_entry.sh` and `mediation/build_arm64_bridge.py` provide the remote
 cross-build commands for a signed development sysroot (musl-dev, gcc, gtk4.0-dev
