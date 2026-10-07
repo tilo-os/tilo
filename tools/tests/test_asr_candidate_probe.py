@@ -1,5 +1,6 @@
 """Experimental adapter receipt/CPU accounting safeguards; no inference or mic."""
 import hashlib
+import json
 import os
 from unittest.mock import patch
 import importlib.util
@@ -18,16 +19,22 @@ spec.loader.exec_module(probe)
 
 class CandidateProbeTests(unittest.TestCase):
     def test_actual_child_time_receipt_not_outer_wrapper_accounting(self):
-        child = subprocess.run(['/usr/bin/time', '-f', 'ASR_RESOURCE {"user":%U,"system":%S}',
-                                sys.executable, '-c', 'sum(range(10000))'],
+        # The minimal policy image has no GNU time. Measure a real child's CPU
+        # with the standard library; the remote native probe still requires
+        # /usr/bin/time and never accepts wrapper-only accounting.
+        child_code = ('import json,resource; sum(range(200000)); '
+                      'r=resource.getrusage(resource.RUSAGE_SELF); '
+                      'print("ASR_RESOURCE " + json.dumps({"user":r.ru_utime,"system":r.ru_stime}))')
+        child = subprocess.run([sys.executable, '-c', child_code],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        self.assertIsInstance(probe.measured_cpu(child.stderr, True), float)
-        self.assertGreaterEqual(probe.measured_cpu(child.stderr, True), 0)
+        receipt = json.loads(child.stdout.split(' ', 1)[1])
+        self.assertEqual(probe.measured_cpu(child.stdout, True), receipt['user'] + receipt['system'])
+        self.assertGreater(probe.measured_cpu(child.stdout, True), 0)
         self.assertIsNone(probe.measured_cpu('guarded before native exit', False))
         with self.assertRaises(RuntimeError):
             probe.measured_cpu('', True)
         with self.assertRaises(RuntimeError):
-            probe.measured_cpu(child.stderr + child.stderr, True)
+            probe.measured_cpu(child.stdout + child.stdout, True)
 
     def test_malformed_or_unobservable_resource_receipt_cannot_be_scored(self):
         for value in ['{"user":-1,"system":0}', '{"user":NaN,"system":0}',
