@@ -186,19 +186,11 @@ impl EnrollmentView {
         service: String,
         cx: &mut EffectCx<Messages>,
     ) -> EffectAnswer {
-        let original = self.state.with(|state| state.account.clone());
-        let prepare = service == "whatsapp" && original.is_none();
-        if self.state.with(|state| state.pending)
-            || original.as_ref().is_some_and(|account| {
-                service != "whatsapp"
-                    || account.service != service
-                    || self.phase() != EnrollmentPhase::Linking
-            })
+        if self
+            .state
+            .with(|state| state.pending || state.account.is_some())
         {
             return Err(CATALOG.t("messages-setup-active"));
-        }
-        if prepare {
-            return Ok(self.prepare(client, service, cx));
         }
         self.state.update(|state| state.pending = true);
         self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
@@ -213,38 +205,10 @@ impl EnrollmentView {
             }
             projection.update(|state| state.pending = false);
             let private = result.map_err(|_| CATALOG.t("messages-setup-unavailable"))?;
-            if original.as_ref().is_some_and(|account| account != &private.account) {
-                invalidated.cancel(&private.account);
-                return Err(CATALOG.t("messages-setup-interrupted"));
-            }
             let value = serde_json::json!({"state":"linking", "service":private.account.service,"account":private.account.account,"attempt":private.attempt,"generation":private.generation});
             projection.update(|state| { state.account = Some(private.account.clone()); state.pairing = Some(Arc::new(private)); });
             Ok(Effected::value(value))
         }))
-    }
-    fn prepare(
-        &self,
-        client: EnrollmentClient,
-        service: String,
-        cx: &mut EffectCx<Messages>,
-    ) -> Effected {
-        self.state.update(|state| state.pending = true);
-        self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
-        let admitted = self.epoch.get();
-        let epoch = self.epoch.clone();
-        let projection = self.state.clone();
-        let invalidated = client.clone();
-        cx.spawn(move |_| async move { client.prepare(service).await }, move |(), result, _| {
-            if epoch.get() != admitted {
-                if let Ok(review) = result { invalidated.cancel(&review.account); }
-                return Err(CATALOG.t("messages-setup-interrupted"));
-            }
-            projection.update(|state| state.pending = false);
-            let review = result.map_err(|_| CATALOG.t("messages-setup-unavailable"))?;
-            let value = serde_json::json!({"state":"review","service":review.account.service,"account":review.account.account});
-            projection.update(|state| { state.account = Some(review.account.clone()); state.review = Some(review); });
-            Ok(Effected::value(value))
-        })
     }
     fn finish(
         &self,
@@ -270,9 +234,9 @@ impl EnrollmentView {
         let original = account.clone();
         Ok(cx.spawn(move |_| async move { client.finish(account, attempt).await }, move |(), result, _| {
             if epoch.get() != admitted { invalidated.cancel(&original); return Err(CATALOG.t("messages-setup-interrupted")); }
-            projection.update(|state| state.pending = false);
-            let review = result.map_err(|_| CATALOG.t("messages-setup-unavailable"))?;
-            projection.update(|state| { state.review = Some(review); state.pairing = None; });
+            projection.update(|state| { state.pending = false; state.pairing = None; });
+            let review = result.map_err(|_| CATALOG.t("messages-setup-interrupted"))?;
+            projection.update(|state| state.review = Some(review));
             Ok(Effected::value(serde_json::json!({"state":"review","service":original.service,"account":original.account})))
         }))
     }
@@ -289,13 +253,7 @@ impl EnrollmentView {
                     .review
                     .as_ref()
                     .is_some_and(|review| review.account == account)
-                && (state.proposal.is_none()
-                    || (account.service == "whatsapp"
-                        && state
-                            .review
-                            .as_ref()
-                            .is_some_and(|review| review.number.is_some())
-                        && client.phase(&account) == EnrollmentPhase::Review))
+                && state.proposal.is_none()
         }) {
             return Err(CATALOG.t("messages-setup-active"));
         }
@@ -305,7 +263,6 @@ impl EnrollmentView {
         let projection = self.state.clone();
         let invalidated = client.clone();
         let original = account.clone();
-        let reviewed = client.clone();
         Ok(cx.spawn(
             move |_| async move { client.review(account, display_name).await },
             move |(), result, _| {
@@ -317,7 +274,7 @@ impl EnrollmentView {
                 let proposal = result.map_err(|_| CATALOG.t("messages-setup-interrupted"))?;
                 projection.update(|state| state.proposal = Some(proposal.clone()));
                 Ok(Effected::value(
-                    serde_json::json!({"state":if reviewed.phase(&original) == EnrollmentPhase::Ready {"ready"} else {"awaiting_permission"},"proposal":proposal}),
+                    serde_json::json!({"state":"awaiting_permission","proposal":proposal}),
                 ))
             },
         ))
@@ -328,16 +285,31 @@ impl EnrollmentView {
         if let Some(private) = &state.pairing
             && phase == EnrollmentPhase::Linking
         {
-            return Self::pairing_panel(content, actions, &state, private);
+            content = content.push(Box::new(Text::new(&CATALOG.t("messages-setup-scan"))));
+            content = content.push(Box::new(
+                QrWidget::new(private.qr_bytes().to_vec())
+                    .with_id("messages.first-account-code")
+                    .with_alt(CATALOG.t("messages-setup-code"))
+                    .with_secret(),
+            ));
+            return content.push(Box::new(
+                actions.bind_effect_invocation(
+                    Button::new("messages.first-account-finish", "messages-finish-link")
+                        .with_enabled(!state.pending),
+                    &MessagesEffect::CompleteFirstEnrollment {
+                        service: private.account.service.clone(),
+                        account: private.account.account.clone(),
+                        attempt: private.attempt.clone(),
+                    },
+                ),
+            ));
         }
         if phase == EnrollmentPhase::Ready {
             return content.push(Box::new(Text::new(&CATALOG.t("messages-setup-linked"))));
         }
         if let Some(review) = &state.review {
-            let explanation = if review.account.service == "whatsapp" && review.number.is_none() {
-                CATALOG.t("messages-whatsapp-storage-explanation")
-            } else {
-                CATALOG.t_args(
+            content = content.push(Box::new(Text::new(
+                &CATALOG.t_args(
                     "messages-first-self-review",
                     &[(
                         "identity",
@@ -348,28 +320,9 @@ impl EnrollmentView {
                                 .unwrap_or_else(|| review.scope.clone()),
                         ),
                     )],
-                )
-            };
-            content = content.push(Box::new(Text::new(&explanation)));
-            if review.account.service == "whatsapp" && phase == EnrollmentPhase::Linking {
-                return content.push(Box::new(
-                    actions.bind_effect_invocation(
-                        Button::new(
-                            "messages.first-whatsapp-code",
-                            "messages-whatsapp-show-code",
-                        )
-                        .with_enabled(!state.pending),
-                        &MessagesEffect::BeginFirstEnrollment {
-                            service: "whatsapp".into(),
-                        },
-                    ),
-                ));
-            }
-            if state.proposal.is_some()
-                && !(review.account.service == "whatsapp"
-                    && review.number.is_some()
-                    && phase == EnrollmentPhase::Review)
-            {
+                ),
+            )));
+            if state.proposal.is_some() {
                 return content.push(Box::new(Text::new(&CATALOG.t(
                     if phase == EnrollmentPhase::Interrupted {
                         "messages-setup-interrupted"
@@ -380,15 +333,8 @@ impl EnrollmentView {
             }
             return content.push(Box::new(
                 actions.bind_effect_invocation(
-                    Button::new(
-                        "messages.first-account-review",
-                        if review.account.service == "whatsapp" && review.number.is_none() {
-                            "messages-whatsapp-review-storage"
-                        } else {
-                            "messages-first-confirm"
-                        },
-                    )
-                    .with_enabled(!state.pending && phase == EnrollmentPhase::Review),
+                    Button::new("messages.first-account-review", "messages-first-confirm")
+                        .with_enabled(!state.pending && phase == EnrollmentPhase::Review),
                     &MessagesEffect::ReviewFirstEnrollment {
                         service: review.account.service.clone(),
                         account: review.account.account.clone(),
@@ -403,15 +349,6 @@ impl EnrollmentView {
             )));
         }
         content = self.sim_panel(content, actions, &state);
-        content =
-            content.push(Box::new(actions.bind_effect_invocation(
-                Button::new("messages.first-whatsapp", "messages-first-whatsapp").with_enabled(
-                    self.client.is_some() && !state.pending && state.account.is_none(),
-                ),
-                &MessagesEffect::BeginFirstEnrollment {
-                    service: "whatsapp".into(),
-                },
-            )));
         content.push(Box::new(
             actions.bind_effect_invocation(
                 Button::new("messages.first-account-start", "messages-first-signal").with_enabled(
@@ -419,45 +356,6 @@ impl EnrollmentView {
                 ),
                 &MessagesEffect::BeginFirstEnrollment {
                     service: "signal".into(),
-                },
-            ),
-        ))
-    }
-    fn pairing_panel(
-        mut content: Column,
-        actions: &Actions<Messages>,
-        state: &Projection,
-        private: &Pairing,
-    ) -> Column {
-        content = content.push(Box::new(Text::new(&CATALOG.t("messages-setup-scan"))));
-        content = content.push(Box::new(
-            QrWidget::new(private.qr_bytes().to_vec())
-                .with_id("messages.first-account-code")
-                .with_alt(CATALOG.t("messages-setup-code"))
-                .with_secret(),
-        ));
-        if private.account.service == "whatsapp" {
-            content = content.push(Box::new(
-                actions.bind_effect_invocation(
-                    Button::new(
-                        "messages.first-whatsapp-refresh",
-                        "messages-whatsapp-refresh-code",
-                    )
-                    .with_enabled(!state.pending),
-                    &MessagesEffect::BeginFirstEnrollment {
-                        service: "whatsapp".into(),
-                    },
-                ),
-            ));
-        }
-        content.push(Box::new(
-            actions.bind_effect_invocation(
-                Button::new("messages.first-account-finish", "messages-finish-link")
-                    .with_enabled(!state.pending),
-                &MessagesEffect::CompleteFirstEnrollment {
-                    service: private.account.service.clone(),
-                    account: private.account.account.clone(),
-                    attempt: private.attempt.clone(),
                 },
             ),
         ))

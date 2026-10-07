@@ -1,9 +1,8 @@
 use super::*;
-use crate::supervisor::whatsapp::WhatsappBootstrap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_messaging::SendError;
 
-pub(in super::super) struct Gate(pub(in super::super) AtomicBool);
+struct Gate(AtomicBool);
 impl AccountAuthority for Gate {
     fn check(&self) -> Result<(), SendError> {
         if self.0.load(Ordering::SeqCst) {
@@ -32,7 +31,7 @@ impl Transport for Pipe {
         self.closes.fetch_add(1, Ordering::SeqCst);
     }
 }
-pub(in super::super) struct Provider {
+struct Provider {
     gate: Arc<Gate>,
     pipe: Arc<Pipe>,
     exchanges: AtomicUsize,
@@ -68,10 +67,7 @@ impl TransportFactory for Provider {
         Ok((self.pipe.clone(), receiver))
     }
 }
-pub(in super::super) fn fixture(
-    revoke_on_call: bool,
-    revoke_on_write: bool,
-) -> (Arc<Gate>, Arc<Provider>, Network) {
+fn fixture(revoke_on_call: bool, revoke_on_write: bool) -> (Arc<Gate>, Arc<Provider>, Network) {
     let gate = Arc::new(Gate(AtomicBool::new(true)));
     let pipe = Arc::new(Pipe {
         gate: gate.clone(),
@@ -92,50 +88,6 @@ pub(in super::super) fn fixture(
     }
     .guarded(gate.clone());
     (gate, provider, network)
-}
-
-#[tokio::test]
-async fn native_profile_bootstrap_refuses_revocation_before_sdk_custody_or_network() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("sdk");
-    let owner = crate::journal::Owner {
-        principal: "11".repeat(32),
-        device: "profile-device".into(),
-        service: crate::Service::Whatsapp,
-        account: "profile-account".into(),
-        linking_generation: 1,
-    };
-    let (gate, provider, network) = fixture(false, false);
-    gate.0.store(false, Ordering::SeqCst);
-    assert!(
-        WhatsappBootstrap::open_profile(
-            &root,
-            owner.clone(),
-            secret_vault::VaultKey::from_bytes([23; 32]),
-            network,
-            gate,
-        )
-        .await
-        .is_err()
-    );
-    assert!(!root.exists());
-    assert_eq!(provider.exchanges.load(Ordering::SeqCst), 0);
-    assert_eq!(provider.creates.load(Ordering::SeqCst), 0);
-    let (gate, provider, network) = fixture(false, false);
-    let bootstrap = WhatsappBootstrap::open_profile(
-        &root,
-        owner,
-        secret_vault::VaultKey::from_bytes([23; 32]),
-        network,
-        gate,
-    )
-    .await
-    .unwrap();
-    assert!(!bootstrap.client().is_logged_in());
-    assert!(!bootstrap.client().is_connected());
-    assert!(root.join("state.enc").is_file());
-    assert_eq!(provider.exchanges.load(Ordering::SeqCst), 0);
-    assert_eq!(provider.creates.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
