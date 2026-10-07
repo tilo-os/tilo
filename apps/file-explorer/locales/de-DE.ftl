@@ -334,6 +334,11 @@ files-received-link-empty = Link zur freigegebenen Datei ist leer
 ## Anwendungsrahmen und Navigation
 files-app-title = Dateien
 files-selection-empty = Wählen Sie zuerst Dateien aus.
+files-clipboard-source-unavailable = Eine ausgewählte Datei wurde geändert oder ist nicht mehr verfügbar. Wählen Sie sie vor dem Kopieren erneut aus.
+files-clipboard-unavailable = Die Datei-Zwischenablage des Arbeitsbereichs ist nicht verfügbar.
+files-clipboard-empty = Die Datei-Zwischenablage des Arbeitsbereichs ist leer.
+files-clipboard-undone = Einfügen rückgängig gemacht.
+files-clipboard-partial = { $count } Elemente eingefügt. Einige Elemente konnten nicht eingefügt werden: { $error }
 files-selection-unavailable = Ein Eintrag ist nicht mehr im angezeigten Ordner. Die Auswahl wurde nicht geändert.
 files-selection-too-large = Wählen Sie höchstens 256 Einträge pro Anfrage aus oder verwenden Sie „Alles auswählen“.
 files-back = Zurück
@@ -599,3 +604,9 @@ files-airdrop-action-detail = Den gewählten Laborempfänger auf dem Bestätigun
 files-nearby-status = Übertragungsstatus
 files-nearby-transfer-unavailable = Diese Übertragung ist in diesem Dateienfenster nicht mehr verfügbar.
 files-nearby-status-detail = Phase und bestätigte Byteanzahl dieser Übertragung anzeigen.
+
+files-clipboard-recovered = { $count } unterbrochene Übertragungen wiederhergestellt. Wiederherstellbare Kopien sind im Papierkorb.
+files-menu-recover-transfers = Unterbrochene Übertragungen wiederherstellen
+files-clipboard-redone = Einfügen wiederhergestellt.
+
+files-clipboard-cancelled = Dateiübertragung abgebrochen. Unterbrochene Übertragungen vor einem erneuten Versuch wiederherstellen.

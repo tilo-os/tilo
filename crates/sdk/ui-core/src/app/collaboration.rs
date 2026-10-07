@@ -827,6 +827,7 @@ impl App {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }
     }

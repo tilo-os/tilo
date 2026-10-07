@@ -212,6 +212,7 @@ pub type SharedInProcessApps = Rc<RefCell<InProcessApps>>;
 mod tests {
     use super::*;
     use tilo_resource::Resource as _;
+    include!("in_process_files_clipboard_tests.rs");
 
     const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
     const TAB: u64 = 41;
