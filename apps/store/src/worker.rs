@@ -48,6 +48,11 @@ pub enum Request {
         path: Option<PathBuf>,
         contents: Option<String>,
     },
+    ImportPackage(crate::package_import::Input),
+    InstallImported {
+        app: String,
+        root: String,
+    },
     RefreshRemotes,
     RemoteAdd {
         name: String,
@@ -111,6 +116,11 @@ pub enum DetailUpdate {
     Requested { id: String, item: Option<StoreItem> },
     /// Opening a reference resolves its identity and intentionally opens it.
     OpenedReference(StoreItem),
+    ImportedPackage {
+        item: StoreItem,
+        root: String,
+        version: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -298,6 +308,7 @@ struct State {
     operation_notice: Option<String>,
     host: Option<app_host::client::BlockingClient>,
     opened_ref: Option<FlatpakRef>,
+    imported_package: Option<crate::package_import::ImportedPackage>,
     base_items: Vec<StoreItem>,
     installed: Vec<(String, String)>,
     installed_origins: std::collections::HashMap<String, (String, bool)>,
@@ -316,16 +327,11 @@ struct State {
     item_index: ui::search::ListIndex,
 }
 
-fn run(
-    requests: &mpsc::Receiver<QueuedRequest>,
-    snapshots: &Snapshots,
+fn initial_state(
     directory: StoreDirectory,
     host: Result<app_host::client::BlockingClient, String>,
-) {
-    let staging = crate::actions::tapp_staging_dir()
-        .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
-    let _ = std::fs::create_dir_all(&staging);
-    let mut state = State {
+) -> State {
+    State {
         refresh_requested: false,
         operation_notice: None,
         host: host
@@ -335,6 +341,7 @@ fn run(
             })
             .ok(),
         opened_ref: None,
+        imported_package: None,
         base_items: Vec::new(),
         installed: Vec::new(),
         installed_origins: std::collections::HashMap::new(),
@@ -346,8 +353,47 @@ fn run(
         details: LruCache::new(CACHE_CAP),
         directory,
         item_index: ui::search::ListIndex::default(),
-    };
+    }
+}
+
+fn defer_import(
+    queued: QueuedRequest,
+    deferred: &mut std::collections::VecDeque<QueuedRequest>,
+    state: &State,
+    snapshots: &Snapshots,
+) -> bool {
+    if deferred.len() < 16 {
+        deferred.push_back(queued);
+        return true;
+    }
+    let error = ui::i18n!("store-package-review-busy");
+    let alive = send_tracked(
+        snapshots,
+        state,
+        state.base_items.clone(),
+        &error,
+        None,
+        None,
+        Some(error.clone()),
+    );
+    if let Some(done) = queued.done {
+        let _ = done.send(Err(error));
+    }
+    alive
+}
+
+fn run(
+    requests: &mpsc::Receiver<QueuedRequest>,
+    snapshots: &Snapshots,
+    directory: StoreDirectory,
+    host: Result<app_host::client::BlockingClient, String>,
+) {
+    let staging = crate::actions::tapp_staging_dir()
+        .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
+    let _ = std::fs::create_dir_all(&staging);
+    let mut state = initial_state(directory, host);
     let mut refresh = Some(refresh::Refresh::start(&state, None));
+    let mut deferred_imports = std::collections::VecDeque::new();
     loop {
         if !poll_refresh(&mut refresh, &mut state, snapshots) {
             break;
@@ -357,13 +403,38 @@ fn run(
         } else {
             REFRESH_INTERVAL
         };
-        match requests.recv_timeout(wait) {
+        let next = if refresh.is_none() && !deferred_imports.is_empty() {
+            deferred_imports
+                .pop_front()
+                .ok_or(mpsc::RecvTimeoutError::Disconnected)
+        } else {
+            requests.recv_timeout(wait)
+        };
+        match next {
             Ok(QueuedRequest {
                 request,
                 done,
                 locale,
             }) => {
                 locale.apply();
+                // A freshly opened Store has no verified offers until its initial
+                // source reads finish. Do not mislabel a valid handed file as
+                // unlisted merely because those same normal reads are pending.
+                if matches!(request, Request::ImportPackage(_)) && refresh.is_some() {
+                    if !defer_import(
+                        QueuedRequest {
+                            request,
+                            done,
+                            locale,
+                        },
+                        &mut deferred_imports,
+                        &state,
+                        snapshots,
+                    ) {
+                        break;
+                    }
+                    continue;
+                }
                 if !matches!(request, Request::Detail(_)) {
                     state.operation_notice = None;
                 }
@@ -371,7 +442,13 @@ fn run(
                     refresh = Some(refresh::Refresh::start(&state, done));
                     continue;
                 }
-                let package_operation = matches!(request, Request::Act(..) | Request::UpdateAll(_));
+                let package_operation = matches!(
+                    request,
+                    Request::Act(..)
+                        | Request::UpdateAll(_)
+                        | Request::InstallImported { .. }
+                        | Request::ImportPackage(_)
+                );
                 let (alive, outcome) = handle(request, &mut state, snapshots, &staging);
                 if package_operation
                     && let Some(outcome) = &outcome
@@ -514,6 +591,74 @@ fn handle(
                 error,
             );
             (alive, Some(opened.map(|_| Finished::status(label))))
+        }
+        Request::ImportPackage(input) => {
+            state.imported_package = None;
+            let reviewed = input
+                .read()
+                .and_then(|bytes| crate::package_import::review(bytes, &state.base_items));
+            let (status, detail, error) = match reviewed {
+                Ok(package) => {
+                    let detail = DetailUpdate::ImportedPackage {
+                        item: package.item.clone(),
+                        root: package.expected.package_root.to_hex(),
+                        version: package.expected.version.clone(),
+                    };
+                    state.imported_package = Some(package);
+                    (ui::i18n!("store-package-ready"), Some(detail), None)
+                }
+                Err(error) => (error.clone(), None, Some(error)),
+            };
+            let alive = send_tracked(
+                snapshots,
+                state,
+                state.base_items.clone(),
+                &status,
+                None,
+                detail,
+                error.clone(),
+            );
+            (
+                alive,
+                Some(error.map_or_else(|| Ok(Finished::status(status)), Err)),
+            )
+        }
+        Request::InstallImported { app, root } => {
+            let result = state
+                .imported_package
+                .as_ref()
+                .filter(|package| {
+                    package.expected.app_id == app && package.expected.package_root.to_hex() == root
+                })
+                .ok_or_else(|| ui::i18n!("store-package-review-required"))
+                .and_then(|package| {
+                    // Recheck immutable handed bytes against the latest independent offers.
+                    let current =
+                        crate::package_import::review(package.bytes.to_vec(), &state.base_items)?;
+                    let host = state
+                        .host
+                        .as_ref()
+                        .ok_or_else(|| ui::i18n!("store-package-unavailable"))?;
+                    host.install_offer(&current.registry, &current.expected)?;
+                    Ok(Finished::status(ui::i18n!("store-package-installed")))
+                });
+            if result.is_ok() {
+                state.imported_package = None;
+                state.refresh_requested = true;
+            }
+            let status = result
+                .as_ref()
+                .map_or_else(Clone::clone, |finished| finished.status.clone());
+            let alive = send_tracked(
+                snapshots,
+                state,
+                state.base_items.clone(),
+                &status,
+                None,
+                None,
+                result.as_ref().err().cloned(),
+            );
+            (alive, Some(result))
         }
         Request::RefreshRemotes => {
             refresh_flatpak(state);
@@ -1225,6 +1370,7 @@ mod tests {
             refresh_requested: false,
             host: None,
             opened_ref: None,
+            imported_package: None,
             base_items: items,
             installed: Vec::new(),
             installed_origins: std::collections::HashMap::new(),
@@ -1237,6 +1383,124 @@ mod tests {
             directory,
             item_index: ui::search::ListIndex::default(),
         }
+    }
+
+    struct ImportOfferHost {
+        expected: app_host::install::InstallExpectation,
+        installs: Arc<AtomicUsize>,
+    }
+
+    impl app_host::app_host_capnp::app_host::Server for ImportOfferHost {
+        fn install_offer(
+            self: capnp::capability::Rc<Self>,
+            params: app_host::app_host_capnp::app_host::InstallOfferParams,
+            mut results: app_host::app_host_capnp::app_host::InstallOfferResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let params = params.get().unwrap();
+            assert_eq!(params.get_registry().unwrap(), "Independent registry");
+            assert_eq!(
+                params.get_app_id().unwrap().to_str().unwrap(),
+                self.expected.app_id
+            );
+            assert_eq!(
+                params.get_version().unwrap().to_str().unwrap(),
+                self.expected.version
+            );
+            assert_eq!(
+                params.get_expected_root().unwrap(),
+                self.expected.package_root.as_bytes()
+            );
+            assert_eq!(
+                params.get_expected_publisher().unwrap(),
+                self.expected.publisher
+            );
+            assert_eq!(params.get_expected_size_bytes(), self.expected.size_bytes);
+            self.installs.fetch_add(1, Ordering::SeqCst);
+            results.get().set_id(self.expected.package_root.as_bytes());
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn package_import_worker_reviews_before_exact_owned_offer_install() {
+        use super::*;
+        let (bytes, item) = crate::package_import::tests::signed_fixture();
+        let reviewed =
+            crate::package_import::review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
+        let installs = Arc::new(AtomicUsize::new(0));
+        let (service, connection) = app_host::testing::ConnectedService::start(ImportOfferHost {
+            expected: reviewed.expected.clone(),
+            installs: installs.clone(),
+        })
+        .unwrap();
+        let mut state = state_with_items(vec![item.clone()], StoreDirectory::default());
+        state.host = Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+        let (sender, received) = mpsc::channel();
+        let snapshots = Snapshots {
+            sender,
+            wake: WakeHandle::new(),
+            pending: Arc::new(AtomicUsize::new(0)),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (alive, outcome) = handle(
+            Request::ImportPackage(crate::package_import::Input::Bytes(bytes.clone())),
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(alive && outcome.unwrap().is_ok());
+        assert_eq!(installs.load(Ordering::SeqCst), 0, "opening never installs");
+        assert!(
+            matches!(received.recv().unwrap().detail, Some(DetailUpdate::ImportedPackage { item: shown, .. }) if shown.id == item.id)
+        );
+        let (_, outcome) = handle(
+            Request::InstallImported {
+                app: item.id.clone(),
+                root: "00".repeat(32),
+            },
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(outcome.unwrap().is_err());
+        assert_eq!(
+            installs.load(Ordering::SeqCst),
+            0,
+            "stale reviewed identity cannot install"
+        );
+        let (_, outcome) = handle(
+            Request::InstallImported {
+                app: item.id.clone(),
+                root: reviewed.expected.package_root.to_hex(),
+            },
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(outcome.unwrap().is_ok());
+        assert_eq!(installs.load(Ordering::SeqCst), 1);
+        assert!(state.imported_package.is_none() && state.refresh_requested);
+        // A later source change revokes the previously reviewed file.
+        handle(
+            Request::ImportPackage(crate::package_import::Input::Bytes(bytes)),
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        state.base_items.clear();
+        let (_, outcome) = handle(
+            Request::InstallImported {
+                app: item.id,
+                root: reviewed.expected.package_root.to_hex(),
+            },
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(outcome.unwrap().is_err());
+        assert_eq!(installs.load(Ordering::SeqCst), 1);
+        drop(state);
+        service.shutdown().unwrap();
     }
 
     #[test]
