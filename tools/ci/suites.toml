@@ -379,6 +379,7 @@ suites = [
   "scripts/vm-acceptance/test_app_cohort.py",
   "scripts/vm-acceptance/test_store_chooser.py",
   "scripts/vm-acceptance/test_runtime_backing.py",
+  "scripts/vm-acceptance/test_flatpak_owned.py",
 ]
 
 [[group]]

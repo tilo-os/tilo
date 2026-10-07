@@ -2884,6 +2884,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         serde_json::json!({
             "seat_focus": self.seat.map(State::seat_focus_json),
             "native_window_provenance": self.seat.map(State::native_window_provenance_json),
+            "host_window_provenance": self.seat.map(State::host_window_provenance_json),
             "overlays": {
                 "overview": overlays.overview,
                 "quick_settings": overlays.quick_settings,

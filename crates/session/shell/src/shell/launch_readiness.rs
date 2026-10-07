@@ -28,8 +28,22 @@ impl Drop for Scope {
 pub(super) fn observe(
     start: impl FnOnce() -> Result<(), String>,
 ) -> Result<LaunchReadiness, String> {
+    observe_with_parent(None, start)
+}
+
+pub(super) fn observe_original(
+    parent: tilo_actions::InvocationId,
+    start: impl FnOnce() -> Result<(), String>,
+) -> Result<LaunchReadiness, String> {
+    observe_with_parent(Some(parent), start)
+}
+
+fn observe_with_parent(
+    parent: Option<tilo_actions::InvocationId>,
+    start: impl FnOnce() -> Result<(), String>,
+) -> Result<LaunchReadiness, String> {
     let session = super::launcher::LaunchSession::current();
-    let (token, readiness) = session.startup.reserve()?;
+    let (token, readiness) = session.startup.reserve_with_parent(parent)?;
     let _scope = Scope(CURRENT.with(|current| current.replace(Some(token))));
     start()?;
     Ok(readiness)
@@ -57,8 +71,24 @@ pub(super) fn fail_current(detail: String) {
         .fail(CURRENT.with(Cell::get), detail);
 }
 
+/// A host launch matched to the actual adopted kernel peer. Owner diagnostics
+/// retain this on the live surface; it grants no native package authority.
+#[derive(Clone, Debug)]
+pub(crate) struct HostLaunchCustody {
+    pub attempt: uuid::Uuid,
+    pub invocation: Option<tilo_actions::InvocationId>,
+    pub desktop_id: String,
+    pub room: String,
+    pub launcher_pid: u32,
+    pub launcher_start: u64,
+    pub peer_pid: u32,
+    pub peer_start: u64,
+}
+
 struct Pending {
+    invocation: Option<tilo_actions::InvocationId>,
     process: Option<(u32, u64)>,
+    host: Option<(uuid::Uuid, String, String)>,
     reply: tokio::sync::oneshot::Sender<Result<(), String>>,
     adoption: tokio::sync::oneshot::Sender<Option<tilo_action_broker::services::LaunchAdoption>>,
 }
@@ -67,7 +97,15 @@ struct Pending {
 pub(super) struct StartupObservations(Arc<Mutex<HashMap<u64, Pending>>>);
 
 impl StartupObservations {
+    #[cfg(test)]
     pub fn reserve(&self) -> Result<(u64, LaunchReadiness), String> {
+        self.reserve_with_parent(None)
+    }
+
+    fn reserve_with_parent(
+        &self,
+        invocation: Option<tilo_actions::InvocationId>,
+    ) -> Result<(u64, LaunchReadiness), String> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let mut pending = self
             .0
@@ -86,7 +124,9 @@ impl StartupObservations {
         pending.insert(
             token,
             Pending {
+                invocation,
                 process: None,
+                host: None,
                 reply,
                 adoption,
             },
@@ -118,6 +158,16 @@ impl StartupObservations {
         }
     }
 
+    pub fn host_started(&self, token: Option<u64>, desktop_id: &str, room: &str) {
+        if let Some(token) = token
+            && let Ok(mut pending) = self.0.lock()
+            && let Some(entry) = pending.get_mut(&token)
+            && entry.process.is_some()
+        {
+            entry.host = Some((uuid::Uuid::new_v4(), desktop_id.into(), room.into()));
+        }
+    }
+
     pub fn fail(&self, token: Option<u64>, detail: String) {
         let observation = token.and_then(|token| self.0.lock().ok()?.remove(&token));
         if let Some(observation) = observation {
@@ -134,14 +184,14 @@ impl StartupObservations {
         &self,
         mut pid: u32,
         adoption: Option<tilo_action_broker::services::LaunchAdoption>,
-    ) {
+    ) -> Option<HostLaunchCustody> {
+        let peer_pid = pid;
+        let peer_start = super::launcher::proc_stat(pid)?.1;
         // Match the same bounded ancestry and PID-reuse rule as the launcher's
         // ordinary service and Wayland admission. Never hold our lock during
         // filesystem reads or while waking a receiver.
         for _ in 0..32 {
-            let Some((parent, start)) = super::launcher::proc_stat(pid) else {
-                return;
-            };
+            let (parent, start) = super::launcher::proc_stat(pid)?;
             let observation = self.0.lock().ok().and_then(|mut pending| {
                 let token = pending.iter().find_map(|(token, entry)| {
                     (entry.process == Some((pid, start))).then_some(*token)
@@ -149,15 +199,29 @@ impl StartupObservations {
                 pending.remove(&token)
             });
             if let Some(observation) = observation {
+                let custody =
+                    observation
+                        .host
+                        .map(|(attempt, desktop_id, room)| HostLaunchCustody {
+                            attempt,
+                            invocation: observation.invocation,
+                            desktop_id,
+                            room,
+                            launcher_pid: pid,
+                            launcher_start: start,
+                            peer_pid,
+                            peer_start,
+                        });
                 let _ = observation.adoption.send(adoption);
                 let _ = observation.reply.send(Ok(()));
-                return;
+                return custody;
             }
             if parent == 0 || parent == pid {
-                return;
+                return None;
             }
             pid = parent;
         }
+        None
     }
 }
 
@@ -171,6 +235,26 @@ pub(super) fn command_token(command: &super::launcher::LaunchCommand) -> Option<
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn host_custody_requires_observed_spawn_and_actual_adoption_once() {
+        let observations = StartupObservations::default();
+        let (token, ready) = observations.reserve().unwrap();
+        let pid = std::process::id();
+        observations.host_started(Some(token), "org.gnome.TextEditor.desktop", "room");
+        assert!(observations.adopted_window(pid, None).is_none());
+        observations.started(Some(token), pid);
+        observations.host_started(Some(token), "org.gnome.TextEditor.desktop", "room");
+        let custody = observations.adopted_window(pid, None).unwrap();
+        assert_eq!(custody.peer_pid, pid);
+        assert_eq!(custody.launcher_pid, pid);
+        assert_eq!(custody.peer_start, custody.launcher_start);
+        assert_eq!(custody.desktop_id, "org.gnome.TextEditor.desktop");
+        assert_eq!(custody.room, "room");
+        assert!(!custody.attempt.is_nil());
+        assert!(observations.adopted_window(pid, None).is_none());
+        assert_eq!(ready.wait_with_adoption().await.unwrap(), None);
+    }
 
     #[tokio::test]
     async fn exact_adoption_returns_public_window_identity_without_kernel_pid() {
@@ -398,3 +482,7 @@ mod tests {
         assert!(observations.0.lock().unwrap().is_empty());
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "launch_readiness/host_wire_tests.rs"]
+mod host_wire_tests;

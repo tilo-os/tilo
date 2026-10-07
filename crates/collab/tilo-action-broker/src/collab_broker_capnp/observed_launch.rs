@@ -118,6 +118,7 @@ impl CapnpChannelHandle {
             workspace_id,
             app.to_owned(),
             root.map(str::to_owned),
+            parent,
             check,
             grant,
         )))

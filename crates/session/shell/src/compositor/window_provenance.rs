@@ -19,6 +19,23 @@ fn current_peer(client: &ClientState, room: &str, package: &str) -> Option<(u32,
     (crate::shell::launcher::proc_stat(pid)?.1 == start).then_some((pid, start))
 }
 
+fn host_peer_is_current(
+    custody: &crate::shell::launch_readiness::HostLaunchCustody,
+    client: &ClientState,
+    room: &str,
+) -> bool {
+    !client.privileged
+        && client.package_id.as_deref() == Some(custody.desktop_id.as_str())
+        && client.workspace_id.as_deref() == Some(custody.room.as_str())
+        && client.pid == Some(custody.peer_pid)
+        && client.pid_start_time == Some(custody.peer_start)
+        && custody.room == room
+        && crate::shell::launcher::proc_stat(custody.peer_pid)
+            .is_some_and(|(_, start)| start == custody.peer_start)
+        && crate::shell::launcher::proc_stat(custody.launcher_pid)
+            .is_some_and(|(_, start)| start == custody.launcher_start)
+}
+
 struct Window {
     room: crate::shell::state::RoomId,
     tab: crate::shell::state::TabId,
@@ -75,6 +92,68 @@ impl State {
         current
     }
 
+    /// Actual observed host launches, through the same owner-only state door.
+    /// Client app IDs are labels; only a surface-local kernel ancestry witness
+    /// can produce a row. No native package or SDK authority is inferred.
+    pub fn host_window_provenance_json(&self) -> serde_json::Value {
+        let tree = self.workspace_tree.read();
+        let mut windows = Vec::new();
+        let mut omitted = 0_u64;
+        for workspace in &tree.workspaces {
+            for tab in workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+            {
+                let TileContent::Foreign { surface_id, .. } = &tab.tile else {
+                    continue;
+                };
+                let Some(surface) = self
+                    .client_input
+                    .surface(*surface_id)
+                    .filter(|surface| surface.is_alive())
+                else {
+                    continue;
+                };
+                let Some(client) = surface.client() else {
+                    continue;
+                };
+                let Some(identity) = client.get_data::<ClientState>() else {
+                    continue;
+                };
+                let custody = smithay::wayland::compositor::with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<crate::shell::launch_readiness::HostLaunchCustody>()
+                        .cloned()
+                });
+                let Some(custody) = custody else { continue };
+                if windows.len() == MAX_WINDOWS {
+                    omitted = omitted.saturating_add(1);
+                    continue;
+                }
+                if !host_peer_is_current(&custody, identity, &workspace.room.to_string()) {
+                    continue;
+                }
+                let Some(adoption_id) = super::state::surface_adoption_id(surface) else {
+                    continue;
+                };
+                windows.push(serde_json::json!({
+                    "attempt_id": custody.attempt, "invocation": custody.invocation,
+                    "adoption_id": adoption_id,
+                    "room": custody.room, "tab_id": tab.id, "surface_id": surface_id,
+                    "desktop_id": custody.desktop_id, "peer_pid": custody.peer_pid,
+                    "peer_start_time_ticks": custody.peer_start.to_string(),
+                    "launcher_pid": custody.launcher_pid,
+                    "launcher_start_time_ticks": custody.launcher_start.to_string(),
+                }));
+            }
+        }
+        drop(tree);
+        serde_json::json!({"method": "observed-host-launch-wayland-peer", "windows": windows, "omitted": omitted})
+    }
+
     /// Read through owner-only `state_dump`, never agent-control or app RPC.
     pub fn native_window_provenance_json(&self) -> serde_json::Value {
         let (candidates, omitted) = self.current_window_candidates();
@@ -118,6 +197,48 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_custody_rejects_wrong_room_peer_and_reused_processes() {
+        let pid = std::process::id();
+        let start = crate::shell::launcher::proc_stat(pid).unwrap().1;
+        let mut custody = crate::shell::launch_readiness::HostLaunchCustody {
+            attempt: uuid::Uuid::new_v4(),
+            invocation: None,
+            desktop_id: "org.gnome.TextEditor.desktop".into(),
+            room: "room".into(),
+            launcher_pid: pid,
+            launcher_start: start,
+            peer_pid: pid,
+            peer_start: start,
+        };
+        let mut client = ClientState {
+            pid: Some(pid),
+            pid_start_time: Some(start),
+            package_id: Some(custody.desktop_id.clone()),
+            workspace_id: Some(custody.room.clone()),
+            ..ClientState::default()
+        };
+        assert!(host_peer_is_current(&custody, &client, "room"));
+        assert!(!host_peer_is_current(&custody, &client, "foreign"));
+        client.privileged = true;
+        assert!(!host_peer_is_current(&custody, &client, "room"));
+        client.privileged = false;
+        client.pid = None;
+        assert!(!host_peer_is_current(&custody, &client, "room"));
+        client.pid = Some(pid);
+        client.package_id = Some("foreign.desktop".into());
+        assert!(!host_peer_is_current(&custody, &client, "room"));
+        client.package_id = Some(custody.desktop_id.clone());
+        client.workspace_id = Some("foreign".into());
+        assert!(!host_peer_is_current(&custody, &client, "room"));
+        client.workspace_id = Some(custody.room.clone());
+        custody.launcher_start = start.checked_add(1).unwrap();
+        assert!(!host_peer_is_current(&custody, &client, "room"));
+        custody.launcher_start = start;
+        custody.peer_start = start.checked_add(1).unwrap();
+        assert!(!host_peer_is_current(&custody, &client, "room"));
+    }
 
     #[test]
     fn current_authenticated_peer_rejects_foreign_custody_and_pid_reuse() {

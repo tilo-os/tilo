@@ -59,6 +59,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 .clone()
                 .expect("real original is retained");
             let workspace = env.membership.read().workspaces[0].clone();
+            assert_eq!(custody.invocation(), original);
             assert!(custody.matches("so.tilo.word-processor", Some(&root), &workspace));
             assert!(!custody.matches("so.tilo.chat", Some(&root), &workspace));
             assert!(!custody.matches("so.tilo.word-processor", None, &workspace));

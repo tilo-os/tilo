@@ -661,6 +661,19 @@ impl LauncherServices for NativeLauncher {
         author: Option<&str>,
         original: Option<tilo_action_broker::services::ObservedApplicationLaunch>,
     ) -> Result<tilo_action_broker::services::LaunchReadiness, String> {
+        if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX)
+            && let Some(original) = original.as_ref()
+        {
+            if package_root.is_some() || !original.matches(app, package_root, workspace) {
+                return Err("original host application launch scope mismatch".into());
+            }
+            original.certificate()?;
+            return super::launch_readiness::observe_original(original.invocation(), || {
+                super::host_apps::launch(desktop_id, Some(workspace.room.to_string()))
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            });
+        }
         let native_tree = self
             .0
             .as_ref()

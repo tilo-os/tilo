@@ -4572,7 +4572,12 @@ fn observe_toplevel_startup(surface: &ToplevelSurface) {
                     room: room.clone(),
                 })
             });
-        crate::shell::launcher::record_startup_window(pid, adoption);
+        if let Some(custody) = crate::shell::launcher::record_startup_window(pid, adoption) {
+            ensure_surface_adoption_id(surface.wl_surface());
+            wl_compositor::with_states(surface.wl_surface(), |states| {
+                states.data_map.insert_if_missing(|| custody);
+            });
+        }
     }
 }
 

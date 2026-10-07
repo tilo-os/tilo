@@ -284,6 +284,7 @@ impl Drop for LaunchReadiness {
 /// the canonical membership action independently checks current administration.
 #[derive(Clone)]
 pub struct ObservedApplicationLaunch {
+    invocation: tilo_actions::InvocationId,
     room: String,
     app: String,
     package_root: Option<String>,
@@ -300,16 +301,24 @@ impl ObservedApplicationLaunch {
         room: String,
         app: String,
         package_root: Option<String>,
+        invocation: tilo_actions::InvocationId,
         check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
         grant: Arc<ObservedAuthorshipGrant>,
     ) -> Self {
         Self {
+            invocation,
             room,
             app,
             package_root,
             check,
             grant,
         }
+    }
+
+    /// The original admitted invocation, for owner startup custody diagnostics.
+    /// This identifier confers no authority; `certificate` still revalidates it.
+    pub fn invocation(&self) -> tilo_actions::InvocationId {
+        self.invocation
     }
 
     pub fn matches(&self, app: &str, root: Option<&str>, workspace: &Workspace) -> bool {

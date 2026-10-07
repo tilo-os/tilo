@@ -3594,6 +3594,11 @@ fn start_launch(
         }
         mark_launch_spawned(&app.package_id, child.id());
         events.startup.started(startup_token, child.id());
+        if let Some(room) = &command.portal_workspace_id {
+            events
+                .startup
+                .host_started(startup_token, &app.package_id, room);
+        }
         // Recorded before the gate opens, so the session learns of the start
         // before the app can do anything a start explains.
         events.push(LaunchEvent {
@@ -3942,10 +3947,10 @@ pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
 pub(crate) fn record_startup_window(
     pid: u32,
     adoption: Option<tilo_action_broker::services::LaunchAdoption>,
-) {
+) -> Option<super::launch_readiness::HostLaunchCustody> {
     LaunchSession::current()
         .startup
-        .adopted_window(pid, adoption);
+        .adopted_window(pid, adoption)
 }
 
 /// Live unconfined launches a close of an unmatched toolkit window may stop.
