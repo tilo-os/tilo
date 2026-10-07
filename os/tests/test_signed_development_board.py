@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import textwrap
 
@@ -18,6 +19,9 @@ PLAN = textwrap.dedent(MATRIX_STEP.split('        run: |\n', 1)[1])
 spec = importlib.util.spec_from_file_location('board_policy', ROOT/'os/dev/signed-development-board-policy.py')
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
+spec = importlib.util.spec_from_file_location('hardware_profile', ROOT/'os/dev/hardware_profile.py')
+hardware = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hardware)
 
 
 class SignedBoard(unittest.TestCase):
@@ -83,6 +87,37 @@ class SignedBoard(unittest.TestCase):
             expected['transports']['docker'][policy.REPOSITORY] = [{'type': 'sigstoreSigned', 'keyPath': '/usr/share/tilo/cosign.pub', 'signedIdentity': {'type': 'matchRepository'}}]
             self.assertEqual(actual, expected)
             self.assertEqual((root/'usr/share/tilo/cosign.pub').read_bytes(), key)
+
+    def test_board_parser_accepts_only_exact_signed_policy_and_immutable_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_root(root)
+            policy.strengthen(root)
+            original_lstat = Path.lstat
+
+            def image_lstat(path, *args, **kwargs):
+                # Model OCI root ownership only; actual modes, symlinks and file
+                # contents remain the on-disk fixture used by the real parser.
+                result = list(original_lstat(path, *args, **kwargs))
+                result[4] = 0
+                return os.stat_result(result)
+
+            ref = policy.REPOSITORY + ':main-fixture-orangepi-3b-v2-1-signed'
+            with patch.object(Path, 'lstat', image_lstat):
+                self.assertEqual(hardware.validate_target_imgref(ref, root=root), ref)
+                key = root/'usr/share/tilo/cosign.pub'
+                key.chmod(0o666)
+                with self.assertRaisesRegex(ValueError, 'not group/world writable'):
+                    hardware.validate_target_imgref(ref, root=root)
+                key.chmod(0o644)
+                path = root/'etc/containers/policy.json'
+                p = json.loads(path.read_text())
+                p['transports']['docker'][policy.REPOSITORY][0]['keyPath'] = '/other/key'
+                path.write_text(json.dumps(p))
+                with self.assertRaisesRegex(ValueError, 'development repository policy'):
+                    hardware.validate_target_imgref(ref, root=root)
+                with self.assertRaisesRegex(ValueError, 'signature-required'):
+                    hardware.validate_target_imgref(ref)
 
     def test_policy_rejects_production_or_redirected_inputs_without_write(self):
         for invalid in ['production', 'key-link', 'policy-link', 'already-rejects']:
