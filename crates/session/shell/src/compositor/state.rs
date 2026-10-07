@@ -4998,6 +4998,28 @@ fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
     osk_identity_is_trusted(app_id, trusted_osk_connection(surface))
 }
 
+struct SurfaceAdoptionId(uuid::Uuid);
+
+pub(crate) fn surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<SurfaceAdoptionId>()
+            .map(|identity| identity.0)
+    })
+}
+
+fn ensure_surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing(|| SurfaceAdoptionId(uuid::Uuid::new_v4()));
+    });
+    surface_adoption_id(surface)
+}
+
 fn observe_toplevel_startup(surface: &ToplevelSurface) {
     if let Some(client) = surface.wl_surface().client()
         && let Some(state) = client.get_data::<ClientState>()
@@ -5015,13 +5037,14 @@ fn observe_toplevel_startup(surface: &ToplevelSurface) {
                             .is_some_and(|(_, start)| start == expected)
                     })
             })
-            .map(
-                |(package, room)| tilo_action_broker::services::LaunchAdoption {
+            .and_then(|(package, room)| {
+                Some(tilo_action_broker::services::LaunchAdoption {
+                    adoption_id: ensure_surface_adoption_id(surface.wl_surface())?,
                     surface_id: surface_id(surface.wl_surface()),
                     package_id: package.clone(),
                     room: room.clone(),
-                },
-            );
+                })
+            });
         crate::shell::launcher::record_startup_window(pid, adoption);
     }
 }

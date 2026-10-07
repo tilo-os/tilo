@@ -208,7 +208,8 @@ impl CapnpChannelHandle {
             if let Some(window) = &adoption
                 && (window.package_id != app
                     || window.room != self.route().cluster_id
-                    || window.surface_id == 0)
+                    || window.surface_id == 0
+                    || window.adoption_id.is_nil())
             {
                 return Err("the adopted application window has foreign custody".into());
             }
