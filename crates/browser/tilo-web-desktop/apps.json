@@ -86,6 +86,12 @@
       "version": "0.1.0"
     },
     {
+      "id": "so.tilo.messages",
+      "name": "Messages",
+      "category": "Network",
+      "version": "0.1.0"
+    },
+    {
       "id": "so.tilo.music",
       "name": "Music",
       "category": "Multimedia",

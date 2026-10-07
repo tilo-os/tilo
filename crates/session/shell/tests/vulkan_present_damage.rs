@@ -138,12 +138,17 @@ impl Server {
     ) -> (Commit, shell::shell::foreign::FrameSnapshot) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            let latest = self.commits.lock().unwrap().last().cloned();
+            // Keep damage records stable while observing the production frame.
+            // The checkpoint releases the lock to force the old reader race.
+            let mut commits = self.commits.lock().unwrap();
+            let latest = commits.last().cloned();
             if let Some((read, resume)) = checkpoint.take() {
+                drop(commits);
                 read.send(()).expect("metadata read checkpoint");
                 resume
                     .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                     .expect("resume capture after presentation");
+                commits = self.commits.lock().unwrap();
             }
             if let Some(commit) = latest
                 && commit.ordinal > previous_commit
@@ -152,6 +157,7 @@ impl Server {
             {
                 return (commit, frame);
             }
+            drop(commits);
             assert!(
                 Instant::now() < deadline,
                 "WSI pixels never reached capture"

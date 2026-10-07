@@ -10,7 +10,7 @@ PREPARE_ACTION_PATH = ".forgejo/actions/prepare-rust-build"
 DIRECT_CONSUMERS = {
     "build-ci-builder.yml": 2,
     "lint.yml": 1,
-    "release-apps.yml": 2,
+    "release-apps.yml": 3,  # The scoped Signal build is also a Cargo consumer.
 }
 PREPARED_CONSUMERS = {
     "release-verifier-bundles.yml": 1,
