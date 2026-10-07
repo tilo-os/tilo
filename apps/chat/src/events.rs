@@ -1976,7 +1976,7 @@ mod tests {
             .expect("c_crit is a channel resource");
             let spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
             let from_spec = match &spec.input {
-                tilo_actions::ActionInput::Immediate(e) => e.clone(),
+                tilo_actions::ActionInput::Immediate(e) => e.as_ref().clone(),
                 tilo_actions::ActionInput::Prompted { .. }
                 | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("delete is an immediate action")

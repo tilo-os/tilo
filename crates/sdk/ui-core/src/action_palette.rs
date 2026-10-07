@@ -1861,7 +1861,7 @@ impl ActionPalette {
                 .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
         Some(match &fa.action.input {
             ActionInput::Immediate(enc) => ActionKind::NoArgument {
-                intent: PreparedActionIntent::Encoded(enc.clone()),
+                intent: PreparedActionIntent::Encoded(enc.as_ref().clone()),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),

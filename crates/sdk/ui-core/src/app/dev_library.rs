@@ -581,7 +581,8 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
             .first()
             .expect("operation argument")
             .schema
-            .clone()
+            .as_deref()
+            .cloned()
             .expect("typed schema")
     }
 
