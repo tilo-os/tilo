@@ -968,3 +968,14 @@ browser-new-workspace-name = Arbeitsbereich { $number }
 notification-center-read = Lesen
 notification-center-read-description = Vollständige Benachrichtigung lesen
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
+
+activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }
+activity-catch-up-review-description = Prüfe wartende Aufgaben, Ziele und die Arbeit von Agenten in diesem Arbeitsbereich. Das Lesen der Aktivitäten schließt keine Aufgabe ab.
+activity-catch-up-review-goals = Ziele und die Arbeit von Agenten prüfen
+activity-acknowledge-viewed = Gesehene Aktivitäten bestätigen
+activity-acknowledge-description = Markiere nur die angezeigten Zusammenfassungen als gelesen. Verborgene Änderungen und wartende Aufgaben bleiben offen.
+activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
+    [one] eine wartende Aufgabe
+   *[other] { $count } wartende Aufgaben
+    }
+activity-catch-up-waiting-detail = { $task } · { $who }

@@ -35,6 +35,59 @@ pub(super) struct PagePart {
 }
 
 impl PagePart {
+    /// Reuse the retained controls' semantics inside the painted page's
+    /// synthetic accessibility subtree, retaining their actual action handlers.
+    pub(super) fn access_nodes(&self) -> Vec<ui::a11y::AccessNode> {
+        fn collect(widget: &dyn ui::widget::Widget, path: &str) -> Vec<ui::a11y::AccessNode> {
+            let children = widget
+                .children()
+                .into_iter()
+                .enumerate()
+                .flat_map(|(index, child)| collect(child, &format!("{path}/{index}")))
+                .collect::<Vec<_>>();
+            if let Some(mut node) = widget.accessibility() {
+                node = node.with_hashed_key(path).with_bounds(widget.get_rect());
+                if let Some(id) = widget.test_id() {
+                    node = node
+                        .with_hashed_key(id)
+                        .with_action_target(format!("music.page-widget.{id}"));
+                }
+                node.children.extend(children);
+                vec![node]
+            } else {
+                children
+            }
+        }
+        if self.placed {
+            collect(self.host.widget(), &self.key)
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub(super) fn perform(
+        &mut self,
+        id: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        fn invoke(
+            widget: &mut dyn ui::widget::Widget,
+            id: &str,
+            action: &ui::a11y::Action,
+            state: &mut ui::widget::Edits<'_>,
+        ) -> bool {
+            if widget.test_id() == Some(id) {
+                return widget.perform_action(action, state, &automerge::ROOT);
+            }
+            widget
+                .children_mut()
+                .into_iter()
+                .any(|child| invoke(child, id, action, state))
+        }
+        self.placed && invoke(self.host.widget_mut(), id, action, state)
+    }
+
     pub(super) fn new() -> Self {
         Self {
             host: Embedded::new(Column::new().with_no_padding()),
