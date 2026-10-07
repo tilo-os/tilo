@@ -200,6 +200,7 @@ pub enum OperatorAction {
     Connect { edge: Edge },
     Disconnect { node: String, port: String },
     SetOutputWidth { node: String, width: u32 },
+    SetShape { node: String, shape: Vec<u16> },
 }
 
 fn valid_id(id: &str) -> bool {
@@ -302,6 +303,9 @@ impl Action for OperatorAction {
                 moved.y = *y;
                 put_node(doc, &nodes, &moved)?;
             }
+            Self::SetShape { node, shape } => {
+                set_shape(doc, &state, &nodes, node, shape)?;
+            }
             Self::SetOutputWidth { node, width } => {
                 set_output_width(doc, &state, &nodes, node, *width)?;
             }
@@ -350,6 +354,26 @@ impl Action for OperatorAction {
         }
         Ok(())
     }
+}
+
+fn set_shape(
+    doc: &mut Doc,
+    state: &OperatorState,
+    collection: &ObjId,
+    id: &str,
+    shape: &[u16],
+) -> Result<(), ActionError> {
+    let mut node = state
+        .nodes
+        .get(id)
+        .cloned()
+        .ok_or_else(|| refuse("unknown node"))?;
+    node.shape = shape.to_vec();
+    node.normalization_width = shape.last().copied().unwrap_or(0);
+    if !valid_node(&node) {
+        return Err(refuse("invalid operator shape"));
+    }
+    put_node(doc, collection, &node)
 }
 
 fn set_output_width(
@@ -450,6 +474,7 @@ impl Resource for OperatorGraph {
         vec![
             add_declaration(),
             output_width_declaration(),
+            shape_declaration(),
             connect_declaration(),
             disconnect_declaration(),
             move_declaration(),
@@ -536,6 +561,18 @@ fn add_declaration() -> ActionDecl<OperatorGraph> {
     )
     .describe("Edit a structural operator design; does not execute or qualify a netlist.")
 }
+fn shape_declaration() -> ActionDecl<OperatorGraph> {
+    ActionDecl::new(
+        "set-shape", "Set operator input shape",
+        vec![text("node", "Operator node identity"), ActionParam::required("shape", ParamType::Array, "Up to four positive input dimensions; last axis sets normalization width")
+            .with_schema(serde_json::json!({"type":"array", "minItems":1,"maxItems":4,"items":{"type":"integer","minimum":1,"maximum":65535},"examples":[[1]]}))],
+        |args, _| Ok(OperatorAction::SetShape {
+            node: args.text("node").ok_or("missing node")?.into(),
+            shape: args.array("shape").ok_or("missing shape")?.iter().map(|dim| dim.as_u64().and_then(|value|u16::try_from(value).ok()).ok_or_else(||"invalid shape dimension".to_owned())).collect::<Result<Vec<_>,_>>()?,
+        }),
+    )
+}
+
 fn output_width_declaration() -> ActionDecl<OperatorGraph> {
     ActionDecl::new(
         "set-output-width", "Set matrix output width",

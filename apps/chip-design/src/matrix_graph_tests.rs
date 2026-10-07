@@ -234,3 +234,87 @@ fn inspector_input_invokes_the_same_matrix_edit_and_system_undo() {
         Some(8192)
     );
 }
+
+#[test]
+fn public_input_reshape_retypes_ports_and_preserves_legacy_bounds() {
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    add(
+        &mut app,
+        "weights",
+        "matrix_weight_input",
+        &[2048],
+        Some(8192),
+    )
+    .unwrap();
+    add(
+        &mut app,
+        "projection",
+        "linear_projection",
+        &[2048],
+        Some(8192),
+    )
+    .unwrap();
+    connect(&mut app, "weights", "weights", "projection", "weights");
+    app.call_on(
+        RESOURCE_ID,
+        "set-shape",
+        serde_json::json!({"node":"weights","shape":[4096]}),
+    )
+    .unwrap();
+    assert_eq!(
+        app.state().operator_graph.nodes["weights"].normalization_width,
+        4096
+    );
+    assert_eq!(
+        app.state().operator_graph.rejected[0].reason,
+        "type_mismatch"
+    );
+    for shape in [vec![], vec![0], vec![2, 32769], vec![2, 4096]] {
+        assert!(
+            app.call_on(
+                RESOURCE_ID,
+                "set-shape",
+                serde_json::json!({"node":"weights","shape":shape})
+            )
+            .is_err()
+        );
+        assert_eq!(app.state().operator_graph.nodes["weights"].shape, [4096]);
+    }
+    assert!(app.undo());
+    assert_eq!(
+        app.state().operator_graph.nodes["weights"].normalization_width,
+        2048
+    );
+    assert_eq!(app.state().operator_graph.active.len(), 1);
+}
+
+#[test]
+fn inspector_shape_field_edits_input_geometry_through_the_resource() {
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    add(&mut app, "weights", "matrix_weight_input", &[8], Some(8192)).unwrap();
+    app.effect(&crate::view::ChipEffect::InspectOperator {
+        node: Some("weights".into()),
+    })
+    .unwrap();
+    app.harness().resize((1600, 1400)).unwrap();
+    app.settle();
+    app.harness()
+        .click_named("chip-operator-shape-weights")
+        .unwrap();
+    app.harness().set_modifiers(&["ctrl".into()]);
+    app.harness().key("a");
+    app.harness().set_modifiers(&[]);
+    app.harness().commit_text("[4096]");
+    app.settle();
+    assert_eq!(app.state().operator_graph.nodes["weights"].shape, [4096]);
+    assert_eq!(
+        app.state().operator_graph.nodes["weights"].normalization_width,
+        4096
+    );
+    assert_eq!(
+        app.state().operator_graph.nodes["weights"].output_width,
+        Some(8192)
+    );
+    assert!(app.undo());
+    assert_eq!(app.state().operator_graph.nodes["weights"].shape, [8]);
+}
