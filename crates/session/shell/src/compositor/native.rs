@@ -1264,6 +1264,16 @@ fn pump_floating_surface_service(
                     }
                     changed = true;
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::MoveDeviceDisplay {
+                    request,
+                    placement,
+                } => {
+                    let result = frame_builder
+                        .host_mut()
+                        .request_device_display_move(&app_id, placement);
+                    service.send(connection, &ui::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult { request, result });
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
                     if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
                         if let Some(writer) = service.reply_writer(connection) {
@@ -6341,6 +6351,12 @@ fn install_device_fabric_bridge(
                 return Ok(view.clone());
             }
             match action {
+                DeviceFabricUiAction::MoveDisplay(request) => {
+                    crate::shell::device_fabric_runtime::move_device_display(
+                        &fabric_net,
+                        &request,
+                    )?;
+                }
                 DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
                 DeviceFabricUiAction::WakeDevice { device } => {
                     crate::shell::device_wake::request_wake(&fabric_net, &device)?;

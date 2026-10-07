@@ -29,6 +29,7 @@ pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
 pub const MAX_FABRIC_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
+pub const MAX_DISPLAY_MOVE_AGE_MS: u64 = 10_000;
 /// Inline fast path only; larger nearby drops belong on the object stream.
 pub const MAX_NEARBY_DROP_BYTES: usize = 48 * 1024;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
@@ -705,6 +706,12 @@ pub enum PersonalFabricAction {
     WakeProbeReply {
         nonce: [u8; 16],
     },
+    /// Compare-and-set placement; old action tags and checkpoint bytes stay stable.
+    SetDisplayPlacementChecked {
+        expected: FabricStamp,
+        rect: DisplayRect,
+        expires_unix_ms: u64,
+    },
 }
 
 /// What became of one request to wake a device.
@@ -1266,6 +1273,22 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::SetDisplayPlacementChecked {
+                expected,
+                rect,
+                expires_unix_ms,
+            } => {
+                if &expected.device != local_target
+                    || expected.counter == 0
+                    || *expires_unix_ms < self.issued_unix_ms
+                    || *expires_unix_ms
+                        > self.issued_unix_ms.saturating_add(MAX_DISPLAY_MOVE_AGE_MS)
+                    || now_unix_ms > *expires_unix_ms
+                    || !valid_display_rect(rect)
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
             PersonalFabricAction::SetDisplayPlacement { rect } => {
                 if !valid_display_rect(rect) {
                     return Err(FabricError::InvalidAction);
@@ -1590,6 +1613,27 @@ pub struct DisplayPlacement {
 }
 
 impl DisplayPlacement {
+    /// Only the owner may accept a request over its exact published revision.
+    pub fn accepts_move(&self, expected: &FabricStamp, rect: DisplayRect) -> bool {
+        expected == &self.stamp
+            && !self.outputs.is_empty()
+            && rect.width == self.rect.width
+            && rect.height == self.rect.height
+            && valid_display_rect(&rect)
+            && self.outputs.iter().all(|output| {
+                rect.x
+                    .checked_add(output.rect.x)
+                    .zip(rect.y.checked_add(output.rect.y))
+                    .is_some_and(|(x, y)| {
+                        valid_display_rect(&DisplayRect {
+                            x,
+                            y,
+                            ..output.rect
+                        })
+                    })
+            })
+    }
+
     /// Shared plane rectangle paired with the owner's seat rectangle.
     fn screens(&self) -> Vec<(DisplayRect, DisplayRect)> {
         if self.outputs.is_empty() {
@@ -1820,6 +1864,44 @@ pub struct DeviceFabric {
 }
 
 impl DeviceFabric {
+    /// Use actual native screen interiors, including legacy aggregate fallbacks.
+    pub fn display_destination_clear(&self, target: &DeviceId, rect: DisplayRect) -> bool {
+        let Some(display) = self
+            .snapshots
+            .get(target)
+            .and_then(|snapshot| snapshot.display.as_ref())
+        else {
+            return false;
+        };
+        if !display.accepts_move(&display.stamp, rect) {
+            return false;
+        }
+        let moved = DisplayPlacement {
+            rect,
+            ..display.clone()
+        };
+        let screens = moved.screens();
+        let others = self
+            .snapshots
+            .iter()
+            .filter(|(device, snapshot)| *device != target && snapshot.presence.online)
+            .filter_map(|(_, snapshot)| snapshot.display.as_ref())
+            .flat_map(DisplayPlacement::screens)
+            .map(|(screen, _)| screen)
+            .collect::<Vec<_>>();
+        !others
+            .iter()
+            .any(|other| screens.iter().any(|(screen, _)| screen.intersects(*other)))
+            && others.iter().any(|other| {
+                screens.iter().any(|(screen, _)| {
+                    screen
+                        .logical_placement()
+                        .zip(other.logical_placement())
+                        .is_some_and(|(screen, other)| screen.touches(other))
+                })
+            })
+    }
+
     pub fn snapshots(&self) -> &BTreeMap<DeviceId, DeviceFabricSnapshot> {
         &self.snapshots
     }
