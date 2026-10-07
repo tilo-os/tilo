@@ -6829,6 +6829,11 @@ impl ShellOverlayHost {
         {
             let st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
+            let workspace = tree.desktop.active;
+            if tree.desktop.active_strip.get(&workspace) != Some(&strip) {
+                tree.desktop.active_strip.insert(workspace, strip);
+                changed = true;
+            }
             if let Some(g) = tree
                 .desktop
                 .active_workspace_mut()
@@ -6948,8 +6953,14 @@ impl ShellOverlayHost {
         let Some((strip, group, tab)) = target else {
             return false;
         };
-        self.followed_tab = Some(tab);
-        self.focus_window_on_strip(strip, group, tab)
+        let changed = self.focus_window_on_strip(strip, group, tab);
+        // Admission can lead the live widget tree by a frame. Pin only the
+        // focus actually installed, so that waiting for the new native tab
+        // cannot masquerade as deliberate local navigation on the next tick.
+        if chrome.borrow().active_tab_id() == Some(tab) {
+            self.followed_tab = Some(tab);
+        }
+        changed
     }
 
     /// Change Follow once, then notify every local app in the room using the

@@ -444,6 +444,71 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
     }
 }
 
+#[test]
+fn follow_waits_for_the_admitted_tabs_live_widget_before_pinning_focus() {
+    let tree = cross_app_follow_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    // The admitted tree already has the target, while a frame's live row is
+    // still being rebuilt. Retain its real pointers for the next frame.
+    let rows = std::mem::take(&mut host.group_row_ptrs);
+    host.set_followed_peer(Some("ada".into()));
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+    assert!(host.followed_tab.is_none());
+    assert!(!host.reconcile_followed_peer());
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+    host.group_row_ptrs = rows;
+    assert!(host.reconcile_followed_peer());
+    assert_eq!(chrome.borrow().active_tab_id(), Some(201));
+    assert_eq!(host.followed_tab, Some(201));
+    assert!(!host.reconcile_followed_peer());
+    // An actual missing admitted target must still end Follow immediately.
+    chrome.borrow_mut().tree_mut().desktop.workspaces[0].strips[0].window_groups[1]
+        .tabs
+        .clear();
+    assert!(host.reconcile_followed_peer());
+    assert!(host.followed_peer.is_none());
+}
+
+#[test]
+fn following_an_admitted_tab_on_another_strip_installs_the_complete_focus() {
+    let mut tree = cross_app_follow_tree();
+    let first = tree.desktop.workspaces[0].strips[0].id;
+    let group = tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .pop()
+        .unwrap();
+    let second = StripId::new();
+    tree.desktop.workspaces[0].strips.push(Strip {
+        id: second,
+        name: "Collaborator context".into(),
+        window_groups: vec![group],
+    });
+    tree.desktop.active_group.insert(second, 200);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    host.set_followed_peer(Some("ada".into()));
+    assert_eq!(
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_strip
+            .get(&tree.desktop.active),
+        Some(&second)
+    );
+    assert_eq!(chrome.borrow().active_tab_id(), Some(201));
+    assert_eq!(host.followed_tab, Some(201));
+    assert!(!host.reconcile_followed_peer());
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+    chrome
+        .borrow_mut()
+        .focus_tab(tree.desktop.active, first, 100, 1);
+    assert!(host.reconcile_followed_peer());
+    assert!(
+        host.followed_peer.is_none(),
+        "deliberate local navigation still releases Follow"
+    );
+}
+
 fn cross_app_follow_tree() -> WorkspaceTree {
     let mut tree = one_group_seed();
     tree.desktop.workspaces[0].strips[0]

@@ -122,6 +122,24 @@ class Fixture:
         nodes = packaged.wait_for("only generated source and null output", sources, source)
         self.record(f"{name}-isolated-audio", frequency_hz=frequency,
                     devices=[{"class": n["media.class"], "name": n["node.name"]} for n in nodes])
+        # Qualify this generated-only graph before testing the governed FD
+        # handoff. This is fixture preflight, never native call acceptance.
+        selected = [node for node in nodes if node.get("node.name") == "fixture-source"]
+        if len(selected) != 1 or not isinstance(selected[0].get("object.serial"), int):
+            raise RuntimeError("private generated source serial is unobservable")
+        try:
+            probe = subprocess.run([
+                "gst-launch-1.0", "-q", "pipewiresrc",
+                f"target-object={selected[0]['object.serial']}", "num-buffers=4", "!",
+                "audioconvert", "!", "audioresample", "!",
+                "audio/x-raw,rate=48000,channels=1,format=S16LE", "!", "opusenc",
+                "frame-size=20", "!", "fakesink", "sync=false",
+            ], env=env, timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.TimeoutExpired as failure:
+            raise RuntimeError("generated-only encoder preflight exceeded startup deadline") from failure
+        if probe.returncode != 0:
+            raise RuntimeError(f"generated-only encoder preflight failed ({probe.returncode})")
+        self.record(f"{name}-generated-only-encoder-preflight")
 
     def stop_private_buses(self):
         # Launcher/SDK helpers may fork a bus out of their process group.
@@ -423,6 +441,9 @@ class Fixture:
             (self.output / f"{name}-capture-observation.json").write_text(json.dumps({
                 "reported": report,
                 "pending_grants_count": packaged.chrome_state(socket).get("pending_grants_count"),
+                "owned_audio_streams": [{key: node.get(key) for key in
+                    ("media.class", "node.name", "object.serial", "target.object")}
+                    for node in self.audio_streams(name, session)],
             }, indent=2))
             if report.get("state") == "ended":
                 raise RuntimeError(f"native capture ended after consent: {report.get('issue')}")

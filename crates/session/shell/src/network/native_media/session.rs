@@ -305,7 +305,10 @@ impl StopSlot {
     fn expire(&self, startup: u64) {
         let mut generation = self.generation.lock();
         if self.startup.load(Ordering::SeqCst) == startup && !self.ready.load(Ordering::SeqCst) {
-            tracing::warn!("native microphone capture startup deadline expired");
+            tracing::warn!(
+                installed = generation.is_some(),
+                "native microphone capture startup deadline expired"
+            );
             self.current.store(false, Ordering::SeqCst);
             let _ = self.advance();
             if let Some((capture, client)) = generation.take() {

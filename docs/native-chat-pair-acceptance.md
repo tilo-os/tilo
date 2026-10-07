@@ -140,6 +140,20 @@ Terminal stop, expired consent, source loss and denied publication still refuse
 capture. This correction does not establish the cause of the earlier synthetic
 receipt until a new instrumented journey exercises it.
 
+The governed topology run then reached the admitted remote tab and a successful
+terminal Follow receipt, but Follow released before navigation completed. A
+production regression now covers admission preceding the live widget rebuild:
+Follow pins a tab only after focus is actually installed; an absent admitted
+target still releases it. The independent synthetic voice run with the startup
+correction reached both live muted calls and one-shot consent, then expired the
+capture startup deadline while consent and the source remained current. That
+receipt does not prove a live permission denial or successful capture. Bounded
+installation and owned-stream observations distinguish its remaining boundary.
+A generated-only encoder preflight checks the private graph and codec before
+native FD custody; it never qualifies a native call. Follow also installs the
+complete strip/group/tab focus address, including when the admitted target is
+on another strip.
+
 `journey.json` remains `qualified: false` until every step completes: presented
 native Chat on both peers; opt-in context navigation; Stop and explicit follow
 release; muted joining; visible fresh capture consent; decoded opposite-frequency
