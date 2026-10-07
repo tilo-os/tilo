@@ -489,6 +489,22 @@ mod files_clipboard_tests {
             renderer.render_png(&scene, theme.region(ui::surface::Region::Content), output);
         }
 
+        fn wait_for_paste_history(&mut self, undone: Option<bool>, failure: &str) {
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(5))
+                .expect("bounded history deadline");
+            loop {
+                let history = self.succeeds(1, "history");
+                if history["versions"].as_array().unwrap().iter().any(|entry| {
+                    entry["action"] == "Paste files"
+                        && undone.is_none_or(|undone| entry["undone"] == undone)
+                }) {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "{failure}: {history}");
+            }
+        }
+
         fn command_key(&mut self, index: usize, character: &str) {
             self.command_key_with_modifiers(
                 index,
@@ -1528,24 +1544,10 @@ mod files_clipboard_tests {
             || pasted.exists(),
         );
         assert_eq!(std::fs::read(&pasted).unwrap(), b"original source");
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
-            .expect("bounded test deadline");
-        loop {
-            let history = fixture.succeeds(1, "history");
-            if history["versions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["action"] == "Paste files")
-            {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "keyboard Paste must record its actual receipt before Undo: {history}"
-            );
-        }
+        fixture.wait_for_paste_history(
+            None,
+            "keyboard Paste must record its actual receipt before Undo",
+        );
         fixture.command_key(1, "z");
         let [first, second] = &mut fixture.shown;
         let deadline = std::time::Instant::now()
@@ -1566,24 +1568,10 @@ mod files_clipboard_tests {
             std::fs::read(fixture.folders[0].join("report")).unwrap(),
             b"original source"
         );
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
-            .expect("bounded restart deadline");
-        loop {
-            let history = fixture.succeeds(1, "history");
-            if history["versions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["action"] == "Paste files" && entry["undone"] == true)
-            {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "keyboard Undo must settle its actual native receipt before Redo: {history}"
-            );
-        }
+        fixture.wait_for_paste_history(
+            Some(true),
+            "keyboard Undo must settle its actual native receipt before Redo",
+        );
         // Ctrl+Shift+Z must use the same freshly admitted native Redo as
         // the semantic action, with no document-patch fallback.
         fixture.command_key_with_modifiers(
