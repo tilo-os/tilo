@@ -212,6 +212,9 @@ jobs:
         with:
           main: ${{ needs.select.outputs.main }}
 
+      - name: Prepare fonts for offline suites
+        uses: ./.forgejo/actions/prepare-font-assets
+
       - name: Run selected suites
         id: suites-run
         env:
