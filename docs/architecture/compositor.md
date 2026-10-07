@@ -127,8 +127,9 @@ submit: cadence remains anchored on frame production.
 Standard `wp_presentation` feedback separately binds a client's committed
 buffer generation to the pixels drawn by the foreign-surface widget and
 then to the exact `PresentPipe` submission serial. On one physical DRM
-output, a successful page-flip event for that output's CRTC completes the
-feedback with the original kernel timestamp and sequence, provided the
+output, a successful page-flip event matching the accepted submission's
+unique kernel cookie and CRTC completes the feedback with the original kernel
+timestamp and sequence, provided the
 driver advertises monotonic timestamps. Presenter return and ordinary
 frame retirement do not prove presentation. Failed capture, uncertain
 completion, timeout, missing output, nested/headless backends and ambiguous
@@ -380,3 +381,19 @@ The analyzer rejects duplicate presenter serials, ambiguous/partial outcomes,
 invalid durations and non-monotonic/non-hardware feedback. Capture files are
 bounded at 32 MiB and analysis at 10,000 lifecycle rows. Coverage describes the
 retained capture, not all frames rendered during the session.
+
+Legacy KMS submissions retain their unique `user_data` cookie through the raw
+completion decoder. Every buffer retirement consumes that exact identity once;
+a stale same-CRTC event cannot release a replacement target. Physical feedback
+also rejects a kernel timestamp preceding the sampled monotonic submission
+boundary. Missing clock/CRTC identity and duplicate matching completions cannot
+certify presentation; timeout/cancellation uncertainty remains latched.
+
+The existing presentation diagnostic opt-in emits bounded
+`tilo-compositor-feedback` records for actual composed surface/capture-sequence
+pairs and their exact presenter serial. Submitted/completed records carry a
+sampled monotonic bookkeeping time and optional raw kernel outcome, never a
+resampled presentation time. The 256-pair per-frame bound reports omitted
+coverage explicitly. These records require a matching maintained collector;
+old captures are not repaired by deduplication or nearest-time joins. They do
+not establish panel response or remove logging overhead from latency samples.
