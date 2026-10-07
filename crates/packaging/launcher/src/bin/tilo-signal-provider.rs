@@ -23,29 +23,29 @@ fn install_stop() -> io::Result<()> {
     Ok(())
 }
 struct Java(Child);
-fn runtime_lib(root: &std::path::Path) -> io::Result<std::path::PathBuf> {
-    let mut found = None;
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(digest) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix("2026.10.1-signal+native."))
-        else {
-            continue;
-        };
-        if digest.len() != 32
-            || !digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            || !entry.file_type()?.is_dir()
-            || found.is_some()
-        {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        found = Some(entry.path().join("lib"));
+fn runtime_lib(
+    root: &std::path::Path,
+    library: &std::path::Path,
+) -> io::Result<std::path::PathBuf> {
+    let relative = library
+        .strip_prefix(root)
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    let mut parts = relative.components();
+    let digest = parts
+        .next()
+        .and_then(|part| part.as_os_str().to_str())
+        .and_then(|part| part.strip_prefix("2026.10.1-signal+native."))
+        .ok_or(io::ErrorKind::InvalidData)?;
+    if digest.len() != 32
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || parts.next() != Some(std::path::Component::Normal(std::ffi::OsStr::new("lib")))
+        || parts.next().is_some()
+    {
+        return Err(io::ErrorKind::InvalidData.into());
     }
-    found.ok_or_else(|| io::ErrorKind::NotFound.into())
+    Ok(library.to_path_buf())
 }
 impl Drop for Java {
     fn drop(&mut self) {
@@ -65,7 +65,13 @@ fn run() -> io::Result<bool> {
     install_stop()?;
     // The normal strict launcher verifies this exact runtime and mounts it
     // read-only. There is no host Java, library lookup or alternate version.
-    let runtime = runtime_lib(std::path::Path::new("/run/tilo-runtime"))?;
+    // bwrap supplies the verified bundle's exact library path. Landlock
+    // grants that mount, not enumeration of the parent runtime directory.
+    let library = std::env::var_os("LD_LIBRARY_PATH").ok_or(io::ErrorKind::InvalidData)?;
+    let runtime = runtime_lib(
+        std::path::Path::new("/run/tilo-runtime"),
+        std::path::Path::new(&library),
+    )?;
     let base = runtime.to_str().ok_or(io::ErrorKind::InvalidData)?;
     let provider = format!("{base}/signal-provider");
     let libraries = format!(
@@ -133,26 +139,70 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
     #[test]
-    fn runtime_requires_one_exact_native_build_mount() {
+    fn runtime_requires_one_exact_native_build_path() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("2026.10.1-signal")).unwrap();
-        assert_eq!(
-            runtime_lib(root.path()).unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
         let exact = root
             .path()
-            .join(format!("2026.10.1-signal+native.{}", "a".repeat(32)));
-        std::fs::create_dir(&exact).unwrap();
-        assert_eq!(runtime_lib(root.path()).unwrap(), exact.join("lib"));
-        std::fs::create_dir(
+            .join(format!("2026.10.1-signal+native.{}/lib", "a".repeat(32)));
+        assert_eq!(runtime_lib(root.path(), &exact).unwrap(), exact);
+        for wrong in [
+            root.path().join("2026.10.1-signal/lib"),
+            root.path().join("2026.10.1-signal+native.a/lib"),
             root.path()
-                .join(format!("2026.10.1-signal+native.{}", "b".repeat(32))),
+                .join(format!("2026.10.1-signal+native.{}/lib", "A".repeat(32))),
+            exact.join(".."),
+            exact.join("other"),
+            root.path().join(format!(
+                "2026.10.1-signal+native.{}/lib:/host",
+                "a".repeat(32)
+            )),
+            std::path::PathBuf::from("/host/lib"),
+        ] {
+            assert_eq!(
+                runtime_lib(root.path(), &wrong).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+    #[test]
+    fn runtime_path_works_without_parent_enumeration_under_strict_landlock() {
+        const FIXTURE: &str = "TILO_SIGNAL_RUNTIME_RULE_FIXTURE";
+        if let Some(root) = std::env::var_os(FIXTURE) {
+            let root = std::path::PathBuf::from(root);
+            let mount = root.join(format!("2026.10.1-signal+native.{}", "a".repeat(32)));
+            let library = mount.join("lib");
+            let plan = launcher::landlock::plan_from_paths(&[mount], &[]);
+            assert_eq!(
+                launcher::landlock::apply_plan_or_log(&plan, false),
+                launcher::landlock::LandlockOutcome::FullyEnforced
+            );
+            assert_eq!(
+                std::fs::read_dir(&root).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(runtime_lib(&root, &library).unwrap(), library);
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(
+            root.path()
+                .join(format!("2026.10.1-signal+native.{}/lib", "a".repeat(32))),
         )
         .unwrap();
-        assert_eq!(
-            runtime_lib(root.path()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::runtime_path_works_without_parent_enumeration_under_strict_landlock",
+                "--nocapture",
+            ])
+            .env(FIXTURE, root.path())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "strict runtime fixture failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
         );
     }
     fn live(script: &str) -> (tempfile::TempDir, Java) {
