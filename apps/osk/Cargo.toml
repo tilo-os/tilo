@@ -38,6 +38,7 @@ emoji = { path = "../../crates/text/emoji" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+settings-store = { path = "../../crates/system/settings-store" }
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

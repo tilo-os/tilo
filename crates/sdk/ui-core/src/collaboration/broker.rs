@@ -4053,6 +4053,7 @@ struct SettingsLink {
 impl Drop for SettingsLink {
     fn drop(&mut self) {
         self.follower.abort();
+        self.settings.disconnected();
     }
 }
 
@@ -4121,6 +4122,7 @@ async fn link_settings(
                     Ok(view) => view,
                     Err(error) => {
                         tracing::warn!(%error, "settings: following the shell's settings stopped");
+                        settings.disconnected();
                         break;
                     }
                 };
