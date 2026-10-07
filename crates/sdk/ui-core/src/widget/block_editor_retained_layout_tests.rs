@@ -18,6 +18,8 @@ struct RetainedEditor {
     rebuilds: usize,
     /// The host's paint viewport, as the live host pushes the window.
     viewport: Option<Rect>,
+    scene: Scene,
+    damage: Vec<Rect>,
 }
 
 impl RetainedEditor {
@@ -93,6 +95,8 @@ impl RetainedEditor {
             width,
             rebuilds: 0,
             viewport: None,
+            scene: Scene::new(),
+            damage: Vec::new(),
         };
         fixture.frame();
         fixture
@@ -136,13 +140,16 @@ impl RetainedEditor {
         if let Some(viewport) = self.viewport {
             presence.push_viewport(viewport);
         }
+        self.scene.reset();
         self.editor.draw(
-            &mut Scene::new(),
+            &mut self.scene,
             Affine::IDENTITY,
             &mut self.text,
             &self.theme,
             &presence,
         );
+        self.damage.clear();
+        self.editor.collect_damage(&mut self.damage);
         self.editor.mark_drawn();
         for child in self.editor.children_mut() {
             child.mark_drawn();
@@ -231,6 +238,230 @@ impl RetainedEditor {
                 "following block overlaps wrapped text"
             );
         }
+    }
+}
+
+#[test]
+fn retained_paragraph_typing_damage_matches_full_gpu_pixels() {
+    let blocks = (0..18)
+        .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
+        .collect();
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    let background = fixture.theme.tokens.colors.surfaces.content;
+    let mut retained = crate::offscreen::OffscreenRenderer::new(1200, 900);
+    let mut full = crate::offscreen::OffscreenRenderer::new(1200, 900);
+    let before = retained.render(&fixture.scene, background);
+    fixture.key(Key::Character("x".into()), Modifiers::default());
+    assert_eq!(
+        fixture.editor.blocks[0].text(),
+        "xParagraph 0: an ordinary document line."
+    );
+    assert!(
+        !fixture.damage.is_empty(),
+        "ordinary typing must describe its changed paint"
+    );
+    let area: f64 = fixture.damage.iter().map(Rect::area).sum();
+    assert!(
+        area < fixture.editor.get_rect().area() / 2.0,
+        "a stable paragraph edit must not damage the whole document: {:?}",
+        fixture.damage
+    );
+    let damage: Vec<_> = fixture
+        .damage
+        .iter()
+        .map(|rect| rect.inflate(16.0, 16.0))
+        .collect();
+    let rasterized = retained.render_damage_regions_gpu_wait(&fixture.scene, background, &damage);
+    assert!(
+        rasterized < 1200 * 900,
+        "the pixel oracle must exercise actual sparse rasterization"
+    );
+    let after = full.render(&fixture.scene, background);
+    assert_ne!(
+        before, after,
+        "the actual keyboard path changes visible text"
+    );
+    assert_eq!(
+        retained.readback_current(),
+        after,
+        "all retained pixels must match the full GPU oracle"
+    );
+}
+
+fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) {
+    let background = fixture.theme.tokens.colors.surfaces.content;
+    let mut retained = crate::offscreen::OffscreenRenderer::new(1200, 1100);
+    let mut full = crate::offscreen::OffscreenRenderer::new(1200, 1100);
+    retained.render(before, background);
+    let damage: Vec<_> = fixture
+        .damage
+        .iter()
+        .map(|rect| rect.inflate(16.0, 16.0))
+        .collect();
+    assert!(!damage.is_empty(), "the actual edit must invalidate paint");
+    let rasterized = retained.render_damage_regions_gpu_wait(&fixture.scene, background, &damage);
+    if sparse {
+        assert!(
+            rasterized < 1200 * 1100,
+            "a stable edit must exercise sparse rasterization"
+        );
+    }
+    let expected = full.render(&fixture.scene, background);
+    assert_eq!(
+        retained.readback_current(),
+        expected,
+        "retained pixels must match full rendering"
+    );
+}
+
+#[test]
+fn retained_paragraph_delete_and_structure_damage_match_gpu_pixels_at_both_text_scales() {
+    for scale in [1.0, 2.0] {
+        let blocks = (0..8)
+            .map(|index| {
+                Block::paragraph(&format!("Paragraph {index}: an ordinary document line."))
+            })
+            .collect();
+        let mut fixture = RetainedEditor::with_blocks(1000.0, scale, blocks);
+        fixture.key(Key::Character("x".into()), Modifiers::default());
+        let before = fixture.scene.clone();
+        fixture.key(Key::Named(NamedKey::Backspace), Modifiers::default());
+        assert_eq!(
+            fixture.editor.blocks[0].text(),
+            "Paragraph 0: an ordinary document line."
+        );
+        assert!(
+            fixture.damage.iter().map(Rect::area).sum::<f64>()
+                < fixture.editor.get_rect().area() / 2.0
+        );
+        assert_damage_pixels(&before, &fixture, true);
+        let before = fixture.scene.clone();
+        let old_bounds = fixture.editor.get_rect();
+        fixture.key(Key::Named(NamedKey::Enter), Modifiers::default());
+        assert_eq!(fixture.editor.blocks.len(), 9);
+        assert!(
+            fixture
+                .damage
+                .iter()
+                .any(|rect| rect.contains_rect(old_bounds)),
+            "structure changes preserve all previous paint bounds"
+        );
+        assert_damage_pixels(&before, &fixture, false);
+    }
+}
+
+#[test]
+fn retained_wrapping_delete_clears_previous_taller_paint_bounds() {
+    for scale in [1.0, 2.0] {
+        let mut fixture = RetainedEditor::with_blocks(280.0, scale, vec![Block::paragraph("")]);
+        fixture.type_text(
+            "A paragraph that wraps over multiple lines and becomes shorter after deletion. ",
+        );
+        let mut proved_shrink = false;
+        for _ in 0..80 {
+            let before = fixture.scene.clone();
+            let old_bounds = fixture.editor.get_rect();
+            fixture.key(Key::Named(NamedKey::Backspace), Modifiers::default());
+            if fixture.editor.get_rect().height() < old_bounds.height() {
+                assert!(
+                    fixture
+                        .damage
+                        .iter()
+                        .any(|rect| rect.contains_rect(old_bounds)),
+                    "shrinking layout must clear the previous taller extent"
+                );
+                assert_damage_pixels(&before, &fixture, false);
+                proved_shrink = true;
+                break;
+            }
+        }
+        assert!(
+            proved_shrink,
+            "the ordinary delete path must actually shrink wrapped geometry"
+        );
+    }
+}
+
+#[test]
+fn retained_scene_release_keeps_first_rebuild_full_and_restores_paragraph_proof() {
+    let blocks = (0..8)
+        .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
+        .collect();
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    let before = fixture.scene.clone();
+    let old_bounds = fixture.editor.get_rect();
+    fixture.editor.release_scene_cache();
+    fixture.key(Key::Character("x".into()), Modifiers::default());
+    assert!(
+        fixture
+            .damage
+            .iter()
+            .any(|rect| rect.contains_rect(old_bounds))
+    );
+    assert_damage_pixels(&before, &fixture, false);
+    let before = fixture.scene.clone();
+    fixture.key(Key::Character("y".into()), Modifiers::default());
+    assert_eq!(
+        fixture.editor.blocks[0].text(),
+        "xyParagraph 0: an ordinary document line."
+    );
+    assert_damage_pixels(&before, &fixture, true);
+}
+
+#[test]
+fn retained_theme_and_viewport_changes_keep_full_paint_bounds() {
+    for viewport in [false, true] {
+        let blocks = (0..8)
+            .map(|index| {
+                Block::paragraph(&format!("Paragraph {index}: an ordinary document line."))
+            })
+            .collect();
+        let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+        let before = fixture.scene.clone();
+        let old_bounds = fixture.editor.get_rect();
+        if viewport {
+            fixture.viewport = Some(Rect::new(0.0, 100.0, 1000.0, 600.0));
+        } else {
+            fixture.theme = Theme::light();
+        }
+        fixture.frame();
+        assert!(
+            fixture
+                .damage
+                .iter()
+                .any(|rect| rect.contains_rect(old_bounds))
+        );
+        assert_damage_pixels(&before, &fixture, false);
+    }
+}
+
+#[test]
+fn retained_document_selection_and_find_overlay_keep_full_paint_bounds() {
+    for find in [false, true] {
+        let blocks = (0..8)
+            .map(|index| {
+                Block::paragraph(&format!("Paragraph {index}: an ordinary document line."))
+            })
+            .collect();
+        let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+        let before = fixture.scene.clone();
+        let old_bounds = fixture.editor.get_rect();
+        if find {
+            fixture.editor.open_find();
+            fixture.frame();
+            assert!(fixture.editor.find_visible);
+        } else {
+            fixture.key(Key::Character("a".into()), ModifiersState::CONTROL.into());
+            assert!(fixture.editor.document_selection.is_some());
+        }
+        assert!(
+            fixture
+                .damage
+                .iter()
+                .any(|rect| rect.contains_rect(old_bounds)),
+            "document selection and global overlays retain full paint bounds"
+        );
+        assert_damage_pixels(&before, &fixture, false);
     }
 }
 

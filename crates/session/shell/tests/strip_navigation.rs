@@ -1672,3 +1672,129 @@ fn axis_gather_finishes_without_animation_in_reduced_motion() {
         "gather must not leave an animation tail"
     );
 }
+
+#[test]
+fn ctrl_shift_t_restores_the_closed_window_and_its_existing_record() {
+    assert_closed_window_restore(false, false);
+}
+
+#[test]
+fn ctrl_shift_t_restores_the_last_window_with_its_existing_record() {
+    assert_closed_window_restore(true, false);
+}
+
+#[test]
+fn ctrl_shift_t_keeps_closed_windows_in_their_original_workspace() {
+    assert_closed_window_restore(true, true);
+}
+
+fn configure_terminal_group(
+    h: &Harness,
+    tab: u64,
+    binding: &shell::shell::state::LocalAppRecord,
+    last_window: bool,
+) {
+    let chrome = h.chrome.borrow_mut();
+    let mut tree = chrome.tree_mut();
+    let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+    group.tabs.retain(|candidate| candidate.id == tab);
+    group.active_tab = tab;
+    group.tabs[0].tile = TileContent::Foreign {
+        app_id: binding.app_id.clone(),
+        surface_id: 42,
+    };
+    if last_window {
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .retain(|group| group.id == h.groups[0]);
+    }
+    tree.local_app_records.insert(tab, binding.clone());
+    tree.seed_doc_from_cache();
+}
+
+fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
+    let mut h = Harness::new();
+    let tab = h.tabs[0][0];
+    let room = h.chrome.borrow().tree().desktop.workspaces[0].room;
+    let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
+    let records = h.chrome.borrow().records().clone();
+    let before = records.read(&checkout.id, ui::record::identity);
+    assert_eq!(before, Some(Some(checkout.clone())));
+    let binding = shell::shell::state::LocalAppRecord {
+        room,
+        app_id: "so.tilo.terminal".into(),
+        record_instance: tab,
+    };
+    configure_terminal_group(&h, tab, &binding, last_window);
+    h.lay_out();
+    shell::shell::window_actions::close_tab(&mut h.chrome.borrow_mut(), tab).unwrap();
+    assert!(
+        !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .any(|group| group.id == h.groups[0])
+    );
+    assert_eq!(
+        records.read(&checkout.id, ui::record::identity),
+        before,
+        "closing a window keeps its old record handle alive"
+    );
+    h.lay_out();
+    if other_workspace {
+        let elsewhere = WorkspaceId::new();
+        let home = h.chrome.borrow().tree().desktop.active;
+        {
+            let chrome = h.chrome.borrow_mut();
+            let mut tree = chrome.tree_mut();
+            tree.desktop
+                .workspaces
+                .push(Workspace::new(elsewhere, "Elsewhere"));
+            tree.desktop.active = elsewhere;
+            tree.seed_doc_from_cache();
+        }
+        h.lay_out();
+        h.key(
+            Key::Character("t".into()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        );
+        assert_eq!(h.chrome.borrow().tree().desktop.active, elsewhere);
+        assert!(
+            !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .any(|group| group.id == h.groups[0]),
+            "another workspace must not reopen this frame"
+        );
+        h.chrome.borrow_mut().tree_mut().desktop.active = home;
+        h.lay_out();
+    }
+    h.key(
+        Key::Character("t".into()),
+        ModifiersState::CONTROL | ModifiersState::SHIFT,
+    );
+    let chrome = h.chrome.borrow();
+    let tree = chrome.tree();
+    let group = tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .find(|group| group.id == h.groups[0])
+        .expect("the closed window is restored");
+    if last_window {
+        assert_eq!(
+            tree.desktop.workspaces[0].strips[0].window_groups.len(),
+            1,
+            "restoring the last window must not add a default duplicate"
+        );
+    }
+    assert_eq!(group.tabs.len(), 1);
+    assert_eq!(group.active_tab, tab);
+    assert!(
+        matches!(&group.tabs[0].tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.terminal")
+    );
+    assert_eq!(tree.local_app_records.get(&tab), Some(&binding));
+    assert_eq!(
+        records.read(&checkout.id, ui::record::identity),
+        before,
+        "restore reuses the existing record rather than creating a default"
+    );
+}

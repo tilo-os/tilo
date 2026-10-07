@@ -837,6 +837,14 @@ impl Widget for AppearancePane {
         }
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // This pane paints only its composition. Keep a child's local visual
+        // change local instead of expanding it to the whole form.
+        if let Some(composed) = &self.composed {
+            composed.collect_damage(regions);
+        }
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
             .as_ref()

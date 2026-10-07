@@ -278,6 +278,12 @@ impl Mover<'_> {
         }
         sync_parent(destination)?;
         #[cfg(test)]
+        super::super::test_support::pause(
+            &decode_path(&self.snapshot()?.destination.path)?,
+            "compensation-after-publish",
+        )
+        .map_err(|error| error.to_string())?;
+        #[cfg(test)]
         super::super::interrupt_test_process("compensation-after-publish");
         Ok(())
     }
