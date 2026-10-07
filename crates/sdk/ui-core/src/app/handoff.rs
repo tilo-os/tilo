@@ -173,18 +173,17 @@ impl App {
         self.set_permission_ctx(read_only);
     }
 
-    pub(super) fn report_handoff(&mut self, report: &HandoffReport) {
+    pub(super) fn report_handoff(&mut self, report: &HandoffReport) -> bool {
         let Some(route) = self.private_continuity_route() else {
             tracing::warn!("handoff: no instance route to answer on");
-            return;
+            return false;
         };
-        let _ = self
-            .collaboration
+        self.collaboration
             .manager
             .send(CollabRequest::ReportHandoff {
                 app_id: route.app_id,
                 message: report.encode(),
-            });
+            })
     }
 }
 
@@ -453,8 +452,13 @@ mod owner_view_tests {
         fn request_redraw(&self) {}
         fn set_cursor(&self, _: winit::window::CursorIcon) {}
     }
+    type Requests = Rc<RefCell<Vec<crate::collaboration::CollabRequest>>>;
     fn receiver() -> (App, Rc<Cell<bool>>, Rc<RefCell<Vec<Vec<u8>>>>) {
-        let (mut app, _) = super::tests::instance();
+        let (app, ready, applied, _) = receiver_with_requests();
+        (app, ready, applied)
+    }
+    fn receiver_with_requests() -> (App, Rc<Cell<bool>>, Rc<RefCell<Vec<Vec<u8>>>>, Requests) {
+        let (mut app, requests) = super::tests::instance();
         let ready = Rc::new(Cell::new(true));
         let applied = Rc::new(RefCell::new(Vec::new()));
         app.root_widget = Box::new(Receiver {
@@ -474,7 +478,7 @@ mod owner_view_tests {
                 })
         );
         app.collaboration.manager.poll();
-        (app, ready, applied)
+        (app, ready, applied, requests)
     }
     fn view(app: &App, generation: u64, counter: u64) -> OwnerView {
         let route = &app.collaboration.manager.primary_route().unwrap().route;
@@ -615,6 +619,220 @@ mod owner_view_tests {
         let stale = view(&app, 2, 11);
         deliver(&mut app, stale);
         assert_eq!(applied.borrow().len(), 1);
+        assert_eq!(app.state.doc.get_heads(), heads);
+    }
+    fn reannounce(app: &mut App, record: &str) {
+        let route = app
+            .collaboration
+            .manager
+            .primary_route()
+            .unwrap()
+            .route
+            .clone();
+        assert!(
+            app.collaboration
+                .manager
+                .send(crate::collaboration::CollabRequest::Hello {
+                    app_id: route.app_id,
+                    cluster_id: route.cluster_id,
+                    record: Some(record.into()),
+                    record_kind: None,
+                    handle: None,
+                })
+        );
+    }
+
+    #[test]
+    fn deferred_owner_view_is_fenced_before_a_reconnected_body_becomes_ready() {
+        let (mut app, ready, applied) = receiver();
+        let heads = app.state.doc.get_heads();
+        ready.set(false);
+        let remote = view(&app, 8, 12);
+        deliver(&mut app, remote);
+        assert!(app.continuation.owner_view.pending.is_some());
+        reannounce(&mut app, "continuation:31");
+        app.collaboration.manager.poll();
+        ready.set(true);
+        // Drive the production publication turn, without separately invoking
+        // the route helper that would otherwise hide this ordering defect.
+        app.publish_continuation_metadata();
+        assert!(applied.borrow().is_empty());
+        assert!(app.continuation.owner_view.pending.is_none());
+        assert!(app.continuation.owner_view.following);
+        assert_eq!(app.state.doc.get_heads(), heads);
+    }
+
+    #[test]
+    fn deferred_owner_view_cannot_cross_pending_or_acknowledged_document_routes() {
+        for acknowledged in [false, true] {
+            let (mut app, ready, applied) = receiver();
+            let heads = app.state.doc.get_heads();
+            let focus = app.focused_node;
+            ready.set(false);
+            let remote = view(&app, 1, 5);
+            deliver(&mut app, remote);
+            assert!(app.continuation.owner_view.pending.is_some());
+            reannounce(&mut app, "tab:000000000000002a");
+            if acknowledged {
+                app.collaboration.manager.poll();
+            }
+            ready.set(true);
+            app.publish_continuation_metadata();
+            assert!(
+                applied.borrow().is_empty(),
+                "document acknowledgement={acknowledged}"
+            );
+            assert!(app.continuation.owner_view.pending.is_none());
+            assert_eq!(app.focused_node, focus);
+            assert_eq!(app.state.doc.get_heads(), heads);
+        }
+    }
+
+    #[test]
+    fn protected_focus_clears_published_positions_and_defers_explicit_takeover() {
+        for modal in [false, true] {
+            let (mut app, _, _, requests) = receiver_with_requests();
+            let heads = app.state.doc.get_heads();
+            app.publish_continuation_metadata();
+            assert!(app.continuation.last_published.is_some());
+            requests.borrow_mut().clear();
+            let remote = view(&app, 1, 5);
+            deliver(&mut app, remote);
+            app.take_over_owner_view();
+            if modal {
+                app.accessibility.focus_trap_active = true;
+            } else {
+                app.floating.capture_protected = true;
+            }
+            app.publish_continuation_metadata();
+            assert!(app.continuation.last_published.is_none());
+            assert!(app.continuation.owner_view.last_claim_at.is_none());
+            assert!(app.continuation.owner_view.awaiting_claim);
+            assert!(requests.borrow().iter().any(|request| matches!(
+                request,
+                crate::collaboration::CollabRequest::ClearContinuation { .. }
+            )));
+            assert!(requests.borrow().iter().all(|request| !matches!(
+                request,
+                crate::collaboration::CollabRequest::ReportContinuation { .. }
+                    | crate::collaboration::CollabRequest::ReportHandoff { .. }
+            )));
+            app.accessibility.focus_trap_active = false;
+            app.floating.capture_protected = false;
+            app.publish_continuation_metadata();
+            assert!(app.continuation.last_published.is_some());
+            assert!(app.continuation.owner_view.last_claim_at.is_some());
+            assert_eq!(app.state.doc.get_heads(), heads);
+        }
+    }
+    struct RefusingPublication {
+        acknowledged: Option<crate::collaboration::RouteSpec>,
+    }
+    impl crate::collaboration::PeerTransport for RefusingPublication {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, request: crate::collaboration::CollabRequest) -> Result<(), String> {
+            if let crate::collaboration::CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                ..
+            } = request
+            {
+                self.acknowledged = Some(crate::collaboration::RouteSpec {
+                    app_id,
+                    cluster_id,
+                    record,
+                });
+                Ok(())
+            } else {
+                Err("synthetic closed publication queue".into())
+            }
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            Vec::new()
+        }
+        fn take_primary_route_result(
+            &mut self,
+        ) -> Option<Result<crate::collaboration::RouteSpec, String>> {
+            self.acknowledged.take().map(Ok)
+        }
+    }
+
+    #[test]
+    fn rejected_publication_cannot_cache_a_position_or_delay_a_takeover_retry() {
+        for takeover in [false, true] {
+            let (mut app, _, _) = receiver();
+            if takeover {
+                let remote = view(&app, 1, 5);
+                deliver(&mut app, remote);
+                app.take_over_owner_view();
+            }
+            let route = app
+                .collaboration
+                .manager
+                .primary_route()
+                .unwrap()
+                .route
+                .clone();
+            app.collaboration.manager =
+                crate::collaboration::CollaborationManager::with_peer_transport(
+                    RefusingPublication { acknowledged: None },
+                );
+            assert!(
+                app.collaboration
+                    .manager
+                    .send(crate::collaboration::CollabRequest::Hello {
+                        app_id: route.app_id,
+                        cluster_id: route.cluster_id,
+                        record: route.record,
+                        record_kind: None,
+                        handle: None
+                    })
+            );
+            app.collaboration.manager.poll();
+            app.publish_continuation_metadata();
+            assert!(app.continuation.last_published.is_none());
+            assert!(app.continuation.owner_view.last_claim_at.is_none());
+            assert!(matches!(
+                app.collaboration.manager.state(),
+                crate::collaboration::CollaborationState::Offline(_)
+            ));
+        }
+    }
+    #[test]
+    fn protected_reconnect_clears_unknown_prior_projection_once_per_acknowledged_epoch() {
+        let (mut app, _, _, requests) = receiver_with_requests();
+        let heads = app.state.doc.get_heads();
+        app.floating.capture_protected = true;
+        requests.borrow_mut().clear();
+        for epoch in 1..=2 {
+            if epoch == 2 {
+                reannounce(&mut app, "continuation:31");
+                app.collaboration.manager.poll();
+            }
+            app.publish_continuation_metadata();
+            app.publish_continuation_metadata();
+            assert_eq!(
+                requests
+                    .borrow()
+                    .iter()
+                    .filter(|request| matches!(
+                        request,
+                        crate::collaboration::CollabRequest::ClearContinuation { .. }
+                    ))
+                    .count(),
+                epoch
+            );
+            assert!(requests.borrow().iter().all(|request| !matches!(
+                request,
+                crate::collaboration::CollabRequest::ReportContinuation { .. }
+                    | crate::collaboration::CollabRequest::ReportHandoff { .. }
+            )));
+            assert!(app.continuation.publication_initialized);
+            assert!(app.continuation.last_published.is_none());
+        }
         assert_eq!(app.state.doc.get_heads(), heads);
     }
 }

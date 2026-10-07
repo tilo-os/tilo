@@ -1464,6 +1464,16 @@ fn paint_scanouts(
     if scanouts.iter().all(|entry| entry.powered_off) {
         return PaintScanoutSample::default();
     }
+    // Reconfiguration is drained before a queued frame is presented. An older
+    // multi-output clip may therefore arrive after hot-unplug to one output.
+    // It has no scene to rasterise: preserve the shown pixels until the next
+    // complete producer frame rather than clearing the new scanout to black.
+    if frame.workspace_hold
+        && scene.encoding().is_empty()
+        && (scanouts.len() == 1 || cpu_present::cpu_render_reason().is_some())
+    {
+        return PaintScanoutSample::default();
+    }
     let target_size = combined_geometry(outputs);
     if target_size.0 == 0 || target_size.1 == 0 {
         return PaintScanoutSample::default();
@@ -2715,6 +2725,12 @@ impl Backend for DrmBackend {
             &mut self.direct_bypass_reported,
         );
         report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
+    }
+
+    fn supports_workspace_clip(&self) -> bool {
+        // Only combined GPU readback implements workspace replay. Single-output
+        // direct and XRGB paths, and the CPU renderer, consume complete scenes.
+        self.outputs.len() > 1 && cpu_present::cpu_render_reason().is_none()
     }
 
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, _output: OutputId) {

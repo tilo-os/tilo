@@ -556,7 +556,8 @@ mod tests {
                 let error =
                     run(helper.to_str().unwrap(), &[], None, 4096, UNTESTED_TIMEOUT).unwrap_err();
                 assert!(
-                    matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream)
+                    matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream),
+                    "expected {stream} overflow, got {error:?}"
                 );
             }
         }
@@ -675,9 +676,12 @@ mod tests {
                 }
             }
         }
+        // Start the descendant before announcing readiness and wait in the
+        // shell builtin. A foreground sleep started after `ready` can miss
+        // the group signal and defer the shell's TERM trap past the grace.
         for (script, expected_clean) in [
-            ("trap 'exit 0' TERM; printf ready; sleep 30", true),
-            ("trap '' TERM; printf ready; sleep 30", false),
+            ("trap 'exit 0' TERM; sleep 30 & printf ready; wait", true),
+            ("trap '' TERM; sleep 30 & printf ready; wait", false),
         ] {
             let mut command = Command::new("sh");
             command.args(["-c", script]).stdout(Stdio::piped());
