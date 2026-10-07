@@ -55,6 +55,7 @@ impl Grant {
         workspace: &str,
         path: &Path,
         write: bool,
+        owner: &str,
     ) -> Result<Self, String> {
         super::nearby_transfer::files_grants(tree, workspace)
             .into_iter()
@@ -69,6 +70,9 @@ impl Grant {
                     || !path.starts_with(root)
                     || (write && *mode != FsMode::ReadWrite)
                 {
+                    return None;
+                }
+                if !current_files_grant(tree, workspace, &capability, owner) {
                     return None;
                 }
                 let opened = SecureNearbySource::open_beneath(root, root).ok()?;
@@ -86,12 +90,19 @@ impl Grant {
     fn root(&self) -> &Path {
         &self.root
     }
-    fn check(&self, tree: &WorkspaceTreeHandle, workspace: &str) -> Result<(), String> {
+    fn check(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        workspace: &str,
+        owner: &str,
+    ) -> Result<(), String> {
         if Identity::of(&self.entry.metadata().map_err(|error| error.to_string())?) != self.identity
         {
             return Err("retained Files grant identity changed".into());
         }
-        if !super::nearby_transfer::files_grants(tree, workspace).contains(&self.capability) {
+        if !current_files_grant(tree, workspace, &self.capability, owner)
+            || !super::nearby_transfer::files_grants(tree, workspace).contains(&self.capability)
+        {
             return Err("Files access was revoked".into());
         }
         let opened = SecureNearbySource::open_beneath(self.root(), self.root())?;
@@ -100,6 +111,38 @@ impl Grant {
         }
         Ok(())
     }
+}
+
+fn current_files_grant(
+    tree: &WorkspaceTreeHandle,
+    room: &str,
+    capability: &Capability,
+    actor: &str,
+) -> bool {
+    let tree = tree.read();
+    let Some(workspace) = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|ws| ws.room.to_string() == room)
+    else {
+        return false;
+    };
+    let scopes = capability.requested_scopes();
+    let current = workspace
+        .app_capabilities_at(
+            super::nearby_transfer::FILES_APP_ID,
+            tilo_clock::unix_now_ns() / 1_000_000_000,
+        )
+        .into_iter()
+        .any(|row| {
+            scopes.contains(&(row.scope.clone(), row.verb))
+                && tree
+                    .native_runtime
+                    .files_home_consent_current(workspace, row, actor)
+        });
+    drop(tree);
+    current
 }
 
 struct Source {
@@ -117,8 +160,9 @@ impl Source {
         workspace: &str,
         path: PathBuf,
         cut: bool,
+        owner: &str,
     ) -> Result<Self, String> {
-        let grant = Grant::open(tree, workspace, &path, cut)?;
+        let grant = Grant::open(tree, workspace, &path, cut, owner)?;
         let parent_path = path.parent().ok_or("source has no parent")?;
         let parent = if parent_path.starts_with(grant.root()) {
             SecureNearbyDestination::open_beneath(grant.root(), parent_path)?
@@ -156,8 +200,13 @@ impl Source {
     fn anchored(&self) -> PathBuf {
         self.parent.anchored_root().join(&self.name)
     }
-    fn check_parent(&self, tree: &WorkspaceTreeHandle, workspace: &str) -> Result<(), String> {
-        self.grant.check(tree, workspace)?;
+    fn check_parent(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        workspace: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        self.grant.check(tree, workspace, owner)?;
         let parent = self.path.parent().ok_or("source parent unavailable")?;
         let current = if parent.starts_with(self.grant.root()) {
             SecureNearbyDestination::open_beneath(self.grant.root(), parent)?.metadata()?
@@ -170,8 +219,13 @@ impl Source {
         Ok(())
     }
 
-    fn check(&self, tree: &WorkspaceTreeHandle, workspace: &str) -> Result<(), String> {
-        self.check_parent(tree, workspace)?;
+    fn check(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        workspace: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        self.check_parent(tree, workspace, owner)?;
         if Identity::of(&self.entry.metadata().map_err(|error| error.to_string())?) != self.identity
         {
             return Err("retained source identity changed".into());
@@ -236,8 +290,13 @@ struct Destination {
     identity: Identity,
 }
 impl Destination {
-    fn open(tree: &WorkspaceTreeHandle, workspace: &str, path: PathBuf) -> Result<Self, String> {
-        let grant = Grant::open(tree, workspace, &path, true)?;
+    fn open(
+        tree: &WorkspaceTreeHandle,
+        workspace: &str,
+        path: PathBuf,
+        owner: &str,
+    ) -> Result<Self, String> {
+        let grant = Grant::open(tree, workspace, &path, true, owner)?;
         let directory = SecureNearbyDestination::open_beneath(grant.root(), &path)?;
         let identity = Identity::of(&directory.metadata()?);
         Ok(Self {
@@ -247,8 +306,13 @@ impl Destination {
             identity,
         })
     }
-    fn check(&self, tree: &WorkspaceTreeHandle, workspace: &str) -> Result<(), String> {
-        self.grant.check(tree, workspace)?;
+    fn check(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        workspace: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        self.grant.check(tree, workspace, owner)?;
         let current = SecureNearbyDestination::open_beneath(self.grant.root(), &self.path)?;
         if Identity::of(&current.metadata()?) != self.identity {
             return Err("destination folder was replaced or moved".into());
@@ -285,7 +349,7 @@ impl Offer {
             .clone();
         for (source, consumed) in self.entries.iter().zip(consumed) {
             if !consumed {
-                source.check(tree, self.source.workspace())?;
+                source.check(tree, self.source.workspace(), self.source.owner())?;
             }
         }
         Ok(())
@@ -541,9 +605,10 @@ impl NativeFileClipboard {
                 context.workspace(),
                 PathBuf::from(OsString::from_vec(selected.path.clone())),
                 false,
+                context.owner(),
             )?);
             verify_selected(context, &selected, source.identity)?;
-            source.check(&self.tree, context.workspace())?;
+            source.check(&self.tree, context.workspace(), context.owner())?;
             let id = uuid::Uuid::new_v4().to_string();
             captured.push((id.clone(), SelectedObject::Source(source)));
             ids.push(id);
@@ -554,9 +619,10 @@ impl NativeFileClipboard {
                     &self.tree,
                     context.workspace(),
                     PathBuf::from(OsString::from_vec(selected.path.clone())),
+                    context.owner(),
                 )?);
                 verify_selected(context, &selected, destination.identity)?;
-                destination.check(&self.tree, context.workspace())?;
+                destination.check(&self.tree, context.workspace(), context.owner())?;
                 let id = uuid::Uuid::new_v4().to_string();
                 captured.push((id.clone(), SelectedObject::Destination(destination)));
                 Ok::<_, String>(id)
@@ -646,10 +712,15 @@ impl NativeFileClipboard {
             let SelectedObject::Source(source) = &ticket.object else {
                 return Err("clipboard source requires a selected entry ticket".into());
             };
-            source.check(&self.tree, context.workspace())?;
+            source.check(&self.tree, context.workspace(), context.owner())?;
             let source = if cut {
-                let writable =
-                    Source::open(&self.tree, context.workspace(), source.path.clone(), true)?;
+                let writable = Source::open(
+                    &self.tree,
+                    context.workspace(),
+                    source.path.clone(),
+                    true,
+                    context.owner(),
+                )?;
                 if writable.identity != source.identity
                     || Identity::of(&writable.parent.metadata()?)
                         != Identity::of(&source.parent.metadata()?)
@@ -906,7 +977,7 @@ impl NativeFileClipboard {
         let SelectedObject::Destination(destination) = &ticket.object else {
             return Err("clipboard destination requires a shown folder ticket".into());
         };
-        destination.check(&self.tree, context.workspace())?;
+        destination.check(&self.tree, context.workspace(), context.owner())?;
         let destination = destination.clone();
         let operation = Arc::new(Operation {
             context: context.clone(),
@@ -1033,13 +1104,14 @@ impl Operation {
         self.context.authorize(Permission::Write)?;
         self.context.authorize(Permission::Read)?;
         self.offer.check(Instant::now())?;
-        source.check(tree, self.context.workspace())?;
+        source.check(tree, self.context.workspace(), self.context.owner())?;
         self.check_destination(tree)
     }
     fn check_destination(&self, tree: &WorkspaceTreeHandle) -> Result<(), String> {
         self.destination_custody
             .check(&self.context, Instant::now())?;
-        self.destination.check(tree, self.context.workspace())
+        self.destination
+            .check(tree, self.context.workspace(), self.context.owner())
     }
     fn run(&self, tree: &WorkspaceTreeHandle) {
         if let Err(error) = self.journal.begin(self).and_then(|receipt| {
@@ -1228,7 +1300,8 @@ impl Operation {
         record: &'a Record,
     ) -> Result<&'a std::ffi::OsStr, String> {
         context.authorize(Permission::Write)?;
-        self.destination.check(tree, context.workspace())?;
+        self.destination
+            .check(tree, context.workspace(), context.owner())?;
         let name = record
             .destination
             .file_name()
@@ -1242,7 +1315,10 @@ impl Operation {
         }
         drop(current);
         if self.offer.public.cut {
-            record.source.grant.check(tree, context.workspace())?;
+            record
+                .source
+                .grant
+                .check(tree, context.workspace(), context.owner())?;
             let parent = record
                 .source
                 .path
@@ -1287,9 +1363,10 @@ impl Operation {
             .entry(&retained)
             .and_then(|entry| entry.metadata().map_err(|error| error.to_string()))
             .map(|metadata| Identity::of(&metadata));
-        let admitted = context
-            .authorize(Permission::Write)
-            .and_then(|()| self.destination.check(tree, context.workspace()));
+        let admitted = context.authorize(Permission::Write).and_then(|()| {
+            self.destination
+                .check(tree, context.workspace(), context.owner())
+        });
         let result = if identity != Ok(record.identity) {
             Err("receipt destination changed before undo".into())
         } else if let Err(reason) = admitted {
@@ -1297,7 +1374,7 @@ impl Operation {
         } else if self.offer.public.cut {
             record
                 .source
-                .check_parent(tree, context.workspace())
+                .check_parent(tree, context.workspace(), context.owner())
                 .and_then(|()| {
                     self.receipt()?.relocate_source(
                         &record.source,
@@ -1520,7 +1597,11 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
             // The source has already been sequestered/deleted; revalidate
             // authority and destination, without reopening the old leaf name.
             self.source
-                .check_parent(self.tree, self.operation.context.workspace())
+                .check_parent(
+                    self.tree,
+                    self.operation.context.workspace(),
+                    self.operation.context.owner(),
+                )
                 .map_err(io::Error::other)?;
             self.operation
                 .context
@@ -1554,7 +1635,11 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
             .check(Instant::now())
             .map_err(io::Error::other)?;
         self.source
-            .check_parent(self.tree, self.operation.context.workspace())
+            .check_parent(
+                self.tree,
+                self.operation.context.workspace(),
+                self.operation.context.owner(),
+            )
             .map_err(io::Error::other)?;
         self.operation
             .check_destination(self.tree)
@@ -1574,7 +1659,11 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
             .check(Instant::now())
             .map_err(io::Error::other)?;
         self.source
-            .check_parent(self.tree, self.operation.context.workspace())
+            .check_parent(
+                self.tree,
+                self.operation.context.workspace(),
+                self.operation.context.owner(),
+            )
             .map_err(io::Error::other)?;
         self.operation
             .check_destination(self.tree)
@@ -1726,11 +1815,16 @@ mod tests {
         let path = directory.path().join("report.txt");
         fs::write(&path, b"original").unwrap();
         let (tree, room) = granted(directory.path());
-        let source = Source::open(&tree, &room, path.clone(), false).unwrap();
-        source.check(&tree, &room).unwrap();
+        let source = Source::open(&tree, &room, path.clone(), false, "").unwrap();
+        source.check(&tree, &room, "").unwrap();
         fs::rename(&path, directory.path().join("retained.txt")).unwrap();
         fs::write(&path, b"replacement").unwrap();
-        assert!(source.check(&tree, &room).unwrap_err().contains("replaced"));
+        assert!(
+            source
+                .check(&tree, &room, "")
+                .unwrap_err()
+                .contains("replaced")
+        );
         assert_eq!(
             Identity::of(&source.entry.metadata().unwrap()),
             source.identity
@@ -1748,12 +1842,12 @@ mod tests {
         let path = directory.path().join("destination");
         fs::create_dir(&path).unwrap();
         let (tree, room) = granted(directory.path());
-        let destination = Destination::open(&tree, &room, path.clone()).unwrap();
+        let destination = Destination::open(&tree, &room, path.clone(), "").unwrap();
         fs::rename(&path, directory.path().join("retained")).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(
             destination
-                .check(&tree, &room)
+                .check(&tree, &room, "")
                 .unwrap_err()
                 .contains("replaced")
         );
@@ -1778,14 +1872,14 @@ mod tests {
         let path = parent.join("report.txt");
         fs::write(&path, b"original").unwrap();
         let (tree, room) = granted(&grant);
-        let source = Source::open(&tree, &room, path, true).unwrap();
-        source.check_parent(&tree, &room).unwrap();
+        let source = Source::open(&tree, &room, path, true, "").unwrap();
+        source.check_parent(&tree, &room, "").unwrap();
         let moved = directory.path().join("outside");
         fs::rename(&parent, &moved).unwrap();
         fs::create_dir(&parent).unwrap();
         assert!(
             source
-                .check_parent(&tree, &room)
+                .check_parent(&tree, &room, "")
                 .unwrap_err()
                 .contains("replaced or moved")
         );
@@ -1811,10 +1905,10 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let tree = tree.shared();
-        let source = Source::open(&tree, &room, path.clone(), false).unwrap();
-        source.check(&tree, &room).unwrap();
-        assert!(Source::open(&tree, &room, path.clone(), true).is_err());
-        assert!(Destination::open(&tree, &room, directory.path().to_path_buf()).is_err());
+        let source = Source::open(&tree, &room, path.clone(), false, "").unwrap();
+        source.check(&tree, &room, "").unwrap();
+        assert!(Source::open(&tree, &room, path.clone(), true, "").is_err());
+        assert!(Destination::open(&tree, &room, directory.path().to_path_buf(), "").is_err());
         assert_eq!(fs::read(&path).unwrap(), b"original");
     }
 
@@ -1828,11 +1922,11 @@ mod tests {
         let path = grant.join("link");
         std::os::unix::fs::symlink(&outside, &path).unwrap();
         let (tree, room) = granted(&grant);
-        let source = Source::open(&tree, &room, path, false).unwrap();
-        source.check(&tree, &room).unwrap();
+        let source = Source::open(&tree, &room, path, false, "").unwrap();
+        source.check(&tree, &room, "").unwrap();
         assert!(source.entry.metadata().unwrap().file_type().is_symlink());
         assert_eq!(source.link.as_deref(), Some(outside.as_path()));
-        assert!(Grant::open(&tree, &room, &outside, false).is_err());
+        assert!(Grant::open(&tree, &room, &outside, false, "").is_err());
         assert_eq!(fs::read(outside).unwrap(), b"not granted");
     }
 
@@ -1843,14 +1937,14 @@ mod tests {
         fs::create_dir(&path).unwrap();
         fs::write(path.join("report.txt"), b"original").unwrap();
         let (tree, room) = granted(&path);
-        let source = Source::open(&tree, &room, path.join("report.txt"), true).unwrap();
+        let source = Source::open(&tree, &room, path.join("report.txt"), true, "").unwrap();
         let original_identity = source.grant.identity;
         fs::rename(&path, directory.path().join("retained")).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(
             source
                 .grant
-                .check(&tree, &room)
+                .check(&tree, &room, "")
                 .unwrap_err()
                 .contains("identity changed")
         );
@@ -1874,7 +1968,7 @@ mod tests {
         assert!(
             source
                 .grant
-                .check(&tree, &room)
+                .check(&tree, &room, "")
                 .unwrap_err()
                 .contains("revoked")
         );

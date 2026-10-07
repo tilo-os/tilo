@@ -78,10 +78,28 @@ def door(socket, room, record, operation):
     return rows[0] if rows else None
 
 
+def entry_keys(socket, room, record):
+    rows = [row for row in shared.actions(socket) if row.get("application") == APP
+            and row.get("room") == room and row.get("record") == record]
+    if not any(row.get("semantic_identity") == {"kind": "files.folder", "key": "files.folder"}
+               and row.get("operation") == "go-to" for row in rows):
+        raise RuntimeError("actual Files folder surface is unobservable")
+    return {row["semantic_identity"]["key"] for row in rows
+            if isinstance(row.get("semantic_identity"), dict)
+            and row["semantic_identity"].get("kind") == "files.entry"}
+
+
 def execute(socket, room, record, operation, shell, output, args=None):
     action = shared.wait_for(f"published Files {operation}", lambda: door(socket, room, record, operation), shell)
-    return shared.wait_terminal(socket, shared.invoke(socket, action, args), shell,
-                                public_failure_path=output / f"failed-{operation}.json")
+    acknowledgement = call(socket, {"op": "actions_invoke", "provider": action["provider"],
+                                    "id": action["id"], "args": args or {}})
+    (output / f"acknowledged-{operation}.json").write_text(json.dumps(acknowledgement, indent=2))
+    if "err" in acknowledgement:
+        raise RuntimeError(f"ordinary Files {operation} refused: {acknowledgement['err']}")
+    receipt = shared.wait_terminal(socket, acknowledgement["answer"], shell,
+                                   public_failure_path=output / f"failed-{operation}.json")
+    (output / f"completed-{operation}.json").write_text(json.dumps(receipt, indent=2))
+    return receipt
 
 
 def observe_grants(socket, room, output, phase):
@@ -214,6 +232,11 @@ def proof(binaries, output):
         execute(socket, room, record, "paste", shell, output)
         destination = receiving / "report.txt"
         shared.wait_for("actual pasted bytes", lambda: destination.is_file() and destination.read_bytes() == original, shell)
+        def pasted_entry():
+            keys = entry_keys(socket, room, record)
+            return next(iter(keys)) if len(keys) == 1 else None
+        entry = shared.wait_for("actual pasted entry resource", pasted_entry, shell)
+        (output / "pasted-entry-resource.json").write_text(json.dumps({"key": entry}, indent=2))
         capture(socket, output, "after-paste")
         destination.write_bytes(edited)
         key(socket, "z")
@@ -223,9 +246,26 @@ def proof(binaries, output):
         copies = [item for item in trash.iterdir() if item.is_file() and item.read_bytes() == edited]
         if len(copies) != 1:
             raise RuntimeError("edited native Copy must be recoverable in standard Trash")
+        # Observe the committed publication prefix before asserting its surface.
+        # The physical host operation precedes document reconciliation.
+        undo_history = execute(socket, room, record, "history", shell, output)
+        undo_output = undo_history.get("update", {}).get("output", {}).get("value", {})
+        if not undo_output.get("versions") or not undo_output.get("now"):
+            raise RuntimeError("post-Undo history did not observe the actual document")
+        (output / "completed-post-undo-history.json").write_text(json.dumps(undo_history, indent=2))
+        shared.wait_for("Undo withdraws the receiving entry resource", lambda:
+                        entry not in entry_keys(socket, room, record), shell)
         capture(socket, output, "after-undo")
         key(socket, "z", shift=True)
         shared.wait_for("native Redo restores later edited bytes", lambda: destination.is_file() and destination.read_bytes() == edited, shell)
+        # A successful read-only history receipt follows the same document
+        # publication prefix. Physical compensation alone cannot pass this.
+        history = execute(socket, room, record, "history", shell, output)
+        history_output = history.get("update", {}).get("output", {}).get("value", {})
+        if not history_output.get("versions") or not history_output.get("now"):
+            raise RuntimeError("post-Redo history did not observe the actual document")
+        shared.wait_for("Redo republishes the exact receiving entry resource", lambda:
+                        entry in entry_keys(socket, room, record), shell)
         capture(socket, output, "after-redo")
         if (source / "report.txt").read_bytes() != original or protected.read_bytes() != b"ungranted host control":
             raise RuntimeError("source or ungranted control changed")
@@ -233,12 +273,21 @@ def proof(binaries, output):
             "passed": True, "signed_files_entrypoint": True, "production_native_enrollment": True,
             "presented_primary_frame": True, "native_copy_paste_undo_redo": True,
             "later_edit_preserved_in_trash_and_redo": True, "source_and_control_intact": True,
+            "post_redo_history_receipt": True, "published_entry_tracks_undo_redo": True,
             "packaging_seconds": round(packaged_at - started, 3),
             "journey_seconds": round(time.monotonic() - packaged_at, 3),
             "operator_profile_modified": False, "display_launched": False,
         }, indent=2))
         print(f"PASS signed Files entrypoint clipboard journey; evidence {output}", flush=True)
     except Exception:
+        if "receiving" in locals():
+            pasted = receiving / "report.txt"
+            (output / "failed-filesystem.json").write_text(json.dumps({
+                "receiving_copy_present": pasted.is_file(),
+                "receiving_copy_matches_source": pasted.is_file() and pasted.read_bytes() == original,
+                "source_intact": (source / "report.txt").read_bytes() == original,
+                "protected_control_intact": protected.read_bytes() == b"ungranted host control",
+            }, indent=2))
         if len(processes) == 2 and processes[-1].poll() is None:
             try:
                 (output / "failed-foreign-frames.json").write_text(json.dumps(

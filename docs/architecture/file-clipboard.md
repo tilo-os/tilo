@@ -1,12 +1,11 @@
 # Local Files clipboard transfer boundary
 
 Status: PR [3009](https://code.tilo.so/tilo/tilo/pulls/3009) remains draft with
-`hold` while the candidate finishes required validation. Mounted desktop
-journeys and the strict sandboxed-child journey through the production SDK
-startup transport pass. The wrong-process descriptor binding is repaired in
-source under the existing launch authority. Actual signed Files presents in the
-real headless compositor, but its clipboard journey is blocked before Copy by
-loss of the existing session home grant during native authorship publication.
+`hold` pending required current-head validation. Mounted journeys, the strict
+sandboxed-child SDK route, and the signed Files entrypoint's actual
+Copy/Paste/keyboard Undo/Redo with a terminal History receipt pass. The final
+visible-resource assertions and polished offscreen screenshots also pass. Packaged
+Trash listing and Restore remain unqualified.
 
 ## Purpose and first slice
 
@@ -130,6 +129,13 @@ Normal Linux launches using this selector require the updated SDK service hub;
 older packaged SDK/runtime clients are not qualified by the legacy-helper tests.
 This is a startup protocol compatibility requirement for any eventual rollout.
 
+The independent runtime service connection uses its existing raw RPC protocol,
+which has no launcher QCL1 handshake. It clears an inherited executing-peer
+selector rather than advertising a challenge it cannot perform. Real SDK
+publication, sealed-write restart, joined-room key and child-process regressions
+exercise that connection; the native manifested launcher still performs the
+full executing-peer proof.
+
 Focused real-process tests cover the actual child rather than the socket creator,
 wrong launch start time/parent, an inherited foreign proof, wrong nonce/user,
 malformed rights, exited handles and a restarted process. A real executing-task
@@ -144,17 +150,47 @@ rejection. The parent explicitly authorized this bounded source correction.
 Keep the PR held until required current-head checks pass, then use the normal
 protected lander.
 
-## Remaining production-entry blocker
+## Native-entry qualification
 
 The `files_clipboard_native` example packages Files through the normal SDK,
 installs the signed app/runtime in an isolated profile, joins through the normal
 signed invitation, waits for the published native authorship surface and invokes
-Applications Open. It observes an actual presented Files primary frame and uses
-the exact published record and semantic folder identity. The original GoTo
-invocation then fails: the source is not a folder visible inside the sandbox.
-Copy/Paste/Undo/Redo assertions remain required and have not passed this entrypoint.
+Applications Open. It observes a presented Files primary frame and uses the
+exact published record and semantic folder identity.
 
-Read-only snapshots from the same run establish the cause: before Open there is
+The earlier GoTo failure exposed session-consent loss during authorship
+publication. After the bounded consent correction below, the real entrypoint
+can navigate, select and Copy. A second gap was that the normal own-process
+window still selected the legacy path clipboard. Its native service selection
+now uses the existing canonical collaboration descriptor and remains fixed for
+that window: losing the service cannot select a legacy fallback. Explicit
+hosted service refusal remains a refusal; document opening services are intact.
+
+The signed journey now passes actual pasted bytes, unchanged source bytes,
+physical Undo retaining a later destination edit in standard Trash, keyboard
+Redo restoring those edited bytes, and a subsequent terminal History receipt
+with actual document versions. Physical compensation alone cannot pass this
+proof. A stronger observer checks the receiving entry's appearance, withdrawal,
+and exact identity after restoration; it observes the document publication
+prefix before inspecting the reconciled surface. Packaged Trash listing and
+Restore remain unqualified; the earlier three-theme proofs cover mounted
+components.
+
+The publication failure was a readiness race: a known committed record can be
+refreshing when its original authorized Undo settlement enters the local queue.
+The manager now retains a Document for an already-required committed route.
+Hosted workers still require original invocation custody before admission;
+ordinary signed app windows retain their existing certified publication policy.
+It does not issue a redundant Join that can reset that read
+gate. The existing bounded worker still waits at most three seconds for the
+exact route, then validates the original custody and body before host commit.
+Unknown routes, missing required hosted custody and legacy signed operations
+retain their existing refusal. Queue or worker failure still blocks the terminal outcome.
+The production SDK regression holds the gate closed and proves there is no
+host commit, signed operation or completed barrier until readiness returns;
+caller expiry, foreign-body and persistence refusal cases retain their checks.
+
+Read-only snapshots from the initial failed run established the cause: before Open there is
 no Files filesystem grant; after Open acknowledgment the existing OS policy has
 created a `FsPath(home)` Write grant with `EndOfSession` expiry; by presentation
 that grant is gone, leaving the signed app authorship and person membership.
@@ -164,15 +200,28 @@ signed capabilities when authorship completes. The launcher and clipboard host
 correctly refuse access with that grant absent. No additional fixture grant or
 assertion bypass is used to hide this failure.
 
-This needs a distinct local-filesystem-consent custody correction: retain only
-consent issued on this device for this app and room, keep it separate from signed
-workspace permission, combine it at the existing launch/I/O boundary, and make
-revocation/session expiry remove it. Incoming signed `FsPath` rows must not create
-local host access; withdrawn local consent must never be reconstructed from a
-stale projection. Tests must cover native authorship/document publication,
-revocation, restart/session expiry, room switches and foreign path claims before
-rerunning this signed Files journey. It is beyond the bounded executing-process
-repair's explicit no-new-grants scope and remains a parent coordination decision.
+The authorized correction retains only the exact OS-issued Files session home
+capability already present in this workspace. An in-memory provenance ledger in
+`NativeStateRuntime` binds it to the existing workspace, room, selected local
+identity and certified device. Native projection verifies current selected
+identity and admitted membership before carrying the original row forward. It
+does not mint a replacement grant, widen its path or expiry, or adopt incoming
+signed rows as local consent. Revocation records a tombstone shared by stale tree
+clones. The ledger is not serialized, so reopening the session cannot reconstruct
+this host grant from durable app authorship. Clipboard capture and every retained
+filesystem boundary also check the current consent; original-caller identity is
+checked before initiating native clipboard effects.
+
+The real native membership-broker regression passes grant survival after Files
+authorship, another app's refusal, and continued refusal after revocation and a
+subsequent authorship publication. The session-reopen regression proves the ledger cannot reconstruct a grant;
+an unattested local identity refuses the helper without leaving a usable home
+grant. The native clipboard bridge rejects a different person's private home
+consent while retaining explicit shared-directory grants. These tests pass.
+
+Background Nearby discovery failure no longer interrupts ordinary file work
+with a toast. It withdraws stale discovered targets; explicitly opening its
+picker or sending still reports failure. Privacy policy and grants are unchanged.
 
 ## Verification and provenance
 

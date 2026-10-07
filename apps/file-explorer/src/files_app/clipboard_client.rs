@@ -66,6 +66,7 @@ pub(super) enum Completion {
 
 #[derive(Default)]
 pub(super) struct Client {
+    native_service: bool,
     next_request: u64,
     awaiting: Option<u64>,
     request: Option<CollabRequest>,
@@ -78,6 +79,13 @@ pub(super) struct Client {
 }
 
 impl Client {
+    pub(super) fn new() -> Self {
+        Self {
+            native_service: runtime_portal::service_fd("collab").is_some(),
+            ..Self::default()
+        }
+    }
+
     pub(super) fn busy(&self) -> bool {
         self.publication.is_some() || self.transfer.is_some() || self.undo.is_some()
     }
@@ -576,8 +584,7 @@ impl FileExplorerWidget {
         cut: bool,
         row: Option<&Path>,
     ) -> Result<super::Ran, String> {
-        if !matches!(&self.services, super::FileServices::Hosted(services) if services.local_clipboard)
-        {
+        if !self.hosted_clipboard() {
             return Err(t("files-clipboard-unavailable"));
         }
         self.refuse_while_answering()?;
@@ -607,8 +614,7 @@ impl FileExplorerWidget {
         &mut self,
         invocation: Option<InvocationId>,
     ) -> Result<super::Ran, String> {
-        if !matches!(&self.services, super::FileServices::Hosted(services) if services.local_clipboard)
-        {
+        if !self.hosted_clipboard() {
             return Err(t("files-clipboard-unavailable"));
         }
         self.refuse_while_answering()?;
@@ -631,7 +637,12 @@ impl FileExplorerWidget {
     }
 
     pub(crate) fn hosted_clipboard(&self) -> bool {
-        matches!(&self.services, super::FileServices::Hosted(services) if services.local_clipboard)
+        match &self.services {
+            super::FileServices::Hosted(services) => services.local_clipboard,
+            // Select once: a dead service must fail through the native lane,
+            // never fall back to queuing legacy pathname operations.
+            super::FileServices::Legacy => self.local_clipboard.native_service,
+        }
     }
 
     pub(crate) fn clipboard_device(&self) -> Option<String> {
@@ -649,7 +660,7 @@ impl FileExplorerWidget {
     }
 
     pub(super) fn can_paste_clipboard(&self) -> bool {
-        if matches!(self.services, super::FileServices::Hosted(_)) {
+        if matches!(self.services, super::FileServices::Hosted(_)) || self.hosted_clipboard() {
             self.hosted_clipboard() && self.shown_folder.is_some()
         } else {
             !self.clipboard.is_empty()
@@ -759,7 +770,13 @@ impl FileExplorerWidget {
                     .objects
                     .get(&path)
                     .and_then(|(_, object)| object.clone())
-                    .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                    .ok_or_else(|| {
+                        t(if self.shown_selection.changed.contains(&path) {
+                            "files-clipboard-source-changed"
+                        } else {
+                            "files-clipboard-source-unavailable"
+                        })
+                    })?;
                 Ok((selected(&path, &retained)?, retained))
             })
             .collect()
@@ -815,6 +832,51 @@ mod tests {
                 request_id: id,
                 result,
             })
+    }
+
+    #[test]
+    fn ordinary_native_window_uses_service_clipboard_and_retains_original_caller() {
+        use std::os::fd::AsRawFd as _;
+        let home = tilo_test_env::TestHome::new().unwrap();
+        let (service, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_SVC_COLLAB_FD", service.as_raw_fd().to_string());
+        env.set(
+            "TILO_RUNTIME_CONNECTION_OWNER_PID",
+            std::process::id().to_string(),
+        );
+        env.set("TILO_USER_HOME", home.home());
+        let mut files = FileExplorerWidget::new();
+        assert!(matches!(files.services, super::super::FileServices::Legacy));
+        assert!(files.hosted_clipboard());
+        let invocation = InvocationId(uuid::Uuid::new_v4());
+        assert!(matches!(
+            files
+                .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
+                .unwrap(),
+            Ran::Pending
+        ));
+        let (id, command) = request(&mut files, invocation);
+        assert!(matches!(command, Command::Snapshot));
+        assert!(matches!(
+            reply(&mut files, id, Ok(Reply::Snapshot { offer: None })),
+            Some(Ok(Completion::Snapshot(None)))
+        ));
+        drop(service);
+        assert!(runtime_portal::service_fd("collab").is_none());
+        assert!(
+            files.hosted_clipboard(),
+            "service loss must never select pathname fallback"
+        );
+        assert!(matches!(
+            files
+                .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
+                .unwrap(),
+            Ran::Pending
+        ));
+        let (_, command) = request(&mut files, invocation);
+        assert!(matches!(command, Command::Snapshot));
+        assert!(files.clipboard.is_empty());
     }
 
     #[test]

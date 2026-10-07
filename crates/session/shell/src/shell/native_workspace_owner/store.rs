@@ -58,6 +58,7 @@ impl std::fmt::Debug for NativeStateRuntime {
 }
 pub(super) struct Runtime {
     pub writer: Mutex<Writer>,
+    pub(super) local_filesystem_consents: Mutex<super::local_filesystem_consents::Consents>,
     pub healthy: AtomicBool,
     uncertain_rooms: RwLock<std::collections::BTreeSet<crate::shell::state::RoomId>>,
     /// Hands out [`StateSequence`]s; see [`NativeStateRuntime::next_sequence`].
@@ -70,6 +71,7 @@ impl Default for Runtime {
     fn default() -> Self {
         Self {
             writer: Mutex::new(Writer::default()),
+            local_filesystem_consents: Mutex::default(),
             healthy: AtomicBool::new(true),
             uncertain_rooms: RwLock::new(std::collections::BTreeSet::default()),
             sequence: AtomicU64::new(0),

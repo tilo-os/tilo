@@ -2,12 +2,13 @@
 
 use super::{FileExplorerWidget, MAX_MOVE_ENTRIES};
 use host_fs::{ObservedObject, RetainedObject};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct ShownSelection {
+    pub(super) changed: HashSet<PathBuf>,
     pub(super) objects: HashMap<PathBuf, (ObservedObject, Option<Arc<RetainedObject>>)>,
 }
 
@@ -35,12 +36,15 @@ impl FileExplorerWidget {
         let selected = self.selection.selected();
         if selected.len() > MAX_MOVE_ENTRIES {
             self.shown_selection.objects.clear();
+            self.shown_selection.changed.clear();
             return;
         }
         // Displayed order is the retained listing order. Borrow it directly:
         // selecting one row in a large folder must not clone the whole listing.
         let entries = &self.entries;
         let previous = &mut self.shown_selection.objects;
+        let changed = std::mem::take(&mut self.shown_selection.changed);
+        let mut next_changed = HashSet::new();
         let mut next = HashMap::with_capacity(selected.len());
         for index in selected {
             let Some(entry) = entries.get(index) else {
@@ -54,11 +58,17 @@ impl FileExplorerWidget {
                     if before == observed
                         || retained.as_ref().is_some_and(|file| file.retains(observed)) =>
                 {
+                    if changed.contains(&entry.path) {
+                        next_changed.insert(entry.path.clone());
+                    }
                     retained
                 }
                 // A background listing refresh may preserve selection by
                 // pathname. That is not consent to adopt a different object.
-                Some(_) => None,
+                Some(_) => {
+                    next_changed.insert(entry.path.clone());
+                    None
+                }
                 _ => RetainedObject::retain_shown(&entry.path, observed)
                     .ok()
                     .map(Arc::new),
@@ -66,5 +76,6 @@ impl FileExplorerWidget {
             next.insert(entry.path.clone(), (observed, retained));
         }
         *previous = next;
+        self.shown_selection.changed = next_changed;
     }
 }
