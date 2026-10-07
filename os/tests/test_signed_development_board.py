@@ -100,9 +100,18 @@ class SignedBoard(unittest.TestCase):
         missing = []
         for copy_input in context_copies(logical_lines(recipe.read_text())):
             for source in copy_input.sources:
+                self.assertTrue((ROOT/source).exists(), 'Board COPY source is missing: '+source)
                 if not any(source == p or source.startswith(p+'/') for p in allowed):
                     missing.append(source)
         self.assertEqual(missing, [], 'Board COPY sources excluded by its sparse Docker context')
+
+    def test_board_input_regression_gates_native_build(self):
+        preflight = WORKFLOW.split('  signing-preflight:\n', 1)[1].split('\n  ensure-rpms:', 1)[0]
+        step = preflight.split('      - name: Validate signed board inputs before native build\n', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn("if: needs.plan.outputs.signed-development-board == 'true'", step)
+        self.assertIn('run: python3 os/tests/test_signed_development_board.py', step)
+        native = WORKFLOW.split('  build-and-push:\n', 1)[1].split('    steps:', 1)[0]
+        self.assertIn('signing-preflight', native)
 
     def make_root(self, root):
         for directory in ['usr/lib/tilo', 'usr/share/tilo', 'etc/containers']:
