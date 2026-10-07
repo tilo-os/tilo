@@ -69,6 +69,7 @@ export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>p
       if(!users||closed)return;
       try{
         if(!valid()||state.phase!=='presented')throw Error('source unavailable before presentation');
+        if(state.captureProtected!==false)throw Error('source capture protection is active or unknown');
         if(!app||app==='desktop'||typeof state.record!=='string'||!state.record)throw Error('capture requires an exact single-app record');
         dimensions(canvas.width,canvas.height,MAX_SOURCE_PIXELS);
         const size=state.logicalSize;

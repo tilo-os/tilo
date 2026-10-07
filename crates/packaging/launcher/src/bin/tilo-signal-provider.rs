@@ -106,7 +106,11 @@ fn supervise(mut java: Java) -> io::Result<bool> {
     let mut forced = false;
     loop {
         if let Some(status) = java.0.try_wait()? {
-            return Ok(clean(status, stopping.is_some(), forced));
+            let success = clean(status, stopping.is_some(), forced);
+            if !success {
+                eprintln!("Signal Java process failed: {status}");
+            }
+            return Ok(success);
         }
         if stopping.is_none() && STOP.load(Ordering::Relaxed) {
             // This child remains owned and unreaped, so its PID cannot refer
@@ -129,10 +133,13 @@ fn supervise(mut java: Java) -> io::Result<bool> {
     }
 }
 fn main() -> std::process::ExitCode {
-    if run().unwrap_or(false) {
-        std::process::ExitCode::SUCCESS
-    } else {
-        std::process::ExitCode::FAILURE
+    match run() {
+        Ok(true) => std::process::ExitCode::SUCCESS,
+        Ok(false) => std::process::ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("Signal provider startup failed: {error}");
+            std::process::ExitCode::FAILURE
+        }
     }
 }
 #[cfg(test)]

@@ -187,9 +187,9 @@ impl Replica {
                 )
             }
             Seed::Existing { record, changes } => {
-                if definition.keeps_room_record() {
+                if definition.keeps_room_record() != record.is_package_primary() {
                     return Err(AppError::Merge(
-                        "the room's own record arrives through the room, not as a copy".into(),
+                        "record route does not match the app's room scope".into(),
                     ));
                 }
                 let mut doc = automerge::AutoCommit::new();
@@ -221,6 +221,17 @@ impl Replica {
     #[must_use]
     pub fn record(&self) -> &str {
         self.record.as_str()
+    }
+
+    /// Collaboration route of this record. A package-primary storage key is
+    /// internal custody; its existing room-level route has an empty record id.
+    #[must_use]
+    pub fn wire_record(&self) -> &str {
+        if self.record.is_package_primary() {
+            ""
+        } else {
+            self.record.as_str()
+        }
     }
 
     /// The record's id.
@@ -367,7 +378,7 @@ fn genesis(
         .map_err(|e| launch(&e))?
         .initialize_seeded(
             |doc| kind.initialize(doc).map_err(|error| error.to_string()),
-            |doc| ui::framework::seed_record(kind.kind(), doc, creator, DEVICE),
+            |doc| ui::framework::seed_record_in_room(kind.kind(), doc, creator, DEVICE, room),
         )
         .map_err(|e| launch(&e))?;
     records

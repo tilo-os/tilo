@@ -228,6 +228,8 @@ struct Mount {
     hidden: bool,
     generation: u64,
     frames: u64,
+    /// Protection sampled only after the corresponding GPU output presents.
+    presented_capture_protected: bool,
     presentation: std::cell::Cell<bool>,
     semantic_targets: Vec<SemanticPresentationTarget>,
     status: Function,
@@ -1157,6 +1159,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hidden: false,
         generation: 1,
         frames: 0,
+        presented_capture_protected: true,
         presentation: std::cell::Cell::new(false),
         semantic_targets: Vec::new(),
         status: status.clone(),
@@ -1632,6 +1635,7 @@ impl Mount {
         handle.queue.submit([encoder.finish()]);
         drop(shared_guard);
         output.present();
+        self.presented_capture_protected = self.frame.capture_protected();
         self.metric_end("render", stage);
         self.viewport.did_present();
         self.pending = false;
@@ -1696,6 +1700,7 @@ impl Mount {
             "id": id,
             "error": self.error,
             "frames": self.frames,
+            "captureProtected": self.presented_capture_protected,
             "presentation": self.presentation.get(),
             "componentInstance": self.frame.component_instance_id(),
             "semanticLoci": self.presentation.get().then(|| self.semantic_targets.iter().map(|target| {
