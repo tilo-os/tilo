@@ -30,6 +30,8 @@ EXPECTED_COPIES = (
     "COPY tools/policy/app_capability_usage.toml "
     "/build/tools/policy/app_capability_usage.toml",
     "COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py",
+    "COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs",
+    "COPY tools/test-assets.py /build/tools/test-assets.py",
 )
 
 

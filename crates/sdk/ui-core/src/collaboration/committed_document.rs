@@ -736,8 +736,11 @@ pub(super) async fn install(
                 inbound.state.document_reads.clear_stage(&key, &merged);
             }
             let refresh = inbound.state.document_reads.refresh_requested(&key);
-            if refresh && !inbound.state.document_reads.applying(&key, &ready) {
-                break;
+            if refresh {
+                if !inbound.state.document_reads.applying(&key, &ready) {
+                    break;
+                }
+                inbound.state.notify_events();
             }
             let result = tokio::time::timeout(
                 Duration::from_secs(2),
@@ -756,6 +759,7 @@ pub(super) async fn install(
                     if !inbound.state.document_reads.applying(&key, &ready) {
                         break;
                     }
+                    inbound.state.notify_events();
                     if let Ok((read, next)) = read_capture(&channel, reply).await {
                         current = Some(read);
                         revision = Some(next);
@@ -774,6 +778,7 @@ pub(super) async fn install(
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         inbound.state.document_reads.unavailable(&key, &ready);
+        inbound.state.notify_events();
         if inbound.state.document_reads.current(&key, &ready) {
             inbound.state.document_reads.discard_stage(&key);
         }
