@@ -238,6 +238,30 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertLess(bootstrap.index("native_float_return("),
                         bootstrap.index("physical_send_after_stop("))
 
+    def test_membership_revocation_uses_owner_actions_and_no_fifth_model_turn(self):
+        rows = [
+            {"application": "so.tilo.desktop", "room": "room-a", "record": "membership",
+             "resource": "desktop:agent:tide", "operation": "remove", "id": "remove"},
+            {"application": "so.tilo.desktop", "room": "room-b", "record": "membership",
+             "resource": "desktop:agent:tide", "operation": "remove", "id": "foreign"},
+        ]
+        with patch.object(PROOF, "actions", return_value=rows):
+            self.assertEqual(PROOF.offered_membership_action(
+                "socket", "room-a", "desktop:agent:tide", "remove"
+            )["id"], "remove")
+        source = inspect.getsource(PROOF.native_agent_membership_revocation)
+        for required in (
+                "offered_membership_action", "wait_terminal", "owned_agent_identities",
+                "agent_read_only_accessibility", "start_managed_agent",
+                "agent_conversation_accessibility", "private_editor_observation",
+                "provider.request_count() != 4"):
+            self.assertIn(required, source)
+        for forbidden in ("provider.release_exact(5)", "SetText", "AddSelection", "stage_scenario"):
+            self.assertNotIn(forbidden, source)
+        bootstrap = inspect.getsource(PROOF.bootstrap)
+        self.assertLess(bootstrap.index("physical_send_after_stop("),
+                        bootstrap.index("native_agent_membership_revocation("))
+
     def test_public_progress_requires_current_exact_original_and_canonical_reply(self):
         original = {"invocation": "00000000-0000-0000-0000-000000000031",
                     "request_row": "m_00000000000000000000000000000031"}

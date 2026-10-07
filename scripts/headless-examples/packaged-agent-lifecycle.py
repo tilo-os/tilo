@@ -146,6 +146,48 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
     return None
 
 
+def agent_read_only_accessibility(agent_name, *, detached=False):
+    """Observe one mounted revoked conversation without reading its private draft."""
+    address = atspi.atspi_address()
+    matches = {}
+    control_name = "Return conversation" if detached else "Float conversation"
+    forbidden = {"Send message", "Queue task", "Send direction", "Stop current task"}
+    for bus, proxy_pid in atspi.bus_pids(address).items():
+        pid = atspi.app_process(proxy_pid)
+        if process_program(pid) != "chat":
+            continue
+        client = atspi.AtspiClient(address, bus)
+        try:
+            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
+                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                headings = client.named(
+                    {path: name.casefold() for path, name in tree.items()},
+                    f"{agent_name.casefold()}, agent",
+                )
+                notices = client.named(
+                    tree,
+                    "This agent is no longer available here. Your draft is kept on this device.",
+                )
+                controls = client.named(tree, control_name)
+                mutable = [path for path, name in tree.items() if name in forbidden]
+                editable = [path for path in tree
+                            if "org.a11y.atspi.EditableText" in client.interfaces(path)]
+                if (len(headings) == 1 and len(notices) == 1 and len(controls) == 1
+                        and not mutable and not editable):
+                    key = (headings[0], notices[0], controls[0])
+                    matches.setdefault(key, {
+                        "bus": bus, "process": pid, "window": window,
+                        "heading": headings[0], "notice": notices[0],
+                        "control": controls[0], "agent": agent_name,
+                        "detached": detached, "mutable_controls": 0,
+                        "editable_composers": 0, "private_content_recorded": False,
+                    })
+        except atspi.GateError:
+            continue
+    return next(iter(matches.values())) if len(matches) == 1 else None
+
+
 def capture_owned_chat_accessibility_transport(shell, path):
     """Probe only this shell's signed Chat launch and filtered bus endpoints.
 
@@ -496,6 +538,14 @@ def private_editor_value_matches(access, expected):
         check=False,
     )
     return atspi.text_reply(reply) == expected
+
+
+def accessible_names(access):
+    """Read only the bounded names in one already-matched Chat window."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    return set(accessible_subtree(
+        client, access["window"], atspi.APP_TREE_NODE_LIMIT
+    ).values())
 
 
 def activate_agent_conversation_control(access, label):
@@ -1143,6 +1193,19 @@ def offered_agent_action(socket, room, record, agent, operation):
     return matches[0] if matches else None
 
 
+def offered_membership_action(socket, room, resource, operation):
+    """Select one owner-published membership action without constructing its id."""
+    matches = [row for row in actions(socket)
+               if row.get("application") == "so.tilo.desktop"
+               and row.get("room") == room
+               and row.get("record") == "membership"
+               and row.get("resource") == resource
+               and row.get("operation") == operation]
+    if len(matches) > 1:
+        raise RuntimeError("ambiguous native workspace membership action")
+    return matches[0] if matches else None
+
+
 def public_action_observation(row):
     """Retain routing metadata, never arguments or private editor content."""
     fields = ("provider", "id", "application", "room", "record", "resource",
@@ -1492,8 +1555,8 @@ def physical_send_release_revision(output, byte_offset):
     return {"revision": value} if value is not None else None
 
 
-def owned_agent_identity(shell_pid):
-    """Compare an owned actual process and kernel starttime only in memory."""
+def owned_agent_identities(shell_pid):
+    """Observe owned actual processes and kernel starttimes only in memory."""
     rows = {}
     for entry in pathlib.Path("/proc").iterdir():
         if not entry.name.isdigit():
@@ -1513,6 +1576,12 @@ def owned_agent_identity(shell_pid):
             ancestor = rows[ancestor][0]
         if ancestor == shell_pid:
             owned.append((pid, started))
+    return sorted(owned)
+
+
+def owned_agent_identity(shell_pid):
+    """Require one owned actual process and kernel starttime."""
+    owned = owned_agent_identities(shell_pid)
     if len(owned) != 1:
         raise RuntimeError("the proof cannot observe one owned managed Agent process")
     return owned[0]
@@ -1606,6 +1675,154 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
                 "old_task_response_still_held_until_reply": True, "provider_request_count": 4,
                 "private_content_recorded": False, "test_owned_draft_rendered": True}
     (output / "physical-send-after-stop.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    return evidence
+
+
+def native_agent_membership_revocation(
+        socket, room, record, provider, output, size, process, old_identity):
+    """Revoke and freshly re-admit Tide through the existing owner actions."""
+    if provider.request_count() != 4 or owned_agent_identity(process.pid) != old_identity:
+        raise RuntimeError("membership revocation requires the completed four-turn lifecycle")
+    draft = "Keep this private draft across revocation"
+    access = wait_for(
+        "attached Tide editor before membership revocation",
+        lambda: agent_conversation_accessibility("Tide"), process,
+    )
+    primary = wait_for("Chat frame before membership revocation", lambda: presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+    physically_click_editor(socket, access, presented_content_geometry(primary))
+    require_chat_keyboard_focus_after_click(socket, output)
+    require_ok(call(socket, {"op": "type", "text": draft}))
+    wait_for("private revocation draft", lambda: private_editor_value_matches(access, draft), process)
+    set_physical_modifiers(socket, shift=True)
+    try:
+        for _ in range(10):
+            require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+    finally:
+        set_physical_modifiers(socket)
+    before = private_editor_observation(access, draft)
+    if before["selection"] != [len(draft) - 10, len(draft)]:
+        raise RuntimeError("physical revocation selection did not reach the private editor")
+
+    # The existing accessible Float action is the same retained control as the
+    # pointer gesture already proven earlier in this run.
+    activate_agent_conversation_control(access, "Float")
+    frame = wait_for("detached Tide pixels before revocation", lambda: presented_floating_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+    detached_access = wait_for(
+        "detached Tide editor before membership revocation",
+        lambda: agent_conversation_accessibility("Tide", detached=True), process,
+    )
+    detached_before = private_editor_observation(detached_access, draft)
+    if detached_before != before:
+        raise RuntimeError("detaching before revocation changed private editor state")
+
+    remove = wait_for("owner-published Tide removal", lambda: offered_membership_action(
+        socket, room, "desktop:agent:tide", "remove"), process)
+    wait_terminal(
+        socket, invoke(socket, remove), process,
+        public_failure_path=output / "failed-agent-tide-removal-terminal.json",
+    )
+
+    def membership_withdrawn():
+        if offered_membership_action(socket, room, "desktop:agent:tide", "remove") is not None:
+            return None
+        if offered_agent_action(socket, room, record, "tide", "open-agent-conversation") is not None:
+            return None
+        return True
+
+    wait_for("Tide membership and Chat route withdrawal", membership_withdrawn, process)
+    wait_for("old managed Tide process retirement", lambda: (
+        True if old_identity not in owned_agent_identities(process.pid) else None
+    ), process)
+    revoked = wait_for(
+        "detached Tide read-only revocation presentation",
+        lambda: agent_read_only_accessibility("Tide", detached=True), process,
+    )
+    if provider.request_count() != 4:
+        raise RuntimeError("membership revocation initiated an unauthorized model turn")
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"agent-membership-revoked-{size}.png"
+    )}))
+
+    add = wait_for("owner-published Tide re-admission", lambda: offered_membership_action(
+        socket, room, "desktop:workspace", "add-agent"), process)
+    wait_terminal(
+        socket, invoke(socket, add, {"agent": "tide", "preset": "operator"}), process,
+        public_failure_path=output / "failed-agent-tide-readmission-terminal.json",
+    )
+    wait_for("fresh Tide membership receipt", lambda: offered_membership_action(
+        socket, room, "desktop:agent:tide", "remove"), process)
+    wait_for("fresh Tide Chat route", lambda: offered_agent_action(
+        socket, room, record, "tide", "open-agent-conversation"), process)
+    start_managed_agent(socket, room, "tide", process)
+
+    def replacement_identity():
+        identities = owned_agent_identities(process.pid)
+        if len(identities) > 1:
+            raise RuntimeError("re-admission launched more than one managed Agent")
+        if len(identities) != 1:
+            return None
+        if identities[0] == old_identity:
+            raise RuntimeError("re-admission reused the retired managed process")
+        return identities[0]
+
+    replacement_identity = wait_for(
+        "fresh managed Tide process after re-admission", replacement_identity, process
+    )
+    if provider.request_count() != 4:
+        raise RuntimeError("fresh idle Agent launch initiated an unauthorized model turn")
+    restored_access = wait_for(
+        "restored detached Tide editor",
+        lambda: agent_conversation_accessibility("Tide", detached=True), process,
+    )
+    restored = private_editor_observation(restored_access, draft)
+    for field in ("draft_matches", "caret", "selection"):
+        if restored[field] != before[field]:
+            raise RuntimeError("re-admission did not restore the exact private editor state")
+    restored_names = accessible_names(restored_access)
+    if not {"Send message", "Queue task"}.issubset(restored_names):
+        raise RuntimeError("re-admission did not restore mounted Message and Queue controls")
+    activate_agent_conversation_control(restored_access, "Return")
+    wait_for("revocation proof Float withdrawal", lambda: not floating_surface_presenting(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]
+    ), process)
+    attached_access = wait_for(
+        "returned Tide editor after re-admission",
+        lambda: agent_conversation_accessibility("Tide"), process,
+    )
+    attached = private_editor_observation(attached_access, draft)
+    for field in ("draft_matches", "caret", "selection"):
+        if attached[field] != before[field]:
+            raise RuntimeError("Return after re-admission changed private editor state")
+    if offered_agent_action(socket, room, record, "tide", "message") is None \
+            or offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
+        raise RuntimeError("re-admission did not restore fresh Message and Queue offers")
+    if owned_agent_identity(process.pid) != replacement_identity or provider.request_count() != 4:
+        raise RuntimeError("restored editor changed process custody or initiated model work")
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"agent-membership-restored-{size}.png"
+    )}))
+    evidence = {
+        "owner_membership_revoked": True,
+        "old_managed_process_retired": True,
+        "read_only_notice_presented": True,
+        "mutable_controls_removed": revoked["mutable_controls"] == 0,
+        "editable_composer_removed": revoked["editable_composers"] == 0,
+        "owner_membership_readmitted": True,
+        "replacement_managed_process": True,
+        "message_and_queue_controls_restored": True,
+        "private_draft_restored": attached["draft_matches"],
+        "caret_restored": attached["caret"] == before["caret"],
+        "selection_restored": attached["selection"] == before["selection"],
+        "returned_to_primary": True,
+        "provider_request_count": provider.request_count(),
+        "private_content_recorded": False,
+        "test_owned_draft_rendered": True,
+    }
+    (output / "agent-membership-revocation.json").write_text(
+        json.dumps(evidence, indent=2) + "\n"
+    )
     return evidence
 
 
@@ -2227,22 +2444,12 @@ def admit_native_agents(socket, room, record, process, output):
     The preset is membership, not action authority. No app record, person row,
     task, conversation or provider output is fabricated by this fixture.
     """
-    def membership_action(resource, operation):
-        matches = [row for row in actions(socket)
-                   if row.get("application") == "so.tilo.desktop"
-                   and row.get("room") == room
-                   and row.get("record") == "membership"
-                   and row.get("resource") == resource
-                   and row.get("operation") == operation]
-        if len(matches) > 1:
-            raise RuntimeError("ambiguous native workspace membership action")
-        return matches[0] if matches else None
-
     receipts = []
     for agent in ["tide", "reed"]:
         if offered_agent_action(socket, room, record, agent, "open-agent-conversation"):
             raise RuntimeError("scratch Chat improperly started with an admitted fixture agent")
-        add = wait_for("normal native Add agent action", lambda: membership_action(
+        add = wait_for("normal native Add agent action", lambda: offered_membership_action(
+            socket, room,
             "desktop:workspace", "add-agent"), process)
         receipt = wait_terminal(socket, invoke(socket, add, {
             "agent": agent, "preset": "operator",
@@ -2254,7 +2461,8 @@ def admit_native_agents(socket, room, record, process, output):
         }, indent=2) + "\n")
         # A terminal receipt alone does not prove that the authoritative roster
         # and its consumers actually changed. Observe both published doors.
-        remove = wait_for("governed agent membership readback", lambda: membership_action(
+        remove = wait_for("governed agent membership readback", lambda: offered_membership_action(
+            socket, room,
             f"desktop:agent:{agent}", "remove"), process)
         opened = wait_for("Chat's authenticated agent roster readback", lambda: offered_agent_action(
             socket, room, record, agent, "open-agent-conversation"), process)
@@ -2263,7 +2471,7 @@ def admit_native_agents(socket, room, record, process, output):
                          "chat_semantic_identity": opened["semantic_identity"]})
     # Ensure admitting the second agent did not replace the first.
     for agent in ["tide", "reed"]:
-        if not membership_action(f"desktop:agent:{agent}", "remove") \
+        if not offered_membership_action(socket, room, f"desktop:agent:{agent}", "remove") \
                 or not offered_agent_action(socket, room, record, agent, "open-agent-conversation"):
             raise RuntimeError("native two-agent roster did not retain both members")
     return receipts
@@ -2330,6 +2538,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
     lifecycle_evidence = None
     float_return_proven = False
     physical_send_evidence = None
+    revocation_evidence = None
     try:
         # Keep Unix socket paths short enough for the production private IME
         # displays. This is still an exclusively owned mode-0700 directory,
@@ -2654,6 +2863,10 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                     socket, enrollment["room"], category[0]["record"], provider, output,
                     size, shell, lifecycle_evidence["_owned_process_identity"],
                 )
+                revocation_evidence = native_agent_membership_revocation(
+                    socket, enrollment["room"], category[0]["record"], provider, output,
+                    size, shell, lifecycle_evidence["_owned_process_identity"],
+                )
             time.sleep(0.5)
         else:
             invite = require_action(socket, "agent.invite", "agent")
@@ -2674,6 +2887,15 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             and physical_send_evidence.get("same_managed_process") is True
             and physical_send_evidence.get("reply_actor") == "agent:tide"
             and physical_send_evidence.get("provider_request_count") == 4
+            and revocation_evidence is not None
+            and revocation_evidence.get("owner_membership_revoked") is True
+            and revocation_evidence.get("old_managed_process_retired") is True
+            and revocation_evidence.get("replacement_managed_process") is True
+            and revocation_evidence.get("message_and_queue_controls_restored") is True
+            and revocation_evidence.get("private_draft_restored") is True
+            and revocation_evidence.get("caret_restored") is True
+            and revocation_evidence.get("selection_restored") is True
+            and revocation_evidence.get("provider_request_count") == 4
         )
         (output / "bootstrap.json").write_text(json.dumps({
             "stage": "native-bootstrap-only" if native else "legacy-bootstrap-only",
