@@ -248,10 +248,15 @@ impl ChatApp {
 
     fn answer_agent_presentation_effect(&mut self, effect: &ChatEffect) -> Option<EffectAnswer> {
         match effect {
-            ChatEffect::FloatAgentConversation { workspace, agent } => Some(
-                self.float_agent_conversation(workspace, agent)
-                    .map(|()| Effected::done()),
-            ),
+            ChatEffect::FloatAgentConversation { workspace, agent } => {
+                if self.agent_presentation_is_detached(workspace, agent) != Some(false) {
+                    return Some(Err("agent conversation is not currently attached".into()));
+                }
+                Some(
+                    self.float_agent_conversation(workspace, agent)
+                        .map(|()| Effected::done()),
+                )
+            }
             ChatEffect::ReturnAgentConversation { workspace, agent } => Some(
                 self.request_agent_conversation_return(workspace, agent)
                     .map(|()| Effected::done()),

@@ -773,6 +773,48 @@ mod tests {
         });
     }
 
+    fn assert_stale_float_preserves_detached_surface(app: &mut TestApp<ChatShell>) {
+        let stale_float = app
+            .with_widget::<ChatApp, _>(|chat| {
+                let before = (
+                    chat.active_channel.clone(),
+                    chat.direct_agent.clone(),
+                    chat.agent_surface_requests.len(),
+                );
+                let refused = chat.answer_effect(ChatEffect::FloatAgentConversation {
+                    workspace: chat.context_ws.clone(),
+                    agent: "tide".into(),
+                });
+                let after = (
+                    chat.active_channel.clone(),
+                    chat.direct_agent.clone(),
+                    chat.agent_surface_requests.len(),
+                );
+                let retained = chat.agent_surfaces.values().next().map(|surface| {
+                    (
+                        surface.placement.is_desktop_adopted(),
+                        surface.placement.is_return_pending(),
+                        surface.view.direct_agent.clone(),
+                    )
+                });
+                (refused, before, after, retained)
+            })
+            .unwrap();
+        assert!(
+            stale_float.0.is_err(),
+            "a stale Float cannot act on the detached conversation"
+        );
+        assert_eq!(
+            stale_float.1, stale_float.2,
+            "refusal does not reselect a route or enqueue another transfer"
+        );
+        assert_eq!(
+            stale_float.3,
+            Some((true, false, Some("tide".into()))),
+            "the adopted surface and its exact editor view remain untouched"
+        );
+    }
+
     #[test]
     fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {
         let mut app = TestApp::<ChatShell>::new().unwrap();
@@ -1288,6 +1330,7 @@ mod tests {
         let offered = agent_presentation_actions(&mut app);
         assert_eq!(offered.len(), 1);
         assert_eq!(offered[0].address.action, "return-agent-conversation");
+        assert_stale_float_preserves_detached_surface(&mut app);
         app.call_on_for(
             ui::tilo_actions::ActionInvoker::actor("test-author"),
             "chat.person:tide",
