@@ -1274,18 +1274,6 @@ impl NotesApp {
         {
             return;
         }
-        self.search_blocks = self
-            .workspace
-            .pages()
-            .iter()
-            .map(|page| {
-                let blocks = NotesDoc::page_block_snapshots(doc, page.id)
-                    .into_iter()
-                    .map(|(id, text)| crate::actions::NoteBlockResource { id, text })
-                    .collect();
-                (page.id, blocks)
-            })
-            .collect();
         let known_pages = self
             .workspace
             .pages()
@@ -1293,9 +1281,16 @@ impl NotesApp {
             .map(|page| page.id)
             .collect::<std::collections::HashSet<_>>();
         let mut backlinks = HashMap::<PageId, HashMap<PageId, u32>>::new();
+        let mut search_blocks = HashMap::new();
         for source in self.workspace.pages().iter().map(|page| page.id) {
-            for (_, marks) in NotesDoc::page_block_marks(doc, source) {
-                for mark in marks {
+            let stored = NotesDoc::page_stored_blocks(doc, source);
+            let mut blocks = Vec::with_capacity(stored.len());
+            for block in stored {
+                blocks.push(crate::actions::NoteBlockResource {
+                    id: block.id,
+                    text: block.text,
+                });
+                for mark in block.marks {
                     let actions::InlineMark::Link { page } = mark.mark else {
                         continue;
                     };
@@ -1312,7 +1307,9 @@ impl NotesApp {
                     }
                 }
             }
+            search_blocks.insert(source, blocks);
         }
+        self.search_blocks = search_blocks;
         self.backlink_index = backlinks
             .into_iter()
             .map(|(target, sources)| {
@@ -3798,6 +3795,71 @@ mod tests {
         app.frame(&mut state.doc, &state.root);
         assert_eq!(app.selected_for_test(), Some(welcome));
         (app, state, tmp, welcome)
+    }
+
+    fn assert_search_snapshot_matches_canonical(app: &NotesApp, doc: &AutoCommit) {
+        assert_eq!(app.search_blocks.len(), app.workspace.pages().len());
+        for page in app.workspace.pages() {
+            let actual = app.search_blocks[&page.id]
+                .iter()
+                .map(|block| (block.id.clone(), block.text.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, NotesDoc::page_block_snapshots(doc, page.id));
+        }
+    }
+
+    #[test]
+    fn search_snapshot_tracks_remote_rich_edits_and_removed_link_targets() {
+        use tilo_automerge::ApplyIncoming as _;
+        let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
+        let target = PageId::new_v4();
+        let absent = PageId::new_v4();
+        let mut peer = state.doc.fork();
+        let create = actions::new_page_action(target, None, "z".into(), "Destination");
+        tilo_actions::apply_local_by(&mut peer, &create, actions::encode(&create), Some(b"peer"))
+            .unwrap();
+        let source_blocks = NotesDoc::page_block_snapshots(&peer, source);
+        for (block, range, link) in [
+            (&source_blocks[0].0, 0..4, target),
+            (&source_blocks[0].0, 5..7, target),
+            (&source_blocks[0].0, 8..10, source),
+            (&source_blocks[1].0, 0..4, absent),
+        ] {
+            let action =
+                actions::set_mark_action(source, block, range, &ui::widget::Mark::Link(link));
+            tilo_actions::apply_local_by(
+                &mut peer,
+                &action,
+                actions::encode(&action),
+                Some(b"peer"),
+            )
+            .unwrap();
+        }
+        state.doc.merge_incoming(&mut peer).unwrap();
+        let rich_before = NotesDoc::page_stored_blocks(&state.doc, source);
+        app.frame(&mut state.doc, &state.root);
+        assert_search_snapshot_matches_canonical(&app, &state.doc);
+        assert_eq!(app.backlink_index.get(&target), Some(&vec![(source, 2)]));
+        assert!(!app.backlink_index.contains_key(&source));
+        assert!(!app.backlink_index.contains_key(&absent));
+        assert_eq!(
+            NotesDoc::page_stored_blocks(&state.doc, source),
+            rich_before
+        );
+
+        let mut peer = state.doc.fork();
+        let delete = actions::delete_page_action(target);
+        tilo_actions::apply_local_by(&mut peer, &delete, actions::encode(&delete), Some(b"peer"))
+            .unwrap();
+        state.doc.merge_incoming(&mut peer).unwrap();
+        app.frame(&mut state.doc, &state.root);
+        assert_search_snapshot_matches_canonical(&app, &state.doc);
+        assert!(!app.search_blocks.contains_key(&target));
+        assert!(!app.backlink_index.contains_key(&target));
+        assert_eq!(
+            NotesDoc::page_stored_blocks(&state.doc, source),
+            rich_before
+        );
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
