@@ -507,6 +507,25 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertNotIn(private_content, retained)
             self.assertFalse(profile.exists())
 
+    def test_normal_descriptor_transport_is_not_a_managed_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            log = profile / "launcher-debug-output.log"
+            log.write_text(
+                'INFO transport="TILO_SVC_COLLAB_FD" joined the room; waiting for the document\n'
+                'INFO managed Agent task catalogue unavailable\n'
+                'INFO managed Agent model turn entered\n'
+            )
+            diagnostic = PROOF.managed_child_diagnostic(profile)
+            self.assertIsNone(diagnostic["first_error_kind"])
+            self.assertTrue(diagnostic["catalogue_unavailable"])
+            self.assertTrue(diagnostic["model_turn_entered"])
+            log.write_text('ERROR TILO_SVC_COLLAB_FD descriptor invalid\n')
+            self.assertEqual(
+                PROOF.managed_child_diagnostic(profile)["first_error_kind"],
+                "managed_collaboration_descriptor_failed",
+            )
+
     def test_exact_new_pointer_release_retains_revision_after_later_ack_frame(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory)

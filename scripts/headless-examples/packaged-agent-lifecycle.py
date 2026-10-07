@@ -3185,7 +3185,8 @@ def managed_child_diagnostic(profile):
         )),
         ("managed_collaboration_rpc_refused", lambda line: "capnp error" in line),
         ("managed_collaboration_descriptor_failed", lambda line: (
-            "tilo_svc_collab_fd" in line or "managed collaboration descriptor" in line
+            ("tilo_svc_collab_fd" in line or "managed collaboration descriptor" in line)
+            and any(word in line for word in ("failed", "error", "refused", "invalid", "missing"))
         )),
         ("managed_collaboration_client_failed", lambda line: "start typed collaboration client" in line),
         ("managed_cli_context_refused", lambda line: "managed agent requires task mode" in line),
@@ -3202,6 +3203,7 @@ def managed_child_diagnostic(profile):
         ("model_gateway_unavailable", lambda line: (
             "model gateway" in line and ("unavailable" in line or "error" in line)
         )),
+        ("model_request_refused", lambda line: "model gateway refused request" in line),
     ]
     for kind, matches in classifiers:
         if any(matches(line) for line in folded_lines):
