@@ -892,6 +892,7 @@ impl ChatApp {
         self.menu = None;
         match hit {
             Hit::Inbox => {
+                self.detached_agent_placeholder = None;
                 self.inbox_open = true;
                 self.thread_open = None;
                 self.focus = Focus::Main;
@@ -902,6 +903,7 @@ impl ChatApp {
             }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::Agent(agent) if self.room_agents.iter().any(|known| known == &agent) => {
+                self.detached_agent_placeholder = None;
                 self.direct_agent = Some(agent.clone());
                 self.active_channel =
                     crate::doc::ChatDoc::agent_conversation_channel_id(&self.active_ws, &agent);
@@ -917,6 +919,10 @@ impl ChatApp {
             Hit::AgentWindow | Hit::AgentDragHandle => {
                 if self.conversation_surface {
                     self.conversation_return_requested = true;
+                } else if self.detached_agent_placeholder_status().is_some() {
+                    if let Some(channel) = self.detached_agent_placeholder.clone() {
+                        let _ = self.request_retained_agent_surface_return(&channel);
+                    }
                 } else if let Some(agent) = self.direct_agent.clone() {
                     let workspace = self.context_ws.clone();
                     let _ = self.float_agent_conversation(&workspace, &agent);
@@ -1071,6 +1077,7 @@ impl ChatApp {
     }
 
     fn on_hit_workspace(&mut self, id: Id) {
+        self.detached_agent_placeholder = None;
         self.direct_agent = None;
         if self.active_ws != id {
             self.active_ws = id;
@@ -1082,6 +1089,7 @@ impl ChatApp {
     }
 
     fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
+        self.detached_agent_placeholder = None;
         self.direct_agent = None;
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {
@@ -4005,6 +4013,10 @@ mod tests {
             app.direct_agent.is_none(),
             "the parent leaves the moved route"
         );
+        assert!(
+            app.detached_agent_placeholder.is_none(),
+            "a real text channel remains the primary fallback"
+        );
 
         let surface = app.agent_surfaces.get_mut(&channel).unwrap();
         render_frame(&mut surface.view, 520.0, 640.0);
@@ -4074,6 +4086,165 @@ mod tests {
         assert_eq!(app.composer_main.value(), "Private direction");
         assert_eq!(app.composer_main.selection(), (2, 9));
         assert!(ChatDoc::draft_text(&doc, &channel).is_empty());
+    }
+
+    fn assert_agent_placeholder_accessibility(
+        app: &ChatApp,
+        title: &str,
+        return_expected: bool,
+    ) -> Option<String> {
+        use ui::Widget;
+
+        fn nodes<'a>(node: &'a ui::a11y::AccessNode, into: &mut Vec<&'a ui::a11y::AccessNode>) {
+            into.push(node);
+            for child in &node.children {
+                nodes(child, into);
+            }
+        }
+
+        let accessible = Widget::accessibility(app).expect("Chat accessibility tree");
+        let mut accessible_nodes = Vec::new();
+        nodes(&accessible, &mut accessible_nodes);
+        assert!(accessible_nodes.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText && node.name.as_deref() == Some(title)
+        }));
+        assert!(!accessible_nodes.iter().any(|node| {
+            node.role == ui::a11y::Role::MultilineTextInput
+                && node.name.as_deref().is_some_and(|name| {
+                    matches!(
+                        name,
+                        "Message composer"
+                            | "Task instruction composer"
+                            | "Task direction composer"
+                    )
+                })
+        }));
+        let return_node = accessible_nodes
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Return conversation"));
+        assert_eq!(return_node.is_some(), return_expected);
+        return_node.and_then(|node| node.action_target.clone())
+    }
+
+    fn adopt_agent_surface(app: &mut ChatApp, id: &str, rect: vello::kurbo::Rect) {
+        for message in [
+            ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: id.into(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+                content_rect: ui::floating_surface::protocol_rect_array(rect),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+            ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: id.into(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+            },
+        ] {
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(app, &message);
+        }
+    }
+
+    #[test]
+    fn detached_agent_without_a_text_fallback_keeps_one_truthful_return_placeholder() {
+        use ui::Widget;
+
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        let text_channels: Vec<_> = app
+            .channels
+            .iter()
+            .filter(|channel| channel.kind == ChannelKind::Text)
+            .map(|channel| channel.id.clone())
+            .collect();
+        for channel in text_channels {
+            ChatDoc::delete_channel(&mut doc, &channel);
+        }
+        app.reload(&doc);
+        render_frame(&mut app, 800.0, 600.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Private draft stays singular");
+        app.composer_main.select(8, 13);
+        app.float_agent_conversation("ws_home", "scribe")
+            .expect("the exact retained conversation floats");
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes one request");
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        assert_eq!(app.detached_agent_placeholder.as_deref(), Some(&*channel));
+        assert!(app.direct_agent.is_none(), "the editor source was cleared");
+        assert_eq!(
+            app.detached_agent_placeholder_status(),
+            Some(("Scribe".into(), false)),
+            "Prepare is a moving handoff, not proof of native presentation"
+        );
+
+        render_frame(&mut app, 800.0, 600.0);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::FocusMain | Hit::Send | Hit::AgentIntent(_)
+            )),
+            0,
+            "the primary placeholder owns no duplicate editor or Agent actions"
+        );
+        assert_eq!(count_hits(&app, |hit| matches!(hit, Hit::AgentWindow)), 0);
+        assert_agent_placeholder_accessibility(&app, "Moving Scribe’s conversation", false);
+
+        let rect = request.initial_rect.expect("exact source rect");
+        adopt_agent_surface(&mut app, &request.id, rect);
+        assert_eq!(
+            app.detached_agent_placeholder_status(),
+            Some(("Scribe".into(), true))
+        );
+        render_frame(&mut app, 800.0, 600.0);
+        let target = assert_agent_placeholder_accessibility(
+            &app,
+            "Scribe’s conversation is in another window",
+            true,
+        )
+        .expect("the adopted placeholder exposes one Return action");
+
+        app.room_agents.clear();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(app.agent_surfaces[&channel].placement.is_return_pending());
+        assert_eq!(
+            app.detached_agent_placeholder_status(),
+            Some(("Scribe".into(), false)),
+            "Return is another moving handoff"
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request.id },
+        );
+        assert!(app.detached_agent_placeholder.is_none());
+        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
+        assert_eq!(app.composer_main.value(), "Private draft stays singular");
+        assert_eq!(app.composer_main.selection(), (8, 13));
+
+        app.direct_agent = None;
+        app.active_channel = "missing-agent-route".into();
+        app.detached_agent_placeholder = Some("missing-agent-route".into());
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(
+            app.agent_surfaces
+                .values()
+                .all(|surface| !surface.placement.is_return_pending()),
+            "a stale placeholder cannot retarget another retained conversation"
+        );
     }
 
     #[test]

@@ -276,6 +276,40 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        if let Some((name, detached)) = self.detached_agent_placeholder_status() {
+            self.composer_main.set_focus(false);
+            let area = Rect::new(
+                self.center_left() + self.chrome.gutter,
+                self.header_rect().y1,
+                self.center_right() - self.chrome.gutter,
+                self.rect.y1 - self.chrome.gutter,
+            );
+            let title = crate::i18n::t_args(
+                if detached {
+                    "chat-agent-detached-title"
+                } else {
+                    "chat-agent-moving-title"
+                },
+                &[("name", name.into())],
+            );
+            let message = crate::i18n::t(if detached {
+                "chat-agent-detached-message"
+            } else {
+                "chat-agent-moving-message"
+            });
+            EmptyState::paint(
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                area,
+                &EmptyStateContent {
+                    icon: Some(Icon::ExternalLink),
+                    message: Some(&message),
+                    ..EmptyStateContent::new(&title)
+                },
+                self.last_mouse,
+            );
+            self.draw_header(scene, tf, tr, theme, hits);
+            return;
+        }
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
         let width = composer_editor_width(field_w, theme, true, self.direct_agent.is_some());
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
@@ -1111,6 +1145,13 @@ impl ChatApp {
         } else {
             String::new()
         };
+        if let Some((name, _)) = self.detached_agent_placeholder_status() {
+            return HeaderIdentityText {
+                name,
+                kind: Some(crate::i18n::t("chat-agent-kind")),
+                context,
+            };
+        }
         if let Some(agent) = &self.direct_agent {
             return HeaderIdentityText {
                 name: self.agent_display_name(agent),
@@ -1336,7 +1377,10 @@ impl ChatApp {
         );
         ChatApp::push_hit(hits, search, Hit::Search);
         let mut cluster_left = search.x0;
-        if self.direct_agent.is_some() {
+        let placeholder = self.detached_agent_placeholder_status();
+        if self.direct_agent.is_some()
+            || placeholder.as_ref().is_some_and(|(_, detached)| *detached)
+        {
             let window = square(
                 Point::new(cluster_left - f64::from(sp.s2) - control / 2.0, cy),
                 control,
@@ -1359,7 +1403,7 @@ impl ChatApp {
             // A direct Agent conversation has no voice capability merely
             // because human conversations do. The detached child is also a
             // conversation, not a second workspace-navigation surface.
-            if self.conversation_surface {
+            if self.conversation_surface || placeholder.is_some() {
                 return cluster_left;
             }
             let drag = square(
