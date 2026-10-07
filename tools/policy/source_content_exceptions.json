@@ -595,11 +595,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/session/tilo-ntfs-helper/vendor/ntfs-3g-source.tar.gz",
-    "oid": "8b17d7077ec62c7aff339e71c7595b291d2652e8",
-    "reason": "Pinned upstream source archive required by the NTFS helper build."
-  },
-  {
     "path": "crates/system/app-state/tests/data/automerge-0.8/changes.automerge",
     "oid": "0c6c84ee8adc84e1abaed608c75f1d8d15a85ffe",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."

@@ -94,8 +94,18 @@ struct StructuralContinuationEnvelope {
 
 /// Whether `record` may name a window's record in a continuation.
 fn portable_record(record: &str) -> bool {
-    crate::record::RecordId::parse(record).is_some_and(|id| {
-        !id.is_package_primary() && id.file_path().is_none() && id.file_record().is_none()
+    let Some(id) = crate::record::RecordId::parse(record) else {
+        return false;
+    };
+    let mut leaf = id.as_str();
+    while let Some(derived) = leaf.strip_prefix("derived:") {
+        let Some((_, source)) = derived.split_once('@') else {
+            return false;
+        };
+        leaf = source;
+    }
+    crate::record::RecordId::parse(leaf).is_some_and(|leaf| {
+        !leaf.is_package_primary() && leaf.file_path().is_none() && leaf.file_record().is_none()
     })
 }
 
@@ -144,6 +154,22 @@ mod continuation_record_tests {
         let file = crate::record::RecordId::for_file("/home/ada/secret.txt");
         let unnamed = with_continuation_record(base.clone(), &file);
         assert_eq!(unnamed, base, "a file's path never travels in a checkpoint");
+    }
+    #[test]
+    fn nested_derived_records_never_disclose_private_file_identity() {
+        let base =
+            compose_structural_continuation_metadata(crate::view::View::default(), None).unwrap();
+        for file in [
+            crate::record::RecordId::for_file("/home/ada/secret.txt"),
+            crate::record::RecordId::for_file_record(uuid::Uuid::new_v4()),
+        ] {
+            let inner = crate::record::RecordId::derived("editor", &file);
+            let nested = crate::record::RecordId::derived("buffer", &inner);
+            assert_eq!(with_continuation_record(base.clone(), &nested), base);
+        }
+        let safe = crate::record::RecordId::derived("editor", &crate::record::RecordId::minted());
+        let named = with_continuation_record(base, &safe);
+        assert_eq!(structural_continuation_record(&named.bytes), Some(safe));
     }
 }
 
@@ -305,6 +331,10 @@ impl App {
     /// focus itself or start playing media.
     fn publish_continuation_metadata(&mut self) {
         self.apply_pending_continuation_restore();
+        self.apply_pending_owner_view();
+        if self.continuation.owner_view.following {
+            return;
+        }
         if !self.collaboration.manager.is_connected() || self.continuation.pending_view.is_some() {
             return;
         }
@@ -330,6 +360,32 @@ impl App {
                     None => metadata,
                 },
             );
+        if self.continuation.owner_view.awaiting_claim
+            && self
+                .continuation
+                .owner_view
+                .last_claim_at
+                .is_none_or(|last| {
+                    crate::time::now().duration_since(last)
+                        >= crate::time::Duration::from_millis(500)
+                })
+            && let Some(metadata) = metadata.as_ref()
+        {
+            let token = self
+                .continuation
+                .owner_view
+                .last_stamp
+                .as_ref()
+                .map_or(1, |(counter, _)| counter.saturating_add(1));
+            self.report_handoff(
+                &crate::collaboration::handoff::HandoffReport::OwnerTakeover {
+                    token,
+                    schema: metadata.schema_version,
+                    metadata: metadata.bytes.clone(),
+                },
+            );
+            self.continuation.owner_view.last_claim_at = Some(crate::time::now());
+        }
         if metadata == self.continuation.last_published {
             return;
         }
@@ -393,4 +449,115 @@ impl App {
             self.invalidate_widget_resource_cache();
         }
     }
+}
+
+impl App {
+    pub(super) fn apply_owner_view(&mut self, view: crate::collaboration::owner_view::OwnerView) {
+        let Some(route) = self.private_continuity_route() else {
+            return;
+        };
+        if !view.valid()
+            || route.app_id != view.app
+            || route.cluster_id.to_string() != view.room
+            || route.record.as_deref() != Some(format!("continuation:{}", view.instance).as_str())
+        {
+            return;
+        }
+        if view.generation <= self.continuation.owner_view.last_generation {
+            return;
+        }
+        let stamp = (view.counter, view.source);
+        if self
+            .continuation
+            .owner_view
+            .last_stamp
+            .as_ref()
+            .is_some_and(|last| *last > stamp)
+        {
+            return;
+        }
+        if self.continuation.owner_view.awaiting_claim
+            && !view.local_claim
+            && view.projection.is_some()
+        {
+            return;
+        }
+        self.continuation.owner_view.last_generation = view.generation;
+        self.continuation.owner_view.last_stamp = Some(stamp);
+        self.continuation.owner_view.awaiting_claim = false;
+        // Cancellation stops movement but keeps publication muted until a
+        // local interaction explicitly claims this view. Otherwise a quiet
+        // disconnected replica would elect itself from the followed caret.
+        self.continuation.owner_view.following = !view.local_claim;
+        self.continuation.owner_view.pending = if view.local_claim {
+            None
+        } else {
+            view.projection
+                .map(|projection| crate::collaboration::ContinuationMetadata {
+                    schema_version: projection.schema_version,
+                    bytes: projection.bytes,
+                })
+        };
+        self.apply_pending_owner_view();
+    }
+
+    fn apply_pending_owner_view(&mut self) {
+        if !self.collaboration.manager.is_connected()
+            || self.accessibility.focus_trap_active
+            || self.wants_capture_protection()
+            || self.continuation.retired
+        {
+            self.continuation.owner_view.pending = None;
+            return;
+        }
+        let Some(metadata) = self.continuation.owner_view.pending.as_ref() else {
+            return;
+        };
+        let accepted = crate::widget::capability::capability_mut::<dyn crate::widget::Continuable>(
+            &mut *self.root_widget,
+        )
+        .is_some_and(|continuable| {
+            continuable.restore_live_continuation_metadata(
+                metadata,
+                &self.state.doc,
+                &self.state.root,
+            )
+        });
+        if accepted {
+            self.continuation.owner_view.pending = None;
+            self.invalidate_widget_resource_cache();
+        }
+    }
+
+    /// A local accepted input or semantic action is an explicit takeover.
+    /// The host's acknowledgement fences remote frames queued before it.
+    pub(super) fn take_over_owner_view(&mut self) {
+        if !self.continuation.owner_view.following {
+            return;
+        }
+        self.continuation.owner_view.pending = None;
+        self.continuation.owner_view.following = false;
+        self.continuation.owner_view.awaiting_claim = true;
+        self.continuation.last_published = None;
+        self.continuation.owner_view.last_claim_at = None;
+    }
+}
+
+/// Only typed semantics travel as live owner views. Generic viewport/focus and
+/// local record names are deliberately absent from this read-only projection.
+pub fn semantic_continuation_projection(
+    metadata: &crate::collaboration::ContinuationMetadata,
+) -> Option<crate::collaboration::ContinuationMetadata> {
+    if metadata.schema_version != STRUCTURAL_CONTINUATION_SCHEMA {
+        return None;
+    }
+    let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(&metadata.bytes).ok()?;
+    if !valid_structural_envelope(&envelope) {
+        return None;
+    }
+    let semantic = envelope.semantic?;
+    Some(crate::collaboration::ContinuationMetadata {
+        schema_version: semantic.schema_version,
+        bytes: semantic.bytes,
+    })
 }

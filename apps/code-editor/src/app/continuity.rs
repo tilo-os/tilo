@@ -41,6 +41,25 @@ impl Continuable for CodeApp {
         self.pending_continuation = Some(position);
         true
     }
+
+    fn restore_live_continuation_metadata(
+        &mut self,
+        metadata: &ContinuationMetadata,
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if metadata.schema_version != 1 {
+            return false;
+        }
+        let Ok(position) = serde_json::from_slice::<TextPosition>(&metadata.bytes) else {
+            return false;
+        };
+        position.valid()
+            && self
+                .active_file_node()
+                .is_some_and(|node| self.buffer_key(node) == position.resource_id)
+            && self.editor.restore_continuation_position(doc, &position)
+    }
 }
 
 impl CodeApp {

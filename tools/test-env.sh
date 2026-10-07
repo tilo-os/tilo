@@ -53,7 +53,7 @@ ntfs_fixtures() {
     # The generator, the build it drives (which pins the vendored source by
     # digest) and the C fixture writer determine the images.
     key=$(cat "$crate/tests/build_native_fixtures.py" "$crate/build_native.py" \
-        "$crate/tests/fixture_builder.c" | sha256sum | cut -c1-16)
+        "$crate/source_artifact.py" "$crate/tests/fixture_builder.c" | sha256sum | cut -c1-16)
     root="$TILO_TEST_CACHE_DIR/ntfs-fixtures"
     dir="$root/$key"
     mkdir -p "$root"

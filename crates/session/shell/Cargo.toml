@@ -318,6 +318,10 @@ app-cli = { path = "../../packaging/app-cli" }
 registry-types = { path = "../../packaging/registry-types" }
 flate2.workspace = true
 greeter = { path = "../greeter" }
+
+# Real native editor instances in certified multi-device continuity fixtures.
+tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
+
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.

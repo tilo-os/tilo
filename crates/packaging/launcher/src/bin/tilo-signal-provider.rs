@@ -23,6 +23,30 @@ fn install_stop() -> io::Result<()> {
     Ok(())
 }
 struct Java(Child);
+fn runtime_lib(root: &std::path::Path) -> io::Result<std::path::PathBuf> {
+    let mut found = None;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(digest) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("2026.10.1-signal+native."))
+        else {
+            continue;
+        };
+        if digest.len() != 32
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !entry.file_type()?.is_dir()
+            || found.is_some()
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        found = Some(entry.path().join("lib"));
+    }
+    found.ok_or_else(|| io::ErrorKind::NotFound.into())
+}
 impl Drop for Java {
     fn drop(&mut self) {
         if self.0.try_wait().ok().flatten().is_none() {
@@ -41,7 +65,8 @@ fn run() -> io::Result<bool> {
     install_stop()?;
     // The normal strict launcher verifies this exact runtime and mounts it
     // read-only. There is no host Java, library lookup or alternate version.
-    let base = "/run/tilo-runtime/2026.10.1-signal/lib";
+    let runtime = runtime_lib(std::path::Path::new("/run/tilo-runtime"))?;
+    let base = runtime.to_str().ok_or(io::ErrorKind::InvalidData)?;
     let provider = format!("{base}/signal-provider");
     let libraries = format!(
         "{base}:{base}/lib64:{base}/usr/lib64:{provider}/java/lib:{provider}/java/lib/server"
@@ -107,6 +132,29 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_requires_one_exact_native_build_mount() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("2026.10.1-signal")).unwrap();
+        assert_eq!(
+            runtime_lib(root.path()).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let exact = root
+            .path()
+            .join(format!("2026.10.1-signal+native.{}", "a".repeat(32)));
+        std::fs::create_dir(&exact).unwrap();
+        assert_eq!(runtime_lib(root.path()).unwrap(), exact.join("lib"));
+        std::fs::create_dir(
+            root.path()
+                .join(format!("2026.10.1-signal+native.{}", "b".repeat(32))),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime_lib(root.path()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
     fn live(script: &str) -> (tempfile::TempDir, Java) {
         let root = tempfile::tempdir().unwrap();
         let ready = root.path().join("ready");

@@ -14320,6 +14320,7 @@ dependencies = [
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-agent-participant",
+ "tilo-app",
  "tilo-app-state",
  "tilo-automation",
  "tilo-automerge",
@@ -15976,6 +15977,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-content",
+ "tilo-feedback",
  "tilo-files",
  "tilo-resource",
  "tilo-runner-native",
@@ -16762,6 +16764,20 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-feedback"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "durable-store",
+ "image",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-feedback-review",
  "workspace-hack",
 ]
 

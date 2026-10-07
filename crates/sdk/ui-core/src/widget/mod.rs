@@ -541,6 +541,19 @@ pub trait Continuable {
         state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool;
+
+    /// Apply a live owner view to an already-bound resource. This opt-in
+    /// capability receives no writable document and must preserve focus.
+    /// Missing resources or anchors are refused so the host can defer or
+    /// cancel the projection when its authenticated source disappears.
+    fn restore_live_continuation_metadata(
+        &mut self,
+        _metadata: &crate::collaboration::ContinuationMetadata,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
 }
 
 /// Optional session collaboration capability for widgets that own live

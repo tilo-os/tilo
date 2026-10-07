@@ -71,6 +71,26 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
+        if matches!(
+            &event,
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            } | WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(winit::event::Touch {
+                    phase: winit::event::TouchPhase::Started,
+                    ..
+                })
+                | WindowEvent::Ime(winit::event::Ime::Commit(_))
+        ) {
+            self.take_over_owner_view();
+        }
         match &event {
             WindowEvent::KeyboardLayoutChanged(layout) => {
                 self.input.keyboard_layout.clone_from(layout)
