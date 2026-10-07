@@ -37,6 +37,12 @@ pub enum ChipEffect {
     /// Choose an output before invoking the typed connect action.
     #[effect(view, permission = "read")]
     SelectOutput { node: String, port: String },
+    /// Inspect a reported evidence stage, artifact, or subflow reference.
+    #[effect(view, permission = "read")]
+    InspectEvidence { report: String, item: String },
+    /// Open an exactly matched imported subflow; refuses unloaded references.
+    #[effect(view, permission = "read")]
+    OpenEvidenceSubflow { report: String, id: String },
     /// Inspect one report, or return to all reports.
     #[effect(view, permission = "read")]
     Inspect {
@@ -58,6 +64,12 @@ fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<Str
     let staged = selected.clone();
     cx.on_stage(move |scenario| {
         notice.set(scenario.is_some_and(|name| name != "empty" && name != "operator-graph"));
+        if scenario == Some("evidence-flow")
+            && let Ok((id, _)) =
+                VerificationRecord::import(include_str!("../fixtures/evidence-flow.json"))
+        {
+            staged.set(Some(format!("{id}/stage/physical")));
+        }
         if scenario == Some("operator-graph") {
             staged.set(Some(crate::operator_graph::RESOURCE_ID.into()));
         }
@@ -95,6 +107,10 @@ impl ResourceApp for ChipDesignShell {
             | ChipEffect::InspectOperator { .. }
             | ChipEffect::SelectOutput { .. }) => {
                 crate::operator_graph_view::present(effect, cx, &graph_opened, &graph_inspected)
+            }
+            effect @ (ChipEffect::OpenEvidenceSubflow { .. }
+            | ChipEffect::InspectEvidence { .. }) => {
+                crate::evidence_flow_view::present(effect, cx, &inspected)
             }
             ChipEffect::Inspect { report } => {
                 if report.as_ref().is_some_and(|id| {
@@ -181,12 +197,17 @@ impl ResourceApp for ChipDesignShell {
             "checkpoint-verification",
             "q4k-superblock",
             "research-mapping",
+            "evidence-flow",
         ]
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<ChipProject>> {
         if name == Some("operator-graph") {
             crate::operator_graph_view::scenario()
+        } else if name == Some("evidence-flow") {
+            let action: ActionRef<ChipProject, String> =
+                ActionRef::new("import-verification", &["json"]);
+            vec![action.with(include_str!("../fixtures/evidence-flow.json").to_owned())]
         } else if name == Some("storage-report") {
             let action: ActionRef<ChipProject, String> = ActionRef::new("import-report", &["json"]);
             vec![action.with(include_str!("../fixtures/storage-report.json").to_owned())]
@@ -213,6 +234,19 @@ fn evidence_body(
     state: &ProjectState,
     selected: Option<&str>,
 ) -> Element {
+    if let Some(value) = selected {
+        let (report, selection) = crate::evidence_flow_view::split(value)
+            .map_or((value, None), |(report, kind, id)| {
+                (report, Some((kind, id)))
+            });
+        if state
+            .verifications
+            .get(report)
+            .is_some_and(|record| record.receipt.evidence_flow.is_some())
+        {
+            return crate::evidence_flow_view::body(cx, state, report, selection);
+        }
+    }
     let reports = &state.reports;
     let verifications = &state.verifications;
     if selected.is_some_and(|id| !reports.contains_key(id) && !verifications.contains_key(id)) {
@@ -240,6 +274,15 @@ fn evidence_body(
     }
     for (id, record) in verifications {
         if selected.is_some_and(|selection| selection != id.as_str()) {
+            continue;
+        }
+        if let Some(flow) = &record.receipt.evidence_flow {
+            body = body.push(Box::new(cx.effect_button(
+                &flow.title,
+                &ChipEffect::Inspect {
+                    report: Some(id.clone()),
+                },
+            )));
             continue;
         }
         body =
