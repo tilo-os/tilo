@@ -1145,11 +1145,6 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   detail_min_width` (700) fits. The shell's buttons (sidebar toggle, Back,
   inspector toggle, the window's History control) are Plain icon buttons of
   `min_pointer_target` in the `s3` inset.
-  Chat's channel list and conversation form a master/detail composition:
-  its conversation reserves `detail_min_width`, rather than the form-sheet
-  `content_min_width`. With its rail, the initial docked breakpoint is 716.
-  Adaptive sidebar resizing reserves the declared content minimum, so
-  enlarging a docked panel cannot hide its own resize control.
 - **One text-scale rule (`Theme::responsive_scale`).** The shell grows its
   text-sized widths and breakpoints by `ui_scale × text_scale.max(1.0)`
   (`Metrics::text_growth`): at 200 % text the panes stop fitting side by side

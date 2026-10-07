@@ -784,9 +784,6 @@ impl SidebarDrawer {
         }
         let extent = self.outer.width();
         let maximum = self.resize_max_width + self.rail_column_width();
-        let maximum = self.content_min_width.map_or(maximum, |minimum| {
-            maximum.min((extent - self.resolve_extent(minimum)).max(0.0))
-        });
         let share = self.sidebar_rect.width() / extent;
         let (position, min, max) = match self.side {
             SidebarSide::Left => (share, 0.0, (maximum / extent).min(1.0)),
@@ -1023,34 +1020,6 @@ mod tests {
             d.resolved_breakpoint(),
             f64::from(metrics.compact_breakpoint)
         );
-    }
-
-    #[test]
-    fn adaptive_sidebar_resize_keeps_the_content_minimum_and_handle_available() {
-        for side in [SidebarSide::Left, SidebarSide::Right] {
-            let mut drawer = SidebarDrawer::new()
-                .side(side)
-                .with_rail()
-                .content_min_width(360.0);
-            drawer.scale_for(&Theme::dark());
-            let area = Rect::new(40.0, 20.0, 800.0, 740.0);
-            drawer.resolve(area);
-            drawer.snap(true);
-            drawer.resolve(area);
-            let value = match side {
-                SidebarSide::Left => "90%",
-                SidebarSide::Right => "10%",
-            };
-            assert!(drawer.perform_resize_action(
-                drawer.resize_target(),
-                &crate::a11y::Action::SetValue(value.into()),
-            ));
-            drawer.resolve(area);
-            assert!(drawer.is_docked(), "resize must not turn into an overlay");
-            assert_eq!(drawer.content_rect().width(), 360.0);
-            assert_eq!(drawer.list_rect().width(), 324.0);
-            assert!(drawer.resize_accessibility().is_some());
-        }
     }
 
     #[test]
