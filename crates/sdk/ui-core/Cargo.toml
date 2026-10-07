@@ -431,3 +431,8 @@ uuid = { workspace = true, features = ["js"] }
 # compile-time `Send` checks. The browser host must still render on the page's
 # thread instead of spawning `ui-render`.
 wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"] }
+
+[[example]]
+name = "native-displays"
+path = "examples/native-displays.rs"
+required-features = ["native"]

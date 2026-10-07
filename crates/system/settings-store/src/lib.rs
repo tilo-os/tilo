@@ -60,6 +60,7 @@ pub mod continuity;
 pub mod day_schedule;
 pub mod display_identify;
 pub mod display_mode;
+pub mod display_placement;
 pub mod display_tools;
 pub mod hardware;
 pub mod keyboard_shortcuts;
