@@ -251,7 +251,7 @@ fn native_review_renders_signed_owner_evidence_in_three_themes() {
         ("high-contrast-200", ui::Theme::high_contrast()),
     ] {
         if name == "high-contrast-200" {
-            theme.text_scale = 2.0;
+            theme = theme.with_text_scale(2.0);
         }
         capture_review_theme(&review, &tree, &mut renderer, &theme, (&output, name));
     }

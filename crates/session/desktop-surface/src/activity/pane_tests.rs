@@ -3446,8 +3446,8 @@ mod task_review_tests {
     #[test]
     fn native_review_form_and_controls_fit_large_text_and_have_keyboard_targets() {
         let (_tree, mut pane, _host) = review_fixture();
-        for mut theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            theme.text_scale = 2.0;
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_text_scale(2.0);
             pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
