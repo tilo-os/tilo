@@ -17,6 +17,7 @@ path = "src/lib.rs"
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 tracing.workspace = true
+chrono.workspace = true
 
 # The notification portal (the Tilo shell implements it), else the
 # freedesktop notification service, on the session bus.

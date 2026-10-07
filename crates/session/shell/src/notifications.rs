@@ -50,6 +50,9 @@ use crate::portal::interface_dispatch;
 
 /// Bus name the freedesktop notification spec reserves for the
 /// notification daemon; owning it makes the compositor the system notification server.
+#[cfg(target_os = "linux")]
+mod scheduled;
+
 pub const BUS_NAME: &str = "org.freedesktop.Notifications";
 
 /// Object path the spec hard-codes for the notification interface.
@@ -307,7 +310,7 @@ impl std::fmt::Debug for BridgeInner {
 
 /// Thread-safe mailbox between the async D-Bus service and the
 /// synchronous chrome pump; cloneable (`Arc` bump) so each side holds its own handle.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NotificationBridge {
     inner: Arc<Mutex<BridgeInner>>,
     /// Monotonic id source. The spec requires ids be non-zero and unique for
@@ -318,6 +321,15 @@ pub struct NotificationBridge {
     continuity_epoch: [u8; 16],
     /// Parked by the D-Bus signal emitter until a close or action is queued.
     signal_wake: crate::idle_wake::IdleWake,
+    compositor_wake: Arc<Mutex<Option<crate::session_runtime::Wake>>>,
+}
+
+impl std::fmt::Debug for NotificationBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotificationBridge")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for NotificationBridge {
@@ -334,6 +346,25 @@ impl NotificationBridge {
             next_id: Arc::new(AtomicU32::new(1)),
             continuity_epoch,
             signal_wake: crate::idle_wake::IdleWake::default(),
+            compositor_wake: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Wake the native session when a background deadline delivers a notice.
+    pub fn set_wake(&self, wake: crate::session_runtime::Wake) {
+        if let Ok(mut slot) = self.compositor_wake.lock() {
+            *slot = Some(wake);
+        }
+    }
+
+    fn wake_compositor(&self) {
+        let wake = self
+            .compositor_wake
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(wake) = wake {
+            wake();
         }
     }
 
@@ -353,6 +384,7 @@ impl NotificationBridge {
         if let Ok(mut g) = self.inner.lock() {
             g.incoming.push(n);
         }
+        self.wake_compositor();
     }
 
     fn push_incoming_with_sharing(
@@ -964,6 +996,10 @@ pub struct NotificationService {
     callers: CallerMap,
     connection: Option<zbus::Connection>,
     priority_contacts: PriorityContactRegistry,
+    schedules: Option<Arc<Mutex<scheduled::ScheduleStore>>>,
+    schedule_changed: crate::idle_wake::IdleWake,
+    schedule_worker: Option<tokio::task::JoinHandle<()>>,
+    schedule_workspaces: Option<crate::portal::GrantStoreHandle>,
 }
 
 #[cfg(target_os = "linux")]
@@ -974,6 +1010,12 @@ impl NotificationService {
             callers,
             connection: None,
             priority_contacts: PriorityContactRegistry::in_memory(),
+            schedules: scheduled::ScheduleStore::open(None)
+                .ok()
+                .map(|s| Arc::new(Mutex::new(s))),
+            schedule_changed: crate::idle_wake::IdleWake::default(),
+            schedule_worker: None,
+            schedule_workspaces: None,
         }
     }
 
@@ -982,13 +1024,95 @@ impl NotificationService {
         callers: CallerMap,
         connection: zbus::Connection,
         priority_contacts: PriorityContactRegistry,
+        schedule_workspaces: Option<crate::portal::GrantStoreHandle>,
     ) -> Self {
+        let path =
+            xdg_paths::xdg::state_home().map(|root| root.join("tilo/notifications/schedules.json"));
+        let schedules = path.and_then(|path| {
+            scheduled::ScheduleStore::open(Some(path))
+                .inspect_err(|error| tracing::warn!(%error, "notification schedules unavailable"))
+                .ok()
+                .map(|store| Arc::new(Mutex::new(store)))
+        });
+        let schedule_changed = crate::idle_wake::IdleWake::default();
+        let schedule_worker = schedules.as_ref().map(|store| {
+            tokio::spawn(scheduled::drive(
+                Arc::downgrade(store),
+                bridge.clone(),
+                schedule_changed.clone(),
+                schedule_workspaces.clone(),
+            ))
+        });
         Self {
             bridge,
             callers,
             connection: Some(connection),
             priority_contacts,
+            schedules,
+            schedule_changed,
+            schedule_worker,
+            schedule_workspaces,
         }
+    }
+
+    async fn schedule_caller(&self, hdr: &Header<'_>) -> fdo::Result<scheduled::Owner> {
+        let denied = || {
+            fdo::Error::AccessDenied(
+                "scheduled notifications require a verified application workspace".into(),
+            )
+        };
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let key = sender.as_ref().map(ToString::to_string).unwrap_or_default();
+        if let Some(caller) = self.callers.lookup(&key) {
+            if let Some(workspaces) = &self.schedule_workspaces {
+                let tree = workspaces.tree_handle();
+                let room = tree
+                    .read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == caller.workspace_id)
+                    .map(|workspace| workspace.room.to_string())
+                    .ok_or_else(denied)?;
+                return Ok(scheduled::Owner { caller, room });
+            }
+            return Ok(scheduled::Owner::mapped(caller));
+        }
+        let connection = self.connection.as_ref().ok_or_else(denied)?;
+        let sender = sender.as_ref().ok_or_else(denied)?;
+        let bus = zbus::fdo::DBusProxy::new(connection)
+            .await
+            .map_err(|_| denied())?;
+        let name = zbus::names::BusName::try_from(sender.as_str()).map_err(|_| denied())?;
+        let pid = bus
+            .get_connection_unix_process_id(name)
+            .await
+            .map_err(|_| denied())?;
+        let launch =
+            crate::shell::launcher::verified_launch_for_descendant(pid).ok_or_else(denied)?;
+        let room = launch
+            .workspace_id
+            .filter(|room| !room.is_empty())
+            .ok_or_else(denied)?;
+        let caller = self
+            .schedule_workspaces
+            .as_ref()
+            .and_then(|workspaces| workspaces.caller_in_room(&room, &launch.package_id))
+            .ok_or_else(denied)?;
+        Ok(scheduled::Owner { caller, room })
+    }
+
+    fn with_schedules<T>(
+        &self,
+        f: impl FnOnce(&mut scheduled::ScheduleStore) -> Result<T, String>,
+    ) -> fdo::Result<T> {
+        let store = self.schedules.as_ref().ok_or_else(|| {
+            fdo::Error::Failed("durable notification scheduler unavailable".into())
+        })?;
+        let mut store = store
+            .lock()
+            .map_err(|_| fdo::Error::Failed("notification scheduler lock failed".into()))?;
+        f(&mut store).map_err(fdo::Error::Failed)
     }
 
     /// Resolve the D-Bus sender to a workspace/app caller via the shared
@@ -1039,6 +1163,15 @@ impl NotificationService {
             );
         }
         (self.resolve_caller(sender).await, false)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for NotificationService {
+    fn drop(&mut self) {
+        if let Some(worker) = &self.schedule_worker {
+            worker.abort();
+        }
     }
 }
 
@@ -1229,6 +1362,23 @@ const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.No
    `CloseNotification` — ask the server to close a notification by id.
    The compositor pump removes the toast and the emitter fires `NotificationClosed(id, 3)`.
    -->
+  <method name="XTiloScheduleNotification">
+    <arg name="tag" type="s" direction="in"/>
+    <arg name="title" type="s" direction="in"/>
+    <arg name="body" type="s" direction="in"/>
+    <arg name="activation" type="s" direction="in"/>
+    <arg name="at_ms" type="x" direction="in"/>
+    <arg name="calendar" type="a(yyyx)" direction="in"/>
+  </method>
+  <method name="XTiloScheduledNotifications">
+    <arg type="a(sx)" direction="out"/>
+  </method>
+  <method name="XTiloScheduledAlarms">
+    <arg type="a(s(yyyx)axaxs)" direction="out"/>
+  </method>
+  <method name="XTiloCancelScheduledNotification">
+    <arg name="tag" type="s" direction="in"/>
+  </method>
   <method name="CloseNotification">
     <arg name="id" type="u" direction="in"/>
   </method>
@@ -1335,6 +1485,50 @@ impl Interface for NotificationService {
                 message,
                 move |hdr, contacts: Vec<(String, String, Vec<String>)>| async move {
                     self.x_tilo_replace_priority_contacts(&hdr, contacts).await
+                },
+            ),
+            "XTiloScheduleNotification" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, args: scheduled::ScheduleArgs| async move {
+                    let caller = self.schedule_caller(&hdr).await?;
+                    self.with_schedules(|store| store.schedule(&caller, args))?;
+                    self.schedule_changed.poke();
+                    Ok(())
+                },
+            ),
+            "XTiloScheduledNotifications" => {
+                interface_dispatch::answer(connection, message, async move {
+                    let caller = self.schedule_caller(&message.header()).await?;
+                    self.with_schedules(|store| {
+                        store.deliver_due(
+                            &self.bridge,
+                            &chrono::Local::now(),
+                            self.schedule_workspaces.as_ref(),
+                        )?;
+                        Ok(store.pending(&caller))
+                    })
+                })
+            }
+            "XTiloScheduledAlarms" => interface_dispatch::answer(connection, message, async move {
+                let caller = self.schedule_caller(&message.header()).await?;
+                self.with_schedules(|store| {
+                    store.deliver_due(
+                        &self.bridge,
+                        &chrono::Local::now(),
+                        self.schedule_workspaces.as_ref(),
+                    )?;
+                    Ok(store.alarm_states(&caller))
+                })
+            }),
+            "XTiloCancelScheduledNotification" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, tag: String| async move {
+                    let caller = self.schedule_caller(&hdr).await?;
+                    self.with_schedules(|store| store.cancel(&caller, &tag))?;
+                    self.schedule_changed.poke();
+                    Ok(())
                 },
             ),
             "CloseNotification" => {
@@ -2121,6 +2315,20 @@ mod tests {
             <(Vec<(String, String, Vec<String>)>,) as Type>::SIGNATURE.to_string()
         );
         assert_eq!(
+            advertised("XTiloScheduleNotification"),
+            <scheduled::ScheduleArgs as Type>::SIGNATURE.to_string()
+        );
+        assert_eq!(
+            advertised("XTiloCancelScheduledNotification"),
+            <(String,) as Type>::SIGNATURE.to_string()
+        );
+        for method in ["XTiloScheduledNotifications", "XTiloScheduledAlarms"] {
+            assert_eq!(
+                interface_dispatch::advertised_in_signature(NOTIFICATIONS_INTROSPECTION, method),
+                <() as Type>::SIGNATURE.to_string()
+            );
+        }
+        assert_eq!(
             advertised("CloseNotification"),
             <(u32,) as Type>::SIGNATURE.to_string()
         );
@@ -2161,6 +2369,129 @@ mod tests {
             .build()
             .await
             .expect("proxy build")
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn scheduled_alarm_history_round_trips_calendar_and_delivery_state() {
+        let callers = CallerMap::new();
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(1), "so.tilo.clocks"));
+        let bridge = NotificationBridge::new();
+        let (_server, client) = bring_up_pair(bridge.clone(), callers).await;
+        let proxy = notifications_proxy(&client).await;
+        let at = chrono::Utc::now().timestamp_millis().saturating_sub(1000);
+        let calendar = (12, 0, 0, 42);
+        let args: scheduled::ScheduleArgs = (
+            "once".into(),
+            "Alarm".into(),
+            "Wake up".into(),
+            "tilo-clocks:alarms".into(),
+            at,
+            vec![calendar],
+        );
+        proxy
+            .call_method("XTiloScheduleNotification", &args)
+            .await
+            .expect("handoff");
+        let states: Vec<scheduled::AlarmStateWire> = proxy
+            .call_method("XTiloScheduledAlarms", &())
+            .await
+            .expect("history")
+            .body()
+            .deserialize()
+            .expect("calendar wire rows");
+        assert_eq!(states.len(), 1);
+        let state = states.first().expect("alarm state");
+        assert_eq!(state.0, "once");
+        assert_eq!(state.1, calendar);
+        assert!(state.2.is_empty());
+        assert_eq!(state.3, vec![at]);
+        assert!(!state.4.is_empty());
+        assert_eq!(bridge.drain_incoming().len(), 1);
+        proxy
+            .call_method("XTiloScheduledAlarms", &())
+            .await
+            .expect("query again");
+        assert!(bridge.drain_incoming().is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn scheduled_notification_rpc_requires_identity_and_isolates_owners() {
+        let (_server, client) = bring_up_pair(NotificationBridge::new(), CallerMap::new()).await;
+        let proxy = notifications_proxy(&client).await;
+        assert!(
+            proxy
+                .call_method("XTiloScheduledNotifications", &())
+                .await
+                .is_err(),
+            "unverified sender denied"
+        );
+        let callers = CallerMap::new();
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(1), "so.tilo.clocks"));
+        let (_server, client) = bring_up_pair(NotificationBridge::new(), callers.clone()).await;
+        let proxy = notifications_proxy(&client).await;
+        let at = chrono::Utc::now()
+            .timestamp_millis()
+            .saturating_add(3_600_000);
+        let args: scheduled::ScheduleArgs = (
+            "alarm".into(),
+            "Alarm".into(),
+            "Wake up".into(),
+            "tilo-clocks:alarms".into(),
+            at,
+            Vec::new(),
+        );
+        proxy
+            .call_method("XTiloScheduleNotification", &args)
+            .await
+            .expect("schedule own deadline");
+        let pending: Vec<(String, i64)> = proxy
+            .call_method("XTiloScheduledNotifications", &())
+            .await
+            .expect("pending")
+            .body()
+            .deserialize()
+            .expect("wire rows");
+        assert_eq!(pending, vec![("alarm".into(), at)]);
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(2), "so.tilo.clocks"));
+        proxy
+            .call_method("XTiloCancelScheduledNotification", &("alarm",))
+            .await
+            .expect("cancel scoped to caller");
+        let pending: Vec<(String, i64)> = proxy
+            .call_method("XTiloScheduledNotifications", &())
+            .await
+            .expect("other workspace pending")
+            .body()
+            .deserialize()
+            .expect("wire rows");
+        assert!(pending.is_empty());
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(1), "so.tilo.clocks"));
+        let pending: Vec<(String, i64)> = proxy
+            .call_method("XTiloScheduledNotifications", &())
+            .await
+            .expect("original pending")
+            .body()
+            .deserialize()
+            .expect("wire rows");
+        assert_eq!(
+            pending.len(),
+            1,
+            "another workspace cannot cancel this alarm"
+        );
+        proxy
+            .call_method("XTiloCancelScheduledNotification", &("alarm",))
+            .await
+            .expect("cancel own deadline");
+        let pending: Vec<(String, i64)> = proxy
+            .call_method("XTiloScheduledNotifications", &())
+            .await
+            .expect("cancelled pending")
+            .body()
+            .deserialize()
+            .expect("wire rows");
+        assert!(pending.is_empty());
     }
 
     #[tokio::test]
