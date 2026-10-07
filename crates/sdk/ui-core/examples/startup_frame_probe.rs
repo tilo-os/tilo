@@ -111,8 +111,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn verify_native_confinement() -> std::io::Result<()> {
-    let status = std::fs::read_to_string("/proc/self/status")?;
-    let no_new_privs = status.lines().any(|line| line == "NoNewPrivs:\t1");
+    // SAFETY: this read-only prctl query takes no pointers and changes no
+    // process state. It observes confinement without requesting proc access.
+    let status = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
+    if status < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let no_new_privs = status == 1;
     if !no_new_privs {
         return Err(std::io::Error::other(
             "native startup probe requires no_new_privs",
