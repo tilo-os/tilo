@@ -463,7 +463,7 @@ impl Harness {
     }
 
     /// Give `surface` a first buffer, so it is mapped and can take focus.
-    fn map(&mut self, surface: &wl_surface::WlSurface) {
+    fn map(&mut self, surface: &wl_surface::WlSurface, app: u64) {
         use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
         // 64×64 ARGB.
         let (width, height, stride, len) = (64, 64, 256, 16_384_usize);
@@ -492,6 +492,10 @@ impl Harness {
         surface.damage(0, 0, width, height);
         surface.commit();
         self.pump();
+        assert!(
+            shell::compositor::foreign::store().is_mapped(app),
+            "the committed SHM buffer maps before painting or asynchronous pixel conversion"
+        );
         let _ = self.fb.paint_settled();
     }
 
@@ -663,7 +667,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
 fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_stroke() {
     let mut h = Harness::new();
     let (surface, app) = h.open("org.example.Draw");
-    h.map(&surface);
+    h.map(&surface, app);
     let centre = h.centre_of(app);
     let manager = h.bind::<zwp_tablet_manager_v2::ZwpTabletManagerV2>("zwp_tablet_manager_v2", 1);
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
