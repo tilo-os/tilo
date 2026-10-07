@@ -227,7 +227,7 @@ TILO_VM_CONFIG=/absolute/path/to/vms.toml \
   --out target/terminal-cohort-new-run
 ```
 
-The receipt must be the successful canonical `swap apps+runtime` receipt for
+The receipt must be the successful canonical `swap apps+runtime` or `swap userspace` receipt for
 this VM and slot, with full source commit and inventory digest. The output
 folder must be new. The runner checks that exact layer is installed, discovers
 Open and the live `terminal.session` contracts, binds Inspect/Run/Read to one
@@ -440,3 +440,15 @@ Browser fresh-open attribution uses the new tab's public
 is not its record instance. Unrelated existing pages publishing late do not
 become candidates, and missing/foreign launch associations fail without another
 Open or navigation of an existing page.
+
+
+Aggregate `swap userspace` receipts remain aggregate evidence: the runners check
+all nine canonical members, matching frozen source/inventory and successful
+activation, then observe the exact current slot generation, owner session and
+component selections. They select the `apps+runtime` member for the normal SDK
+inventory and mapped-backing checks without adding a fictitious top-level layer
+or rewriting the original receipt. Partial/deferred activation, a changed member,
+missing owner session, or an unobservable SDK fails before application actions.
+The same `--cohort-receipt` option continues to accept individual successful
+`swap apps+runtime` receipts. These checks do not establish hardware acceptance
+until the runner executes its application flow and resident-backing assertions.

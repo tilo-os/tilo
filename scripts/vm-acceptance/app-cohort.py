@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from acceptance.action_jobs import invoke, require
+from acceptance.cohort import selected_layer, runtime_inventory
 from acceptance.vm import TiloVm, first_json, wait_until
 
 STORE = "so.tilo.store"
@@ -105,20 +106,9 @@ print(json.dumps({'uid':os.getuid(),'flatpak_apps':[l.split()[0] for l in apps i
 
 def cohort(vm, args, out):
     receipt = json.loads(args.cohort_receipt.read_text())
-    source = receipt.get("cohort_source", {})
-    require(receipt.get("status") == "success" and receipt.get("component") == "apps+runtime"
-            and receipt.get("vm") == args.vm and receipt.get("slot") == args.slot,
-            "successful addressed canonical cohort activation receipt required")
-    require(re.fullmatch(r"[0-9a-f]{40}", source.get("source_commit", ""))
-            and re.fullmatch(r"[0-9a-f]{64}", source.get("dirty_tree_hash", "")),
-            "full source inventory provenance required")
     shown = first_json(vm.run("--json", "slot", "show"))
-    require(shown["slot"]["session"] == "active"
-            and shown["slot"]["components"].get("apps+runtime") == receipt["layer"], "cohort inactive or changed")
-    installed = {f["path"].replace("/usr/lib/tilo-runtime/", "/run/tilo-runtime/", 1): f["sha256"]
-                 for f in shown["files"] if f["layer"] == receipt["layer"]
-                 and f["path"].startswith("/usr/lib/tilo-runtime/")}
-    require(any(p.endswith("/lib/libruntime_dylib.so") for p in installed), "closed SDK unobservable")
+    layer = selected_layer(receipt, shown, args.vm, args.slot)
+    installed = runtime_inventory(shown, layer)
     (out / "cohort.json").write_text(json.dumps(shown, indent=2))
     return receipt, shown, installed
 
@@ -316,7 +306,7 @@ def run(args):
             require(route in specs, f"missing genuine {route} package fixture; never grants trust or stages files")
     if "local" in flows:
         require(baseline["trusted_attestor_count"] > 0, "no existing trusted local attestor; positive generic import blocked")
-    proof = {"flows": flows, "source": receipt["cohort_source"], "layer": receipt["layer"], "results": {}}
+    proof = {"flows": flows, "source": receipt["cohort_source"], "layer": shown["slot"]["components"]["apps+runtime"], "results": {}}
     if any(flow != "browser" for flow in flows):
         door = store(vm, out)
         mapped(vm, "store", installed, args.uid, out)

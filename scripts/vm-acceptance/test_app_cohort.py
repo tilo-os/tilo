@@ -1,4 +1,7 @@
 """Exercise receipt transitions and fresh-instance safety in the production runner."""
+import copy
+import json
+from types import SimpleNamespace
 import importlib.util
 import sys
 import tempfile
@@ -41,6 +44,116 @@ def row(record="derived:default@tab:000000000000000b", operation="navigate"):
             "id": record + ":" + operation, "operation": operation,
             "semantic_identity": {"kind": "browser.page"}, "params": [],
             "contract": {"availability": {"state": "available"}}}
+
+
+class ActivatedCohort(unittest.TestCase):
+    # Wire shape from tilo-vm-protocol::{UserspaceResult, UserspaceMember,
+    # ApplyResult, SlotShowResult}; both Receipt::finish and cohort_activation
+    # retain the same result, rather than a fabricated individual receipt.
+    def fixture(self, login=True):
+        components = ("launcher", "install", "apps+runtime", "app-host", "native-runtime-host",
+                      "control", "app-cli", "ush", "shell")
+        source = {"component": "userspace", "authority": "local", "source_commit": "a" * 40,
+                  "dirty_tree_hash": "b" * 64, "cargo_lock_hash": "c" * 64, "builder": "remote"}
+        members = []
+        for index, component in enumerate(components):
+            build = dict(source, component=component, target="aarch64-unknown-linux-gnu",
+                         toolchain="rustc pinned", cargo_profile="thin-app" if component == "apps+runtime" else "release")
+            members.append({"component": component, "layer": f"{index + 1:064x}",
+                            "build": build, "source_inventory": "d" * 64})
+        identity = {"user": "owner", "unit": "tilo-session@owned.service",
+                    "login_session": "login" if login else None, "login_wrapper": 123 if login else None}
+        actions = [{"action": "restart_desktop", "user": "owner"}] if login else [
+            {"action": "stop_unit", "unit": identity["unit"]},
+            {"action": "restart_unit", "unit": "user@1002.service"},
+            {"action": "start_unit", "unit": identity["unit"]}]
+        activation = {"apply": {"slot": "device", "generation": 12, "changed": True,
+                                 "policy": "session_restart", "actions": actions, "warnings": []},
+                      "source": source, "source_inventory": "d" * 64, "members": members,
+                      "phases": [{"name": "refresh", "seconds": 0.5}], "failure": None}
+        receipt = {"tool": "tilo-vm", "status": "success", "component": "userspace",
+                   "vm": "owned", "slot": "device", "cohort_source": source,
+                   "source_inventory": "d" * 64, "cohort_members": members,
+                   "cohort_activation": activation, "result": dict(activation, next=[], warnings=[])}
+        layer = members[2]["layer"]
+        shown = {"slot": {"name": "device", "session": "active", "generation": 12,
+                           "user": "owner", "session_identity": identity,
+                           "components": {m["component"]: m["layer"] for m in members}},
+                 "files": [{"component": "apps+runtime", "layer": layer,
+                            "path": "/usr/lib/tilo-runtime/native/lib/libruntime_dylib.so", "sha256": "e" * 64},
+                           {"component": "apps+runtime", "layer": layer,
+                            "path": "/usr/lib/tilo-runtime/native/lib/libstd-native.so", "sha256": "f" * 64}]}
+        return receipt, shown
+
+    def run_cohort(self, receipt, shown):
+        class VM:
+            def run(self, *args):
+                self.args = args
+                return json.dumps(shown)
+        vm = VM()
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            file = out / "run.json"
+            file.write_text(json.dumps(receipt))
+            result = app.cohort(vm, SimpleNamespace(cohort_receipt=file, vm="owned", slot="device"), out)
+            self.assertEqual(vm.args, ("--json", "slot", "show"))
+            self.assertEqual(json.loads(file.read_text()), receipt, "never relabel original aggregate receipt")
+            return result
+
+    def test_successful_userspace_wire_receipt_selects_its_current_sdk_without_relabeling(self):
+        for login in (True, False):
+            receipt, shown = self.fixture(login)
+            original, current, installed = self.run_cohort(receipt, shown)
+            self.assertEqual(original, receipt)
+            self.assertEqual(original["component"], "userspace")
+            self.assertNotIn("layer", original)
+            self.assertEqual(current, shown)
+            self.assertEqual(installed["/run/tilo-runtime/native/lib/libruntime_dylib.so"], "e" * 64)
+
+    def test_individual_apps_runtime_wire_receipt_remains_supported(self):
+        receipt, shown = self.fixture()
+        receipt = {"tool": "tilo-vm", "status": "success", "component": "apps+runtime",
+                   "vm": "owned", "slot": "device", "cohort_source": dict(receipt["cohort_source"], component="apps+runtime"),
+                   "layer": shown["slot"]["components"]["apps+runtime"]}
+        original, _, _ = self.run_cohort(receipt, shown)
+        self.assertEqual(original, receipt)
+
+    def test_partial_stale_foreign_or_incoherent_aggregate_refuses_before_app_actions(self):
+        mutations = [
+            lambda r, s: r.update(status="failure"),
+            lambda r, s: r.update(vm="foreign"),
+            lambda r, s: r["cohort_activation"].update(failure="selection failed"),
+            lambda r, s: r["cohort_activation"].pop("failure"),
+            lambda r, s: r["result"].update(source_inventory="0" * 64),
+            lambda r, s: r["cohort_members"].pop(),
+            lambda r, s: r["cohort_members"].reverse(),
+            lambda r, s: r["cohort_members"][0].update(source_inventory="0" * 64),
+            lambda r, s: r["cohort_members"][0]["build"].update(source_commit="0" * 40),
+            lambda r, s: r["cohort_members"][0]["build"].update(cargo_lock_hash="0" * 64),
+            lambda r, s: r["cohort_members"][0]["build"].update(target="x86_64-unknown-linux-gnu"),
+            lambda r, s: r["cohort_members"][2]["build"].update(cargo_profile="release"),
+            lambda r, s: s["slot"].update(generation=13),
+            lambda r, s: s["slot"].update(generation=True),
+            lambda r, s: s["slot"].update(name="foreign"),
+            lambda r, s: s["slot"].update(session="failed"),
+            lambda r, s: s["slot"].update(user="foreign"),
+            lambda r, s: s["slot"].pop("session_identity"),
+            lambda r, s: s["slot"]["components"].update(shell="0" * 64),
+            lambda r, s: r["cohort_activation"]["apply"].update(slot="foreign"),
+            lambda r, s: r["cohort_activation"]["apply"].update(policy="reboot"),
+            lambda r, s: r["cohort_activation"]["apply"]["actions"].append({"action": "deferred"}),
+            lambda r, s: r["cohort_activation"]["apply"]["actions"][0].update(user="foreign"),
+            lambda r, s: r["cohort_activation"]["apply"].update(actions=[]),
+            lambda r, s: s.update(files=[]),
+            lambda r, s: s["files"][0].pop("sha256"),
+            lambda r, s: s["files"].append(copy.deepcopy(s["files"][0])),
+            lambda r, s: s["files"][0].update(path="/usr/lib/tilo-runtime/../foreign/lib/libruntime_dylib.so"),
+        ]
+        for mutation in mutations:
+            receipt, shown = self.fixture()
+            mutation(receipt, shown)
+            with self.subTest(mutation=mutation), self.assertRaises(VmError):
+                self.run_cohort(receipt, shown)
 
 
 class Jobs(unittest.TestCase):

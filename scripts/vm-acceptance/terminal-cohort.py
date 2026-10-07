@@ -10,6 +10,7 @@ from pathlib import Path
 
 from acceptance.vm import TiloVm, first_json, wait_until
 from acceptance.action_jobs import require, succeeded, invoke
+from acceptance.cohort import selected_layer, runtime_inventory
 
 APP = "so.tilo.terminal"
 
@@ -64,17 +65,9 @@ def run(args):
     vm = TiloVm(str(args.binary.resolve()), args.vm, args.slot, out / "commands.log")
     receipt = json.loads(args.cohort_receipt.read_text())
     source = receipt.get("cohort_source", {})
-    require(receipt.get("status") == "success" and receipt.get("component") == "apps+runtime",
-            "successful canonical cohort activation receipt required")
-    require(receipt.get("vm") == args.vm and receipt.get("slot") == args.slot,
-            "cohort receipt does not address this VM/slot")
-    require(re.fullmatch(r"[0-9a-f]{40}", source.get("source_commit", "")) is not None
-            and re.fullmatch(r"[0-9a-f]{64}", source.get("dirty_tree_hash", "")) is not None,
-            "full source inventory provenance required")
     shown = first_json(vm.run("--json", "slot", "show"))
-    require(shown["slot"]["session"] == "active", "slot session inactive")
-    layer = receipt["layer"]
-    require(shown["slot"]["components"].get("apps+runtime") == layer, "installed cohort differs")
+    layer = selected_layer(receipt, shown, args.vm, args.slot)
+    installed = runtime_inventory(shown, layer)
     runtime_files = [f for f in shown["files"] if f["layer"] == layer
                      and f["path"].endswith("/lib/libruntime_dylib.so")]
     require(len(runtime_files) == 1, "closed SDK runtime unobservable or ambiguous")
@@ -121,9 +114,6 @@ def run(args):
     process = after["processes"][0]
     runtime = process["runtime"]
     mapped = expected["path"].replace("/usr/lib/tilo-runtime/", "/run/tilo-runtime/", 1)
-    installed = {f["path"].replace("/usr/lib/tilo-runtime/", "/run/tilo-runtime/", 1): f["sha256"]
-                 for f in shown["files"] if f["layer"] == layer
-                 and f["path"].startswith("/usr/lib/tilo-runtime/")}
     require(any(f["path"] == mapped for f in runtime)
             and any("/libstd-" in f["path"] for f in runtime), "native SDK/libstd mappings missing")
     require(all(installed.get(f["path"]) == f["sha256"] for f in runtime),
