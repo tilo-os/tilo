@@ -645,11 +645,6 @@
     "reason": "Required native typography asset; font manifests verify upstream bytes."
   },
   {
-    "path": "crates/sdk/ui-core/assets/fonts/LICENSES/Noto-Color-Emoji-OFL.txt",
-    "oid": "0f082954d12dffb9f3f874e79a65857ab533f2f8",
-    "reason": "Canonical upstream font license; font manifests verify the original bytes."
-  },
-  {
     "path": "crates/sdk/ui-core/assets/fonts/LibertinusSerif-Bold.otf",
     "oid": "37fbe05403ee745b29a039bdf782a7237be227e5",
     "reason": "Required native typography asset; font manifests verify upstream bytes."
