@@ -1227,9 +1227,20 @@ impl BrowserWidget {
                 self.send_navigation(NavigationCommand::Forward, owner)?;
             }
             BrowserOperation::Reload => {
+                let command = if self.load_error.is_some()
+                    && !self.address_error_active
+                    && url::Url::parse(&self.current_uri).is_ok_and(|url| {
+                        matches!(url.scheme(), "http" | "https") && url.host().is_some()
+                    }) {
+                    NavigationCommand::Navigate {
+                        url: self.navigation_target(&self.current_uri.clone())?,
+                    }
+                } else {
+                    NavigationCommand::Reload
+                };
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
-                self.send_navigation(NavigationCommand::Reload, owner)?;
+                self.send_navigation(command, owner)?;
             }
             BrowserOperation::Stop => {
                 self.loading_stopped = true;
@@ -2462,7 +2473,11 @@ impl BrowserWidget {
                         self.structure_dirty = true;
                     }
                 }
-                WebViewEvent::LoadProgress(p) if !self.forced_loading && !self.loading_stopped => {
+                WebViewEvent::LoadProgress(p)
+                    if !self.forced_loading
+                        && !self.loading_stopped
+                        && self.load_error.is_none() =>
+                {
                     self.set_loading_progress(p);
                 }
                 WebViewEvent::LoadFinishedAt { .. }
@@ -2472,6 +2487,9 @@ impl BrowserWidget {
                 | WebViewEvent::PaintSnapshot { .. }
                 | WebViewEvent::PaintResource { .. } => {}
                 WebViewEvent::LoadFinished => {
+                    if self.load_error.is_some() {
+                        continue;
+                    }
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
                     }
@@ -2498,6 +2516,18 @@ impl BrowserWidget {
                     self.page_navigation_settled(None);
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
+                    self.site.navigation(&uri);
+                    self.favicon = None;
+                    self.media_playing = false;
+                    self.media_document_generation = None;
+                    let follows_navigation = self.address.with(|value| {
+                        value == &self.current_uri
+                            || self.address_navigation_value.as_ref() == Some(value)
+                    });
+                    if !editing || follows_navigation {
+                        self.address.set(uri.clone());
+                    }
+                    self.current_uri.clone_from(&uri);
                     self.address_navigation_value = None;
                     self.set_loading_progress(1.0);
                     tracing::warn!("load failed for {uri}: {error}");
@@ -5278,6 +5308,56 @@ mod architecture_tests {
                 .push(WebViewEvent::LoadProgress(0.6));
             widget.apply_engine_events();
             assert!((widget.progress - 0.6).abs() < f64::EPSILON);
+
+            // A failed request can leave Chromium on its previous document.
+            // Late progress and that document's completion must not conceal
+            // the failed address or restart the spinner; retry owns the URL.
+            let failed_uri = "http://127.0.0.1:9/";
+            engine.events.lock().unwrap().extend([
+                WebViewEvent::LoadFailed {
+                    uri: failed_uri.into(),
+                    error: "ERR_UNSAFE_PORT".into(),
+                },
+                WebViewEvent::LoadProgress(0.3),
+                WebViewEvent::LoadFinishedAt {
+                    uri: "https://stop.test/".into(),
+                },
+                WebViewEvent::LoadFinished,
+            ]);
+            widget.apply_engine_events();
+            assert_eq!(widget.address.get(), failed_uri);
+            assert_eq!(widget.current_uri, failed_uri);
+            assert_eq!(widget.load_error.as_deref(), Some("ERR_UNSAFE_PORT"));
+            assert!((widget.progress - 1.0).abs() < f64::EPSILON);
+            widget
+                .perform_browser_operation(BrowserOperation::Reload)
+                .unwrap();
+            assert!(
+                capture
+                    .commands()
+                    .contains(&WebViewCommand::Navigate(failed_uri.into()))
+            );
+            assert!(widget.load_error.is_none());
+            engine
+                .events
+                .lock()
+                .unwrap()
+                .push(WebViewEvent::LoadProgress(0.4));
+            widget.apply_engine_events();
+            assert!((widget.progress - 0.4).abs() < f64::EPSILON);
+            engine
+                .events
+                .lock()
+                .unwrap()
+                .push(WebViewEvent::LoadFailed {
+                    uri: "file:///outside-workspace.html".into(),
+                    error: "blocked".into(),
+                });
+            widget.apply_engine_events();
+            widget
+                .perform_browser_operation(BrowserOperation::Reload)
+                .unwrap();
+            assert_eq!(capture.commands().last(), Some(&WebViewCommand::Reload));
         }
 
         // Phase `stopped_and_reduced_motion_loading_do_not_schedule_animation`.
