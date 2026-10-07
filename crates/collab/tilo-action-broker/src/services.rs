@@ -6,8 +6,8 @@ use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub use crate::collab_broker_capnp::{
-    DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
-    NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
+    CertifiedPersonContext, DocumentBytes, NativeDocumentRead, NativeDocumentReadContext,
+    NativeDocumentReads, NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
 };
 
 /// One read-only host view lookup. The original admitted channel and exact

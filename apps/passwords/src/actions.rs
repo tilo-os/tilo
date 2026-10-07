@@ -17,6 +17,18 @@ pub const ITEM_PREFIX: &str = "passwords:item:";
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "passwords.effect", device_only)]
 pub enum PasswordsEffect {
+    /// Show the current private credential permissions.
+    #[effect(view, idempotent, permission = "read", label = "passwords-show-access")]
+    ShowAccess,
+    /// Revoke one current credential relationship by its opaque permission ID.
+    #[effect(destructive, idempotent, label = "passwords-revoke-access")]
+    RevokeAccess { grant: String },
+    /// Approve one exact native request after protected confirmation.
+    #[effect(privileged, label = "passwords-approve-access")]
+    ApproveAccess { proposal: String, lifetime: String },
+    /// Decline one pending request without granting access.
+    #[effect(idempotent, permission = "read", label = "passwords-deny-access")]
+    DenyAccess { proposal: String },
     /// New item.
     #[effect(permission = "read")]
     Add,
@@ -80,6 +92,42 @@ pub enum PasswordsEffect {
         #[param("Opaque id of the vault item")]
         item: String,
     },
+}
+
+pub(crate) const GRANT_PREFIX: &str = "passwords:grant:";
+pub(crate) const PROPOSAL_PREFIX: &str = "passwords:request:";
+pub(crate) fn proposal_row(proposal: &accounts::CredentialProposal) -> LiveRow {
+    LiveRow::new(
+        format!("{PROPOSAL_PREFIX}{}", proposal.id),
+        "passwords.credential-request",
+        crate::CATALOG.t("passwords-credential-request"),
+    )
+    .operation(
+        PasswordsEffect::ApproveAccess {
+            proposal: proposal.id.clone(),
+            lifetime: "session".into(),
+        }
+        .bound(),
+    )
+    .operation(
+        PasswordsEffect::DenyAccess {
+            proposal: proposal.id.clone(),
+        }
+        .bound(),
+    )
+}
+pub(crate) fn grant_row(grant: &accounts::CredentialGrant) -> LiveRow {
+    LiveRow::new(
+        format!("{GRANT_PREFIX}{}", grant.id()),
+        "passwords.credential-permission",
+        crate::CATALOG.t("passwords-credential-permission"),
+    )
+    .operation(
+        PasswordsEffect::RevokeAccess {
+            grant: grant.id().into(),
+        }
+        .bound(),
+    )
 }
 
 /// The published id of the vault item `id`.

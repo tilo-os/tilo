@@ -5,26 +5,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "apps/ebook/tests/fixtures/typography/math-reader-windows.png",
-    "oid": "5668bbfae697e6d82d4b1ca6d26c1e9c95fe0a4c",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "apps/ebook/tests/fixtures/typography/math-reader.png",
-    "oid": "091767bea9ad0ab44f9189eba8a062694787ac44",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "apps/ebook/tests/fixtures/typography/serif-reader-windows.png",
-    "oid": "2d3fbc3afb0854b4f5913ea45d4eca114c2a7155",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "apps/ebook/tests/fixtures/typography/serif-reader.png",
-    "oid": "50a976d44bdd4522a316a495c46202b1ea83b8e8",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "apps/notes/fixtures/roadmap.png",
     "oid": "91dbc6842b17c854d4d7ab28aa75a1a9f6a7571f",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
@@ -555,26 +535,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf",
-    "oid": "a441693965d6043514cf5f481c0427dd056dc660",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf",
-    "oid": "fe8c95fa8c87b6c94ec807a1524b32714025e9d9",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf",
-    "oid": "e63215236791c26a837bab6116c9100488adaaca",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/platform/tilo-media/tests/fixtures/h264-aac-48s.mp4",
-    "oid": "c58495dd226f3b2f81a503b41b0e35130a0209f8",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/platform/tilo-pdf/tests/fixtures/arabic.pdf",
     "oid": "09aeb80f0e04f7efbfc338e81b341f66e9730ceb",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
@@ -615,201 +575,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/runtime/ush/tests/fixtures/seccomp/ush.x86_64.bpf",
-    "oid": "a4c8030427b0b2f85c88592c6d5e676229bdd879",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/AdwaitaSans-Regular.ttf",
-    "oid": "6fcafd9b0bc750952b619bf27fbddc769867bb72",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/AtkinsonHyperlegibleNext-Italic[wght].ttf",
-    "oid": "a21e13bcbacc0a33e536bc107973cc458e85ef54",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/AtkinsonHyperlegibleNext[wght].ttf",
-    "oid": "92a357554bdcca62a7e80d5e3724bf4eb8932e5e",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/EBGaramond-Italic[wght].ttf",
-    "oid": "f9ad996001c8ee72fd43b4b8e67c8924b7f615b1",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/EBGaramond[wght].ttf",
-    "oid": "52d34b86ec20977f222ce37e8158e6b3002c0a31",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/LICENSES/Noto-Color-Emoji-OFL.txt",
-    "oid": "0f082954d12dffb9f3f874e79a65857ab533f2f8",
-    "reason": "Canonical upstream font license; font manifests verify the original bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/LibertinusSerif-Bold.otf",
-    "oid": "37fbe05403ee745b29a039bdf782a7237be227e5",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/LibertinusSerif-BoldItalic.otf",
-    "oid": "eb34c4e01f57a25d948f42b44569bb29bb0666b8",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/LibertinusSerif-Italic.otf",
-    "oid": "cd3118d8df23111357ee6976c28c1ee56a376811",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/LibertinusSerif-Regular.otf",
-    "oid": "508f3c0fd3dc262eaff3d470241a37f8451f3ecb",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/LibertinusSerifDisplay-Regular.otf",
-    "oid": "01e342bc1e9aa3ecb95cf0e432318bcbc32bc089",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/Literata-Italic[opsz,wght].ttf",
-    "oid": "8690209cd1bb4d9be1c1a0e976ee2f740c94093b",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/Literata[opsz,wght].ttf",
-    "oid": "0a81b4984a4a4eb101e0ddc28babc85bb137efef",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NewCM08-Book.otf",
-    "oid": "8505956410317b55c6e7d9b738d6696bd61880b5",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NewCM10-Bold.otf",
-    "oid": "7fb44d7a085718d2267964752dc391efb3298607",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NewCM10-BoldItalic.otf",
-    "oid": "0cc6cbd148923a5766e5373d41e74f154aa42584",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NewCM10-Book.otf",
-    "oid": "468b5c2a1443f86d46e6ba050983e8831cf654c9",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NewCM10-BookItalic.otf",
-    "oid": "130f19febef203380d588b6474f1512f16071481",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NewCM10-Italic.otf",
-    "oid": "698fbc0ae92ef751302f382ce7a51270ff4632c8",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NewCM10-Regular.otf",
-    "oid": "9a6ff9173291a4799ba13ca0efd959bf00bc7c90",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/Noto-COLRv1.ttf",
-    "oid": "29d500e4675d7a81b6bf7e790d4b7baa247b5c1b",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSans-Italic[wght].ttf",
-    "oid": "186383a160d7821e5b9ccb03df9981b819085ce9",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansArabic[wght].ttf",
-    "oid": "6064e44e795b73483a3e728247730b6e12dd7886",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansBengali[wght].ttf",
-    "oid": "61feabca829a3668c2cd7e4563a1beff5d79ab77",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansCJK-VF.ttc",
-    "oid": "42745a18c0c317663ee29c34eda8446a50c98e3d",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansDevanagari[wght].ttf",
-    "oid": "969034c389c160c98d01405de890f4fe0c53b290",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansHebrew[wght].ttf",
-    "oid": "eea4c2801813e1a7d2a0a4860cd3ee320fc9df30",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansMath-Regular.ttf",
-    "oid": "a59e95c7ee68b3ad6ee14106f00ecec1346fdb51",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansMono[wght].ttf",
-    "oid": "acd28ca17dd3f3ba3424614bd87cccec53fdee62",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansSymbols2-Regular.ttf",
-    "oid": "a0a8cfe09d1b8bc0a0c2b43f8279fa392e9eb411",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansSymbols[wght].ttf",
-    "oid": "dec53823eecb8f230162a334b91bad4487bc7c55",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSansThai[wght].ttf",
-    "oid": "d8d9069f1d2c8c776d44eb575c22dfdd8ed6c1d8",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/NotoSans[wght].ttf",
-    "oid": "18e7353a93fda415c8690d5d9028189be16cc305",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/Onest-Cyrillic[wght].ttf",
-    "oid": "f2a848ea1d81dd3e627970d3830076c9a42454ce",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/SourceSerif4Variable-Italic.ttf",
-    "oid": "c27d20422faf6fa432396d4ae73af574914bf575",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/SourceSerif4Variable-Roman.ttf",
-    "oid": "83a2dd1f5e2b0cca388ba1d840d8ddf49ef00f11",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/TiloSans-Italic[wdth,wght].ttf",
-    "oid": "8b7fba0b93e5061f217e748d4faf51e7f486805c",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
-    "path": "crates/sdk/ui-core/assets/fonts/TiloSans[wdth,wght].ttf",
-    "oid": "00ef784aa2fe6052be888a9eacb76d53efd80b62",
-    "reason": "Required native typography asset; font manifests verify upstream bytes."
-  },
-  {
     "path": "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf",
     "oid": "e920290a4e9db814ff3300ba42f324b0032afd56",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
@@ -820,64 +585,14 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/dark-display-1-text-1.png",
-    "oid": "b91c8181a0db0d98f6596e255e96e83622223154",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/dark-display-1_25-text-1.png",
-    "oid": "a86028bb74a62e2718dd2001fe99e5e7e09b961b",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/dark-display-1_5-text-1_25.png",
-    "oid": "8b8911a0280fd90c0081b325943a95ad0f6ff6bd",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/light-display-1-text-1.png",
-    "oid": "020791ad6d47b18bd291ea6c9a2aada3c1704c8f",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/light-display-1_25-text-1.png",
-    "oid": "bf6ef125cbee136825fbf82d7732aa1f0c5ea20e",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/light-display-1_5-text-1_25.png",
-    "oid": "4fae8a3b94c5e81b8cca275ca7478167e278cf0c",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/session/desktop-model/tests/fixtures/room_contents.automerge",
     "oid": "bdef6e313dcd850a4298938a14f192a9152e3c2e",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/shell/tests/snapshots/e2e/e2e-maximized-tile-controls.png",
-    "oid": "c24cce8ad434a0913543d8707de442b301ab250b",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
     "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
     "oid": "7a7696681bad4f83fd92680fe7699ea263549022",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/shell/tests/snapshots/e2e/e2e-tab-drag-reorder-settled.png",
-    "oid": "d1c327807e82da9a206fba8f83abf6700fb17424",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/shell/tests/snapshots/wheel_disc/three-spokes.png",
-    "oid": "8ac03e6fd56f0bf9ca6504014a5586486c21f265",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/tilo-ntfs-helper/vendor/ntfs-3g-source.tar.gz",
-    "oid": "8b17d7077ec62c7aff339e71c7595b291d2652e8",
-    "reason": "Pinned upstream source archive required by the NTFS helper build."
   },
   {
     "path": "crates/system/app-state/tests/data/automerge-0.8/changes.automerge",

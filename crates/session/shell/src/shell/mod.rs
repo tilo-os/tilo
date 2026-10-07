@@ -159,6 +159,7 @@ pub mod system_monitor;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
+pub(crate) mod task_review;
 pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
@@ -995,6 +996,22 @@ pub fn mount_in_process(
             ui::record::RecordId::room_default(),
             |_| {},
         ),
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
+            messages::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::room_default(),
+            |_| {},
+        ),
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
+            apps.borrow_mut().mount(
+                passwords::definition(),
+                &room,
+                tab,
+                ui::record::RecordId::room_default(),
+                |_| {},
+            )
+        }
         // Every Notes tab is a notebook of its own, on the tab's record.
         ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
             notes::definition(),

@@ -340,6 +340,13 @@ pub struct SurfaceCx<R: Resource> {
 }
 
 impl<R: Resource> SurfaceCx<R> {
+    /// The host-owned identity of the record this surface shows. A durable
+    /// activation link can name it without relying on the last-open window.
+    /// Absent in a historical view that cannot launch live work.
+    pub fn record(&self) -> Option<&ui_core::record::RecordId> {
+        self.run.launched.record.as_ref()
+    }
+
     /// Open, in this window and in place of the record it shows, what a
     /// launch of the app naming `arguments` opens: the record
     /// [`ResourceApp::launch_record`](super::ResourceApp::launch_record)

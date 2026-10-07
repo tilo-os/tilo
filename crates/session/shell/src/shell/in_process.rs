@@ -21,6 +21,8 @@ use ui::launch::LaunchError;
 use ui::permissions::{Actor, PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
+pub mod messaging;
+
 /// The apps the shell mounts in-process, with the store their records and
 /// views live in, as one person on one device.
 pub struct InProcessApps {
@@ -32,6 +34,24 @@ pub struct InProcessApps {
     /// How an app mounted here reaches the session's broker, as an app the
     /// session launched; `None` keeps them off any broker.
     broker: Option<SessionBroker>,
+    messaging: Option<tilo_messaging::MessagingClient>,
+    first_accounts: Option<Rc<dyn messaging::first_account::FirstAccounts>>,
+    messaging_registry: Option<std::sync::Arc<dyn tilo_messaging::MessagingRegistry>>,
+    credential_owner: Option<accounts::CredentialOwner>,
+    messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
+    messaging_record_wake: Option<crate::session_runtime::Wake>,
+    messaging_starts: Option<Rc<dyn messaging::activation::PendingAccounts>>,
+    messaging_lifetime: std::sync::Arc<()>,
+    messaging_network_prompts: Option<crate::portal::PromptQueueHandle>,
+    messaging_providers: Vec<launcher::owned_service::ServiceCancellation>,
+    messaging_native_accounts: Vec<std::sync::Arc<dyn messaging::NativeAccountCustody>>,
+    native_messaging_root: Option<std::path::PathBuf>,
+    native_broker_socket: Option<std::path::PathBuf>,
+    receivers: Vec<tilo_messaging_protocol::signal_broker::ReceiveGuard>,
+    messaging_services: Vec<(
+        tilo_messaging::ServiceAccount,
+        tilo_messaging::MessagingClient,
+    )>,
 }
 
 /// Connects an app the session shows in its own process to the session's
@@ -39,6 +59,13 @@ pub struct InProcessApps {
 pub type SessionBroker = Rc<dyn Fn(&str, &str) -> ui::collaboration::HostSessionConnector>;
 
 impl InProcessApps {
+    pub(crate) fn bind_messaging_network_prompts(
+        &mut self,
+        prompts: crate::portal::PromptQueueHandle,
+    ) {
+        self.messaging_network_prompts = Some(prompts);
+    }
+
     /// Apps keeping their records in `store`, mounted for `author` on
     /// `device_id`.
     pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
@@ -49,7 +76,176 @@ impl InProcessApps {
             device_id: device_id.to_owned(),
             author: UserId(author.to_owned()),
             broker: None,
+            messaging: None,
+            first_accounts: None,
+            messaging_registry: None,
+            credential_owner: None,
+            messaging_records: None,
+            messaging_record_wake: None,
+            messaging_starts: None,
+            messaging_lifetime: std::sync::Arc::new(()),
+            messaging_network_prompts: None,
+            messaging_providers: Vec::new(),
+            messaging_native_accounts: Vec::new(),
+            native_messaging_root: None,
+            native_broker_socket: None,
+            receivers: Vec::new(),
+            messaging_services: Vec::new(),
         }
+    }
+
+    /// Bind the existing compositor wake once; this opens no metadata/custody.
+    pub(crate) fn bind_messaging_record_wake(&mut self, wake: crate::session_runtime::Wake) {
+        if self.messaging_record_wake.is_none() {
+            if let Some(owner) = &self.credential_owner {
+                owner.bind_request_wake(wake.clone());
+            }
+            self.messaging_record_wake = Some(wake);
+        }
+    }
+
+    /// Service bounded worker reads on the actual UI owner, without a window.
+    pub(crate) fn pump_messaging_records(&mut self) {
+        if let Some(records) = &self.messaging_records {
+            records.pump();
+        }
+        if let Some(starts) = &self.messaging_starts {
+            starts.pump();
+        }
+        if let Some(first) = self.first_accounts.clone() {
+            first.pump(self);
+        }
+    }
+
+    /// Install an already authenticated, device-owned Signal service. No
+    /// metadata record creates this authority and another persona is refused.
+    /// # Errors
+    /// Refuses a broker owned by another person/device or a duplicate service/account installation.
+    pub fn install_signal(
+        &mut self,
+        broker: &tilo_messaging_protocol::signal_broker::SignalBroker,
+    ) -> Result<(), LaunchError> {
+        let owner = broker.owner().map_err(|_| LaunchError::BindingMismatch)?;
+        if owner.principal != self.author.0 || owner.device != self.device_id {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let mut services = self.messaging_services.clone();
+        services.push((
+            tilo_messaging::ServiceAccount::new("signal", &owner.account),
+            broker.client(),
+        ));
+        let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
+            .map_err(|_| LaunchError::BindingMismatch)?;
+        if let Some(registry) = &self.messaging_registry {
+            let (identity, client) = services.last().ok_or(LaunchError::BindingMismatch)?;
+            registry
+                .register(identity.clone(), client.clone())
+                .map_err(|_| LaunchError::BindingMismatch)?;
+            self.messaging = Some(registry.clone().client());
+        } else {
+            self.messaging = Some(router.client());
+        }
+        self.messaging_services = services;
+        Ok(())
+    }
+
+    /// Install an account-owned `WhatsApp` or SMS service under its frozen device.
+    /// # Errors
+    /// Refuses another person/device or duplicate service/account registration.
+    pub fn install_external(
+        &mut self,
+        broker: &tilo_messaging_protocol::external_broker::ExternalBroker,
+    ) -> Result<(), LaunchError> {
+        let owner = broker.owner();
+        if owner.principal != self.author.0 || owner.device != self.device_id {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let mut services = self.messaging_services.clone();
+        let service = match owner.service {
+            tilo_messaging_protocol::Service::Whatsapp => "whatsapp",
+            tilo_messaging_protocol::Service::Sms => "sms",
+            _ => return Err(LaunchError::BindingMismatch),
+        };
+        services.push((
+            tilo_messaging::ServiceAccount::new(service, &owner.account),
+            broker.client(),
+        ));
+        let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
+            .map_err(|_| LaunchError::BindingMismatch)?;
+        if let Some(registry) = &self.messaging_registry {
+            let (identity, client) = services.last().ok_or(LaunchError::BindingMismatch)?;
+            registry
+                .register(identity.clone(), client.clone())
+                .map_err(|_| LaunchError::BindingMismatch)?;
+            self.messaging = Some(registry.clone().client());
+        } else {
+            self.messaging = Some(router.client());
+        }
+        self.messaging_services = services;
+        Ok(())
+    }
+
+    /// Lend the lifecycle-aware service while its owned native account is
+    /// linking, locked or offline. Metadata never installs a usable adapter.
+    /// # Errors
+    /// Refuses another persona/device or duplicate exact service/account.
+    pub fn install_messaging_supervisor(
+        &mut self,
+        supervisor: &std::sync::Arc<tilo_messaging_protocol::supervisor::AccountSupervisor>,
+    ) -> Result<(), LaunchError> {
+        let owner = supervisor.owner();
+        if owner.principal != self.author.0 || owner.device != self.device_id {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let service = match owner.service {
+            tilo_messaging_protocol::Service::Whatsapp => "whatsapp",
+            tilo_messaging_protocol::Service::Signal => "signal",
+            tilo_messaging_protocol::Service::Sms => "sms",
+            tilo_messaging_protocol::Service::Tilo => return Err(LaunchError::BindingMismatch),
+        };
+        let mut services = self.messaging_services.clone();
+        services.push((
+            tilo_messaging::ServiceAccount::new(service, &owner.account),
+            supervisor.client(),
+        ));
+        let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
+            .map_err(|_| LaunchError::BindingMismatch)?;
+        if let Some(registry) = &self.messaging_registry {
+            let (identity, client) = services.last().ok_or(LaunchError::BindingMismatch)?;
+            registry
+                .register(identity.clone(), client.clone())
+                .map_err(|_| LaunchError::BindingMismatch)?;
+            self.messaging = Some(registry.clone().client());
+        } else {
+            self.messaging = Some(router.client());
+        }
+        self.messaging_services = services;
+        Ok(())
+    }
+
+    /// Install sending and independent inbound persistence as one host setup.
+    /// # Errors
+    /// Refuses another owner/device, failed receive setup or duplicate service/account installation.
+    pub fn install_signal_receiving(
+        &mut self,
+        broker: &tilo_messaging_protocol::signal_broker::SignalBroker,
+        receiver: tilo_messaging_protocol::signal_runtime::SignalReceiver,
+    ) -> Result<(), LaunchError> {
+        let owner = broker.owner().map_err(|_| LaunchError::BindingMismatch)?;
+        if owner.principal != self.author.0
+            || owner.device != self.device_id
+            || self.messaging_services.iter().any(|(identity, _)| {
+                identity.service == "signal" && identity.account == owner.account
+            })
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let guard = broker
+            .start_receiver(receiver)
+            .map_err(|_| LaunchError::BindingMismatch)?;
+        self.install_signal(broker)?;
+        self.receivers.push(guard);
+        Ok(())
     }
 
     /// Reach the session's broker through `broker` for every app mounted
@@ -94,20 +290,66 @@ impl InProcessApps {
     /// # Errors
     /// As [`Self::at`].
     pub fn native(author: &str) -> Result<Self, LaunchError> {
-        Ok(Self::at(
+        let mut apps = Self::native_for_profile(
             &cli::data_home()
                 .join(crate::shell::SHELL_RECORDS_PACKAGE)
                 .join("apps"),
             author,
-        )?
-        .reaching_broker(Rc::new(|app, room| {
+            launcher::services::collab_socket(),
+        )?;
+        let owner = accounts::CredentialOwner::deferred(
+            &apps.author.0,
+            &apps.device_id,
+            accounts::SecretStore::open,
+        )
+        .map_err(|_| LaunchError::BindingMismatch)?;
+        apps.install_credential_owner(owner)?;
+        Ok(apps)
+    }
+
+    /// Install one original per-person/device vault owner before lending apps.
+    /// This performs no storage I/O and never creates a credential permission.
+    /// # Errors
+    /// Refuses another person/device or replacement of an active native owner.
+    pub fn install_credential_owner(
+        &mut self,
+        owner: accounts::CredentialOwner,
+    ) -> Result<(), LaunchError> {
+        if owner.principal() != self.author.0
+            || owner.device() != self.device_id
+            || self.credential_owner.is_some()
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        if let Some(wake) = &self.messaging_record_wake {
+            owner.bind_request_wake(wake.clone());
+        }
+        self.credential_owner = Some(owner);
+        Ok(())
+    }
+
+    /// The same native startup, with an explicit private profile and broker
+    /// scope for owned native hosts and isolated integration fixtures.
+    pub(crate) fn native_for_profile(
+        profile: &std::path::Path,
+        author: &str,
+        socket: std::path::PathBuf,
+    ) -> Result<Self, LaunchError> {
+        let connector = socket.clone();
+        let mut apps = Self::at(profile, author)?.reaching_broker(Rc::new(move |app, room| {
             session_connector(
-                launcher::services::collab_socket(),
+                connector.clone(),
                 launcher::services::identity_socket(),
                 app,
                 room,
             )
-        })))
+        }));
+        apps.native_broker_socket = Some(socket);
+        apps.native_messaging_root = Some(profile.join("private-messages"));
+        let registry = tilo_messaging::messaging_registry(&apps.author.0)
+            .map_err(|_| LaunchError::BindingMismatch)?;
+        apps.messaging_registry = Some(registry);
+        Ok(apps)
     }
 
     /// Mount `definition` for tab `tab` of `room` on `record` (the tab's
@@ -126,6 +368,18 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
+        if definition.app_id == "so.tilo.messages" {
+            if self.first_accounts.is_none()
+                && self.native_broker_socket.is_some()
+                && let Some(wake) = &self.messaging_record_wake
+            {
+                self.first_accounts = Some(messaging::first_account::new(
+                    self.author.0.clone(),
+                    wake.clone(),
+                ));
+            }
+            self.prepare_default_messaging();
+        }
         let records = self
             .owners
             .open(definition.app_id, room)
@@ -173,6 +427,23 @@ impl InProcessApps {
             self.author.clone(),
         ) {
             context.provide_person_records(person);
+        }
+        if definition.app_id == "so.tilo.messages" {
+            if let Some(first) = &self.first_accounts {
+                context.lend(first.client());
+            }
+            if let Some(service) = &self.messaging {
+                context.lend(service.clone());
+            } else if let Some(registry) = &self.messaging_registry {
+                // Empty routing/setup lifetime, not an admitted account or a
+                // ready provider. Protected admission still publishes neither.
+                context.lend(registry.clone().client());
+            }
+        }
+        if definition.app_id == "so.tilo.passwords"
+            && let Some(owner) = &self.credential_owner
+        {
+            context.lend(owner.clone());
         }
         lend(&mut context);
         definition.instantiate(context, target, RestoreInput::None)

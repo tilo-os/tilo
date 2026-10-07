@@ -57,7 +57,10 @@ pub mod landlock_shim;
 pub mod loader_preflight;
 pub mod managed;
 pub mod manifest;
+pub mod mesa_seed;
 pub mod netgate;
+#[cfg(target_os = "linux")]
+pub mod owned_service;
 pub mod performance;
 pub mod profile;
 #[cfg(target_os = "linux")]

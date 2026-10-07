@@ -157,6 +157,10 @@ pub(crate) enum Dialog {
         id: SecretId,
         title: String,
     },
+    AccessConfirm {
+        proposal: String,
+        lifetime: String,
+    },
 }
 
 impl Dialog {
@@ -167,6 +171,7 @@ impl Dialog {
             Self::Backup { .. } => "backup",
             Self::Restore { .. } => "restore",
             Self::DeleteConfirm { .. } => "delete",
+            Self::AccessConfirm { .. } => "access",
         }
     }
 }
@@ -200,7 +205,13 @@ pub(crate) enum Request {
     ConfirmBackup,
     Restore,
     ConfirmRestore,
-    Revoke(usize),
+    Revoke(String),
+    ReviewAccess {
+        proposal: String,
+        lifetime: String,
+    },
+    ConfirmAccess,
+    DenyAccess(String),
 }
 
 /// A finding of the password review for one item.
@@ -396,6 +407,8 @@ pub(crate) struct Core {
     pub(crate) health: crate::VaultHealth,
     pub(crate) findings: Vec<Finding>,
     pub(crate) app_grants: Vec<CredentialGrant>,
+    pub(crate) app_proposals: Vec<accounts::CredentialProposal>,
+    model_revision: Option<u64>,
     pub(crate) custody: Option<&'static str>,
     pub(crate) recovery_error: Option<String>,
     pub(crate) import_portal: Option<ui::portal::OpenFileChannel>,
@@ -441,6 +454,8 @@ impl Core {
             health: crate::VaultHealth::default(),
             findings: Vec::new(),
             app_grants: Vec::new(),
+            app_proposals: Vec::new(),
+            model_revision: None,
             custody: None,
             recovery_error: None,
             import_portal: None,
@@ -523,6 +538,7 @@ impl Core {
         let Some(model) = &self.model else {
             return;
         };
+        self.model_revision = model.revision();
         self.recovery_error = model.recovery_error().map(|_| {
             "Your vault could not be unlocked. Restore access to its key, then reopen Passwords."
                 .to_owned()
@@ -531,6 +547,7 @@ impl Core {
         let full = model.items();
         self.findings = crate::findings(&full);
         self.app_grants = model.app_grants();
+        self.app_proposals = model.app_proposals();
         self.custody = Some(model.custody().label());
         self.items = full
             .into_iter()
@@ -1179,22 +1196,55 @@ impl Core {
 
     // --- app access ----------------------------------------------------
 
-    pub(crate) fn revoke(&mut self, index: usize) {
-        let Some(grant) = self.app_grants.get(index).cloned() else {
-            return;
-        };
+    pub(crate) fn revoke(&mut self, id: &str) -> Result<(), String> {
+        let grant = self
+            .app_grants
+            .iter()
+            .find(|grant| grant.id() == id)
+            .cloned()
+            .ok_or_else(|| crate::CATALOG.t("passwords-permission-expired"))?;
         let name = app_name(&grant.app_id);
         if let Some(model) = &mut self.model {
             match model.revoke_app_grant(&grant) {
-                Ok(_) => {
+                Ok(true) => {
                     self.refresh();
                     self.toast(format!("{name} can no longer use this item"));
                 }
-                Err(error) => self.toast(error),
+                Ok(false) => return Err(crate::CATALOG.t("passwords-permission-expired")),
+                Err(error) => {
+                    self.toast(error.clone());
+                    return Err(error);
+                }
             }
         } else {
-            self.app_grants.remove(index);
+            self.app_grants.retain(|grant| grant.id() != id);
             self.touch();
+        }
+        Ok(())
+    }
+    pub(crate) fn model_changed(&self) -> bool {
+        if self
+            .model
+            .as_ref()
+            .and_then(crate::PasswordsModel::proposal_wake_after)
+            .is_some_and(|after| after.is_zero())
+        {
+            return true;
+        }
+        self.model
+            .as_ref()
+            .and_then(crate::PasswordsModel::revision)
+            .is_some_and(|revision| Some(revision) != self.model_revision)
+    }
+    pub(crate) fn refresh_model(&mut self) {
+        let proposals_changed = !self.app_proposals.is_empty()
+            && self
+                .model
+                .as_ref()
+                .is_some_and(|model| model.app_proposals() != self.app_proposals);
+        if proposals_changed || self.model_changed() {
+            self.revealed = None;
+            self.refresh();
         }
     }
 
@@ -1597,6 +1647,10 @@ impl Core {
         };
         [
             transfer,
+            self.model
+                .as_ref()
+                .and_then(crate::PasswordsModel::proposal_wake_after)
+                .and_then(|after| ui::time::now().checked_add(after)),
             self.revealed.as_ref().map(|(_, _, until)| *until),
             self.toast.as_ref().map(|(_, until)| *until),
         ]
@@ -1637,7 +1691,34 @@ impl Core {
             Request::ConfirmBackup => self.begin_encrypted_backup(),
             Request::Restore => self.request_restore(),
             Request::ConfirmRestore => self.apply_encrypted_restore(),
-            Request::Revoke(index) => self.revoke(index),
+            Request::Revoke(id) => {
+                let _ = self.revoke(&id);
+            }
+            Request::ReviewAccess { proposal, lifetime } => {
+                if self
+                    .app_proposals
+                    .iter()
+                    .any(|pending| pending.id == proposal)
+                {
+                    self.dialog = Some(Dialog::AccessConfirm { proposal, lifetime });
+                    self.touch_page();
+                }
+            }
+            Request::ConfirmAccess => {
+                if let Some(Dialog::AccessConfirm { proposal, lifetime }) = self.dialog.take() {
+                    if let Err(error) =
+                        self.perform(PasswordsEffect::ApproveAccess { proposal, lifetime })
+                    {
+                        self.toast(error);
+                    }
+                    self.touch_page();
+                }
+            }
+            Request::DenyAccess(proposal) => {
+                if let Err(error) = self.perform(PasswordsEffect::DenyAccess { proposal }) {
+                    self.toast(error);
+                }
+            }
         }
     }
 
@@ -1678,6 +1759,7 @@ impl Core {
     /// Answer an effect invoked by the palette, an agent, a script or a
     /// search hit.
     pub(crate) fn perform(&mut self, effect: PasswordsEffect) -> Result<(), String> {
+        self.refresh_model();
         let open = |core: &mut Self, id: String| {
             if core.open(&SecretId(id)) {
                 Ok(())
@@ -1686,6 +1768,27 @@ impl Core {
             }
         };
         match effect {
+            PasswordsEffect::ShowAccess => self.navigate("app-access"),
+            PasswordsEffect::RevokeAccess { grant } => self.revoke(&grant)?,
+            PasswordsEffect::ApproveAccess { proposal, lifetime } => {
+                let decision = match lifetime.as_str() {
+                    "session" => accounts::AccessDecision::AllowForSession,
+                    "persistent" => accounts::AccessDecision::AllowAlways,
+                    _ => return Err(crate::CATALOG.t("passwords-request-expired")),
+                };
+                self.model
+                    .as_ref()
+                    .ok_or_else(|| crate::CATALOG.t("passwords-request-expired"))?
+                    .decide_app_proposal(&proposal, decision)?;
+                self.refresh();
+            }
+            PasswordsEffect::DenyAccess { proposal } => {
+                self.model
+                    .as_ref()
+                    .ok_or_else(|| crate::CATALOG.t("passwords-request-expired"))?
+                    .decide_app_proposal(&proposal, accounts::AccessDecision::Deny)?;
+                self.refresh();
+            }
             PasswordsEffect::Add => self.begin_add(),
             PasswordsEffect::Save => {
                 if !self.is_editing() {
@@ -1744,11 +1847,30 @@ impl Core {
     /// may do with it. A row names the item by its opaque id and kind only;
     /// its title, account and addresses stay in the vault.
     pub(crate) fn item_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.items.iter().map(crate::actions::item_row).collect()
+        self.items
+            .iter()
+            .map(crate::actions::item_row)
+            .chain(self.app_grants.iter().map(crate::actions::grant_row))
+            .chain(self.app_proposals.iter().map(crate::actions::proposal_row))
+            .collect()
     }
 
     /// The live row of item `id` (a published row id).
     pub(crate) fn item_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if let Some(id) = id.strip_prefix(crate::actions::PROPOSAL_PREFIX) {
+            return self
+                .app_proposals
+                .iter()
+                .find(|proposal| proposal.id == id)
+                .map(crate::actions::proposal_row);
+        }
+        if let Some(id) = id.strip_prefix(crate::actions::GRANT_PREFIX) {
+            return self
+                .app_grants
+                .iter()
+                .find(|grant| grant.id() == id)
+                .map(crate::actions::grant_row);
+        }
         let id = id.strip_prefix(crate::actions::ITEM_PREFIX)?;
         self.items
             .iter()

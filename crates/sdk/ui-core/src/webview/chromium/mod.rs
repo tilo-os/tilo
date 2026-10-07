@@ -1600,6 +1600,12 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         | WebViewCommand::CancelNativeDownload { id }
         | WebViewCommand::RetryDownload { id } => *id > 0 && i32::try_from(*id).is_ok(),
         WebViewCommand::Navigate(url) => url.len() <= 65536,
+        WebViewCommand::StartDownload { uri } => {
+            uri.len() <= 8192
+                && url::Url::parse(uri).ok().is_some_and(|url| {
+                    matches!(url.scheme(), "http" | "https") && url.host().is_some()
+                })
+        }
         WebViewCommand::Key {
             key: KeyInput::Character(text),
             ..
@@ -1988,8 +1994,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::PaintResource { request_id, url } => {
             json!({"op":"paint_resource","request_id":request_id,"url":url})
         }
-        WebViewCommand::StartDownload { .. }
-        | WebViewCommand::SetDownloadDestination { .. }
+        WebViewCommand::StartDownload { uri } => json!({"op":"download_start","url":uri}),
+        WebViewCommand::SetDownloadDestination { .. }
         | WebViewCommand::CancelDownload { .. }
         | WebViewCommand::SetContentFilter(_)
         | WebViewCommand::SetContentFilters { .. } => {

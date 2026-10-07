@@ -117,8 +117,10 @@ pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
 pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;
 /// Synthetic sandbox account file, consumed by bwrap before app execution.
 pub(crate) const ACCOUNT_CHILD_FD: i32 = 42;
+/// Bwrap private-service namespace information, closed before app execution.
+pub(crate) const SERVICE_NAMESPACE_CHILD_FD: i32 = 43;
 /// Every fixed child slot; declared services are numbered around them.
-pub(crate) const RESERVED_CHILD_FDS: [i32; 7] = [
+pub(crate) const RESERVED_CHILD_FDS: [i32; 8] = [
     runtime_identity::broker::BROKER_CHILD_FD,
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
@@ -126,6 +128,7 @@ pub(crate) const RESERVED_CHILD_FDS: [i32; 7] = [
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
     BASELINE_SECCOMP_CHILD_FD,
     ACCOUNT_CHILD_FD,
+    SERVICE_NAMESPACE_CHILD_FD,
 ];
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";

@@ -2781,3 +2781,62 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
         app.close_components();
     }
 }
+
+#[test]
+fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
+    let mut fixture = ActionFixture::broker();
+    fixture.app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    let target = fixture.target(0, "follow-up");
+    let actor = fixture.app.collaboration.local_author.0.clone();
+    let granted = fixture.permissions.borrow().clone();
+    fixture.app.continuation.owner_view.following = true;
+    fixture.app.continuation.owner_view.pending =
+        Some(crate::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: b"pending-peer-view".to_vec(),
+        });
+    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
+        crate::permissions::Actor::person(None, "fixture-user"),
+        vec![],
+    )
+    .at_unix_time(100);
+    let heads = fixture.app.state.doc.get_heads();
+    let mut actual_before = fixture
+        .records
+        .read(&target.binding.checkout.id, Clone::clone)
+        .unwrap();
+    let actual_heads = actual_before.get_heads();
+    assert!(
+        fixture
+            .app
+            .invoke_bound_target(
+                &target,
+                &ResourceInvocation::new(&target.address.address, &actor)
+                    .confirmed(true)
+                    .broker_admitted(true)
+                    .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+            .is_err()
+    );
+    assert!(fixture.app.continuation.owner_view.following);
+    assert!(!fixture.app.continuation.owner_view.awaiting_claim);
+    assert!(fixture.app.continuation.owner_view.pending.is_some());
+    assert_eq!(fixture.app.state.doc.get_heads(), heads);
+    let mut actual_after = fixture
+        .records
+        .read(&target.binding.checkout.id, Clone::clone)
+        .unwrap();
+    assert_eq!(actual_after.get_heads(), actual_heads);
+    *fixture.permissions.borrow_mut() = granted;
+    let accepted = fixture.app.invoke_bound_target(
+        &target,
+        &ResourceInvocation::new(&target.address.address, &actor)
+            .confirmed(true)
+            .broker_admitted(true)
+            .invocation(Some(tilo_actions::InvocationId::new())),
+    );
+    assert!(accepted.is_ok(), "authorized local action: {accepted:?}");
+    assert!(!fixture.app.continuation.owner_view.following);
+    assert!(fixture.app.continuation.owner_view.awaiting_claim);
+    assert!(fixture.app.continuation.owner_view.pending.is_none());
+}

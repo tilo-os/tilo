@@ -1182,6 +1182,14 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         }
         CollabEvent::Handoff { request } => {
             meter.add_product(1, std::mem::size_of_val(request));
+            if let super::handoff::HandoffRequest::OwnerView { view } = request {
+                meter.string_capacity(&view.room);
+                meter.string_capacity(&view.app);
+                meter.string_capacity(&view.source);
+                if let Some(metadata) = &view.projection {
+                    meter.add_product(metadata.bytes.capacity(), 1);
+                }
+            }
             if let super::handoff::HandoffRequest::Retire { successor, .. } = request {
                 meter.string_capacity(&successor.room);
                 meter.string_capacity(&successor.record);

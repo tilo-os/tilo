@@ -53,6 +53,15 @@ const DEFAULT_HOTSPOT_NAME: &str = "Tilo Hotspot";
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NetworkEffect {
+    /// Read the adopted network state, pending work and labels this pane shows.
+    #[effect(
+        view,
+        returns,
+        device_only,
+        permission = "read",
+        label = "Inspect network state"
+    )]
+    InspectNetworkState,
     /// Scan for Wi-Fi networks and read this device's connections again.
     #[effect(job, idempotent, label = "Refresh networks")]
     RefreshNetworks,
@@ -220,6 +229,9 @@ pub(crate) fn answer(
     effect: NetworkEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if effect == NetworkEffect::InspectNetworkState {
+        return app.network().inspection().map(Effected::value);
+    }
     let begun = app.network().model().borrow_mut().begin(effect)?;
     Ok(match begun {
         Begun::Done => Effected::done(),
@@ -855,6 +867,17 @@ impl NetworkArea {
         })
     }
 
+    /// Observe the already mounted model; reading never starts or polls a scan.
+    fn inspection(&self) -> Result<serde_json::Value, String> {
+        match self.model.get() {
+            Some(model) => model.borrow().inspection(),
+            None => Ok(
+                serde_json::json!({"state":"unopened", "loaded":false, "networks":[],
+                "source": if self.cx.reaches_devices() { "device" } else { "preview" }}),
+            ),
+        }
+    }
+
     /// Take in background results, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
@@ -872,7 +895,7 @@ impl NetworkArea {
             .iter()
             .map(|network| {
                 let row = LiveRow::new(
-                    format!("settings.network:{}", network.ssid),
+                    network_row_id(network),
                     "settings.network",
                     network.ssid.clone(),
                 );
@@ -950,6 +973,8 @@ pub struct NetworkModel {
     /// Changes running; a snapshot taken meanwhile does not overrule what
     /// they show.
     in_flight: usize,
+    /// Explicit refresh operations whose worker result has not landed.
+    refreshes_pending: usize,
     /// Networks being joined.
     connecting: Vec<String>,
     notice: Option<String>,
@@ -993,7 +1018,69 @@ impl Drop for NetworkModel {
     }
 }
 
+/// The AP identity shared by publication and inspection.
+fn network_row_id(network: &WifiNetworkInfo) -> String {
+    format!("settings.network:{}", network.ssid)
+}
+
 impl NetworkModel {
+    /// Only state already adopted by the ordinary snapshot/completion pump.
+    /// Bound the explicit read, and omit editable forms, profiles and secrets.
+    fn inspection(&self) -> Result<serde_json::Value, String> {
+        const MAX_ROWS: usize = 256;
+        const MAX_BYTES: usize = 128 * 1024;
+        let networks = self
+            .networks
+            .iter()
+            .take(MAX_ROWS)
+            .map(|network| {
+                serde_json::json!({
+                    "resource":network_row_id(network), "ssid":network.ssid,
+                    "signal_bucket":network.signal, "security":network.security,
+                    "secure":network.secure, "connected":network.connected,
+                    "visible":self.loaded && self.wifi_enabled,
+                })
+            })
+            .collect::<Vec<_>>();
+        let known_wifi = self.loaded && self.read_errors.wifi_enabled.is_none();
+        let known_radios = self.loaded && self.read_errors.radios.is_none();
+        let known_wired = self.loaded && self.read_errors.wired.is_none();
+        let known_connectivity = self.loaded && self.read_errors.connectivity.is_none();
+        let wifi_status = self.loaded.then(|| {
+            if self.wifi_adapter_absent {
+                t("net-no-wifi-adapter")
+            } else {
+                self.wifi_status_error()
+                    .unwrap_or_else(|| self.connection_status_text())
+            }
+        });
+        let value = serde_json::json!({
+            "source":if self.cx.reaches_devices() { "device" } else { "preview" },
+            "state":if self.loaded { "ready" } else { "loading" }, "loaded":self.loaded,
+            "wifi": { "available":known_radios.then_some(self.radios.wifi_available),
+                "enabled":known_wifi.then_some(self.wifi_enabled), "status_label":wifi_status },
+            "wired": { "device":known_wired.then_some(self.wired.device.as_deref()).flatten(),
+                "connected":known_wired.then_some(self.wired.connected) },
+            "connectivity": { "state":known_connectivity.then_some(match self.connectivity {
+                ConnectivityState::Unknown => "unknown", ConnectivityState::Offline => "offline",
+                ConnectivityState::Portal => "portal", ConnectivityState::Limited => "limited", ConnectivityState::Full => "full",
+            }), "label":known_connectivity.then(|| connectivity_shown(self.connectivity)) },
+            "scan": { "snapshot_pending":self.snapshot.is_some(), "jobs_pending":self.refreshes_pending },
+            "changes_pending":self.in_flight, "networks":networks,
+            "network_count":self.networks.len(), "networks_truncated":self.networks.len() > MAX_ROWS,
+            "errors": { "networks":self.read_errors.networks, "wifi_enabled":self.read_errors.wifi_enabled,
+                "radios":self.read_errors.radios, "wired":self.read_errors.wired, "connectivity":self.read_errors.connectivity },
+            "labels": { "wifi":t("net-wifi"), "wifi_caption":t("net-wifi-caption"),
+                "enterprise_caption":t("net-enterprise-caption"), "refresh":t("net-refresh") },
+        });
+        let size = serde_json::to_vec(&value)
+            .map_err(|_| "Network inspection could not be encoded.".to_string())?
+            .len();
+        if size > MAX_BYTES {
+            return Err("Network inspection exceeds its bounded response size.".into());
+        }
+        Ok(value)
+    }
     /// This device's networks: the pane is pending until the first
     /// snapshot, read in the background, arrives.
     fn of_device(cx: PaneCx) -> Self {
@@ -1043,6 +1130,7 @@ impl NetworkModel {
             diagnostics: None,
             read_errors: NetworkReadErrors::default(),
             in_flight: 0,
+            refreshes_pending: 0,
             connecting: Vec::new(),
             notice: None,
             expanded: None,
@@ -1279,7 +1367,11 @@ impl NetworkModel {
         self.changed = true;
         let service = Arc::clone(&self.service);
         Ok(match effect {
+            NetworkEffect::InspectNetworkState => {
+                return Err("Network inspection is a read-only resource operation.".into());
+            }
             NetworkEffect::RefreshNetworks => {
+                self.refreshes_pending += 1;
                 Begun::work(move || Landed::Refreshed(service.snapshot(false)))
             }
             NetworkEffect::SetWifi { on } => {
@@ -1733,7 +1825,10 @@ impl NetworkModel {
     fn land(&mut self, landed: Landed) -> EffectAnswer {
         self.changed = true;
         let reported = match landed {
-            Landed::Refreshed(snapshot) => self.adopt_snapshot(snapshot),
+            Landed::Refreshed(snapshot) => {
+                self.refreshes_pending = self.refreshes_pending.saturating_sub(1);
+                self.adopt_snapshot(snapshot)
+            }
             Landed::Changed(change, result) => {
                 self.in_flight = self.in_flight.saturating_sub(1);
                 let reported = self.report(&change, result);
@@ -3205,10 +3300,13 @@ mod tests {
         vpns: Mutex<Vec<VpnInfo>>,
         profiles: Mutex<Vec<SavedNetworkProfile>>,
         snapshot_gate: Mutex<Option<SnapshotGate>>,
+        snapshot_reads: std::sync::atomic::AtomicUsize,
     }
 
     impl NetworkService for FakeNetwork {
         fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
+            self.snapshot_reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let gate = self.snapshot_gate.lock().unwrap().take();
             if let Some(gate) = gate {
                 gate.started.send(()).unwrap();
@@ -3301,6 +3399,226 @@ mod tests {
             PaneCx::in_file(profile.join("settings.json")),
             Arc::clone(fake) as Arc<dyn NetworkService>,
         )
+    }
+
+    fn mount_network(
+        app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+        observed: NetworkModel,
+    ) -> Option<()> {
+        app.with_surface::<SettingsApp, _>(|settings| {
+            *settings.network().model().borrow_mut() = observed;
+        })
+    }
+
+    #[test]
+    fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let mut observed = model(&fake);
+        observed.enterprise_open = true;
+        *observed.enterprise.password.lock().unwrap() = "private-enterprise-input".into();
+        *observed.hotspot_password.lock().unwrap() = "private-hotspot-input".into();
+        *observed.sim_pin.lock().unwrap() = "private-pin-input".into();
+        let mut app =
+            ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
+                .expect("read-only Settings opens");
+        mount_network(&mut app, observed).expect("the ordinary mounted network model");
+        let open = crate::effects::open_pane_address(crate::categories::Category::Network);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        let before = app
+            .call("inspect-network-state", serde_json::json!({}))
+            .expect("the network state must have a declared read-only door")
+            .expect("the inspector returns the observed model");
+        assert_eq!(before["network_count"], 3);
+        assert_eq!(before["connectivity"]["state"], "full");
+        assert_eq!(
+            before["source"], "preview",
+            "test stand-ins cannot masquerade as device observations"
+        );
+        let row_ids = app
+            .surface::<SettingsApp, _>(|settings| {
+                settings
+                    .network()
+                    .rows()
+                    .into_iter()
+                    .map(|row| row.id().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        for network in before["networks"].as_array().unwrap() {
+            assert!(
+                row_ids
+                    .iter()
+                    .any(|id| id == network["resource"].as_str().unwrap())
+            );
+        }
+        let shown = crate::widgets::announced_text(app.harness().root_widget());
+        assert!(
+            shown.contains(
+                &before["labels"]["enterprise_caption"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            ),
+            "the Inspector and mounted pane use the same resolved caption"
+        );
+        let encoded = serde_json::to_string(&before).unwrap();
+        for secret in [
+            "private-enterprise-input",
+            "private-hotspot-input",
+            "private-pin-input",
+        ] {
+            assert!(
+                !encoded.contains(secret),
+                "explicit network reads omit private input buffers"
+            );
+        }
+        assert!(
+            app.call("refresh-networks", serde_json::json!({})).is_err(),
+            "Read does not grant scan/write authority"
+        );
+        for actor in ["person:foreign", "agent:foreign"] {
+            assert!(
+                app.call_by(
+                    ui::tilo_actions::ActionInvoker::actor(actor),
+                    "settings.root",
+                    "inspect-network-state",
+                    serde_json::json!({})
+                )
+                .is_err(),
+                "device-only inspection refuses unrelated callers"
+            );
+        }
+        assert!(
+            app.call("inspect-network-state", serde_json::json!({"on":false}))
+                .is_err(),
+            "Read accepts no mutation-shaped arguments"
+        );
+        let after = app
+            .call("inspect-network-state", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "inspection never refreshes or changes network state"
+        );
+        assert_eq!(
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(fake.changes.lock().unwrap().is_empty());
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
+    #[test]
+    fn network_inspection_observes_the_actual_pending_refresh_and_failed_snapshot() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let observed = model(&fake);
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        mount_network(&mut app, observed).unwrap();
+        app.settle();
+        let (started, starts) = std::sync::mpsc::channel();
+        let (release, releases) = std::sync::mpsc::channel();
+        *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
+            started,
+            release: releases,
+        });
+        let mut release = ReleaseSnapshot(Some(release));
+        *fake.unreadable.lock().unwrap() = Some("NetworkManager query refused".into());
+        let effect = SettingsEffect::from(NetworkEffect::RefreshNetworks);
+        assert!(
+            app.operate(ui::tilo_resource::Invoke::effect(&effect))
+                .unwrap()
+                .is_none(),
+            "scan completion awaits its actual worker"
+        );
+        starts
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        let pending = app
+            .call("inspect-network-state", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending["scan"]["jobs_pending"], 1);
+        assert_eq!(
+            pending["network_count"], 3,
+            "pending scans preserve the last adopted rows"
+        );
+        release.0.take().unwrap().send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let failed = loop {
+            app.settle();
+            let snapshot = app
+                .call("inspect-network-state", serde_json::json!({}))
+                .unwrap()
+                .unwrap();
+            if snapshot["scan"]["jobs_pending"] == 0 {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the real worker outcome must land"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(failed["errors"]["networks"], "NetworkManager query refused");
+        assert_eq!(
+            failed["network_count"], 0,
+            "failed scans do not publish stale rows as current"
+        );
+        assert!(
+            failed["wifi"]["enabled"].is_null(),
+            "unreadable radio state is never fabricated as off"
+        );
+        assert!(failed["connectivity"]["state"].is_null());
+        assert_eq!(
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn network_inspection_does_not_initialize_an_unopened_area_and_bounds_private_reads() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = NetworkArea::new(&cx);
+        assert_eq!(area.inspection().unwrap()["state"], "unopened");
+        assert!(
+            area.model.get().is_none(),
+            "Read must not lazily start a device scan"
+        );
+        let fake = Arc::new(FakeNetwork::default());
+        let mut observed = NetworkModel::with_service(cx, fake);
+        let initial = observed.inspection().unwrap();
+        assert_eq!(initial["state"], "loading");
+        assert!(initial["wifi"]["enabled"].is_null());
+        assert!(initial["connectivity"]["state"].is_null());
+        observed.networks = vec![
+            WifiNetworkInfo {
+                ssid: "x".repeat(1024),
+                signal: 0,
+                secure: false,
+                security: os_actions::WifiSecurity::Open,
+                connected: false
+            };
+            257
+        ];
+        assert!(
+            observed.inspection().is_err(),
+            "the explicit Read has a finite byte bound"
+        );
+        for row in &mut observed.networks {
+            row.ssid = "bounded".into();
+        }
+        let bounded = observed.inspection().unwrap();
+        assert_eq!(bounded["network_count"], 257);
+        assert_eq!(bounded["networks"].as_array().unwrap().len(), 256);
+        assert_eq!(bounded["networks_truncated"], true);
     }
 
     /// Begin `effect` and run its work here, as a worker would; what it

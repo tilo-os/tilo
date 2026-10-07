@@ -1625,6 +1625,11 @@ fn spawn_lan_discovery_forwarding(
 }
 
 impl ShellNetwork {
+    /// Retained cryptographic custody for the same native broker's private
+    /// account setup. No key or certificate is created by this projection.
+    pub(crate) fn messaging_host_identity(&self) -> Option<HostIdentity> {
+        self.host_identity.clone()
+    }
     /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared `WorkspaceTree` in a [`WorkspaceTreeReplica`], and
     /// return a handle the shell can use to drive sync. The keypair is
@@ -4423,7 +4428,10 @@ impl ShellNetwork {
             )
             .snapshot;
         let neutral_bytes = postcard::to_allocvec(&neutral).ok()?;
-        let fingerprint = *blake3::hash(&neutral_bytes).as_bytes();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&neutral_bytes);
+        hasher.update(&reports.owner_claim_revision().to_le_bytes());
+        let fingerprint = *hasher.finalize().as_bytes();
 
         let mut previous = self.personal_continuity_fingerprint.lock().ok()?;
         if previous.as_ref() == Some(&fingerprint) {
@@ -4445,7 +4453,7 @@ impl ShellNetwork {
             if !self.enforce_app_continuations_policy() {
                 return None;
             }
-            let _ = self.persist_personal_continuity();
+            self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision());
             return Some(bytes);
         }
         let mut counter = self.personal_continuity_counter.lock().ok()?;
@@ -4462,6 +4470,11 @@ impl ShellNetwork {
                 *counter,
                 &reports,
             );
+        if let Some(prior) = prior.as_ref() {
+            report
+                .snapshot
+                .preserve_owner_view_revisions(prior, &reports);
+        }
         if let Some(prior) = prior.as_ref()
             && let Err(error) = report.snapshot.record_closures_from(prior)
         {
@@ -4491,7 +4504,7 @@ impl ShellNetwork {
         if !self.enforce_app_continuations_policy() {
             return None;
         }
-        let durable = self.persist_personal_continuity();
+        let durable = self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision());
         if durable && !pending_closed_tabs.is_empty() {
             let mut tree = tree_handle.write();
             for (tab, room) in pending_closed_tabs {
@@ -4503,7 +4516,15 @@ impl ShellNetwork {
         Some(bytes)
     }
 
+    fn persist_and_acknowledge_owner_claims(&self, revision: u64) -> bool {
+        self.persist_personal_continuity_with_claims(Some(revision))
+    }
+
     fn persist_personal_continuity(&self) -> bool {
+        self.persist_personal_continuity_with_claims(None)
+    }
+
+    fn persist_personal_continuity_with_claims(&self, claims: Option<u64>) -> bool {
         if !self.enforce_app_continuations_policy() {
             return false;
         }
@@ -4516,13 +4537,27 @@ impl ShellNetwork {
         ) else {
             return false;
         };
-        persist_personal_continuity(
+        let durable = persist_personal_continuity(
             path,
             &PersistedPersonalContinuity {
                 counter: *counter,
                 continuity: continuity.clone(),
             },
-        )
+        );
+        // The acknowledgement refers to the exact value durably written
+        // while these ledger/counter locks remain held, never a later capture.
+        if durable
+            && let Some(revision) = claims
+            && let Some(snapshot) = self
+                .personal_continuity_device
+                .as_ref()
+                .and_then(|device| continuity.snapshot_for(device))
+            && let Ok(mut registry) =
+                crate::shell::personal_continuity_registry::global_registry().lock()
+        {
+            registry.acknowledge_owner_claims(revision, snapshot);
+        }
+        durable
     }
 
     /// What chrome needs to offer continuing another device's focused tab:
@@ -4556,6 +4591,85 @@ impl ShellNetwork {
             observations,
             devices,
         }
+    }
+
+    pub(crate) fn pump_owner_views(
+        &self,
+    ) -> Vec<(
+        ui::collaboration::owner_view::OwnerView,
+        Option<AuthenticatedPersonalRoute>,
+    )> {
+        let permitted = self.enforce_app_continuations_policy();
+        let enrolled: std::collections::HashSet<_> = personal_device_peer_addrs(
+            &personal_device_peer_path(),
+            Some(*self.local_peer_id.as_bytes()),
+        )
+        .into_iter()
+        .map(|peer| peer.id)
+        .collect();
+        let persons = self
+            .peer_identities
+            .authenticated_persons(tilo_clock::unix_now_ns());
+        let current: std::collections::BTreeMap<_, _> = self
+            .authenticated_personal_routes
+            .lock()
+            .map(|routes| {
+                routes
+                    .values()
+                    .filter(|route| {
+                        enrolled.contains(&route.endpoint_id)
+                            && persons
+                                .get(&crate::shell::state::PeerOrigin::peer(&route.endpoint_id))
+                                .is_some_and(|root| {
+                                    Some(root) == self.personal_continuity_user.as_ref()
+                                })
+                    })
+                    .map(|route| (route.device.clone(), route.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let continuity = self
+            .personal_continuity
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default();
+        let registry = crate::shell::personal_continuity_registry::global_registry();
+        let Ok(mut registry) = registry.lock() else {
+            return Vec::new();
+        };
+        registry.stop_owner_views_unless(|route| {
+            permitted && current.get(&route.device) == Some(route)
+        });
+        if permitted {
+            let candidates: std::collections::BTreeSet<_> = continuity
+                .snapshots()
+                .values()
+                .flat_map(|snapshot| &snapshot.workspaces)
+                .flat_map(|workspace| workspace.apps.iter().map(|app| (workspace.room, app.id)))
+                .collect();
+            let live_keys = candidates
+                .iter()
+                .filter_map(|(room, id)| {
+                    let app = continuity.newest_app_state_in_room(*room, *id)?;
+                    registry.owner_view_key(*room, app)
+                })
+                .collect();
+            registry.retain_owner_view_candidates(&live_keys);
+            for (room, id) in candidates {
+                let Some(app) = continuity.newest_app_state_in_room(room, id) else {
+                    continue;
+                };
+                if self.personal_continuity_device.as_ref() == Some(&app.stamp.device) {
+                    if registry.owner_claimed(room, app) {
+                        continue;
+                    }
+                    registry.offer_owner_view(room, app, None);
+                } else if let Some(route) = current.get(&app.stamp.device) {
+                    registry.offer_owner_view(room, app, Some(route.clone()));
+                }
+            }
+        }
+        registry.drain_owner_views()
     }
 
     /// Return the locally retained, convergent view of this person's devices.

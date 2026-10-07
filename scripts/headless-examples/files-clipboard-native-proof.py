@@ -331,8 +331,14 @@ def main():
     print(f"Evidence: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="tilo-files-fonts-") as scratch:
         fonts = pathlib.Path(scratch) / "catalog"
-        subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"), "stage",
+        subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"), "prepare",
                         str(REPO / "crates/sdk/ui-core/assets/fonts"), str(fonts), "--scope", "os"], check=True)
+        (output / "font-namespace.json").write_text(json.dumps({
+            "installer": "tools/font-catalog.py prepare --scope os",
+            "manifest_sha256": shared.digest_file(fonts / "manifest.toml"),
+            "mount": "/usr/share/fonts/tilo", "read_only": True,
+            "host_files_modified": False,
+        }, indent=2))
         subprocess.run(["bwrap", "--die-with-parent", "--bind", "/", "/", "--dev-bind", "/dev", "/dev",
                         "--tmpfs", "/usr/share/fonts", "--ro-bind", str(fonts), "/usr/share/fonts/tilo", "--",
                         sys.executable, "-B", str(pathlib.Path(__file__).resolve()), "--binaries",
