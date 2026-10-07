@@ -56,6 +56,76 @@ pub struct SecureNearbyDestination {
 }
 
 impl SecureNearbyDestination {
+    /// Retain an exact directory beneath an existing grant, with the same
+    /// no-follow relative walk used by source admission.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn open_beneath(grant: &Path, requested: &Path) -> Result<Self, String> {
+        let source = SecureNearbySource::open_beneath(grant, requested)?;
+        if !source.metadata()?.is_dir() {
+            return Err("destination is not a directory".into());
+        }
+        Ok(Self {
+            directory: source.into_file(),
+            display_root: requested.to_path_buf(),
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn metadata(&self) -> Result<fs::Metadata, String> {
+        self.directory.metadata().map_err(display)
+    }
+
+    /// Retain the leaf itself, including a symlink as data. Only one validated
+    /// name is accepted; directory walking remains the existing beneath walk.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn entry(&self, name: &std::ffi::OsStr) -> Result<File, String> {
+        let path = Path::new(name);
+        validate_relative(path)?;
+        if path.components().count() != 1 {
+            return Err("entry is not one leaf".into());
+        }
+        let name = CString::new(name.as_bytes()).map_err(display)?;
+        // SAFETY: owned directory and a live NUL-terminated single name; a
+        // successful openat returns a new owned no-follow metadata descriptor.
+        let fd = unsafe {
+            libc::openat(
+                self.directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        // SAFETY: successful openat transferred this descriptor.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    /// Create a private child under this retained directory, without reopening
+    /// its display path. Existing children are never adopted.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn private_child(&self, name: &std::ffi::OsStr) -> Result<Self, String> {
+        let path = Path::new(name);
+        validate_relative(path)?;
+        if path.components().count() != 1 {
+            return Err("private child is not one leaf".into());
+        }
+        let encoded = CString::new(name.as_bytes()).map_err(display)?;
+        // SAFETY: retained directory and a terminated single-component name;
+        // mkdirat creates exclusively with owner-only access.
+        if unsafe { libc::mkdirat(self.directory.as_raw_fd(), encoded.as_ptr(), 0o700) } != 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        let directory = self.entry(name)?;
+        if !directory.metadata().map_err(display)?.is_dir() {
+            return Err("private child changed during creation".into());
+        }
+        Ok(Self {
+            directory,
+            display_root: self.display_root.join(name),
+        })
+    }
+
     /// Open one approved writable Files grant without following a final link.
     ///
     /// # Errors
@@ -78,8 +148,14 @@ impl SecureNearbyDestination {
         })
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd as _;
+        self.directory.as_raw_fd()
+    }
+
     #[cfg(not(target_os = "macos"))]
-    fn anchored_root(&self) -> PathBuf {
+    pub(crate) fn anchored_root(&self) -> PathBuf {
         PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()))
     }
 

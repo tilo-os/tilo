@@ -1006,13 +1006,17 @@ fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
 /// `lib/` by file name for soname resolution via `LD_LIBRARY_PATH` — unlike
 /// the loader/libc set, these are explicit absolute paths, not resolved
 /// against the host root. A directory (an engine with its resources) keeps
-/// its tree under `lib/<name>/`.
+/// its tree under `lib/<name>/`. Repeated source paths are copied once.
 fn copy_includes(
     out: &Path,
     includes: &[PathBuf],
     written: &mut Vec<(String, PathBuf)>,
 ) -> Result<(), BundleError> {
+    let mut sources = BTreeSet::new();
     for extra in includes {
+        if !sources.insert(extra) {
+            continue;
+        }
         let name = extra
             .file_name()
             .ok_or_else(|| BundleError::IncludeUnnamed {
@@ -1417,6 +1421,77 @@ mod tests {
             .unwrap_err();
             assert!(matches!(err, BundleError::IncludeMissing { .. }));
         }
+    }
+
+    #[test]
+    fn repeated_extra_inputs_build_one_signed_abi_payload() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let identity = Identity::generate();
+        let identity_path = host.path().join("identity.json");
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let libstd = host.path().join("libstd-fixture.so");
+        let libruntime = host.path().join("libruntime_dylib.so");
+        fs::write(&libstd, b"Rust standard library fixture").unwrap();
+        fs::write(&libruntime, b"Tilo runtime fixture").unwrap();
+        let unique = tempfile::tempdir().unwrap();
+        let repeated = tempfile::tempdir().unwrap();
+        let opts = BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: Some(&identity_path),
+            extra_libs: &[libstd.clone(), libruntime.clone()],
+        };
+        let (expected, _) = build_abi_bundle(unique.path(), "2026.07", &opts).unwrap();
+        // Explicit includes and ldd's transitive closure name the same inputs.
+        let (actual, root) = build_abi_bundle(
+            repeated.path(),
+            "2026.07",
+            &BuildOptions {
+                extra_libs: &[libruntime.clone(), libstd.clone(), libstd, libruntime],
+                ..opts
+            },
+        )
+        .unwrap();
+        verify_bundle_with(
+            &root,
+            &VerifyOptions {
+                require_publisher: Some(identity.public_key_hex()),
+                require_signature: true,
+                require_arch: Some("x86_64".to_string()),
+            },
+        )
+        .expect("repeated source inputs still produce a valid signed bundle");
+        assert_eq!(actual.version, expected.version);
+        assert_eq!(actual.root_hash, expected.root_hash);
+        assert_eq!(actual.files.len(), expected.files.len());
+    }
+
+    #[test]
+    fn different_extra_inputs_with_the_same_name_are_still_rejected() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let name = "libruntime_dylib.so";
+        fs::write(first.path().join(name), b"first runtime").unwrap();
+        fs::write(second.path().join(name), b"conflicting runtime").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let (_, root) = build_abi_bundle(
+            out.path(),
+            "2026.07",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[first.path().join(name), second.path().join(name)],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_bundle(&root),
+            Err(BundleError::InvalidPayloadPath { path }) if path == format!("lib/{name}")
+        ));
     }
 
     fn fake_x86_64_host(root: &Path) {

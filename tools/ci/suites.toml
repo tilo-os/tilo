@@ -858,6 +858,7 @@ inputs = [
   "apps/store/fixtures/published/snapshot379.json.gz.b64",
   "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64",
   "apps/browser/tilo-app.toml",
+  "apps/file-explorer/tilo-app.toml",
   "tools/protocols/airdrop_sender.py",
   "tools/test-assets.py",
   "crates/sdk/ui-core/assets/fonts/",
@@ -869,6 +870,9 @@ inputs = [
 ]
 readers = [
   "crates/session/shell/src/compositor/chooser_service.rs",
+
+  "crates/session/shell/examples/files_clipboard_native.rs",
+  "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",

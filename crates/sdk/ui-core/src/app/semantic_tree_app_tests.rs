@@ -636,6 +636,67 @@ fn lazy_app(resource: Resource) -> App {
     app
 }
 
+#[test]
+fn background_document_job_from_an_unbound_resource_waits_for_broker_admission() {
+    let address = tilo_actions::ActionAddress::new("test.lazy-document-job", "bump");
+    let spec = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
+        .unwrap()
+        .execution(tilo_actions::ExecutionMode::Background { cancellable: true })
+        .returns(tilo_actions::ResultSpec::Job);
+    let mut app =
+        lazy_app(Resource::new(&address.resource, "test.counter", "Counter").with_action(spec));
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+    let actor = app.collaboration.local_author.0.clone();
+    let started = app
+        .invoke_resource_action(ResourceInvocation::new(&address, &actor))
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::widget::ResourceOperationStart::Accepted
+    ));
+    assert_eq!(counter(&app), 0, "no edit before native broker admission");
+    let request = sent
+        .borrow()
+        .iter()
+        .find_map(|request| match request {
+            CollabRequest::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+            } => Some(invoke.clone()),
+            _ => None,
+        })
+        .expect("the real action path must submit a broker request");
+    assert_eq!(request.target.address, address);
+    app.invoke_published_action(
+        53,
+        request.invocation,
+        address.resource,
+        address.action,
+        None,
+        &actor,
+        None,
+    );
+    assert_eq!(
+        counter(&app),
+        1,
+        "the admitted delivery applies exactly once"
+    );
+    assert_eq!(
+        sent.borrow()
+            .iter()
+            .filter(|request| matches!(
+                request,
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(_)
+                }
+            ))
+            .count(),
+        1,
+        "admitted document delivery must not route in a loop"
+    );
+}
+
 fn counter(app: &App) -> i64 {
     counter_in_doc(&app.state.doc)
 }

@@ -14,8 +14,161 @@ use tilo_app::prelude::*;
 use tilo_resource::Effect;
 
 thread_local! {
+    static CAUSAL_REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
+    static CAUSAL_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
     static RECEIPT_REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
     static RECEIPT_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
+}
+
+struct CausalMailApp;
+
+impl ResourceApp for CausalMailApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-causal-mailbox";
+    const TITLE: &'static str = "Mailbox";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.drain_causal(
+            |mail: &Mailbox| {
+                mail.outbox
+                    .iter()
+                    .map(|(id, text)| (id.clone(), text.clone()))
+                    .collect()
+            },
+            |_, cx| {
+                CAUSAL_CALLERS.with(|callers| callers.borrow_mut().push(cx.invocation().unwrap()));
+                CAUSAL_REPLIES.with(|replies| replies.borrow_mut().push(cx.reply()));
+                Ok(Effected::Pending)
+            },
+        );
+        Box::new(Column::new())
+    }
+}
+
+fn start_causal(app: &mut TestApp<CausalMailApp>, text: &str) -> tilo_actions::InvocationId {
+    start_causal_action(app, "send", &serde_json::json!({"text": text}))
+}
+
+fn start_causal_action(
+    app: &mut TestApp<CausalMailApp>,
+    action: &str,
+    arguments: &serde_json::Value,
+) -> tilo_actions::InvocationId {
+    let instance_id = app.harness().component_instance_id().unwrap();
+    let address = tilo_app::bound_dispatch::BoundActionAddress {
+        instance_id,
+        address: tilo_actions::ActionAddress::new("test.mailbox", action),
+    };
+    let (invocation, started) = app
+        .harness()
+        .start_bound_job_for(None, &address, arguments.as_object().unwrap(), true)
+        .unwrap();
+    assert!(
+        started.completed().is_none(),
+        "document consequence must remain pending"
+    );
+    invocation
+}
+
+#[test]
+fn semantic_undo_consequences_keep_undos_own_new_invocation() {
+    let mut app = TestApp::<CausalMailApp>::new().unwrap();
+    let original = start_causal(&mut app, "original");
+    CAUSAL_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    let entry = app.state().outbox.iter().next().unwrap().0.clone();
+    app.call("delivered", serde_json::json!({"entry": entry}))
+        .unwrap();
+    assert!(app.state().outbox.is_empty());
+    let undo = start_causal_action(&mut app, "undo", &serde_json::json!({}));
+    assert_ne!(undo, original);
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![original, undo]
+    );
+    app.settle();
+    assert!(
+        !app.harness()
+            .job_updates(undo)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+    CAUSAL_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(Err("undo compensation refused".into()));
+    app.settle();
+    assert!(app.harness().job_updates(undo).iter().any(
+        |update| matches!(update, tilo_actions::InvocationUpdate::Failed { invocation, error }
+            if *invocation == undo && error.message.contains("undo compensation refused"))
+    ));
+    assert!(
+        !app.harness()
+            .job_updates(undo)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+}
+
+#[test]
+fn causal_document_jobs_keep_the_actual_invocation_and_wait_for_terminal_receipts() {
+    let mut app = TestApp::<CausalMailApp>::new().unwrap();
+    let invocation = start_causal(&mut app, "first");
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![invocation]
+    );
+    app.settle();
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+    CAUSAL_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    assert!(app.harness().job_updates(invocation).iter()
+        .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. } if *actual == invocation)));
+    // The old outbox entry remains pending. Another caller's edit must not
+    // adopt it, even though an ordinary drain would retry pending work.
+    app.call("fetched", serde_json::json!({"text": "unrelated"}))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![invocation]
+    );
+    let second = start_causal(&mut app, "second");
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![invocation, second]
+    );
+    CAUSAL_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(Err("compensation refused".into()));
+    app.settle();
+    assert!(app.harness().job_updates(second).iter()
+        .any(|update| matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.message.contains("compensation refused"))));
+}
+
+#[test]
+fn causal_document_job_cancellation_stops_the_same_delayed_consequence() {
+    let mut app = TestApp::<CausalMailApp>::new().unwrap();
+    let invocation = start_causal(&mut app, "cancel");
+    assert!(app.harness().cancel_job(invocation).is_some());
+    let reply = CAUSAL_REPLIES.with(|replies| replies.borrow_mut().pop().unwrap());
+    assert!(reply.is_cancelled());
+    reply.finish(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]

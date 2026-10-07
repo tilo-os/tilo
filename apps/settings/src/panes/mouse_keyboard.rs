@@ -27,7 +27,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Binds};
 use ui::widget::{
-    AppModel, Button, Dropdown, ModelPath, Row, Slider, Spacer, Text, Toggle, Widget,
+    AppModel, Button, Dropdown, ModelPath, Row, Slider, Spacer, Text, TextInput, Toggle, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -41,8 +41,8 @@ use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, choice_row, choice_row_described, error_caption, rows, setting_row,
-    setting_row_described,
+    El, caption, card, choice_row, choice_row_described, error_caption, field_row, rows,
+    setting_row, setting_row_described,
 };
 
 /// Bind a control to a Settings effect where it is built.
@@ -889,6 +889,31 @@ pub enum InputEffect {
     /// Correct misspellings while typing, or stop.
     #[effect(idempotent)]
     SetAutoCorrect { on: bool },
+    /// Add an explicit word to this person's shared local dictionary.
+    AddDictionaryWord {
+        #[param("The spelling, including its intended capitalization")]
+        word: String,
+        #[param("Language tag, or empty for all languages")]
+        language: String,
+        #[param("The dictionary revision being edited")]
+        revision: u64,
+    },
+    /// Edit an existing personal word, preserving the chosen casing.
+    EditDictionaryWord {
+        old_word: String,
+        old_language: String,
+        word: String,
+        language: String,
+        revision: u64,
+    },
+    /// Remove one explicit addition from every local input consumer.
+    RemoveDictionaryWord {
+        word: String,
+        language: String,
+        revision: u64,
+    },
+    /// Reset this person's local dictionary. Other accounts are unchanged.
+    ResetDictionary { revision: u64 },
     /// Check spelling in one language, or the session's.
     #[effect(idempotent)]
     SetSpellingLanguage {
@@ -1252,7 +1277,11 @@ fn apply(
         | E::InspectInputSources { .. }
         | E::SetSpellChecking { .. }
         | E::SetAutoCorrect { .. }
-        | E::SetSpellingLanguage { .. } => {}
+        | E::SetSpellingLanguage { .. }
+        | E::AddDictionaryWord { .. }
+        | E::EditDictionaryWord { .. }
+        | E::RemoveDictionaryWord { .. }
+        | E::ResetDictionary { .. } => {}
     }
     Ok(())
 }
@@ -1280,6 +1309,69 @@ pub(crate) fn answer(
     }
     let host = app.host();
     match effect {
+        InputEffect::AddDictionaryWord {
+            word,
+            language,
+            revision,
+        } => {
+            let word = ui::personal_dictionary::Word::new(
+                &word,
+                (!language.is_empty()).then_some(language.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            return ui::personal_dictionary::edit(
+                revision,
+                ui::personal_dictionary::Edit::Add(word),
+            )
+            .map(|()| Effected::done())
+            .map_err(|error| error.to_string());
+        }
+        InputEffect::EditDictionaryWord {
+            old_word,
+            old_language,
+            word,
+            language,
+            revision,
+        } => {
+            let old = ui::personal_dictionary::Word::new(
+                &old_word,
+                (!old_language.is_empty()).then_some(old_language.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            let new = ui::personal_dictionary::Word::new(
+                &word,
+                (!language.is_empty()).then_some(language.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            return ui::personal_dictionary::edit(
+                revision,
+                ui::personal_dictionary::Edit::Replace { old, new },
+            )
+            .map(|()| Effected::done())
+            .map_err(|error| error.to_string());
+        }
+        InputEffect::RemoveDictionaryWord {
+            word,
+            language,
+            revision,
+        } => {
+            let word = ui::personal_dictionary::Word::new(
+                &word,
+                (!language.is_empty()).then_some(language.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            return ui::personal_dictionary::edit(
+                revision,
+                ui::personal_dictionary::Edit::Remove(word),
+            )
+            .map(|()| Effected::done())
+            .map_err(|error| error.to_string());
+        }
+        InputEffect::ResetDictionary { revision } => {
+            return ui::personal_dictionary::edit(revision, ui::personal_dictionary::Edit::Reset)
+                .map(|()| Effected::done())
+                .map_err(|error| error.to_string());
+        }
         InputEffect::SetSpellChecking { on } => {
             return host.update(|text: &mut TextAssistancePrefs| text.check_spelling = on);
         }
@@ -1489,10 +1581,18 @@ pub(crate) struct KeyboardPreviewCache {
 pub(crate) type KeyboardPreviewCacheHandle =
     std::rc::Rc<std::cell::RefCell<Option<KeyboardPreviewCache>>>;
 
+type DictionaryKey = (String, Option<String>);
+type DictionaryFields = (ui::LocalState<String>, ui::LocalState<String>);
+
 pub struct MouseKeyboardPane {
     cx: PaneCx,
     input: Followed<InputPrefs>,
     text: Followed<TextAssistancePrefs>,
+    dictionary: Option<ui::personal_dictionary::Snapshot>,
+    dictionary_identity: Option<[u8; 32]>,
+    dictionary_word: ui::LocalState<String>,
+    dictionary_language: ui::LocalState<String>,
+    dictionary_edits: RefCell<HashMap<DictionaryKey, DictionaryFields>>,
     /// The input section as shown: normalised.
     last: InputPrefs,
     catalog: Vec<CatalogEntry>,
@@ -1524,6 +1624,12 @@ impl MouseKeyboardPane {
             cx,
             input,
             text,
+            dictionary: ui::personal_dictionary::snapshot().ok(),
+            dictionary_identity: ui::local_identity::bound()
+                .map(|identity| identity.group_public_key),
+            dictionary_word: ui::LocalState::new(String::new()),
+            dictionary_language: ui::LocalState::new(String::new()),
+            dictionary_edits: RefCell::new(HashMap::new()),
             last,
             catalog: area.catalog().to_vec(),
             catalog_error: area.catalog_error.clone(),
@@ -1743,6 +1849,7 @@ impl MouseKeyboardPane {
             self.input_sources_card(),
             self.keyboard_card(),
             self.spell_checker_card(),
+            self.dictionary_card(),
         ];
         if self.sections.touchpad {
             cards.push(self.touchpad_card());
@@ -2246,6 +2353,131 @@ impl MouseKeyboardPane {
         )
     }
 
+    fn dictionary_card(&self) -> Box<dyn Widget> {
+        let Some(snapshot) = &self.dictionary else {
+            return card(
+                &t("input-dictionary-title"),
+                rows(vec![caption(&t("input-dictionary-unavailable"))]),
+            );
+        };
+        let revision = snapshot.revision;
+        let word = self.dictionary_word.clone();
+        let language = self.dictionary_language.clone();
+        let add = self.cx.bind(
+            Button::new("dictionary.add", &t("input-dictionary-add")),
+            effect(InputEffect::ADD_DICTIONARY_WORD)
+                .map(move |()| (word.get(), language.get(), revision)),
+        );
+        let mut children = vec![
+            caption(&t("input-dictionary-caption")),
+            field_row(
+                &t("input-dictionary-word"),
+                Box::new(
+                    TextInput::from_state(&self.dictionary_word)
+                        .with_id("dictionary.word")
+                        .with_accessible_name(t("input-dictionary-word"))
+                        .with_placeholder(&t("input-dictionary-word-placeholder"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ),
+            ),
+            field_row(
+                &t("input-dictionary-language"),
+                Box::new(
+                    TextInput::from_state(&self.dictionary_language)
+                        .with_id("dictionary.language")
+                        .with_accessible_name(t("input-dictionary-language"))
+                        .with_placeholder(&t("input-dictionary-all-languages"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ),
+            ),
+            caption(&t("input-dictionary-language-caption")),
+            Box::new(add) as Box<dyn Widget>,
+        ];
+        for (index, entry) in snapshot.words.iter().enumerate() {
+            children.push(self.dictionary_word_row(index, entry, revision));
+        }
+        children.push(Box::new(
+            self.cx.bind_invocation(
+                Button::new("dictionary.reset", &t("input-dictionary-reset"))
+                    .with_enabled(!snapshot.words.is_empty()),
+                InputEffect::ResetDictionary { revision },
+            ),
+        ));
+        card(&t("input-dictionary-title"), rows(children))
+    }
+
+    fn dictionary_word_row(
+        &self,
+        index: usize,
+        entry: &ui::personal_dictionary::Word,
+        revision: u64,
+    ) -> Box<dyn Widget> {
+        let key = (entry.spelling.clone(), entry.language.clone());
+        let (word, language) = self
+            .dictionary_edits
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| {
+                (
+                    ui::LocalState::new(entry.spelling.clone()),
+                    ui::LocalState::new(entry.language.clone().unwrap_or_default()),
+                )
+            })
+            .clone();
+        let new_word = word.clone();
+        let new_language = language.clone();
+        let old_word = entry.spelling.clone();
+        let old_language = entry.language.clone().unwrap_or_default();
+        let save = self.cx.bind(
+            Button::new(
+                &format!("dictionary.{index}.save"),
+                &t("input-dictionary-save"),
+            ),
+            effect(InputEffect::EDIT_DICTIONARY_WORD).map(move |()| {
+                (
+                    old_word.clone(),
+                    old_language.clone(),
+                    new_word.get(),
+                    new_language.get(),
+                    revision,
+                )
+            }),
+        );
+        let remove = self.cx.bind_invocation(
+            Button::new(
+                &format!("dictionary.{index}.remove"),
+                &t("input-dictionary-remove"),
+            ),
+            InputEffect::RemoveDictionaryWord {
+                word: entry.spelling.clone(),
+                language: entry.language.clone().unwrap_or_default(),
+                revision,
+            },
+        );
+        Box::new(
+            Row::new()
+                .push(Box::new(
+                    TextInput::from_state(&word)
+                        .with_id(&format!("dictionary.{index}.word"))
+                        .with_accessible_name(t("input-dictionary-word"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ))
+                .push(Box::new(
+                    TextInput::from_state(&language)
+                        .with_id(&format!("dictionary.{index}.language"))
+                        .with_accessible_name(t("input-dictionary-language"))
+                        .with_placeholder(&t("input-dictionary-all-languages"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ))
+                .push(Box::new(save))
+                .push(Box::new(remove)),
+        )
+    }
+
     fn input_sources_card(&self) -> Box<dyn Widget> {
         let active_label = t("input-sources-active");
         let remove_label = t("input-sources-remove");
@@ -2525,6 +2757,29 @@ impl MouseKeyboardPane {
 
 impl Widget for MouseKeyboardPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        let identity = ui::local_identity::bound().map(|identity| identity.group_public_key);
+        let dictionary = ui::personal_dictionary::snapshot().ok();
+        if identity != self.dictionary_identity {
+            self.dictionary_word = ui::LocalState::new(String::new());
+            self.dictionary_language = ui::LocalState::new(String::new());
+            self.dictionary_edits.borrow_mut().clear();
+        }
+        if dictionary != self.dictionary || identity != self.dictionary_identity {
+            self.dictionary = dictionary;
+            self.dictionary_identity = identity;
+            self.dictionary_edits
+                .borrow_mut()
+                .retain(|(word, language), _| {
+                    self.dictionary.as_ref().is_some_and(|snapshot| {
+                        snapshot
+                            .words
+                            .iter()
+                            .any(|entry| &entry.spelling == word && &entry.language == language)
+                    })
+                });
+            self.structure_dirty = true;
+            self.composed = None;
+        }
         // The controls are built from the values: a change rebuilds them.
         if self.input.refresh() {
             let mut last = self.input.get().clone();
@@ -2659,6 +2914,140 @@ mod tests {
     use super::*;
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
+
+    #[test]
+    fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
+        use settings_store::personal_dictionary::{Service, Vocabulary, host::Host};
+        use std::sync::Arc;
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ui::local_identity::install_source(None);
+            }
+        }
+        let _guard = tilo_test_env::lock();
+        let _restore = Restore;
+        ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
+            ui::local_identity::LocalIdentity {
+                group_public_key: [1; 32],
+                display_name: String::new(),
+                avatar_color: [0; 3],
+            },
+        ))));
+        let profile = tempfile::tempdir().unwrap();
+        let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
+        let source = Arc::new(Host::new(
+            Arc::new(settings_store::HostDocument::new(
+                serde_json::Map::new(),
+                |_| Ok(()),
+            )),
+            service.clone(),
+            Arc::new(|| Some([1; 32])),
+        ));
+        let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
+        let mut host =
+            ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
+        app.harness().resize((1200, 2200)).unwrap();
+        let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
+        app.call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        app.harness().click_named("dictionary.word").unwrap();
+        app.harness().type_text("Tilo");
+        app.harness().click_named("dictionary.add").unwrap();
+        app.settle();
+        host.flush().unwrap();
+        app.settle();
+        let reader = service.reader().unwrap();
+        assert_eq!(
+            reader.snapshot().unwrap().hints("en").collect::<Vec<_>>(),
+            ["Tilo"]
+        );
+        app.effect(&SettingsEffect::Input(InputEffect::EditDictionaryWord {
+            old_word: "Tilo".into(),
+            old_language: String::new(),
+            word: "TiLo".into(),
+            language: "nl".into(),
+            revision: 1,
+        }))
+        .unwrap();
+        host.flush().unwrap();
+        app.settle();
+        assert_eq!(
+            reader.snapshot().unwrap().hints("nl").collect::<Vec<_>>(),
+            ["TiLo"]
+        );
+        let reopened = Service::new(profile.path().join("dictionary")).unwrap();
+        assert_eq!(
+            reopened.bind(Some([1; 32])).unwrap().snapshot().unwrap(),
+            reader.snapshot().unwrap()
+        );
+        if let Some(path) = std::env::var_os("TILO_DICTIONARY_LIVE_SCREENSHOT") {
+            app.harness().render_png(std::path::Path::new(&path));
+        }
+        app.harness().click_named("dictionary.0.remove").unwrap();
+        app.settle();
+        host.flush().unwrap();
+        app.settle();
+        assert!(reader.snapshot().unwrap().words.is_empty());
+        app.effect(&SettingsEffect::Input(InputEffect::AddDictionaryWord {
+            word: "Élodie".into(),
+            language: "fr".into(),
+            revision: 3,
+        }))
+        .unwrap();
+        host.flush().unwrap();
+        app.settle();
+        app.harness().click_named("dictionary.reset").unwrap();
+        app.settle();
+        host.flush().unwrap();
+        assert!(reader.snapshot().unwrap().words.is_empty());
+        ui::local_identity::install_source(Some(Arc::new(ui::local_identity::NoLocalIdentity)));
+        app.settle();
+        assert!(ui::personal_dictionary::snapshot().is_err());
+        assert!(!app.harness().targets().contains_key("dictionary.word"));
+        assert!(!app.harness().targets().contains_key("dictionary.0.word"));
+    }
+
+    #[test]
+    fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
+        use settings_store::personal_dictionary::{Edit, Service, Vocabulary, Word};
+        let profile = tempfile::tempdir().unwrap();
+        let service = Service::new(profile.path().join("dictionary")).unwrap();
+        let reader = service.bind(Some([1; 32])).unwrap();
+        for (word, language) in [("Tilo", None), ("Élodie", Some("fr")), ("東京", Some("ja"))] {
+            let revision = reader.snapshot().unwrap().revision;
+            service
+                .edit(
+                    &reader,
+                    revision,
+                    Edit::Add(Word::new(word, language).unwrap()),
+                )
+                .unwrap();
+        }
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = InputArea::new(&cx);
+        let mut pane = MouseKeyboardPane::new(cx, &area);
+        pane.dictionary = Some(reader.snapshot().unwrap());
+        let frame =
+            ui::headless::FrameHarness::new(ui::State::new(), pane.dictionary_card(), (1100, 760));
+        for control in [
+            "dictionary.word",
+            "dictionary.language",
+            "dictionary.add",
+            "dictionary.0.save",
+            "dictionary.0.remove",
+            "dictionary.reset",
+        ] {
+            assert!(
+                frame.targets().contains_key(control),
+                "missing shared dictionary control: {control}"
+            );
+        }
+        if let Some(path) = std::env::var_os("TILO_DICTIONARY_SCREENSHOT") {
+            frame.render_png(std::path::Path::new(&path));
+        }
+    }
 
     fn picker_node(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
         if node.test_id.as_deref() == Some("input.source.add_picker") {

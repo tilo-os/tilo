@@ -1964,3 +1964,16 @@ display-device-move-unavailable = That screen is offline or its arrangement cann
 display-device-move-confirmed = The device confirmed its new display position.
 display-device-move-changed = The device layout changed before this position was confirmed. Try again.
 display-device-move-unconfirmed = The device did not confirm this position. Refresh and try again.
+
+input-dictionary-title = Personal dictionary
+input-dictionary-caption = Words you add are available to spelling, the on-screen keyboard and on-device dictation. Your spelling and capitalization are preserved.
+input-dictionary-unavailable = Your local personal dictionary is unavailable in this session.
+input-dictionary-word = Word
+input-dictionary-language = Language
+input-dictionary-language-caption = Leave language empty for all languages, or enter a language tag such as en, nl or fr.
+input-dictionary-add = Add word
+input-dictionary-save = Save
+input-dictionary-remove = Remove
+input-dictionary-reset = Remove all words
+input-dictionary-word-placeholder = Enter a word
+input-dictionary-all-languages = All languages

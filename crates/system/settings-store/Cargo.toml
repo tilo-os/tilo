@@ -18,6 +18,7 @@ tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
+unicode-normalization = "0.1.25"
 # Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else
 # `$HOME/.config`), shared with every other reader of the settings file.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
