@@ -1435,3 +1435,13 @@ readers = ["crates/platform/tilo-pdf/build.rs"]
 name = "browser-fixture-assets"
 inputs = ["tools/web/fixture-assets.mjs", "tools/test-assets.py"]
 suites = ["tools/web/fixture-assets.test.mjs"]
+
+[[cargo]]
+package = "video-editor"
+inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+readers = ["apps/video-editor/build.rs"]
+
+[[cargo]]
+package = "video-player"
+inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+readers = ["apps/video-player/build.rs"]
