@@ -147,14 +147,14 @@ fn node_view(
             },
         )))
         .push(Box::new(
-            Text::new(&format!("F32 {:?}", node.shape)).with_role(TextRole::Caption),
+            Text::new(&I18nManager::format(
+                "chip-tensor-shape",
+                &[("shape", format!("{:?}", node.shape).into())],
+            ))
+            .with_role(TextRole::Caption),
         ));
     for port in &visual.inputs {
-        let label = format!(
-            "{} · {}",
-            tr(&format!("chip-port-{}", port.id)),
-            port.data_type
-        );
+        let label = tr(&format!("chip-port-{}", port.id));
         if let Some((source, out)) = &selection.output {
             let edge = Edge {
                 from_node: source.clone(),
@@ -185,21 +185,23 @@ fn node_view(
                 },
             )));
         }
+        content = content.push(Box::new(
+            Text::new(&port.data_type).with_role(TextRole::Caption),
+        ));
     }
     for port in &visual.outputs {
         content = content.push(Box::new(effect_button(
             cx,
             &port_id(&node.id, &port.id, false),
-            &format!(
-                "{} · {}",
-                tr(&format!("chip-port-{}", port.id)),
-                port.data_type
-            ),
+            &tr(&format!("chip-port-{}", port.id)),
             &ChipEffect::SelectOutput {
                 node: node.id.clone(),
                 port: port.id.clone(),
             },
         )));
+        content = content.push(Box::new(
+            Text::new(&port.data_type).with_role(TextRole::Caption),
+        ));
     }
     GraphCanvasNode {
         x: f32::from(node.x),
