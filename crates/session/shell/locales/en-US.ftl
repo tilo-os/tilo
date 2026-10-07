@@ -2457,6 +2457,20 @@ search-action-tab-drag-cancel = Cancel tab drag
 search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
 search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
 
+display-confirm-answer-pending = Saving the display answer…
+display-confirm-answer-failed = Could not save the display answer: { $reason }
+
+display-sheet-saving-layout = Saving display layout…
+
+session-diagnostics-title = Session timing diagnostics
+session-diagnostics-configure = Configure timing for subsequent app launches
+session-diagnostics-inspect = Inspect session timing diagnostics
+session-diagnostics-presentation = Record content-free input and presentation timing
+session-diagnostics-gpu_stages = Record GPU stage timing
+session-diagnostics-gpu_timestamps = Enable GPU timestamps
+session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
+session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
+
 device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
 search-action-activity-acknowledge = Acknowledge viewed activity
 search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending

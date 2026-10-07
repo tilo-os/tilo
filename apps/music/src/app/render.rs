@@ -1919,6 +1919,7 @@ impl MusicApp {
                         "resolving": self.active_resolve_request.is_some(),
                         "spotify_stage": self.audio.spotify_startup_stage(),
                         "rendered_buffers": self.audio.frames_rendered(),
+                        "rendered_counter_unit": if media::audio_output::is_governed() { "host_pcm_frames" } else { "sink_buffers" },
                         "sink": self.audio.actual_audio_sink_name(),
                         "position_ms": self.audio.position_ms(),
                         "duration_ms": self.audio.duration_ms(),

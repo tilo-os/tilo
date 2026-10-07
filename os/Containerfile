@@ -74,7 +74,7 @@ ARG ENV_RUNTIME_REF=scratch
 # boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
 # The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
-ARG CHROMIUM_RUNTIME_VERSION=2026.10.3-chromium
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.4-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
@@ -349,6 +349,8 @@ COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.s
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
+COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
+COPY tools/test-assets.py /build/tools/test-assets.py
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
@@ -934,9 +936,11 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
           --version-out /out/runtime-version); \
+        report="$(LD_LIBRARY_PATH=/out ldd /out/libruntime_dylib.so /out/thin-apps/*)"; \
+        if grep -Fq "not found" <<<"$report"; then printf "%s\n" "$report" >&2; exit 1; fi; \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done \
-          < <(ldd /out/libruntime_dylib.so \
-              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
+          < <(printf "%s\n" "$report" \
+              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\// && $i !~ /:$/) print $i }'\'' \
               | sort -u); \
         "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \

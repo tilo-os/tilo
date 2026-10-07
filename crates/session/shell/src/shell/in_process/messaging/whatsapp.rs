@@ -127,8 +127,15 @@ impl NativeWhatsappAccount {
             network: handles.network.guarded(self.gate.clone()),
             ..handles
         };
-        self.activate(|authority| assemble_native(&self.gate.0.identity.owner, handles, authority))
-            .await
+        self.activate(|authority| {
+            assemble_native(
+                &self.gate.0.identity.owner,
+                handles,
+                authority,
+                self.gate.clone(),
+            )
+        })
+        .await
     }
 }
 
@@ -136,11 +143,13 @@ async fn assemble_native(
     owner: &Owner,
     handles: NativeWhatsappHandles,
     authority: Arc<dyn ExternalAuthority>,
+    account_authority: Arc<dyn AccountAuthority>,
 ) -> Result<(Arc<ExternalBroker>, WhatsappBootstrap), SendError> {
     let bootstrap = WhatsappBootstrap::open_system(
         &handles.private_root.join("sdk"),
         owner.clone(),
         handles.network,
+        account_authority,
     )
     .await?;
     let journal = tilo_messaging_protocol::journal::EncryptedJournal::open_system(

@@ -336,3 +336,75 @@ fn initial_history_public_directory_requires_every_actual_live_record_owner() {
         runtime_collab::ActionDirectoryResolution::Unavailable
     ));
 }
+
+#[test]
+fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
+    let mut scope = crate::wake::WakeScope::new();
+    let (wake_tx, wakes) = std::sync::mpsc::channel();
+    let wake_tx = std::sync::Mutex::new(wake_tx);
+    scope
+        .bind(move |_| {
+            wake_tx.lock().unwrap().send(()).unwrap();
+        })
+        .unwrap();
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let (manager, rechecks) = {
+        let _entry = scope.enter();
+        CollaborationManager::native_initial_parked_fixture_for_test(
+            "so.tilo.initial-history-probe",
+            uuid::Uuid::new_v4(),
+            history.save(),
+            gate,
+        )
+    };
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(std::rc::Rc::new(std::cell::Cell::new(
+            0,
+        )))),
+    );
+    app.collaboration.manager = manager;
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        app.pump_collab_presence();
+        if app
+            .state
+            .doc
+            .get(ROOT, "original-owner-history")
+            .unwrap()
+            .is_some()
+        {
+            break;
+        }
+        wakes
+            .recv_timeout(deadline.saturating_duration_since(crate::time::now()))
+            .expect("initial committed history must wake its actual owner");
+    }
+    // Readiness is deliberately withheld while the owner finishes its last pump.
+    assert!(!app.published_action_history_ready());
+    app.pump_collab_presence();
+    while wakes.try_recv().is_ok() {}
+    assert!(app.actions.last_published_actions.is_none());
+    release.send(()).unwrap();
+    // No owner polling, yield loop or synthetic event supplies this notification.
+    wakes
+        .recv_timeout(crate::time::Duration::from_secs(3))
+        .expect("worker readiness transition must wake the parked owner");
+    assert!(
+        rechecks() > 0,
+        "the socket worker must recheck its applied capture"
+    );
+    app.pump_collab_presence();
+    assert!(app.published_action_history_ready());
+    assert!(app.actions.last_published_actions.is_some());
+    assert!(
+        !app.published_action_directory_page(initial_history_query())
+            .rows
+            .is_empty()
+    );
+}
