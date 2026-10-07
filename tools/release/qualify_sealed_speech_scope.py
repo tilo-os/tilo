@@ -12,13 +12,16 @@ parser.add_argument('--native-review',action='store_true')
 parser.add_argument('--lifecycle',action='store_true')
 parser.add_argument('--case',choices=['en_us-0','de_de-0'],default='en_us-0')
 parser.add_argument('--vocabulary',action='append',default=[])
+parser.add_argument('--native-phase',action='store_true')
+parser.add_argument('--native-low-latency',action='store_true')
+parser.add_argument('--native-right-context',type=int,choices=[0,1],default=1)
 parser.add_argument('--phase-repeat',action='store_true')
 parser.add_argument('--resident-second-case',choices=['en_us-0','de_de-0','silence'])
 parser.add_argument('--noise-snr-db',type=int,choices=[10,20])
 args=parser.parse_args()
-if args.lifecycle and (not args.native_review or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case):raise RuntimeError('native lifecycle requires its fixed public journey')
-if not args.native_review and (args.case!='en_us-0' or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case):raise RuntimeError('explicit native review required for alternate fixture')
-if args.resident_second_case and (args.phase_repeat or args.vocabulary or args.noise_snr_db is not None):raise RuntimeError('resident review has fixed bounded public sessions')
+if args.lifecycle and (not args.native_review or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case or args.native_phase or args.native_low_latency or args.native_right_context!=1):raise RuntimeError('native lifecycle requires its fixed public journey')
+if not args.native_review and (args.case!='en_us-0' or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case or args.native_phase or args.native_low_latency or args.native_right_context!=1):raise RuntimeError('explicit native review required for alternate fixture')
+if args.resident_second_case and (args.native_phase or args.native_low_latency or args.native_right_context!=1 or args.phase_repeat or args.vocabulary or args.noise_snr_db is not None):raise RuntimeError('resident review has fixed bounded public sessions')
 root=Path(__file__).parent
 sys.path.insert(0,str(root))
 import probe_asr_candidate as probe
@@ -56,7 +59,8 @@ if args.native_review:
  command[command.index('--case')+1]=args.case
  command.extend(['--native-review-model','/review/model.gguf'])
  for word in args.vocabulary:command.extend(['--vocabulary',word])
- if args.phase_repeat:command.append('--continuous-audio')
+ if args.native_phase or args.phase_repeat or args.native_low_latency or args.native_right_context!=1:command.extend(['--continuous-audio','--native-right-context',str(args.native_right_context)])
+ if args.native_low_latency:command.append('--worker-cadence')
  if args.noise_snr_db is not None:command.extend(['--noise-snr-db',str(args.noise_snr_db)])
  # Discard only this owned object's file pages, so the new scope accounts for
  # subsequent reads. fadvise is advisory; do not claim physical cold-device IO.

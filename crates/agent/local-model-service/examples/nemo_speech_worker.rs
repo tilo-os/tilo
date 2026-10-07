@@ -18,7 +18,7 @@ mod linux {
 
     use clap::Parser;
     use local_model_service::speech::{
-        MAX_TEXT_BYTES, SpeechConfig, SpeechError, SpeechReply, worker,
+        DraftPolicy, MAX_TEXT_BYTES, SpeechConfig, SpeechError, SpeechReply, worker,
     };
     use sha2::{Digest as _, Sha256};
     use zeroize::Zeroizing;
@@ -37,11 +37,15 @@ mod linux {
         /// Completed sessions in one private review worker; never an idle daemon.
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
         review_sessions: u8,
+        /// Pinned model trained contexts; default preserves existing geometry.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=1))]
+        review_right_context: u8,
     }
     #[repr(C)]
     struct NativeConfig {
         descriptor: i32,
         threads: i32,
+        right_context: i32,
         language: *const std::ffi::c_char,
         vocabulary: *const std::ffi::c_char,
     }
@@ -126,7 +130,11 @@ mod linux {
 
     struct NativeDecoder(NonNull<c_void>);
     impl NativeDecoder {
-        fn load(model: &ImmutableReviewModel, config: &SpeechConfig) -> Result<Self, SpeechError> {
+        fn load(
+            model: &ImmutableReviewModel,
+            config: &SpeechConfig,
+            right_context: u8,
+        ) -> Result<Self, SpeechError> {
             let (language, words) = Self::spellings(config)?;
             let native = NativeConfig {
                 descriptor: model.0.as_raw_fd(),
@@ -134,6 +142,7 @@ mod linux {
                     std::thread::available_parallelism().map_or(1, |count| count.get().min(2)),
                 )
                 .map_err(|_| SpeechError::WorkerStopped)?,
+                right_context: i32::from(right_context),
                 language: language.as_ptr(),
                 vocabulary: words.as_ptr().cast(),
             };
@@ -216,6 +225,9 @@ mod linux {
         }
     }
     impl worker::SpeechDecoder for NativeDecoder {
+        fn draft_policy(&self) -> DraftPolicy {
+            DraftPolicy::Incremental
+        }
         fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError> {
             // SAFETY: live exclusive context and borrowed PCM remain valid for
             // synchronous copying; the shared protocol already bounds audio.
@@ -261,7 +273,7 @@ mod linux {
             let (session, config) = worker::configure(&mut input)?;
             local_model_service::speech::confine_worker()?;
             let native_started = std::time::Instant::now();
-            let mut decoder = NativeDecoder::load(&model, &config)?;
+            let mut decoder = NativeDecoder::load(&model, &config, args.review_right_context)?;
             let native_ms = native_started.elapsed().as_secs_f64() * 1000.0;
             if args.phase_review {
                 eprintln!(

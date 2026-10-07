@@ -169,6 +169,10 @@ def main():
     parser.add_argument('--noise-snr-db', type=int, choices=(10, 20))
     parser.add_argument('--continuous-audio', action='store_true',
                         help='deliver public PCM every20ms while inference runs; native phase review only')
+    parser.add_argument('--worker-cadence', action='store_true')
+    parser.add_argument('--native-right-context', type=int, choices=(0, 1), default=1)
+    parser.add_argument('--first-draft-ms', type=int, choices=(500, 1000, 2000))
+    parser.add_argument('--draft-interval-ms', type=int, choices=(250, 500, 1000), default=1000)
     parser.add_argument('--cpus', type=int, choices=(1, 2), default=2)
     parser.add_argument('--first-draft-seconds', type=int, choices=(1, 2, 3), default=1)
     args = parser.parse_args()
@@ -177,6 +181,10 @@ def main():
         parser.error('requires an unprivileged, owned hardware-free namespace')
     if args.continuous_audio and args.native_review_model is None:
         parser.error('continuous public PCM requires explicit native review')
+    if (args.worker_cadence or args.first_draft_ms is not None or args.draft_interval_ms != 1000 or args.native_right_context != 1) and (not args.continuous_audio or args.native_review_model is None):
+        parser.error('alternate cadence/context requires explicit continuous native review')
+    first_draft_seconds = args.first_draft_ms / 1000 if args.first_draft_ms is not None else args.first_draft_seconds
+    draft_interval_seconds = args.draft_interval_ms / 1000
     manifest = json.loads(args.manifest.read_text())
     if (manifest.get('dataset') != 'google/fleurs'
             or manifest.get('revision') != '70bb2e84b976b7e960aa89f1c648e09c59f894dd'):
@@ -260,7 +268,7 @@ def main():
         else:
             worker_command = [str(args.worker), '--model', str(model_path)]
             if args.continuous_audio:
-                worker_command.append('--phase-review')
+                worker_command.extend(['--phase-review', '--review-right-context', str(args.native_right_context)])
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         started = time.monotonic()
         worker = subprocess.Popen(worker_command, stdin=subprocess.PIPE,
@@ -286,11 +294,20 @@ def main():
         ready = receive(worker.stdout)
         if ready.get('kind') != 'ready' or ready.get('sequence') != sequence:
             raise RuntimeError('worker did not become ready: ' + worker_failure(ready))
+        policy = ready.get('draft_policy', 'full_context')
+        if policy not in ('full_context', 'incremental'):
+            raise RuntimeError('unknown worker draft policy')
+        if args.worker_cadence:
+            if policy != 'incremental':
+                raise RuntimeError('native worker did not declare incremental policy')
+            if args.first_draft_ms is not None or args.draft_interval_ms != 1000:
+                raise RuntimeError('worker cadence excludes explicit timing overrides')
+            first_draft_seconds, draft_interval_seconds = ((.5, .5) if policy == 'incremental' else (2, 1))
         cold_ms = (time.monotonic() - started) * 1000
         capture = time.monotonic()
         sent, first_partial, revisions, drafts = 0, None, 0, []
         previous = ''
-        next_draft = capture + args.first_draft_seconds
+        next_draft = capture + first_draft_seconds
         if args.continuous_audio:
             source = PacedAudio(worker.stdin, pcm, capture)
             source.thread.start()
@@ -302,7 +319,7 @@ def main():
                 time.sleep(max(0, next_draft - time.monotonic()))
                 inference = time.monotonic()
                 sequence, sent, arrived = source.control(2)
-                next_draft = inference + 1
+                next_draft = inference + draft_interval_seconds
             else:
                 interval = args.first_draft_seconds if sent == 0 else 1
                 if time.monotonic() - capture < sent / 32000 + interval:
@@ -376,7 +393,11 @@ def main():
             'public_vocabulary': args.vocabulary, 'model_sha256': model['sha256'], 'cpu_affinity_count': len(cpus),
             'profile': 'builder CPU-affinity constraint; not physical older hardware',
             'audio_seconds': len(pcm)/32000, 'cold_ms': cold_ms,
-            'first_draft_seconds': args.first_draft_seconds,
+            'first_draft_seconds': first_draft_seconds,
+            'draft_interval_ms': draft_interval_seconds * 1000,
+            'worker_draft_policy': policy,
+            'worker_cadence_used': args.worker_cadence,
+            'native_right_context': args.native_right_context if args.native_review_model is not None else None,
             'preparation_phases': preparation,
             'audio_transport': 'continuous20ms' if source is not None else 'source-paced draft batches',
             'first_audio_frame_started_ms': source.first_started_ms if source is not None else None,
