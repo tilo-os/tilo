@@ -2065,6 +2065,28 @@ fn type_popover_values_edit_and_persist() {
     }
 }
 
+fn reader_typography_baseline(filename: &str) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let result = std::process::Command::new("python3")
+        .arg(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/test-assets.py"),
+        )
+        .arg(root.join("tests/fixtures/typography/artifacts.json"))
+        .args(["--file", filename])
+        .output()
+        .expect("run pinned reader typography asset resolver");
+    assert!(
+        result.status.success(),
+        "resolve immutable reader baseline {filename}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    std::path::PathBuf::from(
+        String::from_utf8(result.stdout)
+            .expect("UTF-8 reader baseline path")
+            .trim(),
+    )
+}
+
 #[test]
 fn serif_reader_matches_typography_baseline() {
     use std::path::PathBuf;
@@ -2095,6 +2117,7 @@ fn serif_reader_matches_typography_baseline() {
         eprintln!("updated {}", baseline.display());
         return;
     }
+    let baseline = reader_typography_baseline(baseline.file_name().unwrap().to_str().unwrap());
     let expected = image::open(&baseline)
         .unwrap_or_else(|error| {
             panic!(
@@ -2147,6 +2170,7 @@ fn mathematical_reader_matches_shared_typesetting_baseline() {
         eprintln!("updated {}", baseline.display());
         return;
     }
+    let baseline = reader_typography_baseline(baseline.file_name().unwrap().to_str().unwrap());
     let expected = image::open(&baseline)
         .unwrap_or_else(|error| {
             panic!(

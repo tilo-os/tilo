@@ -5,26 +5,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "apps/ebook/tests/fixtures/typography/math-reader-windows.png",
-    "oid": "5668bbfae697e6d82d4b1ca6d26c1e9c95fe0a4c",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "apps/ebook/tests/fixtures/typography/math-reader.png",
-    "oid": "091767bea9ad0ab44f9189eba8a062694787ac44",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "apps/ebook/tests/fixtures/typography/serif-reader-windows.png",
-    "oid": "2d3fbc3afb0854b4f5913ea45d4eca114c2a7155",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "apps/ebook/tests/fixtures/typography/serif-reader.png",
-    "oid": "50a976d44bdd4522a316a495c46202b1ea83b8e8",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "apps/notes/fixtures/roadmap.png",
     "oid": "91dbc6842b17c854d4d7ab28aa75a1a9f6a7571f",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
