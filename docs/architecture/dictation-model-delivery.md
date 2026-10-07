@@ -201,9 +201,10 @@ closure verified before execution. No engine code comes from model bytes.
 Native parsing follows full existing Landlock/seccomp confinement. The private
 review witness admits only the fixed reviewed size/digest, requires fs-verity,
 and hashes the same descriptor with a 32 KiB buffer. Native lazy sessions retain
-the descriptor anchor rather than reopening a path. Upstream streaming-only
-scalar warmup prepares resources before Ready; its temporary runner is destroyed
-before the fresh user stream. New PCM is pushed once, endpoint finals accumulate
+the descriptor anchor rather than reopening a path. A bounded cache-aware warmup prepares resources before Ready: 100 ms of
+silence through the real runner, followed by step/finalize. Its temporary state
+is destroyed before the fresh user stream. The earlier qualification used the
+upstream four-second server warmup; the measured optimization is below. New PCM is pushed once, endpoint finals accumulate
 before the current draft, and native vocabulary consumes the existing bounded
 SpeechConfig spellings with at most 64 tokenizer tokens.
 
@@ -233,3 +234,38 @@ stream after the shared-handler change: 5.26% raw WER, 207 ms preparation,
 3.10 seconds to first partial after capture, and no memory-high/max/OOM events.
 Focused speech tests passed (10 tests); default all-target and native-only
 Clippy passed. The native review feature remains outside normal consumer builds.
+
+## Measured startup optimization
+
+The worst measured clean-language case is English (21.05% raw WER). The
+slowest meaningful stable text is German; the worst earlier exposed condition
+was German synthetic 10 dB noise (22.22% WER). These are exposed development
+cases, not holdout acceptance.
+
+The native bridge replaces the server's repeated four-second silence warmup
+with one bounded initialization chunk through the public cache-aware runner.
+Weights and an inference graph still prepare before Ready; the synthetic state
+is destroyed before the actual user stream. No trained context, graph capacity,
+model, vocabulary, trust check or runtime cap changes.
+
+Paired actual-worker runs reduced English preparation from 6.368 to 5.175
+seconds and startup through meaningful stable text from 9.688 to 8.490 seconds.
+German preparation fell from 6.263 to 5.091 seconds and total time from 12.737
+to 11.559 seconds. Capture-to-meaningful-stable timing stayed approximately
+3.32 seconds for English and 6.47 seconds for German. Exact final transcripts
+matched privately; raw WER stayed 21.05% and 0% respectively. Thus the gain
+removes preparation work rather than shifting it to the first user draft.
+
+`dictation-native-startup.json` records exact before/after library hashes,
+input hashes, strict scoring, retrospective prefix stability, scope events and
+memory. No max/OOM events or guard failures occurred. File-cache reclamation
+and pressured-builder timing remain recorded; these measurements do not
+establish physical-device performance or solve the English accuracy gap.
+
+The worst exposed condition was also paired on the actual worker: German at
+seeded synthetic 10 dB noise retained 22.22% raw WER, with first stable text
+at about 6.34 seconds after capture. Preparation improved from 6.448 to 5.235
+seconds, and startup through that stable text from 12.793 to 11.578 seconds.
+Exact noise/PCM hashes and final transcripts matched between variants. This
+confirms the preparation gain on the current worst measured condition while
+preserving its accuracy failure as a release limitation.

@@ -12,9 +12,10 @@ parser.add_argument('--native-review',action='store_true')
 parser.add_argument('--lifecycle',action='store_true')
 parser.add_argument('--case',choices=['en_us-0','de_de-0'],default='en_us-0')
 parser.add_argument('--vocabulary',action='append',default=[])
+parser.add_argument('--noise-snr-db',type=int,choices=[10,20])
 args=parser.parse_args()
-if args.lifecycle and (not args.native_review or args.vocabulary):raise RuntimeError('native lifecycle requires its fixed public journey')
-if not args.native_review and (args.case!='en_us-0' or args.vocabulary):raise RuntimeError('explicit native review required for alternate fixture')
+if args.lifecycle and (not args.native_review or args.vocabulary or args.noise_snr_db is not None):raise RuntimeError('native lifecycle requires its fixed public journey')
+if not args.native_review and (args.case!='en_us-0' or args.vocabulary or args.noise_snr_db is not None):raise RuntimeError('explicit native review required for alternate fixture')
 root=Path(__file__).parent
 sys.path.insert(0,str(root))
 import probe_asr_candidate as probe
@@ -51,6 +52,7 @@ if args.native_review:
  command[command.index('--case')+1]=args.case
  command.extend(['--native-review-model','/review/model.gguf'])
  for word in args.vocabulary:command.extend(['--vocabulary',word])
+ if args.noise_snr_db is not None:command.extend(['--noise-snr-db',str(args.noise_snr_db)])
  # Discard only this owned object's file pages, so the new scope accounts for
  # subsequent reads. fadvise is advisory; do not claim physical cold-device IO.
  fd=os.open(root/'model.gguf',os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW)
