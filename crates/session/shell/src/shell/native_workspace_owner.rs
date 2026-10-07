@@ -4,6 +4,7 @@
 //! inside the state file ([`TreeStore`]), so every owner publication also
 //! binds an enrolled slot, projects the room into the tree and exports the
 //! resulting file-system capabilities under the same writer lock.
+mod local_filesystem_consents;
 pub(crate) mod publication;
 #[cfg(test)]
 mod publication_tests;
@@ -11,7 +12,7 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::test_enrolled_owner;
+pub(crate) use tests::{test_enrolled_owner, tree_of};
 
 use super::{
     persist,
@@ -193,4 +194,9 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
     native.native_runtime.attach(&owner, &tree);
     native.export_fs_capabilities();
     Ok(owner)
+}
+
+#[cfg(test)]
+pub(crate) fn test_tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
+    tests::tree_of(owner)
 }

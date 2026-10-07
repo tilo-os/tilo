@@ -499,6 +499,9 @@ impl<R: Resource> ResourceRoot<R> {
                 resource = resource.with_action(spec);
             }
         }
+        if self.effects.has_causal_drains() {
+            mark_document_jobs(&mut resource);
+        }
         resource.children.extend(self.storage.person_resources());
         resource
     }
@@ -662,6 +665,30 @@ impl<R: Resource> ResourceRoot<R> {
         self.live
             .with(|state| self.effects.drain_projections(state, revision));
         self.effects.poll_jobs();
+    }
+}
+
+fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
+    for spec in &mut resource.actions {
+        if spec.kind == tilo_actions::OperationKind::Document {
+            spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+            if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
+                spec.contract.result = tilo_actions::ResultSpec::Job;
+            }
+        }
+    }
+    for child in &mut resource.children {
+        mark_document_jobs(child);
+    }
+}
+
+impl<R: Resource> ui_core::widget::document_effects::DocumentEffects for ResourceRoot<R> {
+    fn start_document_effects(
+        &mut self,
+        operation: &ui_core::host_operation::ResourceOperation<'_>,
+        applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
+    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        self.effects.start_document_effects(operation, applied)
     }
 }
 
@@ -1029,7 +1056,7 @@ impl ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects; inner = content);
 
     type Inner = dyn Widget;
 

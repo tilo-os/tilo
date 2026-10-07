@@ -29,6 +29,17 @@ pub trait SettingsSource: Send + Sync {
     /// Rings every time [`Self::revision`] changes, so a reader waiting for
     /// a change wakes at once instead of looking again and again.
     fn changes(&self) -> &ChangeSignal;
+
+    /// Host-owned personal vocabulary. App/profile sources provide no host
+    /// authority; the authenticated settings capability projects scoped reads.
+    fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>> {
+        None
+    }
+
+    /// Verified original profile identity permitted to migrate unscoped words.
+    fn dictionary_legacy_owner(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 /// Wakes the readers of a [`SettingsSource`] when its document changes.

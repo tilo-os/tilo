@@ -409,9 +409,10 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string().into());
     };
-    // A window continuing from another device opens the record it showed
-    // there; bring that record here first when this device lacks it.
-    if !item.local {
+    // Profile-backed windows need their exact record before launch. Native
+    // committed rooms read through their owner: an app profile is neither
+    // required nor an authority fallback for that path.
+    if !item.local && !tree.commits_native_documents(ws.room) {
         bring_over_continued_record(item, ws.room)?;
     }
     stage_continuation_for_tab(tree, item);
@@ -546,8 +547,8 @@ fn bringing_note() -> String {
 
 /// Make sure the record a continuing window showed is kept here, and that
 /// its instance reopens on it. `Err` is the card's note while the record is
-/// still on its way; a record no device could give leaves the window to
-/// open as it would have.
+/// still on its way or cannot be read. A failed fetch must not open a
+/// lookalike empty record in place of the selected resource.
 fn bring_over_continued_record(
     item: &Pending,
     room: crate::shell::state::RoomId,
@@ -567,7 +568,7 @@ fn bring_over_continued_record(
             Hydration::Kept(record) => Some(record),
             Hydration::Failed(reason) => {
                 tracing::warn!(%reason, app = %item.app_id, "a continued record could not be brought over");
-                return Ok(());
+                return Err(reason);
             }
         }
     };

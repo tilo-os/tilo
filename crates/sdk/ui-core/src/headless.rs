@@ -532,6 +532,8 @@ pub struct FrameHarness {
     /// Scratch scene for the draw pass. Never rasterised — see
     /// [`Driver::relayout`] for why it is drawn at all.
     scene: Scene,
+    /// Protection of the prepared scene; unknown/failed paints stay protected.
+    scene_capture_protected: bool,
     /// The backdrops the scene's floating surfaces were drawn over, which
     /// the capture renderer blurs under the material as a live window does.
     backdrop: std::sync::Arc<crate::backdrop::BackdropFrame>,
@@ -1441,6 +1443,7 @@ impl FrameHarness {
             text,
             theme,
             scene: Scene::new(),
+            scene_capture_protected: true,
             backdrop: std::sync::Arc::default(),
             records: None,
             record_persistence: None,
@@ -2308,6 +2311,15 @@ impl FrameHarness {
         Ok(true)
     }
 
+    /// Whether the currently prepared scene must be withheld from external
+    /// capture. A host binds this to its actual presentation, never an update
+    /// that has not reached the surface yet. Includes protected components and
+    /// secret fields reported by the production paint, including cached trees.
+    #[must_use]
+    pub const fn capture_protected(&self) -> bool {
+        self.scene_capture_protected
+    }
+
     /// Rasterise the most recently laid-out frame to a PNG over the window
     /// ground (`surfaces.content`), exactly as a live window clears before
     /// drawing. `--shots` writes this.
@@ -3004,6 +3016,8 @@ impl FrameHarness {
         // Logical layout, rasterised at the capture's device scale, as the
         // live host draws at its window's scale factor.
         let transform = self.capture_draw_transform();
+        self.scene_capture_protected = true;
+        let protected_paint = crate::secret_paint::SecretPaint::begin();
         self.scene.reset();
         // Floating chrome records what lies below it, so a capture blurs it
         // under the material exactly as the live window's renderer does.
@@ -3202,6 +3216,7 @@ impl FrameHarness {
             p.commit_frame_summed();
         }
         self.check_retained_geometry_if_due();
+        self.scene_capture_protected = protected_paint.finish();
         Ok(())
     }
 
@@ -7333,6 +7348,21 @@ impl FrameHarness {
             .keys()
             .copied()
             .filter(|&node| {
+                // Hidden layout subtrees are not measured by Taffy. Their
+                // widget flags can remain dirty until shown, so do not let
+                // them request work on every visible edit. Showing them
+                // recomposes the tree and performs the required measurement.
+                let mut ancestor = Some(node);
+                while let Some(current) = ancestor {
+                    if self
+                        .taffy
+                        .style(current)
+                        .is_ok_and(|style| style.display == taffy::Display::None)
+                    {
+                        return false;
+                    }
+                    ancestor = self.taffy.parent(current);
+                }
                 // SAFETY: these maps describe this exclusive runner's current
                 // admitted tree; the callback only reads widget flags.
                 unsafe {
@@ -8998,7 +9028,7 @@ mod tests {
 
     #[test]
     fn late_browser_font_install_rebuilds_layout_without_mutating_document_or_focus() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let root = crate::font_catalog::checkout_root();
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let fonts = catalog
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())

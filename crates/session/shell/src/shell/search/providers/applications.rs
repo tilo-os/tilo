@@ -879,7 +879,7 @@ pub(crate) fn grant_file_manager_home(
     ) {
         return false;
     }
-    ws.grant_app(
+    let ids = ws.grant_app(
         package_id,
         &Capability::Filesystem {
             path: home,
@@ -887,6 +887,14 @@ pub(crate) fn grant_file_manager_home(
             scope: GRANT_SESSION,
         },
     );
+    let remembered = tree.native_runtime.remember_files_home_consent(ws, &ids);
+    if !remembered && tree.native_authority.requires(ws.room) {
+        // Native session consent must have exact live local provenance. A
+        // missing identity or full ledger must not leave an unbound home row.
+        ws.capabilities
+            .retain(|capability| !ids.contains(&capability.id));
+        return false;
+    }
     true
 }
 

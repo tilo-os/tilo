@@ -49,9 +49,9 @@ use ui::widget::{
 };
 
 use crate::support::offscreen::OffscreenRenderer;
-use crate::support::snapshot::SnapshotAssertion;
+use crate::support::snapshot::{SnapshotAssertion, pinned_golden_path};
 
-/// Where golden PNGs are committed (in source, not `target/`).
+/// Where explicit golden-update candidates are written for review.
 fn goldens_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -876,7 +876,7 @@ fn assert_drag_reorder_goldens(renderer_opt: Option<&OffscreenRenderer>, out_dir
         let rendered = out_dir.join("e2e-06-tabs-reordered.png");
         SnapshotAssertion::new(
             rendered,
-            goldens_dir().join("e2e-tab-drag-reorder-settled.png"),
+            pinned_golden_path(goldens_dir().join("e2e-tab-drag-reorder-settled.png")),
         )
         .assert();
     } else {
@@ -1486,7 +1486,7 @@ fn assert_maximized_tile_golden(
         // Floating-controls chrome is what regresses if hover-cluster geometry drifts.
         SnapshotAssertion::new(
             rendered,
-            goldens_dir().join("e2e-maximized-tile-controls.png"),
+            pinned_golden_path(goldens_dir().join("e2e-maximized-tile-controls.png")),
         )
         .assert();
     } else {

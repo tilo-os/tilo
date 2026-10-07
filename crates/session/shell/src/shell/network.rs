@@ -994,10 +994,30 @@ fn personal_room_ids(path: &Path) -> Vec<RoomId> {
 }
 
 /// How often a shell asks the rooms it is in for anything it is
-/// missing. Room replication has no push side, so this interval is the
-/// upper bound on how stale a guest's view of a room can be.
+/// missing. Local changes are pushed the tick they land
+/// ([`ShellNetwork::push_room_changes`]); this pull is the repair path for a
+/// push a peer missed (it was offline, or gossip dropped it).
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// Upper bound between full projections of every room while nothing the
+/// push trigger watches has moved. Most local edits move the desktop
+/// document's heads and are pushed the same tick; this catches the few that
+/// only reach a room document through projection (a record index, say).
+const ROOM_PUSH_FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// What [`ShellNetwork::push_room_changes`] last saw and last announced.
+#[derive(Default)]
+struct RoomPush {
+    /// Desktop-document heads, peer-merge epoch and external revision at
+    /// the last full check: when none moved, no room can have changed
+    /// locally, so a tick costs one heads read.
+    trigger: Option<(Vec<automerge::ChangeHash>, u64, u64)>,
+    /// When every room was last projected.
+    last_full: Option<std::time::Instant>,
+    /// Each room's document heads as last announced (or first seen, which
+    /// announces nothing: a peer that lacks older history pulls it).
+    announced: std::collections::HashMap<RoomId, Vec<automerge::ChangeHash>>,
+}
 /// Keep transport bursts from monopolizing the compositor thread. The actor's
 /// channel is bounded, so leaving events queued simply applies backpressure
 /// until the next frame instead of losing ordering or data.
@@ -1340,6 +1360,8 @@ pub struct ShellNetwork {
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
+    /// Push side of room replication: see [`Self::push_room_changes`].
+    room_push: Mutex<RoomPush>,
     /// Private, same-person continuation state. It is intentionally separate
     /// from `replica`, whose documents are visible to room collaborators.
     personal_continuity: Mutex<crate::shell::personal_continuity::PersonalContinuity>,
@@ -1625,6 +1647,11 @@ fn spawn_lan_discovery_forwarding(
 }
 
 impl ShellNetwork {
+    /// Retained cryptographic custody for the same native broker's private
+    /// account setup. No key or certificate is created by this projection.
+    pub(crate) fn messaging_host_identity(&self) -> Option<HostIdentity> {
+        self.host_identity.clone()
+    }
     /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared `WorkspaceTree` in a [`WorkspaceTreeReplica`], and
     /// return a handle the shell can use to drive sync. The keypair is
@@ -1839,6 +1866,7 @@ impl ShellNetwork {
             registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
+            room_push: Mutex::new(RoomPush::default()),
             personal_focus_recency: Mutex::new(
                 crate::shell::continuity_suggestion::FocusRecency::seeded(
                     &persisted_continuity.continuity,
@@ -4423,7 +4451,10 @@ impl ShellNetwork {
             )
             .snapshot;
         let neutral_bytes = postcard::to_allocvec(&neutral).ok()?;
-        let fingerprint = *blake3::hash(&neutral_bytes).as_bytes();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&neutral_bytes);
+        hasher.update(&reports.owner_claim_revision().to_le_bytes());
+        let fingerprint = *hasher.finalize().as_bytes();
 
         let mut previous = self.personal_continuity_fingerprint.lock().ok()?;
         if previous.as_ref() == Some(&fingerprint) {
@@ -4445,7 +4476,7 @@ impl ShellNetwork {
             if !self.enforce_app_continuations_policy() {
                 return None;
             }
-            let _ = self.persist_personal_continuity();
+            self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision());
             return Some(bytes);
         }
         let mut counter = self.personal_continuity_counter.lock().ok()?;
@@ -4462,6 +4493,11 @@ impl ShellNetwork {
                 *counter,
                 &reports,
             );
+        if let Some(prior) = prior.as_ref() {
+            report
+                .snapshot
+                .preserve_owner_view_revisions(prior, &reports);
+        }
         if let Some(prior) = prior.as_ref()
             && let Err(error) = report.snapshot.record_closures_from(prior)
         {
@@ -4491,7 +4527,7 @@ impl ShellNetwork {
         if !self.enforce_app_continuations_policy() {
             return None;
         }
-        let durable = self.persist_personal_continuity();
+        let durable = self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision());
         if durable && !pending_closed_tabs.is_empty() {
             let mut tree = tree_handle.write();
             for (tab, room) in pending_closed_tabs {
@@ -4503,7 +4539,15 @@ impl ShellNetwork {
         Some(bytes)
     }
 
+    fn persist_and_acknowledge_owner_claims(&self, revision: u64) -> bool {
+        self.persist_personal_continuity_with_claims(Some(revision))
+    }
+
     fn persist_personal_continuity(&self) -> bool {
+        self.persist_personal_continuity_with_claims(None)
+    }
+
+    fn persist_personal_continuity_with_claims(&self, claims: Option<u64>) -> bool {
         if !self.enforce_app_continuations_policy() {
             return false;
         }
@@ -4516,13 +4560,27 @@ impl ShellNetwork {
         ) else {
             return false;
         };
-        persist_personal_continuity(
+        let durable = persist_personal_continuity(
             path,
             &PersistedPersonalContinuity {
                 counter: *counter,
                 continuity: continuity.clone(),
             },
-        )
+        );
+        // The acknowledgement refers to the exact value durably written
+        // while these ledger/counter locks remain held, never a later capture.
+        if durable
+            && let Some(revision) = claims
+            && let Some(snapshot) = self
+                .personal_continuity_device
+                .as_ref()
+                .and_then(|device| continuity.snapshot_for(device))
+            && let Ok(mut registry) =
+                crate::shell::personal_continuity_registry::global_registry().lock()
+        {
+            registry.acknowledge_owner_claims(revision, snapshot);
+        }
+        durable
     }
 
     /// What chrome needs to offer continuing another device's focused tab:
@@ -4556,6 +4614,85 @@ impl ShellNetwork {
             observations,
             devices,
         }
+    }
+
+    pub(crate) fn pump_owner_views(
+        &self,
+    ) -> Vec<(
+        ui::collaboration::owner_view::OwnerView,
+        Option<AuthenticatedPersonalRoute>,
+    )> {
+        let permitted = self.enforce_app_continuations_policy();
+        let enrolled: std::collections::HashSet<_> = personal_device_peer_addrs(
+            &personal_device_peer_path(),
+            Some(*self.local_peer_id.as_bytes()),
+        )
+        .into_iter()
+        .map(|peer| peer.id)
+        .collect();
+        let persons = self
+            .peer_identities
+            .authenticated_persons(tilo_clock::unix_now_ns());
+        let current: std::collections::BTreeMap<_, _> = self
+            .authenticated_personal_routes
+            .lock()
+            .map(|routes| {
+                routes
+                    .values()
+                    .filter(|route| {
+                        enrolled.contains(&route.endpoint_id)
+                            && persons
+                                .get(&crate::shell::state::PeerOrigin::peer(&route.endpoint_id))
+                                .is_some_and(|root| {
+                                    Some(root) == self.personal_continuity_user.as_ref()
+                                })
+                    })
+                    .map(|route| (route.device.clone(), route.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let continuity = self
+            .personal_continuity
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default();
+        let registry = crate::shell::personal_continuity_registry::global_registry();
+        let Ok(mut registry) = registry.lock() else {
+            return Vec::new();
+        };
+        registry.stop_owner_views_unless(|route| {
+            permitted && current.get(&route.device) == Some(route)
+        });
+        if permitted {
+            let candidates: std::collections::BTreeSet<_> = continuity
+                .snapshots()
+                .values()
+                .flat_map(|snapshot| &snapshot.workspaces)
+                .flat_map(|workspace| workspace.apps.iter().map(|app| (workspace.room, app.id)))
+                .collect();
+            let live_keys = candidates
+                .iter()
+                .filter_map(|(room, id)| {
+                    let app = continuity.newest_app_state_in_room(*room, *id)?;
+                    registry.owner_view_key(*room, app)
+                })
+                .collect();
+            registry.retain_owner_view_candidates(&live_keys);
+            for (room, id) in candidates {
+                let Some(app) = continuity.newest_app_state_in_room(room, id) else {
+                    continue;
+                };
+                if self.personal_continuity_device.as_ref() == Some(&app.stamp.device) {
+                    if registry.owner_claimed(room, app) {
+                        continue;
+                    }
+                    registry.offer_owner_view(room, app, None);
+                } else if let Some(route) = current.get(&app.stamp.device) {
+                    registry.offer_owner_view(room, app, Some(route.clone()));
+                }
+            }
+        }
+        registry.drain_owner_views()
     }
 
     /// Return the locally retained, convergent view of this person's devices.
@@ -5654,14 +5791,90 @@ impl ShellNetwork {
         self.publish_sync_requests();
     }
 
+    /// Announce every room document change since the last announcement as a
+    /// `SyncResp`, so peers see an edit, an opened, moved or closed tab, a
+    /// rename within one network round trip instead of at their next pull.
+    /// At most one message per room per tick. Cheap when idle: rooms are
+    /// projected only when the desktop document, the peer-merge epoch or the
+    /// external revision moved, or [`ROOM_PUSH_FALLBACK_INTERVAL`] passed.
+    /// A batch that landed from a peer is re-announced once, which reaches
+    /// a member that missed the original; the echo changes nothing for
+    /// those that already hold it, so it does not repeat.
+    fn push_room_changes(&self) {
+        let Some(handle) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
+            return;
+        };
+        let Ok(mut push) = self.room_push.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let mut outgoing = Vec::new();
+        let mut tree = handle.write();
+        let trigger = (
+            tree.current_heads(),
+            tree.desktop.room_epoch,
+            tree.desktop.external_revision,
+        );
+        let due = push
+            .last_full
+            .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
+        if push.trigger.as_ref() == Some(&trigger) && !due {
+            return;
+        }
+        push.trigger = Some(trigger);
+        push.last_full = Some(now);
+        let rooms = tree.rooms();
+        push.announced.retain(|room, _| rooms.contains(room));
+        for room in rooms {
+            if tree.requires_native_owner(room) {
+                continue;
+            }
+            tree.sync_room_doc(room);
+            let heads = tree.room_heads(room);
+            if heads.is_empty() {
+                continue;
+            }
+            let Some(announced) = push.announced.get(&room) else {
+                push.announced.insert(room, heads);
+                continue;
+            };
+            if *announced == heads {
+                continue;
+            }
+            let changes = tree
+                .room_docs
+                .get_mut(&room)
+                .map(|doc| {
+                    doc.get_changes(announced)
+                        .into_iter()
+                        .map(|change| change.raw_bytes().to_vec())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            push.announced.insert(room, heads);
+            if !changes.is_empty() {
+                outgoing.push(NeighbourMsg::SyncResp {
+                    changes,
+                    room: room.to_string(),
+                });
+            }
+        }
+        drop(tree);
+        drop(push);
+        for msg in outgoing {
+            let _ = self.publish_message(msg);
+        }
+    }
+
     /// Drain a bounded batch of pending [`NetEvent`]s from the actor, forward `Msg`
     /// variants into the replica's `handle`, and publish each resulting
     /// outbound message via `cmd_tx`. Non-blocking — never stalls the
     /// render loop even on a starved channel.
     pub fn tick(&self) {
-        // Room replication is pull-only — a host answers `SyncReq` and
-        // never announces — so nothing else brings a stale guest's view
-        // of a capability change up to date.
+        self.remote_action_replies.expire(std::time::Instant::now());
+        // Local room changes go out the tick they land; the periodic pull
+        // repairs whatever a peer missed.
+        self.push_room_changes();
         self.kick_periodic_sync();
         self.reconcile_personal_workspaces();
         self.refresh_home_peer_hosts_periodically();
@@ -6520,6 +6733,28 @@ impl ShellNetwork {
             );
             return;
         }
+        // Codec adverts ride the heartbeat on every joined topic, including
+        // the default topic and the person's own lane. They describe the
+        // sender's own device, already bound to its transport above, not a
+        // room, so no room authority applies. Two devices of one person
+        // that share no room still learn what the other can decode.
+        if let NeighbourMsg::MediaCapabilities {
+            peer: advertiser,
+            hardware_decode,
+            software_decode,
+            hardware_encode,
+            software_encode,
+        } = &msg
+        {
+            crate::network::media_caps::record(
+                *advertiser,
+                hardware_decode,
+                software_decode,
+                hardware_encode,
+                software_encode,
+            );
+            return;
+        }
         if self.dispatch_personal_continuity(ws, &origin, &msg)
             || self.dispatch_personal_workspaces(ws, &origin, &msg)
         {
@@ -6650,19 +6885,6 @@ impl ShellNetwork {
             | NeighbourMsg::PermissionGrant { .. }) => {
                 self.queue_legacy_message_from(ws, Some(peer), message);
             }
-            NeighbourMsg::MediaCapabilities {
-                peer: advertiser,
-                hardware_decode,
-                software_decode,
-                hardware_encode,
-                software_encode,
-            } => crate::network::media_caps::record(
-                advertiser,
-                &hardware_decode,
-                &software_decode,
-                &hardware_encode,
-                &software_encode,
-            ),
             NeighbourMsg::MlsGovernance { room, frame, .. } => {
                 if let Some(room) = RoomId::parse(&room) {
                     self.queue_channel_governance(InboundChannelGovernance::Frame { room, frame });
@@ -7525,9 +7747,8 @@ pub(crate) fn shell_network_for_test(
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
-        personal_continuity: Mutex::new(
-            crate::shell::personal_continuity::PersonalContinuity::default(),
-        ),
+        room_push: Mutex::new(RoomPush::default()),
+        personal_continuity: Mutex::default(),
         personal_continuity_user: None,
         workspace_person_roots: Vec::new(),
         personal_continuity_device: None,
@@ -7625,6 +7846,102 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_local_tab_is_pushed_on_the_next_tick_and_an_idle_tick_sends_nothing() {
+        const SALT: u16 = 0xCAFE;
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        tree.write().set_salt_override(SALT);
+        let room = tree.read().rooms()[0];
+        let topic = room_topic_id(room);
+        let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0xCAFE);
+        let drain_pushes = |cmd_rx: &mut mpsc::Receiver<NetCmd>| {
+            let mut pushes = Vec::new();
+            while let Ok(cmd) = cmd_rx.try_recv() {
+                if let NetCmd::Publish {
+                    ws,
+                    msg: NeighbourMsg::SyncResp { room, changes },
+                } = cmd
+                {
+                    pushes.push((ws, room, changes));
+                }
+            }
+            pushes
+        };
+        // The first tick learns where every room stands and announces none
+        // of its history; a peer that lacks it pulls it.
+        net.tick();
+        assert!(drain_pushes(&mut cmd_rx).is_empty());
+        net.tick();
+        assert!(
+            drain_pushes(&mut cmd_rx).is_empty(),
+            "an idle tick sends nothing"
+        );
+        let before = tree
+            .read()
+            .room_docs
+            .get(&room)
+            .cloned()
+            .expect("room document");
+
+        let tab = tilo_desktop_model::compose_id(SALT, 77);
+        {
+            let mut tree = tree.write();
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("room workspace");
+            let group = workspace
+                .strips
+                .iter_mut()
+                .flat_map(|strip| strip.window_groups.iter_mut())
+                .next()
+                .expect("a window group");
+            group.tabs.push(crate::shell::state::Tab {
+                id: tab,
+                title: "Pushed".into(),
+                tile: crate::shell::state::TileContent::Stub {
+                    kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
+                    label: "Notes".into(),
+                },
+            });
+            tree.seed_doc_from_cache();
+        }
+        net.tick();
+        let pushes = drain_pushes(&mut cmd_rx);
+        let [(ws, pushed_room, changes)] = pushes.as_slice() else {
+            panic!("one push for the changed room, got {pushes:?}");
+        };
+        assert_eq!(
+            (*ws, pushed_room.as_str()),
+            (topic, room.to_string().as_str())
+        );
+
+        let mut peer = before;
+        for change in changes {
+            tilo_automerge::ApplyIncoming::apply_incoming(
+                &mut peer,
+                [automerge::Change::from_bytes(change.clone()).expect("change")],
+            )
+            .expect("push applies on top of what was announced");
+        }
+        assert!(
+            tilo_desktop_model::projection::contents_of(&peer)
+                .iter()
+                .flat_map(|strip| &strip.groups)
+                .flat_map(|group| &group.tabs)
+                .any(|candidate| candidate.id == tab),
+            "the pushed change carries the new tab"
+        );
+
+        net.tick();
+        assert!(
+            drain_pushes(&mut cmd_rx).is_empty(),
+            "nothing new, nothing sent"
+        );
+    }
     use crate::shell::state::FreshId as _;
 
     #[test]
@@ -7685,6 +8002,62 @@ mod tests {
             }
         }
         assert!(found, "the action must be handed to the personal transport");
+    }
+
+    #[test]
+    fn a_codec_advert_outside_a_room_is_recorded() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x45; 32]);
+        let user = root.verifying_key().to_bytes();
+        let (net, mut commands) = personal_continuity_network_for_test(user);
+        let device = iroh::SecretKey::from_bytes(&[0x23; 32]);
+        authenticated_personal_peer(&net, &root, &device);
+        while commands.try_recv().is_ok() {}
+        let advertiser = crate::network::behaviour::peer_liveness_handle(&device.public());
+        for ws in [DEFAULT_WS_TOPIC, personal_continuity_topic_id(&user)] {
+            net.dispatch_neighbour_msg(
+                ws,
+                device.public(),
+                None,
+                false,
+                NeighbourMsg::MediaCapabilities {
+                    peer: advertiser,
+                    hardware_decode: vec!["h264".into()],
+                    software_decode: Vec::new(),
+                    hardware_encode: Vec::new(),
+                    software_encode: Vec::new(),
+                },
+            );
+        }
+        assert!(
+            crate::network::media_caps::capabilities(advertiser)
+                .hardware_decode
+                .iter()
+                .any(|codec| codec.wire_label() == "h264"),
+            "a codec advert from an authenticated device is recorded without a shared room"
+        );
+        assert!(commands.try_recv().is_err());
+
+        let stranger = iroh::SecretKey::from_bytes(&[0x24; 32]);
+        let unproven = crate::network::behaviour::peer_liveness_handle(&stranger.public());
+        net.dispatch_neighbour_msg(
+            DEFAULT_WS_TOPIC,
+            stranger.public(),
+            None,
+            false,
+            NeighbourMsg::MediaCapabilities {
+                peer: unproven,
+                hardware_decode: vec!["h264".into()],
+                software_decode: Vec::new(),
+                hardware_encode: Vec::new(),
+                software_encode: Vec::new(),
+            },
+        );
+        assert!(
+            crate::network::media_caps::capabilities(unproven)
+                .hardware_decode
+                .is_empty(),
+            "an unauthenticated device's advert is not recorded"
+        );
     }
 
     #[test]

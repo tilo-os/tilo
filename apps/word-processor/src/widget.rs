@@ -965,6 +965,7 @@ struct ProofingPreferences {
     personal: Option<ui::framework::Setting<proofing::PersonalDictionary>>,
     /// The personal words the dictionary was last built with.
     personal_words: proofing::PersonalDictionary,
+    migration_requested: bool,
     /// The person's spelling preferences every app follows, which name the
     /// language words are checked in; `None` until attached.
     shared: Option<ui::framework::Setting<ui::text_assistance::TextAssistancePrefs>>,
@@ -988,6 +989,7 @@ impl ProofingPreferences {
             },
             personal: None,
             personal_words: proofing::PersonalDictionary::default(),
+            migration_requested: false,
             shared: None,
             applied_language: None,
         }
@@ -2976,10 +2978,35 @@ impl WordProcessorWidget {
     /// with any persisted user words layered in. Owned so "Add to dictionary"
     /// can mutate it.
     fn dictionary(&mut self) -> &mut spellcheck::Dictionary {
-        // Words added on another device, or in another window, arrive with
-        // the setting: build the dictionary again when they change.
+        // Explicit words added through the shared local host follow every
+        // window: build the spelling overlay again when they change.
         if let Some(personal) = &self.proofing.personal {
-            let words = personal.get();
+            let snapshot = ui::personal_dictionary::snapshot();
+            if !self.proofing.migration_requested
+                && let Ok(snapshot) = &snapshot
+            {
+                let words = personal.get().dictionary_words;
+                if words.is_empty()
+                    || ui::personal_dictionary::edit(
+                        snapshot.revision,
+                        ui::personal_dictionary::Edit::ImportWriter { words },
+                    )
+                    .is_ok()
+                {
+                    self.proofing.migration_requested = true;
+                }
+            }
+            let language = self
+                .proofing
+                .language
+                .replace('_', "-")
+                .to_ascii_lowercase();
+            let words = proofing::PersonalDictionary {
+                dictionary_words: snapshot
+                    .ok()
+                    .map(|snapshot| snapshot.hints(&language).map(str::to_owned).collect())
+                    .unwrap_or_default(),
+            };
             if words != self.proofing.personal_words {
                 self.proofing.personal_words = words;
                 self.dict = None;
@@ -2994,6 +3021,7 @@ impl WordProcessorWidget {
     /// Misspelled byte spans for a body block, using `spell_cache` (keyed by the
     /// block's text so an edit re-checks and an unchanged block is free).
     fn block_spell_spans(&mut self, id: &str, text: &str) -> Vec<(usize, usize)> {
+        self.dictionary();
         if let Some((cached_text, spans)) = self.spell_cache.get(id)
             && cached_text == text
         {
@@ -12261,16 +12289,24 @@ impl WordProcessorWidget {
             }
             CtxAction::SelectAll => self.select_all_via_primitive(state),
             CtxAction::AddToDictionary(word) => {
-                if self.proofing.personal_words.add(&word) {
+                if self.proofing.personal.is_some() {
+                    let result = ui::personal_dictionary::snapshot().and_then(|snapshot| {
+                        ui::personal_dictionary::edit(
+                            snapshot.revision,
+                            ui::personal_dictionary::Edit::Add(ui::personal_dictionary::Word::new(
+                                &word, None,
+                            )?),
+                        )
+                    });
+                    if let Err(error) = result {
+                        eprintln!("word-processor: could not keep the shared word: {error}");
+                    }
+                    self.dict = None;
+                    self.spell_cache.clear();
+                } else if self.proofing.personal_words.add(&word) {
                     // Keep it with the person's settings, then build the
                     // dictionary again so every block re-checks and the
                     // squiggle clears on the next draw.
-                    if let Some(personal) = &self.proofing.personal {
-                        let words = self.proofing.personal_words.clone();
-                        if let Err(error) = personal.set(words) {
-                            eprintln!("word-processor: could not keep the word: {error}");
-                        }
-                    }
                     self.dict = None;
                     self.spell_cache.clear();
                 }

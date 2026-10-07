@@ -1955,3 +1955,25 @@ display-device-screen = { $device } · { $screen } · { $status }
 display-device-online = Online
 display-device-offline = Offline
 display-devices-observed = Beobachtete Bildschirmpositionen. Eingabezugriff wird gesondert erteilt.
+
+display-devices-arrange = Einen verbundenen Gerätebildschirm neben Ihren ziehen. Bildschirme desselben Geräts werden zusammen verschoben. Verschieben erlaubt keine Eingabe.
+display-device-move-requested = Position angefordert. Die Anordnung aktualisiert sich, wenn das Gerät seine neue Position bestätigt.
+display-device-move-pending = Bildschirmposition wird gesendet…
+display-device-move-unavailable = Dieser Bildschirm ist offline oder seine Anordnung kann hier nicht geändert werden.
+
+display-device-move-confirmed = Das Gerät hat seine neue Bildschirmposition bestätigt.
+display-device-move-changed = Die Geräteanordnung wurde vor der Bestätigung geändert. Erneut versuchen.
+display-device-move-unconfirmed = Das Gerät hat diese Position nicht bestätigt. Aktualisieren und erneut versuchen.
+
+input-dictionary-title = Persönliches Wörterbuch
+input-dictionary-caption = Hinzugefügte Wörter stehen der Rechtschreibprüfung, der Bildschirmtastatur und dem Diktieren auf dem Gerät zur Verfügung. Schreibweise und Groß- und Kleinschreibung bleiben erhalten.
+input-dictionary-unavailable = Dein lokales persönliches Wörterbuch ist in dieser Sitzung nicht verfügbar.
+input-dictionary-word = Wort
+input-dictionary-language = Sprache
+input-dictionary-language-caption = Für alle Sprachen leer lassen oder einen Sprachcode wie en, nl oder fr eingeben.
+input-dictionary-add = Wort hinzufügen
+input-dictionary-save = Speichern
+input-dictionary-remove = Entfernen
+input-dictionary-reset = Alle Wörter entfernen
+input-dictionary-word-placeholder = Ein Wort eingeben
+input-dictionary-all-languages = Alle Sprachen

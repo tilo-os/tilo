@@ -36,6 +36,7 @@
 
 pub mod agent_transport;
 pub mod local_socket;
+pub mod process_binding;
 pub mod service_socket;
 pub mod tools;
 

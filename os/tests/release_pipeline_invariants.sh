@@ -393,7 +393,9 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq 'cancel-in-progress: false' "$apps" \
   && ! grep -Eq '^  pull_request(_target)?:' "$apps" \
-  && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" "$apps_publish" \
+  && grep -Fq '$package_api/tilo-app-collections/$collection_version/' "$apps_publish" \
+  && grep -Fq 'collection_version="$VERSION-$bundle_sha"' "$apps_publish" \
+  && grep -Fq 'bundle_sha=$(sha256sum "$bundle"' "$apps_publish" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" "$apps_publish" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
   && grep -Fq 'if [[ $GITHUB_REF == refs/heads/main ]]; then' "$apps" \
