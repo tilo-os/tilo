@@ -67,6 +67,7 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+pub mod audio_output;
 pub mod committed_document;
 #[cfg(feature = "client")]
 pub mod live_activity;
@@ -854,6 +855,37 @@ impl NearbyTransferReply {
 
 #[cfg(feature = "client")]
 impl ChannelHandle {
+    /// Send PCM or controls to this launched application's output-only service.
+    ///
+    /// # Errors
+    /// Fails closed when the authenticated output service is absent or refuses the command.
+    pub async fn audio_output_command(
+        &self,
+        command: &audio_output::Command,
+    ) -> Result<audio_output::Snapshot, NotAvailable> {
+        let bytes = command
+            .encode()
+            .map_err(|error| NotAvailable::Capnp(capnp::Error::failed(error.into())))?;
+        let mut request = self.inner.audio_output_command_request();
+        request.get().set_command(&bytes);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply()?;
+        if bytes.len() > audio_output::MAX_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "audio output reply too large".into(),
+            )));
+        }
+        let snapshot: audio_output::Snapshot = serde_json::from_slice(bytes).map_err(|_| {
+            NotAvailable::Capnp(capnp::Error::failed("invalid audio output reply".into()))
+        })?;
+        if !snapshot.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid audio output state".into(),
+            )));
+        }
+        Ok(snapshot)
+    }
+
     /// Read this channel's current committed history. Unsupported peers remain
     /// unavailable; only an explicit Legacy response selects legacy storage.
     ///

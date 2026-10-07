@@ -42,6 +42,29 @@ What a sandboxed app is actually presented with. It names none of this; the laun
 
 Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch (`launcher::capabilities`).
 
+### Application audio output
+
+Hosted apps submit output PCM through the launcher's attested collaboration channel;
+they receive no PipeWire/PulseAudio socket, device path or microphone grant. The
+output-only `audioOutputCommand` service is independent of Chat call membership and
+capture. The broker derives the app, workspace and record from the admitted route,
+checks its live kernel process custody and admission, and fences its output when
+the process disconnects or authority ends. The compositor also fences output on
+session lock, onboarding or the sound-output privacy policy.
+
+Each output has a host-issued generation and an eight-packet queue (160 ms of
+48 kHz stereo PCM). Sequence checks make exact packet retries safe and reject
+changed or reordered retries. Pause, flush, volume and close apply only to that
+app's generation. The host pins playback to the device serial and daemon cookie
+from its existing native device observer; a foreign link, removed output or lost
+link fails closed. Rendered-frame receipts count PCM consumed by the verified host
+device callback, rather than a decoder buffer, playhead or fake sink. Music keeps
+its existing resource actions as the user, accessibility and automation surface.
+
+The governed implementation uses the Linux host's PipeWire backend. An unavailable
+service or device is a playback error. It does not relax the app sandbox or use
+capture access as an output fallback.
+
 ## Seccomp-bpf blocklist
 
 `tilo-launcher` compiles the filter for every launch with the `seccompiler` crate (`sandbox_core::seccomp`) and hands it to `bwrap --seccomp <fd>`. It is a default-allow deny-list answering `EPERM`, derived from Flatpak's profile:

@@ -930,6 +930,7 @@ fn spawn_satellite(
         // keymap. Keep both sides on the same validated settings.
         .env("XKB_DEFAULT_LAYOUT", &keyboard.layouts)
         .env("XKB_DEFAULT_VARIANT", &keyboard.variants)
+        .env("XKB_DEFAULT_MODEL", &keyboard.model)
         .env(
             "XKB_DEFAULT_OPTIONS",
             keyboard.options.as_deref().unwrap_or(""),
@@ -1029,7 +1030,12 @@ fn setxkbmap_args(keyboard: &KeyboardSettings) -> Vec<OsString> {
         .min(keyboard.layouts.split(',').count().saturating_sub(1));
     let layout = keyboard.layouts.split(',').nth(active).unwrap_or("us");
     let variant = keyboard.variants.split(',').nth(active).unwrap_or("");
-    let mut args = vec![OsString::from("-layout"), OsString::from(layout)];
+    let mut args = vec![
+        OsString::from("-model"),
+        OsString::from(&keyboard.model),
+        OsString::from("-layout"),
+        OsString::from(layout),
+    ];
     if !variant.is_empty() {
         args.extend([OsString::from("-variant"), OsString::from(variant)]);
     }
@@ -1947,6 +1953,8 @@ mod tests {
             assert_eq!(
                 setxkbmap_args(&settings),
                 [
+                    "-model",
+                    "pc105",
                     "-layout",
                     "de",
                     "-variant",
@@ -1962,7 +1970,7 @@ mod tests {
             let plain = KeyboardSettings::default();
             assert_eq!(
                 setxkbmap_args(&plain),
-                ["-layout", "us", "-option", ""].map(OsString::from)
+                ["-model", "pc105", "-layout", "us", "-option", ""].map(OsString::from)
             );
         }
     }
@@ -2012,6 +2020,7 @@ mod tests {
         fs::write(&slow_setxkbmap, "#!/bin/sh\nexec /usr/bin/sleep 30\n").unwrap();
         fs::set_permissions(&slow_setxkbmap, fs::Permissions::from_mode(0o700)).unwrap();
         let german = KeyboardSettings {
+            model: "pc105".into(),
             source_ids: vec!["de:nodeadkeys".into()],
             layouts: "de".into(),
             variants: "nodeadkeys".into(),

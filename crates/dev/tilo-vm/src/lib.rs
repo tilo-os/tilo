@@ -5,6 +5,7 @@
 pub mod app;
 pub mod appsets;
 pub mod build;
+pub mod builderapp;
 pub mod builderlayer;
 pub mod ci;
 pub mod cicache;
@@ -23,6 +24,7 @@ pub mod reach;
 pub mod receipt;
 pub mod remote;
 pub mod scenario;
+mod source_inputs;
 pub mod sshguard;
 pub mod sshkey;
 pub mod vmbuild;
