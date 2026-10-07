@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Private review worker ABI. No path opens, Rust callbacks or confidence policy.
 #include "recognizer.h"
+#include "runner.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -113,10 +114,21 @@ extern "C" __attribute__((visibility("default"))) void* tilo_nemo_load(const Til
             options.speech_contexts.push_back(std::move(context));
         }
         wipe(vocabulary);
-        // Use the upstream streaming-only scalar warmup. Its temporary runner
-        // is destroyed before the user's fresh stream; no synthetic state or
-        // silence is added to the actual dictation session.
-        worker->recognizer->warmup();
+        // Prepare one actual cache-aware inference shape before Ready. The
+        // server warmup repeats four seconds of silence; one bounded chunk
+        // plus finalize loads lazy weights and graphs without that repeated
+        // work. Destroy all synthetic stream state before the user's stream.
+        auto warmup = worker->recognizer->make_runner();
+        auto* model = worker->recognizer->model();
+        if (model->has_prompt())
+            warmup->set_prompt_index(model->prompt_index_for_lang("auto"));
+        if (worker->recognizer->sample_rate() != 16000)
+            throw std::invalid_argument("sample rate");
+        std::vector<float> silence(1600, 0.0f);
+        warmup->feed_audio(silence.data(), silence.size());
+        warmup->step();
+        warmup->finalize();
+        warmup.reset();
         worker->stream = worker->recognizer->streaming_recognize(options, language, false);
         if (!worker->stream) return nullptr;
         *status = 0;
