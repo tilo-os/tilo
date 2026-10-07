@@ -1152,6 +1152,9 @@ def write_ime_drag_refusal(socket, output, size, drag):
     frames = call(socket, {"op": "foreign_frames"})
     primary = presented_primary_frame(frames, "so.tilo.chat")
     floating = presented_floating_frame(frames, "so.tilo.chat")
+    observed_floating = [row for row in foreign_frames(frames)
+                         if row.get("app_id") == "so.tilo.chat"
+                         and isinstance(row.get("floating_id"), str) and row["floating_id"]]
     primary_geometry = presented_content_geometry(primary) if primary is not None else None
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"ime-after-drag-refused-{size}.png"
@@ -1168,6 +1171,19 @@ def write_ime_drag_refusal(socket, output, size, drag):
         ),
         "primary_geometry": primary_geometry,
         "floating_presented": floating is not None,
+        "floating_observed_count": len(observed_floating),
+        "floating_pixels_ready_count": sum(
+            row.get("pixels_ready") is True for row in observed_floating
+        ),
+        "floating_error_count": sum(
+            row.get("last_error") is not None for row in observed_floating
+        ),
+        "floating_suspended_count": sum(
+            row.get("suspended") is True for row in observed_floating
+        ),
+        "floating_transferring_count": sum(
+            row.get("transferring") is True for row in observed_floating
+        ),
         "private_content_recorded": False,
     }, indent=2) + "\n")
 
@@ -3822,7 +3838,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             "tilo_agent_delivery=debug,"
             "shell::shell::search::providers::live_app_actions=debug,"
             "shell::shell::search::action_api=debug,tilo_native_action_gate=debug,"
-            "tilo_native_governance=debug"
+            "tilo_native_governance=debug,tilo_floating_handoff=debug"
         )
         # Existing bounded launcher diagnostic: managed child output otherwise
         # goes to /dev/null. It changes no sandbox, custody or service route.

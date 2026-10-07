@@ -78,6 +78,30 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertNotIn("must-not-leave-the-frame", evidence)
         self.assertNotIn("private_model_data", evidence)
         self.assertTrue(json.loads(evidence)["primary_frame_advanced"])
+        self.assertEqual(json.loads(evidence)["floating_observed_count"], 0)
+
+    def test_ime_drag_refusal_distinguishes_unpainted_native_surface_without_exporting_errors(self):
+        frame = {
+            "app_id": "so.tilo.chat", "floating_id": "inert-fixture-surface",
+            "presented": False, "pixels_ready": False, "frame_seq": 0,
+            "last_error": "private transport details must not leave the observation",
+            "suspended": True, "transferring": True,
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                PROOF, "call", side_effect=[
+                    {"answer": {"frames": [frame]}}, {"ok": {}},
+                ]):
+            output = pathlib.Path(directory)
+            PROOF.write_ime_drag_refusal("socket", output, "1600x900", {})
+            evidence = json.loads((output / "ime-drag-refused.json").read_text())
+        self.assertFalse(evidence["floating_presented"])
+        self.assertEqual(evidence["floating_observed_count"], 1)
+        self.assertEqual(evidence["floating_pixels_ready_count"], 0)
+        self.assertEqual(evidence["floating_error_count"], 1)
+        self.assertEqual(evidence["floating_suspended_count"], 1)
+        self.assertEqual(evidence["floating_transferring_count"], 1)
+        self.assertNotIn(frame["last_error"], json.dumps(evidence))
+        self.assertNotIn(frame["floating_id"], json.dumps(evidence))
 
     def test_broken_ime_drag_observer_cannot_replace_original_failure(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
