@@ -498,6 +498,10 @@ pub fn run() -> std::process::ExitCode {
     {
         eprintln!("session shader seed unavailable ({error}); compiling normally");
     }
+    if let Err(error) = shell::shell::install_managed_tasks_from_args(std::env::args_os().skip(1)) {
+        eprintln!("native managed task installation refused: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
     tilo_startup_metrics::init();

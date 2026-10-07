@@ -23,7 +23,10 @@ use std::{
     collections::HashMap,
     os::unix::{fs::MetadataExt as _, net::UnixStream},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tilo_desktop_model::{WorkspaceTaskRoute, WorkspaceTaskStatus};
 use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
@@ -81,6 +84,19 @@ struct Policy {
     prior_epoch: u64,
     budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     certificate: tilo_user_identity::DeviceCert,
+    original: Option<Arc<OriginalGate>>,
+}
+struct OriginalGate {
+    check: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    consumed: AtomicBool,
+}
+impl OriginalGate {
+    fn recheck(&self) -> Result<(), String> {
+        if self.consumed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        (self.check)()
+    }
 }
 struct Authority {
     native: ManagedNativeAuthority,
@@ -160,6 +176,9 @@ impl Authority {
 
     fn policy(&self, binding: &ManagedBinding) -> Result<Policy, String> {
         let policy = self.retained_policy(binding)?;
+        if let Some(original) = &policy.original {
+            original.recheck()?;
+        }
         if policy.binding != *binding
             || self.attestor(&binding.room, &binding.agent)? != policy.certificate
         {
@@ -316,6 +335,36 @@ impl ManagedHost {
     /// # Errors
     /// Refuses absent/changed tasks, repeated/ambiguous durable claims or service failures.
     pub fn launch_task(&mut self, room: &str, task: &str) -> Result<String, String> {
+        self.start_task(room, task, None)
+    }
+
+    /// Retain an original public invocation's current authority until actual process admission.
+    /// The callback is host-held custody, never an application or serialized authority claim.
+    /// # Errors
+    /// Refuses revoked original authority, changed native policy or uncertain launch barriers.
+    pub fn launch_guarded_task(
+        &mut self,
+        room: &str,
+        task: &str,
+        check: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Result<String, String> {
+        check()?;
+        self.start_task(
+            room,
+            task,
+            Some(Arc::new(OriginalGate {
+                check,
+                consumed: AtomicBool::new(false),
+            })),
+        )
+    }
+
+    fn start_task(
+        &mut self,
+        room: &str,
+        task: &str,
+        original: Option<Arc<OriginalGate>>,
+    ) -> Result<String, String> {
         let snapshot = self.authority.native.tasks.task_snapshot(room)?;
         let definition = snapshot
             .tasks
@@ -357,6 +406,7 @@ impl ManagedHost {
             prior_epoch: control.run_epoch,
             budget: control.execution_budget,
             certificate,
+            original,
         };
         let mut policies = self
             .authority
@@ -441,7 +491,31 @@ impl ManagedHost {
         let connection = pending.admit_connection(supervisor, self.authority.as_ref())?;
         let policy = self.authority.policy(binding)?;
         self.broker
-            .connect_enrolled_worker(connection, &policy.certificate)
+            .connect_enrolled_worker(connection, &policy.certificate)?;
+        // Only this actual consumed kernel descriptor ends the original startup gate.
+        // A terminal action reply alone cannot establish an admitted process/run.
+        if let Some(original) = &policy.original {
+            original.consumed.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    /// Stop one exact owned launch through its retained supervisor binding, never a supplied PID.
+    /// # Errors
+    /// Refuses an unknown launch or unavailable exact supervisor custody.
+    pub fn stop_launch(&mut self, launch: &str) -> Result<(), String> {
+        let policies = self
+            .authority
+            .policies
+            .lock()
+            .map_err(|_| "managed policies unavailable")?;
+        let binding = policies
+            .get(launch)
+            .ok_or("owned managed launch absent")?
+            .binding
+            .clone();
+        drop(policies);
+        self.launcher.stop(&binding)
     }
 
     /// Stop exactly this owner's children using retained supervisor custody, never journal PIDs.

@@ -869,9 +869,12 @@ fn report_execution(
     task.updated_at = context.now;
     Ok((
         task_id.to_owned(),
-        WorkspaceTaskMutationResult::ExecutionReported {
+        WorkspaceTaskMutationResult::ExecutionPhaseReported {
             task_id: task_id.to_owned(),
-            sequence: fence.1,
+            execution: control
+                .execution
+                .clone()
+                .ok_or("admitted phase is absent")?,
         },
     ))
 }
@@ -1467,6 +1470,87 @@ mod tests {
             sequence,
             phase,
         }
+    }
+
+    #[test]
+    fn phase_result_encoding_preserves_legacy_and_appends_exact_evidence() {
+        // Historical postcard bytes: variant 6, task "t", sequence 2.
+        let legacy = [6, 1, b't', 2];
+        let decoded: WorkspaceTaskMutationResult = postcard::from_bytes(&legacy).unwrap();
+        assert_eq!(
+            decoded,
+            WorkspaceTaskMutationResult::ExecutionReported {
+                task_id: "t".into(),
+                sequence: 2,
+            }
+        );
+        assert_eq!(postcard::to_stdvec(&decoded).unwrap(), legacy);
+        let current = WorkspaceTaskMutationResult::ExecutionPhaseReported {
+            task_id: "t".into(),
+            execution: WorkspaceTaskExecution {
+                run_epoch: 1,
+                sequence: 0,
+                phase: WorkspaceTaskExecutionPhase::Accepted,
+                updated_at: 5,
+            },
+        };
+        // Appended variant 11, task "t", epoch 1, sequence 0, phase 0, zigzag time 10.
+        let exact = [11, 1, b't', 1, 0, 0, 10];
+        assert_eq!(postcard::to_stdvec(&current).unwrap(), exact);
+        assert_eq!(
+            postcard::from_bytes::<WorkspaceTaskMutationResult>(&exact).unwrap(),
+            current
+        );
+    }
+
+    #[test]
+    fn admitted_phase_receipt_survives_failure_with_exact_epoch_and_actor() {
+        let (mut doc, task) = task_with_applied_direction();
+        let result = run(
+            &mut doc,
+            5,
+            5,
+            &agent(),
+            &phase_command(&task, 1, 0, WorkspaceTaskExecutionPhase::Accepted),
+        )
+        .unwrap();
+        run(
+            &mut doc,
+            6,
+            6,
+            &agent(),
+            &WorkspaceTaskCommand::Finish {
+                task_id: task.clone(),
+                run_epoch: 1,
+                outcome: WorkspaceTaskFinish::Waiting,
+                summary: "Private runtime unavailable".into(),
+            },
+        )
+        .unwrap();
+        let reopened = AutoCommit::load(&doc.save()).unwrap();
+        let observed = snapshot(&reopened).unwrap();
+        let control = &observed.controls[&task];
+        assert!(control.execution.is_none());
+        assert!(control.active_run.is_none());
+        let receipt = control
+            .receipts
+            .iter()
+            .find(|receipt| receipt.invocation == uuid::Uuid::from_u128(5))
+            .unwrap();
+        assert_eq!(receipt.device, agent().device());
+        assert_eq!(receipt.result, result.result);
+        assert_eq!(
+            receipt.result,
+            WorkspaceTaskMutationResult::ExecutionPhaseReported {
+                task_id: task,
+                execution: WorkspaceTaskExecution {
+                    run_epoch: 1,
+                    sequence: 0,
+                    phase: WorkspaceTaskExecutionPhase::Accepted,
+                    updated_at: 5,
+                },
+            }
+        );
     }
 
     #[test]

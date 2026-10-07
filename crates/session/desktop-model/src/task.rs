@@ -242,6 +242,11 @@ pub enum WorkspaceTaskMutationResult {
         task_id: String,
         step: WorkspaceTaskStep,
     },
+    /// Appended: exact owner-admitted phase evidence survives terminal clearing.
+    ExecutionPhaseReported {
+        task_id: String,
+        execution: WorkspaceTaskExecution,
+    },
 }
 
 /// Exact replay record for one owner-admitted task mutation.

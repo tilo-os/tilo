@@ -733,6 +733,188 @@ fn refuse_restart() -> Qualification<()> {
 fn one_signed_controller_keeps_two_real_native_task_processes_separate() {
     separate_tasks().unwrap();
 }
+
+#[test]
+fn revoked_second_launch_does_not_revoke_an_already_admitted_first_process() {
+    guarded_tasks().unwrap();
+}
+fn guarded_tasks() -> Qualification<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut fixture = controller_setup(Admission::Governor)?;
+    let room = fixture.native.room.to_string();
+    let first_allowed = Arc::new(AtomicBool::new(true));
+    let first_guard = first_allowed.clone();
+    let first = fixture.host.launch_guarded_task(
+        &room,
+        &fixture.task,
+        Arc::new(move || {
+            if first_guard.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err("first original caller revoked".into())
+            }
+        }),
+    )?;
+    let mut first_peer = take_model_peer(&fixture.connections)?;
+    let first_process = observe_started(&mut fixture.host)?;
+    observe_actual_process(&fixture.journal, &first, first_process)?;
+    read_frame(&mut first_peer, "offered")?;
+    // Ending the first original action after actual descriptor consumption must not revoke its run.
+    first_allowed.store(false, Ordering::Release);
+    first_peer.write_all(b"A")?;
+    read_frame(&mut first_peer, "accepted")?;
+    let second_task = queued(
+        &fixture.native,
+        &fixture.connections.certificate,
+        (&fixture.connections.key, &fixture.connections.certificate),
+    )?;
+    let second_allowed = Arc::new(AtomicBool::new(true));
+    let second_guard = second_allowed.clone();
+    let second = fixture.host.launch_guarded_task(
+        &room,
+        &second_task,
+        Arc::new(move || {
+            if second_guard.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err("second original caller revoked".into())
+            }
+        }),
+    )?;
+    let second_peer = take_model_peer(&fixture.connections)?;
+    second_allowed.store(false, Ordering::Release);
+    observe_guard_refusal(&mut fixture.host, &second)?;
+    observe_actual_process(&fixture.journal, &first, first_process)?;
+    let snapshot = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)?;
+    let second_control = snapshot
+        .controls
+        .get(&second_task)
+        .ok_or("second task control absent")?;
+    require(
+        second_control.active_run.is_none() && second_control.run_epoch == 0,
+        "revoked startup minted a native run",
+    )?;
+    let first_control = snapshot
+        .controls
+        .get(&fixture.task)
+        .ok_or("first task control absent")?;
+    require(
+        first_control.active_run.is_some() && first_control.run_epoch == 1,
+        "independent admitted first run was revoked",
+    )?;
+    first_peer.write_all(b"P")?;
+    read_frame(&mut first_peer, "progress")?;
+    first_peer.write_all(b"F")?;
+    read_frame(&mut first_peer, "finished")?;
+    // Exact stopped/refused second ownership remains fenced against a fresh UUID attempt.
+    require(
+        fixture.host.launch_task(&room, &second_task).is_err(),
+        "revoked epoch was retried",
+    )?;
+    drop(second_peer);
+    fixture.host.shutdown()?;
+    drop(fixture);
+    Ok(())
+}
+fn observe_guard_refusal(host: &mut ManagedHost, launch: &str) -> Qualification<()> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match host.poll() {
+            Err(error) if error.contains("second original caller revoked") => return Ok(()),
+            Err(error) => return Err(error.into()),
+            Ok(events) => {
+                for event in events {
+                    match event {
+                        ManagedLaunchEvent::Failed {
+                            binding,
+                            terminal: true,
+                            ..
+                        } if binding.launch == launch => return Ok(()),
+                        ManagedLaunchEvent::Started(supervisor)
+                            if supervisor.binding().launch == launch =>
+                        {
+                            return Err("revoked launch was kernel-admitted".into());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        require(
+            Instant::now() < deadline,
+            "actual guarded startup refusal absent",
+        )?;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn exact_owned_stop_reaps_only_the_selected_signed_task_process() {
+    exact_stop().unwrap();
+}
+fn exact_stop() -> Qualification<()> {
+    let mut fixture = controller_setup(Admission::Governor)?;
+    let room = fixture.native.room.to_string();
+    let first = fixture.host.launch_task(&room, &fixture.task)?;
+    let mut first_peer = take_model_peer(&fixture.connections)?;
+    let first_process = observe_started(&mut fixture.host)?;
+    read_frame(&mut first_peer, "offered")?;
+    first_peer.write_all(b"A")?;
+    read_frame(&mut first_peer, "accepted")?;
+    let second_task = queued(
+        &fixture.native,
+        &fixture.connections.certificate,
+        (&fixture.connections.key, &fixture.connections.certificate),
+    )?;
+    let second = fixture.host.launch_task(&room, &second_task)?;
+    let mut second_peer = take_model_peer(&fixture.connections)?;
+    let second_process = observe_started(&mut fixture.host)?;
+    observe_actual_process(&fixture.journal, &second, second_process)?;
+    read_frame(&mut second_peer, "offered")?;
+    require(
+        fixture.host.stop_launch("not-an-owned-launch").is_err(),
+        "unknown launch stopped a process",
+    )?;
+    fixture.host.stop_launch(&second)?;
+    let deadline = tilo_test_env::hang_deadline();
+    let mut observed_exit = false;
+    while !observed_exit || second_process.is_current() {
+        for event in fixture.host.poll()? {
+            if matches!(event, ManagedLaunchEvent::Finished { binding, .. } if binding.launch == second)
+            {
+                observed_exit = true;
+            }
+        }
+        require(
+            Instant::now() < deadline,
+            "exact stopped supervisor was not reaped",
+        )?;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    observe_actual_process(&fixture.journal, &first, first_process)?;
+    let snapshot = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)?;
+    let control = snapshot
+        .controls
+        .get(&second_task)
+        .ok_or("second control absent")?;
+    require(
+        control.active_run.is_none() && control.run_epoch == 0,
+        "stopping an offered task minted native execution",
+    )?;
+    first_peer.write_all(b"P")?;
+    read_frame(&mut first_peer, "progress")?;
+    first_peer.write_all(b"F")?;
+    read_frame(&mut first_peer, "finished")?;
+    fixture.host.shutdown()?;
+    drop(fixture);
+    Ok(())
+}
 fn separate_tasks() -> Qualification<()> {
     let mut fixture = controller_setup(Admission::Governor)?;
     let room = fixture.native.room.to_string();

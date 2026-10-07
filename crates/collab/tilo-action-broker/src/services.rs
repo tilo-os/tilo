@@ -1,5 +1,9 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+mod managed_tasks;
+#[cfg(target_os = "linux")]
+pub use managed_tasks::{ManagedTaskLaunchContext, ManagedTaskLaunchFuture, ManagedTaskLaunches};
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 
 /// The normal desktop opening deadline, shared with placement retirement.
@@ -864,6 +868,9 @@ pub trait AppActionGrants: Send + Sync {
 }
 #[derive(Clone, Default)]
 pub struct HostServices {
+    /// Authenticated native task launches, absent unless private installation is configured.
+    #[cfg(target_os = "linux")]
+    pub managed_tasks: Option<Arc<dyn ManagedTaskLaunches>>,
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
     pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host

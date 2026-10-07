@@ -9,6 +9,8 @@ pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
+#[cfg(target_os = "linux")]
+pub mod managed_tasks;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
@@ -1540,8 +1542,14 @@ pub fn native_services(
     let approved_checks = membership
         .as_ref()
         .map(|tree| approved_checks::service(tree.clone(), network.clone()));
+    #[cfg(target_os = "linux")]
+    let managed_tasks = membership
+        .as_ref()
+        .and_then(|tree| managed_tasks::service(tree.clone(), network.clone()));
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     HostServices {
+        #[cfg(target_os = "linux")]
+        managed_tasks,
         #[cfg(target_os = "linux")]
         approved_checks,
         #[cfg(target_os = "linux")]

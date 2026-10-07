@@ -112,3 +112,31 @@ agent app can then disappear as apps adopt the shared contract.
 Each slice must prove that revocation changes both catalogue visibility and
 invocation authority. A management UI cannot claim a grant is effective until
 the broker revalidates the typed agent principal against the current workspace.
+
+## Installed native managed task launch
+
+The Linux session accepts `--managed-tasks /absolute/private/installation.json`
+(or `--managed-tasks=...`) before collaborator admission. The host selects one
+installation. The private, bounded version-1 configuration selects the normal
+installed `so.tilo.agent` package, independent trusted publishers/attestors,
+matching runtime, existing sandbox executable, private process journal and
+separate invocation receipt directory, data directory and model-provider
+selection. Relative paths, unknown fields, unsafe private files and invalid
+package/runtime trust fail admission. Task arguments cannot supply these values.
+
+A configured native workspace publishes `launch` on a queued model task's
+ordinary `desktop:task:...` resource. The action accepts no arguments and retains
+the admitted person's current certified session and durable invocation until
+actual kernel process admission. The existing managed controller, signed
+launcher, enrolled task connection and task lease own execution. Removing the
+original authority before admission refuses startup; ending a completed launch
+invocation does not revoke a separately admitted task process. Host retirement
+reaps its retained children through their exact supervisor bindings.
+
+The public launch result reports process admission; it does not report model
+success. Inspect the same task for the current execution and a bounded,
+attributed history of owner-admitted execution phases. The history retains exact
+run epochs after terminal clearing. Private invocation/process receipts and
+provider credentials remain host-owned. Task cancellation, child actions,
+read-only source projection and approved checks keep their existing authority
+and lifecycle contracts.
