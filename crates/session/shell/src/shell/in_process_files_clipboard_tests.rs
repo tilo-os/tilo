@@ -2122,6 +2122,62 @@ mod files_clipboard_tests {
         drop(fixture);
     }
 
+    fn restore_and_capture_native_copy(
+        fixture: &mut Fixture,
+        renderer: &mut ui::offscreen::OffscreenRenderer,
+        themes: &[(&str, ui::theme::Theme)],
+        edited: &[u8],
+    ) {
+        grant_native_trash(fixture);
+        fixture.succeeds(1, "open-trash");
+        let retained = std::fs::read_dir(xdg_paths::data_dir().unwrap().join("Trash/files"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 1, "one exact retained native Copy");
+        let retained = &retained[0];
+        assert_eq!(std::fs::read(retained).unwrap(), edited);
+        for (name, theme) in themes {
+            fixture.capture(renderer, theme, &format!("before-trash-restore-{name}"));
+        }
+        let update = restore_native_entry(fixture, retained);
+        assert!(
+            matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+            "actual native entry Restore must complete: {update:?}"
+        );
+        assert_eq!(
+            std::fs::read(fixture.folders[1].join("report")).unwrap(),
+            edited
+        );
+        assert!(!retained.exists());
+        assert!(!native_trash_pair(retained).exists());
+        let receiving = fixture.folders[1].clone();
+        let update = fixture.invoke_with(
+            1,
+            "go-to",
+            serde_json::json!({"path": receiving.to_string_lossy()})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(matches!(
+            update,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ));
+        for (name, theme) in themes {
+            fixture.capture(renderer, theme, &format!("after-trash-restore-{name}"));
+        }
+        let history = fixture.succeeds(1, "history");
+        assert!(
+            history["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["action"] == "Restore file"),
+            "actual Restore must be in shared history: {history}"
+        );
+    }
+
     #[test]
     fn mounted_files_native_paste_renders_its_receipt_in_three_themes() {
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_paste_renders_its_receipt_in_three_themes";
@@ -2162,6 +2218,8 @@ mod files_clipboard_tests {
         for (name, theme) in &themes {
             fixture.capture(&mut renderer, theme, &format!("after-redo-{name}"));
         }
+        let edited = b"edited after Paste before Undo";
+        std::fs::write(fixture.folders[1].join("report"), edited).unwrap();
         fixture.succeeds(1, "undo");
         let trash = file_explorer::fileops::trash_dir().expect("the isolated home has Trash");
         let update = fixture.invoke_with(
@@ -2179,6 +2237,7 @@ mod files_clipboard_tests {
         for (name, theme) in &themes {
             fixture.capture(&mut renderer, theme, &format!("trash-recovery-{name}"));
         }
+        restore_and_capture_native_copy(&mut fixture, &mut renderer, &themes, edited);
         drop(fixture);
     }
 
