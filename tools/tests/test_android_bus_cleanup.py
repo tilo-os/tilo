@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -89,3 +90,23 @@ class AndroidBusCleanup(unittest.TestCase):
                 self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
             finally:
                 os.close(descriptor)
+
+    def test_environment_loss_before_pidfd_readiness_waits_for_actual_exit(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            process = self.helper(runtime, hidden=True)
+            read_bytes = Path.read_bytes
+            timer = threading.Timer(0.05, process.kill)
+            def lost_environment_before_exit(path):
+                if path == Path('/proc') / str(process.pid) / 'environ':
+                    # The kernel revokes environ access during exit before the
+                    # pidfd is ready. Keep both the delay and exit real here.
+                    self.assertIsNone(process.poll())
+                    timer.start()
+                    raise PermissionError('environment unavailable before pidfd readiness')
+                return read_bytes(path)
+            try:
+                with patch.object(Path, 'read_bytes', lost_environment_before_exit):
+                    self.cleanup_one(process, runtime)
+                self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
+            finally:
+                if timer.ident is not None: timer.join(timeout=5)
