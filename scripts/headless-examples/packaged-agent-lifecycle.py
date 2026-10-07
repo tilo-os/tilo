@@ -597,7 +597,7 @@ def physically_click_editor(socket, access, geometry):
     }))
 
 
-def component_global_center(access, path, geometry, label):
+def component_global_target(access, path, geometry, label):
     """Translate one real client-local AccessKit extent through the compositor route."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     rect = atspi.extents_reply(client.call(
@@ -614,7 +614,16 @@ def component_global_center(access, path, geometry, label):
                           and box["y"] <= global_y < box["y"] + box["h"])
     if not inside(content) or not inside(placement):
         raise RuntimeError(f"the actual {label} is outside its routed content box")
-    return global_x, global_y
+    return {
+        "client_rect": {"x": x, "y": y, "w": width, "h": height},
+        "global_center": {"x": global_x, "y": global_y},
+    }
+
+
+def component_global_center(access, path, geometry, label):
+    target = component_global_target(access, path, geometry, label)
+    center = target["global_center"]
+    return center["x"], center["y"]
 
 
 def set_physical_modifiers(socket, *, ctrl=False, shift=False, alt=False, logo=False):
@@ -1034,7 +1043,9 @@ def native_float_return(socket, room, record, output, size, process):
 def drag_agent_conversation(socket, access, primary, size):
     """Drag the existing shared handle through the compositor's real seat."""
     geometry = presented_content_geometry(primary)
-    drag_x, drag_y = component_global_center(access, access["drag"], geometry, "drag handle")
+    target = component_global_target(access, access["drag"], geometry, "drag handle")
+    drag_x = target["global_center"]["x"]
+    drag_y = target["global_center"]["y"]
     desktop_width, desktop_height = (int(value) for value in size.split("x", 1))
     placement = geometry["placement"]
     drag_to_x = (max(8.0, placement["x"] - 96.0) if placement["x"] >= 140
@@ -1044,6 +1055,55 @@ def drag_agent_conversation(socket, access, primary, size):
         "op": "drag", "x_from": drag_x, "y_from": drag_y,
         "x_to": drag_to_x, "y_to": drag_to_y, "steps": 16,
     }))
+    return {
+        "handle_client_rect": target["client_rect"],
+        "drag_from": target["global_center"],
+        "drag_to": {"x": drag_to_x, "y": drag_to_y},
+        "primary_placement": geometry["placement"],
+        "primary_content": geometry["content"],
+        "primary_content_origin": geometry["origin"],
+        "primary_frame_seq": primary["frame_seq"],
+    }
+
+
+def write_ime_drag_refusal(socket, output, size, drag):
+    """Retain public geometry and pixels when the real drag never presents."""
+    frames = call(socket, {"op": "foreign_frames"})
+    primary = presented_primary_frame(frames, "so.tilo.chat")
+    floating = presented_floating_frame(frames, "so.tilo.chat")
+    primary_geometry = presented_content_geometry(primary) if primary is not None else None
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-after-drag-refused-{size}.png"
+    )}))
+    (output / "ime-drag-refused.json").write_text(json.dumps({
+        "phase": "after_physical_drag_without_floating_presentation",
+        "drag": drag,
+        "primary_presented": primary is not None,
+        "primary_frame_advanced": (
+            primary is not None and primary["frame_seq"] > drag["primary_frame_seq"]
+        ),
+        "primary_keyboard_focused": (
+            primary.get("keyboard_focused") if primary is not None else None
+        ),
+        "primary_geometry": primary_geometry,
+        "floating_presented": floating is not None,
+        "private_content_recorded": False,
+    }, indent=2) + "\n")
+
+
+def preserve_ime_drag_refusal(socket, output, size, drag):
+    """Best-effort diagnostics must leave the original timeout authoritative."""
+    try:
+        write_ime_drag_refusal(socket, output, size, drag)
+    except Exception:  # A broken observer is evidence, never a replacement failure.
+        try:
+            (output / "ime-drag-refused.json").write_text(json.dumps({
+                "phase": "after_physical_drag_without_floating_presentation",
+                "diagnostic_unavailable": True,
+                "private_content_recorded": False,
+            }, indent=2) + "\n")
+        except OSError:
+            pass
 
 
 def native_ime_float_return(socket, output, size, process, fcitx_identity):
@@ -1104,12 +1164,18 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     )
     if not private_editor_value_matches(access, committed_before):
         raise RuntimeError("resolving the Float handle committed the Rime preedit")
-    drag_agent_conversation(socket, access, preedit_primary, size)
-    frame = wait_for(
-        "Rime composition's detached native pixels",
-        lambda: presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"),
-        process,
-    )
+    drag = drag_agent_conversation(socket, access, preedit_primary, size)
+    try:
+        frame = wait_for(
+            "Rime composition's detached native pixels",
+            lambda: presented_floating_frame(
+                call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+            ),
+            process,
+        )
+    except RuntimeError:
+        preserve_ime_drag_refusal(socket, output, size, drag)
+        raise
     detached_access = wait_for(
         "detached Tide editor during Rime preedit",
         lambda: agent_conversation_accessibility("Tide", detached=True), process,

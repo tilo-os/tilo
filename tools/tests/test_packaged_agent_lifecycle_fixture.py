@@ -24,6 +24,74 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_component_target_retains_exact_client_and_global_geometry(self):
+        class Client:
+            def call(self, path, interface, coord_type):
+                self.assertions = (path, interface, coord_type)
+                return "((40, 20, 30, 10),)"
+
+        client = Client()
+        geometry = {
+            "origin": {"x": 100.0, "y": 200.0},
+            "content": {"x": 100.0, "y": 200.0, "w": 400.0, "h": 300.0},
+            "placement": {"x": 90.0, "y": 190.0, "w": 420.0, "h": 320.0},
+        }
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client):
+            target = PROOF.component_global_target(
+                {"bus": "bus"}, "/drag", geometry, "drag handle"
+            )
+        self.assertEqual(client.assertions, (
+            "/drag", "org.a11y.atspi.Component.GetExtents", "1"
+        ))
+        self.assertEqual(target, {
+            "client_rect": {"x": 40, "y": 20, "w": 30, "h": 10},
+            "global_center": {"x": 155.0, "y": 225.0},
+        })
+
+    def test_ime_drag_refusal_exports_only_closed_public_geometry(self):
+        frame = {
+            "app_id": "so.tilo.chat", "floating_id": None,
+            "presented": True, "last_error": None, "frame_seq": 8,
+            "rect": {"x": 10, "y": 20, "w": 500, "h": 400},
+            "content_rect": {"x": 12, "y": 42, "w": 496, "h": 376},
+            "content_origin": {"x": 12, "y": 42},
+            "keyboard_focused": True,
+            "private_model_data": "must-not-leave-the-frame",
+        }
+        drag = {
+            "handle_client_rect": {"x": 400, "y": 8, "w": 30, "h": 10},
+            "drag_from": {"x": 427, "y": 55},
+            "drag_to": {"x": 2, "y": 103},
+            "primary_placement": frame["rect"],
+            "primary_content": frame["content_rect"],
+            "primary_content_origin": frame["content_origin"],
+            "primary_frame_seq": 7,
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                PROOF, "call", side_effect=[
+                    {"answer": {"frames": [frame]}}, {"ok": {}},
+                ]):
+            output = pathlib.Path(directory)
+            PROOF.write_ime_drag_refusal("socket", output, "1600x900", drag)
+            evidence = (output / "ime-drag-refused.json").read_text()
+        self.assertNotIn("must-not-leave-the-frame", evidence)
+        self.assertNotIn("private_model_data", evidence)
+        self.assertTrue(json.loads(evidence)["primary_frame_advanced"])
+
+    def test_broken_ime_drag_observer_cannot_replace_original_failure(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                PROOF, "write_ime_drag_refusal", side_effect=RuntimeError("observer failed")
+        ):
+            output = pathlib.Path(directory)
+            PROOF.preserve_ime_drag_refusal("socket", output, "1600x900", {})
+            evidence = json.loads((output / "ime-drag-refused.json").read_text())
+        self.assertEqual(evidence, {
+            "phase": "after_physical_drag_without_floating_presentation",
+            "diagnostic_unavailable": True,
+            "private_content_recorded": False,
+        })
+
     def test_agent_control_keyboard_focus_never_invokes_the_accessibility_action(self):
         class Client:
             def __init__(self):
@@ -811,6 +879,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 'focus_agent_conversation_control(returned_access, returned_access["drag"]',
                 'focus_agent_conversation_control(keyboard_access, keyboard_access["control"]'):
             self.assertIn(required, source)
+        self.assertIn("preserve_ime_drag_refusal", source)
         self.assertLess(source.index("committed_value_unchanged_before_float"),
                         source.index("committed_value_unchanged_after_float"))
         self.assertLess(source.index("committed_value_unchanged_after_float"),
