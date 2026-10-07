@@ -103,3 +103,5 @@ chat-identity-in-voice = In voice
 
 chat-resource-copy-link = Copy resource link
 chat-resource-open-link = Open resource in browser
+chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
+chat-attachment-import-unavailable = Attachment import is unavailable on this host.

@@ -8471,11 +8471,14 @@ impl FileExplorerWidget {
                         "files-airdrop-port"
                     };
                     param.description = t(key).into();
-                    param.schema = Some(if &*param.name == "port" {
-                        serde_json::json!({"minimum": 1, "maximum": 65535})
-                    } else {
-                        serde_json::json!({"minLength": 1, "maxLength": 64})
-                    });
+                    param.schema = Some(
+                        (if &*param.name == "port" {
+                            serde_json::json!({"minimum": 1, "maximum": 65535})
+                        } else {
+                            serde_json::json!({"minLength": 1, "maxLength": 64})
+                        })
+                        .into(),
+                    );
                 }
                 let mut action = effect.bound_asking_params(params);
                 action.description = Some(t("files-airdrop-action-detail"));

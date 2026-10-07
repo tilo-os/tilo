@@ -362,6 +362,7 @@ pub struct NotesApp {
     /// Forces a redraw when our own chrome changes without any child widget
     /// flagging itself dirty.
     self_dirty: bool,
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
@@ -608,6 +609,7 @@ impl NotesApp {
             bound_page: None,
             laid_out: false,
             self_dirty: false,
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             canonical_synced: None,
             projection_adopted: false,
             dispatcher: None,
@@ -1264,24 +1266,14 @@ impl NotesApp {
     }
 
     fn refresh_search_blocks(&mut self, doc: &AutoCommit) {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("search_blocks");
         let heads = doc.base_heads();
         if automerge::transaction::Transactable::pending_ops(doc) == 0
             && self.search_heads.as_ref() == Some(&heads)
         {
             return;
         }
-        self.search_blocks = self
-            .workspace
-            .pages()
-            .iter()
-            .map(|page| {
-                let blocks = NotesDoc::page_block_snapshots(doc, page.id)
-                    .into_iter()
-                    .map(|(id, text)| crate::actions::NoteBlockResource { id, text })
-                    .collect();
-                (page.id, blocks)
-            })
-            .collect();
         let known_pages = self
             .workspace
             .pages()
@@ -1289,9 +1281,16 @@ impl NotesApp {
             .map(|page| page.id)
             .collect::<std::collections::HashSet<_>>();
         let mut backlinks = HashMap::<PageId, HashMap<PageId, u32>>::new();
+        let mut search_blocks = HashMap::new();
         for source in self.workspace.pages().iter().map(|page| page.id) {
-            for (_, marks) in NotesDoc::page_block_marks(doc, source) {
-                for mark in marks {
+            let stored = NotesDoc::page_stored_blocks(doc, source);
+            let mut blocks = Vec::with_capacity(stored.len());
+            for block in stored {
+                blocks.push(crate::actions::NoteBlockResource {
+                    id: block.id,
+                    text: block.text,
+                });
+                for mark in block.marks {
                     let actions::InlineMark::Link { page } = mark.mark else {
                         continue;
                     };
@@ -1308,7 +1307,9 @@ impl NotesApp {
                     }
                 }
             }
+            search_blocks.insert(source, blocks);
         }
+        self.search_blocks = search_blocks;
         self.backlink_index = backlinks
             .into_iter()
             .map(|(target, sources)| {
@@ -1333,6 +1334,8 @@ impl NotesApp {
     /// Canonical synchronization is a projection, never an attempt to replay
     /// local rows that are absent from the document.
     fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("reconcile_canonical");
         self.workspace =
             crate::notebook::project_without_asset_rehash(doc, self.workspace.selected())?;
         if self
@@ -2239,6 +2242,8 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("surface_sync");
         self.shell.sync(state, path);
         self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
@@ -2418,6 +2423,7 @@ impl Widget for NotesApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let incoming = std::mem::take(scene);
         // No ground of our own: the window paints `surfaces.content`, and the
         // shell paints the sidebar's region.
         let drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
@@ -2432,6 +2438,7 @@ impl Widget for NotesApp {
         // note), then the page tree on the sidebar the shell painted.
         self.main
             .draw(scene, transform, text_renderer, theme, presence);
+        let main_scene = std::mem::take(scene);
         self.shell
             .draw(scene, transform, text_renderer, theme, presence);
         if self.sidebar_node.is_some() {
@@ -2460,6 +2467,29 @@ impl Widget for NotesApp {
         self.transfer_toasts.place_bottom_right(toast_area, gutter);
         self.transfer_toasts
             .draw(scene, transform, text_renderer, theme, presence);
+        let outside = std::mem::take(scene);
+        let mut main_damage = Vec::new();
+        self.main.collect_damage(&mut main_damage);
+        self.paint_damage.record(
+            self.rect,
+            (!self.main.has_editor_popup()).then(|| {
+                ui::widget::paint_damage::PaintFrame::new(
+                    vec![self.rect, self.main.get_rect()],
+                    transform,
+                    theme,
+                    outside.clone(),
+                    vec![ui::widget::paint_damage::PaintPart::new(
+                        "note-main".into(),
+                        self.main.get_rect(),
+                        main_scene.clone(),
+                        main_damage,
+                    )],
+                )
+            }),
+        );
+        *scene = incoming;
+        scene.append(&main_scene, None);
+        scene.append(&outside, None);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2642,7 +2672,21 @@ impl Widget for NotesApp {
             || self.shortcuts.needs_redraw()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
+        self.paint_damage.mark_drawn();
         self.self_dirty = false;
         self.shell.mark_drawn();
         self.sidebar.mark_drawn();
@@ -3848,6 +3892,101 @@ mod tests {
         app.frame(&mut state.doc, &state.root);
         assert_eq!(app.selected_for_test(), Some(welcome));
         (app, state, tmp, welcome)
+    }
+
+    fn assert_search_snapshot_matches_canonical(app: &NotesApp, doc: &AutoCommit) {
+        assert_eq!(app.search_blocks.len(), app.workspace.pages().len());
+        for page in app.workspace.pages() {
+            let actual = app.search_blocks[&page.id]
+                .iter()
+                .map(|block| (block.id.clone(), block.text.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, NotesDoc::page_block_snapshots(doc, page.id));
+        }
+    }
+
+    #[test]
+    fn canonical_open_refuses_missing_pages_and_blocks_before_projection_adoption() {
+        use ui::tilo_resource::Resource as _;
+        let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
+        let current = crate::resource::Notebook::read(&state.doc).unwrap();
+        let pending = app.pending_events.len();
+        assert_eq!(
+            app.open_block(&current, page, Some("missing-block".into())),
+            Err("the block no longer exists".into())
+        );
+        assert_eq!(app.pending_events.len(), pending);
+        let delete = actions::delete_page_action(page);
+        tilo_actions::apply_local(&mut state.doc, &delete, actions::encode(&delete)).unwrap();
+        let current = crate::resource::Notebook::read(&state.doc).unwrap();
+        assert!(current.get(page).is_none());
+        assert!(
+            app.workspace.get(page).is_some(),
+            "the prior presentation still contains the page"
+        );
+        assert_eq!(
+            app.open_block(&current, page, None),
+            Err("the note no longer exists".into())
+        );
+        assert_eq!(
+            app.pending_events.len(),
+            pending,
+            "refused Open cannot queue a selection"
+        );
+    }
+
+    #[test]
+    fn search_snapshot_tracks_remote_rich_edits_and_removed_link_targets() {
+        use tilo_automerge::ApplyIncoming as _;
+        let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
+        let target = PageId::new_v4();
+        let absent = PageId::new_v4();
+        let mut peer = state.doc.fork();
+        let create = actions::new_page_action(target, None, "z".into(), "Destination");
+        tilo_actions::apply_local_by(&mut peer, &create, actions::encode(&create), Some(b"peer"))
+            .unwrap();
+        let source_blocks = NotesDoc::page_block_snapshots(&peer, source);
+        for (block, range, link) in [
+            (&source_blocks[0].0, 0..4, target),
+            (&source_blocks[0].0, 5..7, target),
+            (&source_blocks[0].0, 8..10, source),
+            (&source_blocks[1].0, 0..4, absent),
+        ] {
+            let action =
+                actions::set_mark_action(source, block, range, &ui::widget::Mark::Link(link));
+            tilo_actions::apply_local_by(
+                &mut peer,
+                &action,
+                actions::encode(&action),
+                Some(b"peer"),
+            )
+            .unwrap();
+        }
+        state.doc.merge_incoming(&mut peer).unwrap();
+        let rich_before = NotesDoc::page_stored_blocks(&state.doc, source);
+        app.frame(&mut state.doc, &state.root);
+        assert_search_snapshot_matches_canonical(&app, &state.doc);
+        assert_eq!(app.backlink_index.get(&target), Some(&vec![(source, 2)]));
+        assert!(!app.backlink_index.contains_key(&source));
+        assert!(!app.backlink_index.contains_key(&absent));
+        assert_eq!(
+            NotesDoc::page_stored_blocks(&state.doc, source),
+            rich_before
+        );
+
+        let mut peer = state.doc.fork();
+        let delete = actions::delete_page_action(target);
+        tilo_actions::apply_local_by(&mut peer, &delete, actions::encode(&delete), Some(b"peer"))
+            .unwrap();
+        state.doc.merge_incoming(&mut peer).unwrap();
+        app.frame(&mut state.doc, &state.root);
+        assert_search_snapshot_matches_canonical(&app, &state.doc);
+        assert!(!app.search_blocks.contains_key(&target));
+        assert!(!app.backlink_index.contains_key(&target));
+        assert_eq!(
+            NotesDoc::page_stored_blocks(&state.doc, source),
+            rich_before
+        );
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]

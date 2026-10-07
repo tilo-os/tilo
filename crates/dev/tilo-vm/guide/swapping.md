@@ -179,12 +179,37 @@ what the restarted session printed.
   architecture) or another builder image; the error names the field and
   both values. A dev image names no builder image (it is its own builder),
   so there the target and toolchain stand for it. Warned: a different base
-  image, toolchain or `Cargo.lock`. `apps+runtime` is the exception: thin
-  apps link the image's `libruntime_dylib.so`, so another `Cargo.lock` is
-  refused there. Then move the VM to an image of your commit
-  (`tilo-vm vm upgrade`) or rebase onto the image's commit; never regenerate
-  `Cargo.lock` to match.
+  image, toolchain or `Cargo.lock`. An individual thin app must match its
+  installed toolkit and another `Cargo.lock` is refused. A complete
+  `apps+runtime` layer may carry a different graph only after the daemon verifies
+  every application's signed payload, exact native runtime ABI, architecture,
+  bundled interpreter and closed library graph. Target and builder-image
+  mismatches remain refusals; never regenerate `Cargo.lock` to match.
 - Local builds (`vm`, `host`) are for testing and never promoted; only CI
   builds are.
 - Swapping the same layer twice does nothing. A failed apply leaves the slot
   on its old generation; rerun the swap.
+
+### Worktree apps and their matching runtime
+
+`tilo-vm swap apps+runtime --builder remote` builds every packaged native app and
+its toolkit in one Cargo graph on the configured builder for the slot's actual
+architecture. It verifies the complete source inventory before and after the
+build, signs and verifies the payload-derived runtime ABI, checks loader closure,
+and packs apps through the normal installer. Ephemeral signing keys stay in
+private build staging and are not exported.
+
+The same invocation updates the existing `launcher` and `install` session
+components from that source before activating the cohort. These updates restart
+the selected session; a failure stops the remaining steps and is recorded in the
+normal receipt. Installed component pins must be root-owned and immutable;
+operator `/etc` trust remains effective. No OS image or kernel reboot is needed.
+Older dev images need the matching daemon once, through the normal VM component
+update (`tilo-vm swap vmd --slot vm --builder remote`); a refused cohort leaves the
+existing apps/runtime active. Its receipt records any already applied session
+prerequisites.
+
+`swap app:terminal --builder remote` retains the ordinary app installer and its
+runtime checks. A standalone package whose authored runtime is absent is refused;
+use the paired component above for an unpublished worktree toolkit rather than
+relabeling it as the VM's existing ABI.
