@@ -350,6 +350,11 @@ name = "action-presence"
 path = "examples/action_presence.rs"
 required-features = ["native"]
 
+[[example]]
+name = "startup-frame-probe"
+path = "examples/startup_frame_probe.rs"
+required-features = ["native"]
+
 [[test]]
 name = "hosted-platform"
 path = "tests/hosted_platform.rs"

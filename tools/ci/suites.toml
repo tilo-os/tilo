@@ -583,8 +583,21 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
+inputs = [
+  "apps/*/tilo-app.toml",
+  "os/usr/lib/tilo/jit-entitled.conf",
+  "os/usr/lib/tilo/web-engine-entitled.conf",
+  "os/usr/share/tilo/system-interfaces.toml",
+  "tools/with-test-environment.sh",
+  "scripts/headless-examples/startup-frame-timeline.py",
+  "scripts/headless-examples/_control.py",
+]
+readers = [
+  "crates/packaging/launcher/src/manifest.rs",
+  "crates/packaging/launcher/src/seccomp.rs",
+  "crates/packaging/launcher/src/services.rs",
+  "crates/packaging/launcher/examples/startup_frame_timeline.rs",
+]
 
 [[cargo]]
 package = "tilo-vm"
