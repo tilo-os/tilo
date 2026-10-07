@@ -279,27 +279,27 @@ impl Workspace {
     /// Only reorders within a single sibling group — re-parenting is a
     /// separate concern. Backs the sidebar's Alt-↑ / Alt-↓ reorder.
     pub fn move_sibling(&mut self, id: PageId, delta: i32) -> bool {
-        if delta == 0 {
+        let Some(plan) = self.plan_move_sibling(id, delta) else {
             return false;
-        }
-        let parent = match self.get(id) {
-            Some(p) => p.parent,
-            None => return false,
         };
+        self.apply_page_move_plan(plan);
+        true
+    }
+
+    pub(crate) fn plan_move_sibling(&self, id: PageId, delta: i32) -> Option<Vec<PageMeta>> {
+        if delta == 0 {
+            return None;
+        }
+        let parent = self.get(id)?.parent;
         // Siblings sorted by order; find where `id` sits.
         let siblings: Vec<PageId> = self.children_of(parent).iter().map(|p| p.id).collect();
-        let pos = match siblings.iter().position(|s| *s == id) {
-            Some(p) => num::i32_of_usize(p),
-            None => return false,
-        };
+        let pos = num::i32_of_usize(siblings.iter().position(|s| *s == id)?);
         let target = pos + delta.signum();
         if target < 0 {
-            return false;
+            return None;
         }
         let target = num::usize_of_i32(target);
-        let Some(&other) = siblings.get(target) else {
-            return false;
-        };
+        let &other = siblings.get(target)?;
         // Up: in front of the sibling above. Down: in front of the one after
         // the sibling below, or last.
         let before = if delta < 0 {
@@ -307,7 +307,7 @@ impl Workspace {
         } else {
             siblings.get(target.saturating_add(1)).copied()
         };
-        self.move_to(id, parent, before)
+        self.plan_move_to(id, parent, before)
     }
 
     /// True when `maybe_ancestor` is `id` itself or one of its
@@ -345,23 +345,42 @@ impl Workspace {
         new_parent: Option<PageId>,
         before: Option<PageId>,
     ) -> bool {
-        if self.get(id).is_none() {
+        let Some(plan) = self.plan_move_to(id, new_parent, before) else {
             return false;
+        };
+        self.apply_page_move_plan(plan);
+        true
+    }
+
+    pub(crate) fn apply_page_move_plan(&mut self, plan: Vec<PageMeta>) {
+        for after in plan {
+            if let Some(page) = self.get_mut(after.id) {
+                *page = after;
+            }
         }
+    }
+
+    pub(crate) fn plan_move_to(
+        &self,
+        id: PageId,
+        new_parent: Option<PageId>,
+        before: Option<PageId>,
+    ) -> Option<Vec<PageMeta>> {
+        self.get(id)?;
         // Cycle guard: a page can't become a child of itself or of one
         // of its own descendants.
         if let Some(np) = new_parent
             && (np == id || self.is_ancestor(id, np))
         {
-            return false;
+            return None;
         }
         // The new group in display order, without `id`, so it can be slotted
         // back in at the requested position.
-        let mut siblings: Vec<(PageId, String)> = self
+        let mut siblings: Vec<(PageId, &str)> = self
             .children_of(new_parent)
             .iter()
             .filter(|p| p.id != id)
-            .map(|p| (p.id, p.order.clone()))
+            .map(|p| (p.id, p.order.as_str()))
             .collect();
         let insert_at = match before {
             Some(b) if b != id => siblings
@@ -373,11 +392,11 @@ impl Workspace {
         let low = insert_at
             .checked_sub(1)
             .and_then(|i| siblings.get(i))
-            .map(|(_, key)| key.as_str());
-        let high = siblings.get(insert_at).map(|(_, key)| key.as_str());
+            .map(|(_, key)| *key);
+        let high = siblings.get(insert_at).map(|(_, key)| *key);
         let keys: Vec<(PageId, String)> = match (low, high) {
             (Some(low), Some(high)) if low >= high => {
-                siblings.insert(insert_at, (id, String::new()));
+                siblings.insert(insert_at, (id, ""));
                 let fresh = order::sequence(None, None, siblings.len());
                 siblings
                     .into_iter()
@@ -387,15 +406,18 @@ impl Workspace {
             }
             _ => vec![(id, order::between(low, high))],
         };
-        if let Some(p) = self.get_mut(id) {
-            p.parent = new_parent;
-        }
-        for (sid, key) in keys {
-            if let Some(p) = self.get_mut(sid) {
-                p.order = key;
-            }
-        }
-        true
+        Some(
+            keys.into_iter()
+                .filter_map(|(sid, key)| {
+                    let mut page = self.get(sid)?.clone();
+                    if sid == id {
+                        page.parent = new_parent;
+                    }
+                    page.order = key;
+                    Some(page)
+                })
+                .collect(),
+        )
     }
 
     /// Deep-copy `id` and its entire subtree, inserting the copy as the
