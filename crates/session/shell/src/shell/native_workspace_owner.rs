@@ -11,7 +11,7 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::test_enrolled_owner;
+pub(crate) use tests::{test_enrolled_owner, tree_of};
 
 use super::{
     persist,
