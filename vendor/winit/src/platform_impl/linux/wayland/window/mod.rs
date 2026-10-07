@@ -49,6 +49,9 @@ pub struct Window {
     /// The state of the window.
     window_state: Arc<Mutex<WindowState>>,
 
+    /// Serialize feedback with its buffer commit without blocking native events.
+    presentation: Mutex<()>,
+
     /// Compositor to handle WlRegion stuff.
     compositor: Arc<CompositorState>,
 
@@ -223,6 +226,7 @@ impl Window {
             window_id,
             compositor,
             window_state,
+            presentation: Mutex::new(()),
             queue_handle,
             xdg_activation,
             attention_requested: Arc::new(AtomicBool::new(false)),
@@ -306,10 +310,12 @@ impl Window {
         observer: crate::platform::wayland::WaylandPresentationObserver,
         present: impl FnOnce(),
     ) -> bool {
-        let guard = self.window_state.lock().unwrap();
-        let accepted = guard.observe_next_present(observer);
+        let _presentation = self.presentation.lock().unwrap();
+        // Only initial creation commits the main surface inside Winit. Later
+        // IME, cursor and decoration commits target other objects or subsurfaces.
+        // A blocked driver must not own state needed by native event delivery.
+        let accepted = self.window_state.lock().unwrap().observe_next_present(observer);
         present();
-        drop(guard);
         accepted
     }
 

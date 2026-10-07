@@ -153,8 +153,9 @@ pub trait WindowExtWayland {
     fn observe_pointer_motion(&self, enabled: bool) -> bool;
 
     /// Observe the next committed buffer with the standard presentation protocol.
-    /// Holds the native window state lock across the request and `present` so an
-    /// IME/configure commit cannot take the feedback for an unrelated buffer.
+    /// Serializes the feedback request and `present` against other presentations,
+    /// while leaving ordinary native window state available during driver waits.
+    /// Winit's IME, cursor and decoration updates do not commit the main surface.
     /// Always calls `present`; returns false when the protocol is unavailable.
     /// A frame callback or client submission never completes this observer.
     fn present_with_feedback(

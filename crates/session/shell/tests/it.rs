@@ -246,3 +246,6 @@ mod xdg_activation;
 
 #[path = "vulkan_present_damage.rs"]
 mod vulkan_present_damage;
+
+#[path = "wayland_present_progress.rs"]
+mod wayland_present_progress;
