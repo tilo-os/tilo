@@ -10,7 +10,18 @@ on:
         required: true
 
 jobs:
+  plan:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+    outputs:
+      signed-development-board: ${{ steps.plan.outputs.signed-development-board }}
+    steps:
+      - id: plan
+        run: echo 'signed-development-board=false' >> "$GITHUB_OUTPUT"
   probe:
+    needs: plan
     runs-on: runner-large
     timeout-minutes: 5
     enable-openid-connect: true
@@ -22,6 +33,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Probe reusable package and broker authentication
         env:
+          SIGNED_DEVELOPMENT_BOARD: ${{ needs.plan.outputs.signed-development-board }}
           PROBE_KIND: ${{ inputs.probe_kind }}
           PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           GATED_PACKAGE_TOKEN: ${{ (github.event_name == 'workflow_call' || needs.plan.outputs.signed-development-board == 'true') && secrets.REGISTRY_TOKEN || '' }}

@@ -52,6 +52,9 @@ def main():
     result["event_name"] = os.environ.get("GITHUB_EVENT_NAME", "")
     result["gated_package_token_present"] = bool(gated)
     result["gated_matches_package_token"] = bool(gated) and gated == registry
+    result["gated_is_boolean_word"] = gated in {"true", "false"}
+    result["gated_looks_unevaluated"] = gated.startswith("${{")
+    result["signed_development_board"] = os.environ.get("SIGNED_DEVELOPMENT_BOARD", "")
     if gated:
         result["gated_package_token_archive_status"] = status(ARCHIVE, gated)
     result["invalid_token_archive_status"] = status(ARCHIVE, "invalid-auth-diagnostic-sentinel")
