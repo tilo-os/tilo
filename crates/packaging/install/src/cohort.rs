@@ -92,13 +92,67 @@ fn save(path: &Path, record: &Record) -> Result<(), Error> {
         .parent()
         .ok_or_else(|| Error::Policy("invalid retention path".into()))?;
     std::fs::create_dir_all(parent)?;
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer(&mut file, record)
+    let bytes = serde_json::to_vec(record)
         .map_err(|_| Error::Policy("could not encode cohort retention record".into()))?;
+    if bytes.len() as u64 > MAX_RECORD_BYTES {
+        return Err(Error::Policy(
+            "cohort retention record exceeds its bound".into(),
+        ));
+    }
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(&bytes)?;
     file.flush()?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| Error::Io(error.error))?;
     std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+pub(super) fn retain_runtimes() -> Result<(), Error> {
+    let store = super::store()?;
+    let mut references = std::collections::BTreeSet::new();
+    for row in store.registry().map_err(super::store_error)?.entries() {
+        if !row.runtime.is_empty() {
+            references.insert(row.runtime.clone());
+        }
+    }
+    if references.len() > 512 {
+        return Err(Error::Policy(
+            "the retained SDK closure exceeds its bound".into(),
+        ));
+    }
+    // Also retain unreferenced system SDKs: a concurrent normal install may
+    // select one while the old generation is still visible. New downloaded
+    // SDKs already live in the user's persistent bundle store.
+    match std::fs::read_dir("/usr/lib/tilo-runtime") {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                if entry
+                    .path()
+                    .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+                    .is_file()
+                {
+                    let version = entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| Error::Policy("invalid system SDK name".into()))?;
+                    references.insert(format!("tilo-runtime/{version}"));
+                }
+                if references.len() > 512 {
+                    return Err(Error::Policy(
+                        "the retained SDK closure exceeds its bound".into(),
+                    ));
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(Error::Io(error)),
+    }
+    for reference in references {
+        super::cohort_runtime::retain(&reference)?;
+    }
+    println!("cohort-runtimes-retained");
     Ok(())
 }
 

@@ -389,14 +389,57 @@ struct SelectionReceipt {
     held: bool,
 }
 
+pub(crate) fn ids(cohort: &VerifiedCohort) -> Vec<String> {
+    cohort
+        .packages
+        .iter()
+        .map(|package| package.row.id.clone())
+        .collect()
+}
+
+pub(crate) fn restore(
+    apply: &mut dyn crate::apply::Apply,
+    session: &crate::apply::Session,
+    undo: &crate::slots::CohortUndo,
+) -> Result<(), DaemonError> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Receipt {
+        id: String,
+        changed: bool,
+    }
+    let output = apply.cohort_command(session, &crate::apply::CohortCommand::Restore(undo))?;
+    let mut remaining = undo.apps.iter().cloned().collect::<BTreeSet<_>>();
+    for encoded in output
+        .lines()
+        .filter_map(|line| line.strip_prefix("cohort-restoration: "))
+    {
+        let receipt: Receipt = serde_json::from_str(encoded).map_err(invalid)?;
+        if !remaining.remove(&receipt.id) {
+            return Err(invalid(
+                "restoration repeated or changed a cohort application",
+            ));
+        }
+        // False truthfully preserves intervening user installs, pins and holds.
+        let _ = receipt.changed;
+    }
+    if !remaining.is_empty() {
+        return Err(invalid(
+            "restoration lacks a canonical receipt for a cohort application",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn select(
     apply: &mut dyn crate::apply::Apply,
     session: &crate::apply::Session,
     cohort: &VerifiedCohort,
+    ticket: Option<&str>,
 ) -> Result<Vec<tilo_vm_protocol::CohortSelection>, DaemonError> {
     let mut selections = Vec::new();
     for package in &cohort.packages {
-        let output = apply.install_cohort_app(session, &package.archive)?;
+        let output = apply.install_cohort_app(session, &package.archive, ticket)?;
         let receipts = output
             .lines()
             .filter_map(|line| line.strip_prefix("cohort-selection: "))

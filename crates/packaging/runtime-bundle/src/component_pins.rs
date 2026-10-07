@@ -15,6 +15,20 @@ const PINS: [&str; 3] = [
 /// # Errors
 /// A present component pin is unreadable, mutable, malformed or insecure.
 pub fn load_with_components(operator_list: &Path) -> std::io::Result<Option<Vec<String>>> {
+    load_with_component_root(operator_list, Path::new("/usr"))
+}
+
+/// Resolve the same pin policy in an independently prepared readonly system
+/// view. The root argument does not relax any ownership, path or mount check.
+/// It is used by the maintained updater before a generation can be activated.
+///
+/// # Errors
+/// The same malformed, mutable or non-root-owned pin failures as
+/// [`load_with_components`].
+pub fn load_with_component_root(
+    operator_list: &Path,
+    usr_root: &Path,
+) -> std::io::Result<Option<Vec<String>>> {
     let mut keys = match std::fs::read_to_string(operator_list) {
         Ok(text) => Some(
             text.lines()
@@ -26,8 +40,12 @@ pub fn load_with_components(operator_list: &Path) -> std::io::Result<Option<Vec<
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
-    for path in PINS {
-        if let Some(key) = read_pin(Path::new(path))? {
+    for original in PINS {
+        let suffix = Path::new(original)
+            .strip_prefix("/usr")
+            .map_err(|_| denied())?;
+        let path = usr_root.join(suffix);
+        if let Some(key) = read_pin(&path, usr_root, original == PINS[1])? {
             keys.get_or_insert_with(Vec::new).push(key);
         }
     }
@@ -46,7 +64,11 @@ fn denied() -> std::io::Error {
 }
 
 #[cfg(unix)]
-fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
+fn read_pin(
+    path: &Path,
+    usr_root: &Path,
+    optional_engine: bool,
+) -> std::io::Result<Option<String>> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let metadata = match std::fs::symlink_metadata(path) {
@@ -58,9 +80,9 @@ fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
         return Err(denied());
     }
     let canonical = path.canonicalize()?;
-    let expected = Path::new("/usr")
+    let expected = usr_root
         .canonicalize()?
-        .join(path.strip_prefix("/usr").map_err(|_| denied())?);
+        .join(path.strip_prefix(usr_root).map_err(|_| denied())?);
     if canonical != expected {
         return Err(denied());
     }
@@ -91,11 +113,15 @@ fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
     }
     let mut bytes = Vec::new();
     file.take(258).read_to_end(&mut bytes)?;
-    decode(&bytes, path == Path::new(PINS[1]))
+    decode(&bytes, optional_engine)
 }
 
 #[cfg(not(unix))]
-fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
+fn read_pin(
+    path: &Path,
+    _usr_root: &Path,
+    _optional_engine: bool,
+) -> std::io::Result<Option<String>> {
     if path.try_exists()? {
         Err(denied())
     } else {
@@ -164,18 +190,52 @@ mod tests {
         command
     }
 
+    fn alternate_view(command: &mut Command, case: &str, pin: &Path) {
+        command.args([
+            "--dir",
+            "/alternate",
+            "--dir",
+            "/alternate/usr",
+            "--dir",
+            "/alternate/usr/share",
+            "--dir",
+            "/alternate/usr/share/tilo",
+        ]);
+        if case == "alternate-symlink" {
+            command.args([
+                "--symlink",
+                "/operator.txt",
+                "/alternate/usr/share/tilo/runtime-bundle-publisher.hex",
+            ]);
+        } else {
+            command
+                .arg(if case == "alternate-mutable" {
+                    "--bind"
+                } else {
+                    "--ro-bind"
+                })
+                .arg(pin)
+                .arg("/alternate/usr/share/tilo/runtime-bundle-publisher.hex");
+        }
+    }
+
     #[test]
     fn installed_component_pins_use_real_readonly_files_and_fail_closed() {
         const CASE: &str = "TILO_TEST_INSTALLED_PIN_CASE";
         if let Ok(case) = std::env::var(CASE) {
-            let loaded = load_with_components(Path::new("/operator.txt"));
+            let loaded = if case.starts_with("alternate") {
+                load_with_component_root(Path::new("/operator.txt"), Path::new("/alternate/usr"))
+            } else {
+                load_with_components(Path::new("/operator.txt"))
+            };
             match case.as_str() {
-                "readonly" => {
+                "readonly" | "alternate" => {
                     let keys = loaded.unwrap().unwrap();
                     assert!(keys.contains(&"11".repeat(32)));
                     assert!(keys.contains(&"22".repeat(32)));
                 }
-                "mutable" | "malformed" | "symlink" | "escape" | "empty" | "writebits" => {
+                "mutable" | "malformed" | "symlink" | "escape" | "empty" | "writebits"
+                | "alternate-mutable" | "alternate-symlink" => {
                     assert!(loaded.is_err());
                 }
                 other => panic!("unexpected fixture case: {other}"),
@@ -203,9 +263,15 @@ mod tests {
             "escape",
             "empty",
             "writebits",
+            "alternate",
+            "alternate-mutable",
+            "alternate-symlink",
         ] {
             let mut command = namespace(&executable, &operator);
             match case {
+                "alternate" | "alternate-mutable" | "alternate-symlink" => {
+                    alternate_view(&mut command, case, &pin);
+                }
                 "symlink" => {
                     command.args(["--symlink", "/operator.txt", PINS[0]]);
                 }

@@ -124,6 +124,15 @@ pub struct Entry {
     pub info: ComponentInfo,
 }
 
+/// Root-owned ancestry for conditional user-package restoration. Tickets
+/// identify private installer records; they grant no package or caller authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CohortUndo {
+    pub ticket: String,
+    pub previous: Option<String>,
+    pub apps: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Generation {
     pub number: u64,
@@ -134,6 +143,8 @@ pub struct Generation {
     pub created_at: String,
     #[serde(default)]
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cohort_undo: Option<CohortUndo>,
 }
 
 pub struct SlotStore {
@@ -451,6 +462,100 @@ impl SlotStore {
         Ok(Some((from, to)))
     }
 
+    /// Prepare an append-only cohort checkpoint even for a repeated layer.
+    /// The slot remains on its current generation until normal activation.
+    ///
+    /// # Errors
+    /// The same generation persistence errors as [`Self::prepare_swap`].
+    pub fn prepare_cohort_swap(
+        &self,
+        record: &SlotRecord,
+        layer: &str,
+        info: ComponentInfo,
+        apps: Vec<String>,
+    ) -> Result<(Generation, Generation), DaemonError> {
+        let (from, mut to) =
+            if let Some(pair) = self.prepare_swap(record, "apps+runtime", layer, info)? {
+                pair
+            } else {
+                let from = self.generation(&record.name, record.current)?;
+                let mut to = from.clone();
+                to.number = self
+                    .generations(&record.name)
+                    .last()
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                to.created_at = now();
+                to.reason = format!("select apps+runtime {layer}");
+                (from, to)
+            };
+        to.cohort_undo = Some(CohortUndo {
+            ticket: format!("cohort-{}", uuid::Uuid::new_v4().simple()),
+            previous: from.cohort_undo.as_ref().map(|undo| undo.ticket.clone()),
+            apps,
+        });
+        let bytes = serde_json::to_vec_pretty(&to)
+            .map_err(|error| DaemonError::InvalidParams(error.to_string()))?;
+        write_atomic(&self.generation_path(&record.name, to.number), &bytes)?;
+        Ok((from, to))
+    }
+
+    /// Resolve the exact recorded cohort ancestry to a rollback target.
+    /// Legacy, missing, cyclic or unrelated tickets refuse rather than guess.
+    ///
+    /// # Errors
+    /// Invalid ancestry and existing generation read errors.
+    pub fn cohort_inverses(
+        &self,
+        record: &SlotRecord,
+        from: &Generation,
+        to: &Generation,
+    ) -> Result<Vec<CohortUndo>, DaemonError> {
+        let destination = to.cohort_undo.as_ref().map(|undo| undo.ticket.as_str());
+        let mut cursor = from.cohort_undo.clone();
+        let mut inverses = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        while cursor.as_ref().map(|undo| undo.ticket.as_str()) != destination {
+            let undo = cursor.ok_or_else(|| {
+                DaemonError::InvalidParams(
+                    "cohort rollback has no retained inverse ancestry".into(),
+                )
+            })?;
+            if !seen.insert(undo.ticket.clone()) || inverses.len() >= 512 {
+                return Err(DaemonError::InvalidParams(
+                    "invalid cohort inverse ancestry".into(),
+                ));
+            }
+            cursor = match &undo.previous {
+                None => None,
+                Some(ticket) => {
+                    let mut previous = None;
+                    for number in self.generations(&record.name) {
+                        let generation = self.generation(&record.name, number)?;
+                        if let Some(candidate) = generation.cohort_undo
+                            && &candidate.ticket == ticket
+                        {
+                            if previous.as_ref().is_some_and(|saved| saved != &candidate) {
+                                return Err(DaemonError::InvalidParams(
+                                    "ambiguous cohort inverse ancestry".into(),
+                                ));
+                            }
+                            previous = Some(candidate);
+                        }
+                    }
+                    Some(previous.ok_or_else(|| {
+                        DaemonError::InvalidParams(
+                            "cohort rollback is missing its prior retained inverse".into(),
+                        )
+                    })?)
+                }
+            };
+            inverses.push(undo);
+        }
+        Ok(inverses)
+    }
+
     /// The transition a rollback makes: to `to`, or the newest generation
     /// older than the current one (the base when none is recorded).
     ///
@@ -556,6 +661,64 @@ mod tests {
     use tilo_vm_protocol::Scope;
 
     use super::*;
+
+    #[test]
+    fn cohort_checkpoints_are_append_only_and_follow_selected_ancestry() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SlotStore::new(root.path());
+        let (mut record, _) = store
+            .create("a", SlotKind::Headless, Owner::default(), &[])
+            .unwrap();
+        let apps = vec!["so.tilo.fixture".into()];
+        let info = ComponentInfo::new(Scope::Session, Vec::new());
+        let (base, first) = store
+            .prepare_cohort_swap(&record, "h1", info.clone(), apps.clone())
+            .unwrap();
+        assert_eq!(
+            store.load("a").unwrap().current,
+            0,
+            "preparation cannot activate"
+        );
+        store.set_current(&mut record, first.number).unwrap();
+        let (_, second) = store
+            .prepare_cohort_swap(&record, "h1", info.clone(), apps.clone())
+            .unwrap();
+        assert_ne!(
+            first.number, second.number,
+            "same-layer selection still has an inverse"
+        );
+        assert_eq!(first.layers, second.layers);
+        let first_undo = first.cohort_undo.clone().unwrap();
+        let second_undo = second.cohort_undo.clone().unwrap();
+        assert_ne!(first_undo.ticket, second_undo.ticket);
+        assert_eq!(second_undo.previous.as_ref(), Some(&first_undo.ticket));
+        store.set_current(&mut record, second.number).unwrap();
+        assert_eq!(
+            store.cohort_inverses(&record, &second, &first).unwrap(),
+            vec![second_undo.clone()]
+        );
+        assert_eq!(
+            store.cohort_inverses(&record, &second, &base).unwrap(),
+            vec![second_undo, first_undo]
+        );
+        store.set_current(&mut record, first.number).unwrap();
+        let (_, branch) = store
+            .prepare_cohort_swap(&record, "h2", info, apps)
+            .unwrap();
+        assert_eq!(
+            branch.cohort_undo.as_ref().unwrap().previous,
+            first.cohort_undo.as_ref().map(|undo| undo.ticket.clone())
+        );
+        assert!(
+            store.cohort_inverses(&record, &branch, &second).is_err(),
+            "an abandoned branch is not inferred as ancestry"
+        );
+        assert_eq!(
+            store.generation("a", first.number).unwrap(),
+            first,
+            "old checkpoints are immutable"
+        );
+    }
 
     #[test]
     fn outputs_are_fixed_at_creation_and_need_a_headful_slot() {

@@ -327,7 +327,7 @@ fn verify_subject(root: &Path, case: &str) {
                 };
                 let mut apply = crate::apply::RecordingApply::default();
                 apply.cohort_replies.push_back(output);
-                let selected = super::select(&mut apply, &session, &cohort);
+                let selected = super::select(&mut apply, &session, &cohort, None);
                 if matches!(variant, "selected" | "held") {
                     let actions = selected.unwrap();
                     assert!(

@@ -903,3 +903,221 @@ fn maintained_cohort_prepares_signed_inverse_before_selecting_new_package() {
     );
     assert!(env.state_exists("personal") && env.state_exists("b7c1-workspace"));
 }
+
+fn command_in_sdk_view(
+    env: &Env,
+    system: &Path,
+    publisher: &Path,
+    arguments: &[&str],
+) -> (bool, String, String) {
+    let mut command = Command::new("timeout");
+    command.env_clear();
+    command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    command.args([
+        "30",
+        "bwrap",
+        "--die-with-parent",
+        "--unshare-all",
+        "--tmpfs",
+        "/",
+        "--dir",
+        "/usr",
+        "--dir",
+        "/usr/share",
+        "--dir",
+        "/usr/share/tilo",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+    ]);
+    command.args(["--dir", "/usr/lib"]);
+    for path in [
+        "/usr/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/aarch64-linux-gnu",
+    ] {
+        if Path::new(path).is_dir() {
+            command.args(["--ro-bind", path, path]);
+        }
+    }
+    command.args([
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+    ]);
+    command
+        .arg("--ro-bind")
+        .arg(install_bin())
+        .arg("/installer");
+    command.arg("--bind").arg(env.home.path()).arg("/owner");
+    command
+        .arg("--ro-bind")
+        .arg(system)
+        .arg("/usr/lib/tilo-runtime");
+    command
+        .arg("--ro-bind")
+        .arg(publisher)
+        .arg("/usr/share/tilo/runtime-bundle-publisher.hex");
+    command.args([
+        "--setenv",
+        "HOME",
+        "/owner",
+        "--setenv",
+        "XDG_DATA_HOME",
+        "/owner/data",
+        "--setenv",
+        "XDG_CONFIG_HOME",
+        "/owner/config",
+        "--",
+        "/installer",
+    ]);
+    command.args(arguments);
+    let output = command.output().unwrap();
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+fn signed_system_views(env: &Env) -> (PathBuf, PathBuf, PathBuf) {
+    let identity = runtime_bundle::Identity::generate();
+    let identity_path = env.home.path().join("sdk-identity.json");
+    std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+    let publisher = env.home.path().join("sdk-publisher.hex");
+    std::fs::write(&publisher, identity.public_key_hex()).unwrap();
+    let old_system = env.home.path().join("old-system");
+    let new_system = env.home.path().join("new-system");
+    for (system, version) in [(&old_system, "2026.07.1"), (&new_system, "2026.07.2")] {
+        runtime_bundle::build_bundle_with(
+            &system.join(version),
+            version,
+            &runtime_bundle::BuildOptions {
+                from: None,
+                arch: None,
+                identity: Some(&identity_path),
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+    }
+    (publisher, old_system, new_system)
+}
+
+#[test]
+fn signed_sdk_inverse_survives_real_readonly_system_view_transitions() {
+    let env = Env::new();
+    let (publisher, old_system, new_system) = signed_system_views(&env);
+    let old = env.tapp(
+        "73018.0.0",
+        b"original with old SDK",
+        Some("tilo-runtime/2026.07.1"),
+    );
+    let new = env.tapp(
+        "0.1.0",
+        b"cohort with new SDK",
+        Some("tilo-runtime/2026.07.2"),
+    );
+    let inside = |path: &Path| {
+        format!(
+            "/owner/{}",
+            path.strip_prefix(env.home.path()).unwrap().display()
+        )
+    };
+    let old_archive = inside(&old);
+    let new_archive = inside(&new);
+    let (ok, out, err) = command_in_sdk_view(
+        &env,
+        &old_system,
+        &publisher,
+        &["install", &old_archive, "--allow-self-signed"],
+    );
+    assert!(ok, "old-view install refused: {out}{err}");
+    env.seed_state();
+    let (ok, out, err) = command_in_sdk_view(
+        &env,
+        &old_system,
+        &publisher,
+        &[
+            "cohort-prepare",
+            "--ticket",
+            "sdk-transition",
+            "so.tilo.lifecycle",
+        ],
+    );
+    assert!(ok, "before-view inverse preparation refused: {out}{err}");
+    assert!(
+        env.xdg_data()
+            .join("tilo-runtime/2026.07.1/bundle.toml")
+            .is_file()
+    );
+    let (ok, out, err) = command_in_sdk_view(
+        &env,
+        &new_system,
+        &publisher,
+        &[
+            "install",
+            &new_archive,
+            "--allow-self-signed",
+            "--force",
+            "--preserve-held",
+            "--cohort",
+            "sdk-transition",
+        ],
+    );
+    assert!(ok, "new-view selected install refused: {out}{err}");
+    assert!(
+        env.xdg_data()
+            .join("tilo-runtime/2026.07.2/bundle.toml")
+            .is_file()
+    );
+    let (ok, out, err) =
+        command_in_sdk_view(&env, &new_system, &publisher, &["cohort-retain-runtimes"]);
+    assert!(ok && out.contains("cohort-runtimes-retained"), "{out}{err}");
+    let (ok, out, err) = command_in_sdk_view(
+        &env,
+        &new_system,
+        &publisher,
+        &[
+            "cohort-restore",
+            "--ticket",
+            "sdk-transition",
+            "so.tilo.lifecycle",
+            "--allow-self-signed",
+        ],
+    );
+    assert!(
+        ok && out.contains("\"changed\":true"),
+        "current-view restoration refused: {out}{err}"
+    );
+    let (ok, out, err) = command_in_sdk_view(
+        &env,
+        &old_system,
+        &publisher,
+        &["verify", "so.tilo.lifecycle"],
+    );
+    assert!(
+        ok,
+        "old-view restored signature/payload refused: {out}{err}"
+    );
+    assert_restored_sdk_selection(&env);
+}
+
+fn assert_restored_sdk_selection(env: &Env) {
+    let registry = package_store::Registry::load(&env.tilo_apps().join("registry.toml")).unwrap();
+    let row = registry.find("so.tilo.lifecycle").unwrap();
+    assert_eq!(row.runtime, "tilo-runtime/2026.07.1");
+    let payload = env
+        .home
+        .path()
+        .join(row.payload_root.strip_prefix("/owner").unwrap());
+    assert_eq!(
+        std::fs::read(payload.join("bin/app")).unwrap(),
+        b"original with old SDK"
+    );
+    assert!(env.state_exists("personal") && env.state_exists("b7c1-workspace"));
+}

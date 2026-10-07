@@ -92,6 +92,35 @@ pub fn user_unit(uid: u32) -> String {
     format!("user@{uid}.service")
 }
 
+/// Narrow canonical installer operations; no caller command or environment.
+#[derive(Debug)]
+pub enum CohortCommand<'a> {
+    Prepare(&'a crate::slots::CohortUndo),
+    Restore(&'a crate::slots::CohortUndo),
+    RetainRuntimes,
+    RuntimeTrust,
+}
+
+impl CohortCommand<'_> {
+    pub fn arguments(&self) -> Vec<String> {
+        let (operation, undo) = match self {
+            Self::Prepare(undo) => ("cohort-prepare", Some(*undo)),
+            Self::Restore(undo) => ("cohort-restore", Some(*undo)),
+            Self::RetainRuntimes => ("cohort-retain-runtimes", None),
+            Self::RuntimeTrust => ("cohort-runtime-trust", None),
+        };
+        let mut arguments = vec!["/usr/bin/tilo-install".into(), operation.into()];
+        if let Some(undo) = undo {
+            arguments.extend(["--ticket".into(), undo.ticket.clone()]);
+            arguments.extend(undo.apps.clone());
+        }
+        if matches!(self, Self::Restore(_)) {
+            arguments.push("--allow-self-signed".into());
+        }
+        arguments
+    }
+}
+
 /// Side effects on the guest. Each method is idempotent and reports a
 /// failed side effect as [`DaemonError::Apply`] or [`DaemonError::Io`].
 #[expect(
@@ -211,7 +240,20 @@ pub trait Apply {
         &mut self,
         session: &Session,
         tapp: &std::path::Path,
+        ticket: Option<&str>,
     ) -> Result<String, DaemonError>;
+    /// Run a typed inverse operation through the slot's canonical installer.
+    fn cohort_command(
+        &mut self,
+        session: &Session,
+        command: &CohortCommand<'_>,
+    ) -> Result<String, DaemonError>;
+    /// Refuse target views that would narrow current runtime trust before mutation.
+    fn check_cohort_rollback(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<(), DaemonError>;
     /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
     /// or with `None` put the image's own kernel back (see [`crate::boot`]).
     /// Returns what the next boot starts, and warnings.
@@ -665,6 +707,8 @@ pub struct RecordingApply {
     pub control_replies: std::collections::VecDeque<ControlResult>,
     /// Exact normal installer output for production cohort selection tests.
     pub cohort_replies: std::collections::VecDeque<String>,
+    pub cohort_operation_replies: std::collections::VecDeque<Result<String, String>>,
+    pub cohort_trust_refusal: Option<String>,
     /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
     /// Every call is copied here too, for a test that hands this to a daemon.
@@ -908,6 +952,7 @@ impl Apply for RecordingApply {
         &mut self,
         session: &Session,
         tapp: &std::path::Path,
+        _ticket: Option<&str>,
     ) -> Result<String, DaemonError> {
         self.call(format!(
             "install_cohort_app {} {}",
@@ -920,6 +965,35 @@ impl Apply for RecordingApply {
                 step: "select cohort app".into(),
                 detail: "no recorded installer receipt".into(),
             })
+    }
+    fn cohort_command(
+        &mut self,
+        session: &Session,
+        command: &CohortCommand<'_>,
+    ) -> Result<String, DaemonError> {
+        self.call(format!(
+            "cohort_command {} {:?}",
+            session.user,
+            command.arguments()
+        ));
+        self.cohort_operation_replies
+            .pop_front()
+            .unwrap_or_else(|| Err("no recorded inverse receipt".into()))
+            .map_err(|detail| DaemonError::Apply {
+                step: "cohort inverse".into(),
+                detail,
+            })
+    }
+    fn check_cohort_rollback(
+        &mut self,
+        session: &Session,
+        _layers: &[PathBuf],
+    ) -> Result<(), DaemonError> {
+        self.call(format!("check_cohort_rollback {}", session.user));
+        match &self.cohort_trust_refusal {
+            Some(detail) => Err(DaemonError::InvalidParams(detail.clone())),
+            None => Ok(()),
+        }
     }
     fn boot_kernel(
         &mut self,

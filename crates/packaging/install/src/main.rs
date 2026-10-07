@@ -107,6 +107,10 @@ enum Cmd {
         #[arg(required = true)]
         apps: Vec<String>,
     },
+    /// Retain the current SDK closure before a maintained generation rollback.
+    CohortRetainRuntimes,
+    /// Report the normal runtime publisher policy for generation preflight.
+    CohortRuntimeTrust,
     /// Conditionally restore only selections still owned by a prepared cohort.
     CohortRestore {
         #[arg(long)]
@@ -2272,6 +2276,14 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
     }
 }
 
+fn cohort_runtime_trust() -> Result<(), Error> {
+    let publishers = trusted_runtime_publishers()?;
+    let encoded = serde_json::to_string(&publishers)
+        .map_err(|_| Error::Policy("could not encode runtime trust".into()))?;
+    println!("cohort-runtime-trust: {encoded}");
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
@@ -2302,6 +2314,8 @@ fn main() {
             &runtime,
         ),
         Cmd::CohortPrepare { ticket, apps } => cohort::prepare(&ticket, &apps),
+        Cmd::CohortRetainRuntimes => cohort::retain_runtimes(),
+        Cmd::CohortRuntimeTrust => cohort_runtime_trust(),
         Cmd::CohortRestore {
             ticket,
             apps,

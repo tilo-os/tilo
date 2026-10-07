@@ -10,7 +10,7 @@ use std::process::Command;
 
 use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
-use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
+use crate::apply::{Apply, CohortCommand, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, walk, write_atomic};
@@ -951,15 +951,102 @@ impl Apply for SystemdApply {
     }
 
     fn install_app(&mut self, session: &Session, tapp: &Path) -> Result<String, DaemonError> {
-        install_app_in_session(self, session, tapp, false)
+        install_app_in_session(self, session, tapp, false, None)
     }
 
     fn install_cohort_app(
         &mut self,
         session: &Session,
         tapp: &Path,
+        ticket: Option<&str>,
     ) -> Result<String, DaemonError> {
-        install_app_in_session(self, session, tapp, true)
+        install_app_in_session(self, session, tapp, true, ticket)
+    }
+
+    fn cohort_command(
+        &mut self,
+        session: &Session,
+        command: &CohortCommand<'_>,
+    ) -> Result<String, DaemonError> {
+        let pid = self
+            .session_pid(session)
+            .ok_or_else(|| DaemonError::Apply {
+                step: "cohort inverse".into(),
+                detail: "the slot has no live session mount namespace".into(),
+            })?;
+        let user = &session.user;
+        let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
+            step: "cohort inverse".into(),
+            detail: "the slot account is unavailable".into(),
+        })?;
+        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+        run(
+            "canonical cohort inverse",
+            &mut crate::exec::in_session(
+                pid,
+                user,
+                &[
+                    ("HOME".into(), home),
+                    ("USER".into(), user.clone()),
+                    ("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")),
+                ],
+                &command.arguments(),
+            ),
+        )
+    }
+
+    fn check_cohort_rollback(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<(), DaemonError> {
+        let output = self.cohort_command(session, &CohortCommand::RuntimeTrust)?;
+        let rows = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("cohort-runtime-trust: "))
+            .collect::<Vec<_>>();
+        let [encoded] = rows.as_slice() else {
+            return Err(DaemonError::InvalidParams(
+                "missing canonical runtime trust receipt".into(),
+            ));
+        };
+        let current: Option<Vec<String>> = serde_json::from_str(encoded).map_err(|_| {
+            DaemonError::InvalidParams("invalid canonical runtime trust receipt".into())
+        })?;
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let temporary = format!("undo-{}", nonce.chars().take(23).collect::<String>());
+        if self.views_dir.join(format!("slot-{temporary}")).exists() {
+            return Err(DaemonError::InvalidParams(
+                "temporary cohort view already exists".into(),
+            ));
+        }
+        let result = (|| {
+            let view = crate::session_view::prepare(&self.views_dir, &temporary, layers)?;
+            let target = runtime_bundle::component_pins::load_with_component_root(
+                Path::new(runtime_bundle::TRUSTED_PUBLISHERS_FILE),
+                &view.join("usr"),
+            )
+            .map_err(DaemonError::io("read target runtime trust"))?;
+            if !runtime_trust_preserved(current.as_deref(), target.as_deref()) {
+                return Err(DaemonError::InvalidParams("cohort rollback would remove runtime publisher trust required by current or concurrent selections".into()));
+            }
+            Ok(())
+        })();
+        let cleanup = crate::session_view::remove(&self.views_dir, &temporary);
+        if cleanup.is_ok() {
+            let _ = fs::remove_dir_all(self.views_dir.join(format!("slot-{temporary}")));
+        }
+        result.and(cleanup)
+    }
+}
+
+fn runtime_trust_preserved(current: Option<&[String]>, target: Option<&[String]>) -> bool {
+    let current = current.filter(|publishers| !publishers.is_empty());
+    let target = target.filter(|publishers| !publishers.is_empty());
+    match (current, target) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(current), Some(target)) => current.iter().all(|key| target.contains(key)),
     }
 }
 
@@ -968,6 +1055,7 @@ fn install_app_in_session(
     session: &Session,
     tapp: &Path,
     preserve_held: bool,
+    ticket: Option<&str>,
 ) -> Result<String, DaemonError> {
     // The installed runtime and publisher pins are part of the resolved
     // slot's verified /usr view, not the daemon's global namespace.
@@ -994,7 +1082,7 @@ fn install_app_in_session(
             run(
                 "tilo-install install --allow-self-signed --force",
                 &mut if preserve_held {
-                    selected_app_install_command(pid, user, uid, &home, &staged, true)
+                    selected_app_install_command(pid, user, uid, &home, &staged, true, ticket)
                 } else {
                     app_install_command(pid, user, uid, &home, &staged)
                 },
@@ -1005,7 +1093,7 @@ fn install_app_in_session(
 }
 
 fn app_install_command(pid: u32, user: &str, uid: u32, home: &str, staged: &Path) -> Command {
-    selected_app_install_command(pid, user, uid, home, staged, false)
+    selected_app_install_command(pid, user, uid, home, staged, false, None)
 }
 
 fn selected_app_install_command(
@@ -1015,6 +1103,7 @@ fn selected_app_install_command(
     home: &str,
     staged: &Path,
     preserve_held: bool,
+    ticket: Option<&str>,
 ) -> Command {
     let mut arguments = vec![
         "/usr/bin/tilo-install".into(),
@@ -1024,6 +1113,9 @@ fn selected_app_install_command(
     ];
     if preserve_held {
         arguments.push("--preserve-held".into());
+        if let Some(ticket) = ticket {
+            arguments.extend(["--cohort".into(), ticket.into()]);
+        }
     }
     arguments.push(staged.to_string_lossy().into_owned());
     crate::exec::in_session(
@@ -1250,6 +1342,19 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn target_runtime_policy_never_narrows_current_admission() {
+        let first = vec!["first".to_string()];
+        let more = vec!["first".to_string(), "second".to_string()];
+        let empty = Vec::new();
+        assert!(super::runtime_trust_preserved(Some(&first), Some(&more)));
+        assert!(!super::runtime_trust_preserved(Some(&more), Some(&first)));
+        assert!(super::runtime_trust_preserved(Some(&more), None));
+        assert!(!super::runtime_trust_preserved(None, Some(&more)));
+        assert!(!super::runtime_trust_preserved(Some(&empty), Some(&first)));
+        assert!(super::runtime_trust_preserved(None, Some(&empty)));
+    }
+
+    #[test]
     fn app_install_uses_the_verified_slot_namespace_and_never_ignores_runtime() {
         let command = super::app_install_command(
             123,
@@ -1292,6 +1397,7 @@ mod tests {
             "/var/home/slot-user",
             std::path::Path::new("/var/tmp/private/app.tapp"),
             true,
+            None,
         );
         let selected: Vec<_> = selected
             .get_args()

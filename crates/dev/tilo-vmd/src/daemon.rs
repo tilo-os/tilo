@@ -1309,9 +1309,42 @@ impl Daemon {
         )?;
         let info = self.component_info(&record, component, info);
         apply::check_scope(&record, component, &info)?;
-        let mut result = match self.slots.prepare_swap(&record, component, layer, info)? {
-            Some((from, to)) => self.transition(&mut record, &from, &to)?,
-            None => unchanged(record),
+        let mut undo_ticket = None;
+        let mut result = if let Some(cohort) = &cohort {
+            let (from, to) =
+                self.slots
+                    .prepare_cohort_swap(&record, layer, info, crate::cohort::ids(cohort))?;
+            let undo = to.cohort_undo.as_ref().ok_or_else(|| {
+                DaemonError::InvalidParams(
+                    "prepared cohort generation has no inverse ticket".into(),
+                )
+            })?;
+            let (_, session) = self.user_slot(name)?;
+            let output = self
+                .apply
+                .cohort_command(&session, &apply::CohortCommand::Prepare(undo))?;
+            let retained = output
+                .lines()
+                .filter_map(|line| line.strip_prefix("cohort-retained: "))
+                .collect::<BTreeSet<_>>();
+            if retained
+                != undo
+                    .apps
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>()
+            {
+                return Err(DaemonError::InvalidParams(
+                    "the installer did not retain each prior cohort selection".into(),
+                ));
+            }
+            undo_ticket = Some(undo.ticket.clone());
+            self.transition(&mut record, &from, &to)?
+        } else {
+            match self.slots.prepare_swap(&record, component, layer, info)? {
+                Some((from, to)) => self.transition(&mut record, &from, &to)?,
+                None => unchanged(record),
+            }
         };
         if let Some(cohort) = &cohort {
             let (_, session) = self.user_slot(name)?;
@@ -1319,6 +1352,7 @@ impl Daemon {
                 self.apply.as_mut(),
                 &session,
                 cohort,
+                undo_ticket.as_deref(),
             )?);
             let uid = self.apply.account_uid(&session.user)?;
             result
@@ -1338,13 +1372,35 @@ impl Daemon {
         if from.number == to.number {
             return Ok(unchanged(record));
         }
-        if let Some(current) = from.components.get("apps+runtime")
-            && to.components.get("apps+runtime").map(|entry| &entry.layer) != Some(&current.layer)
-        {
-            return Err(DaemonError::InvalidParams(
-                "cannot roll back the selected apps+runtime cohort: user packages may require its SDK; \
-                 select a complete verified cohort instead (unrelated component rollbacks remain available)".into(),
-            ));
+        let changes_cohort = from.components.get("apps+runtime").is_some_and(|current| {
+            to.components.get("apps+runtime").map(|entry| &entry.layer) != Some(&current.layer)
+        }) || from.cohort_undo != to.cohort_undo;
+        if changes_cohort {
+            if from.cohort_undo.is_none() {
+                return Err(DaemonError::InvalidParams(
+                    "cannot roll back the selected apps+runtime cohort: user packages may require its SDK; no retained inverse exists for this legacy generation".into(),
+                ));
+            }
+            let inverses = self.slots.cohort_inverses(&record, &from, &to)?;
+            let (_, session) = self.user_slot(name)?;
+            let layers = self.system_layers(&record, self.layer_paths(&to)?)?;
+            self.apply.check_cohort_rollback(&session, &layers)?;
+            let output = self
+                .apply
+                .cohort_command(&session, &apply::CohortCommand::RetainRuntimes)?;
+            if output
+                .lines()
+                .filter(|line| *line == "cohort-runtimes-retained")
+                .count()
+                != 1
+            {
+                return Err(DaemonError::InvalidParams(
+                    "missing canonical retained SDK closure receipt".into(),
+                ));
+            }
+            for undo in inverses {
+                crate::cohort::restore(self.apply.as_mut(), &session, &undo)?;
+            }
         }
         self.transition(&mut record, &from, &to)
     }
@@ -1681,6 +1737,109 @@ impl Daemon {
 mod tests {
     use super::*;
     use crate::apply::session_unit;
+
+    #[test]
+    fn cohort_inverse_dispatch_restores_before_activation_and_refuses_failures() {
+        for case in [
+            "restored",
+            "preserved",
+            "trust-refused",
+            "retention-failed",
+            "missing-receipt",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut apply = RecordingApply::with_login("quickuser");
+            apply.mirror = Some(mirror.clone());
+            if case == "trust-refused" {
+                apply.cohort_trust_refusal = Some("narrower target trust".into());
+            }
+            apply
+                .cohort_operation_replies
+                .push_back(if case == "retention-failed" {
+                    Err("SDK retention failed".into())
+                } else {
+                    Ok("cohort-runtimes-retained\n".into())
+                });
+            apply
+                .cohort_operation_replies
+                .push_back(Ok(if case == "missing-receipt" {
+                    String::new()
+                } else {
+                    format!(
+                        "cohort-restoration: {{\"id\":\"so.tilo.fixture\",\"changed\":{}}}\n",
+                        case == "restored"
+                    )
+                }));
+            let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+            daemon
+                .handle(Request::Hello(tilo_vm_protocol::Hello {
+                    protocol: PROTOCOL_VERSION,
+                    client_version: String::new(),
+                }))
+                .unwrap();
+            let layer = "01".repeat(32);
+            fs::create_dir_all(root.path().join("layers").join(&layer).join("usr/bin")).unwrap();
+            let mut record = daemon.load_slot(DEVICE_SLOT).unwrap();
+            let (base, selected) = daemon
+                .slots
+                .prepare_cohort_swap(
+                    &record,
+                    &layer,
+                    ComponentInfo::new(Scope::Session, Vec::new()),
+                    vec!["so.tilo.fixture".into()],
+                )
+                .unwrap();
+            daemon.transition(&mut record, &base, &selected).unwrap();
+            let boundary = mirror.lock().unwrap().len();
+            let outcome = daemon.rollback(DEVICE_SLOT, Some(0));
+            let calls = mirror.lock().unwrap().clone();
+            let calls = calls.get(boundary..).unwrap();
+            let expected_success = matches!(case, "restored" | "preserved");
+            assert_eq!(outcome.is_ok(), expected_success, "{case}: {outcome:?}");
+            assert_eq!(
+                daemon.load_slot(DEVICE_SLOT).unwrap().current,
+                if expected_success { 0 } else { selected.number }
+            );
+            if expected_success {
+                let restore = calls
+                    .iter()
+                    .position(|call| call.contains("cohort-restore"))
+                    .unwrap();
+                assert!(
+                    calls
+                        .get(..restore)
+                        .unwrap()
+                        .iter()
+                        .any(|call| call.contains("cohort-retain-runtimes"))
+                );
+                assert!(
+                    calls
+                        .get(restore.saturating_add(1)..)
+                        .unwrap()
+                        .iter()
+                        .any(|call| call == "sysext_refresh")
+                );
+                assert!(
+                    !calls
+                        .iter()
+                        .any(|call| call.contains("restart_unit greetd.service")),
+                    "owner PAM login must stay alive"
+                );
+            } else {
+                assert!(
+                    !calls.iter().any(|call| call == "sysext_refresh"),
+                    "refusal must precede layer transition: {case}"
+                );
+                if case == "trust-refused" {
+                    assert!(
+                        !calls.iter().any(|call| call.contains("cohort_command")),
+                        "trust refusal must precede package mutation"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn cohort_rollback_refuses_before_changing_layers_but_keeps_unrelated_rollback() {
