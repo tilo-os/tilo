@@ -197,6 +197,23 @@ impl Peer {
             .iter()
             .find(|r| r["service"] == "tilo" && r["account"] == self.rig.owner.account)
             .unwrap();
+        assert!(
+            !route["recipient"].as_str().unwrap().is_empty(),
+            "confirmed private recipient must be projected"
+        );
+        let owned = tilo_contact_directory::routing::Route {
+            person: tilo_resource::Id::from_raw(PERSON),
+            association: tilo_resource::Id::from_raw(route["association"].as_str().unwrap()),
+            sender: tilo_resource::Id::from_raw(&self.rig.owner.account),
+            service: "tilo".into(),
+            scope: route["scope"].as_str().unwrap().into(),
+            recipient: route["recipient"].as_str().unwrap().into(),
+            revision: route["revision"].as_str().unwrap().into(),
+        };
+        assert!(
+            self.mounted.client.supports(&owned),
+            "original current private host must authorize the confirmed route"
+        );
         let choice = serde_json::to_string(route).unwrap();
         effect(
             &mut self.mounted.harness,

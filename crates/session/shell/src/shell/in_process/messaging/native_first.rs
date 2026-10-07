@@ -26,6 +26,7 @@ struct Projection {
     phase: EnrollmentPhase,
     cancelled: bool,
     linked: Option<LinkedAccount>,
+    native: Option<std::sync::Weak<super::native::Account>>,
 }
 struct Port {
     principal: String,
@@ -75,11 +76,27 @@ impl EnrollmentHost for Port {
         })
     }
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
-        self.states
-            .lock()
-            .ok()
-            .and_then(|s| s.get(account).map(|p| p.phase))
-            .unwrap_or(EnrollmentPhase::Empty)
+        let Some((phase, cancelled, native)) = self.states.lock().ok().and_then(|states| {
+            states
+                .get(account)
+                .map(|state| (state.phase, state.cancelled, state.native.clone()))
+        }) else {
+            return EnrollmentPhase::Empty;
+        };
+        if cancelled {
+            return EnrollmentPhase::Interrupted;
+        }
+        if let Some(native) = native.and_then(|owner| owner.upgrade()) {
+            match native.state() {
+                tilo_messaging::AccountState::Ready => return EnrollmentPhase::Ready,
+                tilo_messaging::AccountState::Locked | tilo_messaging::AccountState::Failed => {
+                    return EnrollmentPhase::Interrupted;
+                }
+                _ if phase == EnrollmentPhase::Ready => return EnrollmentPhase::Interrupted,
+                _ => {}
+            }
+        }
+        phase
     }
     fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount> {
         self.states.lock().ok()?.get(account)?.linked.clone()
@@ -223,6 +240,7 @@ impl Actor {
                     phase: EnrollmentPhase::Review,
                     cancelled: false,
                     linked: None,
+                    native: None,
                 },
             );
         *self.attempt.borrow_mut() = Some(Attempt {
@@ -391,6 +409,7 @@ impl Actor {
                     phase: EnrollmentPhase::Linking,
                     cancelled: false,
                     linked: Some(linked),
+                    native: Some(Arc::downgrade(&active.account)),
                 },
             );
         self.active.borrow_mut().insert(id, active);

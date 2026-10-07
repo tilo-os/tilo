@@ -412,34 +412,37 @@ impl EnrollmentView {
             )));
         }
         content = self.sim_panel(content, actions, &state);
-        content =
-            content.push(Box::new(actions.bind_effect_invocation(
-                Button::new("messages.first-tilo", "messages-first-tilo").with_enabled(
-                    self.client.is_some() && !state.pending && state.account.is_none(),
-                ),
-                &MessagesEffect::BeginFirstEnrollment {
-                    service: "tilo".into(),
-                },
-            )));
-        content =
-            content.push(Box::new(actions.bind_effect_invocation(
-                Button::new("messages.first-whatsapp", "messages-first-whatsapp").with_enabled(
-                    self.client.is_some() && !state.pending && state.account.is_none(),
-                ),
-                &MessagesEffect::BeginFirstEnrollment {
-                    service: "whatsapp".into(),
-                },
-            )));
-        content.push(Box::new(
-            actions.bind_effect_invocation(
-                Button::new("messages.first-account-start", "messages-first-signal").with_enabled(
-                    self.client.is_some() && !state.pending && state.account.is_none(),
-                ),
-                &MessagesEffect::BeginFirstEnrollment {
-                    service: "signal".into(),
-                },
+        self.service_panel(content, actions, &state)
+    }
+    fn service_panel(
+        &self,
+        mut content: Column,
+        actions: &Actions<Messages>,
+        state: &Projection,
+    ) -> Column {
+        for (service, id, label) in [
+            ("tilo", "messages.first-tilo", "messages-first-tilo"),
+            (
+                "whatsapp",
+                "messages.first-whatsapp",
+                "messages-first-whatsapp",
             ),
-        ))
+            (
+                "signal",
+                "messages.first-account-start",
+                "messages-first-signal",
+            ),
+        ] {
+            content = content.push(Box::new(actions.bind_effect_invocation(
+                Button::new(id, label).with_enabled(
+                    self.client.is_some() && !state.pending && state.account.is_none(),
+                ),
+                &MessagesEffect::BeginFirstEnrollment {
+                    service: service.into(),
+                },
+            )));
+        }
+        content
     }
     fn pairing_panel(
         mut content: Column,
