@@ -168,6 +168,7 @@ impl HostedTileInputs {
                 thumbnails: None,
                 document_opener: file_explorer::files_app::DocumentOpenRoute::Unavailable,
                 open_with: None,
+                local_clipboard: false,
             }),
         )
     }

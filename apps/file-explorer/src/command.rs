@@ -102,6 +102,7 @@ pub enum FileCommand {
     Cut,
     /// Paste the clipboard into the current directory.
     Paste,
+    RecoverClipboardTransfers,
     ExtractHere,
     /// Extract the archive currently being browsed. Unlike `ExtractHere`, this
     /// does not depend on a synthetic in-archive row being selected.

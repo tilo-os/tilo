@@ -40,6 +40,7 @@ mod open_with_tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         }
     }
 
@@ -940,6 +941,7 @@ mod command_path_tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         }
     }
 
@@ -2032,7 +2034,21 @@ mod command_path_tests {
             )
         }) {
             if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
-                assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
+                // Inspection and recovery answer with declared JSON receipts.
+                // Every existing void job must still declare Job.
+                let expected = if [
+                    crate::effects::FilesEffect::CLIPBOARD_STATUS.id,
+                    crate::effects::FilesEffect::RECOVER_CLIPBOARD_TRANSFERS.id,
+                ]
+                .contains(&action.id.as_str())
+                {
+                    ResultSpec::Json {
+                        schema: serde_json::json!({}),
+                    }
+                } else {
+                    ResultSpec::Job
+                };
+                assert_eq!(action.contract.result, expected, "{}", action.id);
                 assert!(
                     action.contract.validate_declaration().is_empty(),
                     "{}",
@@ -5458,6 +5474,7 @@ mod injected_startup_tests {
             thumbnails: None,
             document_opener: DocumentOpenRoute::Unavailable,
             open_with: None,
+            local_clipboard: false,
         }
     }
 
@@ -6243,4 +6260,30 @@ mod recent_resource_tests {
         })
         .unwrap();
     }
+}
+
+#[test]
+fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
+    let home = tempfile::tempdir().unwrap();
+    let mut widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
+    widget.navigate(home.path().to_owned());
+    widget.follow_ops(&[]);
+    let operation = "e44ac38c-627f-48a9-ad92-4a6cdf249216".to_owned();
+    let queued = crate::file_ops::QueuedOp {
+        id: "clipboard-undo".into(),
+        device: "local".into(),
+        order: 0,
+        op: crate::file_ops::FileOp::Revert {
+            op: operation.clone(),
+        },
+        outcome: Some(crate::file_ops::Outcome::Done {
+            changes: vec![crate::file_ops::Change::ClipboardUndo { operation }],
+        }),
+    };
+    widget.follow_ops(&[queued]);
+    assert_eq!(
+        widget.status.as_deref(),
+        Some(t("files-clipboard-undone").as_str())
+    );
+    assert!(widget.entries.is_empty());
 }

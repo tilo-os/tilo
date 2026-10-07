@@ -644,24 +644,67 @@ fn scenarios_stage_the_document_through_actions() {
     }
 }
 
-/// The words a person added to the dictionary are their own settings: a
-/// window opened later, on any of their devices, knows them.
+/// Explicit local words follow the shared host dictionary in every window;
+/// application settings no longer create a separate vocabulary store.
 #[test]
 fn the_persons_own_words_are_spelled_right_in_every_window() {
+    use settings_store::personal_dictionary::{Service, host::Host};
+    use std::sync::Arc;
+    use ui::personal_dictionary::{Edit, Word};
     use word_processor::{PersonalDictionary, WordProcessorWidget};
-    let mut app = open();
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ui::local_identity::install_source(None);
+        }
+    }
+    let _guard = tilo_test_env::lock();
+    let _restore = Restore;
+    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
+        ui::local_identity::LocalIdentity {
+            group_public_key: [1; 32],
+            display_name: String::new(),
+            avatar_color: [0; 3],
+        },
+    ))));
+    let profile = tempfile::tempdir().unwrap();
+    let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
+    let source = Arc::new(Host::new(
+        Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        )),
+        service,
+        Arc::new(|| Some([1; 32])),
+    ));
+    let mut app = TestApp::<WordProcessorApp>::for_person(&"01".repeat(32)).unwrap();
+    let mut host =
+        ui::personal_dictionary::TestHost::new(source, "so.tilo.word-processor", [1; 32]).unwrap();
+    let bias_reader = ui::personal_dictionary::reader();
     let flagged =
         app.with_surface(|editor: &mut WordProcessorWidget| !editor.is_spelled_right("qwordz"));
     assert_eq!(flagged, Some(true), "an unknown word is flagged");
-    app.settings::<PersonalDictionary>()
-        .set(&PersonalDictionary {
-            dictionary_words: vec!["qwordz".into()],
-        })
-        .unwrap();
+    ui::personal_dictionary::edit(0, Edit::Add(Word::new("qwordz", None).unwrap())).unwrap();
+    host.flush().unwrap();
     let mut app = app.reopen().unwrap();
     let known =
         app.with_surface(|editor: &mut WordProcessorWidget| editor.is_spelled_right("qwordz"));
     assert_eq!(known, Some(true), "the person's own word is known");
+    assert_eq!(
+        bias_reader
+            .snapshot()
+            .unwrap()
+            .hints("en")
+            .collect::<Vec<_>>(),
+        ["qwordz"],
+        "another consumer sees the same explicit addition"
+    );
+    assert!(
+        app.settings::<PersonalDictionary>()
+            .get()
+            .dictionary_words
+            .is_empty()
+    );
 }
 
 /// The edits bound to the caret are published on the document itself, and

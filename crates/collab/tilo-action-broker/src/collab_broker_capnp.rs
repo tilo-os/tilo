@@ -26,6 +26,7 @@ mod committed_document;
 mod durable_local_invocation;
 #[path = "enrolled_tasks.rs"]
 mod enrolled_tasks;
+mod file_clipboard;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
@@ -33,6 +34,8 @@ mod invoker;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+#[cfg(target_os = "linux")]
+mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
 #[path = "workspace_memberships.rs"]
@@ -470,6 +473,8 @@ struct CollabLaunchHandoff {
     protocol: u16,
     app_id: String,
     workspace_id: String,
+    #[serde(default)]
+    executing_peer: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1341,6 +1346,8 @@ struct PendingInvocation {
     last_activity: std::time::Instant,
     /// Starts the shorter acknowledgement deadline for cooperative cancel.
     cancellation_requested_at: Option<std::time::Instant>,
+    /// A retained continuation must observe cancellation after registry removal.
+    cancellation_fence: Arc<AtomicBool>,
 }
 
 struct PreparedEffectCommit {
@@ -1903,6 +1910,7 @@ impl CapnpBrokerState {
                 .ok_or("durable admission unavailable")?
                 .cancel(key)?;
         }
+        pending.cancellation_fence.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -3265,6 +3273,7 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>()
         };
         for (id, cancellation_expired, pending) in expired {
+            pending.cancellation_fence.store(true, Ordering::Release);
             let (code, message) = if cancellation_expired {
                 (
                     "action_cancellation_timeout",
@@ -5127,6 +5136,7 @@ impl CapnpBrokerState {
                 context: receipt_context,
                 last_activity: std::time::Instant::now(),
                 cancellation_requested_at: None,
+                cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
         self.invocation_generation.fetch_add(1, Ordering::Relaxed);
@@ -5696,9 +5706,7 @@ impl CapnpBrokerState {
         if let Some(realtime) = self.services.realtime.as_ref() {
             realtime.disconnect(peer_id);
         }
-        if let Some(nearby) = self.services.nearby_transfer.as_ref() {
-            nearby.disconnect(peer_id);
-        }
+        self.disconnect_file_transfers(peer_id);
         if let Ok(mut surfaces) = self.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
         {
@@ -5727,6 +5735,7 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>();
             for id in ids {
                 if let Some(invocation) = pending.remove(&id) {
+                    invocation.cancellation_fence.store(true, Ordering::Release);
                     let completion = InvocationCompletion {
                         code: "action_failed".into(),
                         message: "application disconnected before completing the action".into(),
@@ -5777,6 +5786,15 @@ impl CapnpBrokerState {
             }
         }
         self.publish_action_catalogue();
+    }
+
+    fn disconnect_file_transfers(&self, peer_id: u64) {
+        if let Some(nearby) = self.services.nearby_transfer.as_ref() {
+            nearby.disconnect(peer_id);
+        }
+        if let Some(clipboard) = self.services.file_clipboard.as_ref() {
+            clipboard.disconnect(peer_id);
+        }
     }
 
     /// Stable authenticated actor id for native presence and interactions.
@@ -6098,6 +6116,7 @@ impl CapnpBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
             | CollabEvent::RemoteAction { .. } => {
@@ -6875,11 +6894,23 @@ fn app_settings_capability(
         ));
     };
     let app_id = route.app_id.clone();
+    // Personal vocabulary stays on this device. Admission to a workspace is
+    // insufficient: only the host's private local worker descriptor of the
+    // authenticated person receives the read/edit projection.
+    let dictionary_owner = (identity.host_scope.is_some()
+        && identity.agent_id.is_none()
+        && !identity.verified.capped
+        && !identity
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.capabilities.foreign))
+    .then_some(identity.verified.user_public_key);
     let state = Arc::clone(state);
     let revalidate: runtime_collab::settings::host::Revalidate =
         Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
     Ok(capnp_rpc::new_client(
-        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate),
+        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
+            .with_dictionary_owner(dictionary_owner),
     ))
 }
 
@@ -7568,6 +7599,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         match delegate_nearby_transfer_command(&self.state.services, &context, claimed_app, command)
         {
+            Ok(reply) => {
+                results.get().set_reply_json(&reply);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
+    fn local_file_clipboard(
+        self: Rc<Self>,
+        params: channel_handle::LocalFileClipboardParams,
+        mut results: channel_handle::LocalFileClipboardResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let answer = request
+            .get_command_json()
+            .and_then(|bytes| self.file_clipboard_dispatch(bytes, request.get_on_behalf_of()?));
+        match answer {
             Ok(reply) => {
                 results.get().set_reply_json(&reply);
                 Promise::ok(())
@@ -11740,16 +11792,35 @@ async fn authenticate_launcher_handoff(
                 .map_err(|error| LaunchRefusal {
                     error: capnp::Error::failed(error),
                     peer: peer.clone(),
-                    answerable: true,
+                    answerable: !handoff.executing_peer,
                 })?;
-            return Ok(media_process.and_then(|process| {
-                native_media::LocalAppConnection::attested(
-                    handoff.app_id,
-                    handoff.workspace_id,
-                    process,
-                    creation,
+            #[cfg(target_os = "linux")]
+            let media_process = if handoff.executing_peer {
+                Some(
+                    process_binding::bind(stream, media_process, services, pid, &handoff)
+                        .await
+                        .map_err(|error| LaunchRefusal {
+                            error,
+                            peer: peer.clone(),
+                            answerable: false,
+                        })?,
                 )
-            }));
+            } else {
+                media_process
+            };
+            #[cfg(not(target_os = "linux"))]
+            if handoff.executing_peer {
+                return Err(LaunchRefusal {
+                    error: capnp::Error::failed("executing custody requires Linux".into()),
+                    peer,
+                    answerable: false,
+                });
+            }
+            return Ok(native_media::LocalAppConnection::from_launch(
+                handoff,
+                media_process,
+                creation,
+            ));
         }
         if attempt < LAUNCH_RECORD_RACE_RETRIES {
             tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
@@ -11765,7 +11836,7 @@ async fn authenticate_launcher_handoff(
     Err(LaunchRefusal {
         error: capnp::Error::failed(error.into()),
         peer,
-        answerable: true,
+        answerable: !handoff.executing_peer,
     })
 }
 
@@ -13150,6 +13221,36 @@ pub mod tests {
                         .await
                         .err()
                         .expect("ordinary admitted channel cannot mint local process custody");
+                    assert!(error.to_string().contains("launcher-attested"), "{error}");
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_clipboard_raw_admitted_channel_cannot_mint_local_custody() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let channel = fixture.invocation_channel();
+                for command in [
+                    runtime_collab::file_clipboard::Command::Snapshot,
+                    runtime_collab::file_clipboard::Command::Publish {
+                        sources: vec![uuid::Uuid::new_v4().to_string()],
+                        cut: true,
+                    },
+                ] {
+                    let mut request = channel.local_file_clipboard_request();
+                    request
+                        .get()
+                        .set_command_json(&serde_json::to_vec(&command).expect("command"));
+                    request.get().set_on_behalf_of(&[]);
+                    let error = request
+                        .send()
+                        .promise
+                        .await
+                        .err()
+                        .expect("unattested channel must be refused");
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
             })
@@ -15686,6 +15787,15 @@ pub mod tests {
             .expect("cancellable job");
         let refresh_invocation = invocations.try_recv().expect("job invocation");
         assert_eq!(refresh_invocation.id, refresh.id);
+        let retained_cancellation = state
+            .pending_invocations
+            .lock()
+            .expect("pending")
+            .get(&refresh.id)
+            .expect("refresh")
+            .cancellation_fence
+            .clone();
+        assert!(!retained_cancellation.load(Ordering::Acquire));
         assert!(state.request_cancellation(refresh.id, "stranger").is_err());
         state
             .request_cancellation(refresh.id, "owner")
@@ -15713,6 +15823,10 @@ pub mod tests {
             now,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(1),
+        );
+        assert!(
+            retained_cancellation.load(Ordering::Acquire),
+            "the retained worker observes cancellation even after expiry removes the pending job"
         );
         assert!(matches!(
             state.invocation_status(refresh.id),
@@ -15954,6 +16068,7 @@ pub mod tests {
             .with_group("task:release", "Release", "task"),
             last_activity: std::time::Instant::now(),
             cancellation_requested_at: None,
+            cancellation_fence: Arc::new(AtomicBool::new(false)),
         };
         let update = tilo_actions::InvocationUpdate::Failed {
             invocation,

@@ -700,6 +700,35 @@ impl DeviceContinuationSnapshot {
         }
     }
 
+    /// A change elsewhere in the desktop must not claim ownership of an
+    /// unchanged app view. Explicit local takeovers intentionally advance it.
+    pub(crate) fn preserve_owner_view_revisions(
+        &mut self,
+        previous: &Self,
+        registry: &crate::shell::personal_continuity_registry::ContinuationRegistry,
+    ) {
+        for workspace in &mut self.workspaces {
+            for app in &mut workspace.apps {
+                if registry.owner_claimed(workspace.room, app) {
+                    continue;
+                }
+                let prior = previous
+                    .workspaces
+                    .iter()
+                    .find(|prior| prior.room == workspace.room)
+                    .and_then(|prior| prior.apps.iter().find(|prior| prior.id == app.id));
+                if let Some(prior) = prior
+                    && app.launch == prior.launch
+                    && app.resume == prior.resume
+                    && app.record_instance == prior.record_instance
+                    && app.placement == prior.placement
+                {
+                    app.stamp = prior.stamp.clone();
+                }
+            }
+        }
+    }
+
     /// Capture using the authenticated app-report registry. The lookup is by
     /// durable shell tab id and launch instance, never by app id alone.
     pub fn capture_with_registry(

@@ -28,6 +28,11 @@
 //! The launcher receives inherited descriptors directly: this keeps the
 //! handoff local, avoids another daemon, and gives each service a fixed fd.
 
+/// Native startup protocol selector; it conveys no authority.
+pub use runtime_portal::process_binding::ENV as COLLAB_EXECUTING_PEER_ENV;
+#[cfg(target_os = "linux")]
+pub use runtime_portal::process_binding::ExecutingPeer;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
@@ -617,7 +622,7 @@ fn authenticate_service(
             return handoff_failure(required, error, "optional workspace service skipped");
         };
         let result = if name == COLLAB_SERVICE {
-            write_collab_handoff(stream, launch.app_id, workspace_id).map_err(|source| {
+            write_collab_executing_handoff(stream, launch.app_id, workspace_id).map_err(|source| {
                 ServiceError::CollabHandoffFailed {
                     path: path.to_path_buf(),
                     source,
@@ -831,6 +836,32 @@ pub fn write_collab_handoff(
     stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
     stream.write_all(&frame)?;
     stream.flush()
+}
+
+/// Request exact executing-task custody on the existing collaboration socket.
+/// The original launcher handoff remains the sole application/room admission.
+/// # Errors
+/// The stream refuses the write.
+pub fn write_collab_executing_handoff(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: &str,
+) -> std::io::Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    return write_collab_handoff(stream, app_id, workspace_id);
+    #[cfg(target_os = "linux")]
+    {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": app_id,
+            "workspace_id": workspace_id,
+            "executing_peer": true,
+        }))
+        .map_err(std::io::Error::other)?;
+        stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
+        COLLAB_LAUNCH_FRAMING.write(stream, &bytes)?;
+        stream.flush()
+    }
 }
 
 fn write_compat_handoff(
