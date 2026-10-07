@@ -18,6 +18,57 @@ struct NativeFixture {
 }
 
 #[test]
+fn native_member_terminal_audit_uses_installed_governor_and_original_retry_receipt() {
+    use tilo_peer_state::owner_commit::{
+        CommitOperation, OwnerCommitRequest, OwnerCommitService as _,
+    };
+    let fixture = fixture();
+    let service = super::NativeOwnerCommitService::new(
+        native_workspace_owner::test_tree_of(&fixture.owner),
+        None,
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    let effect = tilo_action_broker::policy::redacted_effect_receipt(
+        invocation,
+        &hex::encode(fixture.certificate.user_public_key),
+        tilo_actions::ActionContext::default(),
+        tilo_actions::EffectReceiptStatus::Succeeded,
+    );
+    let request = OwnerCommitRequest {
+        room: fixture.room.to_string(),
+        operation: CommitOperation::EffectReceipt {
+            invocation: invocation.0,
+            redacted: serde_json::to_vec(&effect).unwrap(),
+        },
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let committed = runtime
+        .block_on(
+            service.commit_member_effect_receipt(request.clone(), fixture.certificate.clone()),
+        )
+        .unwrap();
+    let persisted = std::fs::read(&fixture.path).unwrap();
+    let retry = runtime
+        .block_on(
+            service.commit_member_effect_receipt(request.clone(), fixture.certificate.clone()),
+        )
+        .unwrap();
+    assert_eq!(retry.binding, committed.binding);
+    assert_eq!(retry.generation, committed.generation);
+    assert_eq!(retry.aggregate_hash, committed.aggregate_hash);
+    let mut stale = fixture.certificate.clone();
+    stale.device_label = "changed caller evidence".into();
+    assert!(
+        runtime
+            .block_on(service.commit_member_effect_receipt(request, stale))
+            .is_err()
+    );
+    drop(service);
+    assert_eq!(std::fs::read(&fixture.path).unwrap(), persisted);
+    drop(fixture);
+}
+
+#[test]
 fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app() {
     use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
     let fixture = fixture();
