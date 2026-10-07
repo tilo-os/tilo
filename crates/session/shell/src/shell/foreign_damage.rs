@@ -73,7 +73,7 @@ pub(crate) fn record(
 
 /// A recorded image must occur exactly once across the whole composition.
 /// Otherwise a preview or another unrecorded use might also need repair.
-pub(crate) fn unique_uses(scenes: [&Scene; 5], images: &[DrawnImage]) -> bool {
+pub(crate) fn unique_uses<const N: usize>(scenes: [&Scene; N], images: &[DrawnImage]) -> bool {
     let mut ids = HashSet::new();
     images.iter().all(|draw| {
         ids.insert(draw.image.data.id())

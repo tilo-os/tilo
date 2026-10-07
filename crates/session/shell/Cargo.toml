@@ -304,7 +304,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Private native-pair acceptance uses the governed host's real voice relay.
-tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.
 p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
@@ -324,6 +324,7 @@ collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-agent-participant = { path = "../../agent/agent-participant" }
 rand_chacha.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
@@ -365,6 +366,7 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+signal-hook-registry = "1.4.8"
 # Tilo owns the producer side of portal ScreenCast streams.  `pipewire-rs`
 # talks to the session daemon directly; sandboxed apps only receive a remote
 # after the portal has granted a session.
