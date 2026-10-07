@@ -588,6 +588,15 @@ def presented_floating_frame(response, app_id):
     return rows[0] if rows else None
 
 
+def fresh_floating_presentation(current, previous):
+    """Accept a new surface identity or a newer frame on a reused identity."""
+    if current is None or previous is None:
+        return None
+    if current["floating_id"] != previous["floating_id"]:
+        return current
+    return current if current["frame_seq"] > previous["frame_seq"] else None
+
+
 def floating_surface_presenting(response, app_id, floating_id):
     """Return is proved by withdrawal, not failed or temporarily missing paint."""
     rows = [row for row in foreign_frames(response)
@@ -722,7 +731,11 @@ def native_float_return(socket, room, record, output, size, process):
         "test_owned_draft_rendered": True,
         "lifecycle_proven": False,
     }, indent=2) + "\n")
-    return True
+    return {
+        "proven": True,
+        "floating_id": frame["floating_id"],
+        "frame_seq": frame["frame_seq"],
+    }
 
 
 class HeldProvider:
@@ -1679,7 +1692,8 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
 
 
 def native_agent_membership_revocation(
-        socket, room, record, provider, output, size, process, old_identity):
+        socket, room, record, provider, output, size, process, old_identity,
+        previous_float):
     """Revoke and freshly re-admit Tide through the existing owner actions."""
     if provider.request_count() != 4 or provider.overflow_count() != 0 \
             or owned_agent_identity(process.pid) != old_identity:
@@ -1708,8 +1722,14 @@ def native_agent_membership_revocation(
     # The existing accessible Float action is the same retained control as the
     # pointer gesture already proven earlier in this run.
     activate_agent_conversation_control(access, "Float")
-    frame = wait_for("detached Tide pixels before revocation", lambda: presented_floating_frame(
-        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+    frame = wait_for("fresh detached Tide pixels before revocation", lambda: (
+        fresh_floating_presentation(
+            presented_floating_frame(
+                call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+            ),
+            previous_float,
+        )
+    ), process)
     detached_access = wait_for(
         "detached Tide editor before membership revocation",
         lambda: agent_conversation_accessibility("Tide", detached=True), process,
@@ -1717,6 +1737,9 @@ def native_agent_membership_revocation(
     detached_before = private_editor_observation(detached_access, draft)
     if detached_before != before:
         raise RuntimeError("detaching before revocation changed private editor state")
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"before-agent-membership-revocation-{size}.png"
+    )}))
 
     remove = wait_for("owner-published Tide removal", lambda: offered_membership_action(
         socket, room, "desktop:agent:tide", "remove"), process)
@@ -1784,10 +1807,28 @@ def native_agent_membership_revocation(
     restored_names = accessible_names(restored_access)
     if not {"Send message", "Queue task"}.issubset(restored_names):
         raise RuntimeError("re-admission did not restore mounted Message and Queue controls")
+    before_restored_return = presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+    )
+    if before_restored_return is None:
+        raise RuntimeError("Chat's primary presentation disappeared before restored Return")
     activate_agent_conversation_control(restored_access, "Return")
     wait_for("revocation proof Float withdrawal", lambda: not floating_surface_presenting(
         call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]
     ), process)
+
+    def restored_primary_repainted():
+        primary = presented_primary_frame(
+            call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+        )
+        return primary if primary is not None \
+            and primary["frame_seq"] > before_restored_return["frame_seq"] else None
+
+    restored_primary = wait_for(
+        "Chat's primary window to repaint after restored Return",
+        restored_primary_repainted,
+        process,
+    )
     attached_access = wait_for(
         "returned Tide editor after re-admission",
         lambda: agent_conversation_accessibility("Tide"), process,
@@ -1818,6 +1859,10 @@ def native_agent_membership_revocation(
         "caret_restored": attached["caret"] == before["caret"],
         "selection_restored": attached["selection"] == before["selection"],
         "returned_to_primary": True,
+        "fresh_detached_frame": True,
+        "detached_frame_seq": frame["frame_seq"],
+        "fresh_primary_frame_after_return": True,
+        "returned_primary_frame_seq": restored_primary["frame_seq"],
         "provider_request_count": provider.request_count(),
         "provider_overflow_count": provider.overflow_count(),
         "private_content_recorded": False,
@@ -2869,6 +2914,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                 revocation_evidence = native_agent_membership_revocation(
                     socket, enrollment["room"], category[0]["record"], provider, output,
                     size, shell, lifecycle_evidence["_owned_process_identity"],
+                    float_return_proven,
                 )
             time.sleep(0.5)
         else:

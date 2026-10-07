@@ -254,13 +254,28 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "offered_membership_action", "wait_terminal", "owned_agent_identities",
                 "agent_read_only_accessibility", "start_managed_agent",
                 "agent_conversation_accessibility", "private_editor_observation",
-                "provider.request_count() != 4", "provider.overflow_count() != 0"):
+                "provider.request_count() != 4", "provider.overflow_count() != 0",
+                "before-agent-membership-revocation-", "fresh_floating_presentation",
+                "before_restored_return", "restored_primary_repainted"):
             self.assertIn(required, source)
         for forbidden in ("provider.release_exact(5)", "SetText", "AddSelection", "stage_scenario"):
             self.assertNotIn(forbidden, source)
         bootstrap = inspect.getsource(PROOF.bootstrap)
         self.assertLess(bootstrap.index("physical_send_after_stop("),
                         bootstrap.index("native_agent_membership_revocation("))
+
+    def test_fresh_floating_presentation_allows_replacement_or_newer_reuse(self):
+        previous = {"floating_id": "float-a", "frame_seq": 8}
+        replacement = {"floating_id": "float-b", "frame_seq": 1}
+        newer_reuse = {"floating_id": "float-a", "frame_seq": 9}
+        self.assertIs(PROOF.fresh_floating_presentation(replacement, previous), replacement)
+        self.assertIs(PROOF.fresh_floating_presentation(newer_reuse, previous), newer_reuse)
+        self.assertIsNone(PROOF.fresh_floating_presentation(
+            {"floating_id": "float-a", "frame_seq": 8}, previous
+        ))
+        self.assertIsNone(PROOF.fresh_floating_presentation(
+            {"floating_id": "float-a", "frame_seq": 7}, previous
+        ))
 
     def test_public_progress_requires_current_exact_original_and_canonical_reply(self):
         original = {"invocation": "00000000-0000-0000-0000-000000000031",
