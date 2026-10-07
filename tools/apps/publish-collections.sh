@@ -349,8 +349,12 @@ for index in release/*/index.json; do
     dist/apps/assemble-collection.sh
   bundle="$out/tilo-apps-$arch.tar.gz"
   digest_file="$bundle.sha256"
-  bundle_upload_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
-  bundle_url="$package_public_api/tilo-app-collections/$VERSION/${bundle##*/}"
+  # Runs for one source can select different apps and reuse different prior
+  # members. Their immutable collection address must identify the bytes too.
+  bundle_sha=$(sha256sum "$bundle" | cut -d' ' -f1)
+  collection_version="$VERSION-$bundle_sha"
+  bundle_upload_url="$package_api/tilo-app-collections/$collection_version/${bundle##*/}"
+  bundle_url="$package_public_api/tilo-app-collections/$collection_version/${bundle##*/}"
   if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
     python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
       --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
@@ -377,13 +381,13 @@ for index in release/*/index.json; do
     rm -f "$readback"
     printf '%s\t%s\n' \
       "$out/published-receipt.json" \
-      "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.receipt.json" \
+      "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.receipt.json" \
       "$out/published-receipt.upload.json" \
-      "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.upload.json" \
+      "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.upload.json" \
       >> "$metadata_uploads"
   fi
   printf '%s\t%s\n' "$digest_file" \
-    "$package_api/tilo-app-collections/$VERSION/${digest_file##*/}" \
+    "$package_api/tilo-app-collections/$collection_version/${digest_file##*/}" \
     >> "$metadata_uploads"
   TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=3 \
     tools/upload_immutable_packages.sh "$metadata_uploads"
