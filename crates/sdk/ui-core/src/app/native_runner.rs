@@ -1432,6 +1432,9 @@ impl AppHandler {
             ime_state: None,
             focused: false,
         });
+        crate::floating_surface::handoff_diagnostics::mark(
+            crate::floating_surface::handoff_diagnostics::Stage::NativeWindowCreated,
+        );
         Ok(())
     }
 
@@ -1490,6 +1493,9 @@ impl AppHandler {
                     coordinate_offset: _,
                 } => match crate::floating_surface::protocol_rect(rect) {
                     Ok(rect) => {
+                        crate::floating_surface::handoff_diagnostics::mark(
+                            crate::floating_surface::handoff_diagnostics::Stage::PrepareReceived,
+                        );
                         if transfer_covered {
                             self.floating_source_clear_frames.insert(id.clone(), None);
                             if let Some(primary) = self.window.as_ref() {
@@ -1689,6 +1695,11 @@ impl AppHandler {
         };
         while let Ok(outcome) = render.frame_complete.try_recv() {
             app.capture_auxiliary_completed(&capture_id, outcome == FrameOutcome::Presented);
+            if outcome == FrameOutcome::Presented {
+                crate::floating_surface::handoff_diagnostics::mark(
+                    crate::floating_surface::handoff_diagnostics::Stage::FirstBufferPresented,
+                );
+            }
             match outcome {
                 FrameOutcome::Presented
                 | FrameOutcome::Reconfigured

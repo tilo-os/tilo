@@ -1614,6 +1614,9 @@ fn pump_floating_surface_service(
                     changed |= frame_builder.host_mut().open_capture_studio(mode);
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::Present { request } => {
+                    ui::floating_surface::handoff_diagnostics::mark(
+                        ui::floating_surface::handoff_diagnostics::Stage::HostPresent,
+                    );
                     let public_id = request.id.clone();
                     let result = ui::floating_surface::FloatingSurfaceRequest::try_from(request)
                         .and_then(|mut request| {
@@ -1721,6 +1724,9 @@ fn pump_floating_surface_service(
                                         transfer_covered,
                                         coordinate_offset,
                                     },
+                                );
+                                ui::floating_surface::handoff_diagnostics::mark(
+                                    ui::floating_surface::handoff_diagnostics::Stage::HostPrepareIssued,
                                 );
                                 changed = true;
                                 continue;

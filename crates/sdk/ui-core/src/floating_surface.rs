@@ -12,6 +12,8 @@ use vello::kurbo::Affine;
 use vello::kurbo::{Point, Rect, Size, Vec2};
 
 use serde::{Deserialize, Serialize};
+#[doc(hidden)]
+pub mod handoff_diagnostics;
 #[cfg(unix)]
 use std::collections::VecDeque;
 #[cfg(unix)]
@@ -505,14 +507,24 @@ impl FloatingSurfaceServiceClient {
     /// shell) this returns `None`; apps retain their ordinary attached UI.
     #[cfg(feature = "local-daemons")]
     pub fn discover() -> Option<Self> {
-        let fd = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE)?;
+        use handoff_diagnostics::{Stage, mark};
+        let Some(fd) = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE) else {
+            mark(Stage::ClientUnavailable);
+            return None;
+        };
         // The inherited service descriptor belongs to this one client. Lift
         // it exactly once; dropping the client closes it cleanly.
         let owned = unsafe { OwnedFd::from_raw_fd(fd) };
         // The shell writes unprompted (a workspace switch changes the
         // window's appearance), so an idle app must wake to read it.
         let wake = crate::wake::WakeHandle::new();
-        Self::from_stream_waking(UnixStream::from(owned), move || wake.wake()).ok()
+        let client = Self::from_stream_waking(UnixStream::from(owned), move || wake.wake()).ok();
+        mark(if client.is_some() {
+            Stage::ClientAvailable
+        } else {
+            Stage::ClientUnavailable
+        });
+        client
     }
 
     /// [`Self::from_stream`], calling `wake` whenever the shell has written
@@ -577,6 +589,7 @@ impl FloatingSurfaceServiceClient {
     /// Without the local daemons there is no inherited session service.
     #[cfg(not(feature = "local-daemons"))]
     pub fn discover() -> Option<Self> {
+        handoff_diagnostics::mark(handoff_diagnostics::Stage::ClientUnavailable);
         None
     }
 

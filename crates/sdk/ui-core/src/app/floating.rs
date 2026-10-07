@@ -309,6 +309,9 @@ impl App {
             changed = true;
         }
         while let Some(request) = self.root_widget.take_floating_surface_request() {
+            crate::floating_surface::handoff_diagnostics::mark(
+                crate::floating_surface::handoff_diagnostics::Stage::PresentUnhosted,
+            );
             let message =
                 crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request.id };
             self.root_widget.on_floating_surface_host_message(&message);
@@ -457,12 +460,18 @@ impl App {
             *changed = true;
         }
         while let Some(request) = self.root_widget.take_floating_surface_request() {
+            crate::floating_surface::handoff_diagnostics::mark(
+                crate::floating_surface::handoff_diagnostics::Stage::PresentDequeued,
+            );
             self.floating.suspended_ids.remove(&request.id);
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::Present {
                     request: (&request).into(),
                 },
             )?;
+            crate::floating_surface::handoff_diagnostics::mark(
+                crate::floating_surface::handoff_diagnostics::Stage::PresentSendAccepted,
+            );
         }
         for (id, region) in self.root_widget.take_floating_surface_source_updates() {
             client.send(
