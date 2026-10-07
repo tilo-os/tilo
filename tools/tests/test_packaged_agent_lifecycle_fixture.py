@@ -974,6 +974,27 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertGreaterEqual(source.count("before = wait_for_private_selection("), 2)
         self.assertIn("before_return_editor = wait_for_private_selection(", source)
 
+    def test_semantic_float_return_requires_native_pixels_and_retained_editor(self):
+        source = inspect.getsource(PROOF.native_semantic_float_return)
+        for required in ("offered_agent_action", "float-agent-conversation",
+                         "return-agent-conversation", "fresh_floating_presentation",
+                         "floating_surface_presenting", "fresh_primary_presentation"):
+            self.assertIn(required, source)
+        self.assertEqual(source.count("private_editor_observation(access, draft) != before"), 2)
+        self.assertEqual(source.count("wait_terminal(socket, invoke("), 2)
+        for forbidden in ("SetText", "AddSelection", "DoAction", '"op": "type"'):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("native_semantic_float_return(", inspect.getsource(PROOF.native_float_return))
+
+    def test_semantic_return_requires_a_new_primary_frame(self):
+        previous = {"frame_seq": 7}
+        for current, accepted in ((None, False), ({"frame_seq": 7}, False),
+                                  ({"frame_seq": 6}, False), ({"frame_seq": 8}, True)):
+            with self.subTest(current=current), patch.object(
+                    PROOF, "presented_primary_frame", return_value=current):
+                result = PROOF.fresh_primary_presentation({}, previous)
+                self.assertEqual(result is not None, accepted)
+
     def test_native_ime_stage_uses_real_rime_and_preserves_each_handoff_boundary(self):
         source = inspect.getsource(PROOF.native_ime_float_return)
         for forbidden in ("Ime::Preedit", "TrustedInputMethod", "SetText", "AddSelection"):

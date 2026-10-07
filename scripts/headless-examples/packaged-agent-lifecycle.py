@@ -926,6 +926,44 @@ def floating_surface_presenting(response, app_id, floating_id):
     return bool(rows and rows[0]["presented"])
 
 
+def native_semantic_float_return(socket, room, record, draft, previous, process):
+    """Exercise the published automation door without replacing native paint proof."""
+    access = wait_for("semantic Float's attached editor",
+                      lambda: agent_conversation_accessibility("Tide"), process)
+    before = private_editor_observation(access, draft)
+    float_action = wait_for("published Tide Float action", lambda: offered_agent_action(
+        socket, room, record, "tide", "float-agent-conversation"), process)
+    wait_terminal(socket, invoke(socket, float_action, {}), process)
+    frame = wait_for("semantic Float's freshly presented native pixels", lambda:
+                     fresh_floating_presentation(presented_floating_frame(
+                         call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), previous),
+                     process)
+    access = wait_for("semantic Float's detached editor", lambda:
+                      agent_conversation_accessibility("Tide", detached=True), process)
+    if private_editor_observation(access, draft) != before:
+        raise RuntimeError("semantic Float changed the retained private editor state")
+    return_action = wait_for("published Tide Return action", lambda: offered_agent_action(
+        socket, room, record, "tide", "return-agent-conversation"), process)
+    primary = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+    if primary is None:
+        raise RuntimeError("semantic Return cannot observe the primary surface")
+    wait_terminal(socket, invoke(socket, return_action, {}), process)
+    wait_for("semantic Return's native withdrawal", lambda: not floating_surface_presenting(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]), process)
+    wait_for("semantic Return's primary repaint", lambda:
+             fresh_primary_presentation(call(socket, {"op": "foreign_frames"}), primary), process)
+    access = wait_for("semantic Return's attached editor", lambda:
+                      agent_conversation_accessibility("Tide"), process)
+    if private_editor_observation(access, draft) != before:
+        raise RuntimeError("semantic Return changed the retained private editor state")
+    return {"semantic_float": True, "semantic_return": True}
+
+
+def fresh_primary_presentation(response, previous):
+    current = presented_primary_frame(response, "so.tilo.chat")
+    return current if current is not None and current["frame_seq"] > previous["frame_seq"] else None
+
+
 def native_float_return(socket, room, record, output, size, process):
     """Exercise the actual seat, IME and native surface handoff end to end."""
     draft = "Keep this private Tide draft"
@@ -1100,7 +1138,10 @@ def native_float_return(socket, room, record, output, size, process):
     keyboard_attached = private_editor_observation(keyboard_return, draft)
     if keyboard_attached != keyboard_detached:
         raise RuntimeError("keyboard Float/Return changed private editor state")
+    semantic = native_semantic_float_return(
+        socket, room, record, draft, keyboard_frame, process)
     (output / "float-return.json").write_text(json.dumps({
+        **semantic,
         "physical_typing": True, "physical_selection": True, "physical_undo": True,
         "undo_history_crossed_float": True, "undo_history_crossed_return": True,
         "input_method_commit": True, "pointer_drag_detach": True,
