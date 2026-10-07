@@ -1,6 +1,6 @@
 //! Cold native-editor records over the actual certified Iroh record route.
 //! This proves profile-backed body transfer, not committed-owner construction.
-//! The receiving view's remaining active-resource gap is asserted explicitly.
+//! The receiving view's read-only active resource is opened from its admitted body.
 
 use super::*;
 use crate::shell::record_hydration::{self, RecordAddress};
@@ -10,7 +10,7 @@ use tilo_actions::remote::{ActionHostError, Caller, PendingPoll, RecordQuery};
 use tilo_resource::{Demand, Resource as _};
 use ui::application::NativeProfile;
 use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
-use ui::widget::Continuable as _;
+use ui::widget::{Continuable as _, Widget as _};
 
 const APP: &str = "so.tilo.code-editor";
 const FILE: &str = "7164e2a8-9cf4-470b-9941-ecfe990e3d36";
@@ -297,7 +297,7 @@ impl ColdPair {
         })
     }
 
-    fn assert_active_resource_gap(&self) {
+    fn assert_active_resource_open(&self) {
         let mut document = read_record(self.receiving.path(), &self.address);
         let buffers = document.get(automerge::ROOT, "buffers").unwrap().unwrap().1;
         let text = document.get(&buffers, FILE).unwrap().unwrap().1;
@@ -316,8 +316,12 @@ impl ColdPair {
         let heads = document.get_heads();
         let mut editor = code_editor::CodeApp::new();
         assert!(editor.active_file_node().is_none());
+        let focus = editor
+            .native_input_snapshot(&document, &automerge::ROOT)
+            .unwrap()["editor_focused"]
+            .clone();
         assert!(
-            !editor.restore_live_continuation_metadata(
+            editor.restore_live_continuation_metadata(
                 &ui::collaboration::ContinuationMetadata {
                     schema_version: 1,
                     bytes: serde_json::to_vec(&position).unwrap(),
@@ -325,13 +329,22 @@ impl ColdPair {
                 &document,
                 &automerge::ROOT,
             ),
-            "current native live restore cannot open a cold active resource even after its body arrives"
+            "the cold editor must open the exact resource from the admitted body"
         );
-        assert!(editor.active_file_node().is_none());
+        assert!(editor.active_file_node().is_some());
+        let snapshot = editor
+            .native_input_snapshot(&document, &automerge::ROOT)
+            .unwrap();
+        assert_eq!(snapshot["buffer_id"], FILE);
+        assert_eq!(
+            snapshot["editor_focused"], focus,
+            "continuation must preserve local focus"
+        );
+        assert_eq!(snapshot["body_bytes"], body_of(&document).len());
         assert_eq!(
             document.get_heads(),
             heads,
-            "a rejected view must not mutate shared state"
+            "opening a view must not mutate shared state"
         );
     }
 
@@ -385,7 +398,7 @@ async fn certified_cold_editor_body_fetch_reconnect_and_membership_revocation() 
         source_heads, receiving_heads,
         "the whole document converges, not only visible text"
     );
-    pair.assert_active_resource_gap();
+    pair.assert_active_resource_open();
     let tree = pair.left.network.replica.lock().unwrap().tree.clone();
     tree.write().desktop.workspaces[0].set_owner("01".repeat(32));
     assert!(
