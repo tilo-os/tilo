@@ -42,9 +42,12 @@ content. Captures show the shared control rather than live peer discovery.
 
 This slice verifies replication of the personal fabric's logical device topology.
 Existing workspace CRDTs replicate workspace structure and shared semantic app
-resource mutations; each machine renders locally. Caret, selection, scroll, view
-navigation, hardware modes/DPI and seat focus remain device-local unless an app
-explicitly models them as shared resource state. Private credentials remain local.
+resource mutations; each machine renders locally. Current caret, selection, scroll
+and view navigation are participant view state;
+that is a current implementation boundary, not the intended same-session UX.
+The integration target is for the owner’s devices to follow the active session’s
+view and hand it off, while collaborators keep separate views. Hardware modes/DPI,
+physical input ownership and private credentials remain device-local.
 This slice does not prove complete native app-state replication or add a new
 app-state transport.
 
@@ -68,9 +71,9 @@ device restart or security-setting change is performed by this slice.
 ## Focused runner verification
 
 ```sh
-rcargo test --locked -p settings-store display_placement
-rcargo check --locked -p shell -p settings --tests
-rcargo test --locked -p shell --test it peer_sync_test::native_
-rcargo test --locked -p tilo-ui --lib widget::display_arrangement
-rcargo --on-builder --fetch native-displays run --locked -p tilo-ui --example native-displays -- target/native-displays
+cargo test --locked -p settings-store display_placement
+cargo check --locked -p shell -p settings --tests
+cargo test --locked -p shell --test it peer_sync_test::native_
+cargo test --locked -p tilo-ui --lib widget::display_arrangement
+cargo run --locked -p tilo-ui --example native-displays -- target/native-displays
 ```
