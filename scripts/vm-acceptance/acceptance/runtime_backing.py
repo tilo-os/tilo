@@ -47,10 +47,15 @@ def hash_backing(path, remaining=512 * 1024 * 1024):
             "backing_inode": before.st_ino, "bytes": count}
 
 
-def probe(uid, name, proc=Path("/proc")):
+def probe(uid, name, proc=Path("/proc"), selection=None):
     if name not in ("store", "browser", "terminal", "notes", "settings", "calculator") or not isinstance(uid, int) or uid <= 0:
         raise RuntimeError("unsupported public SDK subject")
     processes = []
+    unrelated = []
+    if selection is not None:
+        pid, start = selection
+        if type(pid) is not int or pid <= 0 or not isinstance(start, str) or not start.isdecimal():
+            raise RuntimeError("invalid authenticated worker selection")
     total_bytes = 0
     for process in proc.iterdir():
         if not process.name.isdigit():
@@ -62,6 +67,14 @@ def probe(uid, name, proc=Path("/proc")):
         if not matched:
             continue
         before_start = start_time(process)
+        if selection is not None and int(process.name) != selection[0]:
+            unrelated.append({"pid": int(process.name), "start_time_ticks": before_start,
+                              "status": "unrelated_not_verified_against_selected_offer"})
+            if len(unrelated) > 16:
+                raise RuntimeError("unrelated worker observation exceeds bound")
+            continue
+        if selection is not None and before_start != selection[1]:
+            raise RuntimeError("selected worker PID lifetime changed")
         before_maps = mappings(process)
         if not before_maps or len(before_maps) > 1024:
             raise RuntimeError("resident SDK mappings unobservable or exceed bound")
@@ -94,10 +107,12 @@ def probe(uid, name, proc=Path("/proc")):
             raise RuntimeError("resident SDK subject count exceeds bound")
     if not processes:
         raise RuntimeError("public SDK subject unobservable")
-    return {"uid": uid, "reader_uid": os.getuid(), "method": "proc-map-files-fd", "processes": processes}
+    return {"uid": uid, "reader_uid": os.getuid(), "method": "proc-map-files-fd", "processes": processes,
+            "unrelated_processes": unrelated}
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 5):
         raise RuntimeError("expected exact public process name and subject UID")
-    print(json.dumps(probe(int(sys.argv[2]), sys.argv[1])))
+    selection = (int(sys.argv[3]), sys.argv[4]) if len(sys.argv) == 5 else None
+    print(json.dumps(probe(int(sys.argv[2]), sys.argv[1], selection=selection)))
