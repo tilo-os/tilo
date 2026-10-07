@@ -1,5 +1,6 @@
 """Protect explicit release admission and refusal before signing or upload."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,12 +40,33 @@ class SignalProviderRelease(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'headless service kind'):
                 release.provenance(release.release.head())
 
+    def test_jit_profile_is_refused_without_using_signing_authority(self):
+        with patch.object(release.tomllib, 'loads', return_value={
+            'package': {'runtime': release.RUNTIME, 'kind': 'service'},
+            'sandbox': {'seccomp': 'tilo-jit'},
+        }):
+            with self.assertRaisesRegex(ValueError, 'retain its strict sandbox'):
+                release.provenance(release.release.head())
+
     def compiled(self, root):
         (root / 'bin').mkdir()
         (root / 'bin/tool').write_bytes(b'compiled release tool')
         (root / 'signal-provider').mkdir()
         (root / 'signal-provider/provider').write_bytes(b'compiled pinned provider')
         proof = release.provenance(release.release.head())
+        java = root / 'signal-provider/java'
+        (java / 'lib/server').mkdir(parents=True)
+        (java / 'lib/server/libjvm.so').write_bytes(b'synthetic Zero VM')
+        (java / 'release').write_text('JVM_VARIANT="Zero"\n')
+        modified = root / 'signal-provider/java-zero-source' / release.zero.RESERVER
+        modified.parent.mkdir(parents=True)
+        modified.write_text(release.zero.ZERO_RESERVATION)
+        (root / 'signal-provider/java-zero.json').write_text(json.dumps({
+            'source': proof['pin']['java_zero_source'], 'variant': 'zero',
+            'java_version': proof['pin']['java_version'],
+            'vm_sha256': hashlib.sha256(b'synthetic Zero VM').hexdigest(),
+            'data_only_cache_source_sha256': hashlib.sha256(modified.read_bytes()).hexdigest(),
+        }))
         proof['compiled'] = {'bin': release.inventory(root / 'bin'),
                              'payload': release.inventory(root / 'signal-provider')}
         (root / 'build.json').write_text(json.dumps(proof))
