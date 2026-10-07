@@ -9,7 +9,7 @@ it in the workspace whose collaborators should share the project.
 The operator graph stores nodes, typed ports, positions and connection
 candidates in the system-owned collaborative document. Its first operator
 vocabulary covers FP32 inputs, RMS normalization, normalization weights,
-SiLU, multiplication, a projection input, matrix-weight inputs and linear
+SiLU, multiplication, addition, a projection input, matrix-weight inputs and linear
 projections. Declared tensor shapes determine
 port compatibility. The editor refuses sequential cycles, incompatible ports
 and duplicate drivers. Concurrent conflicting connection candidates remain
@@ -102,3 +102,7 @@ Supported receipt families are versioned producer contracts, not an arbitrary
 JSON evidence viewer. The Q4_K superblock envelope currently requires its
 declared instrumentation and artifact roles; accepting a new producer or
 coverage shape requires a corresponding schema extension.
+
+Addition has two same-shape FP32 inputs (`left`, `right`) and one `result`
+output. It represents residual connections through the same public graph
+actions, shared canvas and system undo; it does not execute arithmetic.

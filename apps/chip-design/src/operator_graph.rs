@@ -26,10 +26,11 @@ pub enum OperatorKind {
     ProjectionInput,
     MatrixWeightInput,
     LinearProjection,
+    Add,
 }
 
 impl OperatorKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Input,
         Self::GateInput,
         Self::NormWeightInput,
@@ -37,6 +38,7 @@ impl OperatorKind {
         Self::ApplyNormWeight,
         Self::Silu,
         Self::Multiply,
+        Self::Add,
         Self::ProjectionInput,
         Self::MatrixWeightInput,
         Self::LinearProjection,
@@ -51,6 +53,7 @@ impl OperatorKind {
             Self::ApplyNormWeight => "chip-op-apply-weight",
             Self::Silu => "chip-op-silu",
             Self::Multiply => "chip-op-multiply",
+            Self::Add => "chip-op-add",
             Self::ProjectionInput => "chip-op-projection",
             Self::MatrixWeightInput => "chip-op-matrix-weights",
             Self::LinearProjection => "chip-op-linear-projection",
@@ -75,7 +78,7 @@ impl OperatorKind {
                 vec![values("value"), weights("weights")],
                 vec![values("result")],
             ),
-            Self::Multiply => (
+            Self::Multiply | Self::Add => (
                 vec![values("left"), values("right")],
                 vec![values("result")],
             ),
@@ -506,6 +509,7 @@ fn add_declaration() -> ActionDecl<OperatorGraph> {
                 "apply_norm_weight",
                 "silu",
                 "multiply",
+                "add",
                 "projection_input",
                 "matrix_weight_input",
                 "linear_projection",
