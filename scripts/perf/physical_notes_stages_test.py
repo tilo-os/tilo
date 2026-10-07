@@ -106,6 +106,134 @@ class PhysicalNotesStages(unittest.TestCase):
         self.assertNotIn('profiler_commit', report['stages'])
 
 
+class NativeGpuJoin(unittest.TestCase):
+    fixture = PhysicalNotesStages.fixture
+    report = PhysicalNotesStages.report
+
+    def gpu(self, index=1, kind='passes', event='attempt', **changes):
+        row = dict(process_id=123, observer_session='2bd78136-4c17-4853-9d7c-7442274a7059',
+                   cpu_frame_id=index, worker_id=8, worker_frame_ix=index,
+                   kind=kind, event=event, supported=True, pending=event == 'attempt',
+                   matched_current=event == 'completed', missing_current=event != 'completed',
+                   stale_sample=False, delayed=False, expected_current_submission_id=100 + index,
+                   latest_submission_id=100 + index,
+                   sample_submission_id=100 + index if event == 'completed' else None,
+                   sample=None)
+        if event == 'completed':
+            row['sample'] = dict(pass_count=3, span_ns=1000.5, summed_pass_ns=1500.25) if kind == 'passes' else dict(
+                stage_count=1, stages=[dict(stage_id=20, stage='fine_area', dispatch_count=2,
+                                          duration_ns='900')])
+        row.update(changes)
+        return 'tilo-native-gpu-stages ', row
+
+    def complete(self):
+        return self.fixture() + [self.gpu(index, kind, event)
+                                 for index in range(1, 4)
+                                 for kind in ('passes', 'dispatches')
+                                 for event in ('attempt', 'completed')]
+
+    def test_exact_delayed_recording_is_associated_with_its_original_frame(self):
+        records = self.complete()
+        for prefix, row in records:
+            if prefix == 'tilo-native-gpu-stages ' and row['event'] == 'completed':
+                row.update(latest_submission_id=999, delayed=True)
+        report = self.report(records)
+        gpu = report['native_gpu']
+        self.assertTrue(gpu['complete'])
+        self.assertFalse(gpu['performance_certified'])
+        self.assertEqual(gpu['clock'], 'device_relative_duration_ns')
+        self.assertEqual(gpu['frames'][0]['kinds']['passes']['submission_id'], 101)
+        self.assertTrue(gpu['frames'][0]['kinds']['passes']['delayed'])
+        self.assertAlmostEqual(gpu['pass_costs']['span_ns']['p50_ms'], .0010005)
+        self.assertAlmostEqual(gpu['pass_costs']['summed_pass_ns']['p50_ms'], .00150025)
+        self.assertAlmostEqual(gpu['dispatch_costs'][0]['duration']['p50_ms'], .0009)
+        self.assertEqual(report['stages'], self.report(self.fixture())['stages'])
+
+    def test_missing_unsupported_stale_partial_and_evicted_are_explicit(self):
+        for changes, status in [(dict(supported=False), 'unsupported'),
+                                (dict(stale_sample=True), 'stale_sample'),
+                                (dict(event='owner_evicted'), 'owner_evicted')]:
+            with self.subTest(status=status):
+                gpu = self.report(self.fixture() + [self.gpu(**changes)])['native_gpu']
+                self.assertFalse(gpu['available'])
+                self.assertFalse(gpu['complete'])
+                self.assertEqual(gpu['frames'][0]['kinds']['passes']['status'], status)
+                self.assertEqual(gpu['pass_costs'], {})
+        partial = self.report(self.fixture() + [self.gpu(), self.gpu(event='completed')])['native_gpu']
+        self.assertTrue(partial['available'])
+        self.assertFalse(partial['complete'])
+        self.assertEqual(partial['frames'][0]['kinds']['dispatches']['status'], 'missing_current')
+        self.assertFalse(self.report(self.fixture())['native_gpu']['available'])
+
+    def test_other_lifetime_worker_or_cpu_cannot_supply_gpu_evidence(self):
+        for changes in [dict(process_id=456), dict(observer_session='another-worker-lifetime'),
+                        dict(worker_id=9), dict(worker_frame_ix=2), dict(cpu_frame_id=99)]:
+            with self.subTest(changes=changes):
+                gpu = self.report(self.fixture() + [self.gpu(**changes),
+                                  self.gpu(event='completed', **changes)])['native_gpu']
+                self.assertFalse(gpu['available'])
+                self.assertEqual(gpu['coverage']['excluded_identity_records'], 2)
+                lifetime = 'process_id' in changes or 'observer_session' in changes
+                self.assertEqual(gpu['coverage']['excluded_other_lifetime_records'], 2 if lifetime else 0)
+                self.assertEqual(gpu['coverage']['excluded_other_frame_records'], 0 if lifetime else 2)
+        gpu = self.report(self.fixture() + [self.gpu(event='completed', cpu_frame_id=None,
+                          worker_id=None, worker_frame_ix=None, stale_sample=True,
+                          matched_current=False, missing_current=True)])['native_gpu']
+        self.assertEqual(gpu['coverage']['unassigned_stale_samples'], 1)
+        self.assertFalse(gpu['available'])
+
+    def test_missing_or_mismatched_recording_owner_does_not_match(self):
+        for extra in [[self.gpu(event='completed')],
+                      [self.gpu(), self.gpu(event='completed', sample_submission_id=99)]]:
+            gpu = self.report(self.fixture() + extra)['native_gpu']
+            self.assertFalse(gpu['available'])
+            self.assertEqual(gpu['frames'][0]['kinds']['passes']['status'], 'unmatched_recording')
+
+    def test_duplicate_or_inconsistent_identity_is_rejected(self):
+        for event in ('attempt', 'completed'):
+            records = self.complete() + [self.gpu(event=event)]
+            with self.subTest(event=event), self.assertRaisesRegex(ValueError, 'Ambiguous'):
+                self.report(records)
+        for changes in [dict(cpu_frame_id=True), dict(latest_submission_id=-1),
+                        dict(latest_submission_id=999, delayed=False), dict(supported='true')]:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.report(self.fixture() + [self.gpu(), self.gpu(event='completed', **changes)])
+
+    def test_invalid_device_duration_and_partial_stage_payload_is_rejected(self):
+        samples = [dict(pass_count=True, span_ns=1000, summed_pass_ns=1500),
+                   dict(pass_count=3, span_ns=-1, summed_pass_ns=1500),
+                   dict(pass_count=3, span_ns=float('nan'), summed_pass_ns=1500),
+                   dict(pass_count=3, span_ns=float('inf'), summed_pass_ns=1500),
+                   dict(pass_count=3, span_ns=True, summed_pass_ns=1500)]
+        for sample in samples:
+            with self.subTest(sample=sample), self.assertRaises(ValueError):
+                self.report(self.fixture() + [self.gpu(), self.gpu(event='completed', sample=sample)])
+        base = self.gpu(kind='dispatches', event='completed')[1]['sample']
+        for changes in [dict(duration_ns='-1'), dict(duration_ns='1e3'), dict(duration_ns=900),
+                        dict(duration_ns='9' * 40), dict(stage='private text'), dict(dispatch_count=True)]:
+            sample = copy.deepcopy(base)
+            sample['stages'][0].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.report(self.fixture() + [self.gpu(kind='dispatches'),
+                            self.gpu(kind='dispatches', event='completed', sample=sample)])
+        for sample in [dict(stage_count=2, stages=base['stages']),
+                       dict(stage_count=2, stages=base['stages'] * 2)]:
+            with self.subTest(sample=sample), self.assertRaises(ValueError):
+                self.report(self.fixture() + [self.gpu(kind='dispatches'),
+                            self.gpu(kind='dispatches', event='completed', sample=sample)])
+
+    def test_gpu_evidence_cannot_rescue_uncertified_physical_feedback(self):
+        records = self.complete()
+        next(row for prefix, row in records if prefix == 'tilo-display-frame ').update(discarded=True)
+        with self.assertRaises(ValueError):
+            self.report(records)
+
+    def test_gpu_evidence_is_bounded(self):
+        from unittest.mock import patch
+        with patch('native_gpu_evidence.MAX_ROWS', 1), self.assertRaisesRegex(ValueError, 'bound'):
+            self.report(self.fixture() + [self.gpu(), self.gpu(event='completed')])
+
+
 class CompositorPhaseJoin(unittest.TestCase):
     def report(self, lines):
         from compositor_phases import summarize_compositor_phases

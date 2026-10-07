@@ -1,7 +1,9 @@
 """Join Linux client CPU stages to verified physical Notes presentations.
 
 This attributes elapsed CPU/queue time, including scheduler preemption. It
-does not measure GPU completion or certify performance.
+does not certify performance. Optional native Vello samples are device-relative
+durations attributed only by their recorded producer, frame and submission;
+they are not the whole producer fence or part of the host-clock intervals.
 """
 import argparse
 import json
@@ -14,6 +16,7 @@ from compositor_phases import capture_lines, summarize_compositor_phases
 from input_latency import summarize_physical_notes_latency
 from main_stages import POINTS, STAGES
 from native_delivery import rows
+from native_gpu_evidence import summarize_native_gpu
 from render_boundaries import _interval, _ordered
 from runtime_benchmark import distribution
 
@@ -109,6 +112,7 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
             pairs.update(zip(STAGES, zip(points, points[1:])))
             pairs['pre_send_gap'] = points[-1], before
         frames.append(dict(input_id=sample['input_id'], cpu_frame_id=cpu,
+                           worker_id=worker_key[0], worker_frame_ix=worker_key[1],
                            intervals_ms={key: _interval(*pair)
                                          for key, pair in pairs.items()}))
     stages = {key: {bound: distribution(
@@ -125,6 +129,7 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
                 observer_session=producer[1], frames=frames, stages=stages,
                 latency=latency['latency'],
                 compositor=compositor, foreign_capture=capture,
+                native_gpu=summarize_native_gpu(lines, frames, producer),
                 limitations=['CPU stages include scheduling and logging overhead.',
                              'CPU render duration is not GPU execution duration.',
                              'KMS timestamps do not measure panel pixel response.'])
@@ -151,6 +156,9 @@ def main():
         json.dump(report, output, indent=2)
         output.write('\n')
     print('Verified Linux Notes frames:', len(report['frames']))
+    gpu = report['native_gpu']
+    print('Exact native GPU evidence:', sum(frame['complete'] for frame in gpu['frames']),
+          '/', len(gpu['frames']), 'frames complete; optional device durations only')
 
 
 if __name__ == '__main__':

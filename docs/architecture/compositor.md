@@ -110,6 +110,14 @@ duplicate or evicted owners are explicitly stale. The final Vello recording
 of a frame is observed; backdrop or recovery recordings are not a complete
 GPU timeline. Pass spans and dispatch totals overlap and must not be added.
 
+The existing `physical_notes_stages.py` report treats those samples as optional
+evidence. It requires the exact observer lifetime, CPU/worker frame and registered
+recording ID; delayed completions stay with their original frame. Missing, stale,
+unsupported, evicted or partial samples remain explicit. Pass and dispatch
+distributions are separate device-relative durations, never host-clock intervals
+or a measurement of the whole producer fence. GPU evidence cannot rescue an
+unadopted key or ambiguous physical presentation.
+
 The recorder is disabled unless startup GPU timestamps and native presentation
 observation are both enabled. It keeps 32 owners per tracker and emits at most
 2048 content-free rows per render-worker lifetime. Existing latest-recording
