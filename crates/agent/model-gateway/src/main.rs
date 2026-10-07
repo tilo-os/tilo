@@ -3,6 +3,7 @@
 //! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
 //! planning call. It does not include a general `LiteLLM` control plane.
 
+mod multiplex_server;
 mod subject;
 
 use std::fs;
@@ -25,11 +26,12 @@ use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use std::future::Future;
 use tilo_model_gateway::{
-    EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
-    MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
+    EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, MAX_DELTA_EVENTS,
+    MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, RequestFrame, Response, TraceEvent,
+    VisionImage,
 };
 #[cfg(test)]
-use tilo_model_gateway::{read_frame, write_frame};
+use tilo_model_gateway::{Frame, read_frame, write_frame};
 use tokio::io::AsyncReadExt as _;
 use tokio::sync::Semaphore;
 use zeroize::{Zeroize, Zeroizing};
@@ -268,7 +270,11 @@ async fn serve_connection(mut stream: tokio::net::UnixStream, http: &reqwest::Cl
         let Ok(frame) = read_request_frame(&mut stream).await else {
             return;
         };
-        let response = match serde_json::from_slice::<Frame<Request>>(&frame) {
+        let response = match serde_json::from_slice::<RequestFrame>(&frame) {
+            Ok(frame) if frame.request_id.is_some() => {
+                multiplex_server::serve(stream, handoff.app_id, frame, http.clone()).await;
+                return;
+            }
             Ok(frame) if frame.version == RPC_VERSION => {
                 match respond(&mut stream, &handoff.app_id, frame.value, http).await {
                     Some(response) => response,
@@ -324,7 +330,10 @@ async fn send_frame<T: serde::Serialize + Sync>(
     send_body(stream, &body).await
 }
 
-async fn send_body(stream: &mut tokio::net::UnixStream, body: &[u8]) -> Result<(), ()> {
+async fn send_body<W: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut W,
+    body: &[u8],
+) -> Result<(), ()> {
     match tokio::time::timeout(WRITE_TIMEOUT, FRAMING.write_async(stream, body)).await {
         Ok(Ok(())) => Ok(()),
         _ => Err(()),
@@ -334,7 +343,9 @@ async fn send_body(stream: &mut tokio::net::UnixStream, body: &[u8]) -> Result<(
 /// Read one length-prefixed request frame. Waiting for its first byte has no
 /// limit (see [`FRAME_TIMEOUT`]); the rest must follow promptly. The buffer
 /// is zeroized on drop because a Settings frame can carry an API key.
-async fn read_request_frame(stream: &mut tokio::net::UnixStream) -> Result<Zeroizing<Vec<u8>>, ()> {
+async fn read_request_frame<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
+) -> Result<Zeroizing<Vec<u8>>, ()> {
     let mut length = [0_u8; 4];
     loop {
         match stream.read(&mut length[..1]).await {

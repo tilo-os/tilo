@@ -17,6 +17,8 @@ use thiserror::Error;
 #[cfg(unix)]
 use zeroize::Zeroizing;
 
+#[cfg(unix)]
+mod multiplex;
 pub mod openai;
 
 pub const SERVICE_NAME: &str = "model-gateway";
@@ -222,6 +224,28 @@ pub struct Frame<T> {
     pub value: T,
 }
 
+/// Correlation on the same launcher-authenticated connection. Untagged older
+/// clients remain serialized; tagged clients never retry through that mode.
+#[derive(Deserialize, Serialize)]
+pub struct RequestFrame {
+    pub version: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<u64>,
+    #[serde(flatten)]
+    pub value: Request,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ResponseFrame {
+    pub request_id: u64,
+    #[serde(flatten)]
+    pub value: Response,
+}
+
+/// Bounds apply to one authenticated connection, not to individual producers.
+pub const MAX_CONCURRENT_REQUESTS: usize = 8;
+pub const MAX_QUEUED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Response {
     pub ok: bool,
@@ -275,15 +299,13 @@ pub fn available() -> bool {
 /// frames, and [`ClientError::Rejected`] when the gateway refuses the request.
 #[cfg(unix)]
 pub fn request(request: Request) -> Result<Response, ClientError> {
-    let mut stream = service_stream()?;
-    write_frame(
-        &mut stream,
-        &Frame {
-            version: RPC_VERSION,
-            value: request,
-        },
-    )?;
-    let response: Response = read_frame(&mut stream)?;
+    let mut pending = multiplex::start(service_stream()?, request)?;
+    let response = pending.read()?;
+    if response.event.is_some() {
+        return Err(ClientError::Protocol(
+            "unexpected streaming response".into(),
+        ));
+    }
     if response.ok {
         Ok(response)
     } else {
@@ -398,20 +420,16 @@ fn stream_plan(
     on_event: &mut dyn FnMut(&str, &str),
 ) -> Result<String, ClientError> {
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-    let mut stream = service_stream()?;
-    write_frame(
-        &mut stream,
-        &Frame {
-            version: RPC_VERSION,
-            value: Request::Plan {
-                profile_id: profile_id.to_string(),
-                model_id: model_id.to_string(),
-                body,
-                timeout_ms,
-                stream: true,
-                deltas,
-                trace,
-            },
+    let mut pending = multiplex::start(
+        service_stream()?,
+        Request::Plan {
+            profile_id: profile_id.to_string(),
+            model_id: model_id.to_string(),
+            body,
+            timeout_ms,
+            stream: true,
+            deltas,
+            trace,
         },
     )?;
     // A bounded number of intermediate frames: one per completed tool call,
@@ -419,7 +437,7 @@ fn stream_plan(
     let mut calls = 0_usize;
     let mut delta_frames = 0_usize;
     loop {
-        let response: Response = read_frame(&mut stream)?;
+        let response = pending.read()?;
         if !response.ok {
             return Err(ClientError::Rejected(
                 response

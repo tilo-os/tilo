@@ -105,6 +105,10 @@ fn child_plan(case: &str) {
                 .is_some()
         );
     }
+    if case == "concurrent" {
+        child_concurrent_plans();
+        return;
+    }
     let body = match case {
         // The caller names another model and asks for a raw stream; the
         // gateway sends the checked model and a plain completion request.
@@ -183,10 +187,17 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
     let stop = Arc::new(AtomicBool::new(false));
     let server_stop = stop.clone();
     let server_case = case.to_owned();
+    let server_root = temp.0.clone();
     let peer = std::thread::spawn(move || {
         let mut requests = Vec::new();
-        let mut held = Vec::new();
+        let mut held: Vec<TcpStream> = Vec::new();
         while !server_stop.load(Ordering::Acquire) {
+            if server_case == "concurrent" && server_root.join("chat-returned").exists() {
+                for mut stream in std::mem::take(&mut held) {
+                    let reply = successful_reply(OUTPUT);
+                    stream.write_all(reply.as_bytes()).unwrap();
+                }
+            }
             let (mut stream, _) = match listener.accept() {
                 Ok(accepted) => accepted,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -196,39 +207,20 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                 Err(error) => panic!("accept local Plan request: {error}"),
             };
             requests.push(read_request(&mut stream));
-            let reply = match server_case.as_str() {
+            if server_case == "concurrent" && requests.len() == 1 {
+                held.push(stream);
+                fs::write(server_root.join("task-accepted"), []).unwrap();
+                continue;
+            }
+            match server_case.as_str() {
                 "lost" => continue,
                 "timeout" => {
                     held.push(stream);
                     continue;
                 }
-                "truncated" => {
-                    "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{partial"
-                        .into()
-                }
-                "stream" | "stream-deltas" => STREAM_REPLY.into(),
-                "400detail" => format!(
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ERROR_BODY}",
-                    ERROR_BODY.len()
-                ),
-                "redirect" => format!(
-                    "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                ),
-                value if value.parse::<u16>().is_ok() => format!(
-                    "HTTP/1.1 {value} Provider Error\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                ),
-                _ => {
-                    let body = if server_case == "anthropic" {
-                        ANTHROPIC_OUTPUT
-                    } else {
-                        OUTPUT
-                    };
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                }
-            };
+                _ => {}
+            }
+            let reply = provider_reply(&server_case, &redirect);
             stream.write_all(reply.as_bytes()).unwrap();
         }
         // Held connections stay open, unanswered, until the peer stops.
@@ -236,16 +228,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         requests
     });
     let began = Instant::now();
-    let child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", &format!("plan_tests::{test}"), "--nocapture"])
-        // No ambient credentials, proxy settings, settings path, or secret-tool.
-        .env_clear()
-        .env("PATH", &temp.0)
-        .env("XDG_CONFIG_HOME", &temp.0)
-        .env("PLAN_TEST_CASE", case)
-        .env("PLAN_TEST_ENDPOINT", endpoint)
-        .output()
-        .unwrap();
+    let child = plan_child(test, case, &temp.0, &endpoint);
     let elapsed = began.elapsed();
     stop.store(true, Ordering::Release);
     let requests = peer.join().unwrap();
@@ -264,6 +247,182 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         elapsed,
         events,
     })
+}
+
+fn plan_child(test: &str, case: &str, root: &Path, endpoint: &str) -> std::process::Output {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", &format!("plan_tests::{test}"), "--nocapture"])
+        // No ambient credentials, proxy settings, settings path, or secret-tool.
+        .env_clear()
+        .env("PATH", root)
+        .env("XDG_CONFIG_HOME", root)
+        .env("PLAN_TEST_CASE", case)
+        .env("PLAN_TEST_ENDPOINT", endpoint);
+    if case != "concurrent" {
+        return command.output().unwrap();
+    }
+    let (app, server) = UnixStream::pair().unwrap();
+    let app_fd = app.as_raw_fd();
+    let server_fd = server.as_raw_fd();
+    command
+        .env(tilo_model_gateway::SERVICE_FD_ENV, app_fd.to_string())
+        .env("PLAN_TEST_SERVER_FD", server_fd.to_string());
+    // SAFETY: only async-signal-safe fcntl runs between fork and exec. The
+    // child's descriptor environment is established before any threads exist.
+    unsafe {
+        command.pre_exec(move || {
+            for fd in [app_fd, server_fd] {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    command.output().unwrap()
+}
+
+fn provider_reply(case: &str, redirect: &str) -> String {
+    match case {
+        "truncated" => {
+            "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{partial".into()
+        }
+        "stream" | "stream-deltas" => STREAM_REPLY.into(),
+        "400detail" => format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ERROR_BODY}",
+            ERROR_BODY.len()
+        ),
+        "redirect" => format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
+        value if value.parse::<u16>().is_ok() => format!(
+            "HTTP/1.1 {value} Provider Error\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
+        "anthropic" => successful_reply(ANTHROPIC_OUTPUT),
+        _ => successful_reply(OUTPUT),
+    }
+}
+
+fn successful_reply(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn child_concurrent_plans() {
+    let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap());
+    let app_fd = std::env::var(tilo_model_gateway::SERVICE_FD_ENV)
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    let server_fd = std::env::var("PLAN_TEST_SERVER_FD")
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert!(app_fd >= 3 && server_fd >= 3 && app_fd != server_fd);
+    // SAFETY: this isolated child owns these two distinct inherited sockets,
+    // issued by plan_child, and transfers each descriptor exactly once.
+    let mut client = unsafe { UnixStream::from_raw_fd(app_fd) };
+    let server = unsafe { UnixStream::from_raw_fd(server_fd) };
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_frame(
+        &mut client,
+        &serde_json::json!({"protocol":1,"app_id":AGENT_APP}),
+    )
+    .unwrap();
+    server.set_nonblocking(true).unwrap();
+    let gateway = std::thread::spawn(move || {
+        let runtime = tilo_rt::daemon("gateway-concurrency-test")
+            .workers(2)
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let stream = tokio::net::UnixStream::from_std(server).unwrap();
+            serve_connection(stream, &provider_client().unwrap()).await;
+        });
+    });
+    let (finished, task_result) = std::sync::mpsc::channel();
+    let task = std::thread::spawn(move || {
+        let result = tilo_model_gateway::plan(
+            "test-provider",
+            "test-model",
+            serde_json::json!({"messages":[{"role":"user","content":"held task"}]}),
+            Duration::from_secs(5),
+        );
+        finished.send(result).unwrap();
+    });
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    while !root.join("task-accepted").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "actual task POST was not observed"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let response = tilo_model_gateway::plan(
+        "test-provider",
+        "test-model",
+        serde_json::json!({"messages":[{"role":"user","content":"chat during task"}]}),
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    assert_eq!(response, OUTPUT);
+    assert!(
+        matches!(
+            task_result.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "chat completes while the original task POST remains held"
+    );
+    fs::write(root.join("chat-returned"), []).unwrap();
+    assert_eq!(
+        task_result
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap(),
+        OUTPUT
+    );
+    task.join().unwrap();
+    // No content-bearing evidence is emitted; the existing harness keeps the
+    // disposable request bodies private and counts the two actual POSTs.
+    fs::write(
+        root.join("response.json"),
+        serde_json::to_vec(&succeeded(Some(response), None)).unwrap(),
+    )
+    .unwrap();
+    fs::write(root.join("events.json"), b"[]").unwrap();
+    client.shutdown(std::net::Shutdown::Both).unwrap();
+    gateway.join().unwrap();
+}
+
+#[test]
+fn concurrent_plans_share_one_authenticated_capability_without_blocking_chat() {
+    if let Some(observed) = run_case(
+        "concurrent_plans_share_one_authenticated_capability_without_blocking_chat",
+        "concurrent",
+    ) {
+        assert!(observed.response.ok);
+        assert_eq!(
+            observed.requests.len(),
+            2,
+            "one task POST and one chat POST; no replay"
+        );
+        assert_eq!(
+            request_body(&observed.requests[0])["messages"][0]["content"],
+            "held task"
+        );
+        assert_eq!(
+            request_body(&observed.requests[1])["messages"][0]["content"],
+            "chat during task"
+        );
+    }
 }
 
 fn assert_unknown(observed: Observed) {

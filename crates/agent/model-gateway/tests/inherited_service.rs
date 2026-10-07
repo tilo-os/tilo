@@ -11,7 +11,9 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use tilo_model_gateway::{ClientError, Frame, Request, Response, read_frame, write_frame};
+use tilo_model_gateway::{
+    ClientError, Request, RequestFrame, Response, ResponseFrame, read_frame, write_frame,
+};
 
 fn selection_request() -> Request {
     serde_json::from_value(serde_json::json!({
@@ -94,21 +96,25 @@ fn run_child(test: &str, case: &str) {
     drop(app);
     let peer = std::thread::spawn(move || {
         let mut requests = 0;
-        while let Ok(frame) = read_frame::<Frame<Request>>(&mut service) {
+        while let Ok(frame) = read_frame::<RequestFrame>(&mut service) {
             assert_eq!(frame.version, 3);
             assert_eq!(
                 serde_json::to_value(frame.value).unwrap(),
                 serde_json::to_value(selection_request()).unwrap()
             );
             requests += 1;
+            assert_eq!(frame.request_id, Some(requests));
             write_frame(
                 &mut service,
-                &Response {
-                    ok: true,
-                    configured: Some(true),
-                    output: None,
-                    error: None,
-                    event: None,
+                &ResponseFrame {
+                    request_id: frame.request_id.unwrap(),
+                    value: Response {
+                        ok: true,
+                        configured: Some(true),
+                        output: None,
+                        error: None,
+                        event: None,
+                    },
                 },
             )
             .unwrap();
