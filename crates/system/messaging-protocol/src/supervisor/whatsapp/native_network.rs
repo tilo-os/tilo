@@ -90,7 +90,7 @@ impl Native {
         .map_err(|_| unavailable())?
         .with_root_certificates(roots)
         .with_no_client_auth();
-        let http = reqwest::Client::builder()
+        let http = tilo_net::http::client()
             .tls_backend_preconfigured(tls.clone())
             .https_only(true)
             .no_proxy()
@@ -166,71 +166,6 @@ impl Native {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use tokio_tungstenite::tungstenite::protocol::Role;
-    struct Grant(AtomicBool);
-    impl AccountAuthority for Grant {
-        fn check(&self) -> std::result::Result<(), tilo_messaging::SendError> {
-            if self.0.load(Ordering::Acquire) {
-                Ok(())
-            } else {
-                Err(tilo_messaging::SendError::Revoked)
-            }
-        }
-    }
-    async fn sockets() -> (Socket, Socket) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let connecting = tokio::spawn(async move { TcpStream::connect(address).await.unwrap() });
-        let (server, _) = listener.accept().await.unwrap();
-        let client = connecting.await.unwrap();
-        (
-            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
-                .await,
-            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(server), Role::Server, None)
-                .await,
-        )
-    }
-    #[tokio::test]
-    async fn native_pipe_revocation_stops_receives_and_new_writes_and_closes_owned_stream() {
-        let (client, mut server) = sockets().await;
-        let grant = Arc::new(Grant(AtomicBool::new(true)));
-        let (transport, events) = pipe(client, grant.clone());
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            TransportEvent::Connected
-        ));
-        transport
-            .send(Bytes::from_static(b"fixture encrypted frame"))
-            .await
-            .unwrap();
-        assert_eq!(
-            server.next().await.unwrap().unwrap(),
-            Message::Binary(Bytes::from_static(b"fixture encrypted frame"))
-        );
-        grant.0.store(false, Ordering::Release);
-        assert!(
-            transport
-                .send(Bytes::from_static(b"refused frame"))
-                .await
-                .is_err()
-        );
-        let next = tokio::time::timeout(Duration::from_secs(2), events.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(next, TransportEvent::Disconnected(_)));
-        assert!(events.recv().await.is_err());
-        let closing = tokio::time::timeout(Duration::from_secs(3), server.next())
-            .await
-            .unwrap();
-        assert!(matches!(closing, Some(Ok(Message::Close(_))) | None));
-        transport.disconnect().await;
-    }
-}
 #[whatsapp_rust::async_trait]
 impl HttpClient for Native {
     async fn execute(&self, request: HttpRequest) -> Result<HttpResponse> {
@@ -298,7 +233,7 @@ impl TransportFactory for Native {
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_BODY))
             .max_frame_size(Some(MAX_BODY));
-        let (socket, _) = admitted(self.authority.as_ref(), async {
+        let (socket, _) = Box::pin(admitted(self.authority.as_ref(), async {
             tokio::time::timeout(
                 Duration::from_secs(15),
                 tokio_tungstenite::connect_async_tls_with_config(
@@ -311,7 +246,7 @@ impl TransportFactory for Native {
             .await
             .map_err(|_| unavailable())?
             .map_err(|_| unavailable())
-        })
+        }))
         .await?;
         check(self.authority.as_ref())?;
         Ok(pipe(socket, self.authority.clone()))
@@ -372,6 +307,75 @@ fn pipe(
             .await;
         }
     });
-    *pipe.reader.lock().expect("new native transport reader") = Some(task);
+    match pipe.reader.lock() {
+        Ok(mut reader) => *reader = Some(task),
+        Err(_) => task.abort(),
+    }
     (pipe, receiver)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    struct Grant(AtomicBool);
+    impl AccountAuthority for Grant {
+        fn check(&self) -> std::result::Result<(), tilo_messaging::SendError> {
+            if self.0.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err(tilo_messaging::SendError::Revoked)
+            }
+        }
+    }
+    async fn sockets() -> (Socket, Socket) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let connecting = tokio::spawn(async move { TcpStream::connect(address).await.unwrap() });
+        let (server, _) = listener.accept().await.unwrap();
+        let client = connecting.await.unwrap();
+        (
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
+                .await,
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(server), Role::Server, None)
+                .await,
+        )
+    }
+    #[tokio::test]
+    async fn native_pipe_revocation_stops_receives_and_new_writes_and_closes_owned_stream() {
+        let (client, mut server) = sockets().await;
+        let grant = Arc::new(Grant(AtomicBool::new(true)));
+        let (transport, events) = pipe(client, grant.clone());
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            TransportEvent::Connected
+        ));
+        transport
+            .send(Bytes::from_static(b"fixture encrypted frame"))
+            .await
+            .unwrap();
+        assert_eq!(
+            server.next().await.unwrap().unwrap(),
+            Message::Binary(Bytes::from_static(b"fixture encrypted frame"))
+        );
+        grant.0.store(false, Ordering::Release);
+        assert!(
+            transport
+                .send(Bytes::from_static(b"refused frame"))
+                .await
+                .is_err()
+        );
+        let next = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(next, TransportEvent::Disconnected(_)));
+        assert!(events.recv().await.is_err());
+        let closing = tokio::time::timeout(Duration::from_secs(3), server.next())
+            .await
+            .unwrap();
+        assert!(matches!(closing, Some(Ok(Message::Close(_))) | None));
+        transport.disconnect().await;
+    }
 }

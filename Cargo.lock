@@ -17153,6 +17153,7 @@ dependencies = [
  "tilo-clock",
  "tilo-contact-directory",
  "tilo-messaging",
+ "tilo-net",
  "tilo-resource",
  "tilo-secret-vault",
  "tilo-secrets",

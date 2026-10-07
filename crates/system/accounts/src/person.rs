@@ -313,7 +313,7 @@ impl PersonAccounts {
         )
     }
 
-    /// Publish the explicitly reviewed self identity of one native WhatsApp
+    /// Publish the explicitly reviewed self identity of one native `WhatsApp`
     /// profile. The caller retains provider proof and credential authority;
     /// this record contains no credential, pairing payload or messaging state.
     /// # Errors

@@ -117,6 +117,21 @@ impl NativeWhatsappAccount {
         self.gate.check()?;
         self.supervisor.whatsapp_linking()
     }
+    pub(super) fn resume_default(
+        &self,
+        root: std::path::PathBuf,
+        scope: String,
+        expected: &str,
+        policy: &super::network::Policy,
+    ) -> Result<Arc<tilo_messaging_protocol::supervisor::whatsapp::WhatsappLinking>, SendError>
+    {
+        self.activate_default(root, scope, policy)?;
+        let session = self.supervisor.whatsapp_resume(expected)?;
+        crate::session_runtime::runtime()
+            .map_err(|_| SendError::Unavailable)?
+            .block_on(async { session.resume() })?;
+        Ok(session)
+    }
     /// Called only on the original native enrollment worker after profile review.
     /// Protected temporary egress review precedes constructing any network source.
     pub(super) fn activate_default(
