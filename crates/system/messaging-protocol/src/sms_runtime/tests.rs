@@ -1090,31 +1090,21 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
 }
 
 #[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn actual_sms_arrival_wakes_messages_without_shared_plaintext() {
+fn sms_messages_app(
+    broker: &crate::external_broker::ExternalBroker,
+    route: &tilo_contact_directory::routing::Route,
+) -> (
+    ui::framework::testing::TestApp<messages::MessagesShell>,
+    String,
+) {
     use messages::{MessagesEffect, MessagesShell};
     use tilo_contact_directory::ContactDirectory;
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let route = contact_route();
-    let broker = crate::external_broker::ExternalBroker::new(
-        Box::new(fixture.runtime(&root.path().join("journal"))),
-        crate::signal_broker::History::open(
-            &root.path().join("history"),
-            &owner(),
-            secret_vault::VaultKey::from_bytes([19; 32]),
-        )
-        .unwrap(),
-        route.scope.clone(),
-        Arc::new(ReceiveGate(std::sync::atomic::AtomicBool::new(false))),
-    )
-    .unwrap();
     let mut app = ui::framework::testing::TestApp::<MessagesShell>::for_person_with_lent(
         &owner().principal,
         broker.client(),
     )
     .unwrap();
-    crate::external_broker::tests::project_account_metadata(&owner(), &route, &mut app);
+    crate::external_broker::tests::project_account_metadata(&owner(), route, &mut app);
     let directory = app.shared_person::<ContactDirectory>().unwrap();
     directory
         .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
@@ -1142,7 +1132,34 @@ async fn actual_sms_arrival_wakes_messages_without_shared_plaintext() {
         choice: choice.clone(),
     })
     .unwrap();
-    app.effect(&MessagesEffect::ReadHistory { choice }).unwrap();
+    app.effect(&MessagesEffect::ReadHistory {
+        choice: choice.clone(),
+    })
+    .unwrap();
+    (app, choice)
+}
+
+#[cfg(feature = "signal-broker")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state() {
+    use messages::MessagesEffect;
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let route = contact_route();
+    let gate = Arc::new(ReceiveGate(std::sync::atomic::AtomicBool::new(false)));
+    let broker = crate::external_broker::ExternalBroker::new(
+        Box::new(fixture.runtime(&root.path().join("journal"))),
+        crate::signal_broker::History::open(
+            &root.path().join("history"),
+            &owner(),
+            secret_vault::VaultKey::from_bytes([19; 32]),
+        )
+        .unwrap(),
+        route.scope.clone(),
+        gate.clone(),
+    )
+    .unwrap();
+    let (mut app, choice) = sms_messages_app(&broker, &route);
     let guard = broker.start_sms_receiver().await.unwrap();
     receive_state(&mut fixture.state.lock().unwrap());
     added(&fixture).await;
@@ -1158,7 +1175,73 @@ async fn actual_sms_arrival_wakes_messages_without_shared_plaintext() {
         "SMS arrival must refresh the selected private view"
     );
     assert!(!app.harness().dump_json().contains("private incoming SMS"));
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (0, 0));
+        drop(state);
+    }
+    // Use the same private Messages view and actual native D-Bus adapter.
+    // The receive-only fixture object becomes the newly created outgoing SMS.
+    drop(guard);
+    fixture.state.lock().unwrap().incoming = false;
+    let reply = MessagesEffect::Send {
+        choice: choice.clone(),
+        operation: "sms-native-ui-reply".into(),
+        text: "private SMS reply".into(),
+    };
+    assert!(
+        app.effect(&reply).is_err(),
+        "submission requires explicit effect confirmation"
+    );
+    let receipt = app.effect_confirmed(&reply).unwrap();
+    assert_eq!(
+        receipt.value.unwrap()["status"],
+        "submitted",
+        "a native Send reply is not evidence of carrier delivery"
+    );
+    assert!(
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some("private SMS reply"))
+    );
+    assert!(!app.harness().dump_json().contains("private SMS reply"));
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (1, 1));
+        assert_eq!(state.number, route.recipient);
+        assert_eq!(state.text, "private SMS reply");
+        drop(state);
+    }
+    let private_files = |directory: &Path| {
+        let mut files: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (path.clone(), std::fs::read(path).unwrap())
+            })
+            .collect();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    };
+    let before = private_files(&root.path().join("history"));
+    gate.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = MessagesEffect::Send {
+        choice,
+        operation: "sms-native-revoked-reply".into(),
+        text: "revoked SMS reply".into(),
+    };
+    assert!(app.effect_confirmed(&refused).is_err());
+    assert_eq!(
+        broker.observe_sms_message(route, MESSAGE_PATH.into()).await,
+        Err(tilo_messaging::SendError::Revoked)
+    );
+    assert_eq!(
+        private_files(&root.path().join("history")),
+        before,
+        "revocation must stop private history writes as well as native submission"
+    );
     let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
+    assert_eq!((state.creates, state.sends), (1, 1));
     drop(state);
 }

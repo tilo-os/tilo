@@ -305,6 +305,64 @@ fn live_editor_views_follow_repeated_positions_without_editing_or_focus() {
 }
 
 #[test]
+fn cold_live_continuation_opens_existing_text_and_preserves_local_focus() {
+    use tilo_actions::Action as _;
+    use ui::widget::Continuable as _;
+    let (_directory, mut source, _) = loaded_fixture();
+    let metadata = crate::test_support::with_doc(&mut source, |app, doc| {
+        stage_continuation_view(app, doc);
+        app.continuation_metadata(doc.doc(), &automerge::ROOT)
+            .unwrap()
+    });
+    let mut document = source.peer_document();
+    let heads = document.get_heads();
+    for focused in [false, true] {
+        let mut target = CodeApp::new();
+        target.editor.set_focus(focused);
+        assert!(target.active_file_node().is_none());
+        assert!(target.restore_live_continuation_metadata(&metadata, &document, &automerge::ROOT));
+        assert!(target.active_file_node().is_some());
+        let snapshot = target
+            .native_input_snapshot(&document, &automerge::ROOT)
+            .unwrap();
+        assert_eq!(snapshot["editor_focused"], focused);
+        assert!(snapshot["body_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(document.get_heads(), heads);
+        assert!(target.pending_open.is_none());
+        assert!(target.pending_continuation.is_none());
+    }
+    let mut position: ui::text_position::TextPosition =
+        serde_json::from_slice(&metadata.bytes).unwrap();
+    position.resource_id = "99999999-2222-4333-8444-555555555555".into();
+    let foreign = ui::collaboration::ContinuationMetadata {
+        schema_version: 1,
+        bytes: serde_json::to_vec(&position).unwrap(),
+    };
+    let mut target = CodeApp::new();
+    assert!(!target.restore_live_continuation_metadata(&foreign, &document, &automerge::ROOT));
+    assert!(target.active_file_node().is_none());
+    assert_eq!(document.get_heads(), heads);
+    let position: ui::text_position::TextPosition =
+        serde_json::from_slice(&metadata.bytes).unwrap();
+    let file = EditorDoc::file(&document, &position.resource_id).unwrap();
+    crate::actions::CodeEditorAction::DeleteFile {
+        id: position.resource_id,
+        kind: crate::actions::EntryKind::File,
+        expected_revision: file.deletion_revision,
+    }
+    .apply(&mut document)
+    .unwrap();
+    let deleted_heads = document.get_heads();
+    assert!(!target.restore_live_continuation_metadata(&metadata, &document, &automerge::ROOT));
+    assert!(target.active_file_node().is_none());
+    assert_eq!(
+        document.get_heads(),
+        deleted_heads,
+        "deleted resources cannot be reopened by a view"
+    );
+}
+
+#[test]
 fn independent_cold_editors_keep_one_text_object_and_both_offline_edits() {
     let (directory, mut source, manifest) = loaded_fixture();
     let path = directory.path().join("fixture.rs");
