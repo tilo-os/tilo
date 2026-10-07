@@ -14766,9 +14766,11 @@ version = "0.1.2"
 dependencies = [
  "app-cli",
  "app-host",
+ "base64",
  "blake3",
  "capnp",
  "ed25519-dalek 3.0.0",
+ "flate2",
  "getrandom 0.4.3",
  "hex",
  "lru 0.18.3",
