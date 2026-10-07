@@ -6,6 +6,26 @@ set -euo pipefail
 [[ ${IMAGE_SOURCE:-} =~ ^[0-9a-f]{40}$ ]]
 : "${OUTPUT:?}"
 mkdir -p "$OUTPUT"
+# Admit physical backing capacity before any image pull or sparse-store setup.
+# Peak includes image extraction, allocated install disk, QCOW publication copy
+# and scratch coexisting. Apparent sizes of sparse loop files are not capacity.
+python3 - "$OUTPUT" "${RUNNER_TEMP:-/var/tmp}" <<'PY'
+import json, os, sys, time
+from pathlib import Path
+budget = 64 * 1024**3
+observations = []
+for name in sys.argv[1:]:
+    path = Path(name).resolve(); stat = os.statvfs(path)
+    observations.append({'path':str(path), 'available_bytes':stat.f_bavail*stat.f_frsize,
+                         'available_inodes':stat.f_favail})
+proof = {'measured_at_unix':time.time(), 'architecture':'aarch64',
+         'minimum_physical_peak_bytes':budget, 'minimum_available_inodes':1000000,
+         'backing_filesystems':observations}
+print(json.dumps(proof, indent=2), flush=True)
+(Path(sys.argv[1])/'backing-capacity.json').write_text(json.dumps(proof,indent=2)+'\n')
+assert all(x['available_bytes'] >= budget and x['available_inodes'] >= 1000000
+           for x in observations), 'ARM backing capacity insufficient; no source pull attempted'
+PY
 cosign verify --key keys/cosign.pub "$IMAGE" > "$OUTPUT/signature.json"
 cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$IMAGE" > "$OUTPUT/provenance.json"
 cosign verify-attestation --key keys/cosign.pub --type https://tilo.so/attestations/development-board-freshness/v1 "$IMAGE" > "$OUTPUT/freshness.json"
