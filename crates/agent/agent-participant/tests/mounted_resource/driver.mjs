@@ -6,6 +6,7 @@ import {readFileSync, existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {resolve, join, extname} from 'node:path';
 import {createInterface} from 'node:readline';
 import {launch} from '../../../../../tools/web/chrome.mjs';
+import {mountChat} from './mount-chat.mjs';
 
 const bundle = resolve(process.argv[2]);
 assert.ok(existsSync(join(bundle, 'resource.html')), 'built resource entry is required');
@@ -55,62 +56,7 @@ try {
   assert.equal(permission.error, undefined, JSON.stringify(permission.error));
   const supplied = await tab.send('Runtime.evaluate', {expression:`window.fixture = ${JSON.stringify(fixture)}; void 0`});
   assert.equal(supplied.result?.exceptionDetails, undefined, 'fixture bootstrap could not be supplied');
-  const initialized = await tab.evaluate(`(async () => { try {
-    const host = await import('/host.mjs');
-    window.runtime = await host.loadRuntime();
-    const {profileStore} = await import('/peer.mjs');
-    const {idbStorage} = await import('/device-custody.mjs');
-    const storage = idbStorage();
-    for (const [root, bytes, device] of [[fixture.root, fixture.accounts, 'fixture-reader'],
-      [fixture.decoy, fixture.decoyAccounts, 'unadmitted-fixture']]) {
-      const profile = 'tilo-identity:' + root + '@' + new URL(fixture.origin).host;
-      const opened = await host.openProfileStorage(profile, device);
-      await opened.lease.commit([{key: runtime.browser_accounts_key(root), bytes: new Uint8Array(bytes), revision: '0'}]);
-      if (root === fixture.root) {
-        await profileStore(runtime, profile, device).put('certificate', JSON.stringify(fixture.certificate));
-        const wrapKey = await crypto.subtle.generateKey({name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const sealed = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, wrapKey, new Uint8Array(fixture.seed)));
-        await storage.put('device-key:' + profile, {kind:'sealed-seed', wrapKey, iv, sealed});
-      }
-      await opened.release();
-    }
-    const {readBrowserAccounts, currentBrowserAccount} = await import('/browser-accounts.mjs');
-    window.readAccounts = () => readBrowserAccounts({origin: fixture.origin, runtime});
-    const accounts = await readAccounts();
-    if (accounts.length !== 2) throw Error('two actual Settings account choices required');
-    window.selected = accounts.find(account => account.userPublicKey === fixture.root);
-    await currentBrowserAccount(selected, readAccounts);
-    const {connectPeer, withCustody} = await import('/peer.mjs');
-    const {openDeviceCustody} = await import('/device-custody.mjs');
-    const custody = await openDeviceCustody({profile:selected.profile, storage, requireExisting:true});
-    window.mountDiagnostic = [];
-    const desktop = {...host, mountDesktop:(target, options)=>host.mountDesktop(target, {...options,
-      onStatus:status=>{if(status.catalogueError || status.clipboard) mountDiagnostic.push(status); options.onStatus?.(status);}})};
-    window.peer = await withCustody(custody, () => connectPeer({origin:fixture.origin,
-      room:fixture.room, userPublicKey:selected.userPublicKey, profile:selected.profile,
-      device:selected.device, custody, runtime, desktop, live:false, requireExistingCertificate:true}));
-    await peer.whenReady();
-    window.catalogueDiagnostic = {calls:0, replies:0};
-    const catalogue = peer.actions.catalogue.bind(peer.actions);
-    peer.actions.catalogue = async query => {
-      catalogueDiagnostic.query = query;
-      catalogueDiagnostic.calls++;
-      try { const page = await catalogue(query); catalogueDiagnostic.replies++; catalogueDiagnostic.rows=page.rows.length; catalogueDiagnostic.locator=Boolean(page.locator); return page; }
-      catch (error) { catalogueDiagnostic.error = String(error?.message ?? error); throw error; }
-    };
-    window.link = await peer.resourceLink(location.origin + '/resource.html', fixture.reference,
-      fixture.provider, 'reveal-message');
-    const {openResourceOperation} = await import('/resource-session.mjs');
-    window.operation = {controller:new AbortController()};
-    window.mount = await openResourceOperation({operation, link, target:document.querySelector('#surface'), connect:async()=>peer});
-    await currentBrowserAccount(selected, readAccounts);
-    mount.requestSemantics();
-    return {actions:mount.actions(fixture.reference.id)};
-  } catch (error) {
-    return {error:String(error?.message ?? error), stack:error?.stack};
-  }
-  })()`);
+  const initialized = await mountChat(tab);
   assert.equal(initialized.error, undefined, JSON.stringify(initialized));
   await tab.waitFor('document.querySelector("canvas")?.width > 0');
   assert.ok((await tab.evaluate('mount.actions(fixture.reference.id)')).some(action => action.address.action === 'reveal-message-range'));

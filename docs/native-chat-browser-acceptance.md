@@ -1,4 +1,4 @@
-# Native Chat resource and browser recovery acceptance
+# Native Chat resource, browser recovery and call acceptance
 
 The existing `mounted-resource` fixture now runs against the actual Chat browser
 bundle produced by `tilo-app build apps/chat --platform web`. The CLI recognizes
@@ -38,9 +38,27 @@ written separately under `target/mounted-resource/` and
 uploads both. Missing tools, frames, acknowledgements or documents fail the
 journey. The baseline deadline and existing assertions remain intact.
 
+The optional `--voice` journey mounts that same compiled Chat in two isolated,
+certified browser profiles. The host prepares the registered native primary
+record and authors its existing graph through `Rooms::author_application`.
+Only the exact current governor can use this host-local API; ordinary incoming
+member snapshots cannot become governor records. The retained resource view
+and voice admission therefore resolve the same governor-authored document.
+
+Both profiles join the actual call muted without requesting a microphone.
+Explicit Unmute runs through the public app action and the real semantic
+microphone control. Chromium's synthetic devices supply production Opus audio;
+each browser must report more than five decoded remote levels above RMS 0.015.
+Mute stops only local capture. Leave closes tracks, audio contexts and workers,
+and rejoin requires fresh Unmute. Removing one workspace member stops that
+person's capture while the other participant continues. The receipt and actual
+Chat frames are saved under `target/mounted-resource-voice/`. The SDK web lane
+runs this journey as an unprivileged user with Chromium's sandbox enabled and
+an owned descendant supervisor; missing prerequisites fail.
+
 This qualifies local governed certified-peer resource navigation and actual
 browser disconnect/retry. It does not qualify a full browser-profile restart
-with queued edits, physical devices/microphones, browser voice, cross-app Follow,
+with queued edits, physical devices/microphones, cross-app Follow,
 or the user's public demo. The audited `tilo.coffee` candidate is unconfirmed;
 its resource entry returned 403. That response was not bypassed, expired AWS
 credentials were not renewed, and no deployment or access change was made.
