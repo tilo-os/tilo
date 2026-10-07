@@ -128,3 +128,8 @@ chip-graph-port-missing = This output port no longer exists
 chip-synthetic-fixture = Synthetic contract example · No numerical or hardware experiment is represented.
 
 chip-tensor-shape = Tensor (F32): { $shape }
+
+chip-op-matrix-weights = Matrix weights
+chip-op-linear-projection = Linear projection
+chip-graph-output-width = Output width
+chip-graph-input-width = Input width
