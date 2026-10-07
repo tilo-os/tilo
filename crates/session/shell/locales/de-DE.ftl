@@ -2470,6 +2470,8 @@ session-diagnostics-gpu_stages = Zeiten der GPU-Verarbeitungsschritte erfassen
 session-diagnostics-gpu_timestamps = GPU-Zeitstempel aktivieren
 session-diagnostics-gpu_dispatch_timestamps = Zeitstempel der GPU-Aufträge aktivieren
 session-diagnostics-dispatch-requires-timestamps = Die Zeitdiagnose der GPU-Aufträge benötigt GPU-Zeitstempel.
+
+device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
 search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
 search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
 search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung

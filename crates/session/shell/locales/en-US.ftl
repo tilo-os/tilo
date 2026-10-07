@@ -2467,6 +2467,8 @@ session-diagnostics-gpu_stages = Record GPU stage timing
 session-diagnostics-gpu_timestamps = Enable GPU timestamps
 session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
 session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
+
+device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
 search-action-activity-acknowledge = Acknowledge viewed activity
 search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
 search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment

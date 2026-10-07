@@ -11,6 +11,8 @@ import time
 import unittest
 from unittest import mock
 
+from git_fixture import isolated_git_environment
+
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -23,15 +25,22 @@ SPEC = importlib.util.spec_from_file_location(
 history = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(history)
 
-
 class AppReleaseHistory(unittest.TestCase):
     def setUp(self):
         if not hasattr(self, "operations"):
             self.operations = []
+            self.git_commands, self.git_regions = {}, {}
             self.started, self.cpu = time.perf_counter(), os.times()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        trace = self.root / "git-phases.json"
+        environment = mock.patch.dict(
+            os.environ, isolated_git_environment(GIT_TRACE2_EVENT=str(trace)), clear=True
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.addCleanup(self.collect_git_phases, trace)
         self.source = self.root / "source"
         self.remote = self.root / "remote.git"
         self.command("git", "init", "-q", "-b", "main", str(self.source))
@@ -54,6 +63,7 @@ class AppReleaseHistory(unittest.TestCase):
             })
 
     def tearDown(self):
+        self.doCleanups()
         ended = os.times()
         print("Git fixture subprocess timings: " + json.dumps({
             "test": self.id(),
@@ -64,6 +74,35 @@ class AppReleaseHistory(unittest.TestCase):
             "measured_command_wall_seconds": sum(item["wall_seconds"] for item in self.operations),
             "slowest": sorted(self.operations, key=lambda item: item["wall_seconds"], reverse=True)[:5],
         }))
+        print("Git fixture inclusive phases: " + json.dumps({
+            "test": self.id(),
+            "commands": [{"name": name, **numbers} for name, numbers in
+                         sorted(self.git_commands.items(), key=lambda item: item[1]["seconds"], reverse=True)],
+            "regions": [{"category": key[0], "label": key[1], "nesting": key[2], **numbers}
+                        for key, numbers in sorted(self.git_regions.items(),
+                                                   key=lambda item: item[1]["seconds"], reverse=True)[:12]],
+        }))
+
+    def collect_git_phases(self, trace):
+        commands = {}
+        completed = 0
+        for line in trace.read_text().splitlines():
+            event = json.loads(line)
+            if event["event"] == "cmd_name":
+                commands[event["sid"]] = event["name"]
+            elif event["event"] in ("exit", "region_leave"):
+                if event["event"] == "exit":
+                    completed += 1
+                    table, key, seconds = self.git_commands, commands[event["sid"]], event["t_abs"]
+                else:
+                    table = self.git_regions
+                    key = (event["category"], event["label"], event["nesting"])
+                    seconds = event["t_rel"]
+                numbers = table.setdefault(key, {"count": 0, "seconds": 0, "max_seconds": 0})
+                numbers["count"] += 1
+                numbers["seconds"] += seconds
+                numbers["max_seconds"] = max(numbers["max_seconds"], seconds)
+        self.assertGreater(completed, 0, "Git phase profiling must observe completed commands")
 
     def git(self, repository, *args):
         return self.command("git", "-C", str(repository), *args)
@@ -115,6 +154,41 @@ class AppReleaseHistory(unittest.TestCase):
             parent = commit
         self.assertEqual(self.git(self.source, "rev-parse", "HEAD"), commits[-1])
         self.assertEqual((self.source / "file").read_text(), messages[-1])
+
+    def test_temporary_histories_ignore_and_restore_inherited_repository_environment(self):
+        unrelated = self.commit("unrelated")
+        objects = self.source / ".git/objects"
+        inherited_cases = [
+            {"GIT_ALTERNATE_OBJECT_DIRECTORIES": str(objects)},
+            {"GIT_OBJECT_DIRECTORY": str(objects), "GIT_DIR": str(self.source / ".git"),
+             "GIT_WORK_TREE": str(self.source), "GIT_INDEX_FILE": str(self.source / ".git/index"),
+             "GIT_COMMON_DIR": str(self.source / ".git")},
+        ]
+        before = {path.relative_to(objects): path.read_bytes()
+                  for path in objects.rglob("*") if path.is_file()}
+        for inherited in inherited_cases:
+            with self.subTest(variables=list(inherited)), mock.patch.dict(os.environ, inherited):
+                fixture = AppReleaseHistory()
+                try:
+                    fixture.setUp()
+                    self.assertNotEqual(subprocess.run(
+                        ["git", "-C", str(fixture.source), "cat-file", "-e", unrelated],
+                        capture_output=True,
+                    ).returncode, 0, "temporary history must not read unrelated cached objects")
+                    base, head = fixture.commit_sequence(["independent-base", "independent-head"])
+                    fixture.publish()
+                    clone = fixture.shallow_clone("main")
+                    self.assertEqual(fixture.git(clone, "rev-list", "--count", "HEAD"), "1")
+                    self.assertEqual(history.prepare_comparison(clone, base, head, (2,)), base)
+                    self.assertEqual(fixture.git(clone, "rev-parse", "HEAD"), head)
+                    self.assertTrue((fixture.source / ".git/objects" / head[:2] / head[2:]).is_file())
+                finally:
+                    fixture.doCleanups()
+                self.assertEqual({variable: os.environ[variable] for variable in inherited}, inherited)
+        self.assertEqual(self.git(self.source, "rev-parse", "HEAD"), unrelated)
+        self.assertEqual((self.source / "file").read_text(), "unrelated")
+        self.assertEqual({path.relative_to(objects): path.read_bytes()
+                          for path in objects.rglob("*") if path.is_file()}, before)
 
     def publish(self):
         self.command("git", "clone", "-q", "--bare", str(self.source), str(self.remote))
