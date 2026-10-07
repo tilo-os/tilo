@@ -4859,6 +4859,64 @@ impl FloatingSurfaceProvider for ChatApp {
         self.hits.extend(hits);
     }
 
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        let desktop = self.desktop_floating_bounds();
+        if let Some(surface) = self
+            .agent_surfaces
+            .values_mut()
+            .find(|surface| surface.id == id)
+        {
+            if !matches!(
+                surface.placement.attachment(),
+                ui::floating_surface::Attachment::Desktop { .. }
+            ) && !surface.placement.is_return_pending()
+            {
+                return false;
+            }
+            surface.view.perms = self.perms.clone();
+            surface.view.room_agents.clone_from(&self.room_agents);
+            surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_colors.clone_from(&self.room_colors);
+            surface.view.rect = surface.placement.rect(surface.source, desktop);
+            let content_rect = surface.view.rect;
+            return ui::floating_surface::paint_app_owned_content(
+                scene,
+                transform,
+                content_rect,
+                theme,
+                |scene| {
+                    surface
+                        .view
+                        .draw(scene, transform, text_renderer, theme, presence);
+                    true
+                },
+            );
+        }
+        if id != format!("chat-call:{}", self.call.channel)
+            || !self.call.active
+            || self.call.expanded
+            || (!self.call.placement.is_return_pending()
+                && !matches!(
+                    self.call.placement.attachment(),
+                    ui::floating_surface::Attachment::Desktop { .. }
+                ))
+        {
+            return false;
+        }
+        let mut hits = Vec::new();
+        self.draw_live_huddle(scene, transform, text_renderer, theme, presence, &mut hits);
+        self.hits.extend(hits);
+        true
+    }
+
     fn floating_surface_presentations(
         &self,
     ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {

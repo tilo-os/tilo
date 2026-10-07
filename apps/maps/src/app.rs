@@ -4443,6 +4443,32 @@ impl FloatingSurfaceProvider for MapsApp {
         }
     }
 
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _: &PresenceCtx,
+    ) -> bool {
+        let Some(active) = self.active_navigation_request() else {
+            return false;
+        };
+        if active.id != id
+            || self.model.route.is_none()
+            || (!self.navigation_placement.is_return_pending()
+                && !matches!(
+                    self.navigation_placement.attachment(),
+                    ui::floating_surface::Attachment::Desktop { .. }
+                ))
+        {
+            return false;
+        }
+        self.draw_navigation_surface(scene, transform, text_renderer, theme);
+        true
+    }
+
     fn floating_surface_presentations(
         &self,
     ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {

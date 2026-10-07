@@ -619,6 +619,23 @@ pub trait FloatingSurfaceProvider {
     ) {
     }
 
+    /// Paint exactly one app-owned presentation into its native window.
+    ///
+    /// Native secondary windows are independent buffers. Painting the plural
+    /// overlay pass into each one can duplicate sibling surfaces and lets
+    /// content escape the window's own clip.
+    fn draw_floating_surface(
+        &mut self,
+        _id: &str,
+        _scene: &mut vello::Scene,
+        _transform: vello::kurbo::Affine,
+        _text_renderer: &mut crate::text_render::TextRenderer,
+        _theme: &crate::theme::Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        false
+    }
+
     /// Desktop-space presentations that need a native secondary window.
     fn floating_surface_presentations(
         &self,
@@ -2112,6 +2129,15 @@ pub trait FloatingSurfaceWidgetExt {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     );
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
     fn floating_surface_presentations(
         &self,
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation>;
@@ -2191,6 +2217,20 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
         }
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).is_some_and(|provider| {
+            provider.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+        })
     }
 
     fn floating_surface_presentations(

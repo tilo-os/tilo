@@ -1457,6 +1457,23 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(widget) => {
+                widget.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+            }
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+        }
+    }
+
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
         if let TileContent::App(widget) = &mut self.content {
             widget.set_floating_surface_bounds(bounds);

@@ -7021,12 +7021,134 @@ mod tests {
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
 
+    fn native_agent_float_scene(
+        width: u32,
+        height: u32,
+        theme: &ui::theme::Theme,
+    ) -> (vello::Scene, vello::kurbo::Rect) {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        render_frame_with_theme(&mut app, f64::from(width), f64::from(height), theme);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Opaque native draft");
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes the native surface");
+        let rect = request
+            .initial_rect
+            .expect("native content has exact geometry");
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: request.id.clone(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+                content_rect: ui::floating_surface::protocol_rect_array(rect),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: request.id.clone(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+            },
+        );
+        let presentation =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&app)
+                .into_iter()
+                .find(|presentation| presentation.id == request.id)
+                .expect("the adopted native presentation is current");
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        assert!(
+            !ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+                &mut app,
+                "chat-conversation:other",
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                theme,
+                &ui::presence::PresenceCtx::empty(),
+            ),
+            "a sibling native window cannot borrow these pixels"
+        );
+        assert!(ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+            &mut app,
+            &request.id,
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
+        ));
+        (scene, presentation.content_rect)
+    }
+
     fn stage_agent_work(app: &mut ChatApp, doc: &mut AutoCommit) {
         for (author, action) in crate::resource::agent_work_scenario() {
             crate::actions::apply_as(doc, author, &action).unwrap();
         }
         app.land(doc);
         app.stage_scenario("agent-work");
+    }
+
+    #[test]
+    fn native_agent_conversation_paints_an_opaque_clipped_window_ground() {
+        use ui::offscreen::OffscreenRenderer;
+        use vello::peniko::Color;
+
+        let output = std::env::var_os("TILO_CHAT_NATIVE_FLOAT_SHOTS").map(std::path::PathBuf::from);
+        if let Some(output) = &output {
+            std::fs::create_dir_all(output).unwrap();
+        }
+        for (size, width, height) in [("normal", 1600_u32, 900_u32), ("compact", 960, 720)] {
+            for (name, theme) in [
+                ("light", ui::theme::Theme::light()),
+                ("dark", ui::theme::Theme::dark()),
+                (
+                    "high-contrast-200",
+                    ui::theme::Theme::high_contrast().with_text_scale(2.0),
+                ),
+            ] {
+                let (scene, content) = native_agent_float_scene(width, height, &theme);
+                let mut renderer = OffscreenRenderer::new(width, height);
+                let transparent = renderer.render_rgba(&scene);
+                let inside = OffscreenRenderer::sample(
+                    &transparent,
+                    width,
+                    u32::try_from(ui::num::usize_of_f64(content.center().x)).unwrap(),
+                    u32::try_from(ui::num::usize_of_f64(content.center().y)).unwrap(),
+                );
+                assert_eq!(inside.3, u8::MAX, "{size} {name} content is opaque");
+                assert!(
+                    content.intersect(vello::kurbo::Rect::new(
+                        0.0,
+                        0.0,
+                        f64::from(width),
+                        f64::from(height),
+                    )) == content,
+                    "{size} {name} content stays within the capture"
+                );
+                if let Some(output) = &output {
+                    renderer.render_png(
+                        &scene,
+                        Color::from_rgb8(0x35, 0x1d, 0x3f),
+                        output.join(format!("native-float-{size}-{name}.png")),
+                    );
+                }
+            }
+        }
     }
 
     #[test]

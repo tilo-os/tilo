@@ -479,6 +479,67 @@ struct NativeFloatingWindow {
     focused: bool,
 }
 
+/// Resolve the drawable presentation region inside a transparent native
+/// floating allocation. The intersection is deliberate: a presentation
+/// update and a platform resize can cross for one frame, but neither may paint
+/// outside the buffer that is actually being submitted.
+fn native_floating_window_clip(window: KurboRect, presentation: KurboRect) -> Option<KurboRect> {
+    if !window.x0.is_finite()
+        || !window.y0.is_finite()
+        || !window.x1.is_finite()
+        || !window.y1.is_finite()
+        || !presentation.x0.is_finite()
+        || !presentation.y0.is_finite()
+        || !presentation.x1.is_finite()
+        || !presentation.y1.is_finite()
+        || window.width() <= 0.0
+        || window.height() <= 0.0
+        || presentation.width() <= 0.0
+        || presentation.height() <= 0.0
+    {
+        return None;
+    }
+    let clipped = window.intersect(presentation);
+    (clipped.width() > 0.0 && clipped.height() > 0.0).then_some(clipped)
+}
+
+#[cfg(test)]
+mod native_floating_paint_tests {
+    use super::native_floating_window_clip;
+    use vello::kurbo::Rect;
+
+    #[test]
+    fn content_ground_is_clipped_to_the_submitted_native_window() {
+        let window = Rect::new(-16.0, 120.0, 544.0, 480.0);
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(0.0, 120.0, 520.0, 480.0)),
+            Some(Rect::new(0.0, 120.0, 520.0, 480.0))
+        );
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(-32.0, 100.0, 560.0, 500.0)),
+            Some(window),
+            "a crossing presentation update cannot paint beyond this buffer"
+        );
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(600.0, 120.0, 700.0, 220.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn malformed_content_never_becomes_an_opaque_desktop_spill() {
+        let window = Rect::new(0.0, 0.0, 560.0, 360.0);
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(0.0, 0.0, f64::NAN, 360.0)),
+            None
+        );
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(0.0, 0.0, 0.0, 360.0)),
+            None
+        );
+    }
+}
+
 fn forward_native_surface_focus(root: &mut dyn Widget, surface: Option<&str>, event: &WindowEvent) {
     if let WindowEvent::Focused(focused) = event {
         root.on_floating_surface_focus_changed(surface, *focused);
@@ -1732,14 +1793,39 @@ impl AppHandler {
         let scale = surface.window.scale_factor();
         let transform = crate::scale::composite_transform(scale)
             .pre_translate((-surface.desktop_rect.x0, -surface.desktop_rect.y0).into());
+        let presentation = app
+            .root_widget
+            .floating_surface_presentations()
+            .into_iter()
+            .find(|presentation| presentation.id == surface.id);
+        let Some(window_clip) = presentation.and_then(|presentation| {
+            native_floating_window_clip(surface.desktop_rect, presentation.window_rect)
+        }) else {
+            tracing::warn!(id = %surface.id, "floating surface has no valid content region");
+            return false;
+        };
         let secrets = crate::secret_paint::SecretPaint::begin();
-        app.root_widget.draw_floating_surfaces(
+        use vello::peniko::{BlendMode, Fill};
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &window_clip,
+        );
+        let drawn = app.root_widget.draw_floating_surface(
+            &surface.id,
             &mut scene,
             transform,
             &mut app.text_renderer,
             &app.theme,
             &app.presence_ctx,
         );
+        scene.pop_layer();
+        if !drawn {
+            tracing::warn!(id = %surface.id, "floating surface content is no longer available");
+            return false;
+        }
         // Floating action presence is not projected yet, but an earlier frame
         // under this logical surface must never remain clickable after redraw.
         let marker_surface = app

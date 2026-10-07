@@ -2498,6 +2498,30 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
             },
         );
         assert!(!a.navigation_placement.is_desktop_adopted());
+        let mut native_scene = Scene::new();
+        let mut native_text = TextRenderer::new();
+        assert!(ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+            &mut a,
+            &request.id,
+            &mut native_scene,
+            Affine::IDENTITY,
+            &mut native_text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        ));
+        assert!(!native_scene.encoding().is_empty());
+        assert!(
+            !ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+                &mut a,
+                "maps-navigation:stale",
+                &mut native_scene,
+                Affine::IDENTITY,
+                &mut native_text,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            ),
+            "a stale native window cannot borrow the current navigation pixels"
+        );
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut a,
             &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {

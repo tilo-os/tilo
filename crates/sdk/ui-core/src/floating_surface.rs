@@ -101,6 +101,40 @@ pub fn paint_material(
     crate::backdrop::fill(scene, transform, shape, material, theme);
 }
 
+/// Paint one interactive app-owned native surface on the ordinary opaque
+/// window ground, clipped to its authenticated content region.
+///
+/// The native window allocation remains transparent because `window_rect`
+/// may later include app-drawn shadows around `content_rect`. Only pixels
+/// inside the content contract receive the opaque ground.
+pub fn paint_app_owned_content(
+    scene: &mut vello::Scene,
+    transform: Affine,
+    content_rect: Rect,
+    theme: &crate::theme::Theme,
+    draw: impl FnOnce(&mut vello::Scene) -> bool,
+) -> bool {
+    use vello::peniko::{BlendMode, Fill};
+
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        transform,
+        &content_rect,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &content_rect,
+    );
+    let drawn = draw(scene);
+    scene.pop_layer();
+    drawn
+}
+
 /// Version of the app ↔ shell wire contract on the shell-ui channel:
 /// floating-surface lifecycle and the window's appearance. Geometry is
 /// encoded as plain logical-pixel arrays rather than renderer types so
@@ -1645,6 +1679,25 @@ fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_owned_content_ground_is_opaque_inside_and_transparent_outside_its_clip() {
+        let theme = crate::theme::Theme::dark();
+        let content = Rect::new(10.0, 12.0, 70.0, 68.0);
+        let mut scene = vello::Scene::new();
+        assert!(paint_app_owned_content(
+            &mut scene,
+            Affine::IDENTITY,
+            content,
+            &theme,
+            |_| true,
+        ));
+        let pixels = crate::offscreen::OffscreenRenderer::new(80, 80).render_rgba(&scene);
+        let inside = crate::offscreen::OffscreenRenderer::sample(&pixels, 80, 40, 40);
+        let outside = crate::offscreen::OffscreenRenderer::sample(&pixels, 80, 4, 4);
+        assert_eq!(inside.3, u8::MAX, "app content cannot expose the desktop");
+        assert_eq!(outside.3, 0, "shadow margins remain transparent");
+    }
 
     #[test]
     fn floating_roles_preserve_wire_identity_and_app_host_classification() {

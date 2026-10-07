@@ -548,6 +548,24 @@ mod component_adapter {
             }
         }
 
+        fn draw_floating_surface(
+            &mut self,
+            id: &str,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text_renderer: &mut crate::text_render::TextRenderer,
+            theme: &crate::theme::Theme,
+            presence: &crate::presence::PresenceCtx,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component.root.as_deref_mut().is_some_and(|root| {
+                root.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+            })
+        }
+
         fn floating_surface_presentations(
             &self,
         ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
