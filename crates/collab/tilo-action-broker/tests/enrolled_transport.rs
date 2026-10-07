@@ -698,6 +698,19 @@ fn running_fixture_join(empty: bool, gate_join: bool) -> Qualification<RunningFi
     running_fixture_options(empty, gate_join, None)
 }
 
+fn running_broker(
+    root: &Path,
+    native: &Arc<native::Native>,
+    mode: Option<&str>,
+    key: &ed25519_dalek::SigningKey,
+) -> Qualification<Broker> {
+    if let Some(mode) = mode.filter(|mode| mode.starts_with("steps")) {
+        steps::configured_broker(root, native, mode, key)
+    } else {
+        broker_with_document_obligation(root, native, mode.is_some())
+    }
+}
+
 fn running_fixture_options(
     empty: bool,
     gate_join: bool,
@@ -706,11 +719,7 @@ fn running_fixture_options(
     let root = tempfile::tempdir()?;
     let (native, key, certificate) = native::installed(root.path())?;
     let task = queued(&native, &key, &certificate)?;
-    let broker = if sdk_mode.is_some_and(|mode| mode.starts_with("steps")) {
-        steps::configured_broker(root.path(), &native, sdk_mode.ok_or("step mode absent")?)?
-    } else {
-        broker_with_document_obligation(root.path(), &native, sdk_mode.is_some())?
-    };
+    let broker = running_broker(root.path(), &native, sdk_mode, &key)?;
     let state = broker
         .fanout
         .capnp_state()
@@ -797,7 +806,7 @@ fn running_fixture_options(
         task,
         certificate,
         key,
-        _root: root,
+        root,
     })
 }
 
@@ -811,7 +820,7 @@ struct RunningFixture {
     task: String,
     certificate: tilo_user_identity::DeviceCert,
     key: ed25519_dalek::SigningKey,
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
 }
 impl RunningFixture {
     fn accept_and_progress(&mut self) -> Qualification<()> {
@@ -1054,5 +1063,7 @@ fn require_eq<T: PartialEq<U> + std::fmt::Debug, U: std::fmt::Debug>(
     Ok(())
 }
 
+#[path = "enrolled/source_projection.rs"]
+mod source_projection;
 #[path = "enrolled/steps.rs"]
 mod steps;

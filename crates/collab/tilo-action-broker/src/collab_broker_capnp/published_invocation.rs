@@ -377,6 +377,30 @@ impl OriginalInvocation {
         }
         Ok(())
     }
+    pub(super) fn source_origin(
+        &self,
+        state: &CapnpBrokerState,
+    ) -> Result<(InvocationCaller, tilo_actions::ActionContext), String> {
+        self.check_execution_frontier(state)?;
+        self.check_lifecycle()?;
+        let pending = state
+            .pending_invocations
+            .lock()
+            .map_err(|_| "source parent invocation registry unavailable")?;
+        let original = pending
+            .get(&self.data.request.wire_id)
+            .filter(|pending| pending.peer_id == self.peer)
+            .filter(|pending| {
+                pending
+                    .original
+                    .as_ref()
+                    .is_some_and(|original| Arc::ptr_eq(original, &self.data))
+            })
+            .ok_or("source parent original invocation changed or retired")?;
+        let context = original.context.clone();
+        drop(pending);
+        Ok((self.data.caller.clone(), context))
+    }
     pub fn request(&self) -> &PublishedInvocationRequest {
         &self.data.request
     }

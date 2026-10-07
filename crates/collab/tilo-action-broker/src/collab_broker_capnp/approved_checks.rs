@@ -3,6 +3,8 @@ use super::{Arc, CapnpBrokerState, CapnpChannelHandle, OriginalInvocation};
 use runtime_collab::approved_checks::{Receipt, Request};
 use std::collections::{HashMap, HashSet};
 use std::sync::Weak;
+mod source_projection;
+pub use source_projection::{SourceBinding, SourceObservation};
 
 /// No public constructor or deserializer: only this broker mints custody.
 #[derive(Clone)]

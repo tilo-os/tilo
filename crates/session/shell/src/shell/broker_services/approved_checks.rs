@@ -10,6 +10,8 @@ use std::sync::{Arc, OnceLock};
 use tilo_action_broker::collab_broker_capnp::{ApprovedCheckContext, ApprovedCheckServices};
 use ush::approved_checks::{ApprovedCheck, ApprovedChecks, CheckOutcome, ProjectBinding};
 
+mod source_projection;
+
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +26,8 @@ struct Project {
     resource_identity: ResourceIdentity,
     artifacts: PathBuf,
     checks: Vec<ApprovedCheck>,
+    #[serde(default)]
+    source_projections: Vec<source_projection::Definition>,
 }
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -37,6 +41,8 @@ struct Registered {
     binding: ProjectBinding,
     artifacts: PathBuf,
     checks: ApprovedChecks,
+    templates: Vec<ApprovedCheck>,
+    projections: Vec<source_projection::Definition>,
 }
 impl Registered {
     fn matches(
@@ -148,6 +154,8 @@ fn load(path: &Path) -> Result<Definitions, String> {
         if !metadata.is_dir() || metadata.uid() != effective_uid() || metadata.mode() & 0o077 != 0 {
             return Err("approved private artifacts directory is not owned/private".into());
         }
+        validate_projections(&project)?;
+        let templates = project.checks.clone();
         let checks = ApprovedChecks::new(binding.clone(), project.checks)?;
         definitions.push(Registered {
             app_id: project.app_id,
@@ -155,9 +163,30 @@ fn load(path: &Path) -> Result<Definitions, String> {
             binding,
             artifacts: project.artifacts,
             checks,
+            templates,
+            projections: project.source_projections,
         });
     }
     Ok(Definitions(definitions))
+}
+
+fn validate_projections(project: &Project) -> Result<(), String> {
+    if project.source_projections.len() > project.checks.len() {
+        return Err("too many source projection registrations".into());
+    }
+    let mut projection_ids = std::collections::HashSet::new();
+    for projection in &project.source_projections {
+        let template = project
+            .checks
+            .iter()
+            .find(|check| check.id == projection.check_id)
+            .ok_or("source projection references an unapproved check")?;
+        if !projection_ids.insert(projection.check_id.clone()) {
+            return Err("duplicate source projection check ID".into());
+        }
+        projection.validate(template)?;
+    }
+    Ok(())
 }
 
 fn argument_path(
@@ -266,16 +295,41 @@ impl ApprovedCheckServices for NativeChecks {
                 )
             })
             .ok_or("no approved checks for this exact project resource")?;
-        let observed = registered
-            .checks
-            .run(&registered.binding, context.check_id(), || {
-                context.recheck()?;
-                self.host_current(&registered.binding)
-            })?;
+        let prepared = registered
+            .projections
+            .iter()
+            .find(|projection| projection.check_id == context.check_id())
+            .map(|projection| {
+                let template = registered
+                    .templates
+                    .iter()
+                    .find(|check| check.id == context.check_id())
+                    .ok_or("source projection check template unavailable")?;
+                self.host_current(&registered.binding)?;
+                projection.prepare(context, template, &registered.artifacts)
+            })
+            .transpose()?;
+        let checks = prepared
+            .as_ref()
+            .map_or(&registered.checks, |prepared| &prepared.checks);
+        if let Some(prepared) = &prepared {
+            prepared.verify_source()?;
+        }
+        let observed = checks.run(&registered.binding, context.check_id(), || {
+            if let Some(prepared) = &prepared {
+                prepared.recheck()?;
+            }
+            context.recheck()?;
+            self.host_current(&registered.binding)
+        })?;
+        if let Some(prepared) = &prepared {
+            prepared.verify_source()?;
+        }
         let artifact_value = serde_json::json!({
             "resource_identity": registered.resource_identity,
             "accepted_opaque_resource": context.resource(),
             "observed": observed,
+            "source_projection": prepared.as_ref().map(|prepared| &prepared.provenance),
         });
         let bytes = serde_json::to_vec(&artifact_value).map_err(|error| error.to_string())?;
         let artifact_sha256 = hex::encode(Sha256::digest(&bytes));
@@ -300,6 +354,9 @@ impl ApprovedCheckServices for NativeChecks {
                 resource: context.resource().into(),
             },
             artifact_sha256,
+            candidate_source_sha256: prepared
+                .as_ref()
+                .map(|prepared| prepared.source_sha256.clone()),
             config_sha256: observed.config_sha256,
             runtime_binary_sha256: observed.runtime_binary_sha256,
             supervisor_source_sha256: observed.supervisor_source_sha256,
@@ -317,6 +374,10 @@ impl ApprovedCheckServices for NativeChecks {
             stdout: diagnostic(observed.stdout.as_ref(), observed.stdout_sha256),
             stderr: diagnostic(observed.stderr.as_ref(), observed.stderr_sha256),
         };
+        if let Some(prepared) = &prepared {
+            prepared.recheck()?;
+        }
+        drop(prepared);
         receipt.encode()?;
         Ok(receipt)
     }

@@ -109,6 +109,9 @@ pub struct Receipt {
     pub check_id: String,
     pub binding: Binding,
     pub artifact_sha256: String,
+    /// Actual source inventory identity; complete provenance remains in the private artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_source_sha256: Option<String>,
     pub config_sha256: String,
     pub runtime_binary_sha256: String,
     pub supervisor_source_sha256: String,
@@ -142,6 +145,10 @@ impl Receipt {
             ]
             .into_iter()
             .all(|v| digest(v))
+            && self
+                .candidate_source_sha256
+                .as_ref()
+                .is_none_or(|value| digest(value))
             && [&self.stdout, &self.stderr].into_iter().all(|v| {
                 v.preview.len() <= MAX_PREVIEW_BYTES
                     && v.sha256.as_ref().is_none_or(|s| digest(s))
@@ -223,6 +230,7 @@ mod tests {
                 resource: "repository".into(),
             },
             artifact_sha256: "a".repeat(64),
+            candidate_source_sha256: None,
             config_sha256: "b".repeat(64),
             runtime_binary_sha256: "c".repeat(64),
             supervisor_source_sha256: "d".repeat(64),
@@ -242,6 +250,36 @@ mod tests {
                 truncated: false,
             },
         }
+    }
+
+    #[test]
+    fn approved_check_candidate_identity_preserves_legacy_none_and_refuses_ambiguous_hashes() {
+        let mut value = receipt();
+        let legacy = value.encode().unwrap();
+        // Golden pre-extension wire bytes: optional None must preserve field omission and order.
+        assert_eq!(legacy.as_slice(), br#"{"version":1,"invocation":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","check_id":"regression","binding":{"app_id":"so.tilo.git","workspace":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","host":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],"record":"project","resource":"repository"},"artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","runtime_binary_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","supervisor_source_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","outcome":"exited","exit_code":1,"signal":null,"elapsed_ms":34,"cleanup_observed":true,"stdout":{"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","preview":"failed regression","truncated":false},"stderr":{"sha256":null,"preview":"","truncated":false}}"#);
+        let old: serde_json::Value = serde_json::from_slice(&legacy).unwrap();
+        assert!(
+            !old.as_object()
+                .unwrap()
+                .contains_key("candidate_source_sha256")
+        );
+        assert_eq!(
+            Receipt::decode(&legacy).unwrap().candidate_source_sha256,
+            None
+        );
+        assert_eq!(Receipt::decode(&legacy).unwrap().encode().unwrap(), legacy);
+        value.candidate_source_sha256 = Some("f".repeat(64));
+        let bytes = value.encode().unwrap();
+        assert_eq!(Receipt::decode(&bytes).unwrap(), value);
+        for malformed in ["F".repeat(64), "f".repeat(63), "g".repeat(64)] {
+            value.candidate_source_sha256 = Some(malformed);
+            assert!(value.encode().is_err());
+        }
+        let duplicate = String::from_utf8(bytes).unwrap().replacen(
+            "\"candidate_source_sha256\":",
+            "\"candidate_source_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"candidate_source_sha256\":", 1);
+        assert!(Receipt::decode(duplicate.as_bytes()).is_err());
     }
 
     #[test]

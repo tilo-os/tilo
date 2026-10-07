@@ -8,6 +8,7 @@ pub(super) fn configured_broker(
     root: &Path,
     native: &Arc<native::Native>,
     mode: &str,
+    key: &ed25519_dalek::SigningKey,
 ) -> Qualification<Broker> {
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
     let clock = tilo_action_broker::peer_actions::OwnerPolicyClock::new()?.new_origin();
@@ -19,7 +20,10 @@ pub(super) fn configured_broker(
     let configured = tilo_action_broker::collab_broker::spawn_with_services(
         root.join("control.sock"),
         Some(native.clone()),
-        PeerPublisher::with_optional_owner_commit(None, native.clone()),
+        PeerPublisher::with_optional_owner_commit(
+            None,
+            super::source_projection::owner_commit(native, key, mode)?,
+        ),
         Some(&tilo_action_broker::peer_actions::NativePeerBrokerConfig {
             journal_root: root.join("invocation-journal"),
             certificate_authority: authority,
@@ -36,6 +40,7 @@ pub(super) fn configured_broker(
                 failed: Arc::new(AtomicBool::new(false)),
             })),
             native_certificates: Some(native.clone()),
+            approved_checks: super::source_projection::service(root, native, mode),
             ..Default::default()
         },
         Arc::new(Mutex::new(BrokerChannels::default())),
@@ -241,10 +246,10 @@ fn descriptor() -> Qualification<runtime_collab::ExportedAction> {
     })
 }
 
-struct Target {
-    peer: u64,
+pub(super) struct Target {
+    pub(super) peer: u64,
     quit: Arc<AtomicBool>,
-    count: Arc<AtomicUsize>,
+    pub(super) count: Arc<AtomicUsize>,
     release: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<Result<(), String>>>,
 }
@@ -253,13 +258,28 @@ impl Target {
         Self::held(fixture, false)
     }
     fn held(fixture: &RunningFixture, held: bool) -> Qualification<Self> {
-        let route = CrdtRoute::app(
-            "so.tilo.step-fixture-reader",
-            fixture.native.room.to_string(),
-        );
-        let stream = fixture
-            .state
-            .connect_local_worker(route.clone(), &fixture.certificate)?;
+        Self::configured(fixture, held, false, false)
+    }
+    pub(super) fn source_check(fixture: &RunningFixture, check: bool) -> Qualification<Self> {
+        Self::configured(fixture, false, check, true)
+    }
+    fn connection(
+        fixture: &RunningFixture,
+        route: &CrdtRoute,
+        check: bool,
+    ) -> Qualification<(UnixStream, Vec<u8>)> {
+        let stream = if check {
+            // The check host requires the actual retained worker registration.
+            // Ordinary reader fixture modes retain their existing descriptor path.
+            fixture
+                .state
+                .connect_local_worker_with_authorizer(route.clone(), &fixture.certificate)?
+                .0
+        } else {
+            fixture
+                .state
+                .connect_local_worker(route.clone(), &fixture.certificate)?
+        };
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: route.cluster_id.clone(),
             device_certificate: serde_json::to_vec(&fixture.certificate)?,
@@ -272,6 +292,23 @@ impl Target {
                 .to_vec(),
         }
         .encode()?;
+        Ok((stream, presentation))
+    }
+    fn configured(
+        fixture: &RunningFixture,
+        held: bool,
+        check: bool,
+        projection: bool,
+    ) -> Qualification<Self> {
+        let route = CrdtRoute::app(
+            if check {
+                "so.tilo.step-fixture-check"
+            } else {
+                "so.tilo.step-fixture-reader"
+            },
+            fixture.native.room.to_string(),
+        );
+        let (stream, presentation) = Self::connection(fixture, &route, check)?;
         let quit = Arc::new(AtomicBool::new(false));
         let count = Arc::new(AtomicUsize::new(0));
         let release = Arc::new(AtomicBool::new(!held));
@@ -297,7 +334,11 @@ impl Target {
                 let client = runtime_collab::CollabClient::from_raw(raw);
                 let channel = client.join_channel(&route.channel_key(), &presentation).await
                     .map_err(|error| error.to_string())?;
-                channel.publish_actions(&route.app_id, &[descriptor().map_err(|error| error.to_string())?])
+                let mut operation = if check { super::source_projection::descriptor() } else { descriptor() }.map_err(|error| error.to_string())?;
+                if projection && !check { let mut contract: tilo_actions::ActionContract = serde_json::from_str(&operation.contract_json).map_err(|error| error.to_string())?;
+                    contract.tags.push(tilo_actions::DOCUMENT_READ_TAG.into());
+                    operation.contract_json = serde_json::to_string(&contract).map_err(|error| error.to_string())?; }
+                channel.publish_actions(&route.app_id, &[operation])
                     .await.map_err(|error| error.to_string())?;
                 let invocations = channel.subscribe_stable_invocations().await.map_err(|error| error.to_string())?;
                 let peer = state.published_surfaces().iter().find(|surface| surface.app_id == route.app_id)
@@ -329,13 +370,13 @@ impl Target {
                         }
                         tokio::time::sleep(Duration::from_millis(5)).await;
                     }
-                    let update = tilo_actions::InvocationUpdate::Succeeded {
+                    let update = if check { super::source_projection::check_reply(&channel, &invocation).await? } else { tilo_actions::InvocationUpdate::Succeeded {
                         invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(invocation.invocation_uuid)),
                         output: tilo_actions::ActionOutput {
                             value: Some(serde_json::json!("retained private tool result")),
                             ..Default::default()
                         },
-                    };
+                    }};
                     channel.update_invocation(invocation.id,
                         &serde_json::to_string(&update).map_err(|error| error.to_string())?)
                         .await.map_err(|error| error.to_string())?;
@@ -357,7 +398,7 @@ impl Target {
             thread: Some(thread),
         })
     }
-    fn stop(&mut self) -> Qualification<()> {
+    pub(super) fn stop(&mut self) -> Qualification<()> {
         self.quit.store(true, Ordering::SeqCst);
         self.thread
             .take()
@@ -376,7 +417,7 @@ impl Drop for Target {
     }
 }
 
-fn grant_reader(fixture: &RunningFixture, allowed: bool) -> Qualification<()> {
+pub(super) fn grant_reader(fixture: &RunningFixture, allowed: bool) -> Qualification<()> {
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     let now = SystemTime::now();
     let messages = fixture
@@ -474,7 +515,7 @@ fn signed_native_step_actual_cross_app_handler_runs_once_under_committed_replay(
     fixture.stop().unwrap();
 }
 
-fn write_frame(stream: &mut UnixStream, value: &serde_json::Value) -> Qualification<()> {
+pub(super) fn write_frame(stream: &mut UnixStream, value: &serde_json::Value) -> Qualification<()> {
     let bytes = serde_json::to_vec(value)?;
     let length = u32::try_from(bytes.len())?;
     stream.write_all(&length.to_le_bytes())?;

@@ -11,10 +11,13 @@ use tilo_peer_state::{
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskFinish},
 };
 
+#[path = "enrolled_tasks/source_projection.rs"]
+mod source_projection;
 #[path = "enrolled_tasks/steps.rs"]
 pub(super) mod steps;
 #[path = "enrolled_tasks/task_actions.rs"]
 mod task_actions;
+pub(super) use source_projection::SourceOrigin;
 pub(super) use task_actions::{cancelled, start_action};
 
 const MAX_CONNECTIONS: usize = 32;

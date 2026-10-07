@@ -181,7 +181,9 @@ pub(super) fn exercise(
         },
     )?;
     frame(&mut model, &serde_json::json!({"stage":"progress"}))?;
-    if mode.starts_with("steps") {
+    if mode.starts_with("steps-source") {
+        source_action(&mut recipient, &mut model, &envelope.task)?;
+    } else if mode.starts_with("steps") {
         steps(&mut recipient, &mut model, &envelope.task, mode)?;
     }
     finish(&mut recipient, &mut model, &envelope.task, accepted, mode)
@@ -212,7 +214,7 @@ fn finish(
             request_id: 4,
             acceptance: accepted,
             sequence: 2,
-            update: if mode == "steps-prepare-ack-lost" {
+            update: if mode == "steps-prepare-ack-lost" || mode.starts_with("steps-source") {
                 runtime_collab::TaskRunUpdate::Failed {
                     message: "Uncertain prepared step".into(),
                 }
@@ -231,6 +233,45 @@ fn finish(
         &serde_json::json!({"stage":"finished", "terminal_lease_refused":true}),
     )?;
     gate(model, b'E')?;
+    Ok(())
+}
+
+fn source_action(
+    recipient: &mut Recipient,
+    model: &mut UnixStream,
+    task: &runtime_collab::TaskRunEnvelope,
+) -> Result<()> {
+    let control = step_control(model)?;
+    let peer = control
+        .get("peer")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("source check peer absent")?;
+    if !recipient.manager.send(CollabRequest::InvokeTaskAction {
+        request_id: 20,
+        invocation: tilo_actions::InvocationId::new(),
+        run_id: task.run_id,
+        lease: task.lease.clone(),
+        step: None,
+        peer_id: peer,
+        resource: "check:fixture".into(),
+        action: runtime_collab::approved_checks::ACTION_ID.into(),
+        arguments: serde_json::from_value(serde_json::json!({"check_id":"regression"}))?,
+    }) {
+        return Err("accepted SDK source check dispatch refused".into());
+    }
+    let event = recipient.take(|event| {
+        matches!(
+            event,
+            CollabEvent::TaskActionInvocationResult { request_id: 20, .. }
+        )
+    })?;
+    let CollabEvent::TaskActionInvocationResult { result, .. } = event else {
+        return Err("source check reply changed".into());
+    };
+    frame(
+        model,
+        &serde_json::json!({"stage":"source-action","result":result}),
+    )?;
     Ok(())
 }
 

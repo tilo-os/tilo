@@ -14,7 +14,9 @@
 //! fetch instead.
 
 mod approved_checks;
-pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
+pub use approved_checks::{
+    ApprovedCheckContext, ApprovedCheckServices, SourceBinding, SourceObservation,
+};
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
@@ -13230,6 +13232,8 @@ pub mod tests {
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
     include!("approved_check_rpc_tests.rs");
+    #[cfg(test)]
+    include!("source_projection_rpc_tests.rs");
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
