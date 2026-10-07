@@ -5031,6 +5031,8 @@ impl FrameHarness {
             &resources,
         );
         resources.extend(semantics.action_resources());
+        // Search belongs to this window host, including semantic callers.
+        resources.push(crate::search::search_resource());
         resources
     }
 
@@ -7635,7 +7637,18 @@ impl FrameHarness {
                 return Err(tilo_actions::DoorError::ConfirmationRequired);
             }
         };
-        let result = if controls::is_control_operation(spec) {
+        let result = if crate::search::request::is_search_address(address) {
+            let encoded = spec
+                .build_json(arguments)
+                .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+            let request = crate::search::SearchRequest::decode(&encoded.payload)
+                .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+            self.open_search(&request)
+                .map_err(tilo_actions::DoorError::Failed)?;
+            Ok(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ))
+        } else if controls::is_control_operation(spec) {
             self.invoke_control_action(address, arguments)
         } else {
             self.invoke_address(address, arguments, confirmed)
