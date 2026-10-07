@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Signed Files Open -> real selection/Paste -> edit -> native Undo/Redo.
 
-Run through the files_clipboard_native example on the existing rcargo runner.
+Run through the files_clipboard_native example on an approved remote Cargo runner.
 Uses the normal SDK packager, installer, native enrollment, Applications action,
 production app main and real headless compositor. Everything lives in an owned
 scratch profile; no operator desktop, persistent grant or machine setting changes.
