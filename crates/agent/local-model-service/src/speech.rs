@@ -26,8 +26,8 @@ pub mod worker;
 pub use recognition::SpeechRecognition;
 
 pub use agent_provider_config::speech::{
-    FRAME, MAX_CONFIG_BYTES, MAX_SAMPLES, MAX_TEXT_BYTES, RequestKind, SAMPLE_RATE, SpeechConfig,
-    SpeechError, SpeechReply, request,
+    DraftPolicy, FRAME, MAX_CONFIG_BYTES, MAX_SAMPLES, MAX_TEXT_BYTES, RequestKind, SAMPLE_RATE,
+    SpeechConfig, SpeechError, SpeechReply, request,
 };
 const MAX_MODEL_BYTES: u64 = 256 * 1024 * 1024;
 

@@ -306,3 +306,35 @@ text still takes about3.3s English and6.3s German. The English errors include th
 numeric representation edits and one inflection error. Do not erase them with
 number normalization. Production residency, recognition quality, earlier stable
 streaming, and physical/full OS acceptance remain outstanding.
+
+
+## Decoder-specific draft cadence
+
+The private Ready reply now optionally carries the typed `DraftPolicy` chosen by
+the image decoder implementation. Full-context workers retain two-second opening
+context and one-second draft intervals. Incremental workers use500ms for both.
+Missing policy defaults to full context and its serialization omits the field,
+preserving legacy Ready messages byte for byte. Arbitrary timing objects or unknown
+policy values are rejected. Capture consent and field/dictionary ownership checks
+remain prerequisites; the timer starts when capture starts, not at model readiness.
+
+The compositor uses this policy after accepting Ready. Native review declares
+incremental; production Whisper retains full context, including its separate
+minimum-audio guard against opening-word hallucinations. This integrates a bounded
+streaming cadence without selecting or installing the held native model.
+
+[Eight actual confined streams](dictation-native-cadence.json) compare existing
+cadence, early cadence, supported context0, and the final Ready-driven policy.
+With context1 unchanged, earlier cadence reduced English first stable text from
+3221ms to1681ms and German meaningful stable text from6447ms to5671ms. The final
+policy-driven runs reproduced1661ms English first stable and5660ms German meaningful
+stable. Selected-policy finals matched the baseline exactly; raw errors remained
+4/19 English and0/18 German. CPU measured10.38→9.87s English and16.59→15.57s German
+in the paired runs, an observed development result rather than a device-wide claim.
+
+The model's trained context0 gave no material English latency benefit and worsened
+German meaningful stable delay to6555ms and CPU to17.72s. It also changed one English
+capitalization while preserving the strict raw score. Context1 remains default;
+context0 is exposed only as an explicit bounded review comparison. No cleanup,
+number normalization, word-order rewrite or holdout tuning was introduced. These
+results improve draft delivery, not the remaining accuracy or full OS acceptance.

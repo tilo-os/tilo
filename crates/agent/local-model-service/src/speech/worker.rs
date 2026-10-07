@@ -1,5 +1,5 @@
 //! One confined child serving a private speech pipe. No microphone is opened.
-use super::{FRAME, RequestKind, SpeechConfig, SpeechError, SpeechInput, SpeechReply};
+use super::{DraftPolicy, FRAME, RequestKind, SpeechConfig, SpeechError, SpeechInput, SpeechReply};
 #[cfg(feature = "whisper")]
 use super::{SpeechEngine, SpeechRecognition, speech_model_file};
 #[cfg(feature = "whisper")]
@@ -102,6 +102,11 @@ pub fn serve(
 /// exactly once; full-context engines may use the shared cumulative input.
 /// All methods execute in the owned confined child, never the compositor.
 pub trait SpeechDecoder {
+    /// Declare scheduling supported by this implementation, never by model
+    /// bytes or a remote collaborator. Older workers default to full context.
+    fn draft_policy(&self) -> DraftPolicy {
+        DraftPolicy::FullContext
+    }
     /// Accept only newly appended PCM, once per audio frame.
     /// # Errors
     /// Rejects invalid audio, exhausted resources or native failure.
@@ -178,6 +183,7 @@ pub fn serve_decoder(
             sequence: session.sequence(),
             model: identity.0.to_owned(),
             revision: identity.1.to_owned(),
+            draft_policy: decoder.draft_policy(),
         },
     )?;
     loop {

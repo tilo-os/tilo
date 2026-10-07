@@ -10,7 +10,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use agent_provider_config::speech::{
-    FRAME, MAX_TEXT_BYTES, RequestKind, SpeechConfig, SpeechError, SpeechReply, request,
+    DraftPolicy, FRAME, MAX_TEXT_BYTES, RequestKind, SpeechConfig, SpeechError, SpeechReply,
+    request,
 };
 use zeroize::{Zeroize as _, Zeroizing};
 
@@ -23,8 +24,6 @@ const RECORD_WINDOW: Duration = Duration::from_secs(105);
 // Public CPU qualification takes about nineteen seconds for a seventy-second
 // automatic-language final. Keep capture off while a bounded slower pass finishes.
 const FINISH_WINDOW: Duration = Duration::from_secs(60);
-const DRAFT_INTERVAL: Duration = Duration::from_secs(1);
-const INITIAL_DRAFT_DELAY: Duration = Duration::from_secs(2);
 // A slow draft must not discard live speech. This covers the entire bounded
 // PCM16 session plus framing; it grows only as the owned worker backpressures.
 const QUEUE_BYTES: usize = 4 * 1024 * 1024;
@@ -341,6 +340,7 @@ impl Pipe {
                 sequence: got,
                 model,
                 revision,
+                ..
             } => {
                 kind == RequestKind::Configure
                     && *got == sequence
@@ -450,7 +450,8 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             .saturating_add(RECORD_WINDOW)
             .saturating_add(FINISH_WINDOW),
     );
-    let mut next_draft = later(DRAFT_INTERVAL);
+    let mut draft_policy = DraftPolicy::FullContext;
+    let mut next_draft = later(draft_policy.interval());
     let mut next_vocabulary_check = Instant::now();
     loop {
         if io.cancel.load(Ordering::Acquire) {
@@ -489,7 +490,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 );
                 // Anchor context accumulation to actual capture, not model
                 // startup or time spent awaiting the user's consent.
-                next_draft = later(INITIAL_DRAFT_DELAY);
+                next_draft = later(draft_policy.initial_delay());
                 event(io.events, RuntimeEvent::Listening)?;
             }
             Ok(Control::Finish) if ready && !finishing => {
@@ -515,7 +516,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 pipe.enqueue(RequestKind::Finish, &[])?;
             } else if microphone.is_some() && Instant::now() >= next_draft {
                 pipe.enqueue(RequestKind::Draft, &[])?;
-                next_draft = later(DRAFT_INTERVAL);
+                next_draft = later(draft_policy.interval());
             }
         }
         pipe.flush(io.output)?;
@@ -523,7 +524,11 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             pipe.accept(&reply)?;
             check_vocabulary(io)?;
             match reply {
-                SpeechReply::Ready { .. } => {
+                SpeechReply::Ready {
+                    draft_policy: policy,
+                    ..
+                } => {
+                    draft_policy = policy;
                     ready = true;
                     event(io.events, RuntimeEvent::Ready)?;
                 }

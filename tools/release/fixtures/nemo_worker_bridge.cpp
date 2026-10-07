@@ -97,6 +97,7 @@ int request_options(Worker& worker, const char* input_language, const char* inpu
 struct TiloNemoConfig {
     int descriptor;
     int threads;
+    int right_context;
     const char* language;
     const char* vocabulary; // validated newline-separated accepted spellings
 };
@@ -105,12 +106,14 @@ extern "C" __attribute__((visibility("default"))) void* tilo_nemo_load(const Til
     *status = -3;
     try {
         if (!input || input->descriptor < 0 || input->threads < 1 || input->threads > 2 ||
-            !input->language || !input->vocabulary) return nullptr;
+            !input->language || !input->vocabulary || input->right_context < 0 ||
+            input->right_context > 1) return nullptr;
         ggml_log_set(discard_log, nullptr);
         nemo_speech::asr::RecognizerConfig config;
         config.model.descriptor = input->descriptor;
         config.backend.gpu = -1;
         config.backend.threads = input->threads;
+        config.streaming.rnnt_right_context = input->right_context;
         config.postproc.cpu_workers = 1;
         config.log_status = false;
         config.batching.enabled = false;
