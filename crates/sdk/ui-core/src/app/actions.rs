@@ -2318,6 +2318,9 @@ impl App {
         self.layout.layout_dirty = true;
         self.invalidate_widget_resource_cache();
         let started = started?;
+        if actor == self.collaboration.local_author.0 {
+            self.take_over_owner_view();
+        }
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.actions.bound_invocations.insert(id, target.clone());
             if invocation.is_none() {
@@ -2333,29 +2336,38 @@ impl App {
         &mut self,
         request: ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        use crate::bound_dispatch::legacy_document::{LocalResourceTarget, select_local_target};
-        let address = request.address;
-        if let Some(target) = self
-            .actions
-            .bound_publication
-            .target(address)
-            .map_err(crate::bound_dispatch::BoundActionError::into_door)?
-        {
-            self.require_bound_broker_route(&target.binding)?;
-            return self.invoke_bound_target_with_broker(&target, &request, None);
+        let local = request.actor == self.collaboration.local_author.0;
+        let started = (|| {
+            use crate::bound_dispatch::legacy_document::{
+                LocalResourceTarget, select_local_target,
+            };
+            let address = request.address;
+            if let Some(target) = self
+                .actions
+                .bound_publication
+                .target(address)
+                .map_err(crate::bound_dispatch::BoundActionError::into_door)?
+            {
+                self.require_bound_broker_route(&target.binding)?;
+                return self.invoke_bound_target_with_broker(&target, &request, None);
+            }
+            match select_local_target(self.root_widget.as_ref(), &self.state.doc, address) {
+                Ok(LocalResourceTarget::Component(target)) => {
+                    self.invoke_bound_target_with_broker(&target, &request, None)
+                }
+                Ok(LocalResourceTarget::Legacy(target)) => {
+                    self.invoke_legacy_resource_action(&target, &request)
+                }
+                Ok(LocalResourceTarget::Outer) | Err(tilo_actions::DoorError::Unknown(_)) => {
+                    self.invoke_unbound_resource_action(&request, None)
+                }
+                Err(error) => Err(error),
+            }
+        })()?;
+        if local {
+            self.take_over_owner_view();
         }
-        match select_local_target(self.root_widget.as_ref(), &self.state.doc, address) {
-            Ok(LocalResourceTarget::Component(target)) => {
-                self.invoke_bound_target_with_broker(&target, &request, None)
-            }
-            Ok(LocalResourceTarget::Legacy(target)) => {
-                self.invoke_legacy_resource_action(&target, &request)
-            }
-            Ok(LocalResourceTarget::Outer) | Err(tilo_actions::DoorError::Unknown(_)) => {
-                self.invoke_unbound_resource_action(&request, None)
-            }
-            Err(error) => Err(error),
-        }
+        Ok(started)
     }
 
     /// The legacy `target` names the action; `request.address` is not consulted.
