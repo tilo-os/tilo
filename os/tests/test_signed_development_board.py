@@ -95,6 +95,85 @@ class SignedBoard(unittest.TestCase):
         (root/'etc/containers/policy.json').write_text(json.dumps(original))
         return original
 
+    def test_maintenance_flavour_changes_only_signed_scope_and_marker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_root(root)
+            (root/'usr/lib/tilo/image-flavour').unlink()
+            original = json.loads((ROOT/'os/etc/containers/policy.json').read_text())
+            path = root/'etc/containers/policy.json'
+            path.write_text(json.dumps(original))
+            key = (root/'usr/share/tilo/cosign.pub').read_bytes()
+            policy.maintenance(root)
+            expected = copy.deepcopy(original)
+            expected['transports']['docker'][policy.REPOSITORY] = policy.REQUIREMENT
+            self.assertEqual(json.loads(path.read_text()), expected)
+            self.assertEqual((root/'usr/lib/tilo/image-flavour').read_text(), 'dev\n')
+            self.assertEqual((root/'usr/share/tilo/cosign.pub').read_bytes(), key)
+
+    def test_maintenance_rejects_vm_or_unsigned_base_before_writes(self):
+        for invalid in ['vm-flavour', 'vm-route', 'unsigned-policy', 'key-link']:
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                self.make_root(root)
+                flavour = root/'usr/lib/tilo/image-flavour'
+                flavour.unlink()
+                path = root/'etc/containers/policy.json'
+                path.write_bytes((ROOT/'os/etc/containers/policy.json').read_bytes())
+                if invalid == 'vm-flavour':
+                    flavour.write_text('dev\n')
+                elif invalid == 'vm-route':
+                    item = root/policy.VM_ONLY_PATHS[0]
+                    item.parent.mkdir(parents=True, exist_ok=True)
+                    item.write_bytes(b'VM route fixture')
+                elif invalid == 'unsigned-policy':
+                    original = json.loads(path.read_text())
+                    original['transports']['docker'][policy.REPOSITORY] = [{'type': 'insecureAcceptAnything'}]
+                    path.write_text(json.dumps(original))
+                else:
+                    key = root/'usr/share/tilo/cosign.pub'
+                    key.rename(key.with_name('saved.pub'))
+                    key.symlink_to('saved.pub')
+                before = path.read_bytes()
+                with self.assertRaises(ValueError):
+                    policy.maintenance(root)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(flavour.exists(), invalid == 'vm-flavour')
+
+    def test_signed_publish_uses_production_payload_without_vm_publication(self):
+        compile_step = WORKFLOW.split('      - name: Start the dev binaries compile\n', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn("needs.plan.outputs.signed-development-board != 'true'", compile_step)
+        step = WORKFLOW.split('        id: dev-publish\n', 1)[1].split('\n      - name:', 1)[0]
+        actual = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        # Exercise the actual workflow shell, mocking only external build/sign tools.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            tools = root/'os/dev'
+            tools.mkdir(parents=True)
+            log = root/'calls'
+            for name, body in {
+                'build-board-image.sh': 'printf "%s\n" "$*" >> "$CALLS"; echo orangepi-3b-v2-1: >&2; echo sha256:fixture',
+                'sign-development-board.sh': 'printf "signed %s\n" "$*" >> "$CALLS"',
+                'publish-dev-disk.sh': 'exit 91', 'move-tag-forward.sh': 'exit 92',
+            }.items():
+                file = tools/name
+                file.write_text('#!/bin/sh\n'+body+'\n')
+                file.chmod(0o755)
+            fake = root/'docker'
+            fake.write_text('#!/bin/sh\nexit 93\n')
+            fake.chmod(0o755)
+            result = subprocess.run(['bash', '-c', actual], cwd=root, capture_output=True, text=True,
+                env={**os.environ, 'PATH': str(root)+os.pathsep+os.environ['PATH'],
+                     'TILO_SIGNED_DEVELOPMENT_BOARD': '1', 'DEV_BASE_DIGEST': 'sha256:production',
+                     'SOURCE_DATE_ISO': '2026-10-07T00:00:00Z', 'DEV_SERIES': 'main-fixture',
+                     'BOARDS': '["orangepi-3b-v2-1"]', 'RUNNER_TEMP': str(root),
+                     'GITHUB_SHA': 'a'*40, 'GITHUB_REF': 'refs/heads/main', 'CALLS': str(log),
+                     'TILO_DEV_COMPILE_LOG': ''})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = log.read_text().splitlines()
+            self.assertEqual(calls[0], 'orangepi-3b-v2-1 registry.tilo.so/tilo/tilo-ci@sha256:production registry.tilo.so/tilo/tilo-vm:main-fixture-orangepi-3b-v2-1-signed')
+            self.assertEqual(calls[1], 'signed registry.tilo.so/tilo/tilo-vm@sha256:fixture orangepi-3b-v2-1')
+
     def test_policy_only_strengthens_existing_dev_scope_with_same_key(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
