@@ -21,6 +21,11 @@ import wave
 
 from probe_speech_memory import MODELS
 
+# Review-only pinned MIT weight; never a production catalogue/default change.
+REVIEW_MODELS = dict(MODELS, **{
+    'base-q8_0': 'c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9',
+})
+
 
 def exact(pipe, count, deadline):
     output = bytearray()
@@ -108,7 +113,7 @@ def main():
     parser.add_argument('--manifest', required=True, type=Path)
     parser.add_argument('--qualifier', required=True, type=Path)
     parser.add_argument('--worker', required=True, type=Path)
-    parser.add_argument('--model', choices=('tiny', 'base'), default='base')
+    parser.add_argument('--model', choices=('tiny', 'base', 'base-q8_0'), default='base')
     parser.add_argument('--case', required=True)
     parser.add_argument('--append-case', action='append', default=[])
     parser.add_argument('--language', choices=('auto', 'en', 'de', 'fr', 'es', 'ar', 'zh'))
@@ -125,7 +130,7 @@ def main():
             or manifest.get('revision') != '70bb2e84b976b7e960aa89f1c648e09c59f894dd'):
         parser.error('unexpected public corpus')
     model = manifest['models'][args.model]
-    if model['sha256'] != MODELS[args.model]:
+    if model['sha256'] != REVIEW_MODELS[args.model]:
         parser.error('unexpected reviewed model')
     long_language = args.case.removeprefix('long-') if args.case.startswith('long-') else None
     requested = [args.case, *args.append_case]

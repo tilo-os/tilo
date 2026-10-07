@@ -130,7 +130,7 @@ def finite(value):
 
 def stream_metrics(row, language):
     drafts = row['drafts']
-    if not isinstance(drafts, list) or len(drafts) > 120:
+    if not isinstance(drafts, list) or len(drafts) > 1500:
         raise ValueError('bounded draft timeline required')
     final = row['final_text']
     if not isinstance(final, str) or len(final.encode()) > 32768:
