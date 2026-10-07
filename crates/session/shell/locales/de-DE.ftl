@@ -2494,3 +2494,10 @@ agent-quick-work-refused = Diese Aktion ist nicht verfügbar. Dein Entwurf bleib
 agent-quick-shots-draft = Prüfe Änderungen und markiere offene Entscheidungen.
 agent-marker-a11y-name = Agentenaktion: { $agent }
 agent-marker-a11y-description = { $action } für { $resource }
+
+search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
+search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
+search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
+search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
+search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
+search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben

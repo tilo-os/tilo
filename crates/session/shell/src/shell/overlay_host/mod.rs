@@ -22174,6 +22174,7 @@ impl ShellOverlayHost {
                 f64::from(theme.tokens.radii.control),
                 &sheet_shadow,
             );
+            self.room_activity.set_review_clip(self.rect);
             self.room_activity
                 .draw(scene, transform, text_renderer, theme, presence);
         }

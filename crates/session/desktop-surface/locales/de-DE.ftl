@@ -986,3 +986,14 @@ activity-task-pending-cancelling = Aufgabe wird abgebrochen…
 activity-task-cancel-edit = Bearbeiten abbrechen
 activity-task-amend-saved = Anweisung in Revision { $revision } gespeichert.
 activity-task-pending-cancelled = Aufgabe in der Warteschlange abgebrochen.
+
+activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }
+activity-catch-up-review-description = Prüfe wartende Aufgaben, Ziele und die Arbeit von Agenten in diesem Arbeitsbereich. Das Lesen der Aktivitäten schließt keine Aufgabe ab.
+activity-catch-up-review-goals = Ziele und die Arbeit von Agenten prüfen
+activity-acknowledge-viewed = Gesehene Aktivitäten bestätigen
+activity-acknowledge-description = Markiere nur die angezeigten Zusammenfassungen als gelesen. Verborgene Änderungen und wartende Aufgaben bleiben offen.
+activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
+    [one] eine wartende Aufgabe
+   *[other] { $count } wartende Aufgaben
+    }
+activity-catch-up-waiting-detail = { $task } · { $who }

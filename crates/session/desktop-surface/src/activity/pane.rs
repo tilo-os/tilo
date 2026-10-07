@@ -141,6 +141,8 @@ const EXPLORER_DETAIL_W: f64 = 240.0;
 pub const HISTORY_COMPARE: &str = "history.compare";
 pub const HISTORY_UNDO: &str = "history.undo";
 pub const HISTORY_RESTORE: &str = "history.restore";
+pub const ACTIVITY_ACKNOWLEDGE: &str = "room.activity.acknowledge";
+pub const ACTIVITY_TASKS: &str = "room.activity.tasks";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -197,6 +199,7 @@ enum ActivityFocus {
     Brief(usize),
     WorkSessionBoundary(WorkSessionBoundary),
     MoreBriefs,
+    Acknowledge,
     NewTask,
     Task(String),
     TaskInstruction(String),
@@ -423,16 +426,16 @@ fn draw_resume_card(
             &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
             Rect::new(
                 rect.x0 + 12.0,
-                rect.y0 + 22.0,
+                rect.center().y - 12.0,
                 rect.x0 + 36.0,
-                rect.y0 + 46.0,
+                rect.center().y + 12.0,
             ),
         );
     tr.draw_style(
         scene,
         &t("activity-resume-heading"),
         colors.intent.inverted_hover,
-        at(transform, rect.x0 + 46.0, rect.y0 + 7.0),
+        at(transform, rect.x0 + 46.0, rect.y0 + 8.0),
         None,
         &theme.text(TextRole::Caption),
     );
@@ -441,20 +444,24 @@ fn draw_resume_card(
     let button_label = t("activity-resume-button");
     let (label_w, _) = tr.measure_style(&button_label, None, &theme.text(TextRole::Label));
     let button_w = (f64::from(label_w) + 24.0).max(74.0);
+    let button_h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
+    let (_, caption_h) = tr.measure_style("Mg", None, &theme.text(TextRole::Caption));
+    let (_, title_h) = tr.measure_style("Mg", None, &theme.text(TextRole::Label));
+    let title_y = rect.y0 + 12.0 + f64::from(caption_h);
+    let context_y = title_y + 4.0 + f64::from(title_h);
     let button = Rect::new(
         rect.x1 - 10.0 - button_w,
-        rect.y0 + 19.0,
+        rect.center().y - button_h / 2.0,
         rect.x1 - 10.0,
-        rect.y0 + 49.0,
+        rect.center().y + button_h / 2.0,
     );
     let text_w = text_width((button.x0 - 12.0 - (rect.x0 + 46.0)).max(0.0));
-    let title =
-        tr.elide_to_width_style(&resume.target.label, text_w, &theme.text(TextRole::Caption));
+    let title = tr.elide_to_width_style(&resume.target.label, text_w, &theme.text(TextRole::Label));
     tr.draw_style(
         scene,
         &title,
         colors.text_primary,
-        at(transform, rect.x0 + 46.0, rect.y0 + 27.0),
+        at(transform, rect.x0 + 46.0, title_y),
         None,
         &theme.text(TextRole::Label),
     );
@@ -473,7 +480,7 @@ fn draw_resume_card(
         scene,
         &context,
         colors.text_dim,
-        at(transform, rect.x0 + 46.0, rect.y0 + 46.0),
+        at(transform, rect.x0 + 46.0, context_y),
         None,
         &theme.text(TextRole::Caption),
     );
@@ -699,6 +706,10 @@ pub struct RoomActivityPane {
     /// collaborative history, and timestamps cannot identify delayed or
     /// concurrent CRDT changes correctly.
     seen_frontiers: HashMap<u64, WorkspaceSeenFrontier>,
+    /// Exact addresses exposed by a painted catch-up page, partitioned before
+    /// workspace switches. Never infer visibility from the index's heads.
+    viewed_changes: HashMap<u64, BTreeSet<WorkspaceHistoryId>>,
+    review_clip: Option<Rect>,
     /// Private causal baseline captured when this device leaves a workspace.
     /// Wall time gates the presentation; the frontier decides which changes
     /// actually happened during the absence.
@@ -709,10 +720,12 @@ pub struct RoomActivityPane {
     catchup_frontier: WorkspaceSeenFrontier,
     passive_digest: ActivityDigest,
     passive_unread: usize,
+    passive_rows: Vec<HistoryEntry>,
     persistent_frontiers: bool,
     view: ActivityView,
     view_rects: Vec<(ActivityView, Rect)>,
     brief_rects: Vec<(usize, Rect)>,
+    acknowledge_rect: Option<Rect>,
     brief_more_rect: Option<Rect>,
     boundary_rects: Vec<(WorkSessionBoundary, Rect)>,
     /// Where the "you left off" card was drawn and what it reopens.
@@ -922,6 +935,8 @@ impl RoomActivityPane {
             last_active: None,
             now_override: None,
             seen_frontiers: HashMap::new(),
+            viewed_changes: HashMap::new(),
+            review_clip: None,
             departures: HashMap::new(),
             presence_workspace: None,
             away_digest: ActivityDigest::default(),
@@ -929,10 +944,12 @@ impl RoomActivityPane {
             catchup_frontier: WorkspaceSeenFrontier::default(),
             passive_digest: ActivityDigest::default(),
             passive_unread: 0,
+            passive_rows: Vec::new(),
             persistent_frontiers: false,
             view: ActivityView::default(),
             view_rects: Vec::new(),
             brief_rects: Vec::new(),
+            acknowledge_rect: None,
             brief_more_rect: None,
             boundary_rects: Vec::new(),
             resume_rect: Rect::ZERO,
@@ -1101,10 +1118,52 @@ impl RoomActivityPane {
         &self.digest
     }
 
+    /// Native tiles can extend beyond the output while strips scroll. Only
+    /// fully exposed summaries qualify for acknowledgment.
+    pub fn set_review_clip(&mut self, clip: Rect) {
+        self.review_clip = Some(clip);
+    }
+
+    /// Brief positions change when fresh work arrives. Retain the addressed
+    /// work session so keyboard focus cannot drift onto a different result.
+    fn replace_digest(&mut self, digest: ActivityDigest) {
+        let anchor = |index: usize| {
+            self.digest
+                .briefs
+                .get(index)
+                .and_then(|brief| brief.entry_ids.first())
+                .copied()
+        };
+        let focused = match self.keyboard_focus {
+            Some(ActivityFocus::Brief(index)) => anchor(index),
+            _ => None,
+        };
+        let expanded = self.expanded_brief.and_then(anchor);
+        let page = anchor(self.brief_offset);
+        let position = |id| {
+            digest
+                .briefs
+                .iter()
+                .position(|brief| brief.entry_ids.contains(&id))
+        };
+        if let Some(id) = focused {
+            self.keyboard_focus =
+                Some(position(id).map_or(ActivityFocus::Acknowledge, ActivityFocus::Brief));
+        }
+        self.expanded_brief = expanded.and_then(position);
+        self.brief_offset = page.and_then(position).unwrap_or_default();
+        self.digest = digest;
+    }
+
     /// Snapshot the previous private frontier before the catch-up surface is
     /// shown. It advances only when the surface closes, so opening it cannot
     /// erase the very summary the user came to read.
     pub fn begin_view(&mut self, workspace: u64) {
+        self.viewed_changes.remove(&workspace);
+        if self.scope != RoomScope::ThisRoom {
+            self.scope = RoomScope::ThisRoom;
+            self.invalidate();
+        }
         if self.prepared_away_workspace.take() == Some(workspace)
             && let Some(departure) = self.departures.get(&workspace)
         {
@@ -1123,15 +1182,18 @@ impl RoomActivityPane {
     }
 
     /// Observe the active-workspace edge before refreshing the history index.
-    /// The previous index still describes the workspace being left, so its
-    /// exact causal frontier is the correct departure baseline.
+    /// Departure retains the last acknowledged frontier. Merely being in a
+    /// workspace must not count hidden or unpainted history as reviewed.
     pub fn observe_workspace(&mut self, workspace: u64) {
         if self.presence_workspace == Some(workspace) {
             return;
         }
         if let Some(previous) = self.presence_workspace {
-            let mut frontier = WorkspaceSeenFrontier::default();
-            frontier.mark_seen(&self.history_index);
+            let frontier = self
+                .seen_frontiers
+                .get(&previous)
+                .cloned()
+                .unwrap_or_default();
             let departed_at_secs = self
                 .now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -1172,31 +1234,60 @@ impl RoomActivityPane {
 
     pub fn finish_view(&mut self, workspace: u64) {
         self.replay_playing = false;
-        if self.timeline.entries().is_empty() {
+        let Some(viewed) = self.viewed_changes.remove(&workspace) else {
+            return;
+        };
+        let frontier = self.seen_frontiers.entry(workspace).or_default();
+        for id in &viewed {
+            frontier.acknowledge(id);
+        }
+        if self.last_active != Some(workspace) {
+            if self.persistent_frontiers {
+                self.persist_frontiers();
+            }
             return;
         }
-        let frontier = self.seen_frontiers.entry(workspace).or_default();
-        if self.history_index.entries().is_empty() {
-            for entry in self.timeline.entries() {
-                if self
-                    .external_entry
-                    .as_ref()
-                    .is_some_and(|external| external.id == entry.id)
-                {
-                    continue;
-                }
-                frontier.acknowledge(&WorkspaceHistoryId {
+        self.catchup_frontier = frontier.clone();
+        if let Some(departure) = self.departures.get_mut(&workspace) {
+            departure.frontier = frontier.clone();
+        }
+        // Keep everything not exposed on screen in the catch-up immediately,
+        // as well as in the persisted exceptions used by the next refresh.
+        let pending: HashSet<_> = self
+            .digest
+            .briefs
+            .iter()
+            .flat_map(|brief| brief.entry_ids.iter().copied())
+            .collect();
+        let was_viewed = |entry: &HistoryEntry| {
+            viewed.contains(&self.projected_origins.get(&entry.id).cloned().unwrap_or(
+                WorkspaceHistoryId {
                     origin: super::index::HistoryOrigin::DesktopTree,
                     change: entry.id,
-                });
-            }
-        } else {
-            frontier.mark_seen(&self.history_index);
-        }
-        self.catchup_frontier = frontier.clone();
-        self.digest = ActivityDigest::default();
-        self.passive_digest = ActivityDigest::default();
-        self.passive_unread = 0;
+                },
+            ))
+        };
+        self.passive_rows.retain(|entry| !was_viewed(entry));
+        let rows: Vec<_> = self
+            .timeline
+            .entries()
+            .iter()
+            .filter(|entry| pending.contains(&entry.id) && !was_viewed(entry))
+            .cloned()
+            .collect();
+        self.passive_unread = self.passive_rows.len();
+        self.replace_digest(ActivityDigest::from_entries_with_ranges(
+            &rows,
+            SystemTime::UNIX_EPOCH,
+            super::index::MAX_FEED_ENTRIES,
+            &self.named,
+        ));
+        self.passive_digest = ActivityDigest::from_entries_with_ranges(
+            &self.passive_rows,
+            SystemTime::UNIX_EPOCH,
+            5,
+            &self.named,
+        );
         self.reset_narrative();
         if self.persistent_frontiers {
             self.persist_frontiers();
@@ -1205,7 +1296,10 @@ impl RoomActivityPane {
 
     /// `(headline, unread, pulse)` consumed by passive chrome. `pulse` is a
     /// stable projection of the newest content id, not a frame counter.
-    pub fn glance_signal(&self, _workspace: u64) -> (Option<String>, usize, u64) {
+    pub fn glance_signal(&self, workspace: u64) -> (Option<String>, usize, u64) {
+        if self.last_active != Some(workspace) {
+            return (None, 0, 0);
+        }
         let unread = self.passive_unread;
         let latest = self
             .timeline
@@ -1221,7 +1315,9 @@ impl RoomActivityPane {
     }
 
     pub fn digest_for_workspace(&self, workspace: u64) -> ActivityDigest {
-        let _ = workspace;
+        if self.last_active != Some(workspace) {
+            return ActivityDigest::default();
+        }
         self.passive_digest.clone()
     }
 
@@ -1320,6 +1416,16 @@ impl RoomActivityPane {
             self.task_instruction_scroll
                 .set_offset(vello::kurbo::Vec2::ZERO);
         }
+        if view == ActivityView::Tasks
+            && self.selected_task.is_none()
+            && let Some(task) = self
+                .tasks
+                .iter()
+                .find(|task| task.status == WorkspaceTaskStatus::Waiting)
+        {
+            self.selected_task = Some(task.id.clone());
+            self.keyboard_focus = Some(ActivityFocus::Task(task.id.clone()));
+        }
     }
 
     fn step_replay(&mut self, forward: bool) {
@@ -1410,6 +1516,14 @@ impl RoomActivityPane {
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
     ) -> RoomActivityOutcome {
+        if id == ACTIVITY_TASKS {
+            self.set_view(ActivityView::Tasks);
+            return handled_outcome();
+        }
+        if id == ACTIVITY_ACKNOWLEDGE {
+            self.finish_view(tree.active.raw());
+            return handled_outcome();
+        }
         let action = match id {
             HISTORY_COMPARE => DetailAction::Compare,
             HISTORY_RESTORE => DetailAction::Restore,
@@ -2139,9 +2253,9 @@ impl RoomActivityPane {
             .map(|workspace| workspace.tasks.clone())
             .unwrap_or_default();
         self.tasks.sort_by(|left, right| {
-            left.status
-                .is_finished()
-                .cmp(&right.status.is_finished())
+            (left.status != WorkspaceTaskStatus::Waiting)
+                .cmp(&(right.status != WorkspaceTaskStatus::Waiting))
+                .then_with(|| left.status.is_finished().cmp(&right.status.is_finished()))
                 .then_with(|| right.updated_at.cmp(&left.updated_at))
                 .then_with(|| left.id.cmp(&right.id))
         });
@@ -2481,6 +2595,7 @@ impl RoomActivityPane {
             &local,
         );
         self.passive_unread = rows.len();
+        self.passive_rows.clone_from(&rows);
         self.passive_digest =
             ActivityDigest::from_entries_with_ranges(&rows, SystemTime::UNIX_EPOCH, 5, &self.named);
         let rows = others_work(
@@ -2491,8 +2606,12 @@ impl RoomActivityPane {
             ),
             &local,
         );
-        self.digest =
-            ActivityDigest::from_entries_with_ranges(&rows, SystemTime::UNIX_EPOCH, 5, &self.named);
+        self.replace_digest(ActivityDigest::from_entries_with_ranges(
+            &rows,
+            SystemTime::UNIX_EPOCH,
+            super::index::MAX_FEED_ENTRIES,
+            &self.named,
+        ));
         if changed {
             self.reset_narrative();
         }
@@ -2606,6 +2725,7 @@ impl RoomActivityPane {
         let local_user = self.local_user();
         let passive_rows = others_work(unseen(&passive_frontier, tree), &local_user);
         self.passive_unread = passive_rows.len();
+        self.passive_rows.clone_from(&passive_rows);
         self.passive_digest = ActivityDigest::from_entries_with_ranges(
             &passive_rows,
             SystemTime::UNIX_EPOCH,
@@ -2627,12 +2747,12 @@ impl RoomActivityPane {
                 )
             });
         let catchup_rows = others_work(unseen(&self.catchup_frontier, tree), &local_user);
-        self.digest = ActivityDigest::from_entries_with_ranges(
+        self.replace_digest(ActivityDigest::from_entries_with_ranges(
             &catchup_rows,
             SystemTime::UNIX_EPOCH,
-            5,
+            super::index::MAX_FEED_ENTRIES,
             &self.named,
-        );
+        ));
         self.reset_narrative();
     }
 
@@ -2715,6 +2835,13 @@ impl RoomActivityPane {
         let digest_rows: Vec<HistoryEntry> = rows
             .iter()
             .filter(|entry| !author_is_local(&entry.author, &local))
+            .filter(|entry| {
+                !self.history_index.entries().is_empty()
+                    || !self.catchup_frontier.acknowledged(&WorkspaceHistoryId {
+                        origin: super::index::HistoryOrigin::DesktopTree,
+                        change: entry.id,
+                    })
+            })
             .cloned()
             .collect();
         if let Some(entry) = self.external_entry.clone()
@@ -2724,12 +2851,12 @@ impl RoomActivityPane {
         }
         self.total_entries = rows.len();
         self.facet_index = HistoryFacetIndex::from_entries(&rows);
-        self.digest = ActivityDigest::from_entries_with_ranges(
+        self.replace_digest(ActivityDigest::from_entries_with_ranges(
             &digest_rows,
             SystemTime::UNIX_EPOCH,
-            5,
+            super::index::MAX_FEED_ENTRIES,
             &self.named,
-        );
+        ));
         if self.history_index.entries().is_empty() {
             let theirs: HashSet<HistoryEntryId> = digest_rows.iter().map(|row| row.id).collect();
             let unseen: Vec<HistoryEntry> = self
@@ -2738,6 +2865,7 @@ impl RoomActivityPane {
                 .filter(|row| theirs.contains(&row.id))
                 .collect();
             self.passive_unread = unseen.len();
+            self.passive_rows.clone_from(&unseen);
             self.passive_digest = ActivityDigest::from_entries_with_ranges(
                 &unseen,
                 SystemTime::UNIX_EPOCH,
@@ -2746,6 +2874,7 @@ impl RoomActivityPane {
             );
         } else {
             self.passive_unread = digest_rows.len();
+            self.passive_rows.clone_from(&digest_rows);
             self.passive_digest = self.digest.clone();
         }
         self.reset_narrative();
@@ -3496,7 +3625,7 @@ impl RoomActivityPane {
                 scene,
                 &label,
                 theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
+                at(transform, rect.x0 + 8.0, rect.y0 + 8.0),
                 None,
                 &theme.text(TextRole::Caption),
             );
@@ -3793,6 +3922,120 @@ impl RoomActivityPane {
         );
     }
 
+    fn catch_up_task_summary(&self) -> String {
+        let done = self
+            .tasks
+            .iter()
+            .filter(|task| task.status == WorkspaceTaskStatus::Done)
+            .count();
+        let unfinished = self
+            .tasks
+            .iter()
+            .filter(|task| !task.status.is_finished())
+            .count();
+        let updated = self
+            .tasks
+            .iter()
+            .map(|task| task.updated_at)
+            .max()
+            .unwrap_or_default();
+        let updated = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(
+                u64::try_from(updated).unwrap_or_default(),
+            ))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        t_args(
+            "activity-catch-up-goals",
+            &[
+                ("done", done.into()),
+                ("unfinished", unfinished.into()),
+                ("when", format_relative_time(updated, self.now()).into()),
+            ],
+        )
+    }
+
+    /// Task state is a live room projection, separate from read history. Seeing
+    /// a summary never completes, dismisses or changes a waiting task.
+    fn draw_catch_up_tasks(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        mut y: f64,
+    ) -> f64 {
+        if self.tasks.is_empty() {
+            return y;
+        }
+        let waiting = self
+            .tasks
+            .iter()
+            .filter(|task| task.status == WorkspaceTaskStatus::Waiting)
+            .count();
+        let x0 = self.sheet.x0 + 12.0;
+        let x1 = self.sheet.x1 - 12.0;
+        let summary = self.catch_up_task_summary();
+        let style = theme.text(TextRole::Caption);
+        let width = text_width(x1 - x0 - 24.0);
+        let (_, height) = tr.measure_style(&summary, Some(width), &style);
+        tr.draw_style(
+            scene,
+            &summary,
+            theme.tokens.colors.text_dim,
+            at(transform, x0 + 12.0, y),
+            Some(width),
+            &style,
+        );
+        y += f64::from(height) + 8.0;
+        let label = if waiting == 0 {
+            t("activity-catch-up-review-goals")
+        } else {
+            t_args(
+                "activity-catch-up-needs-review",
+                &[("count", waiting.into())],
+            )
+        };
+        let (_, height) = tr.measure_style(&label, Some(width), &theme.text(TextRole::Body));
+        let control_h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
+        let rect = Rect::new(x0, y, x1, y + (f64::from(height) + 16.0).max(control_h));
+        if rect.y1 > self.sheet.y1 - 10.0 {
+            return y;
+        }
+        draw_task_button(scene, transform, tr, theme, rect, &label, true);
+        self.view_rects.push((ActivityView::Tasks, rect));
+        let mut next = rect.y1 + 8.0;
+        if let Some(task) = self
+            .tasks
+            .iter()
+            .find(|task| task.status == WorkspaceTaskStatus::Waiting)
+        {
+            let detail = t_args(
+                "activity-catch-up-waiting-detail",
+                &[
+                    ("task", task.title.as_str().into()),
+                    ("who", task_assignee_label(task).into()),
+                ],
+            );
+            let style = theme.text(TextRole::Caption);
+            for line in tr.clamp_to_lines(&detail, &style, width, 2) {
+                let (_, height) = tr.measure_style(&line, Some(width), &style);
+                if next + f64::from(height) > self.sheet.y1 - 10.0 {
+                    break;
+                }
+                tr.draw_style(
+                    scene,
+                    &line,
+                    theme.tokens.colors.text_primary,
+                    at(transform, x0 + 12.0, next),
+                    Some(width),
+                    &style,
+                );
+                next += f64::from(height);
+            }
+        }
+        next + 8.0
+    }
+
     #[allow(
         clippy::too_many_lines,
         clippy::cast_precision_loss,
@@ -3806,6 +4049,7 @@ impl RoomActivityPane {
         theme: &Theme,
     ) {
         self.brief_rects.clear();
+        self.acknowledge_rect = None;
         self.boundary_rects.clear();
         self.brief_more_rect = None;
         self.brief_more_advance = 0;
@@ -3814,12 +4058,27 @@ impl RoomActivityPane {
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
         let x0 = self.sheet.x0 + 12.0;
         let x1 = self.sheet.x1 - 12.0;
+        let label = t("activity-acknowledge-viewed");
+        let width = text_width(x1 - x0 - 24.0);
+        let (_, height) = tr.measure_style(&label, Some(width), &theme.text(TextRole::Caption));
+        let control_h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
+        let acknowledge = Rect::new(x0, y, x1, y + (f64::from(height) + 16.0).max(control_h));
+        if acknowledge.y1 < self.sheet.y1 - 10.0 {
+            draw_task_button(scene, transform, tr, theme, acknowledge, &label, false);
+            self.acknowledge_rect = Some(acknowledge);
+            y = acknowledge.y1 + 8.0;
+        }
+        y = self.draw_catch_up_tasks(scene, transform, tr, theme, y);
         if let Some(resume) = local_resume_snapshot(self.timeline.entries(), &self.local_user()) {
-            let rect = Rect::new(x0, y, x1, y + 66.0);
+            let (_, caption_h) = tr.measure_style("Mg", None, &theme.text(TextRole::Caption));
+            let (_, title_h) = tr.measure_style("Mg", None, &theme.text(TextRole::Label));
+            let height =
+                (f64::from(caption_h) * 2.0 + f64::from(title_h) + 24.0).max(control_h + 16.0);
+            let rect = Rect::new(x0, y, x1, y + height);
             draw_resume_card(scene, transform, tr, theme, rect, &resume, self.now());
             self.resume_rect = rect;
             self.resume_target = Some(resume.target);
-            y += 74.0;
+            y = rect.y1 + 8.0;
         }
         if self.digest.briefs.is_empty() {
             tr.draw_style(
@@ -3973,6 +4232,27 @@ impl RoomActivityPane {
             }
             let rect = Rect::new(x0, y, x1, y + height);
             self.brief_rects.push((index, rect));
+            if self.scope == RoomScope::ThisRoom
+                && self.review_clip.unwrap_or(self.viewport).intersect(rect) == rect
+                && let Some(workspace) = self.last_active
+            {
+                let viewed = self.viewed_changes.entry(workspace).or_default();
+                for id in &brief.entry_ids {
+                    if self
+                        .external_entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.id == *id)
+                    {
+                        continue;
+                    }
+                    viewed.insert(self.projected_origins.get(id).cloned().unwrap_or(
+                        WorkspaceHistoryId {
+                            origin: super::index::HistoryOrigin::DesktopTree,
+                            change: *id,
+                        },
+                    ));
+                }
+            }
             scene.push_layer(
                 Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -6142,6 +6422,14 @@ impl RoomActivityPane {
         point: Point,
         tree: &mut impl ActivityTree,
     ) -> Option<RoomActivityOutcome> {
+        if self
+            .acknowledge_rect
+            .is_some_and(|rect| rect.contains(point))
+        {
+            self.keyboard_focus = Some(ActivityFocus::Acknowledge);
+            self.finish_view(tree.active.raw());
+            return Some(handled_outcome());
+        }
         if self.resume_rect.contains(point)
             && let Some(open_target) = self.resume_target.clone()
         {
@@ -6551,13 +6839,23 @@ impl RoomActivityPane {
                 .iter()
                 .map(|(scope, _)| ActivityFocus::Scope(*scope)),
         );
-        order.extend(
-            self.view_rects
-                .iter()
-                .map(|(view, _)| ActivityFocus::View(*view)),
-        );
+        if self.view != ActivityView::CatchUp {
+            order.extend(
+                self.view_rects
+                    .iter()
+                    .map(|(view, _)| ActivityFocus::View(*view)),
+            );
+        }
         match self.view {
             ActivityView::CatchUp => {
+                if self.acknowledge_rect.is_some() {
+                    order.push(ActivityFocus::Acknowledge);
+                }
+                order.extend(
+                    self.view_rects
+                        .iter()
+                        .map(|(view, _)| ActivityFocus::View(*view)),
+                );
                 if self.resume_target.is_some() && self.resume_rect.area() > 0.0 {
                     order.push(ActivityFocus::Resume);
                 }
@@ -6706,6 +7004,7 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MoreBriefs => self.brief_more_rect,
+            ActivityFocus::Acknowledge => self.acknowledge_rect,
             ActivityFocus::NewTask => self.new_task_rect,
             ActivityFocus::Task(value) => self
                 .task_rects
@@ -6885,6 +7184,7 @@ impl RoomActivityPane {
                 outcome.named = self.move_work_session_boundary(tree, boundary);
             }
             ActivityFocus::MoreBriefs => self.advance_briefs(),
+            ActivityFocus::Acknowledge => self.finish_view(tree.active.raw()),
             ActivityFocus::NewTask => self.open_task_composer(tree),
             ActivityFocus::Task(id) => self.toggle_task_selection(&id),
             ActivityFocus::TaskInstruction(_)
@@ -7006,6 +7306,9 @@ impl RoomActivityPane {
     fn focus_label(&self, focus: &ActivityFocus) -> Option<String> {
         match focus {
             ActivityFocus::Scope(value) => Some(value.label()),
+            ActivityFocus::View(ActivityView::Tasks) if self.view == ActivityView::CatchUp => {
+                Some(t("activity-catch-up-review-goals"))
+            }
             ActivityFocus::View(value) => Some(value.label()),
             ActivityFocus::Period(value) => Some(value.label()),
             ActivityFocus::Author(Some(value))
@@ -7033,6 +7336,7 @@ impl RoomActivityPane {
                 BoundaryDirection::IntoOlder => t("a11y-shell-activity-boundary-older"),
             }),
             ActivityFocus::MoreBriefs => Some(t("a11y-shell-activity-more-sessions")),
+            ActivityFocus::Acknowledge => Some(t("activity-acknowledge-viewed")),
             ActivityFocus::NewTask => Some(t("a11y-shell-activity-new-task")),
             ActivityFocus::Task(id) => self
                 .tasks
@@ -7088,12 +7392,26 @@ impl RoomActivityPane {
             description,
         };
         Some(match focus {
+            ActivityFocus::Acknowledge => control(
+                Role::Button,
+                false,
+                None,
+                t("activity-acknowledge-description"),
+            ),
             ActivityFocus::Scope(value) => control(
                 Role::RadioButton,
                 self.scope == *value,
                 None,
                 t("a11y-shell-activity-history-scope"),
             ),
+            ActivityFocus::View(ActivityView::Tasks) if self.view == ActivityView::CatchUp => {
+                control(
+                    Role::Button,
+                    false,
+                    None,
+                    t("activity-catch-up-review-description"),
+                )
+            }
             ActivityFocus::View(value) => control(
                 Role::Tab,
                 self.view == *value,
@@ -7403,6 +7721,24 @@ impl RoomActivityPane {
             .enumerate()
             .filter_map(|(index, focus)| self.accessibility_control_node(focus, index, set_size))
             .collect();
+        if self.view == ActivityView::CatchUp && !self.tasks.is_empty() {
+            root.children
+                .push(AccessNode::new(Role::StaticText).with_name(self.catch_up_task_summary()));
+            if let Some(task) = self
+                .tasks
+                .iter()
+                .find(|task| task.status == WorkspaceTaskStatus::Waiting)
+            {
+                root.children
+                    .push(AccessNode::new(Role::StaticText).with_name(t_args(
+                        "activity-catch-up-waiting-detail",
+                        &[
+                            ("task", task.title.as_str().into()),
+                            ("who", task_assignee_label(task).into()),
+                        ],
+                    )));
+            }
+        }
         if self.timeline_is_visible() {
             let mut history =
                 AccessNode::new(Role::List).with_name(t("a11y-shell-activity-history-entries"));
@@ -7555,6 +7891,7 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MoreBriefs => self.brief_more_rect,
+            ActivityFocus::Acknowledge => self.acknowledge_rect,
             ActivityFocus::NewTask => self.new_task_rect,
             ActivityFocus::Task(value) => self
                 .task_rects
@@ -7878,32 +8215,16 @@ fn draw_task_button(
     label: &str,
     prominent: bool,
 ) {
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        if prominent {
-            theme.tokens.colors.intent.inverted
-        } else {
-            theme.tokens.colors.lift(0.35)
-        },
-        None,
-        &RoundedRect::from_rect(rect, 6.0),
-    );
-    let style = theme.text(TextRole::Caption);
-    let (width, height) = tr.measure_style(label, None, &style);
-    tr.draw_style(
+    ui::widget::Button::paint(
         scene,
-        label,
-        theme.tokens.colors.text_primary,
-        at(
-            transform,
-            rect.center().x - f64::from(width) / 2.0,
-            rect.center().y - f64::from(height) / 2.0,
-        ),
-        None,
-        &style
-            .clone()
-            .with_weight(ui::text_render::TextWeight::Medium),
+        transform,
+        tr,
+        theme,
+        &ui::widget::ButtonFace::new(rect, label).role(if prominent {
+            ButtonRole::Primary
+        } else {
+            ButtonRole::Secondary
+        }),
     );
 }
 

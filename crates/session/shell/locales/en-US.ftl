@@ -2492,3 +2492,10 @@ agent-quick-work-refused = This action is unavailable. Your draft is still here.
 agent-quick-shots-draft = Review changes and flag open decisions.
 agent-marker-a11y-name = Agent action: { $agent }
 agent-marker-a11y-description = { $action } on { $resource }
+
+search-action-activity-acknowledge = Acknowledge viewed activity
+search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
+search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
+search-action-activity-tasks = Review workspace goals and agent work
+search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
+search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks

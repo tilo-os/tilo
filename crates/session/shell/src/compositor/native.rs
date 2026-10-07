@@ -8688,6 +8688,7 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    notif_bridge.set_wake(Arc::clone(&session_wake));
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
     }
@@ -8826,6 +8827,9 @@ pub fn run() {
     match crate::session_runtime::runtime() {
         Ok(rt) => {
             let bridge = notif_bridge.clone();
+            let notification_workspaces = portal_backend
+                .as_ref()
+                .map(|portal| portal.media_grants.clone());
             notif_handle = Some(crate::session_runtime::Registration::start(
                 rt.handle(),
                 "notifications",
@@ -8838,6 +8842,7 @@ pub fn run() {
                         crate::portal::CallerMap::new(),
                         conn.clone(),
                         priority_contacts,
+                        notification_workspaces,
                     );
                     let handle =
                         crate::notifications::serve_notifications(conn.clone(), service).await?;
