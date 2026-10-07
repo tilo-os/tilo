@@ -3356,16 +3356,13 @@ fn handle_spatial_action(
                 .retain(|input| input.target != source || input.lease_nonce != nonce);
         }
         PersonalFabricAction::Input { lease_nonce, event } => {
-            let accepted = spatial.issued.get(&lease_nonce).is_some_and(|lease| {
-                lease.binds(&source, target)
-                    && lease.validate_at(unix_now_ms()).is_ok()
-                    && match event {
-                        FabricInputEvent::PointerMotion { .. }
-                        | FabricInputEvent::PointerButton { .. }
-                        | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
-                        FabricInputEvent::Key { .. } => lease.allow_keyboard,
-                    }
-            });
+            let accepted = crate::shell::device_fabric::permits_spatial_input(
+                spatial.issued.get(&lease_nonce),
+                &source,
+                target,
+                (lease_nonce, event),
+                unix_now_ms(),
+            );
             if accepted {
                 spatial.inbound.push_back((source, event));
             }
