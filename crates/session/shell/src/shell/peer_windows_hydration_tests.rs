@@ -229,6 +229,9 @@ fn refused_cold_record_never_opens_a_default_or_binds_a_saved_view() {
         "a rejected fetch must block the production launch path"
     );
     assert_eq!(device.asked.lock().unwrap().len(), 1);
-    let root = profile_root(data.path(), room, APP);
-    assert!(!root.exists(), "a refusal must not create an empty profile");
+    let profile_dir = profile_root(data.path(), room, APP);
+    assert!(
+        !profile_dir.exists(),
+        "a refusal must not create an empty profile"
+    );
 }
