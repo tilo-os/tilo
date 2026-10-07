@@ -7,10 +7,10 @@
 //! Regenerate intentional changes with the "Render visual baseline
 //! candidates" workflow (`dev-visual-baselines.yml`), which pins the
 //! builder image and llvmpipe. Review candidates, publish their immutable
-//! artifacts, and update artifacts.json; generated PNGs stay out of Git.
-//! Baselines resolve through tools/test-assets.py, which verifies their exact
+//! artifacts, and update `artifacts.json`; generated PNGs stay out of Git.
+//! Baselines resolve through `tools/test-assets.py`, which verifies their exact
 //! length and SHA-256 on every cache read. Prewarm for offline test runs with
-//! that tool and set TILO_TEST_ASSETS_OFFLINE=1.
+//! that tool and set `TILO_TEST_ASSETS_OFFLINE=1`.
 //! Locally, inside that image:
 //! `UPDATE_TYPOGRAPHY_BASELINES=1 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 //! WGPU_ADAPTER_NAME=llvmpipe cargo test -p tilo-ui --test it typography_visual_regression`
