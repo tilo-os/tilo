@@ -33,6 +33,48 @@ implementation.
 
 ## Evidence
 
+### Staged architecture comparisons
+
+The `architecture_study` evidence class describes a user's comparison of two
+to sixteen implementations of the same inputs. It uses the existing
+`import-verification`, child `inspect`, `read` and removal actions, so the native
+view and automation inspect the same collaborative record. It stores no model
+weights or executable artifacts. Detached summaries report producer claims;
+importing one does not authenticate the referenced receipts or their artifacts.
+
+The optional `architecture_study` object in a schema-version-1 verification
+receipt contains `stage`, `original_receipt_sha256`, `producer_sha256`,
+`input_identity_sha256`, `expected_comparison_words`, `links` and `variants`.
+Stages are `prepare`, `numerical`, `fault`, `synthesis` and `aggregate`. A link
+contains `receipt_sha256`, `producer_sha256` and the same
+`input_identity_sha256`. Numerical and synthesis stages link preparation;
+fault controls link preparation and numerical verification; an aggregate links
+all four. A failed stage may retain partial observations and available links.
+
+Numerical variants report cold programming, vector load and warm execution
+cycles separately, accepted packed weight and descriptor bytes, cache reads,
+quantizer packets, compared words and an output digest. A passed comparison
+requires every variant's declared complete word count and output digest to
+match. Generic synthesis variants report logic cells and storage bits, with
+physical memory macros and synthesized-netlist equivalence explicitly
+unqualified. A synthesis stage cannot contain numerical observations. Aggregate
+variants contain both observation types; numerical and synthesis stages contain
+only their own type. The native property view shows these distinctions and the
+producer and stage identities.
+
+The required stage check keys are respectively `input_identity_recorded`,
+`all_variants_complete_outputs` plus `protocol_controls`,
+`wrong_coefficient_rejected` plus `wrong_row_rejected`,
+`generic_structure_observed`, and `linked_stages_match_inputs`. All summaries
+exclude `full_model_execution`, `coding_quality`, `physical_ppa`,
+`manufacturing`, `payload_authentication` and
+`synthesized_netlist_equivalence`. Reported cycles are not a clock frequency or
+token-rate measurement; generic cells and initialized bits are not physical
+area or energy. Declared device directories are removed before sharing and
+redacted from a failure description, using the same receipt import path.
+
+### Other reports
+
 Use **Import report** to choose bounded JSON through the consented framework
 file chooser, or invoke the published import action with JSON. Storage
 reports expose their assumptions and exclusions. Verification receipts expose
