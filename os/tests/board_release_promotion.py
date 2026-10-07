@@ -116,7 +116,9 @@ class BoardRelease(unittest.TestCase):
         # jq checks run unchanged, and the test proves their refusal prevents copy.
         dev = self.root / "os/dev"
         dev.mkdir()
-        (dev / "require-private-oci-owner.py").write_text("raise SystemExit(0)\n")
+        (dev / "require-private-oci-owner.py").write_text(
+            "from pathlib import Path\nPath('private-owner-checked').touch()\n"
+            "raise SystemExit('public owner requires Lenovo approval')\n")
         helper = dev / "verify-release-sbom.sh"
         helper.write_text('#!/bin/sh\nexit "${SBOM_RESULT:-0}"\n')
         helper.chmod(0o755)
@@ -152,6 +154,27 @@ class BoardRelease(unittest.TestCase):
         self.assertIn(f":{PROFILE}-{SOURCE}", copy)
         self.assertNotIn(":latest", copy)
         self.assertNotIn(":gen", copy)
+
+    def test_public_orangepi_promotion_does_not_use_lenovo_firmware_override(self):
+        self.prepare_promotion()
+        result = self.run_step("Verify and publish immutable board ARM64 image")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "private-owner-checked").exists())
+        self.assertTrue((self.root / "copied").exists())
+
+    def test_lenovo_promotion_still_requires_private_owner_or_explicit_approval(self):
+        self.prepare_promotion()
+        self.env["HARDWARE_PROFILE"] = "lenovo-83ed"
+        result = self.run_step("Verify and publish immutable board ARM64 image")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "private-owner-checked").exists())
+        self.assertFalse((self.root / "copied").exists())
+
+    def test_unknown_profile_cannot_use_public_board_publication(self):
+        self.prepare_promotion()
+        self.env["HARDWARE_PROFILE"] = "unknown-board"
+        self.assertNotEqual(self.run_step("Verify and publish immutable board ARM64 image").returncode, 0)
+        self.assertFalse((self.root / "copied").exists())
 
     def test_same_immutable_tag_is_idempotent(self):
         self.prepare_promotion()

@@ -1045,3 +1045,54 @@ trusted idle proof; the guard stays closed until a fresh observed document.
 Full ordinary composing-IME delivery and trusted cancellation recovery still
 need the embedding's native IME path; the safe pre-existing admission gap is
 closed without assuming those completions are trustworthy.
+
+## Signed application capture and native Edit publication
+
+A hardware-free assembled journey now uses the maintained SDK thin packager,
+including its derived and signed resource kinds, verified runtime bundles and
+the real launcher. The initial Browser package is 2,846,208 bytes and its rebuilt
+payload is 2,847,232 bytes, both under the normal 8 MiB limit. The updated shared
+SDK runtime is included in the verified bundle. A throwaway workspace governor
+establishes custody before Shell startup; ordinary signed Join enrolls the session and normal Applications open
+creates the primary Browser record. No authority or document-read refusal is
+bypassed. The private namespace has its own PipeWire graph with hardware nodes
+disabled, a pinned public FLEURS utterance, and no physical devices or external
+network.
+
+Certified broker navigation and page Read/Click finish with terminal receipts.
+The page action changes DOM focus; the native toolkit also needs ordinary
+window input focus. A measured compositor pointer click in the public original
+field establishes that owner. Without it this fixture's preparation times out;
+DOM focus alone is not claimed to prepare a native editable field. With normal
+input focus, Prepare and Start are acknowledged before capture, the worker
+records the private virtual source, and the final transcript reaches the
+original field. The recorder is gone after Finish.
+
+The original signed journey exposed only the primary document's CRDT Undo/Redo,
+not the separate native Edit resource. It refused to substitute those document
+actions or a keyboard-only history probe. A concrete SDK contract defect was
+found independently: WebView handles `tilo.host.edit` but omitted its handler
+declaration. The existing
+renderer-acknowledgement and focus-change test now validates the real Edit
+resource against WebView's handler table. It failed for both Undo and Redo
+before the declaration and passed after it. The rebuilt package still lacked
+the native Edit row. The actual bound-app adapter also intercepted LocalUndo
+but inherited its default absent status and synchronous-completion flag.
+Status and deferred completion now follow its existing callback binding into
+the underlying owner, returning none/false while closing or closed. A focused
+production-boundary regression reproduced the absent status; its closing-owner
+assertions ensure metadata cannot cross a retired owner. All 14 selected native
+history tests passed in 0.650 seconds.
+
+With both fixes and the normal rebuilt signed package, the assembled journey
+passed native Edit Undo and Redo with broker terminal acknowledgements: Undo
+restored the exact original field, and Redo restored the exact dictated field.
+A repeated session was canceled without changing that field; both recorder
+and model worker exited before restart. Moving focus to the successor field
+while public speech was actively streaming retired capture and changed neither
+field. The confirmation run used the final diagnostic-free Shell executable;
+builder source digests match the candidate. Its temporary fixture signing key
+was removed after both successful runs. Physical microphones, complete OS
+rendering/fonts, older CPU/ARM and
+noisy conversations remain unqualified. No permission, sandbox rule, package
+limit, model default or release gate changes accompany these fixes.

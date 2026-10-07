@@ -360,6 +360,11 @@ name = "startup-frame-probe"
 path = "examples/startup_frame_probe.rs"
 required-features = ["native"]
 
+[[example]]
+name = "startup-blit-phase-probe"
+path = "examples/startup_blit_phase_probe.rs"
+required-features = ["native"]
+
 [[test]]
 name = "hosted-platform"
 path = "tests/hosted_platform.rs"

@@ -2119,6 +2119,23 @@ mod component_adapter {
     }
 
     impl crate::undo::LocalUndo for BoundAppWidget {
+        fn local_undo_status(&self) -> Option<crate::undo::LocalUndoStatus> {
+            let binding = self.component.callback_binding();
+            let _entry = binding.enter().ok()?;
+            crate::undo::local_undo_status(self.component.root.as_deref()?)
+        }
+
+        fn local_undo_is_deferred(&self) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component
+                .root
+                .as_deref()
+                .is_some_and(|root| crate::undo::local_undo_is_deferred(root))
+        }
+
         fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -2273,6 +2290,92 @@ mod native_lifecycle_tests {
     use super::*;
     use crate::application::{LaunchTarget, RestoreInput};
     use crate::application_test_support as probe;
+
+    #[test]
+    fn native_history_status_crosses_only_the_live_bound_owner() {
+        use crate::undo::{LocalUndo, LocalUndoStatus, UndoStatus};
+        use crate::widget::Decorator;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct History {
+            root: Box<dyn AppWidget>,
+            reads: Rc<Cell<u32>>,
+        }
+        impl Decorator for History {
+            crate::provides!(dyn LocalUndo; inner = root);
+            type Inner = dyn AppWidget;
+            fn inner(&self) -> &(dyn AppWidget + 'static) {
+                self.root.as_ref()
+            }
+            fn inner_mut(&mut self) -> &mut (dyn AppWidget + 'static) {
+                self.root.as_mut()
+            }
+        }
+        impl AppWidget for History {
+            fn app_kind(&self) -> AppKind {
+                self.root.app_kind()
+            }
+            fn app_title(&self) -> &str {
+                self.root.app_title()
+            }
+            fn app_icon(&self) -> IconDescriptor {
+                self.root.app_icon()
+            }
+            fn permission_hint(&self) -> Option<AppKind> {
+                self.root.permission_hint()
+            }
+        }
+        impl LocalUndo for History {
+            fn local_undo_status(&self) -> Option<LocalUndoStatus> {
+                self.reads.set(self.reads.get() + 1);
+                Some(LocalUndoStatus::Ready(UndoStatus {
+                    can_undo: true,
+                    ..Default::default()
+                }))
+            }
+            fn local_undo_is_deferred(&self) -> bool {
+                self.reads.set(self.reads.get() + 1);
+                true
+            }
+            fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
+                true
+            }
+        }
+        let host = probe::ProbeHost::new();
+        let mut component =
+            probe::instantiate_probe(&host, 42, LaunchTarget::New, RestoreInput::None).unwrap();
+        let reads = Rc::new(Cell::new(0));
+        component.root = Some(Box::new(History {
+            root: component.root.take().unwrap(),
+            reads: reads.clone(),
+        }));
+        let binding = component.callback_binding();
+        let mut widget = BoundAppWidget::new(component);
+        assert!(matches!(
+            crate::undo::local_undo_status(&widget),
+            Some(LocalUndoStatus::Ready(UndoStatus { can_undo: true, .. }))
+        ));
+        assert!(crate::undo::local_undo_is_deferred(&widget));
+        let live_reads = reads.get();
+        assert!(live_reads >= 2);
+        binding.closing.set(true);
+        assert!(crate::undo::local_undo_status(&widget).is_none());
+        assert!(!crate::undo::local_undo_is_deferred(&widget));
+        assert_eq!(
+            reads.get(),
+            live_reads,
+            "closing owner must never be queried"
+        );
+        widget.component.close();
+        assert!(crate::undo::local_undo_status(&widget).is_none());
+        assert!(!crate::undo::local_undo_is_deferred(&widget));
+        assert_eq!(
+            reads.get(),
+            live_reads,
+            "closed owner must never be queried"
+        );
+    }
 
     #[test]
     fn free_native_lifecycle_walk_enters_bound_owner_once_and_refuses_closed_owner() {

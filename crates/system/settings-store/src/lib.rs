@@ -58,6 +58,7 @@ use serde_json::{Map, Value};
 pub mod app_scope;
 pub mod continuity;
 pub mod day_schedule;
+pub mod device_displays;
 pub mod dictation;
 pub mod display_identify;
 pub mod display_mode;

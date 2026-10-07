@@ -361,6 +361,10 @@ impl Widget for WebView {
         dyn crate::undo::LocalUndo
     );
 
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::undo::EDIT_OPERATION]
+    }
+
     fn start_operation(
         &mut self,
         operation: &crate::widget::ResourceOperation<'_>,
@@ -914,6 +918,19 @@ mod tests {
             });
             let mut page = WebView::new(engine.clone());
             page.focused = true;
+            let edit = crate::host_chrome::edit::edit_resource(&crate::undo::UndoStatus {
+                can_undo: true,
+                ..Default::default()
+            });
+            let violations = tilo_actions::validate_surface(
+                &[edit],
+                &tilo_actions::ActionRegistry::new(),
+                &page.resource_operation_handlers(),
+            );
+            assert!(
+                violations.is_empty(),
+                "native Edit publication: {violations:?}"
+            );
             let mut doc = AutoCommit::new();
             page.sync(&doc, &automerge::ROOT);
             page.sync(&doc, &automerge::ROOT);
