@@ -284,3 +284,65 @@ No hardware percentile or performance improvement is claimed by the native wire
 and offscreen pixel tests. Compositor palette hover and its presentation need a
 separate actual Shell witness; selected palette actions and keyboard receipts
 are not hover measurements.
+
+### Fresh owned Settings palette activation (inert preparation and offline report)
+
+Use the qualified paired userspace cohort and the existing `OwnerVm`/tracked
+job adapter; the normal agent endpoint is not an owner substitute. The operator
+first records the complete existing window set, configures startup presentation
+observation through the declared session diagnostics action, and opens exactly
+one new background Settings tab with `tab.open-beside`. Preserve and restore the
+original diagnostics on every failure and in a `finally` scope. Enabling a flag
+on an existing worker does not establish its startup observer.
+
+Resolve the actual workspace `room` (not workspace `id`) and mapped host record.
+Pin `app-cohort.native_subject(state, tab, 'so.tilo.settings')`, including the
+host-observed PID/start time, surface, record instance and adoption ID. Verify
+that exact selected process's executable and SDK backing with the maintained
+`runtime_backing` probe and successful cohort inventory before input. Refuse
+missing/ambiguous provenance, changed worker, locked owner, altered user windows
+or old loaded SDK. Focus only this fresh operator-owned tab through the declared
+frame action; never select a user Settings window by application alone.
+
+`settings_search_navigation` requires that pinned scope before every operation.
+It resolves actual semantic kind/key with current authorized opaque action IDs,
+requires the exact palette selected action, and re-discovers navigation Read
+for every read. A changed action alias immediately before Enter refuses the
+activation. Initial Inspector must prove a settled pane other
+than `mouse_keyboard`; opening an already selected pane is not a latency sample.
+The fixed `keyboard` search target is the owned `settings.section:mouse_keyboard`
+`open-pane`, and the read resource is `settings.navigation/inspect-navigation`.
+Record one explicit activation and its actual broker UUID; do not infer that
+UUID from a search hit, a numeric job ID or the most recent unrelated log row.
+The native before-witness must additionally prove that initial pane was drawn.
+The existing Shell `tilo-action-submission` links that actual invocation to its
+origin, and the authorized native `tilo-broker-input`/`tilo-broker-frame` records
+link it to the actual current and last-drawn pane. The worker's random observer
+UUID and namespace process ID must be captured from that exact pinned worker;
+a sandbox PID alone is not lifetime proof.
+
+After capture, analyze the bounded private existing flight artifact offline:
+
+```bash
+python3 scripts/perf/settings_effects.py \
+  --log /ABS/PRIVATE/settings-flight.log \
+  --invocation ACTUAL_BROKER_UUID --pane mouse_keyboard \
+  --process-id ACTUAL_NATIVE_NAMESPACE_PID --observer-session ACTUAL_OBSERVER_UUID
+```
+
+This command does not connect to a device or perform input. It requires one
+admitted invocation, an actual changed mounted/drawn pane and unique exact
+Wayland KMS feedback. Missing/coalesced/foreign/duplicate records, unready state,
+headless/discarded outcomes and clock disagreement refuse the report. Explicit
+negative feedback can precede a later positive draw of the same intended pane.
+Keep output and raw receipts private; the report emits fixed IDs and durations,
+not search text, labels, documents or credentials.
+
+`submission_to_kms_ms` excludes palette opening, query entry and activation input
+dispatch. `physical_activation_to_kms_ms` is available only for the production
+`physical_key` origin with original libinput monotonic time, so it measures the
+final activating key, not the entire Ctrl+K interaction. Existing control/input
+transport may instead produce `controlled_input` with no trusted kernel origin:
+that is an explicit submission-to-KMS measurement, never physical latency.
+Neither result measures hover. One successful activation proves attribution;
+it does not establish the p50 <20ms / p99 <50ms target or whole-search latency.

@@ -106,12 +106,12 @@ class NavigationTests(unittest.TestCase):
         bound=('so.tilo.settings','owned-room','fresh-record')
         def row(resource,op):
             return dict(provider='app-actions',id=resource+'/'+op,application=bound[0],room=bound[1],
-                record=bound[2],resource=resource,operation=op,contract={'availability':{'state':'available'}})
+                record=bound[2],resource='opaque:' + resource, semantic_identity=dict(kind=('settings.section' if resource.startswith('settings.section:') else 'settings.navigation'),key=resource),operation=op,contract={'availability':{'state':'available'}})
         target=row('settings.section:mouse_keyboard','open-pane')
         inspector=row('settings.navigation','inspect-navigation')
         class Vm:
             def __init__(self):self.keys=[];self.selected=dict(provider='app-actions',id='unrelated')
-            def control_json(self,*args):return {'actions':[target,inspector]}
+            def control_json(self,*args):return {'query':bound[0],'actions':[target,inspector]}
             def key(self,key):
                 self.keys.append(key)
                 if key=='ArrowDown':self.selected={k:target[k] for k in ('provider','id')}
@@ -131,8 +131,107 @@ class NavigationTests(unittest.TestCase):
         def refuse():raise ValueError('replaced owned native lifetime')
         with self.assertRaises(ValueError):settings_search_navigation(vm,bound,refuse,call)
         self.assertEqual(vm.keys,[])
+        for key,bad in [('semantic_identity',None),('contract',{'availability':{'state':'unavailable'}})]:
+            original=copy.deepcopy(target);target[key]=bad
+            vm=Vm()
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                settings_search_navigation(vm,bound,lambda:None,call)
+            self.assertEqual(vm.keys,[])
+            target.clear();target.update(original)
+        class ReplacedDescriptorVm(Vm):
+            reads=0
+            def control_json(self,*args):
+                self.reads+=1
+                current=copy.deepcopy(target)
+                if self.reads>=3:current['id']='replacement-action'
+                return {'query':bound[0],'actions':[current,inspector]}
+        vm=ReplacedDescriptorVm()
+        with self.assertRaises(ValueError):settings_search_navigation(vm,bound,lambda:None,call)
+        self.assertNotIn('Enter',vm.keys)
         vm=Vm();target['record']='old-record'
         with self.assertRaises(ValueError):settings_search_navigation(vm,bound,lambda:None,call)
         self.assertEqual(vm.keys,[])
+
+class ActivationTests(unittest.TestCase):
+    invocation = '12345678-1234-4567-8234-123456789abc'
+    observer = 'abcdef12-1234-4567-8234-123456789abc'
+
+    def fixture(self):
+        def snapshot(pane):
+            nav = dict(selected_pane=pane, requested_pane=pane, path='settings://' + pane,
+                       ready=True, pending=False, content_visible=True)
+            return dict(app='so.tilo.settings', navigation=nav, rendered_navigation=nav.copy())
+        owner = dict(process_id=2, observer_session=self.observer)
+        return [
+            ('tilo-action-submission ', dict(invocation=self.invocation, application='so.tilo.settings',
+                source='controlled_input', clock_id=1, input_time_ns=None,
+                activation_dispatch_ns=100_000_000, submission_time_ns=101_000_000)),
+            ('tilo-broker-input ', dict(owner, invocation=self.invocation,
+                clock='clock_monotonic_seconds', handler_returned_ok=True,
+                handler_dispatch_lo_s=.102, handler_dispatch_hi_s=.103,
+                handler_return_lo_s=.104, handler_return_hi_s=.105,
+                before=snapshot('network'), after=snapshot('mouse_keyboard'))),
+            ('tilo-broker-frame ', dict(owner, invocations=[self.invocation], cpu_frame_id=17,
+                state=snapshot('mouse_keyboard'))),
+            ('tilo-display-frame ', dict(owner, backend='wayland', cpu_frame_id=17,
+                clock_id=1, discarded=False, flags=7, presented_time_ns=120_000_000, sequence=11)),
+        ]
+
+    def report(self, rows):
+        from settings_effects import summarize_settings_activation
+        return summarize_settings_activation([p+json.dumps(r) for p,r in rows],
+            self.invocation, 'mouse_keyboard', 2, self.observer)
+
+    def test_control_submission_is_not_physical_ctrl_k_or_hover(self):
+        report = self.report(self.fixture())
+        self.assertEqual(report['submission_to_kms_ms'], 19)
+        self.assertIsNone(report['physical_activation_to_kms_ms'])
+        self.assertFalse(report['physical_activation_available'])
+        self.assertFalse(report['palette_open_latency_available'])
+        self.assertFalse(report['hover_latency_available'])
+        rows=self.fixture();rows[0][1].update(source='physical_key',input_time_ns=90_000_000)
+        self.assertEqual(self.report(rows)['physical_activation_to_kms_ms'],30)
+
+    def test_all_exact_links_and_positive_feedback_are_required(self):
+        for index in range(4):
+            rows=self.fixture();del rows[index]
+            with self.subTest(missing=index), self.assertRaises(ValueError):self.report(rows)
+            rows=self.fixture();rows.append(copy.deepcopy(rows[index]))
+            with self.subTest(duplicate=index), self.assertRaises(ValueError):self.report(rows)
+        for index,key,value in [(1,'observer_session','another-worker'),(2,'process_id',3),
+                (2,'invocations',[self.invocation,'other']),(3,'cpu_frame_id',18),
+                (3,'flags',3),(3,'discarded',True),(3,'clock_id',0),(1,'handler_returned_ok',False),
+                (0,'input_time_ns',99),(0,'submission_time_ns',110_000_000),
+                (3,'presented_time_ns',100_000_000)]:
+            rows=self.fixture();rows[index][1][key]=value
+            with self.subTest(index=index,key=key),self.assertRaises(ValueError):self.report(rows)
+
+    def test_actual_changed_drawn_pane_is_required(self):
+        for target in ('before','after'):
+            rows=self.fixture();rows[1][1][target]['navigation']['requested_pane']=('mouse_keyboard' if target=='before' else 'network')
+            with self.subTest(target=target),self.assertRaises(ValueError):self.report(rows)
+        for key,value in [('selected_pane','network'),('ready',False),('pending',True),('content_visible',False)]:
+            rows=self.fixture();rows[2][1]['state']['rendered_navigation'][key]=value
+            with self.subTest(key=key),self.assertRaises(ValueError):self.report(rows)
+        rows=self.fixture();rows[1][1]['before']=copy.deepcopy(rows[2][1]['state'])
+        with self.assertRaises(ValueError):self.report(rows)
+
+    def test_discarded_draw_requires_exact_negative_and_duplicate_kms_is_rejected(self):
+        rows=self.fixture()
+        earlier=copy.deepcopy(rows[2]);earlier[1]['cpu_frame_id']=16
+        negative=copy.deepcopy(rows[3]);negative[1].update(cpu_frame_id=16,discarded=True)
+        rows += [earlier,negative]
+        self.assertEqual(self.report(rows)['cpu_frame_id'],17)
+        rows[-1][1]['discarded']=False
+        with self.assertRaises(ValueError):self.report(rows)
+
+    def test_bounded_existing_flight_normalization(self):
+        from settings_effects import activation_lines
+        text='private unrelated log line\n'+'\n'.join('[flight] '+p+json.dumps(r) for p,r in self.fixture())
+        self.assertEqual(self.report([(line.split(' ',1)[0]+' ',json.loads(line.split(' ',1)[1]))
+                                     for line in activation_lines(text)])['submission_to_kms_ms'],19)
+        for text in ['tilo-broker-frame []', 'tilo-broker-frame '+json.dumps({'value':'x'*8192}),
+                     'x'*(8*1024*1024+1), 'tilo-broker-frame {"x":"tilo-display-frame "}']:
+            with self.subTest(size=len(text)),self.assertRaises(ValueError):activation_lines(text)
 
 if __name__=='__main__':unittest.main()

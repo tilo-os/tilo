@@ -185,19 +185,22 @@ def settings_search_navigation(vm, bound, scope, call, query='keyboard'):
             or query != 'keyboard'):
         raise ValueError('Exact owned Settings binding and fixture query required')
     scope()
-    rows = vm.control_json('actions', 'list', bound[0], '--programmatic', '--json').get('actions', [])
-
     def row(resource, operation):
+        response = vm.control_json('actions', 'list', bound[0], '--programmatic', '--json')
+        if response.get('query') != bound[0] or not isinstance(response.get('actions'), list):
+            raise ValueError('Matched Settings action discovery unavailable')
+        rows = response['actions']
         found = [r for r in rows if r.get('provider') == 'app-actions'
                  and tuple(r.get(k) for k in ('application', 'room', 'record')) == bound
-                 and r.get('resource') == resource and r.get('operation') == operation
+                 and r.get('semantic_identity') == dict(kind=('settings.section' if resource.startswith('settings.section:') else 'settings.navigation'), key=resource)
+                 and r.get('operation') == operation
                  and r.get('contract', {}).get('availability', {}).get('state') == 'available']
         if len(found) != 1 or not found[0].get('id'):
             raise ValueError('Exact available Settings operation missing or ambiguous')
         return found[0]
 
     target = row('settings.section:mouse_keyboard', 'open-pane')
-    inspector = row('settings.navigation', 'inspect-navigation')
+    row('settings.navigation', 'inspect-navigation')  # Refuse missing Read before input.
     scope()
     vm.key('CTRL+K')
     vm.input('type', query)
@@ -229,10 +232,13 @@ def settings_search_navigation(vm, bound, scope, call, query='keyboard'):
         vm.key('ArrowDown')
     scope()
     # Recheck exact selection immediately before the single activation.
-    if vm.state().get('chrome', {}).get('palette', {}).get('selected_action') != expected:
+    if ({k: row('settings.section:mouse_keyboard', 'open-pane')[k] for k in ('provider', 'id')} != expected
+            or vm.state().get('chrome', {}).get('palette', {}).get('selected_action') != expected):
         raise ValueError('Selected search action changed before Enter')
     vm.key('Enter')
     for attempt in range(20):
+        scope()
+        inspector = row('settings.navigation', 'inspect-navigation')
         scope()
         value = call(inspector, {}, 'settings-navigation-' + str(attempt))
         try:
@@ -242,3 +248,164 @@ def settings_search_navigation(vm, bound, scope, call, query='keyboard'):
                 raise
             time.sleep(.1)
     raise ValueError('Selected Settings pane remained pending')
+
+
+def summarize_settings_activation(lines, invocation, pane, process_id, observer_session):
+    """Join an admitted broker UUID to actual Settings draw and KMS feedback.
+
+    This measures activation only, not palette opening/query or native hover.
+    The caller must pin the fresh authenticated host worker and mapped SDK
+    before capture; namespace PID alone cannot establish worker custody.
+    """
+    import uuid
+    if (pane not in ALL_CATEGORIES or type(process_id) is not int or process_id <= 0
+            or any(not isinstance(value, str) for value in (invocation, observer_session))):
+        raise ValueError('Exact Settings invocation, pane and worker identity required')
+    for value in (invocation, observer_session):
+        parsed = uuid.UUID(value)
+        if str(parsed) != value or parsed.version != 4:
+            raise ValueError('Canonical random invocation/observer UUID required')
+    submissions = [r for r in _rows(lines, 'tilo-action-submission ')
+                   if r.get('invocation') == invocation]
+    inputs = [r for r in _rows(lines, 'tilo-broker-input ')
+              if r.get('invocation') == invocation]
+    if len(submissions) != 1 or len(inputs) != 1:
+        raise ValueError('Missing or duplicate exact Settings activation')
+    submitted, event = submissions[0], inputs[0]
+    owner = (process_id, observer_session)
+    def owned(row):
+        return (row.get('process_id'), row.get('observer_session')) == owner
+    if (submitted.get('application') != 'so.tilo.settings' or submitted.get('clock_id') != 1
+            or not owned(event) or event.get('handler_returned_ok') is not True
+            or event.get('clock') != 'clock_monotonic_seconds'):
+        raise ValueError('Settings invocation was not handled by the exact worker')
+    start = submitted.get('submission_time_ns')
+    if type(start) is not int or start < 0:
+        raise ValueError('Missing monotonic submission time')
+    times = [event.get('handler_' + point + '_' + end + '_s')
+             for point in ('dispatch', 'return') for end in ('lo', 'hi')]
+    if (not all(_number(t) and t >= 0 for t in times)
+            or times != sorted(times) or start > times[0] * 1e9):
+        raise ValueError('Invalid submission/handler clock ordering')
+    frames = [r for r in _rows(lines, 'tilo-broker-frame ')
+              if invocation in r.get('invocations', [])]
+    if not frames or any(not owned(r) or r.get('invocations') != [invocation] for r in frames):
+        raise ValueError('Missing, foreign or coalesced Settings invocation draw')
+    ids = [r.get('cpu_frame_id') for r in frames]
+    if (any(type(i) is not int or i < 0 for i in ids) or len(set(ids)) != len(ids)):
+        raise ValueError('Invalid or duplicate Settings draw frame')
+    feedback = {}
+    for row in _rows(lines, 'tilo-display-frame '):
+        if not owned(row):
+            continue
+        cpu = row.get('cpu_frame_id')
+        if cpu not in ids:
+            continue
+        if cpu in feedback or row.get('backend') != 'wayland':
+            raise ValueError('Duplicate or non-Wayland exact frame feedback')
+        feedback[cpu] = row
+    if set(feedback) != set(ids):
+        raise ValueError('Missing exact Settings frame feedback')
+    selected = None
+    for frame in sorted(frames, key=lambda r: r['cpu_frame_id']):
+        before, after, drawn = event.get('before'), event.get('after'), frame.get('state')
+        for snapshot in (before, after, drawn):
+            if not isinstance(snapshot, dict) or snapshot.get('app') != 'so.tilo.settings':
+                raise ValueError('Settings navigation witness missing')
+        for snapshot in (before, drawn):
+            current = snapshot.get('navigation')
+            if (not isinstance(current, dict) or current != snapshot.get('rendered_navigation')
+                    or current.get('ready') is not True or current.get('pending') is not False
+                    or current.get('content_visible') is not True
+                    or current.get('requested_pane') != current.get('selected_pane')
+                    or current.get('path') != 'settings://' + str(current.get('selected_pane'))):
+                raise ValueError('Actual current and drawn Settings pane disagree')
+        if (before['navigation']['selected_pane'] == pane
+                or drawn['navigation']['selected_pane'] != pane
+                or after.get('navigation', {}).get('requested_pane') != pane):
+            raise ValueError('This invocation did not request and draw the intended changed pane')
+        display = feedback[frame['cpu_frame_id']]
+        if display.get('discarded') is True:
+            if selected is not None:
+                continue
+            continue  # Explicit negative outcome, never credited as presentation.
+        if (display.get('discarded') is not False or display.get('clock_id') != 1
+                or type(display.get('flags')) is not int or display['flags'] & 7 != 7
+                or type(display.get('presented_time_ns')) is not int
+                or type(display.get('sequence')) is not int or display['sequence'] < 0):
+            raise ValueError('Settings draw lacks proven monotonic hardware presentation')
+        if selected is None:
+            selected = frame, display
+    if selected is None:
+        raise ValueError('No presented changed Settings pane')
+    frame, display = selected
+    end = display['presented_time_ns']
+    proof = end, display['sequence']
+    if sum((r.get('presented_time_ns'), r.get('sequence')) == proof
+           and r.get('discarded') is False for r in feedback.values()) != 1:
+        raise ValueError('Ambiguous Settings physical outcome')
+    if end < times[-1] * 1e9:
+        raise ValueError('KMS outcome precedes handler completion')
+    source, original = submitted.get('source'), submitted.get('input_time_ns')
+    physical = source == 'physical_key'
+    dispatch = submitted.get('activation_dispatch_ns')
+    if physical:
+        if (type(original) is not int or type(dispatch) is not int
+                or not 0 <= original <= dispatch <= start):
+            raise ValueError('Missing trusted original physical activation time')
+    elif source not in ('semantic', 'controlled_input', 'native_unstamped') or original is not None:
+        raise ValueError('Unsupported or forged physical activation origin')
+    return dict(invocation=invocation, process_id=process_id, observer_session=observer_session,
+                pane=pane, cpu_frame_id=frame['cpu_frame_id'], physical_sequence=display['sequence'],
+                presented_time_ns=end, source=source, physical_activation_available=physical,
+                submission_to_kms_ms=(end-start)/1e6,
+                physical_activation_to_kms_ms=(end-original)/1e6 if physical else None,
+                palette_open_latency_available=False, hover_latency_available=False)
+
+
+
+def activation_lines(text):
+    """Normalize bounded existing flight rows; export no unrelated log content."""
+    prefixes = ('tilo-action-submission ', 'tilo-broker-input ',
+                'tilo-broker-frame ', 'tilo-display-frame ')
+    if not isinstance(text, str) or len(text.encode()) > 8 * 1024 * 1024:
+        raise ValueError('Settings flight evidence exceeds its bound')
+    result = []
+    for line in text.splitlines():
+        found = [prefix for prefix in prefixes if prefix in line]
+        if not found:
+            continue
+        if len(found) != 1 or len(result) >= 8192:
+            raise ValueError('Ambiguous or excessive Settings trace rows')
+        prefix = found[0]
+        payload = line.partition(prefix)[2]
+        if len(payload.encode()) > 8192:
+            raise ValueError('Settings trace row exceeds its bound')
+        row = json.loads(payload)
+        if not isinstance(row, dict):
+            raise ValueError('Settings trace must be an object')
+        result.append(prefix + json.dumps(row))
+    return result
+
+
+def activation_main():
+    """Offline only: no device connection, input, navigation or state mutation."""
+    import argparse
+    from pathlib import Path
+    parser = argparse.ArgumentParser(description='Exact Settings activation-to-pane KMS report (offline)')
+    parser.add_argument('--log', required=True, type=Path)
+    parser.add_argument('--invocation', required=True)
+    parser.add_argument('--pane', required=True, choices=ALL_CATEGORIES)
+    parser.add_argument('--process-id', required=True, type=int)
+    parser.add_argument('--observer-session', required=True)
+    args = parser.parse_args()
+    if args.log.stat().st_size > 8 * 1024 * 1024:
+        raise ValueError('Settings evidence exceeds the bounded offline capture')
+    lines = activation_lines(args.log.read_text())
+    report = summarize_settings_activation(lines, args.invocation,
+                                          args.pane, args.process_id, args.observer_session)
+    print(json.dumps(report, indent=2))
+
+
+if __name__ == '__main__':
+    activation_main()
