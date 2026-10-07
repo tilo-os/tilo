@@ -127,6 +127,168 @@ fn closing_a_window_is_quiet_and_still_reopens_its_exact_tab() {
     assert_eq!(state.notification_count(), counts.0);
 }
 
+#[test]
+fn the_last_window_keeps_only_its_close_visual_until_retirement() {
+    let (mut tree, strip_id, group_id) = one_group_seed();
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let mut theme = Theme::dark();
+    // Hold the observation interval while cold mounted discovery settles. Normal
+    // base-token retirement is proved separately without this fixture override.
+    theme.tokens.motion.durations.base_ms = 3000;
+    layout_close_fixture(&mut host, &theme);
+    assert!(host.close_tab_in_group(group_id, Some(1)));
+    assert!(
+        chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .is_empty()
+    );
+    let group = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("a final window retains its closing visual");
+    assert!(
+        group.is_closing(),
+        "close must start before canonical resync"
+    );
+    assert_eq!(group.keyboard_input_scope(), None);
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+    assert!(
+        host.group_at_for_tests(strip_id, 0)
+            .is_some_and(|group| group.is_closing())
+    );
+    assert!(
+        chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .is_empty(),
+        "a visual must never resurrect canonical state"
+    );
+}
+
+fn layout_close_fixture(host: &mut ShellOverlayHost, theme: &Theme) {
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let root = host.build_layout(&mut taffy, theme, &mut nodes);
+    taffy
+        .compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(1280.0),
+                height: taffy::AvailableSpace::Definite(800.0),
+            },
+        )
+        .expect("close fixture layout");
+    host.apply_layout(&taffy, root, Point::ORIGIN);
+}
+
+#[test]
+fn window_close_retires_without_input_and_undo_during_fade_is_live() {
+    let theme = Theme::dark();
+    let (mut tree, strip, group) = one_group_seed();
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    layout_close_fixture(&mut host, &theme);
+    assert!(host.close_tab_in_group(group, Some(1)));
+    for _ in 0..3 {
+        host.update(&AutoCommit::new(), &automerge::ROOT);
+        let _ = host.take_structure_dirty();
+        assert!(
+            chrome.borrow().tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty(),
+            "a retained visual cannot be harvested as a window"
+        );
+    }
+    std::thread::sleep(
+        theme
+            .tokens
+            .motion
+            .durations
+            .base()
+            .saturating_add(Duration::from_millis(40)),
+    );
+    host.update(&AutoCommit::new(), &automerge::ROOT);
+    let _ = host.take_structure_dirty();
+    assert!(
+        host.group_at_for_tests(strip, 0).is_none(),
+        "frame ticks retire without another input"
+    );
+    assert!(chrome.borrow_mut().reopen_closed_tab().is_some());
+    let _ = host.take_structure_dirty();
+    assert!(!host.group_at_for_tests(strip, 0).unwrap().is_closing());
+    assert!(host.close_tab_in_group(group, Some(1)));
+    assert!(chrome.borrow_mut().reopen_closed_tab().is_some());
+    let _ = host.take_structure_dirty();
+    let restored = host
+        .group_at_for_tests(strip, 0)
+        .expect("restored group is visible");
+    assert!(
+        !restored.is_closing(),
+        "undo during the fade owns a fresh live host"
+    );
+    assert_eq!(restored.keyboard_input_scope(), Some(1));
+}
+
+#[test]
+fn closing_slots_animate_without_overlapping_their_live_neighbour() {
+    for mut theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+        theme.tokens.motion.durations.base_ms = 3000;
+        let (mut tree, strip, group) = one_group_seed();
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(101, "Neighbour"));
+        tree.seed_doc_from_cache();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        layout_close_fixture(&mut host, &theme);
+        let before = host.group_at_for_tests(strip, 0).unwrap().layout_width_px();
+        assert!(before > 0.0, "the mounted window has a real slot");
+        assert!(host.close_tab_in_group(group, Some(1)));
+        let _ = host.take_structure_dirty();
+        layout_close_fixture(&mut host, &theme);
+        let closing = host.group_at_for_tests(strip, 0).unwrap();
+        assert_eq!(
+            closing.id, group,
+            "the closing window retains its original strip slot"
+        );
+        let width = closing.layout_width_px();
+        let closing_rect = closing.get_rect();
+        assert!(
+            width > 0.0 && width < before,
+            "closing must step the existing spring, not snap its slot: {before} -> {width}"
+        );
+        let neighbour = host.group_at_for_tests(strip, 1).unwrap();
+        assert_eq!(neighbour.id, 101);
+        assert!(
+            neighbour.get_rect().x0 >= closing_rect.x1,
+            "the real strip layout keeps the live neighbour outside the closing slot"
+        );
+        assert_eq!(
+            chrome.borrow().tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .len(),
+            1,
+            "only the neighbour remains canonical"
+        );
+    }
+}
+
+#[test]
+fn reduced_motion_close_retires_in_the_next_frame() {
+    let (mut tree, strip, group) = one_group_seed();
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    layout_close_fixture(&mut host, &Theme::light().with_reduce_motion(true));
+    assert!(host.close_tab_in_group(group, Some(1)));
+    assert!(host.group_at_for_tests(strip, 0).unwrap().close_complete());
+    let _ = host.take_structure_dirty();
+    assert!(host.group_at_for_tests(strip, 0).is_none());
+    assert!(
+        chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .is_empty()
+    );
+}
+
 fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
     let tab_id = id.saturating_add(1000);
     StateGroup {
@@ -908,8 +1070,22 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         chrome.borrow_mut().bump();
         let _ = host.take_structure_dirty();
         assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .is_some_and(|group| group.is_closing()),
+            "resync keeps only the dying visual, never canonical window state"
+        );
+        std::thread::sleep(
+            Theme::dark()
+                .tokens
+                .motion
+                .durations
+                .base()
+                .saturating_add(Duration::from_millis(40)),
+        );
+        let _ = host.take_structure_dirty();
+        assert!(
             host.group_at_for_tests(strip_id, 0).is_none(),
-            "resync after another revision must keep the closed group absent"
+            "the closing visual retires by its motion-token deadline"
         );
 
         // A fresh compositor must observe the same close. This catches the

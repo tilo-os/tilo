@@ -399,6 +399,23 @@ impl DesktopSurface {
     pub fn strip_ids(&self) -> Vec<StripId> {
         self.order.clone()
     }
+    /// Whether retained close visuals still need reconciliation. They are not canonical windows.
+    pub fn has_closing_visuals(&self) -> bool {
+        self.order
+            .iter()
+            .filter_map(|id| self.row(*id))
+            .any(|row| row.groups.iter().any(UiGroup::is_closing))
+    }
+
+    /// Whether a same-workspace rebuild would discard a still-visible close transition.
+    pub fn close_animation_in_flight(&self) -> bool {
+        self.order.iter().filter_map(|id| self.row(*id)).any(|row| {
+            row.groups
+                .iter()
+                .any(|group| group.is_closing() && !group.close_complete())
+        })
+    }
+
     pub fn row(&self, id: StripId) -> Option<&GroupRow> {
         self.row_at(*self.rows.get(&id)?)
     }
@@ -546,6 +563,11 @@ impl DesktopSurface {
         if self
             .empty_workspace_visible
             .is_some_and(|visible| visible != empty)
+            && !self.order.iter().filter_map(|id| self.row(*id)).any(|row| {
+                row.groups
+                    .iter()
+                    .any(|group| group.is_closing() && !group.close_complete())
+            })
         {
             return ReconcileOutcome::RebuildRequired;
         }
@@ -633,10 +655,14 @@ impl DesktopSurface {
                 .map(|g| g.id)
                 .collect();
             for id in stale {
-                if row.groups.iter().any(|g| g.id == id && g.is_closing()) {
-                    // Super+W (and the ✕) start the close animation
+                if row
+                    .groups
+                    .iter()
+                    .any(|g| g.id == id && g.is_closing() && !g.close_complete())
+                {
+                    // The declared close (and the ✕) start the close animation
                     // before the tree drop is reconciled; keep the last
-                    // frame here until `GroupRow::prune_closed_groups`.
+                    // frame here until its motion-token deadline.
                     continue;
                 }
                 if let Some(group) = row.groups.iter_mut().find(|g| g.id == id) {
@@ -644,12 +670,32 @@ impl DesktopSurface {
                 }
                 changed |= row.remove_group_by_id(id);
             }
+            let closing_slots: Vec<_> = row
+                .groups
+                .iter()
+                .enumerate()
+                .filter(|(_, group)| {
+                    group.is_closing()
+                        && !strip.window_groups.iter().any(|live| live.id == group.id)
+                })
+                .map(|(index, group)| (index, group.id))
+                .collect();
             // The row lays groups out display by display; on one display
             // that is the strip's own order.
             for (index, group) in display_ordered(&tree.outputs, strip)
                 .into_iter()
                 .enumerate()
             {
+                if let Some(dying) = row
+                    .groups
+                    .iter_mut()
+                    .find(|candidate| candidate.id == group.id && candidate.is_closing())
+                {
+                    // Undo may restore the canonical identity during the fade. Its dying
+                    // host is not a live application; resolve the restored window afresh.
+                    reports.extend(ui::component_lifecycle::close_components(dying));
+                    row.remove_group_by_id(group.id);
+                }
                 if !row.groups.iter().any(|g| g.id == group.id) {
                     changed = true;
                     let mut fresh = UiGroup::from_hosts(
@@ -662,7 +708,6 @@ impl DesktopSurface {
                     fresh.start_spawn_animation();
                     row.insert_group(fresh, index);
                 }
-                changed |= row.reorder_group_by_id(group.id, index);
                 let Some(live) = row.groups.iter_mut().find(|g| g.id == group.id) else {
                     continue;
                 };
@@ -819,6 +864,26 @@ impl DesktopSurface {
                 if live.active_tab_id() != group.active_tab {
                     changed |= live.set_active_tab(group.active_tab);
                 }
+            }
+            // Closing visuals retain their strip slots while the live groups follow
+            // canonical order. Reordering only live groups would move a closing
+            // neighbour behind them and animate across its occupied footprint.
+            let mut live_order = display_ordered(&tree.outputs, strip)
+                .into_iter()
+                .map(|group| group.id);
+            let mut closing_order = closing_slots.iter().copied().peekable();
+            let mut visual_order = Vec::with_capacity(row.groups.len());
+            for index in 0..row.groups.len() {
+                if closing_order.peek().is_some_and(|(slot, _)| *slot == index) {
+                    if let Some((_, id)) = closing_order.next() {
+                        visual_order.push(id);
+                    }
+                } else if let Some(id) = live_order.next() {
+                    visual_order.push(id);
+                }
+            }
+            for (index, id) in visual_order.into_iter().enumerate() {
+                changed |= row.reorder_group_by_id(id, index);
             }
         }
         for (_, (_, mut host)) in moved {
