@@ -5883,6 +5883,14 @@ impl ShellOverlayHost {
             return;
         };
 
+        // A retired native/portal request cannot leave a stale grant sheet.
+        chrome_handle.borrow_mut().pending_grants.retain(|pending| {
+            pending
+                .reply
+                .as_ref()
+                .is_none_or(|reply| !reply.is_closed())
+        });
+
         // The widget and semantic actions answer the same exact pending request.
         let choice = self
             .permission_prompt
@@ -7748,12 +7756,22 @@ impl ShellOverlayHost {
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; the first open pays for the files provider's deferred home walk
     /// and content index open (kept off the `OverlayHost` constructor on purpose).
+    fn selected_search_identity(&self) -> Option<(String, String)> {
+        self.palette
+            .selected_id()
+            .and_then(|id| id.strip_prefix("result:"))
+            .and_then(|id| id.parse::<usize>().ok())
+            .and_then(|index| self.search_results.get(index))
+            .map(|result| (result.provider_id.clone(), result.id.clone()))
+    }
+
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let current_query = self.palette.query().to_string();
+        let preserve_selection = current_query == self.last_search_query;
         let (scope, active_provider) = {
             let st = chrome.borrow();
             let scope = st.search_scope;
@@ -7782,6 +7800,14 @@ impl ShellOverlayHost {
             self.last_search_revision = revision;
             self.search_registry
                 .query_grouped(&args, PALETTE_ROW_BUDGET)
+        };
+
+        // Provider revisions may insert/re-rank rows without a query edit.
+        // Keep the chosen resource, never its old callback or row index.
+        let previous_selection = if preserve_selection {
+            self.selected_search_identity()
+        } else {
+            None
         };
 
         // Kind travels as the row's section and glyph, not a `[Files]`
@@ -7835,7 +7861,23 @@ impl ShellOverlayHost {
 
         // Peer-sync rows are ordinary `ActionsProvider` results, ranked
         // against everything else rather than appended below every hit.
+        let selected_id = previous_selection
+            .and_then(|(provider, id)| {
+                results
+                    .iter()
+                    .position(|result| result.provider_id == provider && result.id == id)
+            })
+            .map(|index| format!("result:{index}"));
         self.palette.set_entries(entries);
+        if let Some(id) = selected_id
+            && let Some(cursor) = self
+                .palette
+                .visible_entries()
+                .iter()
+                .position(|entry| entry.id == id)
+        {
+            self.palette.set_cursor(cursor);
+        }
         self.search_results = results;
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
@@ -17079,6 +17121,15 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let (doc, path) = ui::doc::document_ref(doc, path);
+        if let Some(chrome) = &self.chrome
+            && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
+        {
+            let mut apps = apps.borrow_mut();
+            if let Some(prompts) = &self.portal_prompts {
+                apps.bind_messaging_network_prompts(prompts.clone());
+            }
+            apps.pump_messaging_records();
+        }
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
             // secrets) are raised by the system on behalf of the person in

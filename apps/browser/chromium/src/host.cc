@@ -1093,6 +1093,12 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   const auto op=d->GetString("op");int id=d->HasKey("tab")?d->GetInt("tab"):1;
   if(op=="shutdown") {CloseHost();return;}
   if(op=="create_tab") {CreateTab(id);return;}
+  if(op=="download_start") {
+    auto found=clients.find(id);
+    if(downloads->Accepting() && found!=clients.end() && found->second->accepts_downloads())
+      found->second->browser_->GetHost()->StartDownload(d->GetString("url"));
+    return;
+  }
   if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
   if(op=="download_cancel_all") {downloads->CancelAll();return;}
@@ -1190,6 +1196,13 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return true;
   }
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
+  if(op=="download_start") {
+    if(!type("url",VTYPE_STRING))return false;
+    CefURLParts parts;
+    if(!CefParseURL(d->GetString("url"),parts))return false;
+    const auto scheme=CefString(&parts.scheme).ToString();
+    return (scheme=="https" || scheme=="http") && !CefString(&parts.host).empty();
+  }
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;

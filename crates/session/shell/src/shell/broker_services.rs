@@ -1305,6 +1305,44 @@ impl ContinuationServices for NativeContinuations {
         instance: u64,
         message: Vec<u8>,
     ) -> Result<(), String> {
+        if matches!(
+            ui::collaboration::handoff::HandoffReport::decode(&message),
+            Some(ui::collaboration::handoff::HandoffReport::OwnerSubscribe { .. })
+        ) {
+            super::personal_continuity_registry::global_registry()
+                .lock()
+                .map_err(|_| "continuation registry unavailable".to_owned())?
+                .refresh_owner_view(
+                    room,
+                    &app,
+                    super::personal_continuity::AppInstanceId(instance),
+                );
+            return Ok(());
+        }
+        if let Some(ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+            token,
+            schema,
+            metadata,
+        }) = ui::collaboration::handoff::HandoffReport::decode(&message)
+        {
+            use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
+            if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations) {
+                return Err("app continuation permission is disabled".into());
+            }
+            return super::personal_continuity_registry::global_registry()
+                .lock()
+                .map_err(|_| "continuation registry unavailable".to_owned())?
+                .claim_owner_view(
+                    room,
+                    app,
+                    super::personal_continuity::AppInstanceId(instance),
+                    token,
+                    ui::collaboration::ContinuationMetadata {
+                        schema_version: schema,
+                        bytes: metadata,
+                    },
+                );
+        }
         super::window_transfer::report_handoff(room, app, instance, &message)
     }
 }
@@ -1859,6 +1897,23 @@ mod tests {
                 .unwrap_err(),
             "native certificate policy origin changed"
         );
+    }
+
+    #[test]
+    fn native_certificate_policy_time_never_replaces_an_unavailable_origin() {
+        use tilo_action_broker::peer_actions::CertificateAuthority as _;
+        let certificates = NativeCertificates {
+            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+        };
+        for _ in 0..2 {
+            assert!(matches!(certificates.policy_time(), Err(error)
+                if error == tilo_action_broker::peer_actions::PolicyClockError.to_string()));
+        }
+        let certificates = NativeCertificates::default();
+        let captured = certificates.policy_time().unwrap().unwrap();
+        certificates.origin.as_ref().unwrap().invalidate();
+        assert!(certificates.policy_time().is_err());
+        assert!(captured.now_ns().is_err());
     }
 
     /// Content keyed by `(room, hash)`, standing in for the content store's
