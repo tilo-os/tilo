@@ -134,6 +134,7 @@ struct TrustedServiceLaunch {
     start_time: u64,
     identity: ServiceLaunchIdentity,
     registered_at: Instant,
+    continuation_instance: Option<u64>,
 }
 
 static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedServiceLaunch>>> =
@@ -258,7 +259,16 @@ pub(crate) fn verified_running_packages() -> Vec<String> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
+#[cfg(test)]
 fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
+    register_trusted_window_launch(pid, identity, None);
+}
+
+fn register_trusted_window_launch(
+    pid: u32,
+    identity: ServiceLaunchIdentity,
+    continuation_instance: Option<u64>,
+) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
     };
@@ -270,6 +280,7 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
             start_time,
             identity,
             registered_at: Instant::now(),
+            continuation_instance,
         },
     );
 }
@@ -277,40 +288,91 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
 /// Launch records of the apps the session shows inside its own process: the
 /// app and room each is about to connect for, until its collaboration
 /// connection is attested or the record expires.
-static IN_PROCESS_LAUNCHES: Mutex<Vec<(ServiceLaunchIdentity, Instant)>> = Mutex::new(Vec::new());
+struct InProcessLaunch {
+    identity: ServiceLaunchIdentity,
+    registered_at: Instant,
+    continuation_instance: Option<u64>,
+}
+static IN_PROCESS_LAUNCHES: Mutex<Vec<InProcessLaunch>> = Mutex::new(Vec::new());
 
 /// Record that the session itself is about to connect `app_id` in room
 /// `workspace_id`, as it records a process it launched.
 pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
+    register_in_process_window(app_id, workspace_id, None);
+}
+
+pub(crate) fn register_in_process_window(
+    app_id: &str,
+    workspace_id: &str,
+    continuation_instance: Option<u64>,
+) {
     let mut launches = lock(&IN_PROCESS_LAUNCHES);
-    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
-    launches.push((
-        ServiceLaunchIdentity {
+    launches.retain(|launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+    launches.push(InProcessLaunch {
+        identity: ServiceLaunchIdentity {
             app_id: app_id.to_owned(),
             workspace_id: workspace_id.to_owned(),
             allowed_compat_entry_ids: Vec::new(),
             compat_entry_generation: 0,
             application_creation: None,
         },
-        Instant::now(),
-    ));
+        registered_at: Instant::now(),
+        continuation_instance,
+    });
 }
 
 /// Spend the session's launch record for a connection from its own process
 /// naming `app_id` in room `workspace_id`.
 pub fn consume_in_process_launch(pid: u32, app_id: &str, workspace_id: &str) -> bool {
+    take_in_process_window_launch(pid, app_id, workspace_id).is_some()
+}
+
+pub(crate) fn authenticated_window_launch(
+    pid: u32,
+    app: &str,
+    room: &str,
+) -> Option<tilo_action_broker::services::AuthenticatedApplicationLaunch> {
+    let (_, start_time) = proc_stat(pid)?;
+    {
+        let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
+        launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+        if let Some(launch) = launches.get(&pid)
+            && launch.start_time == start_time
+            && launch.identity.app_id == app
+            && launch.identity.workspace_id == room
+        {
+            return Some(
+                tilo_action_broker::services::AuthenticatedApplicationLaunch {
+                    creation: launch.identity.application_creation.clone(),
+                    continuation_instance: launch.continuation_instance,
+                },
+            );
+        }
+    }
+    take_in_process_window_launch(pid, app, room)
+}
+
+fn take_in_process_window_launch(
+    pid: u32,
+    app: &str,
+    room: &str,
+) -> Option<tilo_action_broker::services::AuthenticatedApplicationLaunch> {
     if pid != std::process::id() {
-        return false;
+        return None;
     }
     let mut launches = lock(&IN_PROCESS_LAUNCHES);
-    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
-    let Some(index) = launches.iter().position(|(identity, _)| {
-        identity.app_id == app_id && identity.workspace_id == workspace_id
-    }) else {
-        return false;
-    };
-    launches.remove(index);
-    true
+    launches.retain(|launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+    let index = launches
+        .iter()
+        .position(|launch| launch.identity.app_id == app && launch.identity.workspace_id == room)?;
+    let launch = launches.remove(index);
+    drop(launches);
+    Some(
+        tilo_action_broker::services::AuthenticatedApplicationLaunch {
+            creation: launch.identity.application_creation,
+            continuation_instance: launch.continuation_instance,
+        },
+    )
 }
 
 /// Consume the compositor's one-shot authority record for a launcher child.
@@ -3551,7 +3613,14 @@ fn start_launch(
             }
         };
         if let Some(identity) = command.service_identity.clone() {
-            register_trusted_service_launch(child.id(), identity);
+            // Capture compositor-authored launch input before releasing the
+            // child gate. Never read window authority back from the sandbox.
+            let instance = command
+                .env
+                .iter()
+                .find(|(key, _)| key == "TILO_CONTINUITY_INSTANCE")
+                .and_then(|(_, value)| value.parse::<u64>().ok());
+            register_trusted_window_launch(child.id(), identity, instance);
         }
         let workspace_id = command
             .service_identity
@@ -6275,6 +6344,62 @@ mod tests {
         stale_start_time_is_never_accepted_as_pid_identity();
         compatibility_service_authority_is_exact_and_consumed_once();
         direct_launcher_pid_has_no_service_authority_to_redeem();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn private_window_launch_binding_is_exact_live_and_host_retained() {
+        let launcher = LauncherStandIn::spawn();
+        let pid = launcher.pid();
+        let identity = ServiceLaunchIdentity {
+            app_id: "so.tilo.code".into(),
+            workspace_id: "private-window-room".into(),
+            allowed_compat_entry_ids: Vec::new(),
+            compat_entry_generation: 0,
+            application_creation: None,
+        };
+        register_trusted_window_launch(pid, identity, Some(42));
+        assert!(authenticated_window_launch(pid, "so.tilo.notes", "private-window-room").is_none());
+        assert!(authenticated_window_launch(pid, "so.tilo.code", "other-room").is_none());
+        assert!(
+            authenticated_window_launch(
+                launcher.descendant(),
+                "so.tilo.code",
+                "private-window-room"
+            )
+            .is_none()
+        );
+        let bound = authenticated_window_launch(pid, "so.tilo.code", "private-window-room")
+            .expect("original exact launcher record");
+        assert_eq!(bound.continuation_instance, Some(42));
+        // Kernel start time is part of the retained record, not app-reported identity.
+        lock(&TRUSTED_SERVICE_LAUNCHES)
+            .get_mut(&pid)
+            .unwrap()
+            .start_time = u64::MAX;
+        assert!(authenticated_window_launch(pid, "so.tilo.code", "private-window-room").is_none());
+        lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
+        assert!(authenticated_window_launch(pid, "so.tilo.code", "private-window-room").is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn in_process_private_window_binding_is_single_use_and_exact() {
+        let app = format!("so.tilo.code.{}", uuid::Uuid::new_v4());
+        let room = uuid::Uuid::new_v4().to_string();
+        register_in_process_window(&app, &room, Some(42));
+        assert!(authenticated_window_launch(std::process::id(), &app, "other-room").is_none());
+        assert!(authenticated_window_launch(u32::MAX, &app, &room).is_none());
+        let bound = authenticated_window_launch(std::process::id(), &app, &room).unwrap();
+        assert_eq!(bound.continuation_instance, Some(42));
+        assert!(authenticated_window_launch(std::process::id(), &app, &room).is_none());
+        register_in_process_launch(&app, &room);
+        assert_eq!(
+            authenticated_window_launch(std::process::id(), &app, &room)
+                .unwrap()
+                .continuation_instance,
+            None
+        );
     }
 
     /// A live process standing in for a started `tilo-launcher`, with one

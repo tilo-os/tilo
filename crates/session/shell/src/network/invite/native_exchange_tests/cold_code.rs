@@ -14,7 +14,7 @@ pub(super) const BODY: &str =
 
 #[tokio::test]
 async fn native_cold_code_body_is_admitted_before_local_rendering() {
-    Box::pin(super::actual_exchange(false, true, false)).await;
+    Box::pin(super::actual_exchange(false, true, None)).await;
 }
 
 pub(super) fn governor(directory: &Path) -> TestGovernor {
@@ -396,7 +396,11 @@ fn connect_manager(
     );
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
     if launcher_custody {
-        crate::shell::launcher::register_in_process_launch(APP, tilo_joined_room::testing::ROOM);
+        crate::shell::launcher::register_in_process_window(
+            APP,
+            tilo_joined_room::testing::ROOM,
+            Some(42),
+        );
         launcher::services::write_collab_handoff(&mut stream, APP, tilo_joined_room::testing::ROOM)
             .unwrap();
     }
