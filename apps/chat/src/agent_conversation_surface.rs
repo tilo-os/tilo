@@ -39,13 +39,23 @@ impl AgentConversationSurface {
         view.rect = source;
         let mut placement = FloatingPlacement::attached(source.size());
         placement.set_attached_region(Some(source));
-        let compact = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
+        let compact_size = Size::new(
+            parent
+                .chrome
+                .detached_conversation_width
+                .min(source.width()),
+            parent
+                .chrome
+                .detached_conversation_height
+                .min(source.height()),
+        );
+        placement.settle_detached_to_preferred_size(compact_size);
         Self {
             id: format!("chat-conversation:{}", uuid::Uuid::new_v4()),
             view: Box::new(view),
             placement,
             source,
-            compact_size: Size::new(compact.min(source.width()), compact.min(source.height())),
+            compact_size,
             view_owns_editor: true,
             closed: false,
         }
@@ -84,7 +94,7 @@ impl AgentConversationSurface {
         self.closed
     }
 
-    pub(crate) fn request(&self) -> FloatingSurfaceRequest {
+    pub(crate) fn request(&self, desktop: Rect) -> FloatingSurfaceRequest {
         FloatingSurfaceRequest {
             id: self.id.clone(),
             title: self
@@ -100,7 +110,7 @@ impl AgentConversationSurface {
             },
             preferred_size: self.compact_size,
             aspect_ratio: None,
-            initial_rect: Some(self.source),
+            initial_rect: Some(self.placement.rect(self.source, desktop)),
             presentation_rect: None,
             tracking_source: None,
         }
@@ -148,7 +158,7 @@ impl AgentConversationSurface {
                 if ui::floating_surface::protocol_rect(*rect).is_err() {
                     return false;
                 }
-                self.placement.confirm_desktop_adoption();
+                self.placement.confirm_desktop_adoption_within(desktop);
             }
             FloatingSurfaceHostMessage::Reattach { id }
             | FloatingSurfaceHostMessage::Closed { id }

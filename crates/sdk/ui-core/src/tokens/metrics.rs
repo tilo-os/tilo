@@ -41,6 +41,10 @@ pub struct Metrics {
     pub panel_width_list: f32,
     /// A sheet carrying a form.
     pub panel_width_sheet: f32,
+    /// Preferred content height of a compact detached utility surface. The
+    /// actual host still clamps it to its safe viewport and a source never
+    /// grows merely because it detached.
+    pub compact_content_height: f32,
     /// Compact glyph: tab leading icon, inline status mark.
     pub icon_sm: f32,
     /// The standard 20 px glyph that sits in a 32 px hit rect.
@@ -124,6 +128,7 @@ impl Metrics {
         panel_width_utility: 320.0,
         panel_width_list: 360.0,
         panel_width_sheet: 560.0,
+        compact_content_height: 360.0,
         icon_sm: 14.0,
         icon_md: 20.0,
         icon_lg: 24.0,
@@ -207,6 +212,7 @@ impl Metrics {
             panel_width_utility: self.panel_width_utility * factor,
             panel_width_list: self.panel_width_list * factor,
             panel_width_sheet: self.panel_width_sheet * factor,
+            compact_content_height: self.compact_content_height * factor,
             icon_sm: self.icon_sm * factor,
             icon_md: self.icon_md * factor,
             icon_lg: self.icon_lg * factor,
@@ -257,6 +263,7 @@ mod tests {
             (base.scroll_thumb, scaled.scroll_thumb),
             (base.swipe_commit, scaled.swipe_commit),
             (base.menu_min_width, scaled.menu_min_width),
+            (base.compact_content_height, scaled.compact_content_height),
         ] {
             assert!((one * 1.5 - scaled).abs() < 1e-3);
         }

@@ -46,6 +46,11 @@ pub(crate) struct Chrome {
     pub avatar_gap: f64,
     /// One body line, the composer's step as its draft grows.
     pub body_line: f64,
+    /// Preferred detached conversation dimensions from the live theme. They
+    /// grow with accessible text and are capped by the attached source at the
+    /// handoff boundary.
+    pub detached_conversation_width: f64,
+    pub detached_conversation_height: f64,
     /// Shortest and tallest composer field.
     pub composer_min_h: f64,
     pub composer_max_h: f64,
@@ -74,6 +79,7 @@ impl Chrome {
         let metrics = &theme.tokens.metrics;
         let body = theme.text(TextRole::Body);
         let body_line = f64::from(body.line_height_px());
+        let text_growth = ui::tokens::Metrics::text_growth(theme.text_scale);
         let control = ButtonFace::height(ControlSize::Regular, theme);
         let composer_min_h =
             (control + 2.0 * f64::from(sp.s1)).max(body_line + 2.0 * f64::from(sp.s3));
@@ -84,6 +90,8 @@ impl Chrome {
             avatar: AvatarSize::Regular.side(theme),
             avatar_gap: f64::from(sp.s3),
             body_line,
+            detached_conversation_width: f64::from(metrics.panel_width_sheet * text_growth),
+            detached_conversation_height: f64::from(metrics.compact_content_height * text_growth),
             composer_min_h,
             composer_max_h: composer_min_h + 6.0 * body_line,
             composer_pad: f64::from(sp.s4),
@@ -150,5 +158,10 @@ mod tests {
         ));
         let large = Chrome::of(&Theme::dark().with_text_scale(2.0));
         assert!(large.composer_min_h > base.composer_min_h);
+        assert!(
+            large.detached_conversation_width > base.detached_conversation_width,
+            "detached content grows with accessible text"
+        );
+        assert!(large.detached_conversation_height > base.detached_conversation_height);
     }
 }

@@ -3854,6 +3854,10 @@ mod tests {
             surface.view.composer_main.private_plain().as_deref(),
             Some("Keep the exact private selection")
         );
+        let source_rect = surface.source;
+        let live_transfer_rect = surface
+            .placement
+            .rect(source_rect, app.desktop_floating_bounds());
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
             .expect("the drag crosses the same compositor adoption door as Float");
         assert_eq!(
@@ -3863,6 +3867,18 @@ mod tests {
         assert!(
             request.role.uses_app_owned_host(),
             "a detached conversation must prepare an interactive app-owned native host"
+        );
+        assert_eq!(
+            request.initial_rect,
+            Some(live_transfer_rect),
+            "the request preserves the exact moved handoff rect, not its stale source"
+        );
+        assert_ne!(live_transfer_rect, source_rect);
+        assert!(request.preferred_size.width <= live_transfer_rect.width());
+        assert!(
+            request.preferred_size.height < live_transfer_rect.height(),
+            "the default detached conversation becomes meaningfully shorter: {:?}",
+            request.preferred_size
         );
         feed(
             &mut app,

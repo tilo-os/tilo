@@ -2819,6 +2819,7 @@ impl ChatApp {
         if self.rect.area() <= 0.0 {
             return Err("Chat must be visible before its conversation can move".into());
         }
+        let desktop = self.desktop_floating_bounds();
         let channel = self.active_channel.clone();
         if let Some(mut surface) = self.agent_surfaces.remove(&channel) {
             if matches!(
@@ -2827,7 +2828,8 @@ impl ChatApp {
             ) {
                 surface.move_editor_to_view(self);
                 surface.placement.detach_to_desktop(surface.source);
-                self.agent_surface_requests.push_back(surface.request());
+                self.agent_surface_requests
+                    .push_back(surface.request(desktop));
             }
             self.agent_surfaces.insert(channel, surface);
             self.leave_floated_agent_route(workspace);
@@ -2836,7 +2838,8 @@ impl ChatApp {
         let mut surface =
             crate::agent_conversation_surface::AgentConversationSurface::from_attached(self, agent);
         surface.placement.detach_to_desktop(surface.source);
-        self.agent_surface_requests.push_back(surface.request());
+        self.agent_surface_requests
+            .push_back(surface.request(desktop));
         self.agent_surfaces.insert(channel, surface);
         self.leave_floated_agent_route(workspace);
         Ok(())
@@ -2862,7 +2865,8 @@ impl ChatApp {
         if let Some(surface) = self.agent_surfaces.get_mut(&drag.channel) {
             let handoff = surface.placement.update_drag(pointer, self.rect, desktop);
             if handoff == ui::floating_surface::Handoff::Detached {
-                self.agent_surface_requests.push_back(surface.request());
+                self.agent_surface_requests
+                    .push_back(surface.request(desktop));
             }
             self.request_relayout();
             return;
@@ -2885,7 +2889,8 @@ impl ChatApp {
             surface.move_editor_to_parent(self);
             return;
         }
-        self.agent_surface_requests.push_back(surface.request());
+        self.agent_surface_requests
+            .push_back(surface.request(desktop));
         self.agent_surfaces.insert(drag.channel, surface);
         self.leave_floated_agent_route(&drag.workspace);
         self.request_relayout();
