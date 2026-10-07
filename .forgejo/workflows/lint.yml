@@ -9,10 +9,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # Stacked PRs (a PR whose base is another task branch) get the
     # same gate; affected-package selection diffs against that base, so each
     # layer tests its own change.
-    branches: ["main", "pr/sdk-*"]
+    branches: ["main", "pr/sdk-*", "codex/**"]
   workflow_dispatch:
 
 concurrency:
@@ -76,6 +76,12 @@ jobs:
       - name: Require reasons for Rust lint exceptions in changed files
         run: >-
           python3 tools/ci/check_changed_rust_allows.py
+          '${{ steps.merge.outputs.main }}'
+          '${{ github.event.before }}'
+
+      - name: Verify commit messages and exact new blob contents
+        run: >-
+          python3 tools/policy/check_commit_policy.py
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 

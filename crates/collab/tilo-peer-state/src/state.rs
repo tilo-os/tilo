@@ -3621,9 +3621,12 @@ mod delivery_admission_resource_tests {
     }
     #[test]
     fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
-        let literal = include_bytes!("../tests/fixtures/delivery-admission/native-v5.postcard");
+        let literal = include_str!("../tests/fixtures/delivery-admission/native-v5.postcard.hex")
+            .split_ascii_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+            .collect::<Vec<_>>();
         let (peer, _, _, _, now) = crate::admission_tests::seeded();
-        let value: DurableV5<'_> = postcard::from_bytes(literal).unwrap();
+        let value: DurableV5<'_> = postcard::from_bytes(&literal).unwrap();
         let bomb = postcard::to_allocvec(&DurableV5 {
             version: 5,
             base: value.base,
@@ -3641,7 +3644,7 @@ mod delivery_admission_resource_tests {
             )
             .is_err()
         );
-        let value: DurableV5<'_> = postcard::from_bytes(literal).unwrap();
+        let value: DurableV5<'_> = postcard::from_bytes(&literal).unwrap();
         let mut index = ExactAdmissions::decode(value.exact).unwrap();
         let first = index
             .iter()

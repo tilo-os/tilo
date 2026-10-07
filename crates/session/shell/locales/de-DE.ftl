@@ -515,6 +515,7 @@ host-session-action-blocked = Sitzungsaktion blockiert
 host-action-started = „{ $title }“ gestartet
 host-action-admitted = Aktionsauftrag { $job } wurde angenommen
 host-action-cannot-run = „{ $title }“ kann nicht ausgeführt werden
+host-action-failed-status = Nicht ausgeführt
 launchpad-action-unanswered = Die App hat nicht geantwortet
 host-search-placeholder = Suchen …
 host-search-in = In { $scope } suchen …
@@ -2456,3 +2457,18 @@ dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkrip
 search-action-tab-drag-cancel = Tab-Ziehen abbrechen
 search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
 search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
+
+device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
+search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
+search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
+search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
+search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
+search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
+search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
+
+task-review-inspect = Aufgabennachweise prüfen
+task-review-steer = Aufgabenanweisungen ändern
+task-review-cancel = Aufgabenlauf abbrechen
+task-review-retry = Aufgabe erneut versuchen
+task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
+task-review-provider = Aufgabenprüfung

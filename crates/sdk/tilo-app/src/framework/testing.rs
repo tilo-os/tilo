@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::application::{
-    ApplicationHost, Capture, ComponentRunnerInputs, OpenFile, PlaybackHandoff,
+    ApplicationHost, Capture, ComponentRunnerInputs, HostContext, OpenFile, PlaybackHandoff,
     PreparedComponentInputs,
 };
 use ui_core::bound_dispatch::BoundActionAddress;
@@ -159,6 +159,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             None,
             None,
+            |_| {},
         )
     }
 
@@ -176,6 +177,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             None,
             None,
+            |_| {},
         )
     }
 
@@ -195,6 +197,27 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             None,
             None,
+            |_| {},
+        )
+    }
+
+    /// Open a fresh person profile with a service lent by its mounting host.
+    /// The loan follows production `HostContext::lend` and is not retained on
+    /// reopen: the next host must authorize and lend its own service again.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure.
+    pub fn for_person_with_lent<S: 'static>(person: &str, service: S) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        Self::open(
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Role::Owner,
+            person,
+            &[],
+            None,
+            None,
+            None,
+            move |context| context.lend(service),
         )
     }
 
@@ -265,6 +288,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             None,
             Some((Capture::new(scenario.map(str::to_owned)), viewport)),
+            |_| {},
         )?;
         super::stage::stage::<A>(app.harness(), scenario)?;
         Ok(app)
@@ -289,6 +313,35 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             None,
             None,
+            |_| {},
+        )
+    }
+
+    /// Launch on a private receiving profile after hydrating an existing
+    /// record in the same room. The production installer validates its
+    /// identity before the app can initialize or open it.
+    ///
+    /// # Errors
+    /// Returns invalid record scope, storage or launch failures.
+    pub fn launched_replica(
+        arguments: &[&str],
+        document: &mut tilo_resource::Doc,
+    ) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let native =
+            ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
+        ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
+            .map_err(operation)?;
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::open(
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Role::Owner,
+            AUTHOR,
+            &arguments,
+            None,
+            None,
+            None,
+            |_| {},
         )
     }
 
@@ -308,6 +361,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             Some(handoff),
             None,
+            |_| {},
         )
     }
 
@@ -327,6 +381,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             Some(file),
             None,
             None,
+            |_| {},
         )
     }
 
@@ -345,6 +400,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             None,
             None,
+            |_| {},
         )
     }
 
@@ -356,6 +412,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         file: Option<OpenFile>,
         handoff: Option<PlaybackHandoff>,
         capture: Option<(Capture, (u32, u32))>,
+        configure: impl FnOnce(&mut HostContext),
     ) -> Result<Self, LaunchError> {
         let (profile, private, private_arguments) = private_launch::<A>(profile, arguments)?;
         let (arguments, options) = split_command_line(&private_arguments, A::OPTIONS, A::FLAGS);
@@ -412,7 +469,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None => A::shot_viewport(None),
         };
         prepared.context.provide_content(profile.content());
-        let prepared = in_profile(prepared, &profile.root(), A::ID);
+        let mut prepared = in_profile(prepared, &profile.root(), A::ID);
+        configure(&mut prepared.context);
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
         let mut harness =
@@ -505,7 +563,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         // Release this instance's record writer before the next one opens it.
         drop(self);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
-        Self::open(profile, role, &author, &arguments, None, None, None)
+        Self::open(profile, role, &author, &arguments, None, None, None, |_| {})
     }
 
     /// Open what a launch naming `arguments` opens in this window, as the

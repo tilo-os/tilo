@@ -1940,3 +1940,31 @@ settings-appearance-schedule-follow = Follow the day and night schedule
 settings-appearance-shared-body = Your appearance preferences follow you across your devices. Wallpaper can apply to one workspace or every workspace.
 settings-appearance-shared-card = Your preferences
 settings-appearance-text-scale = Text scale
+
+display-devices-title = Screens on your devices
+display-device-screen = { $device } · { $screen } · { $status }
+display-device-online = Online
+display-device-offline = Offline
+display-devices-observed = Observed screen positions. Input access is granted separately.
+
+display-devices-arrange = Drag an online device screen beside yours. Screens on one device move together. Moving screens does not allow input.
+display-device-move-requested = Placement requested. The peer layout updates when it confirms its new position.
+display-device-move-pending = Sending display placement…
+display-device-move-unavailable = That screen is offline or its arrangement cannot be changed here.
+
+display-device-move-confirmed = The device confirmed its new display position.
+display-device-move-changed = The device layout changed before this position was confirmed. Try again.
+display-device-move-unconfirmed = The device did not confirm this position. Refresh and try again.
+
+input-dictionary-title = Personal dictionary
+input-dictionary-caption = Words you add are available to spelling, the on-screen keyboard and on-device dictation. Your spelling and capitalization are preserved.
+input-dictionary-unavailable = Your local personal dictionary is unavailable in this session.
+input-dictionary-word = Word
+input-dictionary-language = Language
+input-dictionary-language-caption = Leave language empty for all languages, or enter a language tag such as en, nl or fr.
+input-dictionary-add = Add word
+input-dictionary-save = Save
+input-dictionary-remove = Remove
+input-dictionary-reset = Remove all words
+input-dictionary-word-placeholder = Enter a word
+input-dictionary-all-languages = All languages

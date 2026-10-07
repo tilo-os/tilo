@@ -3027,66 +3027,74 @@ pub fn read_bounded_line<R: BufRead>(
     out: &mut String,
     max_bytes: usize,
 ) -> Result<Option<()>, ReadLineError> {
-    let mut buf = Vec::with_capacity(256);
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(b) => b,
-            Err(e) => return Err(ReadLineError::Io(e)),
-        };
-        if available.is_empty() {
-            // EOF: return accumulated bytes as a best-effort line if any, else None.
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
+    BoundedLineBuffer::default().read(reader, out, max_bytes)
+}
+
+/// One connection's bounded request prefix. Nonblocking readers retain it
+/// across `WouldBlock`, including a UTF-8 character split between reads.
+/// Consumed request bytes are zeroized after delivery and on connection drop.
+#[derive(Default)]
+pub struct BoundedLineBuffer(zeroize::Zeroizing<Vec<u8>>);
+
+impl BoundedLineBuffer {
+    /// Read one bounded line, preserving an incomplete prefix until more
+    /// bytes arrive. A nonempty final fragment at EOF keeps the existing policy.
+    ///
+    /// # Errors
+    /// Returns `TooLarge` for the cumulative line size, or an I/O/UTF-8 error.
+    /// `WouldBlock` preserves the pending bytes for the next call.
+    pub fn read<R: BufRead>(
+        &mut self,
+        reader: &mut R,
+        out: &mut String,
+        max_bytes: usize,
+    ) -> Result<Option<()>, ReadLineError> {
+        loop {
+            let available = match reader.fill_buf() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::WouldBlock {
+                        zeroize::Zeroize::zeroize(&mut *self.0);
+                    }
+                    return Err(ReadLineError::Io(error));
                 }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
+            };
+            if available.is_empty() {
+                return if self.0.is_empty() {
+                    Ok(None)
+                } else {
+                    self.finish(out)
+                };
             }
-        }
-        // Find the newline (if any) in the available slice.
-        let (consumed, found_nl) = match available.iter().position(|&b| b == b'\n') {
-            Some(idx) => (idx.saturating_add(1), true),
-            None => (available.len(), false),
-        };
-        if buf.len().saturating_add(consumed) > max_bytes {
-            // Cap reached: consume up to the cap so we don't leave garbage in the reader, then bail.
-            let remaining = max_bytes.saturating_sub(buf.len());
-            // `remaining < consumed <= available.len()` by construction, so this
-            // never misses — `unwrap_or(available)` is just a defensive fallback.
-            let take = available.get(..remaining).unwrap_or(available);
+            let (consumed, found_newline) = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or((available.len(), false), |index| {
+                    (index.saturating_add(1), true)
+                });
+            if self.0.len().saturating_add(consumed) > max_bytes {
+                reader.consume(max_bytes.saturating_sub(self.0.len()));
+                zeroize::Zeroize::zeroize(&mut *self.0);
+                return Err(ReadLineError::TooLarge);
+            }
+            let take = available.get(..consumed).unwrap_or(available);
             let taken = take.len();
-            buf.extend_from_slice(take);
+            self.0.extend_from_slice(take);
             reader.consume(taken);
-            return Err(ReadLineError::TooLarge);
-        }
-        // `consumed` is either `idx + 1` (a valid position in `available`) or
-        // `available.len()`, so this too never misses.
-        let take = available.get(..consumed).unwrap_or(available);
-        let taken = take.len();
-        buf.extend_from_slice(take);
-        reader.consume(taken);
-        if found_nl {
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
-                }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
+            if found_newline {
+                return self.finish(out);
             }
         }
+    }
+
+    fn finish(&mut self, out: &mut String) -> Result<Option<()>, ReadLineError> {
+        let result = std::str::from_utf8(&self.0)
+            .map(|line| out.push_str(line))
+            .map_err(|error| {
+                ReadLineError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            });
+        zeroize::Zeroize::zeroize(&mut *self.0);
+        result.map(|()| Some(()))
     }
 }
 
@@ -3120,6 +3128,60 @@ pub fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
 #[cfg(test)]
 mod framing_tests {
     use super::*;
+    #[test]
+    fn nonblocking_line_retains_split_utf8_and_the_next_line() {
+        use std::io::{BufReader, Write as _};
+        use std::os::unix::net::UnixStream;
+
+        let (server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let mut reader = BufReader::new(server);
+        let mut pending = BoundedLineBuffer::default();
+        let mut out = String::new();
+        client.write_all(&[0xf0, 0x9f]).unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Err(ReadLineError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        assert!(out.is_empty(), "a UTF-8 prefix is not yet a request");
+        client.write_all(&[0x98, 0x80, b'\n']).unwrap();
+        client.write_all(b"next\n").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Ok(Some(()))
+        ));
+        assert_eq!(out, "😀\n");
+        out.clear();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Ok(Some(()))
+        ));
+        assert_eq!(out, "next\n", "delivery resets only the completed prefix");
+    }
+
+    #[test]
+    fn nonblocking_line_cap_applies_across_fragments() {
+        use std::io::{BufReader, Write as _};
+        use std::os::unix::net::UnixStream;
+
+        let (server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let mut reader = BufReader::new(server);
+        let mut pending = BoundedLineBuffer::default();
+        let mut out = String::new();
+        client.write_all(b"abc").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 4),
+            Err(ReadLineError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        client.write_all(b"def\n").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 4),
+            Err(ReadLineError::TooLarge)
+        ));
+        assert!(out.is_empty(), "an oversized line must never be dispatched");
+    }
+
     /// `read_bounded_line` caps a malicious/buggy client's input at
     /// `TEST_CONTROL_MAX_LINE_BYTES`; the caller closes the connection on `TooLarge`.
     #[test]

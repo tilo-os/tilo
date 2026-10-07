@@ -5,6 +5,63 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
+fn peer_hardware_language_metadata_survives_projection_without_a_source_extension() {
+    for language in [Language::Verilog, Language::SystemVerilog] {
+        let mut sample = synced_sample();
+        let id = "00000000-0000-4000-8000-0000000000ed";
+        sample.app.merge_peer_edit(|doc| {
+            EditorDoc::create_file(
+                doc,
+                &crate::doc::CollaborativeFile {
+                    id: id.into(),
+                    kind: "file".into(),
+                    name: "hardware.txt".into(),
+                    path: "hardware.txt".into(),
+                    parent: None,
+                    language: language.label().into(),
+                    order: 1,
+                    deleted: false,
+                    name_revision: 0,
+                    structure_revision: 0,
+                    language_revision: 0,
+                    deletion_revision: 0,
+                },
+                "module mac;\nendmodule\n",
+            );
+        });
+        sample.app.settle();
+        sample.editor(|app| {
+            let node = app
+                .session
+                .project
+                .node_for_resource(id)
+                .expect("peer file projected");
+            let file = app
+                .session
+                .project
+                .get(node)
+                .expect("projected file exists");
+            assert!(
+                matches!(
+                    &file.kind,
+                    crate::model::NodeKind::File { language: actual, .. } if *actual == language
+                ),
+                "persisted {language:?} wins over the .txt extension"
+            );
+        });
+    }
+}
+
+#[test]
+fn hardware_dialects_use_standard_language_server_ids() {
+    assert_eq!(CodeApp::language_id(Language::Verilog), "verilog");
+    assert_eq!(
+        CodeApp::language_id(Language::SystemVerilog),
+        "systemverilog"
+    );
+}
+
+#[test]
 fn sample_app_opens_main_rs_with_accessible_context_and_a_collapsed_dock() {
     // Each phase builds a fresh sample app.
     new_app_opens_main_rs();

@@ -8,6 +8,9 @@ publish.workspace = true
 license.workspace = true
 
 [features]
+# Explicit native RAM custody qualification: requires a qualified tmpfs backing
+# or permission to create a noswap fixture in a private mount namespace.
+signal-profile-native-test = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
@@ -138,6 +141,12 @@ runtime-portal = { path = "../../runtime/runtime-portal" }
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
 terminal = { path = "../../../apps/terminal" }
+messages = { path = "../../../apps/messages" }
+passwords = { path = "../../../apps/passwords" }
+tilo-messaging = { path = "../../platform/tilo-messaging" }
+accounts = { path = "../../system/accounts" }
+tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
+tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"] }
 file-explorer = { path = "../../../apps/file-explorer" }
 browser = { path = "../../../apps/browser" }
 notes = { path = "../../../apps/notes" }
@@ -303,6 +312,9 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Real native editor instances in certified multi-device continuity fixtures.
+tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
+
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.
@@ -366,6 +378,7 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+signal-hook-registry = "1.4.8"
 # Tilo owns the producer side of portal ScreenCast streams.  `pipewire-rs`
 # talks to the session daemon directly; sandboxed apps only receive a remote
 # after the portal has granted a session.

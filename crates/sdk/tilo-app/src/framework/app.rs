@@ -440,7 +440,8 @@ pub(crate) fn build_root<A: ResourceApp>(
 pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
     let mut registry = tilo_actions::ActionRegistry::new();
     tilo_resource::group::register::<A::Resource>(&mut registry);
-    registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
+    registry
+        .register::<super::history::ResourceHistoryEdit<A::Resource>>(super::history::EDIT_TYPE);
     registry
 }
 
@@ -564,15 +565,14 @@ fn create<A: ResourceApp>(
     if let Some(file) = &file {
         file.report_opened(<A::Resource as Resource>::KIND);
     }
-    let handoff = context.take_handoff();
-    let lent = super::scenario::Lent::new(context.take_lent());
     let run = run
         .launched(Launched {
+            record: Some(context.record().id.clone()),
             arguments,
             options,
             file,
-            handoff,
-            lent,
+            handoff: context.take_handoff(),
+            lent: super::scenario::Lent::new(context.take_lent()),
         })
         .opening_with(opener)
         .showing_file_history(

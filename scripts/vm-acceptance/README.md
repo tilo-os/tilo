@@ -209,3 +209,40 @@ Touchpad gestures (W15) are driven through the control socket's `swipe` and `pin
 feed the shell's gesture tracker; libinput's own touchpad decoding needs a uinput touchpad
 `tilo-vm input` does not have yet. Not yet drivable, so failing as unobservable: output
 hotplug (B06; a slot's outputs are fixed at creation).
+
+## Terminal after a userspace cohort update
+
+`terminal-cohort.py` exercises an already active owner-controlled slot without
+power, session, permission, keyboard or screenshot operations. It uses the same
+`TiloVm` control transport and bounded wait helper as this suite. First close any
+existing **test** Terminal through its declared tab action: the runner refuses an
+existing Terminal or ambiguous/stale binding rather than touching its contents.
+
+```bash
+TILO_VM_CONFIG=/absolute/path/to/vms.toml \
+  python3 scripts/vm-acceptance/terminal-cohort.py \
+  --binary /absolute/path/to/tilo-vm --vm sysapps \
+  --slot yoga-app-acceptance-1006 --uid 1002 \
+  --cohort-receipt /absolute/path/to/successful-cohort/run.json \
+  --out target/terminal-cohort-new-run
+```
+
+The receipt must be the successful canonical `swap apps+runtime` receipt for
+this VM and slot, with full source commit and inventory digest. The output
+folder must be new. The runner checks that exact layer is installed, discovers
+Open and the live `terminal.session` contracts, binds Inspect/Run/Read to one
+room/record/opaque connection, and invokes a unique harmless `printf` exactly
+once. Broker acceptance is insufficient: every job must reach success. Read
+must report the same Default session, the marker as a standalone output line,
+and a subsequent Default prompt. A slot process probe reads only UID, process
+identity, runtime mappings and ELF hashes; the mapped runtime must equal the
+SDK ELF in that installed layer, and the slot generation/components must remain
+unchanged. Unobservable, ambiguous, stale, refused or truncated subjects fail.
+
+`proof.json`, contracts, job receipts, installed file metadata and the maintained
+CLI command log are saved under `--out`. The source association relies on the
+operator's original canonical activation receipt and daemon layer inventory;
+this script does not replace installer signature/closed-graph validation or
+infer source ancestry from a `native.*` name. No Host permission is granted, and
+no actor is relabelled. On a physical device, run it only after the owner has
+confirmed the matched cohort is active and authorized this test.

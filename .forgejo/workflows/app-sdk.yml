@@ -337,20 +337,11 @@ jobs:
           bundle=target/tilo-app/web/calculator/bundle
           (cd "$bundle" && python3 -m http.server 7878 --bind 127.0.0.1) &
           server=$!
-          "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
-            --enable-features=Vulkan --use-vulkan=swiftshader --use-angle=swiftshader \
-            --disable-background-timer-throttling --disable-renderer-backgrounding \
-            --disable-backgrounding-occluded-windows \
-            --remote-debugging-port="$CDP_PORT" --user-data-dir="$RUNNER_TEMP/chrome-profile" \
-            about:blank &
-          chrome=$!
-          trap 'kill $server $chrome 2>/dev/null || true' EXIT
-          for _ in $(seq 1 30); do
-            curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null && break
-            sleep 1
-          done
+          trap 'kill $server 2>/dev/null || true' EXIT
           mapfile -t apps < <(python3 -c 'import json,sys; print("\n".join(a["id"] for a in json.load(open(sys.argv[1]))["applications"]))' "$bundle/apps.json")
           mkdir -p "$RUNNER_TEMP/web-shots"
+          # Independent browsers keep each probe foregrounded while using
+          # the existing job CPU/memory budget. Every app and timing stays.
           SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
             http://127.0.0.1:7878 "${apps[@]}" desktop
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4

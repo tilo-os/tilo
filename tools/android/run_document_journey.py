@@ -14,6 +14,7 @@ import tempfile
 import tomllib
 
 from qualify_apk import digest, pinned, verify_runtime
+from execution_host import add_architecture, native_architecture
 from run_arity_journey import REPO, Journey, checked_output, wait_for, require_ok
 from run_integration_journey import stop, stop_bus_helpers
 from journey_support import AccessiblePicker
@@ -28,6 +29,7 @@ def revoke_fixture(journey, identifier):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    add_architecture(parser)
     for name in ('payload', 'runtime-receipt', 'runtime-parent', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('apk', 'signer', 'runtime-receipt'):
@@ -38,6 +40,7 @@ def main():
     parser.add_argument('--cold-hydration', action='store_true',
                         help='require real FUSE backend eviction and actual APK relaunch restoration')
     args = parser.parse_args()
+    native_architecture(args.architecture)
     if args.cold_hydration and args.expect_incompatibility:
         parser.error('cold restoration requires the compatible runtime')
     output = checked_output(args.output)
@@ -48,7 +51,7 @@ def main():
         raise RuntimeError('fixture signature qualification does not match')
     if qualification['runtime_receipt_sha256'] != args.runtime_receipt_sha256:
         raise RuntimeError('qualification runtime differs')
-    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, 'x86_64')
+    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, args.architecture)
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
         raise RuntimeError('runtime parent must be private and user-owned')
@@ -137,6 +140,10 @@ def main():
                         raise RuntimeError('document APIs did not pass: ' + repr(lines))
                     if destination.read_bytes() != b'final\n':
                         raise RuntimeError('actual output bytes differ')
+                saved = list(private.rglob('document-uris.txt'))
+                if not args.expect_incompatibility and len(saved) != 1:
+                    raise RuntimeError('missing actual private document URIs')
+                private_uris = saved[0].read_bytes() if saved else None
                 if digest(source) != initial['source'] or digest(canary) != initial['canary']:
                     raise RuntimeError('source or ungranted sibling bytes changed')
                 _, _, tree = wait_for(lambda: picker.described('Android document resource status'),
@@ -161,6 +168,8 @@ def main():
                         raise RuntimeError('cold relaunch did not repeat the complete document assertions')
                     if digest(source) != initial['source'] or destination.read_bytes() != b'final\n':
                         raise RuntimeError('cold restored source/output bytes differ')
+                    if saved[0].read_bytes() != private_uris:
+                        raise RuntimeError('private document URIs changed during cold relaunch')
                     require_ok(journey.request('snapshot', path=str(output / 'cold-restored.png')))
                     journey.close()
                     wait_for(lambda: acceptance.read_text().splitlines().count('lifecycle=destroy') == 2,
@@ -175,11 +184,17 @@ def main():
                     journey.launch()
                     wait_for(lambda: recorded('revocation-complete=true'), 'actual revoked document API denials')
                     if 'failure=' in acceptance.read_text(): raise RuntimeError('revoked authority accepted')
+                    if saved[0].read_bytes() != private_uris:
+                        raise RuntimeError('revoked relaunch changed private document URIs')
                     require_ok(journey.request('snapshot', path=str(output / 'document-revocation.png')))
                     journey.close()
                     closes = 3 if cold else 2
                     wait_for(lambda: acceptance.read_text().splitlines().count('lifecycle=destroy') == closes,
                              'actual relaunch close')
+                    if destination.read_bytes() != b'final\n':
+                        raise RuntimeError('revoked relaunch changed exact output bytes')
+                if digest(source) != initial['source'] or digest(canary) != initial['canary']:
+                    raise RuntimeError('source or sibling bytes changed after withdrawal')
                 (output / 'acceptance.txt').write_text(acceptance.read_text())
                 log.flush()
                 runtime_log = (output / 'compositor.log').read_text()
@@ -187,7 +202,7 @@ def main():
                                  'landlock: fully enforced', 'no_new_privs: true'):
                     if evidence not in runtime_log: raise RuntimeError('missing production evidence: ' + evidence)
                 result = {'schema': 1, 'completed_at_utc': datetime.now(timezone.utc).isoformat(),
-                    'execution': 'headless production Tilo, actual ART, x86_64 software graphics',
+                    'execution': 'headless production Tilo, actual ART, ' + args.architecture + ' software graphics',
                     'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
                     'production_binaries': {n: digest(REPO / 'target/debug' / n) for n in ('shell', 'tilo-launcher')},
                     'baseline_incompatibility_observed': args.expect_incompatibility,
@@ -195,6 +210,7 @@ def main():
                     'fixture_grants_revoked': True, 'source_and_canary_unchanged': True,
                     'ungranted_sibling_exists': not args.cold_hydration,
                     'revoked_metadata_reads_writes_denied': not args.expect_incompatibility,
+                    'private_document_uris_preserved': not args.expect_incompatibility,
                     'real_device': False, 'presented_frame': frame,
                     'png_sha256': {p.name: digest(p) for p in output.glob('*.png')}}
                 if cold: result['cold_hydration'] = cold.report()

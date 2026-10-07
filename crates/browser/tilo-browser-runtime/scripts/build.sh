@@ -111,9 +111,13 @@ cp "$crate/web/resource.css" "$out/resource.css"
 (cd "$repo/scripts/moq-browser" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
 
 python3 - "$repo" "$out" <<'PY'
-import json, pathlib, re, shutil, sys
+import importlib.util, json, pathlib, re, shutil, sys
 repo, out = map(pathlib.Path, sys.argv[1:])
-source = repo / 'crates/sdk/ui-core/assets/fonts'
+tool = repo / 'tools/font-catalog.py'
+spec = importlib.util.spec_from_file_location('font_catalog', tool)
+catalog_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(catalog_module)
+source = catalog_module.prepared_root(repo / 'crates/sdk/ui-core/assets/fonts', 'product')
 text = (source / 'manifest.toml').read_text()
 assets = []
 for block in text.split('[[font]]')[1:]:
@@ -130,6 +134,7 @@ for block in text.split('[[font]]')[1:]:
 assert any(asset['startup'] for asset in assets), 'no browser startup fonts in the manifest'
 shutil.copytree(source / 'LICENSES', out / 'fonts/LICENSES', dirs_exist_ok=True)
 shutil.copy2(source / 'manifest.toml', out / 'fonts/manifest.toml')
+shutil.copy2(source / 'PROVENANCE.md', out / 'fonts/PROVENANCE.md')
 catalog = re.search(r'^catalog_id = "(.*?)"$', text, re.M)[1]
 (out / 'fonts.json').write_text(json.dumps(dict(schema=1, catalog=catalog, assets=assets), separators=(',', ':')) + '\n')
 PY

@@ -96,6 +96,14 @@ pub enum DisplayEffect {
     /// dragging it does. Staged until applied.
     #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
+    /// Request this peer's screens at a shared logical position. No input grant.
+    #[effect(returns, row, label = "Move device display")]
+    MoveDeviceDisplay {
+        display: String,
+        revision: u64,
+        x: i32,
+        y: i32,
+    },
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
     #[effect(returns, row)]
@@ -640,7 +648,9 @@ impl DisplayArea {
     /// Take in background results, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_background();
+            let mut model = model.borrow_mut();
+            model.poll_device_move();
+            model.poll_background();
         }
     }
 
@@ -653,6 +663,13 @@ impl DisplayArea {
             .into_iter()
             .map(|output| model.output_row(output))
             .collect();
+        rows.extend(
+            model
+                .device_displays
+                .iter()
+                .filter(|display| DisplayModel::device_movable(display))
+                .map(DisplayModel::device_output_row),
+        );
         if model.of_device {
             for tool in &settings_store::display_tools::TrustedDisplayTools::load().tools {
                 rows.push(
@@ -677,6 +694,10 @@ pub struct DisplayModel {
     of_device: bool,
     brightness_control: Arc<dyn BrightnessControl>,
     outputs: Vec<DisplayOutput>,
+    device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
+    pending_device_move: Option<settings_store::device_displays::DeviceDisplayMove>,
+    awaiting_device_move: Option<(settings_store::device_displays::DeviceDisplayMove, Instant)>,
+    device_move_reply: Option<Rc<std::cell::RefCell<ui::widget::DeviceDisplayMoveReply>>>,
     ambient_sensor_available: bool,
     brightness: f32,
     prefs: Followed<DisplayPrefs>,
@@ -701,10 +722,95 @@ pub struct DisplayModel {
     /// The arrangement canvas's in-progress drag; kept here because the
     /// composition is rebuilt between frames.
     arrangement_drag: LocalState<Option<super::display_arrangement::ArrangementDrag>>,
+    device_arrangement_drag: LocalState<Option<super::display_arrangement::ArrangementDrag>>,
     changed: bool,
 }
 
 impl DisplayModel {
+    fn device_movable(display: &settings_store::device_displays::DeviceDisplay) -> bool {
+        display.online && !display.local && display.revision != 0
+    }
+
+    fn device_output_row(display: &settings_store::device_displays::DeviceDisplay) -> LiveRow {
+        LiveRow::new(
+            format!("settings.device-display:{}", display.key()),
+            "settings.device-display",
+            display.label.clone(),
+        )
+        .operation(
+            SettingsEffect::from(DisplayEffect::MoveDeviceDisplay {
+                display: display.key(),
+                revision: display.revision,
+                x: 0,
+                y: 0,
+            })
+            .bound_asking(&["x", "y"]),
+        )
+    }
+
+    pub(crate) fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        let request = self.pending_device_move.take()?;
+        let reply = Rc::downgrade(self.device_move_reply.as_ref()?);
+        Some(ui::widget::AppHostIntent::MoveDeviceDisplay { request, reply })
+    }
+
+    fn poll_device_move(&mut self) {
+        let result = self
+            .device_move_reply
+            .as_ref()
+            .and_then(|reply| reply.borrow_mut().result.take());
+        if let Some(result) = result {
+            self.device_move_reply = None;
+            self.notice = Some(result.map_or_else(
+                |error| {
+                    self.awaiting_device_move = None;
+                    error
+                },
+                |()| t("display-device-move-requested"),
+            ));
+            self.changed = true;
+        }
+        if self
+            .awaiting_device_move
+            .as_ref()
+            .is_some_and(|(_, started)| started.elapsed() >= Duration::from_secs(10))
+        {
+            self.device_move_reply = None;
+            self.pending_device_move = None;
+            self.awaiting_device_move = None;
+            self.notice = Some(t("display-device-move-unconfirmed"));
+            self.changed = true;
+            return;
+        }
+        if self.device_move_reply.is_some() {
+            return;
+        }
+        let Some((request, _started)) = &self.awaiting_device_move else {
+            return;
+        };
+        let observed = self
+            .device_displays
+            .iter()
+            .find(|screen| screen.key() == request.screen.key());
+        let message = match observed {
+            None => Some(t("display-device-move-unavailable")),
+            Some(screen) if !screen.online => Some(t("display-device-move-unavailable")),
+            Some(screen) if screen.revision > request.screen.revision => {
+                Some(t(if (screen.x, screen.y) == (request.x, request.y) {
+                    "display-device-move-confirmed"
+                } else {
+                    "display-device-move-changed"
+                }))
+            }
+            _ => None,
+        };
+        if let Some(message) = message {
+            self.awaiting_device_move = None;
+            self.notice = Some(message);
+            self.changed = true;
+        }
+    }
+
     /// This device's displays; brightness is probed and set off the UI
     /// thread.
     fn of_device(cx: PaneCx) -> Self {
@@ -747,6 +853,9 @@ impl DisplayModel {
             output_config,
             output_brightness,
             pending_candidate: None,
+            pending_device_move: None,
+            awaiting_device_move: None,
+            device_move_reply: None,
             last_seen_transaction: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: settings_store::hardware::display_snapshot_path()
@@ -758,6 +867,9 @@ impl DisplayModel {
             pending_brightness: None,
             notice: None,
             arrangement_drag: LocalState::new(None),
+            device_arrangement_drag: LocalState::new(None),
+            device_displays: settings_store::device_displays::DeviceDisplaySnapshot::load()
+                .map_or_else(Vec::new, |snapshot| snapshot.displays),
             changed: false,
         }
     }
@@ -765,12 +877,15 @@ impl DisplayModel {
     /// A built-in panel at 62 %, with an ambient light sensor; nothing it
     /// does reaches the device or its files.
     fn sample(cx: PaneCx) -> Self {
+        let device_displays = cx
+            .scene()
+            .map_or_else(Vec::new, |scene| scene.device_displays.clone());
         let mode = OutputMode {
             width: 1920,
             height: 1080,
             refresh_mhz: 60_000,
         };
-        Self::detached(cx).with_outputs(vec![DisplayOutput {
+        let mut model = Self::detached(cx).with_outputs(vec![DisplayOutput {
             label: "Built-in display".into(),
             connected: true,
             builtin: true,
@@ -788,7 +903,9 @@ impl DisplayModel {
             color_profiles: Vec::new(),
             color_profile_labels: BTreeMap::new(),
             monitor: None,
-        }])
+        }]);
+        model.device_displays = device_displays;
+        model
     }
 
     /// A model with no outputs whose brightness changes nothing; tests give
@@ -805,6 +922,9 @@ impl DisplayModel {
             output_config: DisplayConfig::default(),
             output_brightness: BTreeMap::new(),
             pending_candidate: None,
+            pending_device_move: None,
+            awaiting_device_move: None,
+            device_move_reply: None,
             last_seen_transaction: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: None,
@@ -815,6 +935,8 @@ impl DisplayModel {
             pending_brightness: None,
             notice: None,
             arrangement_drag: LocalState::new(None),
+            device_arrangement_drag: LocalState::new(None),
+            device_displays: Vec::new(),
             changed: false,
         }
     }
@@ -858,6 +980,7 @@ impl DisplayModel {
                     "vrr_available": output.vrr,
                 })
             }).collect::<Vec<_>>(),
+            "device_displays": self.device_displays,
             "saved_configuration": self.output_config,
             "staged_configuration": self.staged(),
             "has_staged_changes": self.pending_candidate.is_some(),
@@ -1142,6 +1265,40 @@ impl DisplayModel {
         }
         self.changed = true;
         let reported = match effect {
+            DisplayEffect::MoveDeviceDisplay {
+                display,
+                revision,
+                x,
+                y,
+            } => {
+                if self.device_move_reply.is_some() || self.awaiting_device_move.is_some() {
+                    return Err(t("display-device-move-pending"));
+                }
+                let screen = self
+                    .device_displays
+                    .iter()
+                    .find(|screen| {
+                        screen.key() == *display
+                            && screen.revision == *revision
+                            && DisplayModel::device_movable(screen)
+                    })
+                    .ok_or_else(|| t("display-device-move-unavailable"))?
+                    .clone();
+                self.pending_device_move =
+                    Some(settings_store::device_displays::DeviceDisplayMove {
+                        screen,
+                        x: *x,
+                        y: *y,
+                    });
+                self.awaiting_device_move = self
+                    .pending_device_move
+                    .clone()
+                    .map(|request| (request, ui::time::now()));
+                self.device_move_reply = Some(Rc::new(std::cell::RefCell::new(
+                    ui::widget::DeviceDisplayMoveReply::default(),
+                )));
+                Ok(t("display-device-move-pending"))
+            }
             DisplayEffect::InspectDisplayConfiguration => {
                 Err("Display inspection is read-only.".into())
             }
@@ -1500,6 +1657,12 @@ impl DisplayModel {
             return;
         }
         self.last_snapshot_check = ui::time::now();
+        let devices = settings_store::device_displays::DeviceDisplaySnapshot::load()
+            .map_or_else(Vec::new, |snapshot| snapshot.displays);
+        if devices != self.device_displays {
+            self.device_displays = devices;
+            self.changed = true;
+        }
         let stamp = settings_store::hardware::display_snapshot_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         if stamp != self.snapshot_stamp {
@@ -1549,6 +1712,9 @@ impl DisplayModel {
         let brightness = self.build_brightness_card();
 
         let mut cards = vec![arrangement];
+        if let Some(devices) = self.build_device_arrangement_card() {
+            cards.push(devices);
+        }
         if let Some(notice) = &self.notice {
             cards.push(card(&t("display-card-title"), rows(vec![caption(notice)])));
         }
@@ -1561,6 +1727,85 @@ impl DisplayModel {
         }
         cards.push(brightness);
         crate::widgets::cards(cards)
+    }
+
+    /// Certified peer connectors at their observed shared logical positions.
+    /// Observation alone never makes a screen movable or grants input access.
+    fn build_device_arrangement_card(&self) -> Option<El> {
+        use super::display_arrangement::{
+            ArrangedDisplay, DisplayArrangement, placement::Placement,
+        };
+        if !self.device_displays.iter().any(|display| !display.local) {
+            return None;
+        }
+        let first_local = self
+            .device_displays
+            .iter()
+            .position(|display| display.local);
+        let displays = self
+            .device_displays
+            .iter()
+            .enumerate()
+            .filter_map(|(index, display)| {
+                Some(ArrangedDisplay {
+                    connector: display.key(),
+                    movement_group: Some(display.device.clone()),
+                    label: t_args(
+                        "display-device-screen",
+                        &[
+                            ("device", display.device_label.clone().into()),
+                            ("screen", display.label.clone().into()),
+                            (
+                                "status",
+                                t(if display.online {
+                                    "display-device-online"
+                                } else {
+                                    "display-device-offline"
+                                })
+                                .into(),
+                            ),
+                        ],
+                    ),
+                    number: index + 1,
+                    placement: Placement::new(
+                        display.x,
+                        display.y,
+                        i32::try_from(display.width).ok()?,
+                        i32::try_from(display.height).ok()?,
+                    ),
+                    primary: first_local == Some(index),
+                    movable: DisplayModel::device_movable(display),
+                })
+            })
+            .collect();
+        let moves = self
+            .device_displays
+            .iter()
+            .filter(|display| DisplayModel::device_movable(display))
+            .filter_map(|display| {
+                let key = display.key();
+                let target = key.clone();
+                let revision = display.revision;
+                self.cx
+                    .row_binding(
+                        &DisplayModel::device_output_row(display).into_resource(),
+                        effect(DisplayEffect::MOVE_DEVICE_DISPLAY)
+                            .map(move |(x, y): (i32, i32)| (target.clone(), revision, x, y)),
+                    )
+                    .map(|binding| (key, binding))
+            })
+            .collect();
+        Some(card(
+            &t("display-devices-title"),
+            rows(vec![
+                Box::new(DisplayArrangement::new(
+                    displays,
+                    moves,
+                    self.device_arrangement_drag.clone(),
+                )),
+                caption(&t("display-devices-arrange")),
+            ]),
+        ))
     }
 
     /// The "Displays" arrangement card: a drag-to-arrange canvas of the
@@ -1663,6 +1908,7 @@ impl DisplayModel {
             };
             next_free_x = next_free_x.max(x.saturating_add(width));
             placed.push(ArrangedDisplay {
+                movement_group: None,
                 connector: output.connector.clone(),
                 label: output_title(output),
                 number: numbers.get(index).copied().unwrap_or(index + 1),
@@ -2165,6 +2411,7 @@ impl PaneModel for DisplayModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.poll_device_move();
         self.poll_background();
         self.poll_device();
         if self.prefs.refresh() {
@@ -2178,7 +2425,9 @@ impl PaneModel for DisplayModel {
     }
 
     fn busy(&self) -> bool {
-        self.hardware_probe.is_some() || self.pending_brightness.is_some()
+        self.hardware_probe.is_some()
+            || self.pending_brightness.is_some()
+            || self.awaiting_device_move.is_some()
     }
 
     fn next_wake(&self) -> Option<Instant> {
@@ -2317,6 +2566,242 @@ mod tests {
     use crate::dispatcher::testing::RecordingDispatcher;
 
     /// The compositor's exact output is the shared control and automation target.
+    #[test]
+    fn peer_drag_exports_the_same_exact_request_without_editing_local_outputs() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        let saved = pane.output_config.clone();
+        pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+            device: "drag-peer".into(),
+            device_label: "Laptop".into(),
+            connector: "eDP-1".into(),
+            label: "Panel".into(),
+            online: true,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+            revision: 9,
+        }];
+        let row = DisplayModel::device_output_row(&pane.device_displays[0]);
+        assert_eq!(row.id(), "settings.device-display:drag-peer/eDP-1");
+        assert!(
+            pane.apply(&DisplayEffect::MoveDeviceDisplay {
+                display: "drag-peer/eDP-1".into(),
+                revision: 8,
+                x: 0,
+                y: 1080
+            })
+            .is_err(),
+            "a drag bound before a new peer layout cannot overwrite it"
+        );
+        pane.apply(&DisplayEffect::MoveDeviceDisplay {
+            display: "drag-peer/eDP-1".into(),
+            revision: 9,
+            x: 0,
+            y: 1080,
+        })
+        .unwrap();
+        let ui::widget::AppHostIntent::MoveDeviceDisplay { request, reply } =
+            pane.take_host_intent().unwrap()
+        else {
+            panic!("exact typed host request");
+        };
+        assert_eq!(request.screen, pane.device_displays[0]);
+        assert_eq!((request.x, request.y), (0, 1080));
+        assert_eq!(pane.output_config, saved);
+        assert!(pane.pending_candidate.is_none());
+        assert!(pane.take_host_intent().is_none());
+        reply.upgrade().unwrap().borrow_mut().result = Some(Err("Disconnected".into()));
+        pane.poll_device_move();
+        assert_eq!(pane.notice.as_deref(), Some("Disconnected"));
+        pane.device_displays[0].online = false;
+        assert!(
+            pane.apply(&DisplayEffect::MoveDeviceDisplay {
+                display: "drag-peer/eDP-1".into(),
+                revision: 9,
+                x: 0,
+                y: 0
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn peer_drag_confirmation_reports_owner_updates_competing_layouts_and_offline() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        for outcome in 0..3 {
+            let mut pane = laptop_with_monitor();
+            pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+                device: "confirmation-peer".into(),
+                device_label: "Peer".into(),
+                connector: "eDP-1".into(),
+                label: "Panel".into(),
+                online: true,
+                local: false,
+                x: 1920,
+                y: 0,
+                width: 1280,
+                height: 720,
+                scale_milli: 1250,
+                revision: 9,
+            }];
+            pane.apply(&DisplayEffect::MoveDeviceDisplay {
+                display: "confirmation-peer/eDP-1".into(),
+                revision: 9,
+                x: 0,
+                y: 1080,
+            })
+            .unwrap();
+            let ui::widget::AppHostIntent::MoveDeviceDisplay { reply, .. } =
+                pane.take_host_intent().unwrap()
+            else {
+                panic!("placement host request");
+            };
+            reply.upgrade().unwrap().borrow_mut().result = Some(Ok(()));
+            pane.poll_device_move();
+            assert!(
+                pane.awaiting_device_move.is_some(),
+                "dispatch is never reported as applied"
+            );
+            let screen = &mut pane.device_displays[0];
+            screen.revision = 10;
+            let expected = match outcome {
+                0 => {
+                    screen.x = 0;
+                    screen.y = 1080;
+                    "display-device-move-confirmed"
+                }
+                1 => {
+                    screen.y = 20;
+                    "display-device-move-changed"
+                }
+                _ => {
+                    screen.online = false;
+                    "display-device-move-unavailable"
+                }
+            };
+            pane.poll_device_move();
+            assert!(pane.awaiting_device_move.is_none());
+            assert_eq!(pane.notice, Some(t(expected)));
+        }
+    }
+
+    #[test]
+    fn peer_drag_timeout_cancels_an_unadmitted_host_gesture() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+            device: "timeout-peer".into(),
+            device_label: "Peer".into(),
+            connector: "eDP-1".into(),
+            label: "Panel".into(),
+            online: true,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+            revision: 9,
+        }];
+        pane.apply(&DisplayEffect::MoveDeviceDisplay {
+            display: "timeout-peer/eDP-1".into(),
+            revision: 9,
+            x: 0,
+            y: 1080,
+        })
+        .unwrap();
+        let ui::widget::AppHostIntent::MoveDeviceDisplay { reply, .. } =
+            pane.take_host_intent().unwrap()
+        else {
+            panic!("placement host request");
+        };
+        pane.awaiting_device_move.as_mut().unwrap().1 = ui::time::now()
+            .checked_sub(Duration::from_secs(11))
+            .unwrap();
+        pane.poll_device_move();
+        assert!(
+            reply.upgrade().is_none(),
+            "an expired gesture leaves no live admission witness"
+        );
+        assert!(pane.pending_device_move.is_none() && pane.awaiting_device_move.is_none());
+        assert_eq!(pane.notice, Some(t("display-device-move-unconfirmed")));
+        assert!(pane.take_host_intent().is_none());
+    }
+
+    #[test]
+    fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.surface::<SettingsApp, _>(|settings| {
+            settings.displays().model().borrow_mut().device_displays =
+                vec![settings_store::device_displays::DeviceDisplay {
+                    device: "semantic-peer".into(),
+                    device_label: "Peer laptop".into(),
+                    connector: "eDP-1".into(),
+                    label: "Panel".into(),
+                    online: true,
+                    local: false,
+                    x: 1920,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                    scale_milli: 1250,
+                    revision: 9,
+                }];
+        })
+        .unwrap();
+        app.settle();
+        let address = "settings.device-display:semantic-peer/eDP-1";
+        let surface = app.agent_surface();
+        let row = surface
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["resource"] == address && row["action"] == "move-device-display")
+            .expect("discovered screen exports its move action");
+        assert_eq!(
+            row["params"].as_array().unwrap().len(),
+            2,
+            "only logical x/y are caller-controlled"
+        );
+        assert!(
+            app.call_on(
+                address,
+                "move-device-display",
+                serde_json::json!({"x":0,"y":1080,"revision":1})
+            )
+            .is_err()
+        );
+        assert!(
+            app.call_on(
+                address,
+                "move-device-display",
+                serde_json::json!({"x":0,"y":1080,"display":"other/eDP-1"})
+            )
+            .is_err()
+        );
+        app.call_on(
+            address,
+            "move-device-display",
+            serde_json::json!({"x":0,"y":1080}),
+        )
+        .unwrap();
+        let intent = app.surface::<SettingsApp, _>(<SettingsApp as ui::framework::ResourceSurface<Settings, SettingsEffect>>::take_host_intent).flatten().expect("the real mounted surface carries the typed host intent");
+        let ui::widget::AppHostIntent::MoveDeviceDisplay { request, .. } = intent else {
+            panic!("typed topology request");
+        };
+        assert_eq!(request.screen.device, "semantic-peer");
+        assert_eq!(request.screen.revision, 9);
+        assert_eq!((request.x, request.y), (0, 1080));
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
     #[test]
     fn connected_display_controls_publish_their_parameter_actions() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
@@ -3194,5 +3679,64 @@ mod tests {
         .unwrap();
         assert!(!TrustedDisplayTools::load().contains(&kanshi));
         assert!(pane.build_trusted_tools_card().is_none());
+    }
+    #[test]
+    fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
+        fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
+            fn collect(node: &ui::a11y::AccessNode, names: &mut Vec<String>) {
+                if let Some(name) = &node.name {
+                    names.push(name.clone());
+                }
+                for child in &node.children {
+                    collect(child, names);
+                }
+            }
+            if let Some(node) = widget.accessibility() {
+                collect(&node, names);
+            }
+            for child in widget.children() {
+                accessible_names(child, names);
+            }
+        }
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        assert!(pane.build_device_arrangement_card().is_none());
+        pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+            device: "certified-peer".into(),
+            device_label: "Peer laptop".into(),
+            connector: "eDP-1".into(),
+            label: "Panel".into(),
+            online: false,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+            revision: 1,
+        }];
+        let card = pane
+            .build_device_arrangement_card()
+            .expect("discovered peer has a real canvas");
+        let mut names = Vec::new();
+        accessible_names(card.as_ref(), &mut names);
+        assert!(
+            names
+                .iter()
+                .any(|name| name.contains("Peer laptop") && name.contains("Offline")),
+            "assistive users receive actual peer and offline state"
+        );
+        let inspection = pane.inspection();
+        assert_eq!(inspection["device_displays"][0]["device"], "certified-peer");
+        assert_eq!(inspection["device_displays"][0]["scale_milli"], 1250);
+        assert!(
+            pane.apply(&DisplayEffect::MoveDisplay {
+                display: "certified-peer/eDP-1".into(),
+                x: 0,
+                y: 0,
+            })
+            .is_err(),
+            "read-only discovery cannot edit local outputs or grant input"
+        );
     }
 }

@@ -9,6 +9,26 @@
 // Exits non-zero when any app panics, throws or never presents a frame.
 const [base, ...apps] = process.argv.slice(2);
 const port = process.env.CDP_PORT ?? '9333';
+// Older PR workflow definitions still invoke this entry point directly after
+// merging current main. Give them the same bounded CI driver; workers and
+// manual callers continue through the unchanged probe below.
+if (process.env.CI === 'true' && process.env.CHROME && process.env.RUNNER_TEMP &&
+    process.env.TILO_WEB_SMOKE_WORKER !== '1') {
+  const {spawn} = await import('node:child_process');
+  // The child can run before spawn returns; install forwarding first.
+  let driver;
+  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => driver?.kill(signal));
+  driver = spawn('bash', ['tools/web/run_smoke_shards.sh', base, ...apps], {
+    stdio: 'inherit',
+    // A legacy workflow may already own its browser on `port`.
+    env: {...process.env, CDP_PORT: String(Number(port) + 1)},
+  });
+  const status = await new Promise((resolve, reject) => {
+    driver.once('error', reject);
+    driver.once('close', code => resolve(code ?? 1));
+  });
+  process.exit(status);
+}
 const shots = process.env.SHOTS_DIR ?? '.';
 const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
 const ws = new WebSocket(version.webSocketDebuggerUrl);

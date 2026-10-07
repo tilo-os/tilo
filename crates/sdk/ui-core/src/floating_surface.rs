@@ -165,6 +165,11 @@ pub struct FloatingSurfaceProtocolRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceClientMessage {
+    /// A typed Settings request on the existing authenticated app connection.
+    MoveDeviceDisplay {
+        request: u64,
+        placement: settings_store::device_displays::DeviceDisplayMove,
+    },
     /// Bounded response to a trusted owner operation on this same connection.
     DeviceShellOutcome {
         request: u64,
@@ -279,6 +284,11 @@ pub enum DeviceShellOperation {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceHostMessage {
+    /// Admission/delivery result. The owner's published topology confirms application.
+    DeviceDisplayMoveResult {
+        request: u64,
+        result: Result<(), String>,
+    },
     /// The authenticated device owner selected Terminal's device-shell target.
     /// This requests its ordinary permission flow; it is not a grant.
     DeviceShellOperation {

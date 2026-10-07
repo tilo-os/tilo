@@ -282,12 +282,48 @@ If the environment prohibits user namespaces, use the existing isolated Linux
 builder where these tests can run as container root. Missing capabilities fail
 the command and are recorded in its receipt.
 
+Signal working-profile custody has an explicit native qualification feature:
+`cargo test --locked -p shell --lib --features signal-profile-native-test working_profile::tests`
+and `cargo test --locked -p shell --lib --features signal-profile-native-test verified_enrollment_ram_profile_native_qualification`.
+These execute the production materializer, not a substitute memory policy. They
+require a private tmpfs whose opened mount reports `noswap`, or a host whose swap
+is absent or entirely zram without disk writeback. Otherwise the fixture attempts
+a disposable user/mount namespace; kernels can refuse `noswap` on unprivileged
+mounts, in which case qualification fails. The fixture does not change host swap
+or trust settings. Ordinary custody tests still cover encrypted storage and the
+original protected grant; they do not qualify native working-profile custody.
+A provider lease handed to the launcher cannot use the prelaunch cancellation
+checkpoint. The strict service launcher requires a successful exit of the actual
+private PID-namespace init before collecting the newest bounded working image.
+Forced shutdowns preserve the interrupted marker. Signed-runtime qualification
+remains a separate acceptance requirement.
+
 CI's repository policy tests discover the same app-packaging tests, including
 the build-to-collection handoff regression.
 For an actual installer VM cycle with an already prepared medium, continue using
 `os/dev/test-installer-cycle.sh`. To run a change in the Tilo OS image, use
 `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); for the disposable Fedora desktop
 development session use `dist/dev/fedora44-vm-iterate.sh`.
+
+Source builds prepare the pinned font catalog during compilation, outside the
+source tree. Python 3.11+ is required. The first build downloads the exact reviewed
+fonts; subsequent builds verify the cached bytes. Prewarm with
+`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures`.
+Set `TILO_FONT_ASSETS_OFFLINE=1` (or `CARGO_NET_OFFLINE=true`) to require a warm
+cache, or supply a complete matching catalog with `TILO_FONT_CATALOG_ROOT`.
+See [font artifact preparation](crates/sdk/ui-core/assets/fonts/ARTIFACTS.md).
+
+A Cargo drop-in compiling on another machine prepares the catalog there. If the
+fetched executable will run locally, use the client's generated-artifact fetch
+facility to bring `target/font-artifacts/catalogs` back as part of the build,
+preserving its relative path. Fetching an executable alone does not bring font
+data, license notices or provenance back. With a custom cache location, preserve
+the catalog path compiled into the executable.
+
+Verify the received catalog locally without a network using
+`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --offline`.
+Tests and executables running on the builder use its catalog directly.
+Applications do not download fonts at runtime.
 
 For measured Rust edit feedback on the remote builder, run one scoped command:
 
@@ -1644,8 +1680,31 @@ suite names a member that `manage-deps` gave the unconditional line.
 Enable the repo's git hooks once per clone:
 
 ```bash
-git config core.hooksPath .githooks
+python3 tools/dev/install-git-hooks.py
 ```
+
+The tracked hooks do not activate automatically in a fresh clone. The installer
+verifies both hooks, preserves unrelated hook configuration, and uses worktree
+configuration when enabled. Run it in each linked worktree that needs its own
+managed hooks. It refuses an unrelated hooks path or custom default hooks;
+arrange explicit chaining rather than overwriting them.
+
+`commit-msg` requires `type(optional-scope)!: description`. Types are `build`,
+`chore`, `ci`, `docs`, `dev`, `env`, `feat`, `fix`, `perf`, `refactor`, `revert`,
+`style`, and `test`. For example, `fix(shell): preserve window identity` or
+`feat(ui)!: expose resource actions`. Bodies follow a blank line and can include
+`BREAKING CHANGE:` footers. Git's genuine merge, target-bound revert and
+existing-target autosquash messages are accepted; an arbitrary `Merge ...`
+subject on an ordinary commit is rejected. Generated sources use ordinary
+headers such as `chore(codegen): refresh bindings`.
+
+New or modified staged non-text and non-LF blobs are rejected, even when an
+exception entry is added in the same commit. Existing pinned assets are only
+admitted unchanged; deletion is allowed. The staged index is inspected, so
+partial staging and filenames with spaces are handled correctly. Fast quality
+checks all new commits and exact blobs in its comparison range, catching
+`--no-verify` commits and intermediate binary additions later deleted. It fails
+when history cannot be inspected. Existing exceptions remain migration work.
 
 `pre-commit` checks the staged change the way CI's quality job would: rustfmt
 on the staged Rust files, workspace membership

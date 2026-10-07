@@ -9,10 +9,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # Stacked PRs (a PR whose base is another task branch) get the
     # same gate; affected-package selection diffs against that base, so each
     # layer tests its own change.
-    branches: ["main", "pr/sdk-*"]
+    branches: ["main", "pr/sdk-*", "codex/**"]
   workflow_dispatch:
     inputs:
       builder_image:
@@ -211,6 +211,14 @@ jobs:
         uses: ./.forgejo/actions/merge-main
         with:
           main: ${{ needs.select.outputs.main }}
+
+      - name: Prepare fonts for offline suites
+        uses: ./.forgejo/actions/prepare-font-assets
+
+      - name: Prepare pinned NTFS source for offline suites
+        run: |
+          python3 crates/session/tilo-ntfs-helper/source_artifact.py
+          printf 'TILO_NTFS_SOURCE_CACHE=%s/target/ntfs-source\nTILO_NTFS_SOURCE_OFFLINE=1\n' "$PWD" >> "$GITHUB_ENV"
 
       - name: Run selected suites
         id: suites-run

@@ -12,6 +12,7 @@ exclude = [
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
     "vendor/google-cast-protocol",
+    "vendor/fcast-sender-sdk",
     "vendor/libspa-sys",
     "vendor/winit",
     "vendor/accesskit_winit",
@@ -41,6 +42,7 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/platform/tilo-messaging",
     "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
@@ -70,8 +72,10 @@ members = [
     "apps/calendar",
     "apps/camera",
     "apps/chat",
+    "apps/messages",
     "apps/clocks",
     "apps/code-editor",
+    "apps/chip-design",
     "apps/contacts",
     "apps/containers",
     "apps/db-client",
@@ -145,6 +149,8 @@ members = [
     "crates/collab/collab-types",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",
+    "crates/collab/feedback-review",
+    "crates/collab/feedback",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-joined-room",
@@ -314,6 +320,7 @@ members = [
     "crates/system/host-fs",
     "crates/system/host-info",
     "crates/system/libvirt-domain",
+    "crates/system/messaging-protocol",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
@@ -916,6 +923,9 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Verify Cast TLS handshake signatures and bound cancellation; identity
+# authentication remains a separate explicit trust decision. See provenance.
+fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }
 # Spotify parser/session and Rustls proxy repairs; preserve Tilo trust roots.
 # See the two vendor PROVENANCE.md files.
 librespot-core = { path = "vendor/librespot-core" }

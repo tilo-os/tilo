@@ -510,6 +510,19 @@ pub trait Continuable {
         state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool;
+
+    /// Apply a live owner view to an already-bound resource. This opt-in
+    /// capability receives no writable document and must preserve focus.
+    /// Missing resources or anchors are refused so the host can defer or
+    /// cancel the projection when its authenticated source disappears.
+    fn restore_live_continuation_metadata(
+        &mut self,
+        _metadata: &crate::collaboration::ContinuationMetadata,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
 }
 
 /// Optional session collaboration capability for widgets that own live
@@ -2430,6 +2443,7 @@ pub mod binding;
 pub mod capability;
 pub mod controls;
 pub mod decorator;
+pub mod document_effects;
 pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
@@ -2578,8 +2592,8 @@ pub use tile_host::{AppKind, TileContent, TileHost};
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
-    AppCommand, AppHostIntent, AppWidget, DocumentOpenCapability, DocumentOpenOutcome,
-    DocumentOpenReply, HostShellAllow, IconDescriptor,
+    AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
+    DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor,
 };
 pub mod command_palette;
 pub mod input_hint;
@@ -2621,7 +2635,7 @@ pub use resize_handle::{
 mod group_row;
 pub use group_row::{
     CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan, StripLane,
-    TabDropTarget, WheelJumpAccum, wheel_jump_detents,
+    TabDropTarget, WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
 };
 mod strip_view;
 pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
@@ -3397,3 +3411,8 @@ pub(crate) mod control_result_probe {
         }
     }
 }
+
+/// Logical screen topology canvas shared by local and native peer displays.
+pub mod display_arrangement;
+mod graph_canvas;
+pub use graph_canvas::{GraphCanvas, GraphCanvasConnection, GraphCanvasNode};

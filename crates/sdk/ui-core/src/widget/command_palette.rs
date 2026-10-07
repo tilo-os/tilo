@@ -448,6 +448,7 @@ pub struct CommandPalette {
     cursor: usize,
     rect: Rect,
     text_scale: f64,
+    ui_scale: f64,
     is_focused: bool,
     search_filter: SearchFilter,
     mode: PaletteMode,
@@ -517,6 +518,7 @@ impl CommandPalette {
             cursor: 0,
             rect: Rect::ZERO,
             text_scale: 1.0,
+            ui_scale: 1.0,
             is_focused: false,
             search_filter: SearchFilter::default(),
             mode: PaletteMode::Search,
@@ -680,24 +682,30 @@ impl CommandPalette {
         self.text_scale
     }
 
+    // Theme typography already includes both scales; geometry must reserve
+    // the same space without changing the public text-scale cache.
+    fn layout_scale(&self) -> f64 {
+        self.text_scale * self.ui_scale
+    }
+
     /// Matches the size `build_layout` requests from taffy.
     pub fn desired_size(&self) -> (f64, f64) {
         // Sized off the row plan, not a row count, since headers and entries
         // have different heights; clamped so a big hit count doesn't grow
         // the card taller than the screen.
         let list = if self.rows.is_empty() {
-            EMPTY_STATE_HEIGHT * self.text_scale
+            EMPTY_STATE_HEIGHT * self.layout_scale()
         } else {
             self.rows_height()
                 .clamp(self.row_height(), self.max_list_height())
         };
         let height = PADDING * 2.0
-            + (INPUT_HEIGHT * self.text_scale)
+            + (INPUT_HEIGHT * self.layout_scale())
             + PADDING
             + self.filter_block()
             + list
             + PADDING
-            + (FOOTER_HEIGHT * self.text_scale);
+            + (FOOTER_HEIGHT * self.layout_scale());
         (self.card_width(), height)
     }
 
@@ -727,7 +735,7 @@ impl CommandPalette {
 
     fn visual_row_height(&self, row: &VisualRow) -> f64 {
         match row {
-            VisualRow::Header { .. } => HEADER_HEIGHT * self.text_scale,
+            VisualRow::Header { .. } => HEADER_HEIGHT * self.layout_scale(),
             VisualRow::Entry(_) => self.row_height(),
         }
     }
@@ -748,7 +756,7 @@ impl CommandPalette {
             .count()
             .min(MAX_HEADERS_IN_VIEW);
         Self::max_visible_rows() as f64 * self.row_height()
-            + headers as f64 * (HEADER_HEIGHT * self.text_scale)
+            + headers as f64 * (HEADER_HEIGHT * self.layout_scale())
     }
 
     fn filter_block(&self) -> f64 {
@@ -761,7 +769,7 @@ impl CommandPalette {
             return self.filter_strip_height() + PADDING;
         }
         match self.mode {
-            PaletteMode::Search => (FILTER_STRIP_HEIGHT * self.text_scale) + PADDING,
+            PaletteMode::Search => (FILTER_STRIP_HEIGHT * self.layout_scale()) + PADDING,
             PaletteMode::Commands => 0.0,
         }
     }
@@ -774,15 +782,15 @@ impl CommandPalette {
             .iter()
             .any(|&i| self.entries.get(i).is_some_and(|e| e.description.is_some()));
         match self.mode {
-            PaletteMode::Search if !any_subtitle => ROW_HEIGHT * self.text_scale,
-            _ => TWO_LINE_ROW_HEIGHT * self.text_scale,
+            PaletteMode::Search if !any_subtitle => ROW_HEIGHT * self.layout_scale(),
+            _ => TWO_LINE_ROW_HEIGHT * self.layout_scale(),
         }
     }
 
     fn card_width(&self) -> f64 {
         match self.mode {
-            PaletteMode::Search => SEARCH_CARD_WIDTH * self.text_scale,
-            PaletteMode::Commands => CMD_CARD_WIDTH * self.text_scale,
+            PaletteMode::Search => SEARCH_CARD_WIDTH * self.layout_scale(),
+            PaletteMode::Commands => CMD_CARD_WIDTH * self.layout_scale(),
         }
     }
 
@@ -932,6 +940,23 @@ impl CommandPalette {
         self.rebuild();
     }
 
+    /// Show host feedback on the selected row using the shared status pill and
+    /// description. Keep the query, visible order and cursor so an unsuccessful
+    /// invocation can be corrected or retried. A new entry set replaces feedback.
+    pub fn set_selected_status(
+        &mut self,
+        badge: impl Into<String>,
+        description: impl Into<String>,
+    ) {
+        let Some(&index) = self.visible.get(self.cursor) else {
+            return;
+        };
+        if let Some(entry) = self.entries.get_mut(index) {
+            entry.badge = Some(badge.into());
+            entry.description = Some(description.into());
+        }
+    }
+
     /// Every entry passes through unless [`Self::search_filter`] rejects it.
     /// For a provider host doing its own matching, so hits whose labels
     /// don't literally spell the query aren't hidden by fuzzy scoring.
@@ -1049,7 +1074,7 @@ impl CommandPalette {
             {
                 // Pull the header back in rather than stranding its rows.
                 if start > 0
-                    && used + HEADER_HEIGHT * self.text_scale <= budget
+                    && used + HEADER_HEIGHT * self.layout_scale() <= budget
                     && self
                         .rows
                         .get(start.saturating_sub(1))
@@ -1089,7 +1114,11 @@ impl CommandPalette {
 
     /// Shared by `row_rect` and `draw`.
     fn list_top_y(&self) -> f64 {
-        self.rect.y0 + PADDING + (INPUT_HEIGHT * self.text_scale) + PADDING + self.filter_block()
+        self.rect.y0
+            + PADDING
+            + (INPUT_HEIGHT * self.layout_scale())
+            + PADDING
+            + self.filter_block()
     }
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
@@ -1198,7 +1227,7 @@ impl CommandPalette {
             self.rect.x0 + PADDING,
             self.rect.y0 + PADDING,
             self.rect.x1 - PADDING,
-            self.rect.y0 + PADDING + (INPUT_HEIGHT * self.text_scale),
+            self.rect.y0 + PADDING + (INPUT_HEIGHT * self.layout_scale()),
         )
     }
 
@@ -1211,7 +1240,7 @@ impl CommandPalette {
     }
 
     pub fn filter_strip_row_height(&self) -> f64 {
-        FILTER_STRIP_HEIGHT * self.text_scale
+        FILTER_STRIP_HEIGHT * self.layout_scale()
     }
 
     pub fn host_filter_strip_rows(&self) -> usize {
@@ -1228,13 +1257,13 @@ impl CommandPalette {
                   handful of rows, far below f64's exact-integer range"
     )]
     fn filter_strip_height(&self) -> f64 {
-        (FILTER_STRIP_HEIGHT * self.text_scale) * self.host_filter_strip_rows() as f64
+        (FILTER_STRIP_HEIGHT * self.layout_scale()) * self.host_filter_strip_rows() as f64
     }
 
     pub fn footer_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0 + PADDING,
-            self.rect.y1 - PADDING - (FOOTER_HEIGHT * self.text_scale),
+            self.rect.y1 - PADDING - (FOOTER_HEIGHT * self.layout_scale()),
             self.rect.x1 - PADDING,
             self.rect.y1 - PADDING,
         )
@@ -1622,7 +1651,7 @@ impl CommandPalette {
             match row {
                 VisualRow::Header { label, total } => {
                     let (_, height) = text_renderer.measure_style(label, None, &header_style);
-                    let hy = y + (HEADER_HEIGHT * self.text_scale - f64::from(height)) / 2.0;
+                    let hy = y + (HEADER_HEIGHT * self.layout_scale() - f64::from(height)) / 2.0;
                     text_renderer.draw_style(
                         scene,
                         label,
@@ -1633,7 +1662,7 @@ impl CommandPalette {
                     );
                     let count = total.to_string();
                     let (cw, ch) = text_renderer.measure_style(&count, None, &count_style);
-                    let cy = y + (HEADER_HEIGHT * self.text_scale - f64::from(ch)) / 2.0;
+                    let cy = y + (HEADER_HEIGHT * self.layout_scale() - f64::from(ch)) / 2.0;
                     text_renderer.draw_style(
                         scene,
                         &count,
@@ -1642,7 +1671,7 @@ impl CommandPalette {
                         None,
                         &count_style,
                     );
-                    y += HEADER_HEIGHT * self.text_scale;
+                    y += HEADER_HEIGHT * self.layout_scale();
                 }
                 VisualRow::Entry(entry_i) => {
                     let row_rect = Rect::new(x0, y, x1, y + rh);
@@ -1706,15 +1735,9 @@ impl CommandPalette {
         transform: Affine,
         row: Rect,
         icon: Icon,
-        colors: &crate::tokens::Colors,
-        selected: bool,
+        tint: Color,
     ) -> f64 {
         let icon_rect = Self::row_icon_rect(row);
-        let tint = if selected {
-            colors.text_primary
-        } else {
-            colors.text_dim
-        };
         icons::draw_icon(scene, transform, icon_rect, icon, tint, 1.5);
         icon_rect.x1 + 10.0
     }
@@ -1828,15 +1851,17 @@ impl CommandPalette {
         // legible step from the theme's dim tone rather than promoting it
         // to the title's weight to survive.
         let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, SMALL_TEXT_MIN_CONTRAST);
-        if selected {
+        let label_ink = if selected {
             crate::widget::floating_surface::paint_armed_row(
                 scene,
                 transform,
                 row,
                 row.x0 - self.rect.x0,
                 theme,
-            );
-        }
+            )
+        } else {
+            colors.text_primary
+        };
 
         let mut text_x = row.x0 + 12.0;
         let image_x = entry
@@ -1846,7 +1871,8 @@ impl CommandPalette {
         if let Some(x) = image_x {
             text_x = x;
         } else if let Some(icon) = entry.icon {
-            text_x = Self::draw_row_icon(scene, transform, row, icon, colors, selected);
+            let icon_ink = if selected { label_ink } else { colors.text_dim };
+            text_x = Self::draw_row_icon(scene, transform, row, icon, icon_ink);
         }
 
         let text_right = self.draw_row_trailing(
@@ -1862,13 +1888,13 @@ impl CommandPalette {
             let sub = elide_middle(text_renderer, desc, &desc_style, avail);
             let (_, label_height) = text_renderer.measure_style(&label, None, &label_style);
             let (_, desc_height) = text_renderer.measure_style(&sub, None, &desc_style);
-            let gap = 3.0 * f64::from(theme.text_scale);
+            let gap = 3.0 * self.layout_scale();
             let block = f64::from(label_height + desc_height) + gap;
             let ly = row.y0 + (row.height() - block) / 2.0;
             text_renderer.draw_style(
                 scene,
                 &label,
-                colors.text_primary,
+                label_ink,
                 transform.pre_translate(Vec2::new(text_x, ly)),
                 None,
                 &label_style,
@@ -1888,7 +1914,7 @@ impl CommandPalette {
             text_renderer.draw_style(
                 scene,
                 &label,
-                colors.text_primary,
+                label_ink,
                 transform.pre_translate(Vec2::new(text_x, ly)),
                 None,
                 &label_style,
@@ -2074,6 +2100,7 @@ impl Widget for CommandPalette {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
+        self.ui_scale = f64::from(theme.ui_scale);
         // `desired_size` is the single source of truth so a hand-placed
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
@@ -2111,6 +2138,7 @@ impl Widget for CommandPalette {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
         self.text_scale = f64::from(theme.text_scale);
+        self.ui_scale = f64::from(theme.ui_scale);
         let colors = &theme.tokens.colors;
         // Panel role (HIG §9.1): panel ground + the derived panel edge as a
         // crisp 1 px inset stroke. The declared `border_standard` sat within
@@ -3933,5 +3961,79 @@ mod tests {
                 taffy: &taffy,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod selected_status_tests {
+    use super::*;
+
+    #[test]
+    fn combined_scaling_keeps_two_line_results_inside_rows() {
+        let theme = Theme::dark().with_ui_scale(1.5).with_text_scale(1.3);
+        let mut palette = CommandPalette::commands();
+        palette.set_entries(vec![
+            CommandEntry::new("fixture", "Open Recovery Fixture")
+                .description("The application is temporarily unavailable. Try again."),
+        ]);
+        palette.open();
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        palette.build_layout(&mut taffy, &theme, &mut nodes);
+        let (width, height) = palette.desired_size();
+        palette.set_rect(Rect::new(0.0, 0.0, width, height));
+        let row = palette.row_rect(0).expect("a visible result row");
+        let mut text = TextRenderer::new();
+        let (_, title_height) =
+            text.measure_style("Open Recovery Fixture", None, &theme.text(TextRole::Body));
+        let (_, detail_height) = text.measure_style(
+            "The application is temporarily unavailable. Try again.",
+            None,
+            &theme.text(TextRole::Caption),
+        );
+        assert!(
+            title_height > 0.0 && detail_height > 0.0,
+            "fonts must be observable"
+        );
+        let text_height =
+            f64::from(title_height + detail_height) + 3.0 * f64::from(theme.text_scale);
+        assert!(
+            row.height() >= text_height,
+            "rendered title and detail need {text_height}px inside {row:?}"
+        );
+    }
+
+    #[test]
+    fn selected_status_preserves_query_order_focus_and_accessible_detail() {
+        let mut palette = CommandPalette::commands();
+        palette.set_entries(vec![
+            CommandEntry::new("one", "Fixture one"),
+            CommandEntry::new("two", "Fixture two"),
+        ]);
+        palette.open();
+        palette.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
+        palette.set_query("fixture");
+        palette.set_cursor(1);
+        palette.set_selected_status("Couldn't run", "Try again after restoring the connection.");
+        assert_eq!(palette.selected_id(), Some("two"));
+        assert_eq!(palette.query(), "fixture");
+        assert!(palette.is_focused());
+        let entries = palette.visible_entries();
+        assert_eq!(entries.first().unwrap().id, "one");
+        assert_eq!(
+            entries.get(1).unwrap().badge.as_deref(),
+            Some("Couldn't run")
+        );
+        let semantics = palette.accessibility().unwrap();
+        let row = semantics.children.get(1).unwrap().children.get(1).unwrap();
+        assert!(
+            row.description
+                .as_deref()
+                .unwrap()
+                .contains("restoring the connection")
+        );
+        assert!(row.description.as_deref().unwrap().contains("Couldn't run"));
+        palette.set_entries(vec![CommandEntry::new("two", "Fixture two")]);
+        assert!(palette.visible_entries().first().unwrap().badge.is_none());
     }
 }

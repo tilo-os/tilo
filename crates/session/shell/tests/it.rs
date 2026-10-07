@@ -193,6 +193,8 @@ mod sandbox_check;
 mod server_side_decorations;
 #[path = "session_lock_e2e.rs"]
 mod session_lock_e2e;
+#[path = "session_lock_recovery.rs"]
+mod session_lock_recovery;
 #[path = "shell_chrome_test.rs"]
 mod shell_chrome_test;
 #[path = "shell_narration.rs"]

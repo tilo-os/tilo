@@ -1,0 +1,312 @@
+[
+  {
+    "path": "apps/ebook/assets/sample.epub",
+    "oid": "dd9b2aaa342d2bf46d1451f542d742d32d8ea0b4",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "apps/pdf-viewer/tests/fixtures/sample.pdf",
+    "oid": "df7e820556975738dbf2f5ea0db9d6d8c3bee494",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "apps/settings/shots/settings.png",
+    "oid": "169653ddf8f3c15d7d443f72e49be950c3af51a3",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Chess-preview-1.png",
+    "oid": "4873383167540401f7f10b5a498e6b9e07189a8a",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Chess-preview-2.png",
+    "oid": "8c3a1f2e030ea2bfc6f0361906022088fa52a270",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Chess-preview-3.png",
+    "oid": "e59f4a4b32b29b84b8ad82a79745de7262b51081",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Chess.png",
+    "oid": "2bf1f21c5f079c36d3f104070dca54d372a0ba33",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Files-preview-1.png",
+    "oid": "2f6066cbf198698f60bf8f61f1bb387f68b672cd",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Files-preview-2.png",
+    "oid": "90315975b970985dcb3b74b486ca52de95d79fa9",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Files-preview-3.png",
+    "oid": "587cb1ef09b7c5e1456c53053e0366a0100e180e",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Files.png",
+    "oid": "b9dff991a388ac9d78258f71cc45e0912fbaee46",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Inkscape-preview-1.png",
+    "oid": "156a0568ebefd489a4dd557cdbddcec37847217b",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Inkscape-preview-2.png",
+    "oid": "e3024d977dc31f63738ace326bc0ead989f85f44",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Inkscape-preview-3.png",
+    "oid": "463e08b1f79b65c8c58051fec76f45769b697064",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Inkscape.png",
+    "oid": "61796d1f4a79cfb2e093799331aea9138a97134f",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Notes-preview-1.png",
+    "oid": "fa49f488ffc2f77266aa87391fa0cf7887012b61",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Notes-preview-2.png",
+    "oid": "98182d40f6cee6eb5114fa974cc1676b876a9a64",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Notes-preview-3.png",
+    "oid": "654c584c5208c0f490b22944541c089b58b3b3cc",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Notes.png",
+    "oid": "ed180c3728f47d32f6854d5a6171df4a68c59876",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Terminal-preview-1.png",
+    "oid": "a63f2a2cf2c8a0b83c69e043887b246f50c18f6f",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Terminal-preview-2.png",
+    "oid": "e119bbf6f2ade3bd7a0c794f13a21b1fa22dc6f6",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Terminal-preview-3.png",
+    "oid": "c0eff2d63782b1455aca555a5bd8c175a2d6f912",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/Terminal.png",
+    "oid": "8a51f629aebfe76707451b1c8642e24c663a6324",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/VLC-preview-1.png",
+    "oid": "587ff6744b891e6802d839c38d5656d66e0ee929",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/VLC-preview-2.png",
+    "oid": "48bd02591a6c436016d09d5a6d35c1029f2bff35",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/VLC-preview-3.png",
+    "oid": "99bdacd05e3fc2bb9461926a97800a5cc11400b3",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/store/fixtures/artwork/VLC.png",
+    "oid": "2fffc009b63e2786dc9dc6ce7c73a7a77060165d",
+    "reason": "Store fixture gallery or user-viewable screenshot consumed by app/tests; preserve original visual evidence. Replacement plan: archive and verify each original; prepare SHA-pinned assets at build time into OUT_DIR; include bytes from generated path; offline-prewarm CI; preserve evidence URL."
+  },
+  {
+    "path": "apps/video-editor/sample-media/media/Ambient_Pad.wav",
+    "oid": "092f5f2fd4922fd23ed17f86730a6a18d3e38ef0",
+    "reason": "Actual audio/video decoder or editor fixture; preserve codec/sample properties. Replacement plan: inspect existing generation recipe and assertions; generate deterministic PCM from text source/recipe or pin original compressed media and prewarm offline; compare real decoder output."
+  },
+  {
+    "path": "apps/video-editor/sample-media/media/VO_Take3.wav",
+    "oid": "3b79965579efd8b780719e0b8d3317f5ca4a5d42",
+    "reason": "Actual audio/video decoder or editor fixture; preserve codec/sample properties. Replacement plan: inspect existing generation recipe and assertions; generate deterministic PCM from text source/recipe or pin original compressed media and prewarm offline; compare real decoder output."
+  },
+  {
+    "path": "apps/video-player/tests/fixtures/h264-aac.mp4",
+    "oid": "cdaf3d270d7004a2b2345f700bc99586cf8dbfab",
+    "reason": "Actual audio/video decoder or editor fixture; preserve codec/sample properties. Replacement plan: inspect existing generation recipe and assertions; generate deterministic PCM from text source/recipe or pin original compressed media and prewarm offline; compare real decoder output."
+  },
+  {
+    "path": "crates/browser/paint-stream/tests/fixtures/layers.top.png",
+    "oid": "ab50351113635351798b002cc492534cc978120a",
+    "reason": "Actual image/paint/inline content fixture; confirm per-path consumer and pixel invariants. Replacement plan: small deterministic PNG recipe when reproducible; otherwise verified pinned original artifact through existing test-assets cache, with offline consumer coverage."
+  },
+  {
+    "path": "crates/doc/fixtures/lo-annotations.docx",
+    "oid": "dd0bc6fc3e439ea2e8cc0b94378a8a90bce946ed",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/lo-annotations.odt",
+    "oid": "1cfa956ce050e88e073dfb742dcb918f53913809",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/lo-drawings.docx",
+    "oid": "062768803c98a6c9a33e9954a4645cb7e05a48a8",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/lo-drawings.odt",
+    "oid": "96552cb824f5df696b1f21c18e848a29f43ec386",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/lo-fields.docx",
+    "oid": "f82108eb111f6a8857cc762d82ea3a2e0770321b",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/lo-fields.odt",
+    "oid": "023827a1d51b58da96b4c75866beb4054cb45f1b",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/lo-structure.docx",
+    "oid": "e3ae1917b4367c45e7613062f287933fc7bd798f",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/lo-structure.odt",
+    "oid": "825374e1d8874216e01926d0c13c56440de1be39",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/sample.docx",
+    "oid": "fafc8dfb1d0dadbc69106718634ad37f1e77cc8d",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/sample.odt",
+    "oid": "356b7e511838972dc4b45e91381d58883047f585",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/xxe.docx",
+    "oid": "12d31037efb669c914e928206ba1a07531725fcb",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/xxe.odt",
+    "oid": "1b91ad4bf7c9531cedb8f349224f28a1c775f80b",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/doc/fixtures/zipbomb.docx",
+    "oid": "6be5b9e8bf2a4219e9d9c87c8c5d3c3a75622cc3",
+    "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
+  },
+  {
+    "path": "crates/platform/tilo-pdf/tests/fixtures/arabic.pdf",
+    "oid": "09aeb80f0e04f7efbfc338e81b341f66e9730ceb",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "crates/platform/tilo-pdf/tests/fixtures/cjk.pdf",
+    "oid": "7a9f7094a43a325bc0185006ffafb227a157aaa8",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "crates/platform/tilo-pdf/tests/fixtures/columns.pdf",
+    "oid": "133444ebfcd4799cd71743dae6f62b605e54c36a",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "crates/platform/tilo-pdf/tests/fixtures/form.pdf",
+    "oid": "f6765cd7e8a5a65aa9fc93be8d429c2da9901d81",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "crates/platform/tilo-pdf/tests/fixtures/latin.pdf",
+    "oid": "be61dc7d30527d6fead89f5d4253ea94e935d6cb",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "crates/platform/tilo-pdf/tests/fixtures/ligatures.pdf",
+    "oid": "5a5e3c239d9efcf684381c6a4eaa7b4ac8eb0de3",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "crates/platform/tilo-pdf/tests/fixtures/links.pdf",
+    "oid": "ec38e7a1d9294a602eaeb90f8522a4be33d1a90d",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "crates/platform/tilo-pdf/tests/fixtures/multipage.pdf",
+    "oid": "d8e9f6dd5ca790680a582cca355a349783b837fe",
+    "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
+  },
+  {
+    "path": "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf",
+    "oid": "e920290a4e9db814ff3300ba42f324b0032afd56",
+    "reason": "Font feature regression fixture; subset and shaping behavior need exact original bytes. Replacement plan: extend existing checksum-pinned font catalog; build-time preparation and offline prewarm; retain real font parser/shaping assertion."
+  },
+  {
+    "path": "crates/sdk/ui-core/tests/fixtures/test_image.png",
+    "oid": "ecd6b467faef2f101fae6a5f603a14fa70bf9c70",
+    "reason": "Actual image/paint/inline content fixture; confirm per-path consumer and pixel invariants. Replacement plan: small deterministic PNG recipe when reproducible; otherwise verified pinned original artifact through existing test-assets cache, with offline consumer coverage."
+  },
+  {
+    "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
+    "oid": "7a7696681bad4f83fd92680fe7699ea263549022",
+    "reason": "Original visual regression reference; must remain unchanged until genuine overview mismatch is fixed. Replacement plan: repair production or harness cause, then reuse pinned original PNG artifact; never refresh baseline to silence failure."
+  },
+  {
+    "path": "tools/android/mediation/res/drawable/icon.png",
+    "oid": "ac5572efcc58d610d218dcd8ac48ba2f53b3b5c5",
+    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
+  },
+  {
+    "path": "vendor/wgpu/src/macros/be-aligned.spv",
+    "oid": "0e2d0657840989e5b2dc34afbb8ad832b3c2263a",
+    "reason": "Exact tiny SPIR-V include macro/endian compile-time fixtures. Replacement plan: build-script emits original two u32 words from LF source into OUT_DIR; retain include macro/endian assertions."
+  },
+  {
+    "path": "vendor/wgpu/src/macros/le-aligned.spv",
+    "oid": "3f6aead0683d5339f713c63fa56ed38031bafdfc",
+    "reason": "Exact tiny SPIR-V include macro/endian compile-time fixtures. Replacement plan: build-script emits original two u32 words from LF source into OUT_DIR; retain include macro/endian assertions."
+  },
+  {
+    "path": "vendor/winit/examples/data/cross.png",
+    "oid": "9bfdf369b3ba297216a2859beda741508d02a43d",
+    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
+  },
+  {
+    "path": "vendor/winit/examples/data/cross2.png",
+    "oid": "b9f7a486b1d78da9a43011981f6cea68123415fd",
+    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
+  },
+  {
+    "path": "vendor/winit/examples/data/gradient.png",
+    "oid": "41ce610e66221b0803d20b0dcca6f9215745ac3b",
+    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
+  },
+  {
+    "path": "vendor/winit/examples/data/icon.png",
+    "oid": "aa3fbf3cfc18a3723cca4de446cf6f6079216b50",
+    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
+  }
+]

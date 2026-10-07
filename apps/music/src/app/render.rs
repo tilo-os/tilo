@@ -9,6 +9,7 @@
 //!
 //! [`SidebarDrawer`]: ui::widget::SidebarDrawer
 
+use super::page_part::PagePart;
 use super::{
     Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Dimension, Drag,
     Fill, HashMap, HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId,
@@ -1193,6 +1194,7 @@ impl Widget for MusicApp {
             matches!(
                 (&self.view, id),
                 (View::Home, "home")
+                    | (View::Recommendations, "recommendations")
                     | (View::Songs, "songs")
                     | (View::Albums, "albums")
                     | (View::Artists, "artists")
@@ -1272,6 +1274,7 @@ impl Widget for MusicApp {
         }
         let page_name = match &self.view {
             View::Home => "Home".to_string(),
+            View::Recommendations => ui::i18n!("music-recommendations-title"),
             View::Songs => "Songs".to_string(),
             View::Albums => "Albums".to_string(),
             View::Artists => "Artists".to_string(),
@@ -1536,6 +1539,7 @@ impl Widget for MusicApp {
                         }),
                 );
             }
+            View::Recommendations => {}
         }
         if !list_items.is_empty() {
             page_content.push(
@@ -1544,6 +1548,7 @@ impl Widget for MusicApp {
                     .with_children(list_items),
             );
         }
+        page_content.extend(self.page_parts.iter().flat_map(PagePart::access_nodes));
         let page = AccessNode::new(Role::TabPanel)
             .with_hashed_key(format!("page:{page_name}"))
             .with_name(page_name)
@@ -1572,6 +1577,22 @@ impl Widget for MusicApp {
         state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
+        if let Some(id) = target.strip_prefix("music.page-widget.") {
+            let handled = self
+                .page_parts
+                .iter_mut()
+                .any(|part| part.perform(id, action, state));
+            let asked = self
+                .page_parts
+                .iter()
+                .flat_map(PagePart::take_asked)
+                .collect::<Vec<_>>();
+            for action in asked {
+                self.dispatch(action, state);
+            }
+            self.dirty |= handled;
+            return handled;
+        }
         if self.history.perform_semantic_action(target, action) {
             self.dirty = true;
             return true;
@@ -1744,6 +1765,8 @@ impl Widget for MusicApp {
         // engine) promptly without waiting for the next input event.
         self.pb.playing
             || self.audio.needs_poll()
+            || self.resource_stream_invocation.is_some()
+            || !self.effect_replies.is_empty()
             || self.local_file_pick.is_some()
             || self.toast.is_some()
             || self.live_search_pending.is_some()
@@ -1887,6 +1910,23 @@ impl MusicApp {
     ) -> Result<ui::framework::Effected, String> {
         use crate::actions::MusicEffect;
         match effect {
+            MusicEffect::PlaybackStatus => {
+                Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "track": self.pb.current,
+                        "requested_playing": self.pb.playing,
+                        "confirmed_playing": self.audio.is_playing_real(),
+                        "resolving": self.active_resolve_request.is_some(),
+                        "spotify_stage": self.audio.spotify_startup_stage(),
+                        "rendered_buffers": self.audio.frames_rendered(),
+                        "sink": self.audio.actual_audio_sink_name(),
+                        "position_ms": self.audio.position_ms(),
+                        "duration_ms": self.audio.duration_ms(),
+                        "error": self.playback_error,
+                    })),
+                    resources: Vec::new(),
+                }))
+            }
             MusicEffect::Sources => {
                 self.open_sources_menu();
                 Ok(ui::framework::Effected::done())
@@ -2973,6 +3013,7 @@ impl MusicApp {
     fn view_title(&self) -> String {
         match &self.view {
             View::Home => "Home".into(),
+            View::Recommendations => ui::i18n!("music-recommendations-title"),
             View::Songs => "Songs".into(),
             View::Albums => "Albums".into(),
             View::Artists => "Artists".into(),
@@ -3005,6 +3046,12 @@ impl MusicApp {
     fn draw_body(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         match self.view.clone() {
             View::Home => self.draw_home(ctx, look, body, y),
+            View::Recommendations => self.draw_recommendations(
+                ctx,
+                (body.x0 + look.gutter, body.x1 - look.gutter),
+                y + look.gutter,
+                true,
+            ),
             View::Songs => {
                 let ids: Vec<String> = self
                     .lib
@@ -3259,6 +3306,14 @@ impl MusicApp {
         let mut y = y + look.gutter;
         self.refresh_spotify_control_flags();
         y = self.position_source_buttons(ctx, look, body, y);
+        if !self.lib.tracks.is_empty() {
+            y = self.draw_recommendations(
+                ctx,
+                (body.x0 + look.gutter, body.x1 - look.gutter),
+                y,
+                false,
+            ) + look.gutter;
+        }
 
         // Remote catalogue content when it has landed.
         if let Some(home) = self.home.take() {
@@ -3979,7 +4034,7 @@ impl MusicApp {
     /// Place the next embedded part of the page from `top` across
     /// `[left, right]`, rebuilt with `build` when `key` changed. Returns the
     /// y below it.
-    fn page_part(
+    pub(super) fn page_part(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         span: (f64, f64),

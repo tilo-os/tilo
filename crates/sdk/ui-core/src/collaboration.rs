@@ -44,9 +44,10 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 mod broker;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
-mod channel_settings;
+pub(crate) mod channel_settings;
 pub mod handoff;
 mod history;
+pub mod owner_view;
 pub mod participants;
 pub mod record_content;
 #[cfg(feature = "broker-transport")]
@@ -111,6 +112,7 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use runtime_collab::file_clipboard;
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
     CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,
@@ -202,6 +204,11 @@ impl From<TransportError> for CollabSendError {
 
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
+    LocalFileClipboard {
+        request_id: u64,
+        command: runtime_collab::file_clipboard::Command,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+    },
     Hello {
         app_id: String,
         cluster_id: Uuid,
@@ -638,6 +645,10 @@ impl ChannelAccessState {
 
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
+    LocalFileClipboardResult {
+        request_id: u64,
+        result: Result<runtime_collab::file_clipboard::Reply, String>,
+    },
     /// Original committed history from this SDK channel, applied by its document owner.
     CommittedDocument {
         route: RouteSpec,
@@ -1681,12 +1692,19 @@ impl CollaborationManager {
             }
             Backend::Disabled(_) => false,
         };
-        if unpublishable {
+        let known_pending_document = matches!(&req, CollabRequest::Document { .. })
+            && matches!(&self.backend, Backend::Transport(transport)
+                if transport.committed_document_required(&route.channel_id()));
+        if unpublishable && !known_pending_document {
             // Join first; the route's original history must be applied
             // before any local mutation is published on it.
             let _ = self.submit(TransportCommand::Join(route));
             return Err(CollabSendError::Unavailable);
         }
+        // A known committed route may be refreshing. Required original
+        // custody was checked above; retain this mutation in the bounded queue.
+        // The worker still waits for this exact route before checking retained
+        // custody and applying the route's existing certification/commit policy.
         Ok(self.submit(TransportCommand::ToRoute(route, req))?)
     }
 

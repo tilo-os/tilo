@@ -8,13 +8,20 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** Uses only the launcher-authenticated, already-scoped chooser connection. */
-final class TiloChooser {
+public final class TiloChooser {
     private static long nextId = 1;
     private static boolean loaded;
     private static boolean broken;
     private static native byte[] exchange(byte[] request);
     private static native boolean notificationServiceAvailable();
     private static native void markOngoingNative(long builder);
+    private static native void recoveryJournalNative(String services);
+
+    public static void recoveryJournal(String services) {
+        if (System.getenv("TILO_ANDROID_RECOVERY_FD") == null) return;
+        loadBridge();
+        recoveryJournalNative(services);
+    }
 
     static void markOngoing(long builder) {
         loadBridge();
