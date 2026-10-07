@@ -41,6 +41,10 @@ pub struct NativeStateRuntime(pub(super) Arc<Runtime>);
 #[derive(Clone)]
 pub(crate) struct NativeStateWitness(Weak<Runtime>);
 impl NativeStateWitness {
+    #[cfg(test)]
+    pub(crate) fn retained_owners(&self) -> usize {
+        self.0.strong_count()
+    }
     pub(crate) fn authority_is_current(
         &self,
         storage: &NativeAuthorityStorage,

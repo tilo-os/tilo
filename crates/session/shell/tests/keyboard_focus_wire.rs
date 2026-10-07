@@ -700,6 +700,14 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     let events =
         GlobalShortcutsHandle::with_bound_session_for_tests(session, "org.example.Talk", &["talk"]);
     service.attach_event_bridge(events.clone());
+    assert!(
+        service.is_reserved("CTRL+SHIFT+KEYT"),
+        "reopen belongs to the shell"
+    );
+    assert!(
+        !service.is_reserved("CTRL+SHIFT+KEYM"),
+        "the reviewed grant is unreserved"
+    );
     h.state.global_shortcuts = service.clone();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     runtime.block_on(async {

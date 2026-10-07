@@ -136,6 +136,11 @@ impl Resource for ChipProject {
     }
 
     fn child(state: &ProjectState, resource: &str) -> Option<PublishedResource> {
+        if let Some(anchor) = resource.strip_prefix("chip_design.flow:") {
+            let (report, kind, id) = crate::evidence_flow_view::split(anchor)?;
+            crate::evidence_flow_view::item(state, anchor)?;
+            return Some(flow_child(report, kind, id, id));
+        }
         if resource == crate::operator_graph::RESOURCE_ID {
             return Some(graph_child(&state.operator_graph));
         }
@@ -159,6 +164,10 @@ impl Resource for ChipProject {
         doc: &Doc,
         item: Option<&str>,
     ) -> Result<serde_json::Value, String> {
+        if let Some(anchor) = item.and_then(|item| item.strip_prefix("chip_design.flow:")) {
+            return crate::evidence_flow_view::item(state, anchor)
+                .ok_or_else(|| "evidence item no longer exists".into());
+        }
         if item == Some(crate::operator_graph::RESOURCE_ID) {
             return crate::operator_graph::OperatorGraph::read_content(
                 &state.operator_graph,
@@ -253,7 +262,7 @@ impl Resource for ChipProject {
                 let json = args.text("json").ok_or("missing receipt JSON")?.to_owned();
                 VerificationRecord::import(&json)?;
                 Ok(ProjectAction::ImportVerification { json })
-            }).describe("Import reported integer RTL evidence; does not authenticate artifacts or establish model quality or physical PPA."),
+            }).describe("Import reported engineering evidence; does not authenticate artifacts or establish model quality, silicon measurements, or manufacturability."),
             remove_verification_declaration(),
             remove_declaration(),
         ]
@@ -271,7 +280,10 @@ impl Resource for ChipProject {
             })
             .chain(state.verifications.iter().map(|(id, record)| SearchEntry {
                 anchor: Some(id.clone()),
-                title: record.receipt.evidence.clone(),
+                title: record.receipt.evidence_flow.as_ref().map_or_else(
+                    || record.receipt.evidence.clone(),
+                    |flow| flow.title.clone(),
+                ),
                 text: format!(
                     "{:?} {}",
                     record.receipt.status,
@@ -279,6 +291,12 @@ impl Resource for ChipProject {
                 ),
                 ..Default::default()
             }))
+            .chain(
+                state
+                    .verifications
+                    .iter()
+                    .flat_map(|(id, record)| flow_search(id, record)),
+            )
             .collect()
     }
 }
@@ -369,6 +387,7 @@ fn verification_resource(id: &str, record: &VerificationRecord) -> PublishedReso
         "chip_design.verification",
         &record.receipt.evidence,
     )
+    .with_children(flow_children(id, record))
     .with_action(
         ChipEffect::Inspect {
             report: Some(id.to_owned()),
@@ -393,4 +412,69 @@ fn graph_child(state: &crate::operator_graph::OperatorState) -> PublishedResourc
         |edit| ProjectAction::EditGraph { edit },
     )
     .with_action(ChipEffect::OperatorGraph.bound())
+}
+
+fn flow_child(report: &str, kind: &str, id: &str, title: &str) -> PublishedResource {
+    let child = PublishedResource::new(
+        crate::evidence_flow_view::resource_id(report, kind, id),
+        format!("chip_design.flow_{kind}"),
+        title,
+    )
+    .with_action(
+        ChipEffect::InspectEvidence {
+            report: report.into(),
+            item: format!("{kind}/{id}"),
+        }
+        .bound(),
+    );
+    if kind == "subflow" {
+        child.with_action(
+            ChipEffect::OpenEvidenceSubflow {
+                report: report.into(),
+                id: id.into(),
+            }
+            .bound(),
+        )
+    } else {
+        child
+    }
+}
+fn flow_children(report: &str, record: &VerificationRecord) -> Vec<PublishedResource> {
+    let Some(flow) = &record.receipt.evidence_flow else {
+        return Vec::new();
+    };
+    flow.stages
+        .iter()
+        .map(|stage| flow_child(report, "stage", &stage.id, &stage.title))
+        .chain(
+            flow.subflows
+                .iter()
+                .map(|link| flow_child(report, "subflow", &link.id, &link.title)),
+        )
+        .chain(
+            record
+                .receipt
+                .artifact_sha256
+                .keys()
+                .map(|path| flow_child(report, "artifact", path, path)),
+        )
+        .collect()
+}
+fn flow_search(report: &str, record: &VerificationRecord) -> Vec<SearchEntry> {
+    flow_children(report, record)
+        .into_iter()
+        .map(|child| SearchEntry {
+            anchor: Some(
+                child
+                    .id
+                    .0
+                    .strip_prefix("chip_design.flow:")
+                    .unwrap_or_default()
+                    .to_owned(),
+            ),
+            title: child.label,
+            text: "reported_unverified".into(),
+            ..Default::default()
+        })
+        .collect()
 }

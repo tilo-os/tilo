@@ -347,7 +347,7 @@ fn legacy_dictionary_owner() -> Option<[u8; 32]> {
         .map(|identity| identity.group_public_key)
 }
 
-fn session_settings_read_view(
+fn session_host_view(
     session: std::sync::Arc<settings_store::SessionSettings>,
 ) -> std::sync::Arc<dyn settings_store::SettingsSource> {
     match session.host_view() {
@@ -386,7 +386,7 @@ fn install_session_settings() {
                     "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
                 ),
             }
-            let source = session_settings_read_view(session);
+            let source = session_host_view(session);
             let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
             let source = match dictionary_root
                 .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())

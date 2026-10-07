@@ -57,6 +57,37 @@ impl NativeOwnerCommitService {
     }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
+    fn commit_member_effect_receipt(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native effect governor unavailable")?;
+            let room = super::state::RoomId::parse(&request.room).ok_or("invalid effect room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("member receipt requires the actual governing owner".into());
+                }
+            }
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("effect governor custody unavailable: {error}"))?;
+            let receipt = owner.commit_member_effect_receipt(
+                &request,
+                &caller,
+                &governor,
+                &key,
+                std::time::SystemTime::now(),
+            )?;
+            if let Some(network) = network {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(receipt)
+        })
+    }
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
