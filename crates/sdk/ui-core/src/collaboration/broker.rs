@@ -39,6 +39,8 @@ mod managed_sender_transport;
 pub(crate) mod native_initial;
 #[path = "native_media.rs"]
 mod native_media;
+#[path = "broker/native_message.rs"]
+mod native_message;
 pub use committed_document::CommittedDocument;
 
 use crate::time::{Duration, Instant};
@@ -747,6 +749,11 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             }
         }
         CollabRequest::SignedOperation { envelope } => meter.bytes(&envelope.payload),
+        CollabRequest::NativeExecutedContribution { contribution } => {
+            meter.0 = meter
+                .0
+                .and_then(|bytes| bytes.checked_add(contribution.retained_bytes()?));
+        }
         CollabRequest::Presence { key, payload } => {
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
@@ -1253,6 +1260,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             argument,
             actor,
             context,
+            native_source,
             ..
         } => {
             meter.string_capacity(resource);
@@ -1263,6 +1271,11 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.string_capacity(actor);
             if let Some(context) = context {
                 serialized_bytes(context.as_ref(), &mut meter);
+            }
+            if let Some(source) = native_source {
+                meter.0 = meter
+                    .0
+                    .and_then(|bytes| bytes.checked_add(source.retained_bytes()?));
             }
         }
         CollabEvent::InvocationCancellation { .. } => {}
@@ -3355,6 +3368,8 @@ async fn drive_shovel(
             SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_)
         )
     );
+    let native_document_source = matches!(signer, LocalSdkDocumentSigner::Host(_));
+    let native_document_budget = native_message::NativeDocumentBudget::default();
     let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
     key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // A certified identity service is asked on a blocking thread. The
@@ -3420,6 +3435,8 @@ async fn drive_shovel(
                     ensure_sdk_route(
                         &SdkJoinContext {
                             asks_channel_keys,
+                            native_document_source,
+                            native_document_budget: &native_document_budget,
                             client: &client,
                             presentation: &presentation,
                             participant_handle: participant_handle.as_deref(),
@@ -3474,6 +3491,8 @@ async fn drive_shovel(
                 let _ = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
+                        native_document_source,
+                        native_document_budget: &native_document_budget,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3492,6 +3511,8 @@ async fn drive_shovel(
                 let joined = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
+                        native_document_source,
+                        native_document_budget: &native_document_budget,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3555,6 +3576,8 @@ async fn drive_shovel(
                 let result = install_sdk_encryption(
                     SdkJoinContext {
                         asks_channel_keys,
+                        native_document_source,
+                        native_document_budget: &native_document_budget,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3654,6 +3677,21 @@ async fn drive_shovel(
             }
         }
     }
+    // A failed claimed send may already have committed. Keep exact signed
+    // bytes/source references alive until the owning manager is disposed;
+    // withdrawal of health is NOT an acknowledgment or absence proof. No
+    // subsequent command may create an effect on this parked connection.
+    if !inbound_tx.state.is_healthy()
+        && routes
+            .values()
+            .any(|route| route.native_documents.claimed())
+    {
+        while let Some(queued) = outbound_rx.recv().await {
+            if let SdkCommand::PublicationBarrier(reply) = queued.command {
+                let _ = reply.send(inbound_tx.state.publication_result());
+            }
+        }
+    }
 }
 
 #[allow(
@@ -3682,6 +3720,8 @@ async fn install_sdk_encryption(
 #[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
+    native_document_source: bool,
+    native_document_budget: &'a native_message::NativeDocumentBudget,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
     participant_handle: Option<&'a str>,
@@ -3697,6 +3737,7 @@ struct SdkRoute {
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
     committed: bool,
     encryption: SharedRouteKeys,
+    native_documents: native_message::NativeDocumentQueue,
 }
 
 // Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
@@ -3715,6 +3756,8 @@ async fn ensure_sdk_route(
 ) -> Result<(), String> {
     let SdkJoinContext {
         asks_channel_keys,
+        native_document_source,
+        native_document_budget,
         client,
         presentation: identity_bytes,
         participant_handle,
@@ -3781,7 +3824,7 @@ async fn ensure_sdk_route(
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
         spawn_action_stream(&channel, inbound_tx),
-        spawn_invocation_stream(&channel, inbound_tx),
+        spawn_invocation_stream(&channel, spec.clone(), native_document_source, inbound_tx),
         spawn_realtime_stream(&channel, inbound_tx),
         async {
             // This intentionally fails quietly for person sessions. An
@@ -3810,6 +3853,9 @@ async fn ensure_sdk_route(
             workspace_controls: std::collections::HashMap::new(),
             committed,
             encryption,
+            native_documents: native_message::NativeDocumentQueue::new(
+                native_document_budget.clone(),
+            ),
         },
     );
     Ok(())
@@ -3989,15 +4035,34 @@ async fn spawn_action_stream(channel: &runtime_collab::ChannelHandle, inbound_tx
 )]
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
+    route: RouteSpec,
+    native_document_source: bool,
     inbound_tx: &InboundBridge,
 ) {
     if let Ok(stream) = channel.subscribe_stable_invocations().await {
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
         tokio::task::spawn_local(async move {
-            while let Ok(invocation) = stream.read().await {
+            let lifetime = crate::invocation_scope::NativeMessageStreamLifetime::new();
+            loop {
+                let received = if native_document_source {
+                    stream.read_with_document_source().await
+                } else {
+                    stream.read().await
+                };
+                let Ok(invocation) = received else { break };
                 let id = invocation.id;
                 let context = parse_invocation_context(id, &invocation.context_json);
+                let source = crate::invocation_scope::NativeInvocationSource::from_delivery(
+                    route.clone(),
+                    &invocation,
+                    context.as_ref(),
+                    &lifetime,
+                );
+                let Ok(native_source) = source else {
+                    tx.state.fail_closed("native Message source decoding");
+                    break;
+                };
                 if !tx.send_durable(CollabEvent::Invocation {
                     id,
                     invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
@@ -4008,6 +4073,7 @@ async fn spawn_invocation_stream(
                     argument: invocation.argument,
                     actor: invocation.actor,
                     context: context.map(Box::new),
+                    native_source,
                 }) {
                     break;
                 }
@@ -5367,6 +5433,24 @@ async fn dispatch_sdk_request(
     }
     match request {
         CollabRequest::Hello { .. } => {}
+        CollabRequest::NativeExecutedContribution { contribution } => {
+            let mut queue = std::mem::replace(
+                &mut route.native_documents,
+                native_message::NativeDocumentQueue::new(
+                    native_message::NativeDocumentBudget::default(),
+                ),
+            );
+            let result = queue.stage(route, contribution);
+            route.native_documents = queue;
+            if let Err(reason) = result {
+                inbound_tx.state.publication_failed(
+                    "native Message source retention",
+                    reason,
+                    true,
+                );
+                return false;
+            }
+        }
         CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
             Ok(bytes) => {
                 if let Err(error) = route.channel.send(&bytes).await {
@@ -5385,6 +5469,35 @@ async fn dispatch_sdk_request(
             mutation,
             authorization,
         } => {
+            if route.native_documents.claimed() {
+                if authorization.is_some() {
+                    inbound_tx.state.publication_failed(
+                        "native Message authorization",
+                        "required document authorization cannot be downgraded",
+                        true,
+                    );
+                    return false;
+                }
+                let mut queue = std::mem::replace(
+                    &mut route.native_documents,
+                    native_message::NativeDocumentQueue::new(
+                        native_message::NativeDocumentBudget::default(),
+                    ),
+                );
+                let result = queue
+                    .publish(route, signer, &mutation, &inbound_tx.state)
+                    .await;
+                route.native_documents = queue;
+                if let Err(reason) = result {
+                    inbound_tx.state.publication_failed(
+                        "native Message document publication",
+                        reason,
+                        true,
+                    );
+                    return false;
+                }
+                return true;
+            }
             // The helper records every failure, including a policy denial that
             // leaves the identity connection usable, before returning its result.
             return send_document_mutation(route, signer, mutation, authorization, inbound_tx)
@@ -5703,6 +5816,8 @@ async fn dispatch_sdk_request(
                 inbound_tx
                     .state
                     .fail_closed("invocation completion outcome unknown");
+            } else {
+                route.native_documents.observed_terminal(id, None);
             }
         }
         CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
@@ -5718,6 +5833,10 @@ async fn dispatch_sdk_request(
                             Some((id, &error)),
                         );
                     }
+                } else if update.is_terminal() {
+                    route
+                        .native_documents
+                        .observed_terminal(id, Some(update.invocation()));
                 }
             }
             Err(error) => {

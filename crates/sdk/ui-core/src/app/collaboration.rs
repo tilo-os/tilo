@@ -783,7 +783,10 @@ impl App {
                 argument,
                 actor,
                 context,
+                native_source,
             } => {
+                let _native = native_source
+                    .map(crate::invocation_scope::NativeInvocationSource::enter_delivery);
                 self.invoke_published_action(
                     id,
                     invocation,
@@ -1182,15 +1185,20 @@ impl App {
                 argument,
                 actor,
                 context,
-            } => self.invoke_published_action(
-                id,
-                invocation,
-                resource,
-                action,
-                argument.as_deref(),
-                &actor,
-                context.as_deref(),
-            ),
+                native_source,
+            } => {
+                let _native = native_source
+                    .map(crate::invocation_scope::NativeInvocationSource::enter_delivery);
+                self.invoke_published_action(
+                    id,
+                    invocation,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                    context.as_deref(),
+                );
+            }
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
             }

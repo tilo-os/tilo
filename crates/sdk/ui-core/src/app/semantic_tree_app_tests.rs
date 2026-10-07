@@ -982,6 +982,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             argument: None,
             actor: "agent:Scribe".into(),
             context: None,
+            native_source: None,
         });
 
         assert_eq!(counter(&app), 1, "the directed document action ran");
@@ -1019,6 +1020,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             argument: None,
             actor: "agent:Scribe".into(),
             context: None,
+            native_source: None,
         });
         assert_eq!(counter(&app), 0, "admission alone does not mutate");
         assert_eq!(

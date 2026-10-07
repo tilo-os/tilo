@@ -227,6 +227,11 @@ pub enum CollabRequest {
         /// Host-local original contributor custody; never serialized on the wire.
         authorization: Option<crate::invocation_scope::DocumentAuthorization>,
     },
+    /// Supplemental actual executor correlation from the native Message door.
+    /// Never constructed from caller JSON or used to complete required custody.
+    NativeExecutedContribution {
+        contribution: std::sync::Arc<crate::invocation_scope::NativeExecutedContribution>,
+    },
     /// Ask the broker to select one existing holder of this exact route as a
     /// snapshot responder. Safe to retry while no holder is available.
     RequestDocumentSnapshot,
@@ -774,6 +779,7 @@ pub enum CollabEvent {
         /// resource and action remain authoritative; this only supplies the
         /// surrounding purpose and work-group for durable history.
         context: Option<Box<tilo_actions::ActionContext>>,
+        native_source: Option<crate::invocation_scope::NativeInvocationSource>,
     },
     /// The invocation owner requested cooperative cancellation. Delivered at
     /// most once; the app-side job decides the next safe stopping boundary.

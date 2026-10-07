@@ -55,6 +55,7 @@ pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
 #[cfg(test)]
 mod history_actions_tests;
 mod model_lifecycle;
+mod native_message;
 mod participants;
 mod published_invocations;
 mod retirement_assembly;

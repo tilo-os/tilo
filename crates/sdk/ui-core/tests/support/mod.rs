@@ -128,6 +128,15 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
+            CollabRequest::NativeExecutedContribution { .. }
+            | CollabRequest::SubscribeAgentMessages { .. }
+            | CollabRequest::AcceptAgentMessage { .. }
+            | CollabRequest::PrepareAgentMessageReply { .. }
+            | CollabRequest::CommitAgentMessageReply { .. } => {
+                panic!(
+                    "native addressed Message requires the installed broker/owner, not MemoryRelay"
+                );
+            }
             CollabRequest::Document { mutation, .. } => {
                 let mutation = match mutation {
                     tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
@@ -149,14 +158,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::SignedOperation { envelope } => {
-                // Mirror the production fan-out (collaboration.rs): the
-                // in-toolkit test broker routes verbatim (no role
-                // enforcement — that's the shell collab_broker's job).
-                let event = CollabEvent::Document {
-                    envelope,
-                    from_user_id: from.clone(),
-                    decrypted_payload: None,
-                };
+                let event = signed_document_event(envelope, &from);
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::FetchScrollback { artifact, .. } => {
@@ -226,6 +228,16 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // Session-local control commands never fan out through app documents.
             }
         }
+    }
+}
+
+fn signed_document_event(envelope: Box<collab_types::SignedOp>, from: &str) -> CollabEvent {
+    // Mirror production fan-out verbatim. This memory-only transport never
+    // establishes native owner authority or creates private Agent receipts.
+    CollabEvent::Document {
+        envelope,
+        from_user_id: from.to_owned(),
+        decrypted_payload: None,
     }
 }
 

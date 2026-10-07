@@ -566,6 +566,7 @@ mod owner_commit_tests {
             argument: None,
             actor: "worker".into(),
             context: None,
+            native_source: None,
         });
         app.pump_collab_presence();
         let after = records

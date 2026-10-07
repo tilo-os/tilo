@@ -1759,25 +1759,32 @@ impl App {
             },
         );
         let invoker_scope = crate::invocation_scope::InvokerScope::enter(invoker);
-        let authorization = self.authorize_published_invocation(
-            &crate::invocation_scope::PublishedInvocationRequest {
-                wire_id: id,
-                invocation,
-                address: address.clone(),
-                argument: argument.map(str::to_owned),
-                actor: actor.to_owned(),
-                participant,
-            },
-        );
-        let authorization = authorization.and_then(|lease| {
+        let request = crate::invocation_scope::PublishedInvocationRequest {
+            wire_id: id,
+            invocation,
+            address: address.clone(),
+            argument: argument.map(str::to_owned),
+            actor: actor.to_owned(),
+            participant,
+        };
+        let native_capture = self.prepare_native_message_capture(&request);
+        let authorization = native_capture.and_then(|capture| {
+            self.authorize_published_invocation(&request)
+                .map(|lease| (capture, lease))
+        });
+        let authorization = authorization.and_then(|(capture, lease)| {
             if let Some(lease) = &lease {
                 self.check_published_invocation_revision(lease)?;
             }
             self.published_invocation_scope(&address, lease)
+                .map(|scope| (capture, scope))
         });
-        let (result, authorization) = match authorization {
-            Ok(authorization) => (
-                self.invoke_resource_action(
+        let (result, authorization, native_capture) = match authorization {
+            Ok((capture, authorization)) => {
+                let active = capture
+                    .as_ref()
+                    .map(crate::invocation_scope::NativeMessageCapture::enter);
+                let result = self.invoke_resource_action(
                     ResourceInvocation::new(&address, actor)
                         .argument(argument)
                         .confirmed(true)
@@ -1785,11 +1792,13 @@ impl App {
                         .invocation(Some(invocation))
                         .ambient_context(ambient_context)
                         .scope(authorization.as_ref()),
-                ),
-                authorization,
-            ),
-            Err(error) => (Err(error), None),
+                );
+                drop(active);
+                (result, authorization, capture)
+            }
+            Err(error) => (Err(error), None, None),
         };
+        let result = self.finish_native_message_capture(native_capture, result);
         drop(invoker_scope);
         let continuation = if matches!(result, Ok(crate::widget::ResourceOperationStart::Accepted))
         {

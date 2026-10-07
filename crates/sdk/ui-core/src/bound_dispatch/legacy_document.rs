@@ -861,6 +861,8 @@ fn execute_owned(
                         "Local action was unexpectedly submitted",
                     ));
                 };
+                crate::invocation_scope::NativeMessageCapture::retain_applied(doc, &envelope)
+                    .map_err(DoorError::Failed)?;
                 if let Some(scope) = scope {
                     scope
                         .retain_executed_action(doc, &envelope)

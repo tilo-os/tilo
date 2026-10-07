@@ -1933,6 +1933,8 @@ pub(crate) fn execute_resource_operation(
             .as_ref()
             .map(|envelope| envelope.base_change_hashes());
         if let Some(envelope) = applied {
+            crate::invocation_scope::NativeMessageCapture::retain_applied(doc, &envelope)
+                .map_err(tilo_actions::DoorError::Failed)?;
             if let Some(scope) = scope {
                 scope
                     .retain_executed_action(doc, &envelope)

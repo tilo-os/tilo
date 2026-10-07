@@ -1440,5 +1440,8 @@ impl crate::portal::EffectGate for ResourceEffectScope {
 
 #[cfg(test)]
 mod host_effect_tests;
+pub(crate) mod native_message;
 #[cfg(test)]
 pub(crate) mod tests;
+pub use native_message::{NativeExecutedContribution, NativeInvocationSource};
+pub(crate) use native_message::{NativeMessageCapture, NativeMessageStreamLifetime};
