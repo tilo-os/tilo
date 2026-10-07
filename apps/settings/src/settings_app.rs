@@ -53,9 +53,34 @@ pub const NAV_BREAKPOINT: f64 = ui::tokens::Metrics::BASE.compact_breakpoint as 
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
 
+/// A local composition witness, cached only after the actual shell draw.
+#[derive(Clone, Copy)]
+struct NavigationState {
+    selected: Category,
+    requested: Option<Category>,
+    ready: bool,
+    content: Option<vello::kurbo::Rect>,
+    narrow: bool,
+    sidebar_open: bool,
+}
+
+impl NavigationState {
+    fn snapshot(self) -> serde_json::Value {
+        serde_json::json!({
+            "app": "so.tilo.settings", "selected_pane": self.selected.slug(),
+            "requested_pane": self.requested.unwrap_or(self.selected).slug(),
+            "path": format!("settings://{}", self.selected.slug()),
+            "pending": self.requested.is_some(), "ready": self.ready,
+            "content_visible": self.content.is_some(), "narrow": self.narrow,
+            "sidebar_open": self.sidebar_open, "presentation_attribution_available": false,
+        })
+    }
+}
+
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
+    last_drawn_navigation: Option<NavigationState>,
     /// `true` once a selection (or other composition-affecting change) has
     /// happened and the host must re-run `build_layout`. Drained by
     /// `take_structure_dirty`.
@@ -181,6 +206,7 @@ impl SettingsApp {
             displays: panes::display::DisplayArea::new(&cx),
             network: panes::network::NetworkArea::new(&cx),
             selected: Category::DEFAULT,
+            last_drawn_navigation: None,
             structure_dirty: false,
             cx,
             narrow_screen: NavPane::Content,
@@ -230,26 +256,28 @@ impl SettingsApp {
 
     /// The actual mounted navigation state. Readiness is local composition,
     /// never an assertion that this pane reached a display or that input is fast.
-    pub(crate) fn navigation_inspection(&self) -> serde_json::Value {
+    fn navigation_state(&self) -> NavigationState {
         let pending = self.sidebar_selection.with(|request| *request);
-        let content_visible = self.shell.as_ref().is_some_and(|shell| {
+        let content = self.shell.as_ref().and_then(|shell| {
             let rect = shell.geometry().content_column;
-            rect.is_finite()
+            (rect.is_finite()
                 && rect.width() > 0.0
                 && rect.height() > 0.0
-                && !(self.is_narrow() && self.sidebar_open())
+                && !(self.is_narrow() && self.sidebar_open()))
+            .then_some(rect)
         });
-        serde_json::json!({
-            "app": "so.tilo.settings",
-            "selected_pane": self.selected.slug(),
-            "requested_pane": pending.unwrap_or(self.selected).slug(),
-            "path": format!("settings://{}", self.selected.slug()),
-            "pending": pending.is_some(),
-            "ready": content_visible && pending.is_none() && !self.structure_dirty,
-            "content_visible": content_visible,
-            "narrow": self.is_narrow(), "sidebar_open": self.sidebar_open(),
-            "presentation_attribution_available": false,
-        })
+        NavigationState {
+            selected: self.selected,
+            requested: pending,
+            ready: content.is_some() && pending.is_none() && !self.structure_dirty,
+            content,
+            narrow: self.is_narrow(),
+            sidebar_open: self.sidebar_open(),
+        }
+    }
+
+    pub(crate) fn navigation_inspection(&self) -> serde_json::Value {
+        self.navigation_state().snapshot()
     }
 
     pub fn selected(&self) -> Category {
@@ -779,6 +807,8 @@ impl Widget for SettingsApp {
             "search_rect": search_rect,
             "root_rect": rect(self.rect),
             "selected_category": self.selected.slug(),
+            "navigation": self.navigation_inspection(),
+            "rendered_navigation": self.last_drawn_navigation.map(NavigationState::snapshot),
             "rendered_result_count": categories.len(),
             "rendered_category_ids": categories,
             "narrow": self.is_narrow(),
@@ -912,6 +942,7 @@ impl Widget for SettingsApp {
     ) {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
+            self.last_drawn_navigation = Some(self.navigation_state());
         }
     }
 
@@ -933,6 +964,7 @@ impl Widget for SettingsApp {
                 presence,
                 permissions,
             );
+            self.last_drawn_navigation = Some(self.navigation_state());
         }
     }
 

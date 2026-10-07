@@ -226,3 +226,28 @@ This is navigation evidence only: `latency_available` remains false. Settings
 hover and page changes do not yet have the trusted changed-state/frame-to-KMS
 attribution needed for physical latency percentiles; CLI RTT and polling time
 are not substitutes. The p50 <20ms / p99 <50ms goal remains unverified.
+
+### Native Settings key-to-pane presentation evidence
+
+`input_latency.summarize_physical_settings_latency(lines, expected_pane)` joins
+existing physical input, drawn frame and standard Wayland presentation rows.
+Use only a fresh pinned, runtime-verified owner Settings worker, as for the
+navigation recipe above. Focus an actual sidebar destination before the measured
+key; activation must use its ordinary native keyboard route. Collect the existing
+content-free opt-in physical trace and actual compositor delivery/presentation
+rows. The expected destination is an explicit canonical pane slug, never a label.
+
+The analyser requires an admitted native key with trusted original libinput time,
+one worker lifetime, exact serial/frame ownership, an intended changed pane, and
+agreement between current mounted navigation and the navigation cached after the
+actual NavShell draw. Positive KMS feedback must belong to that submitted frame.
+It rejects undrawn/pending/hidden/wrong/unchanged panes and missing origins or
+feedback. Renderer/presentation stages overlap; do not add their durations.
+
+Ctrl+K palette activation is compositor-consumed and does not deliver that key to
+the native Settings worker. This native analyser cannot qualify it. Pointer
+motion has no immutable native Wayland origin stamp yet, so neither native hover
+nor compositor palette hover is qualified by this increment. Those require their
+own exact origin and actually drawn state witness. No synthetic event, nearest
+timestamp, CLI RTT or headless GPU test is physical latency certification. No
+Yoga measurement is included here; opt-in diagnostic overhead remains a limit.

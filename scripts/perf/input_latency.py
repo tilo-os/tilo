@@ -105,15 +105,84 @@ def summarize_physical_notes_latency(lines, scratch_page):
     positive standard Wayland feedback; absent/coalesced/unchanged state fails.
     This excludes peripheral scan before the trusted kernel/libinput event timestamp.
     """
+    return _summarize_physical_state_latency(lines, scratch_page, _verify_notes_change,
+        'Original trusted kernel/libinput key time to exact changed Notes body KMS presentation',
+        'No physical Notes input or explicit scratch page')
+
+
+def _verify_notes_change(event, frame, subject):
+    before, state = event.get('before'), frame.get('state')
+    for snap in (before, state):
+        if not isinstance(snap, dict) or snap.get('app') != 'so.tilo.notes':
+            raise ValueError('Notes content-free state missing')
+        if any(snap.get(k) != subject for k in
+               ('selected_page', 'main_page', 'editor_binding_page')):
+            raise ValueError('Input is not bound to the explicit scratch page')
+        if snap.get('editor_focused') is not True or snap.get('body_hash') != snap.get('rendered_body_hash'):
+            raise ValueError('Canonical body and drawn editor disagree')
+        if type(snap.get('body_chars')) is not int or type(snap.get('body_bytes')) is not int:
+            raise ValueError('Body count evidence missing')
+        if (snap.get('hash_algorithm') != 'blake3' or not isinstance(snap.get('body_hash'), str)
+                or len(snap['body_hash']) != 64
+                or any(c not in '0123456789abcdef' for c in snap['body_hash'])):
+            raise ValueError('Body hash evidence missing')
+    if (state['body_hash'] == before['body_hash'] or state['body_chars'] != before['body_chars'] + 1
+            or state['body_bytes'] <= before['body_bytes']
+            or state.get('caret', {}).get('byte_offset') != state['body_bytes']):
+        raise ValueError('This frame does not prove one inserted scratch character')
+    effect = event.get('after')
+    if (not isinstance(effect, dict)
+            or effect.get('rendered_body_hash') != state['body_hash']
+            or effect.get('rendered_body_chars') != state['body_chars']
+            or any(effect.get(k) != subject for k in
+                   ('selected_page', 'main_page', 'editor_binding_page'))):
+        raise ValueError('Drawn body is not the effect of this dispatched input')
+
+
+def summarize_physical_settings_latency(lines, expected_pane):
+    """Trusted native key → exact mounted/drawn Settings pane → KMS.
+
+    Compositor-consumed Ctrl+K and pointer events lack this native key chain.
+    They must not be supplied as native Settings samples.
+    """
+    return _summarize_physical_state_latency(lines, expected_pane, _verify_settings_change,
+        'Original trusted kernel/libinput key time to exact changed Settings pane KMS presentation')
+
+
+def _verify_settings_change(event, frame, subject):
+    if event.get('input_route_admitted') is not True:
+        raise ValueError('Settings key was not admitted by the native input route')
+    before, after, drawn = event.get('before'), event.get('after'), frame.get('state')
+    for snapshot in (before, after, drawn):
+        if not isinstance(snapshot, dict) or snapshot.get('app') != 'so.tilo.settings':
+            raise ValueError('Settings content-free state missing')
+    def mounted(snapshot):
+        current, rendered = snapshot.get('navigation'), snapshot.get('rendered_navigation')
+        if (not isinstance(current, dict) or current != rendered
+                or current.get('ready') is not True or current.get('pending') is not False
+                or current.get('content_visible') is not True
+                or not isinstance(current.get('selected_pane'), str)
+                or current.get('requested_pane') != current['selected_pane']
+                or current.get('path') != 'settings://' + current['selected_pane']):
+            raise ValueError('Mounted and actually drawn Settings pane disagree')
+        return current
+    previous, current = mounted(before), mounted(drawn)
+    if (current['selected_pane'] != subject or previous['selected_pane'] == subject
+            or after.get('navigation', {}).get('requested_pane') != subject):
+        raise ValueError('This key did not request and draw the exact intended changed Settings pane')
+
+
+def _summarize_physical_state_latency(lines, scratch_page, verify_change, metric,
+        missing_message='No physical native input or explicit expected subject'):
     inputs = rows(lines, 'tilo-physical-input ')
     mappings = rows(lines, 'tilo-physical-frame ')
     deliveries = rows(lines, 'tilo-physical-delivery ')
     displayed = rows(lines, 'tilo-display-frame ')
-    if not inputs or not scratch_page:
-        raise ValueError('No physical Notes input or explicit scratch page')
+    if not inputs or not isinstance(scratch_page, str) or not scratch_page:
+        raise ValueError(missing_message)
     process_ids = {event.get('process_id') for event in inputs}
     if len(process_ids) != 1 or any(type(pid) is not int or pid <= 0 for pid in process_ids):
-        raise ValueError('Physical input is not scoped to one actual Notes worker')
+        raise ValueError('Physical input is not scoped to one actual native worker')
     process_id = next(iter(process_ids))
     sessions = {event.get('observer_session') for event in inputs}
     if (len(sessions) != 1 or any(not isinstance(value, str) or len(value) != 36 for value in sessions)):
@@ -127,7 +196,7 @@ def summarize_physical_notes_latency(lines, scratch_page):
         raise ValueError('App worker lifetime identity is not a canonical random UUID')
     if any(frame.get('observer_session') != session or frame.get('process_id') != process_id
            for frame in mappings):
-        raise ValueError('Frame belongs to a different Notes worker')
+        raise ValueError('Frame belongs to a different native worker')
     def unique(values, key):
         out = {}
         for value in values:
@@ -144,7 +213,7 @@ def summarize_physical_notes_latency(lines, scratch_page):
     for frame in frames.values():
         identities = frame.get('input_ids')
         if not isinstance(identities, list) or len(identities) != 1:
-            raise ValueError('Coalesced input does not prove every intermediate body was displayed')
+            raise ValueError('Coalesced input does not prove every intermediate changed state was displayed')
         identity = identities[0]
         if type(identity) is not int:
             raise ValueError('Invalid physical input/frame mapping')
@@ -187,33 +256,8 @@ def summarize_physical_notes_latency(lines, scratch_page):
                 continue
             if (feedback.get(candidate['cpu_frame_id'], {}).get('discarded') is not True
                     or candidate.get('state') != frame.get('state')):
-                raise ValueError('Earlier input draw is not a verified discarded identical body')
-        before, state = event.get('before'), frame.get('state')
-        for snap in (before, state):
-            if not isinstance(snap, dict) or snap.get('app') != 'so.tilo.notes':
-                raise ValueError('Notes content-free state missing')
-            if any(snap.get(k) != scratch_page for k in
-                   ('selected_page', 'main_page', 'editor_binding_page')):
-                raise ValueError('Input is not bound to the explicit scratch page')
-            if snap.get('editor_focused') is not True or snap.get('body_hash') != snap.get('rendered_body_hash'):
-                raise ValueError('Canonical body and drawn editor disagree')
-            if type(snap.get('body_chars')) is not int or type(snap.get('body_bytes')) is not int:
-                raise ValueError('Body count evidence missing')
-            if (snap.get('hash_algorithm') != 'blake3' or not isinstance(snap.get('body_hash'), str)
-                    or len(snap['body_hash']) != 64
-                    or any(c not in '0123456789abcdef' for c in snap['body_hash'])):
-                raise ValueError('Body hash evidence missing')
-        if (state['body_hash'] == before['body_hash'] or state['body_chars'] != before['body_chars'] + 1
-                or state['body_bytes'] <= before['body_bytes']
-                or state.get('caret', {}).get('byte_offset') != state['body_bytes']):
-            raise ValueError('This frame does not prove one inserted scratch character')
-        effect = event.get('after')
-        if (not isinstance(effect, dict)
-                or effect.get('rendered_body_hash') != state['body_hash']
-                or effect.get('rendered_body_chars') != state['body_chars']
-                or any(effect.get(k) != scratch_page for k in
-                       ('selected_page', 'main_page', 'editor_binding_page'))):
-            raise ValueError('Drawn body is not the effect of this dispatched input')
+                raise ValueError('Earlier input draw is not a verified discarded identical state')
+        verify_change(event, frame, scratch_page)
         presented = feedback.get(frame['cpu_frame_id'])
         if (not presented or presented.get('discarded') is not False
                 or presented.get('clock_id') != 1 or type(presented.get('flags')) is not int
@@ -230,7 +274,7 @@ def summarize_physical_notes_latency(lines, scratch_page):
         if end < start or start < 0:
             raise ValueError('Presentation precedes physical delivery')
         if previous_presented is not None and (start <= previous_presented or end <= previous_presented):
-            raise ValueError('Typing was not isolated after the preceding presented body')
+            raise ValueError('Input was not isolated after the preceding presented changed state')
         if previous_delivery is not None and start <= previous_delivery:
             raise ValueError('Physical delivery clock moved backwards')
         previous_presented, previous_delivery = end, start
@@ -240,9 +284,9 @@ def summarize_physical_notes_latency(lines, scratch_page):
     if set(by_input) != seen:
         raise ValueError('Extra or missing physical input mappings')
     measured = distribution([sample['latency_ms'] for sample in samples], scale=1)
-    return {'latency_complete': True, 'metric': 'Original trusted kernel/libinput key time to exact changed Notes body KMS presentation',
+    return {'latency_complete': True, 'metric': metric,
             'clock': 'CLOCK_MONOTONIC', 'samples': samples, 'latency': measured,
             'limitations': ['Excludes peripheral scan before the trusted kernel/libinput timestamp.',
-                            'Requires isolated character presses, no coalesced or IME-only samples.',
+                            'Requires isolated native key presses, no coalesced or IME-only samples.',
                             'Includes opt-in content-free state and timing diagnostics; their overhead must be checked before normal-mode performance certification.',
                             'Hardware presentation timestamps do not measure panel pixel response.']}

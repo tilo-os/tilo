@@ -271,3 +271,84 @@ fn read_navigation_permits_viewer_but_refuses_unrelated_actor() {
     assert_eq!(read(&mut app), before);
     assert_eq!(read(&mut owner), owner_before);
 }
+
+#[test]
+fn physical_navigation_observer_follows_mounted_keyboard_activation_and_actual_draw() {
+    use winit::event::ElementState;
+    use winit::keyboard::{Key, NamedKey};
+    let mut app = TestApp::<SettingsShell>::new().expect("mounted Settings");
+    app.settle();
+    let node = app
+        .harness()
+        .a11y_node_named(&Category::Bluetooth.label())
+        .expect("actual destination row");
+    app.harness()
+        .perform_a11y_action(node, &ui::a11y::Action::Focus)
+        .expect("focus actual sidebar destination without activation");
+    app.settle();
+    let before = app
+        .harness()
+        .native_input_snapshot()
+        .expect("Settings snapshot");
+    assert_eq!(before["navigation"]["selected_pane"], "network");
+    assert_eq!(before["navigation"], before["rendered_navigation"]);
+    let (width, height) = app.harness().frame_output().device_size;
+    let mut renderer =
+        ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(width, height)
+            .expect("native stable-preprocessing GPU renderer");
+    let background = ui::Theme::dark().tokens.colors.surfaces.content;
+    let old_pixels = app.harness().render_rgba_with(&mut renderer, background);
+    let key = Key::Named(NamedKey::Enter);
+    let event = winit::event::WindowEvent::KeyboardInput {
+        device_id: winit::event::DeviceId::dummy(),
+        event: winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: ElementState::Pressed,
+            },
+            key.clone(),
+            None,
+            winit::keyboard::KeyLocation::Standard,
+            false,
+            None,
+            key,
+        ),
+        is_synthetic: false,
+    };
+    let mut trace = ui::NativePhysicalInputTrace::default();
+    let input = trace.begin(&event, Some(before)).expect("input witness");
+    app.harness().send_host_event(&event);
+    let effect = ui::NativePhysicalInputTrace::effect(input, app.harness().native_input_snapshot());
+    app.settle();
+    let drawn = trace
+        .drawn(Some(71), app.harness().native_input_snapshot())
+        .expect("draw witness");
+    assert_eq!(effect["after"]["navigation"]["requested_pane"], "bluetooth");
+    assert_eq!(drawn["state"]["navigation"]["selected_pane"], "bluetooth");
+    assert_eq!(drawn["state"]["navigation"]["ready"], true);
+    assert_eq!(
+        drawn["state"]["navigation"],
+        drawn["state"]["rendered_navigation"]
+    );
+    assert_eq!(effect["observer_session"], drawn["observer_session"]);
+    assert_eq!(effect["process_id"], drawn["process_id"]);
+    assert_eq!(drawn["input_ids"], serde_json::json!([1]));
+    let new_pixels = app.harness().render_rgba_with(&mut renderer, background);
+    assert!(!new_pixels.is_empty());
+    assert_ne!(
+        old_pixels, new_pixels,
+        "actual composed destination changes GPU pixels"
+    );
+    assert_eq!(
+        new_pixels,
+        app.harness().render_rgba_with(&mut renderer, background)
+    );
+    // Native key delivery and KMS must independently qualify real measurements.
+    assert!(effect["wayland_serial"].is_null());
+    for row in [effect, drawn] {
+        assert!(row["state"].get("local_search_text").is_none());
+        assert!(!row.to_string().contains("document_actor"));
+    }
+}

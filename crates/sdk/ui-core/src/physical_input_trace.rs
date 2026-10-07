@@ -109,12 +109,25 @@ impl Trace {
     }
 }
 
-// Existing app snapshots may contain names or paths. This physical-input
-// observer carries only the declared content-free Notes state evidence.
+// Existing app snapshots may contain names, search text or document paths.
+// Only explicit content-free app evidence can enter the physical-input trace.
 fn safe_snapshot(snapshot: Option<Value>) -> Value {
-    let Some(snapshot) = snapshot.filter(|snapshot| snapshot["app"] == "so.tilo.notes") else {
+    let Some(snapshot) = snapshot else {
         return Value::Null;
     };
+    if snapshot["app"] == "so.tilo.settings" {
+        let mut safe = serde_json::Map::new();
+        safe.insert("app".into(), Value::String("so.tilo.settings".into()));
+        for key in ["navigation", "rendered_navigation"] {
+            if let Some(value) = snapshot.get(key).and_then(safe_navigation) {
+                safe.insert(key.into(), value);
+            }
+        }
+        return Value::Object(safe);
+    }
+    if snapshot["app"] != "so.tilo.notes" {
+        return Value::Null;
+    }
     let mut safe = serde_json::Map::new();
     for key in [
         "app",
@@ -163,6 +176,37 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
         safe.insert("caret".into(), Value::Object(safe_caret));
     }
     Value::Object(safe)
+}
+
+fn safe_navigation(value: &Value) -> Option<Value> {
+    fn pane(value: Option<&Value>) -> Option<&str> {
+        value.and_then(Value::as_str).filter(|pane| {
+            !pane.is_empty()
+                && pane.len() <= 48
+                && pane
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || matches!(c, b'_' | b'-'))
+        })
+    }
+    let selected = pane(value.get("selected_pane"))?;
+    let requested = pane(value.get("requested_pane"))?;
+    let mut safe = serde_json::Map::new();
+    safe.insert("selected_pane".into(), Value::String(selected.into()));
+    safe.insert("requested_pane".into(), Value::String(requested.into()));
+    safe.insert(
+        "path".into(),
+        Value::String(format!("settings://{selected}")),
+    );
+    for key in [
+        "pending",
+        "ready",
+        "content_visible",
+        "narrow",
+        "sidebar_open",
+    ] {
+        safe.insert(key.into(), Value::Bool(value.get(key)?.as_bool()?));
+    }
+    Some(Value::Object(safe))
 }
 
 #[cfg(test)]
@@ -218,6 +262,32 @@ mod tests {
         assert_eq!(safe["editor_composing"], false);
         assert!(safe.get("sidebar_renaming").is_none());
         assert!(!safe.to_string().contains("private rename value"));
+    }
+
+    #[test]
+    fn settings_snapshot_exports_only_navigation_and_actual_draw_witness() {
+        let navigation = serde_json::json!({
+            "selected_pane":"network", "requested_pane":"displays",
+            "pending":true, "ready":false, "content_visible":true,
+            "narrow":false, "sidebar_open":true, "path":"private path",
+            "query":"private search", "label":"private label",
+        });
+        let safe = safe_snapshot(Some(serde_json::json!({
+            "app":"so.tilo.settings", "navigation":navigation,
+            "rendered_navigation":null, "local_search_text":"private search",
+            "document_actor":"private actor", "document_root":"private root",
+        })));
+        assert_eq!(safe["navigation"]["path"], "settings://network");
+        assert_eq!(safe["navigation"]["pending"], true);
+        assert!(safe.get("rendered_navigation").is_none());
+        assert!(!safe.to_string().contains("private"));
+        let mut malformed = navigation;
+        malformed["ready"] = Value::String("private value".into());
+        assert!(safe_navigation(&malformed).is_none());
+        malformed["ready"] = Value::Bool(true);
+        malformed["selected_pane"] = Value::String("private value".into());
+        assert!(safe_navigation(&malformed).is_none());
+        assert!(safe_snapshot(Some(serde_json::json!({"app":"unknown"}))).is_null());
     }
 
     #[test]

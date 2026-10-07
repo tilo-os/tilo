@@ -882,3 +882,39 @@ fn keyboard_map_read_matches_actual_focused_native_symbols_and_revokes_on_blur()
         "reading and physical feedback never edit the document"
     );
 }
+
+#[test]
+fn navigation_snapshot_never_credits_an_undrawn_or_stale_composition() {
+    let mut h = Harness::new();
+    let before = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    assert!(before["rendered_navigation"].is_null());
+    let mut scene = vello::Scene::new();
+    let mut text = TextRenderer::new();
+    h.app.draw(
+        &mut scene,
+        vello::kurbo::Affine::IDENTITY,
+        &mut text,
+        &ui::Theme::dark(),
+        &ui::presence::PresenceCtx::empty(),
+    );
+    let drawn = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    assert_eq!(drawn["navigation"], drawn["rendered_navigation"]);
+    h.app.request_pane(Category::MouseKeyboard);
+    let pending = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    assert_eq!(pending["navigation"]["pending"], true);
+    assert_eq!(pending["rendered_navigation"], drawn["rendered_navigation"]);
+    h.rebuild();
+    let undrawn = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    assert_eq!(undrawn["navigation"]["selected_pane"], "mouse_keyboard");
+    assert_ne!(undrawn["navigation"], undrawn["rendered_navigation"]);
+    h.app.draw_with_presence(
+        &mut scene,
+        vello::kurbo::Affine::IDENTITY,
+        &mut text,
+        &ui::Theme::dark(),
+        &ui::presence::PresenceCtx::empty(),
+        &ui::permissions::PermissionContext::permissive(),
+    );
+    let updated = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    assert_eq!(updated["navigation"], updated["rendered_navigation"]);
+}

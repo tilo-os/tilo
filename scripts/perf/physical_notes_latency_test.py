@@ -110,5 +110,47 @@ class PhysicalNotesLatency(unittest.TestCase):
                     self.report(self.timeline()+[next((p,r) for p,r in self.timeline() if p == prefix)])
 
 
+
+class PhysicalSettingsLatency(unittest.TestCase):
+    def timeline(self):
+        def state(pane):
+            nav=dict(selected_pane=pane,requested_pane=pane,path='settings://'+pane,
+                pending=False,ready=True,content_visible=True,narrow=False,sidebar_open=True)
+            return dict(app='so.tilo.settings',navigation=nav,rendered_navigation=copy.deepcopy(nav))
+        rows=PhysicalNotesLatency().timeline()
+        for prefix,row in rows:
+            if prefix=='tilo-physical-input ':
+                row.update(before=state('network'),after=state('bluetooth'),input_route_admitted=True)
+            elif prefix=='tilo-physical-frame ':row['state']=state('bluetooth')
+        return rows
+
+    def report(self,rows,pane='bluetooth'):
+        from input_latency import summarize_physical_settings_latency
+        return summarize_physical_settings_latency([prefix+json.dumps(row) for prefix,row in rows],pane)
+
+    def test_same_trusted_frame_and_clock_join_proves_exact_changed_pane(self):
+        report=self.report(self.timeline())
+        self.assertEqual(len(report['samples']),3)
+        self.assertEqual(report['samples'][0]['latency_ms'],10)
+        self.assertIn('Settings pane',report['metric'])
+
+    def test_absent_wrong_stale_or_unchanged_state_never_qualifies(self):
+        for mutation in ('unchanged','wrong','stale','pending','hidden','denied','no_origin','other_worker',
+                'no_feedback','no_native_key','other_effect'):
+            rows=copy.deepcopy(self.timeline());event=rows[1][1];frame=rows[2][1];feedback=rows[3][1]
+            if mutation=='unchanged':event['before']=copy.deepcopy(frame['state'])
+            elif mutation=='wrong':frame['state']['navigation']['selected_pane']='displays'
+            elif mutation=='stale':frame['state']['rendered_navigation']['selected_pane']='network'
+            elif mutation=='pending':frame['state']['navigation']['pending']=True
+            elif mutation=='hidden':frame['state']['navigation']['content_visible']=False
+            elif mutation=='denied':event['input_route_admitted']=False
+            elif mutation=='no_origin':rows[0][1]['input_time_ns']=None
+            elif mutation=='other_worker':frame['observer_session']='13d78136-4c17-4853-9d7c-7442274a7059'
+            elif mutation=='no_feedback':feedback['discarded']=True
+            elif mutation=='no_native_key':event['wayland_serial']=None
+            elif mutation=='other_effect':event['after']['navigation']['requested_pane']='displays'
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):self.report(rows)
+        with self.assertRaises(ValueError):self.report(self.timeline(),'displays')
+
 if __name__ == '__main__':
     unittest.main()
