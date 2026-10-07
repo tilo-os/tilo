@@ -19,6 +19,19 @@ class TerminalCohort(unittest.TestCase):
                     semantic_identity={'kind': 'terminal.session', 'key': 'terminal.session'},
                     contract={'availability': {'state': 'available'}})
 
+    def test_scoped_machine_catalogue_not_human_suggestions(self):
+        expected = self.row(operation="inspect-session")
+        class Vm:
+            def actions(self, *args):
+                return []
+            def control_json(self, *args):
+                self.args = args
+                return {"actions": [expected]}
+        vm = Vm()
+        self.assertEqual(module.terminal_actions(vm), [expected])
+        self.assertEqual(vm.args, ("actions", "list", module.APP, "--programmatic", "--json"))
+        self.assertIs(module.select(module.terminal_actions(vm), "inspect-session"), expected)
+
     def test_same_bound_connection_only(self):
         row = self.row()
         self.assertIs(module.select([row, self.row('other')], 'run', module.identity(row)), row)

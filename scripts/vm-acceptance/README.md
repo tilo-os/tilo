@@ -230,12 +230,16 @@ TILO_VM_CONFIG=/absolute/path/to/vms.toml \
 The receipt must be the successful canonical `swap apps+runtime` receipt for
 this VM and slot, with full source commit and inventory digest. The output
 folder must be new. The runner checks that exact layer is installed, discovers
-Open and the live `terminal.session` contracts, binds Inspect/Run/Read to one
+Open and the live `terminal.session` contracts using scoped programmatic discovery
+(`actions list so.tilo.terminal --programmatic --json`), binds Inspect/Run/Read to one
 room/record/opaque connection, and invokes a unique harmless `printf` exactly
 once. Broker acceptance is insufficient: every job must reach success. Read
 must report the same Default session, the marker as a standalone output line,
-and a subsequent Default prompt. A slot process probe reads only UID, process
-identity, runtime mappings and ELF hashes; the mapped runtime must equal the
+and a subsequent Default prompt. Read is discovered after Run creates output,
+not required before submission. A slot process probe reads only UID and process
+identity; exact resident SDK hashes use the shared read-only `map_files` FD probe
+through maintained root metadata transport, without changing the action actor.
+Namespace path hashes are insufficient. The mapped runtime must equal the
 SDK ELF in that installed layer, and the slot generation/components must remain
 unchanged. Unobservable, ambiguous, stale, refused or truncated subjects fail.
 
