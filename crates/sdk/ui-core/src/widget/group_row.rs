@@ -6450,12 +6450,17 @@ mod tests {
 
     #[test]
     fn closing_groups_fade_before_pruning_with_aligned_nodes() {
-        fn group_pruned_after_close_fade_completes() {
+        fn group_pruned_after_close_fade_completes(theme: &Theme) {
             use winit::event::WindowEvent;
 
-            let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-            // Already-elapsed timestamp: ready-to-prune on the very next tick.
-            row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 200));
+            let (row, _, _) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            let (mut row, taffy, root) = relayout_row_owned_with(row, FIXTURE_USABLE_PX, theme);
+            // At the themed boundary, the next production event must prune.
+            let boundary = crate::time::now()
+                .checked_sub(theme.tokens.motion.durations.base())
+                .expect("fixture clock supports the close duration");
+            row.groups[0].set_closing_at_for_tests(boundary);
+            assert!(row.groups[0].close_complete());
             assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
             let event = WindowEvent::CursorMoved {
@@ -6493,11 +6498,15 @@ mod tests {
         }
 
         /// Mirror of the prune test above.
-        fn group_retained_during_close_fade() {
+        fn group_retained_during_close_fade(theme: &Theme) {
             use winit::event::WindowEvent;
 
-            let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-            row.groups[0].set_closing_at_for_tests(crate::time::now());
+            let (row, _, _) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            let (mut row, taffy, root) = relayout_row_owned_with(row, FIXTURE_USABLE_PX, theme);
+            let before_boundary = crate::time::now()
+                .checked_sub(theme.tokens.motion.durations.base() / 2)
+                .expect("fixture clock supports half the close duration");
+            row.groups[0].set_closing_at_for_tests(before_boundary);
             assert!(row.groups[0].is_closing());
             assert!(!row.groups[0].close_complete());
 
@@ -6536,14 +6545,18 @@ mod tests {
         /// production `debug_assert` pins that. Gated since the asserts
         /// exercised are themselves debug-only.
         #[cfg(debug_assertions)]
-        fn group_prune_keeps_node_ids_aligned_in_debug() {
+        fn group_prune_keeps_node_ids_aligned_in_debug(theme: &Theme) {
             use winit::event::WindowEvent;
 
             // Non-adjacent prune indices (0, 2) verify the
             // highest-index-first sort doesn't shift slots under the loop.
-            let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-            row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 500));
-            row.groups[2].set_closing_at_for_tests(earlier(crate::time::now(), 500));
+            let (row, _, _) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+            let (mut row, taffy, root) = relayout_row_owned_with(row, FIXTURE_USABLE_PX, theme);
+            let boundary = crate::time::now()
+                .checked_sub(theme.tokens.motion.durations.base())
+                .expect("fixture clock supports the close duration");
+            row.groups[0].set_closing_at_for_tests(boundary);
+            row.groups[2].set_closing_at_for_tests(boundary);
 
             let groups_pre = row.groups.len();
             let node_ids_pre = row.node_ids.len();
@@ -6600,10 +6613,15 @@ mod tests {
             );
         }
 
-        group_pruned_after_close_fade_completes();
-        group_retained_during_close_fade();
-        #[cfg(debug_assertions)]
-        group_prune_keeps_node_ids_aligned_in_debug();
+        let default_theme = Theme::dark();
+        let mut changed_theme = default_theme.clone();
+        changed_theme.tokens.motion.durations.base_ms = 420;
+        for theme in [&default_theme, &changed_theme] {
+            group_pruned_after_close_fade_completes(theme);
+            group_retained_during_close_fade(theme);
+            #[cfg(debug_assertions)]
+            group_prune_keeps_node_ids_aligned_in_debug(theme);
+        }
     }
 
     /// Each `WindowWidth::Normal` group is 600px, so `count`×600 +
