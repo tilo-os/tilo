@@ -13,7 +13,7 @@
     "license": "CC-BY-4.0",
     "attribution": "Google FLEURS dataset authors",
     "source": "https://huggingface.co/datasets/google/fleurs/blob/70bb2e84b976b7e960aa89f1c648e09c59f894dd/README.md",
-    "selection": "First three archive members per language, without listening or selecting recognition results. Five additional distinct utterances per English/French/Mandarin provide 70\u201390 second splices.",
+    "selection": "First three archive members per language, without listening or selecting recognition results. Five additional distinct utterances per English/French/Mandarin provide 70–90 second splices.",
     "manifest_sha256_before_additional_model": "2b5e3f2886662798af3eebb90b519f12b2c012984ab58cad8c78ed573c6c9dab",
     "fixtures": [
       {
@@ -5042,6 +5042,86 @@
       ],
       "limits": "Debugger Input.insertText emits an untrusted end in this engine, and focus changes may omit an end. Both retain refusal until a fresh observed document. This is safe admission qualification, not full composing IME delivery qualification.",
       "privacy": "Composition presence only; no preedit text, caret or field values exported; inspector enabled only by the confined native test fixture, never production."
+    },
+    "certified_application_capture": {
+      "date": "2026-10-07",
+      "configuration": "Real SDK thin signed Browser, signed runtime bundles, normal installer/launcher, genuine signed workspace Join; UID65534 bwrap unshare-all; synthetic public virtual PipeWire source, hardware nodes disabled; no physical devices or external network",
+      "package_bytes_before_handler_fix": 2846208,
+      "package_cap_bytes": 8388608,
+      "completed": [
+        "Genuine native custody/enrollment",
+        "Normal Applications launch and primary record creation",
+        "Certified broker Navigate/Read/Click terminal receipts",
+        "Measured compositor input establishes toolkit and original native field focus",
+        "Original field Prepare and Start acknowledgements before virtual-source capture",
+        "Actual public speech capture and acknowledged final insertion in original field",
+        "Recorder gone after Finish",
+        "Native Edit Undo/Redo through certified broker terminal acknowledgements restores exact original/dictated field",
+        "Repeated Cancel leaves field unchanged and terminates recorder plus model worker before restart",
+        "Active public speech followed by successor-field focus retires capture and changes neither field"
+      ],
+      "capture_log_sha256": "5f64cfef68546dc0fdefd33b3e76a164dddcf414c62d3faaeb3e07fe8dcabae3",
+      "history_discovery_log_sha256": "8099d30f5f1f5b38337439163353db650bde85cdd0ed7c61e9537a99cabf038e",
+      "native_history_handler_contract": {
+        "red_tests": 1,
+        "green_tests": 1,
+        "red_log_sha256": "d4fdc88358897ed2aa96adae48fbeacf9ac27d2b74fa05090a929dab19aa89e4",
+        "green_log_sha256": "64d134074b1e1632e8a051fe82e89deb7c7e47f80c9b3e7607f773e3d642114d",
+        "defect": "WebView handles tilo.host.edit but did not declare it for production surface validation",
+        "fix": "Declare the existing Edit operation in the shared WebView handler table; existing renderer acknowledgement/focus assertions unchanged"
+      },
+      "unqualified": [
+        "DOM semantic click alone does not establish native toolkit editable focus in this fixture",
+        "Physical microphone, full OS, older CPU/ARM and noisy conversation"
+      ],
+      "release_status": "Draft and hold retained; no merge, deploy, reboot, microphone/account/new persistent trust grant, paid service, model/default/catalogue publication or cap increase",
+      "package_bytes_after_handler_fix": 2847232,
+      "bound_owner_history_contract": {
+        "defect": "BoundAppWidget forwards LocalUndo requests but inherited absent status and false deferred-completion defaults; capability traversal stops at this owner boundary",
+        "fix": "Forward both read-only capabilities through existing callback_binding().enter(); closing/closed owners return none/false",
+        "red_tests": 1,
+        "red_log_sha256": "6f8ff9b9731089321299a5f20abdee89a9c33e20700a7ec1da57be66e5efc54c",
+        "green_tests": 14,
+        "green_elapsed_seconds": 0.65,
+        "green_log_sha256": "cbbe5b9805c96ad78ee33cdbdb64e21b40c373d9669da9292c9cbc7bede6f1d0"
+      },
+      "package_bytes_after_bound_owner_fix": 2847232,
+      "bound_owner_journey_log_sha256": "d7a338f4bd68c842a3e1fb839dde99a29b0e0b5c1daf6a499e1a918aec12817d",
+      "bound_owner_journey_exit_code": 0,
+      "merged_candidate_checks": {
+        "settings_dictation": {
+          "passed_tests": 1,
+          "log_sha256": "33c3ac152c6add9daaaf29a48c8e20ac56c6682da69ad5ce143ae1587b5bcd73"
+        },
+        "ui_all_target_clippy": {
+          "exit_code": 0,
+          "elapsed_seconds": 79,
+          "log_sha256": "fc4c016f394c9d98501ce9a40cf903172f533d6ff0d33366b5e9d29ac1747fdc"
+        },
+        "shell_tests_compile": {
+          "exit_code": 0,
+          "elapsed_seconds": 109,
+          "log_sha256": "ed46379696051ce762bf9f21b25c93bab2d6b5fcd039f74c52c0ab2b1122078a"
+        },
+        "final_shell_version": {
+          "exit_code": 0,
+          "elapsed_seconds": 153,
+          "version": "0.1.12",
+          "log_sha256": "c8cefd41965a508d710d4c04e603e2294d4e7ed56706432260aaa9dd541a6351"
+        }
+      },
+      "final_source_digests": {
+        "crates/sdk/ui-core/src/widget/app_widget.rs": "0ef5b47319032c2d27d70b09a43a8d114423a73aa4b1b0711beb3d1d27292546",
+        "crates/sdk/ui-core/src/widget/webview.rs": "c5352e7dbfb8d49e597f53e35d6c33690aec22110fddb65f6ce33e48b02cb96d",
+        "crates/session/shell/src/compositor/dictation/frontend.rs": "eadb56186be7960f6f13198c4d322f331f164c79ce09d0b656613efe33b3551a"
+      },
+      "builder_source_digests_match": true,
+      "final_candidate_journey": {
+        "exit_code": 0,
+        "log_sha256": "9606a4570075345cef7c63581d04b18e7f0dce978245f1c62e52cdc01744549b",
+        "typed_temporary_diagnostics_absent": true,
+        "temporary_fixture_signing_key_removed": true
+      }
     }
   }
 }

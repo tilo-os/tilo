@@ -51,9 +51,10 @@ def stop_bus_helpers(runtime):
                     try:
                         environment = (entry / 'environ').read_bytes().split(b'\0')
                     except PermissionError:
-                        # Exit can revoke /proc access after pidfd_open. A live
-                        # helper whose ownership is unreadable must still fail.
-                        if select.select([handle], [], [], 0)[0]: continue
+                        # Exit can revoke /proc access before the pidfd becomes
+                        # ready. Wait briefly for proof of that exact exit; an
+                        # unreadable helper that stays live must still fail.
+                        if select.select([handle], [], [], 1)[0]: continue
                         raise
                     if os.fsencode('XDG_RUNTIME_DIR=' + runtime) not in environment: continue
                     signal.pidfd_send_signal(handle, signal.SIGTERM)

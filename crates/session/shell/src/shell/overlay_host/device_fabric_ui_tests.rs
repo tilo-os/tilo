@@ -14,6 +14,7 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
     let remote = DeviceId::new("certified-laptop").unwrap();
     (
         DeviceFabricView {
+            displays: Vec::new(),
             bluetooth_authorizations: Vec::new(),
             bluetooth_handoffs: Vec::new(),
             gamepad_authorizations: Vec::new(),

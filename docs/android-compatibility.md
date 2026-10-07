@@ -6,7 +6,8 @@ through Tilo's production compositor and launcher.** Arity 1.1 rendered
 rendered `234+567 = 801` with separate state in a second workspace. This is
 x86-64 execution on the existing remote Fedora builder with a headless Tilo
 compositor and software graphics. Native ARM64 ART additionally passes the owned
-service, foreground, notification-denial, sticky-recovery and permission fixtures
+service, foreground, notification-denial, sticky-recovery, permission and document fixtures,
+including actual FUSE cold restoration and foreground descriptor interruption,
 described below. These are headless runtime journeys, not real-device
 qualification or general Android application support.
 [Android](android.md) describes the opposite direction: building Tilo apps for Android.
@@ -312,9 +313,29 @@ authored fixture input asserts its name. The original Unicode/existing-sibling
 journey remains separate. The accepted cold APK SHA-256 is
 `90965424611eb98666fcc06dfc01f1ea7f3b11221f71f41cdce0b5cf1a0be8a2`,
 with signer `05331ce2f12843658fcea5d4d69c214647abee538bfe8c8dc1cc02417153ff0a`.
-Reports and PNGs stay outside tracked source. This is real FUSE/ART execution on
-one remote x86-64 host with software graphics, not qualification of a signed OS
-image, multiple physical machines, native Btrfs projection, ARM64 or physical GPU.
+Reports and PNGs stay outside tracked source. The unchanged ordinary APK and cold
+fixture also passed on the existing native ARM64 builder on 2026-10-07. Both
+ordinary journeys retained Unicode/existing-sibling assertions; the cold journey
+required initial and safely evicted backend absence, two actual APK restorations,
+exact output bytes and denied former metadata/read/write authority with the source
+resident. The app's private URI bytes remained unchanged through cold and revoked
+relaunches. This proves real FUSE/ART on each remote host with software graphics,
+not a signed OS image, multiple physical machines, native Btrfs projection or
+physical GPU.
+
+The native FUSE binary and production inspection helper were built remotely from
+main `f152ce3010`, with SHA-256 identities
+`7d14870afe49281c44b75f3540d3b767673276d895f1d58671c56c2c585d7cdf` and
+`ddba6614b80eee9cab51667aba97a74ccf26193750f232c1054af0dbde1dac18`.
+The shell/launcher and runtime are the pinned native inputs below. A separate
+`run_foreground_journey.py --cold-hydration` run starts with an absent recipient
+manifest/chunk, requires projected state before the actual worker read and local
+state before any harness read, then checks accepted revocation interrupting open
+descriptors. The notice disappears, writes stop, former metadata/read/write access
+fails on relaunch, private visits remain ordered and stopped-store inspection
+verifies the exact source bytes. All owned FUSE mounts and processes stop. This
+does not establish withdrawal of an independent filesystem share or persisted
+Android URI grants.
 
 ## Started-service lifecycle
 
@@ -472,9 +493,10 @@ private qualification bundle outside Git. No host package installation, binfmt
 registration, new persistent access grant, device takeover or reboot was needed.
 
 Native execution exposed a helper-cleanup race: `/proc/<pid>/environ` can become
-unreadable after the process exits. Cleanup now proves exit through the captured
-pidfd before treating that process as gone. An unreadable live helper still fails;
-five real-process/pidfd regression tests cover ownership, preservation and exit
+unreadable during exit before the captured pidfd is ready. Cleanup waits at most
+one second for proof of that exact exit before treating the process as gone. An
+unreadable helper that stays live still fails; six real-process/pidfd regression
+tests cover ownership, preservation and exit
 races, with injected environment-read errors for privilege-independent coverage.
 
 `build_arm64_entry.sh` and `mediation/build_arm64_bridge.py` provide the remote
@@ -505,7 +527,7 @@ by this Android task.
 | Area | Confirmed | Remaining acceptance |
 | --- | --- | --- |
 | Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation; native ARM64 fixture surfaces | Real GPU/DRM, resize/rotation, ARM64 calculation/input, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
-| Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source; native ARM64 room-private state and accepted withdrawal interrupting an old sandbox holding open descriptors | ARM64 document/FUSE journeys, Android content providers, Android sharing intents, persisted URI authority, native projection and legacy external storage mapping |
+| Files/state | App-private history and separate room state; x86-64 and native ARM64 document metadata/read/save, Unicode names and editor modes, FUSE cold read, safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source; native ARM64 private URI/visit preservation and withdrawal interrupting open descriptors after a cold FUSE read | Android content providers, Android sharing intents, persisted URI authority, independent filesystem-share withdrawal, native projection and legacy external storage mapping |
 | Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability; ongoing notice persistence, owner cleanup and unrelated-sender denial | Full Android notification tags, actions, resource mapping and independent background persistence |
 | Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
 | Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks; started-service request IDs and stale/current self-stop with main-looper destruction; scoped foreground worker stop and revocation interruption; bounded null-Intent sticky recovery and revocation during backoff; owned compositor teardown | Workspace stop, compositor loss, bound/typed/media services, broader recovery, updates and migration |

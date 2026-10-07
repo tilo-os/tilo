@@ -8,12 +8,14 @@ an exception requires an explicit policy edit. File extensions grant no exemptio
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
 EXCEPTIONS = "tools/policy/source_content_exceptions.json"
+NON_TEXT_BYTES = re.compile(rb"[\x00-\x08\x0e-\x1f]")
 
 
 def git(root, *args):
@@ -25,7 +27,7 @@ def content_issues(data):
         data.decode("utf-8")
     except UnicodeDecodeError:
         return ["non-text content"]
-    if any(byte < 9 or 13 < byte < 32 for byte in data):
+    if NON_TEXT_BYTES.search(data):
         return ["non-text content"]
     return ["non-LF line endings"] if b"\r" in data else []
 

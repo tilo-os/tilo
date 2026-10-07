@@ -784,7 +784,12 @@ fn overview_controls_semantic_bounds_and_focus_follow_populated_child_order() {
             .map(ui::a11y::AccessBounds::to_rect)
     );
     assert!(h.focus_synthetic_accessibility(&[0, count, 0]));
-    assert_eq!(h.overview_window_selection, Some(0));
+    assert_eq!(
+        h.overview_window_selection,
+        h.overview_row_windows()
+            .first()
+            .map(|window| window.address.tab)
+    );
     assert!(h.focus_synthetic_accessibility(&[0, create]));
     assert_eq!(h.overview_selection, Some(count));
     assert_eq!(h.overview_window_selection, None);
@@ -999,4 +1004,195 @@ fn assert_overview_preview_focus_pixels(
             && blue.abs_diff(expected.b) <= 2,
         "preview focus ring is clipped at ({pixel_x}, {pixel_y})"
     );
+}
+
+#[test]
+fn overview_window_identity_survives_another_window_closing() {
+    let mut h = overview_controls_host_with_preview();
+    let windows = h.overview_row_windows();
+    let before = windows.first().expect("first fixture window").address.tab;
+    let selected = windows.get(1).expect("second fixture window").clone();
+    h.select_overview_window(1);
+    let chrome = h.chrome.as_ref().expect("chrome").clone();
+    crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), before)
+        .expect("production close transaction");
+    let tree = h.accessibility().expect("overview semantics");
+    let list = &tree.children[0].children[h.overview_cards().len()];
+    let focused = list
+        .children
+        .iter()
+        .find(|node| node.state.focused)
+        .expect("the surviving selected window retains focus");
+    assert_eq!(focused.name.as_deref(), Some(selected.title.as_str()));
+    assert_eq!(
+        focused.semantic_key.as_deref(),
+        Some(format!("overview-window:{}", selected.address.tab).as_str()),
+        "accessibility identity follows the surviving tab"
+    );
+    let mut handled = false;
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
+    assert_eq!(chrome.borrow().active_tab_id(), Some(selected.address.tab));
+}
+
+#[test]
+fn overview_window_identity_does_not_activate_a_replacement_after_selected_close() {
+    let mut h = overview_controls_host_with_preview();
+    let selected = h
+        .overview_row_windows()
+        .get(1)
+        .expect("second fixture window")
+        .address
+        .tab;
+    h.select_overview_window(1);
+    let chrome = h.chrome.as_ref().expect("chrome").clone();
+    crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), selected)
+        .expect("production close transaction");
+    let active = chrome.borrow().active_tab_id();
+    let mut handled = false;
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
+    assert!(
+        h.overlay_flags().overview,
+        "an interrupted preview activation stays in overview"
+    );
+    assert_eq!(
+        chrome.borrow().active_tab_id(),
+        active,
+        "no different window is activated"
+    );
+}
+
+#[test]
+fn overview_window_identity_capture_matrix_is_written() {
+    use crate::shell::osd::review_offscreen::OffscreenRenderer;
+    let out = std::env::var_os("TILO_OVERVIEW_IDENTITY_SHOTS").map_or_else(
+        || std::path::PathBuf::from("target/overview-window-identity"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).expect("capture output");
+    let variants = vec![
+        ("dark", Theme::dark(), 1280_u32, 800_u32),
+        ("light", Theme::light(), 1280, 800),
+        ("large-text", Theme::dark().with_text_scale(2.0), 960, 540),
+        ("high-contrast", Theme::high_contrast(), 1280, 800),
+    ];
+    for (name, theme, width, height) in variants {
+        for state in ["another-window-closed", "selected-window-closed"] {
+            let mut h = overview_controls_host_with_preview();
+            h.rect = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            h.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+            let windows = h.overview_row_windows();
+            let first = windows.first().expect("first fixture window").address.tab;
+            let selected = windows.get(1).expect("second fixture window").address.tab;
+            h.select_overview_window(1);
+            let chrome = h.chrome.as_ref().expect("chrome").clone();
+            let closed = if state == "another-window-closed" {
+                first
+            } else {
+                selected
+            };
+            crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), closed)
+                .expect("production close transaction");
+            if state == "selected-window-closed" {
+                let mut handled = false;
+                h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled);
+            }
+            scene.reset();
+            h.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+            OffscreenRenderer::new(width, height).render_png(
+                &scene,
+                theme.tokens.colors.surfaces.base,
+                out.join(format!("{name}-{state}.png")),
+            );
+        }
+    }
+}
+
+#[test]
+fn overview_window_identity_interruption_reconciles_shared_focus_and_native_navigation() {
+    use winit::event::Modifiers;
+    let mut h = overview_controls_host_with_preview();
+    let selected = h
+        .overview_row_windows()
+        .get(1)
+        .expect("second fixture window")
+        .address
+        .tab;
+    h.select_overview_window(1);
+    let chrome = h.chrome.as_ref().expect("chrome").clone();
+    crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), selected)
+        .expect("production close transaction");
+    h.rect = Rect::new(0.0, 0.0, 800.0, 480.0);
+    let mut text = TextRenderer::new();
+    h.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut text,
+        &Theme::dark().with_text_scale(2.0),
+        &ui::presence::PresenceCtx::default(),
+    );
+    let here = h.overview_here_index().expect("current workspace");
+    let tree = h.accessibility().expect("overview accessibility");
+    assert!(
+        tree.children[0].children[here].state.focused,
+        "painting after removal restores the shared workspace focus"
+    );
+    let doc = AutoCommit::new();
+    let mut handled = false;
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Enter),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled
+    ));
+    assert!(
+        h.overlay_flags().overview,
+        "the interrupted activation is consumed once"
+    );
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::ArrowRight),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled
+    ));
+    let next = h
+        .overview_row_windows()
+        .first()
+        .expect("remaining window")
+        .address
+        .tab;
+    assert_eq!(h.overview_window_selection, Some(next));
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Enter),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled
+    ));
+    assert!(!h.overlay_flags().overview);
+    assert_eq!(chrome.borrow().active_tab_id(), Some(next));
+    chrome.borrow_mut().overlays.overview = true;
+    h.force_overview_settled(true);
+    assert_eq!(h.overview_window_selection, None);
+    assert!(!h.overview_window_interrupted);
+    assert!(h.handle_shell_escape_chord(&mut handled));
+    assert!(!h.overlay_flags().overview);
 }

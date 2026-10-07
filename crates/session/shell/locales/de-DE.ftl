@@ -2462,3 +2462,9 @@ dictation-open-settings = Einrichten
 
 dictation-edit-rejected = Mikrofon aus · Das ursprüngliche Feld hat den Text abgelehnt oder wurde geändert. Dein Transkript bleibt 10 Minuten privat aufbewahrt. Kopieren überträgt es in die Zwischenablage; Verwerfen entfernt es.
 dictation-delivery-unknown = Mikrofon aus · Das Einfügen wurde nicht bestätigt. Prüfe das ursprüngliche Feld, bevor du erneut einfügst. Dein Transkript bleibt 10 Minuten privat aufbewahrt; Kopieren überträgt es in die Zwischenablage.
+search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
+search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
+search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
+search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
+search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
+search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben

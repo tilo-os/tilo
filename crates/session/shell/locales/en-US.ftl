@@ -2459,3 +2459,9 @@ dictation-open-settings = Set up
 
 dictation-edit-rejected = Microphone off · The original field refused the text or changed. Your transcript is kept privately for 10 minutes. Copy exports it to your clipboard; discard removes it.
 dictation-delivery-unknown = Microphone off · Text insertion was not confirmed. Check the original field before inserting again. Your transcript is kept privately for 10 minutes; copy exports it to your clipboard.
+search-action-activity-acknowledge = Acknowledge viewed activity
+search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
+search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
+search-action-activity-tasks = Review workspace goals and agent work
+search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
+search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks

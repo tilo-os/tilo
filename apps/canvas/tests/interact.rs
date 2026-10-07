@@ -1330,7 +1330,15 @@ fn small_pixel_zoom_deltas(wheel: bool) {
 
 #[test]
 fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
+    // This measures zoom motion, not startup image jobs on a shared worker pool.
+    // Keep the real animation clock and the existing two-second motion bound.
+    let pumped = ui::background::Pumped::new();
+    let _entered = pumped.background().enter();
     let mut desk = Desk::open();
+    desk.app
+        .call("set-artwork", serde_json::json!({"texture":"smooth"}))
+        .unwrap();
+    pumped.run_pending();
     desk.key("Ctrl+1");
     desk.key("=");
     let canvas = desk.app.harness().targets()["canvas"];
@@ -1340,7 +1348,17 @@ fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
         position: ui::winit::dpi::PhysicalPosition::new(focal.x, focal.y),
     });
     desk.hold(&["ctrl"]);
-    desk.app.harness().scroll(0.0, 1.0);
+    // Observe scheduling at the actual input boundary. `scroll` also paints,
+    // which can legitimately outlast the 130 ms interpolation on a busy host.
+    assert!(
+        desk.app
+            .harness()
+            .dispatch_to_root(&WindowEvent::MouseWheel {
+                device_id: ui::winit::event::DeviceId::dummy(),
+                delta: ui::winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+                phase: ui::winit::event::TouchPhase::Moved,
+            })
+    );
     assert!(
         desk.app.harness().frame_schedule().needs_animation_frame,
         "one wheel notch schedules intermediate frames without further input"
