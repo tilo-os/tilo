@@ -29,6 +29,9 @@ tagline = "Art agents can see and revise"
 [apps.chat]
 description = "A focused space for conversations, calls, and shared work."
 tagline = "Talk together, naturally"
+[apps.chip-design]
+description = "Review chip verification reports, design evidence, and implementation readiness together."
+tagline = "Trace a design from evidence to readiness"
 [apps.clocks]
 description = "Keep an eye on time zones, timers, and alarms."
 tagline = "Time, at a glance"

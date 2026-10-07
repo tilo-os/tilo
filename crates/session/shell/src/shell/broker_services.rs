@@ -48,6 +48,9 @@ impl NativeOwnerCommitService {
             network,
         }
     }
+    pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
+        self.owner.clone()
+    }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
@@ -81,6 +84,12 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
                     return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
                         .await;
                 }
+            }
+            if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+            ) {
+                return owner.commit_workspace_task_command(request, std::time::SystemTime::now());
             }
             if matches!(
                 request.operation,

@@ -2464,3 +2464,13 @@ search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen
 search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
 search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
 search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
+
+task-review-inspect = Aufgabennachweise prüfen
+task-review-steer = Aufgabenanweisungen ändern
+task-review-cancel = Aufgabenlauf abbrechen
+task-review-retry = Aufgabe erneut versuchen
+task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
+task-review-provider = Aufgabenprüfung
+
+host-history-task-refused-title = Aufgabe konnte nicht geändert werden
+host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.

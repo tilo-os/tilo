@@ -2463,3 +2463,10 @@ search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and actio
 search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
 host-history-task-refused-title = Task could not be changed
 host-history-task-refused-body = The workspace did not accept this change. Any draft is kept; check your identity and workspace permissions before retrying.
+
+task-review-inspect = Inspect task evidence
+task-review-steer = Change task instructions
+task-review-cancel = Cancel task run
+task-review-retry = Retry task
+task-review-status = Inspect task review availability
+task-review-provider = Task review

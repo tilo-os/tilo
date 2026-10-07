@@ -42,7 +42,8 @@ ARG TILO_HARDWARE_PROFILE
 COPY os/dev/prepare-hardware-profile.py os/dev/hardware_profile.py /tilo/os/dev/
 COPY os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py /tilo/os/scripts/
 COPY os/hardware/profiles /tilo/os/hardware/profiles
-COPY os/dev/install-board-layer.sh /tilo/os/dev/
+COPY os/dev/install-board-layer.sh os/dev/signed-development-board-policy.py /tilo/os/dev/
+COPY os/usr/lib/bootc/kargs.d/05-credentials.toml /tilo/os/usr/lib/bootc/kargs.d/
 COPY os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf /tilo/os/usr/lib/systemd/system/sshd.service.d/
 COPY os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf /tilo/os/etc/NetworkManager/conf.d/
 COPY os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee /tilo/os/usr/lib/NetworkManager/dispatcher.d/
@@ -55,12 +56,22 @@ ARG TILO_HARDWARE_PROFILE
 # The update origin the board image records; a board dev image itself is
 # replaced with `bootc switch` to the next one.
 ARG TILO_TARGET_IMGREF
+ARG TILO_SIGNED_DEVELOPMENT_BOARD=0
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
+# tilo-rpm-snapshot-package[aarch64]: openssh-server
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=board-inputs,source=/tilo,target=/run/tilo-board \
     case "${TILO_HARDWARE_PROFILE:-}" in ''|generic) echo 'a board profile is required' >&2; exit 1 ;; esac \
+    && case "$TILO_SIGNED_DEVELOPMENT_BOARD" in \
+         0) ;; \
+         1) test "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 \
+            && dnf install -y --setopt=reposdir=/repo openssh-server \
+            && python3 /run/tilo-board/os/dev/signed-development-board-policy.py --maintenance / \
+            && systemctl enable sshd.service ;; \
+         *) echo 'invalid signed development board flag' >&2; exit 1 ;; \
+       esac \
     && set -- /usr/lib/modules/*/ \
     && { [ "$#" = 1 ] || { echo "expected one kernel in the dev image, found $#" >&2; exit 1; }; } \
     && kver="$(basename "$1")" \
@@ -71,6 +82,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         --firmware-dir "/run/tilo-board/os/hardware/firmware/$TILO_HARDWARE_PROFILE" \
         --target-update-ref "$TILO_TARGET_IMGREF" \
     && bash /run/tilo-board/os/dev/install-board-layer.sh /run/tilo-board \
+    && case "$TILO_SIGNED_DEVELOPMENT_BOARD" in \
+         0) ;; \
+         1) test "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 \
+            && install -D -m 0644 /run/tilo-board/os/usr/lib/bootc/kargs.d/05-credentials.toml \
+                 /usr/lib/bootc/kargs.d/05-credentials.toml ;; \
+         *) echo 'invalid signed development board flag' >&2; exit 1 ;; \
+       esac \
     && bash /run/tilo-board/os/scripts/build-initramfs.sh "$kver" \
     && rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-* \
     && dnf clean all \
@@ -127,4 +145,5 @@ COPY --from=cfs-digest /out/digest /
 
 FROM split AS final
 COPY --from=uki /out/*.efi /boot/EFI/Linux/
-LABEL org.opencontainers.image.title="Tilo board dev image (not for production)"
+LABEL org.opencontainers.image.title="Tilo board dev image (not for production)" \
+      sh.tilo.image.flavour="dev"
