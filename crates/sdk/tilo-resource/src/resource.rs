@@ -163,6 +163,21 @@ pub trait Resource: Sized + 'static {
         PermissionRequirement::Write
     }
 
+    /// Publish the bounded audited mutation door. Default resources retain
+    /// their existing catalogue. Enabling this also requires a closed
+    /// [`allows_low_mutation`](Self::allows_low_mutation) whitelist.
+    const AUDITED_LOW_MUTATIONS: bool = false;
+
+    /// Opt in an audited state-only mutation to the bounded low-risk door.
+    /// Default-deny: a default `Action::risk()` is insufficient authority.
+    /// Implementations must use a closed whitelist excluding I/O, commands,
+    /// capability grants and destructive mutations. The target also requires
+    /// actual `RiskLevel::Low` and checks the action's current permission.
+    fn allows_low_mutation(action: &Self::Action) -> bool {
+        let _ = action;
+        false
+    }
+
     /// The least any of the resource's actions needs
     /// ([`permission`](Self::permission)): what the generic [`APPLY`] and
     /// group actions are offered under, each invocation then checked
@@ -825,7 +840,7 @@ pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> Enc
 
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
-fn refused<R: Resource>(reason: &str) -> EncodedAction {
+pub(crate) fn refused<R: Resource>(reason: &str) -> EncodedAction {
     let _ = R::ACTION_TYPE;
     EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
@@ -916,7 +931,7 @@ fn declared_args<R: Resource>() -> std::collections::BTreeMap<&'static str, serd
 /// The parameter of [`APPLY`]: one action value, described by
 /// [`Resource::action_schema`] when the resource has one, with what only
 /// restates a named action folded into a reference to it.
-fn apply_param<R: Resource>() -> ActionParam {
+pub(crate) fn apply_param<R: Resource>() -> ActionParam {
     let param = ActionParam::required_owned(
         APPLY_PARAM,
         ParamType::Object,
@@ -1002,7 +1017,7 @@ fn read_apply<R: Resource>(value: serde_json::Value) -> Result<R::Action, String
 /// checked against its own action's schema when the group is built, so this
 /// names those actions rather than repeating their schemas; an `apply`
 /// member carries `apply`'s schema, without its descriptions.
-fn group_param<R: Resource>() -> ActionParam {
+pub(crate) fn group_param<R: Resource>() -> ActionParam {
     use crate::schema::{
         array, constant, describe, nullable, object, one_of, string_enum, undescribed,
     };
@@ -1028,7 +1043,15 @@ fn group_param<R: Resource>() -> ActionParam {
             |schema| undescribed(&schema),
         );
         members.push(object(vec![
-            ("action", constant(APPLY), true),
+            (
+                "action",
+                if R::AUDITED_LOW_MUTATIONS {
+                    string_enum(&[APPLY, crate::APPLY_LOW])
+                } else {
+                    constant(APPLY)
+                },
+                true,
+            ),
             ("args", object(vec![(APPLY_PARAM, action, true)]), true),
         ]));
         Some(array(one_of(members)))
@@ -1096,7 +1119,7 @@ fn apply_spec<R: Resource>() -> ActionSpec {
 }
 
 /// How much a requirement asks, least first.
-fn permission_rank(requirement: PermissionRequirement) -> u8 {
+pub(crate) fn permission_rank(requirement: PermissionRequirement) -> u8 {
     match requirement {
         PermissionRequirement::None => 0,
         PermissionRequirement::Read => 1,
@@ -1214,10 +1237,15 @@ pub(crate) fn publish_parts<R: Resource>(
         }
         resource = resource.with_action(spec);
     }
-    resource
+    resource = resource
         .with_action(apply_spec::<R>())
-        .with_action(group_spec::<R>())
-        .with_children(children)
+        .with_action(group_spec::<R>());
+    if R::AUDITED_LOW_MUTATIONS {
+        resource = resource
+            .with_action(crate::low_mutation::apply_spec::<R>())
+            .with_action(crate::low_mutation::group_spec::<R>());
+    }
+    resource.with_children(children)
 }
 
 /// Build the action a declaration produces for JSON arguments, validating them
@@ -1232,6 +1260,9 @@ pub fn build_action<R: Resource>(
 ) -> Result<R::Action, String> {
     if id == crate::GROUP {
         return Err("a group is several actions; build it with `group::build_group`".into());
+    }
+    if id == crate::APPLY_LOW {
+        return crate::low_mutation::build_action::<R>(arguments);
     }
     if id == APPLY {
         let value = arguments
