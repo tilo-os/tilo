@@ -84,15 +84,29 @@ through this adapter; never derive it from report payloads or URLs. The submitti
 host feeds the receipt to `Outbox::confirm_durable_receipt` with that identity.
 Persist masked screenshot bytes before allowing its immutable payload to send.
 
-The browser room-action server currently catalogues and invokes **document
-operations only** through `Participant`/`Replica`; it also discards action output.
-It therefore does not serve this reader yet. Its shared SDK/server integration
-must serve registered read-only operations from a qualified canonical owner,
-return their stamped output and retain the existing refusal of device effects.
-Simply enabling all effects or running a raw projection on an arbitrary replica
-does not preserve that boundary. This seam is tracked in #3269.
+The browser room-action server can serve an explicitly selected record's
+registered semantic readers through an exact-target catalogue lookup. Document
+operations keep their existing catalogue revision and invocation path. It mounts the compiled app over the host's exact
+retained, signature-verified source, qualifies the existing record binding,
+and rechecks current certified Read before disclosure and after projection.
+Only actual registered Read/Immediate readers with their exact result contract
+are admitted; generic effects remain excluded. The SDK-stamped output survives
+the response. A governor-created primary uses the empty wire record name and its
+internal SDK primary identity; windowless creation receives the actual selected
+room rather than inventing a starter workspace.
 
-Once that integration is qualified, invoke `read-feedback-receipt` through the
+This read path does not grant document authorship or broaden the room-action
+service's existing host-person invocation policy. A browser's existing
+ClientLocal Chat action still submits through its certified participant and
+normal peer publication. The signed HTTPS fixture retries one reviewed payload,
+checks opted-in personal context redaction and current/stale source revisions,
+reads a retained receipt and confirms that an unpublished local-only report
+cannot return a receipt. Host-side document actions retain their existing peer
+publication limitation: publish/local cache completion alone is not a durable
+commit acknowledgment. A separate writer correction requires qualification.
+No anonymous/public-guest submission journey is established by these tests.
+
+For the qualified registered-read path, invoke `read-feedback-receipt` through the
 existing admitted action transport. Check the returned SDK record stamp against the retained Chat
 record, and the receipt identity, digest and destination against the outbox.
 This projection alone is **not** a durability witness. Accept it only from the
