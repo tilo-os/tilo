@@ -38,6 +38,7 @@ pub struct Outbox {
     _lease: Lease,
     snapshot: Snapshot,
     revision: Option<Revision>,
+    rejected_write: bool,
 }
 
 impl Outbox {
@@ -76,6 +77,7 @@ impl Outbox {
             _lease: lease,
             snapshot,
             revision: None,
+            rejected_write: false,
         })
     }
 
@@ -172,6 +174,9 @@ impl Outbox {
             .entries
             .get(id)
             .ok_or(Error::Invalid("unknown submission"))?;
+        if self.rejected_write {
+            return Ok(DeliveryState::StorageFailed);
+        }
         if let Some(revision) = self.revision {
             match self.store.durability(&self.key, revision) {
                 Durability::Pending => return Ok(DeliveryState::Saving),
@@ -218,9 +223,11 @@ impl Outbox {
     }
 
     fn require_durable(&self) -> Result<(), Error> {
-        if self.revision.is_some_and(|revision| {
-            self.store.durability(&self.key, revision) != Durability::Durable
-        }) {
+        if self.rejected_write
+            || self.revision.is_some_and(|revision| {
+                self.store.durability(&self.key, revision) != Durability::Durable
+            })
+        {
             return Err(Error::NotDurable);
         }
         Ok(())
@@ -231,9 +238,19 @@ impl Outbox {
         if bytes.len() > MAX_BYTES {
             return Err(Error::Full);
         }
-        let revision = self.store.write(&self.key, WriteOp::Replace(bytes), None)?;
+        let revision = match self.store.write(&self.key, WriteOp::Replace(bytes), None) {
+            Ok(revision) => revision,
+            Err(error) => {
+                // Keep the approved identity in memory for an honest retry,
+                // even when the writer rejects its very first write.
+                self.snapshot = next;
+                self.rejected_write = true;
+                return Err(error.into());
+            }
+        };
         self.snapshot = next;
         self.revision = Some(revision);
+        self.rejected_write = false;
         Ok(())
     }
 }
