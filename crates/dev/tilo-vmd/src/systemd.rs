@@ -252,6 +252,20 @@ fn try_restart_unit_with(
             &mut manager_command(user, &["daemon-reload"]),
         )?;
     }
+    validate_unit_with(user, unit, &mut execute)?;
+    execute(
+        &format!("systemctl try-restart {unit}"),
+        &mut manager_command(user, &["try-restart", unit]),
+    )
+    .map(drop)
+}
+
+/// The same installed-unit check for immediate and deferred activation.
+fn validate_unit_with(
+    user: Option<&str>,
+    unit: &str,
+    execute: &mut impl FnMut(&str, &mut Command) -> Result<String, DaemonError>,
+) -> Result<(), DaemonError> {
     let loaded = execute(
         "validate component unit",
         &mut manager_command(user, &["show", "--property=LoadState", "--value", unit]),
@@ -262,11 +276,7 @@ fn try_restart_unit_with(
             detail: format!("unit is not loadable ({})", loaded.trim()),
         });
     }
-    execute(
-        &format!("systemctl try-restart {unit}"),
-        &mut manager_command(user, &["try-restart", unit]),
-    )
-    .map(drop)
+    Ok(())
 }
 
 fn manager_command(user: Option<&str>, args: &[&str]) -> Command {
@@ -519,6 +529,9 @@ impl Apply for SystemdApply {
         systemctl("restart", unit)
     }
 
+    fn validate_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        validate_unit_with(None, unit, &mut run)
+    }
     fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
         try_restart_unit_with(None, unit, run)
     }
@@ -1218,6 +1231,42 @@ mod tests {
         });
         assert!(error.is_err());
         assert_eq!(calls, 1, "a failed reload cannot restart the stale unit");
+    }
+
+    #[test]
+    fn deferred_greeter_activation_still_validates_the_installed_manager() {
+        for loaded in ["loaded", "merged", "not-found", "masked", "error", ""] {
+            let mut calls = Vec::new();
+            let result = validate_unit_with(None, GREETER_UNIT, &mut |_, command| {
+                calls.push(
+                    command
+                        .get_args()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(loaded.into())
+            });
+            assert_eq!(result.is_ok(), matches!(loaded, "loaded" | "merged"));
+            assert_eq!(
+                calls,
+                [vec![
+                    "show",
+                    "--property=LoadState",
+                    "--value",
+                    GREETER_UNIT
+                ]]
+            );
+        }
+        let result = validate_unit_with(None, GREETER_UNIT, &mut |_, _| {
+            Err(DaemonError::Apply {
+                step: "manager unavailable".into(),
+                detail: "failure".into(),
+            })
+        });
+        assert!(
+            result.is_err(),
+            "manager failures cannot become a successful deferral"
+        );
     }
 
     #[test]
