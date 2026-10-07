@@ -194,6 +194,14 @@ pub trait Decorator {
         self.inner_mut().visit_components(request)
     }
 
+    #[doc(hidden)]
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        self.inner_mut().visit_retained_components(request)
+    }
+
     fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
         self.inner().provide(request);
     }
@@ -804,6 +812,14 @@ impl<T: Decorator + 'static> Widget for T {
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         Decorator::visit_components(self, request)
+    }
+
+    #[doc(hidden)]
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        Decorator::visit_retained_components(self, request)
     }
 
     fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
