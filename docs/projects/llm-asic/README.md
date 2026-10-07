@@ -12,9 +12,12 @@ Qwen3.8-27B is the initial model/compiler target, **not a frozen fabrication
 checkpoint**. [Model selection](model-selection.md) records the current
 alternatives, source caveats, storage calculations and evaluation contract.
 
-This directory currently provides a research baseline and captured model
-metadata. It does not establish measured model quality, quantization quality,
-RTL correctness, physical area, power, timing closure or a manufacturing quote.
+This directory provides a research baseline, captured model metadata and an
+[architecture exploration contract](architecture.md). The
+[coding evidence scorer](evaluation.md) separates platform readiness from
+candidate model outcomes. It does not establish measured model quality,
+quantization quality, full-model RTL correctness, physical area, power,
+timing closure or a manufacturing quote.
 A working test tile would supply evidence toward the complete ASIC objective;
 it would not complete that objective.
 
@@ -51,6 +54,23 @@ The captured license label and inventory are not a pinned full license or a
 complete per-tensor manifest. Subsequent evaluation must additionally pin
 weights, tokenizer, chat template, license text, runtime and harness. No model
 weights or executable remote model code are downloaded by this CLI.
+
+For checkpoint storage, use the separate bounded header inventory:
+
+```bash
+python3 tools/chip/tensor_inventory.py \
+  docs/projects/llm-asic/models/Qwen3.8-27B.json \
+  --out /absolute/path/to/new-tensor-inventory.json
+```
+
+This fetches the pinned safetensors index and bounded header ranges, validates
+dtype/shape/byte-span agreement and complete non-overlapping shard layout, and
+records source URLs and digests. It refuses servers that do not honor ranges.
+The initial Qwen capture contains 1,199 tensors in 18 shards: 27,781,427,952
+BF16 storage elements and 55,562,855,904 payload bytes. These describe the
+complete stored checkpoint, including components outside the text backbone.
+No payload bytes were fetched or verified. Stored elements in packed formats
+must not be relabeled as logical model parameters.
 
 ## Tilo application model
 
