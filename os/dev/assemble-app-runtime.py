@@ -189,6 +189,8 @@ def package_inside(args):
     if args.app is not None:
         env.update(APP_DIR=args.app, TAPP_OUT=str(stage / 'work/selected.tapp'),
                    STAGE=str(stage / 'work/selected-pack'))
+    else:
+        env['COHORT_TAPP_DIR'] = '/usr/share/tilo-apps/cohort'
     run(['bash', str(repo / 'os/scripts/pack-apps.sh')], env=env)
 
 

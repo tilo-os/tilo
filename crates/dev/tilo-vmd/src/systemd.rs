@@ -951,40 +951,81 @@ impl Apply for SystemdApply {
     }
 
     fn install_app(&mut self, session: &Session, tapp: &Path) -> Result<String, DaemonError> {
-        // The installed runtime and publisher pins are part of the resolved
-        // slot's verified /usr view, not the daemon's global namespace.
-        let pid = self
-            .session_pid(session)
-            .ok_or_else(|| DaemonError::Apply {
-                step: "tilo-install".into(),
-                detail: "the slot has no live session mount namespace".into(),
-            })?;
-        let user = &session.user;
-        let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
-            step: "tilo-install".into(),
-            detail: format!("no user {user}"),
-        })?;
-        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
-        // The slot user must read the package; the state root is root's.
-        let dir =
-            Path::new("/var/tmp").join(format!("tilo-vm-app-{}", uuid::Uuid::new_v4().simple()));
-        fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
-        let staged = dir.join("app.tapp");
-        let result = fs::copy(tapp, &staged)
-            .map_err(DaemonError::io("stage the app package"))
-            .and_then(|_| {
-                make_readable(&dir, &staged)?;
-                run(
-                    "tilo-install install --allow-self-signed --force",
-                    &mut app_install_command(pid, user, uid, &home, &staged),
-                )
-            });
-        let _ = fs::remove_dir_all(&dir);
-        result
+        install_app_in_session(self, session, tapp, false)
+    }
+
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &Path,
+    ) -> Result<String, DaemonError> {
+        install_app_in_session(self, session, tapp, true)
     }
 }
 
+fn install_app_in_session(
+    apply: &mut SystemdApply,
+    session: &Session,
+    tapp: &Path,
+    preserve_held: bool,
+) -> Result<String, DaemonError> {
+    // The installed runtime and publisher pins are part of the resolved
+    // slot's verified /usr view, not the daemon's global namespace.
+    let pid = apply
+        .session_pid(session)
+        .ok_or_else(|| DaemonError::Apply {
+            step: "tilo-install".into(),
+            detail: "the slot has no live session mount namespace".into(),
+        })?;
+    let user = &session.user;
+    let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
+        step: "tilo-install".into(),
+        detail: format!("no user {user}"),
+    })?;
+    let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+    // The slot user must read the package; the state root is root's.
+    let dir = Path::new("/var/tmp").join(format!("tilo-vm-app-{}", uuid::Uuid::new_v4().simple()));
+    fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
+    let staged = dir.join("app.tapp");
+    let result = fs::copy(tapp, &staged)
+        .map_err(DaemonError::io("stage the app package"))
+        .and_then(|_| {
+            make_readable(&dir, &staged)?;
+            run(
+                "tilo-install install --allow-self-signed --force",
+                &mut if preserve_held {
+                    selected_app_install_command(pid, user, uid, &home, &staged, true)
+                } else {
+                    app_install_command(pid, user, uid, &home, &staged)
+                },
+            )
+        });
+    let _ = fs::remove_dir_all(&dir);
+    result
+}
+
 fn app_install_command(pid: u32, user: &str, uid: u32, home: &str, staged: &Path) -> Command {
+    selected_app_install_command(pid, user, uid, home, staged, false)
+}
+
+fn selected_app_install_command(
+    pid: u32,
+    user: &str,
+    uid: u32,
+    home: &str,
+    staged: &Path,
+    preserve_held: bool,
+) -> Command {
+    let mut arguments = vec![
+        "/usr/bin/tilo-install".into(),
+        "install".into(),
+        "--allow-self-signed".into(),
+        "--force".into(),
+    ];
+    if preserve_held {
+        arguments.push("--preserve-held".into());
+    }
+    arguments.push(staged.to_string_lossy().into_owned());
     crate::exec::in_session(
         pid,
         user,
@@ -993,13 +1034,7 @@ fn app_install_command(pid: u32, user: &str, uid: u32, home: &str, staged: &Path
             ("USER".into(), user.into()),
             ("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")),
         ],
-        &[
-            "/usr/bin/tilo-install".into(),
-            "install".into(),
-            "--allow-self-signed".into(),
-            "--force".into(),
-            staged.to_string_lossy().into_owned(),
-        ],
+        &arguments,
     )
 }
 
@@ -1247,6 +1282,35 @@ mod tests {
         );
         assert!(
             !args
+                .iter()
+                .any(|arg| arg.contains("ignore-missing-runtime"))
+        );
+        let selected = super::selected_app_install_command(
+            123,
+            "slot-user",
+            1002,
+            "/var/home/slot-user",
+            std::path::Path::new("/var/tmp/private/app.tapp"),
+            true,
+        );
+        let selected: Vec<_> = selected
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&selected[..2], ["--target=123", "--mount"]);
+        assert_eq!(
+            &selected[selected.len() - 6..],
+            [
+                "/usr/bin/tilo-install",
+                "install",
+                "--allow-self-signed",
+                "--force",
+                "--preserve-held",
+                "/var/tmp/private/app.tapp",
+            ]
+        );
+        assert!(
+            !selected
                 .iter()
                 .any(|arg| arg.contains("ignore-missing-runtime"))
         );
