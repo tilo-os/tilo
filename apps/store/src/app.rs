@@ -391,7 +391,7 @@ pub struct StoreApp {
     dispatcher: Option<Dispatcher<Store>>,
     /// The serialized package and catalogue worker of a live window.
     worker: Option<StoreWorker>,
-    pub(crate) package_content: Option<tilo_content::ContentStore>,
+    pub(crate) package_content: Option<ui::framework::content::ContentStore>,
     pub(crate) imported_review: Option<(String, String, String)>,
     launch_requests: Vec<ui::collaboration::CollabRequest>,
     pending_launches: HashMap<u64, std::sync::mpsc::Sender<Result<String, String>>>,
@@ -1579,7 +1579,7 @@ impl StoreApp {
                     (Some(path), None) if path.len() <= 4096 => {
                         crate::package_import::Input::Path(path.into())
                     }
-                    (None, Some(hash)) if tilo_content::valid_hash(&hash) => {
+                    (None, Some(hash)) if ui::framework::content::valid_hash(&hash) => {
                         crate::package_import::Input::Content(
                             self.package_content
                                 .clone()

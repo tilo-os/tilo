@@ -15003,7 +15003,6 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-content",
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-net",
@@ -16398,15 +16397,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-contact-directory"
-version = "0.1.0"
-dependencies = [
- "tilo-resource",
- "uuid",
  "workspace-hack",
 ]
 

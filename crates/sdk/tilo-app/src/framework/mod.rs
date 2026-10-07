@@ -364,3 +364,10 @@ pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use view::{EffectsHandle, ViewCx};
+
+/// Record content and canonical hashing. Use the store borrowed through
+/// `SurfaceCx::content` or `LaunchInput::content` so the host binds reads and
+/// writes to the resource's content lane.
+pub mod content {
+    pub use tilo_content::{ContentStore, hash_bytes, valid_hash};
+}
