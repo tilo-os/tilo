@@ -5293,6 +5293,7 @@ fn apply_session_transition(
     pipe: Option<&present::PresentPipe>,
     local_session: Option<&LocalSessionLifecycle>,
     dimmer: &mut ScreenDimmer<impl Backlight>,
+    output_management: Option<&mut super::output_management::OutputManagementState>,
 ) {
     if let Some(local_session) = local_session {
         match transition {
@@ -5309,12 +5310,18 @@ fn apply_session_transition(
         SessionTransition::Dimmed => dimmer.dim(),
         SessionTransition::Undimmed => dimmer.restore(),
         SessionTransition::Blanked => {
+            if let Some(management) = output_management {
+                management.set_session_blanked(true);
+            }
             backend.set_dpms(false);
             if let Some(p) = pipe {
                 p.set_dpms(false);
             }
         }
         SessionTransition::Woke => {
+            if let Some(management) = output_management {
+                management.set_session_blanked(false);
+            }
             backend.set_dpms(true);
             if let Some(p) = pipe {
                 p.set_dpms(true);
@@ -5324,6 +5331,48 @@ fn apply_session_transition(
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
     }
+}
+
+/// Apply owner-session output power without turning it into input or unlock.
+/// A global idle blank also belongs to the presenter, so restoring only the
+/// connector cannot make a frame visible. Returns whether a paint is owed.
+fn apply_output_power_request(
+    request: (OutputId, bool),
+    session: &mut SessionManager,
+    backend: &mut dyn Backend,
+    pipe: Option<&present::PresentPipe>,
+    local_session: Option<&LocalSessionLifecycle>,
+    dimmer: &mut ScreenDimmer<impl Backlight>,
+    management: &mut super::output_management::OutputManagementState,
+    now: Instant,
+) -> bool {
+    let (output, on) = request;
+    if on {
+        let transitions = session.request_display_wake(now);
+        let woke = transitions.contains(&SessionTransition::Woke);
+        for transition in transitions {
+            apply_session_transition(
+                transition,
+                backend,
+                pipe,
+                local_session,
+                dimmer,
+                Some(&mut *management),
+            );
+        }
+        if !woke {
+            apply_session_transition(
+                SessionTransition::Woke,
+                backend,
+                pipe,
+                local_session,
+                dimmer,
+                Some(management),
+            );
+        }
+    }
+    backend.set_output_power(output, on);
+    on
 }
 
 fn publish_native_session_state(
@@ -9161,6 +9210,7 @@ pub fn run() {
                             present_pipe.as_ref(),
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
+                            Some(&mut state.output_management),
                         );
                     }
                     if let Some(steps) = key_steps.as_mut() {
@@ -9283,6 +9333,7 @@ pub fn run() {
                                         present_pipe.as_ref(),
                                         local_session_lifecycle.as_ref(),
                                         &mut screen_dimmer,
+                                        Some(&mut state.output_management),
                                     );
                                 }
                             }
@@ -9335,6 +9386,7 @@ pub fn run() {
                                 present_pipe.as_ref(),
                                 local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
+                                Some(&mut state.output_management),
                             );
                         }
                     } else if route == PriorityRoute::ToggleMouseKeys {
@@ -9567,6 +9619,7 @@ pub fn run() {
                                 present_pipe.as_ref(),
                                 local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
+                                Some(&mut state.output_management),
                             );
                         }
                         apply_shell_gesture(&mut frame_builder, action);
@@ -9723,6 +9776,7 @@ pub fn run() {
                     present_pipe.as_ref(),
                     local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
+                    Some(&mut state.output_management),
                 );
             }
         }
@@ -9870,9 +9924,6 @@ pub fn run() {
         input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
         input_methods.tick(&mut state);
-        for (output, on) in state.output_management.take_power_requests() {
-            backend.set_output_power(output, on);
-        }
         if let Some(rotation) = device_rotation
             .as_ref()
             .and_then(|changes| changes.try_iter().last())
@@ -9959,6 +10010,22 @@ pub fn run() {
                 metrics.set_target_period(interval);
             }
         }
+        // Remove disconnected heads before applying queued owner power requests.
+        for request in state.output_management.take_power_requests() {
+            if apply_output_power_request(
+                request,
+                &mut session,
+                backend.as_mut(),
+                present_pipe.as_ref(),
+                local_session_lifecycle.as_ref(),
+                &mut screen_dimmer,
+                &mut state.output_management,
+                Instant::now(),
+            ) {
+                force_first_paint = true;
+                session_changed = true;
+            }
+        }
         input_steps.step("outputs");
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
@@ -9998,6 +10065,7 @@ pub fn run() {
                     present_pipe.as_ref(),
                     local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
+                    Some(&mut state.output_management),
                 );
             }
             session_changed = true;
@@ -10027,6 +10095,7 @@ pub fn run() {
                     present_pipe.as_ref(),
                     local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
+                    Some(&mut state.output_management),
                 );
             }
             // Any session transition (blank/lock/suspend) changes what should be on screen — force a repaint.
@@ -10046,6 +10115,7 @@ pub fn run() {
                             present_pipe.as_ref(),
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
+                            Some(&mut state.output_management),
                         );
                     }
                 }
@@ -10061,6 +10131,7 @@ pub fn run() {
                             present_pipe.as_ref(),
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
+                            Some(&mut state.output_management),
                         );
                     }
                     sleep_lock_frame_pending = true;
@@ -10088,6 +10159,7 @@ pub fn run() {
                                 present_pipe.as_ref(),
                                 local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
+                                Some(&mut state.output_management),
                             );
                         }
                     }
@@ -10103,6 +10175,7 @@ pub fn run() {
                             present_pipe.as_ref(),
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
+                            Some(&mut state.output_management),
                         );
                     }
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
@@ -10175,6 +10248,7 @@ pub fn run() {
                     present_pipe.as_ref(),
                     local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
+                    Some(&mut state.output_management),
                 );
             }
         }
@@ -10196,6 +10270,7 @@ pub fn run() {
                         present_pipe.as_ref(),
                         local_session_lifecycle.as_ref(),
                         &mut screen_dimmer,
+                        Some(&mut state.output_management),
                     );
                 }
             }
@@ -12038,6 +12113,7 @@ pub fn run() {
                         present_pipe.as_ref(),
                         local_session_lifecycle.as_ref(),
                         &mut screen_dimmer,
+                        Some(&mut state.output_management),
                     );
                 }
             }
@@ -12542,6 +12618,108 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+
+    #[test]
+    fn explicit_display_wake_restores_backend_and_presenter_without_unlock_or_input() {
+        use crate::compositor::backend::{BackendEvent, Output};
+        use crate::compositor::idle::IdleConfig;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct PowerBackend {
+            dpms: Vec<bool>,
+            output_power: Vec<(OutputId, bool)>,
+            outputs: Vec<Output>,
+        }
+        impl Backend for PowerBackend {
+            fn submit_frame(&mut self, _scene: &vello::Scene, _output: OutputId) {}
+            fn poll_events(&mut self, _callback: &mut dyn FnMut(BackendEvent)) {}
+            fn outputs(&self) -> &[Output] {
+                &self.outputs
+            }
+            fn set_dpms(&mut self, on: bool) {
+                self.dpms.push(on);
+            }
+            fn set_output_power(&mut self, output: OutputId, on: bool) {
+                self.output_power.push((output, on));
+            }
+        }
+        struct PowerPresenter(Arc<Mutex<Vec<bool>>>);
+        impl present::Presenter for PowerPresenter {
+            fn present(&mut self, _scene: &vello::Scene, _output: OutputId) {}
+            fn set_dpms(&mut self, on: bool) {
+                self.0.lock().expect("power log").push(on);
+            }
+        }
+        struct NoBacklight;
+        impl Backlight for NoBacklight {
+            fn brightness(&self) -> Option<f32> {
+                None
+            }
+            fn set_brightness(&self, _fraction: f32) -> bool {
+                false
+            }
+        }
+        let display = smithay::reexports::wayland_server::Display::<State>::new().expect("display");
+        let mut management =
+            super::super::output_management::OutputManagementState::new(&display.handle());
+        let start = Instant::now();
+        let mut session = SessionManager::new(
+            IdleConfig {
+                blank_timeout: Some(Duration::from_secs(5)),
+                lock_timeout: Some(Duration::from_secs(2)),
+                suspend_timeout: None,
+            },
+            start,
+        );
+        let mut backend = PowerBackend::default();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut pipe = present::PresentPipe::spawn(
+            Box::new(PowerPresenter(Arc::clone(&recorded))),
+            Box::new(|| {}),
+        );
+        let mut dimmer = ScreenDimmer::new(NoBacklight);
+        for transition in session.tick(start + Duration::from_secs(5)) {
+            apply_session_transition(
+                transition,
+                &mut backend,
+                Some(&pipe),
+                None,
+                &mut dimmer,
+                Some(&mut management),
+            );
+        }
+        assert!(session.is_locked() && session.is_blanked());
+        for seconds in [6, 7] {
+            assert!(apply_output_power_request(
+                (OutputId(0), true),
+                &mut session,
+                &mut backend,
+                Some(&pipe),
+                None,
+                &mut dimmer,
+                &mut management,
+                start + Duration::from_secs(seconds)
+            ));
+        }
+        pipe.shutdown();
+        assert_eq!(backend.dpms, vec![false, true, true]);
+        assert_eq!(
+            *recorded.lock().expect("power log"),
+            vec![false, true, true]
+        );
+        assert_eq!(backend.output_power, vec![(OutputId(0), true); 2]);
+        assert!(session.is_locked() && !session.is_blanked());
+        assert_eq!(
+            session.idle_for(start + Duration::from_secs(7)),
+            Duration::from_secs(7)
+        );
+        assert!(
+            !session
+                .tick(start + Duration::from_secs(11))
+                .contains(&SessionTransition::Blanked)
+        );
+    }
 
     #[test]
     fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
@@ -13129,7 +13307,7 @@ mod tests {
                 SessionTransition::Locked,
                 SessionTransition::Unlocked,
             ] {
-                apply_session_transition(t, &mut backend, None, None, &mut dimmer);
+                apply_session_transition(t, &mut backend, None, None, &mut dimmer, None);
             }
             // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
             assert_eq!(backend.dpms_calls, vec![false, true]);
@@ -13141,6 +13319,7 @@ mod tests {
                 None,
                 None,
                 &mut dimmer,
+                None,
             );
             assert_eq!(dimmer.overlay_alpha(), None);
         }
@@ -16068,6 +16247,7 @@ mod tests {
                 None,
                 Some(&lifecycle),
                 &mut ScreenDimmer::default(),
+                None,
             );
             let locked = lifecycle.snapshot().expect("synchronous lock revoke");
             assert_eq!(
@@ -16082,6 +16262,7 @@ mod tests {
                 None,
                 Some(&lifecycle),
                 &mut ScreenDimmer::default(),
+                None,
             );
             let unlocked = lifecycle.snapshot().expect("fresh unlock");
             assert_eq!(

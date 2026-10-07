@@ -336,6 +336,15 @@ impl CodeApp {
         self.staging = Some(Staging {
             scenario: scenario.map(str::to_owned),
         });
+        if scenario == Some("hardware")
+            && let Some(root) = self.project_root()
+        {
+            let path = crate::disk::canonical(&root.join(crate::sample_project::HARDWARE_FILE));
+            if let Some(node) = self.session.project.reveal_path(&path) {
+                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.open_node(node);
+            }
+        }
     }
 
     /// Set the staged scenario's view state once the editor holds its file.
@@ -354,6 +363,16 @@ impl CodeApp {
             return;
         }
         match scenario.as_deref() {
+            // A missing fixture must leave capture staging incomplete instead
+            // of silently capturing the default Rust file.
+            Some("hardware")
+                if self
+                    .session
+                    .active_buffer()
+                    .is_none_or(|buffer| buffer.name != "signed_mac.sv") =>
+            {
+                return;
+            }
             Some("terminal") => {
                 self.shots_terminal_input(terminal::demo_session_input());
                 self.staging_until = Some(ui::time::now() + SHELL_ANSWER);

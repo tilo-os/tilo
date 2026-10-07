@@ -55,6 +55,16 @@ def audit(root, staged=False):
         if mode == "160000":
             raise ValueError("uninspected submodule: " + path.decode())
         entries.append((second if staged else third, path.decode()))
+    previous = {}
+    if staged:
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "HEAD"], capture_output=True)
+        if head.returncode not in (0, 1):
+            raise ValueError("cannot inspect the previous commit")
+        if head.returncode == 0:
+            for record in git(root, "ls-tree", "-r", "-z", "HEAD").split(b"\0"):
+                if record:
+                    metadata, path = record.split(b"\t", 1)
+                    previous[path.decode()] = metadata.decode().split()[2]
     failures = []
     with subprocess.Popen(
         ["git", "-C", str(root), "cat-file", "--batch"],
@@ -71,8 +81,9 @@ def audit(root, staged=False):
             if len(data) != size or process.stdout.read(1) != b"\n":
                 raise ValueError("incomplete blob: " + path)
             issues = content_issues(data)
-            if issues and allowed.get(path) != oid:
-                failures.append(path + ": " + ", ".join(issues))
+            changed_exception = staged and issues and previous.get(path) != oid
+            if issues and (allowed.get(path) != oid or changed_exception):
+                failures.append(path + ": " + ", ".join(issues) + ("; new/modified non-text or non-LF blobs are forbidden" if changed_exception else ""))
         process.stdin.close()
         if process.wait() != 0:
             raise ValueError("Git blob reader failed")

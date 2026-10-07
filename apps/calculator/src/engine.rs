@@ -140,6 +140,15 @@ fn take_while_into(out: &mut String, chars: &mut Peekable<Chars<'_>>, keep: impl
 // Parser (precedence climbing)
 // ---------------------------------------------------------------------------
 
+/// Reserved operands cannot be function names: `pi(2)` and `x(x+1)` are
+/// implicit products, while an identifier such as `sin` introduces a call.
+fn is_value_name(name: &str) -> bool {
+    matches!(
+        name,
+        "pi" | "tau" | "e" | "x" | "y" | "ans" | "m" | "mem" | "inf" | "nan"
+    )
+}
+
 /// The token stream still to be parsed. Consuming from the front of a slice
 /// (rather than advancing an index into a `Vec`) keeps "how much is left" and
 /// "what comes next" the same question, so neither can run past the end.
@@ -213,7 +222,7 @@ impl Parser<'_> {
                 }
             }
             Tok::Ident(name) => {
-                if matches!(self.peek(), Some(Tok::LParen)) {
+                if matches!(self.peek(), Some(Tok::LParen)) && !is_value_name(&name) {
                     self.next(); // consume '('
                     let mut args = Vec::new();
                     if !matches!(self.peek(), Some(Tok::RParen)) {
@@ -466,11 +475,8 @@ pub fn compile(input: &str, deg: bool, two_var: bool) -> Result<Compiled, String
 fn validate(e: &Expr, two_var: bool) -> Result<(), String> {
     match e {
         Expr::Num(_) => Ok(()),
-        Expr::Var(name) => match name.as_str() {
-            "pi" | "tau" | "e" | "ans" | "m" | "mem" | "inf" | "nan" | "x" => Ok(()),
-            "y" if two_var => Ok(()),
-            other => Err(format!("unknown name `{other}`")),
-        },
+        Expr::Var(name) if is_value_name(name) && (two_var || name != "y") => Ok(()),
+        Expr::Var(name) => Err(format!("unknown name `{name}`")),
         Expr::Neg(a) | Expr::Fact(a) | Expr::Percent(a) => validate(a, two_var),
         Expr::Bin(_, a, b) => {
             validate(a, two_var)?;
@@ -749,6 +755,42 @@ mod tests {
             s.eval2(0.0, 0.0).abs() < 1e-12,
             "compiled_sampling: surface at origin"
         );
+    }
+
+    #[test]
+    fn values_followed_by_parentheses_use_implicit_multiplication() {
+        let ctx = Ctx {
+            x: 2.0,
+            y: 3.0,
+            ans: 4.0,
+            mem: 5.0,
+            ..Default::default()
+        };
+        for (source, expected, cmp) in [
+            ("pi(2)", 2.0 * PI, Cmp::Near(1e-12)),
+            ("π(2)", 2.0 * PI, Cmp::Near(1e-12)),
+            ("tau(2)", 2.0 * TAU, Cmp::Near(1e-12)),
+            ("e(2)", 2.0 * E, Cmp::Near(1e-12)),
+            ("x(x+1)", 6.0, Cmp::Exact),
+            ("y(2)", 6.0, Cmp::Exact),
+            ("ans(2)", 8.0, Cmp::Exact),
+            ("m(2)", 10.0, Cmp::Exact),
+            ("mem(2)", 10.0, Cmp::Exact),
+        ] {
+            check(source, evaluate(source, &ctx).unwrap(), expected, cmp);
+        }
+        assert!(ev("inf(2)").is_infinite());
+        assert!(ev("nan(2)").is_nan());
+        let curve = compile("x(x+1)", false, false).unwrap();
+        check("parenthetic curve", curve.eval1(2.0), 6.0, Cmp::Exact);
+        let surface = compile("x(y+1)", false, true).unwrap();
+        check(
+            "parenthetic surface",
+            surface.eval2(2.0, 3.0),
+            8.0,
+            Cmp::Exact,
+        );
+        assert!(compile("y(x+1)", false, false).is_err());
     }
 
     #[test]
