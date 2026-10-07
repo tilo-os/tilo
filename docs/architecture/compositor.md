@@ -92,6 +92,26 @@ these fixed options through the greeter's ordinary next-sign-in diagnostics
 action. A disabled/unsupported recorder and discarded presentation remain
 ineligible for a hardware latency claim.
 
+Native app render workers use those same startup options and the existing
+Vello timestamp trackers. `tilo-native-gpu-stages` reports bounded pass and
+per-dispatch samples with observer session, worker, worker frame, CPU frame and
+Vello recording IDs. A delayed sample retains its originating frame; it never
+settles a newer frame. Attempt rows have provisional `missing_current=true`;
+only a completed row with `matched_current=true` proves a sample. Unknown,
+duplicate or evicted owners are explicitly stale. The final Vello recording
+of a frame is observed; backdrop or recovery recordings are not a complete
+GPU timeline. Pass spans and dispatch totals overlap and must not be added.
+
+The recorder is disabled unless startup GPU timestamps and native presentation
+observation are both enabled. It keeps 32 owners per tracker and emits at most
+2048 content-free rows per render-worker lifetime. Existing latest-recording
+readback slots can skip a recording while another map is pending. Idle workers
+service those callbacks with nonblocking `device.poll(Poll)`, at most 128 polls
+of 5 ms per received frame; no synchronous GPU wait, repaint or render request
+is introduced. Missing, unsupported, stale or exhausted evidence cannot certify
+client shader duration. Startup options require a new renderer; the live
+session diagnostic setter does not reconfigure an existing renderer.
+
 `crates/session/shell/src/compositor/metrics.rs` instruments all of it
 (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
 drives a measured run and diffs two of them.
