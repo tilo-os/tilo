@@ -234,6 +234,135 @@ fn native_text_continuation_restores_shared_resource_selection_and_view_after_of
 }
 
 #[test]
+fn live_editor_views_follow_repeated_positions_without_editing_or_focus() {
+    use ui::widget::Continuable;
+    let (directory, mut source, _) = loaded_fixture();
+    let mut initial = source.peer_document();
+    let path = directory.path().join("fixture.rs");
+    let mut target = ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched_replica(
+        &[path.to_str().unwrap()],
+        &mut initial,
+    )
+    .unwrap();
+    target
+        .settings::<crate::settings::CodeSettings>()
+        .set(&crate::settings::CodeSettings {
+            language_servers: false,
+        })
+        .unwrap();
+    target.settle();
+    for (line, focused) in [(20, false), (37, true)] {
+        let (metadata, expected) = crate::test_support::with_doc(&mut source, move |app, doc| {
+            stage_continuation_view(app, doc);
+            app.editor.set_selection_lc((line, 3), (line + 2, 5));
+            (
+                app.continuation_metadata(doc.doc(), &automerge::ROOT)
+                    .unwrap(),
+                app.native_input_snapshot(doc.doc(), &automerge::ROOT)
+                    .unwrap(),
+            )
+        });
+        crate::test_support::with_doc(&mut target, move |app, doc| {
+            app.editor
+                .force_geometry(Rect::new(200.0, 40.0, 800.0, 560.0), 16.0);
+            app.editor.set_focus(focused);
+            let before = app
+                .native_input_snapshot(doc.doc(), &automerge::ROOT)
+                .unwrap();
+            let heads = doc.doc().clone().get_heads();
+            assert!(
+                app.restore_live_continuation_metadata(&metadata, doc.doc(), &automerge::ROOT,)
+            );
+            let after = app
+                .native_input_snapshot(doc.doc(), &automerge::ROOT)
+                .unwrap();
+            assert_eq!(after["caret_line"], line + 2);
+            assert_eq!(after["caret_column"], expected["caret_column"]);
+            assert_eq!(after["selection_chars"], expected["selection_chars"]);
+            assert_eq!(after["offset_y"], expected["offset_y"]);
+            assert_eq!(after["editor_focused"], focused);
+            assert_eq!(after["body_hash"], before["body_hash"]);
+            assert_eq!(doc.doc().clone().get_heads(), heads);
+            assert!(app.pending_open.is_none());
+            assert!(app.pending_continuation.is_none());
+            let mut position: ui::text_position::TextPosition =
+                serde_json::from_slice(&metadata.bytes).unwrap();
+            position.resource_id = "99999999-2222-4333-8444-555555555555".into();
+            let foreign = ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: serde_json::to_vec(&position).unwrap(),
+            };
+            assert!(
+                !app.restore_live_continuation_metadata(&foreign, doc.doc(), &automerge::ROOT,)
+            );
+            assert_eq!(
+                app.native_input_snapshot(doc.doc(), &automerge::ROOT)
+                    .unwrap(),
+                after
+            );
+        });
+    }
+}
+
+#[test]
+fn cold_live_continuation_opens_existing_text_and_preserves_local_focus() {
+    use tilo_actions::Action as _;
+    use ui::widget::Continuable as _;
+    let (_directory, mut source, _) = loaded_fixture();
+    let metadata = crate::test_support::with_doc(&mut source, |app, doc| {
+        stage_continuation_view(app, doc);
+        app.continuation_metadata(doc.doc(), &automerge::ROOT)
+            .unwrap()
+    });
+    let mut document = source.peer_document();
+    let heads = document.get_heads();
+    for focused in [false, true] {
+        let mut target = CodeApp::new();
+        target.editor.set_focus(focused);
+        assert!(target.active_file_node().is_none());
+        assert!(target.restore_live_continuation_metadata(&metadata, &document, &automerge::ROOT));
+        assert!(target.active_file_node().is_some());
+        let snapshot = target
+            .native_input_snapshot(&document, &automerge::ROOT)
+            .unwrap();
+        assert_eq!(snapshot["editor_focused"], focused);
+        assert!(snapshot["body_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(document.get_heads(), heads);
+        assert!(target.pending_open.is_none());
+        assert!(target.pending_continuation.is_none());
+    }
+    let mut position: ui::text_position::TextPosition =
+        serde_json::from_slice(&metadata.bytes).unwrap();
+    position.resource_id = "99999999-2222-4333-8444-555555555555".into();
+    let foreign = ui::collaboration::ContinuationMetadata {
+        schema_version: 1,
+        bytes: serde_json::to_vec(&position).unwrap(),
+    };
+    let mut target = CodeApp::new();
+    assert!(!target.restore_live_continuation_metadata(&foreign, &document, &automerge::ROOT));
+    assert!(target.active_file_node().is_none());
+    assert_eq!(document.get_heads(), heads);
+    let position: ui::text_position::TextPosition =
+        serde_json::from_slice(&metadata.bytes).unwrap();
+    let file = EditorDoc::file(&document, &position.resource_id).unwrap();
+    crate::actions::CodeEditorAction::DeleteFile {
+        id: position.resource_id,
+        kind: crate::actions::EntryKind::File,
+        expected_revision: file.deletion_revision,
+    }
+    .apply(&mut document)
+    .unwrap();
+    let deleted_heads = document.get_heads();
+    assert!(!target.restore_live_continuation_metadata(&metadata, &document, &automerge::ROOT));
+    assert!(target.active_file_node().is_none());
+    assert_eq!(
+        document.get_heads(),
+        deleted_heads,
+        "deleted resources cannot be reopened by a view"
+    );
+}
+
+#[test]
 fn independent_cold_editors_keep_one_text_object_and_both_offline_edits() {
     let (directory, mut source, manifest) = loaded_fixture();
     let path = directory.path().join("fixture.rs");

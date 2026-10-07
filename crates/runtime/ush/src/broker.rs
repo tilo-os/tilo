@@ -918,10 +918,50 @@ fn run_build(
         .map_err(|e| e.to_string())
 }
 
+/// A kernel pathname alias for sockets under a long data directory.
+/// The directory descriptor stays open for every use of its alias. Only the
+/// original filesystem path is published to the guest; permissions and socket
+/// identity are unchanged, and the descriptor is closed on exec.
+struct SocketAddress {
+    path: PathBuf,
+    _directory: Option<std::fs::File>,
+}
+
+impl SocketAddress {
+    fn new(socket: &Path) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        if std::os::unix::net::SocketAddr::from_pathname(socket).is_ok() {
+            return Ok(Self {
+                path: socket.to_path_buf(),
+                _directory: None,
+            });
+        }
+        let name = socket.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "socket requires a filename",
+            )
+        })?;
+        let directory = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(socket.parent().unwrap_or_else(|| Path::new(".")))?;
+        let path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(name);
+        // A long filename or invalid byte is still an error, never truncated.
+        std::os::unix::net::SocketAddr::from_pathname(&path)?;
+        Ok(Self {
+            path,
+            _directory: Some(directory),
+        })
+    }
+}
+
 /// A running broker: a listener and the thread serving it.
 pub struct Broker {
     state: Arc<Mutex<BrokerState>>,
     socket: PathBuf,
+    address: SocketAddress,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     connections: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
@@ -943,8 +983,9 @@ impl Broker {
             std::fs::create_dir_all(parent)?;
         }
         let _ = std::fs::remove_file(&socket);
-        let listener = UnixListener::bind(&socket)?;
-        restrict_socket(&socket)?;
+        let address = SocketAddress::new(&socket)?;
+        let listener = UnixListener::bind(&address.path)?;
+        restrict_socket(&address.path)?;
 
         let state = Arc::new(Mutex::new(state));
         let thread_state = Arc::clone(&state);
@@ -1002,6 +1043,7 @@ impl Broker {
         Ok(Self {
             state,
             socket,
+            address,
             stop,
             thread: Some(thread),
             connections,
@@ -1033,7 +1075,7 @@ impl Drop for Broker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take()
-            && UnixStream::connect(&self.socket).is_ok()
+            && UnixStream::connect(&self.address.path).is_ok()
         {
             let _ = thread.join();
         }
@@ -1042,7 +1084,7 @@ impl Drop for Broker {
                 let _ = connection.join();
             }
         }
-        let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_file(&self.address.path);
     }
 }
 
@@ -1343,7 +1385,7 @@ fn serve_host_command(
     stop: &Arc<AtomicBool>,
     host_mutation_gate: &Arc<Mutex<()>>,
 ) -> bool {
-    let Ok(_mutation_guard) =
+    let Ok(mutation_guard) =
         acquire_host_mutation(command, host_mutation_gate, writer, reader.get_ref(), stop)
     else {
         log_disconnected(state, command);
@@ -1352,7 +1394,7 @@ fn serve_host_command(
     let mut child = match start_host_command(command, state) {
         Ok(child) => child,
         Err(response) => {
-            return write_frame(writer, &WireFrame::Complete { response });
+            return complete_host_command(writer, response, mutation_guard);
         }
     };
     let deadline = command
@@ -1414,7 +1456,7 @@ fn serve_host_command(
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             stop_child(&mut child);
             let response = past_time_limit(command, state);
-            return write_frame(writer, &WireFrame::Complete { response });
+            return complete_host_command(writer, response, mutation_guard);
         }
         if last_activity.elapsed() >= HEARTBEAT_INTERVAL {
             if !write_frame(writer, &WireFrame::Heartbeat) {
@@ -1442,12 +1484,18 @@ fn serve_host_command(
             Some(&detail),
         );
     }
-    write_frame(
-        writer,
-        &WireFrame::Complete {
-            response: Response::Command { code },
-        },
-    )
+    complete_host_command(writer, Response::Command { code }, mutation_guard)
+}
+
+/// The mutation has finished before the guest can observe its completion.
+/// A slow response reader must not retain the host's update serialization gate.
+fn complete_host_command(
+    writer: &mut UnixStream,
+    response: Response,
+    mutation_guard: Option<std::sync::MutexGuard<'_, ()>>,
+) -> bool {
+    drop(mutation_guard);
+    write_frame(writer, &WireFrame::Complete { response })
 }
 
 /// "30 minutes"; seconds for limits that are not whole minutes.
@@ -1582,7 +1630,8 @@ pub fn ask_streaming_with_progress(
     stderr: &mut dyn Write,
     show_progress: bool,
 ) -> std::io::Result<Response> {
-    let stream = UnixStream::connect(socket)?;
+    let address = SocketAddress::new(socket)?;
+    let stream = UnixStream::connect(&address.path)?;
     let mut writer = stream.try_clone()?;
     let mut bytes = serde_json::to_vec(req)?;
     bytes.push(b'\n');
@@ -1896,6 +1945,74 @@ mod tests {
     }
 
     #[test]
+    fn completed_host_command_releases_gate_before_a_blocked_completion_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_host_program(dir.path(), "tilo", "#!/bin/sh\nexit 7\n");
+        let state = Arc::new(Mutex::new(state(dir.path())));
+        let command = {
+            let state = state.lock().unwrap();
+            host_command_for(
+                &state.host_root,
+                &state.environment.policy(),
+                &Request::SystemUpdate,
+            )
+            .unwrap()
+        };
+        let audit = state.lock().unwrap().audit.clone();
+        let gate = Arc::new(Mutex::new(()));
+        let (mut writer, peer) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        // Fill every remaining byte so the actual Complete write cannot finish.
+        loop {
+            match writer.write(&[0]) {
+                Ok(1) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                other => panic!("failed to fill completion socket: {other:?}"),
+            }
+        }
+        writer.set_nonblocking(false).unwrap();
+        let reader = BufReader::new(writer.try_clone().unwrap());
+        let worker_gate = gate.clone();
+        let worker = std::thread::spawn(move || {
+            serve_host_command(
+                &command,
+                &state,
+                &mut writer,
+                &reader,
+                &Arc::new(AtomicBool::new(false)),
+                &worker_gate,
+            )
+        });
+        let started = Instant::now();
+        let mut completed = false;
+        let mut released = false;
+        while started.elapsed() < Duration::from_secs(2) {
+            completed = audit
+                .read_all()
+                .iter()
+                .any(|record| record.detail.as_deref() == Some("exit 7"));
+            if completed && gate.try_lock().is_ok() {
+                released = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let blocked = !worker.is_finished();
+        // Always retire the fixture socket and join before asserting, even on failure.
+        peer.shutdown(std::net::Shutdown::Both).unwrap();
+        assert!(!worker.join().unwrap());
+        assert!(completed, "production command did not reach completion");
+        assert!(
+            blocked,
+            "fixture did not block the production completion write"
+        );
+        assert!(
+            released,
+            "completed command retained the host mutation gate while sending its response"
+        );
+    }
+
+    #[test]
     fn host_updates_run_one_at_a_time_and_say_so() {
         let dir = tempfile::tempdir().unwrap();
         let events = dir.path().join("events");
@@ -2149,7 +2266,12 @@ mod tests {
             stopped, pids,
             "the command process group survived its guest connection"
         );
-        let audit = broker.state().lock().unwrap().audit.read_all();
+        // Observing a terminated process can precede the broker's wait/reap
+        // returning and its subsequent cancellation audit. Join the actual
+        // connection worker before observing that final production record.
+        let state = broker.state().clone();
+        drop(broker);
+        let audit = state.lock().unwrap().audit.read_all();
         assert!(audit.iter().any(|record| {
             !record.allowed
                 && record
@@ -2157,7 +2279,6 @@ mod tests {
                     .as_deref()
                     .is_some_and(|detail| detail.contains("disconnected"))
         }));
-        drop(broker);
     }
 
     #[test]
@@ -2437,6 +2558,38 @@ mod tests {
         assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
         assert_eq!(String::from_utf8(out).unwrap(), "building pandoc\n");
         drop(broker);
+    }
+
+    #[test]
+    fn broker_under_long_data_home_round_trips_and_cleans_up() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("a".repeat(90)).join("ush/sessions/session");
+        std::fs::create_dir_all(&data).unwrap();
+        let socket = data.join("broker.sock");
+        assert!(std::os::unix::net::SocketAddr::from_pathname(&socket).is_err());
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+        assert_eq!(broker.socket(), socket);
+        assert_eq!(
+            std::fs::metadata(&socket).unwrap().permissions().mode() & 0o077,
+            0
+        );
+        let response = ask(&socket, &Request::ListPerms).unwrap();
+        assert!(matches!(response, Response::Perms { .. }));
+        assert!(broker.guest_connected());
+        // Reconnect to the same owner-only filesystem socket, not a new alias
+        // published to the peer. Renaming its parent cannot invalidate the
+        // broker's retained descriptor used to wake and clean up on shutdown.
+        let renamed = data.with_file_name("renamed-session");
+        std::fs::rename(&data, &renamed).unwrap();
+        let moved_socket = renamed.join("broker.sock");
+        let response = ask(&moved_socket, &Request::ListPerms).unwrap();
+        assert!(matches!(response, Response::Perms { .. }));
+        drop(broker);
+        assert!(
+            !moved_socket.exists(),
+            "session socket must be removed on shutdown"
+        );
     }
 
     #[test]

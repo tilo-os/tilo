@@ -163,6 +163,9 @@ impl Connections {
         let fds = services.fds();
         command
             .env_remove("TILO_SVC_BLOBS_FD")
+            // Independently attached connections use their existing RPC route,
+            // not the manifest launcher's executing-task challenge protocol.
+            .env_remove(launcher::services::COLLAB_EXECUTING_PEER_ENV)
             // This prepares a fresh transfer, including managed spawn where
             // the future child PID is not yet known. Never carry an ancestor's
             // automatic-exec ownership or command-resume marker into it.
@@ -241,7 +244,8 @@ mod tests {
         let mut command = std::process::Command::new("/usr/bin/true");
         command
             .env("TILO_RUNTIME_CONNECTION_OWNER_PID", "1")
-            .env("TILO_RUNTIME_RESUME_LIVE", "dev.tilo.parent");
+            .env("TILO_RUNTIME_RESUME_LIVE", "dev.tilo.parent")
+            .env(launcher::services::COLLAB_EXECUTING_PEER_ENV, "1");
         let _connections = super::Connections::prepare(
             &mut command,
             "dev.tilo.child",
@@ -256,6 +260,7 @@ mod tests {
         for key in [
             "TILO_RUNTIME_CONNECTION_OWNER_PID",
             "TILO_RUNTIME_RESUME_LIVE",
+            launcher::services::COLLAB_EXECUTING_PEER_ENV,
         ] {
             assert_eq!(
                 command.get_envs().find(|(name, _)| *name == key).unwrap().1,

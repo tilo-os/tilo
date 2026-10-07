@@ -11,12 +11,10 @@ use ui::semantic_document_read::{
 };
 
 pub const OPERATION_TYPE: &str = "chat.read";
-pub static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::new(
-    OPERATION_TYPE,
-    result_schema,
-    validate_request,
-    project,
-)];
+pub static READERS: [RegisteredSemanticReader; 2] = [
+    RegisteredSemanticReader::new(OPERATION_TYPE, result_schema, validate_request, project),
+    crate::feedback::receipt_read::READER,
+];
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

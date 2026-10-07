@@ -562,13 +562,17 @@ impl Participation {
     }
 
     fn stop_resources(&self, terminal: bool) {
+        tracing::debug!(terminal, "native participation resource stop started");
         let stops = self.stops.lock();
         if let Some(client) = stops.client.upgrade() {
             client.close();
         }
+        tracing::debug!(terminal, "native participation carrier close completed");
         if let Some(stop) = &stops.capture {
             stop(terminal);
         }
+        drop(stops);
+        tracing::debug!(terminal, "native participation resource stop completed");
     }
 }
 

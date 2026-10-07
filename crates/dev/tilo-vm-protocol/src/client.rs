@@ -25,10 +25,14 @@ pub enum ClientError {
     Rpc(RpcError),
 }
 
+// Retain ordinary upload frames, but do not cache unusually large RPC bodies.
+const MAX_RETAINED_REQUEST_BYTES: usize = UPLOAD_CHUNK_BYTES * 4;
+
 pub struct Client<R, W> {
     reader: R,
     writer: W,
     next_id: u64,
+    request_buffer: Vec<u8>,
 }
 
 impl<R: BufRead, W: Write> Client<R, W> {
@@ -37,6 +41,7 @@ impl<R: BufRead, W: Write> Client<R, W> {
             reader,
             writer,
             next_id: 1,
+            request_buffer: Vec::new(),
         }
     }
 
@@ -74,11 +79,20 @@ impl<R: BufRead, W: Write> Client<R, W> {
             id,
             request: params.into(),
         };
-        let mut line =
-            serde_json::to_vec(&envelope).map_err(|e| ClientError::Protocol(e.to_string()))?;
-        line.push(b'\n');
-        self.writer.write_all(&line)?;
-        self.writer.flush()?;
+        // Reuse the serialized frame across serial calls instead of allocating
+        // and growing a new base64-sized JSON buffer for every upload chunk.
+        self.request_buffer.clear();
+        serde_json::to_writer(&mut self.request_buffer, &envelope)
+            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        self.request_buffer.push(b'\n');
+        let sent = self
+            .writer
+            .write_all(&self.request_buffer)
+            .and_then(|()| self.writer.flush());
+        if self.request_buffer.capacity() > MAX_RETAINED_REQUEST_BYTES {
+            self.request_buffer = Vec::new();
+        }
+        sent?;
 
         let mut response = String::new();
         if self.reader.read_line(&mut response)? == 0 {
@@ -107,10 +121,11 @@ impl<R: BufRead, W: Write> Client<R, W> {
     /// [`crate::LayerSource::Upload`].
     ///
     /// # Errors
-    /// Read failures on `bytes` and any call failure.
+    /// Read failures on `bytes`, call failures, and incorrect byte acknowledgments.
     pub fn upload(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
         let upload = self.call(LayerUploadBegin {})?.upload;
         let mut buffer = vec![0_u8; UPLOAD_CHUNK_BYTES];
+        let mut sent = 0_u64;
         loop {
             let mut filled = 0;
             while filled < buffer.len() {
@@ -127,10 +142,17 @@ impl<R: BufRead, W: Write> Client<R, W> {
                 break;
             }
             let data = STANDARD.encode(buffer.get(..filled).unwrap_or_default());
-            self.call(LayerUploadChunk {
+            sent = sent.saturating_add(filled as u64);
+            let reply = self.call(LayerUploadChunk {
                 upload: upload.clone(),
                 data,
             })?;
+            if reply.received != sent {
+                return Err(ClientError::Protocol(format!(
+                    "upload acknowledgment: expected {sent} bytes, got {}",
+                    reply.received
+                )));
+            }
             if filled < buffer.len() {
                 break;
             }
@@ -138,3 +160,6 @@ impl<R: BufRead, W: Write> Client<R, W> {
         Ok(upload)
     }
 }
+
+#[cfg(test)]
+mod tests;

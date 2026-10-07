@@ -37,10 +37,16 @@ class RegistryMetadataTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 entries = sorted(output.glob("*.json"))
-                self.assertEqual(len(entries), 58)
-                # 23 archived images remain in the public gallery, alongside
-                # 58 locally generated icons and the Notes image fixture.
-                self.assertEqual(len(list(media.glob("*"))), 59)
+                self.assertEqual(len(entries), 59)
+                # Every screenshot, including the Notes image fixture, is archived.
+                # Observe the exact icon output and the original Settings image pin.
+                self.assertEqual({path.name for path in media.iterdir()},
+                                 {f"{path.stem}.svg" for path in entries})
+                settings = json.loads((output / "settings.json").read_text(encoding="utf-8"))
+                self.assertEqual(len(settings["images"]["en"]), 5)
+                self.assertEqual(settings["images"]["en"][-1]["url"],
+                                 "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/"
+                                 "bd5d23b61827b873b51daf0d84e09db582104b5a93c617c733a5c282191eb96f/settings.png")
                 image_count = 0
                 for path in entries:
                     entry = json.loads(path.read_text(encoding="utf-8"))
@@ -63,13 +69,14 @@ class RegistryMetadataTests(unittest.TestCase):
                             else:
                                 self.assertEqual(image["kind"], "screenshot")
                                 self.assertIn(image["url"], archive_urls)
-                self.assertEqual(image_count, 82)
+                self.assertEqual(image_count, 83)
         with self.subTest(phase='audit reports the intended generic fleet'):
             result = self.run_tool("audit")
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
-            self.assertEqual(report["count"], 58)
+            self.assertEqual(report["count"], 59)
             self.assertIn("browser", report["apps"])
+            self.assertIn("messages", report["apps"])
             self.assertIn("chip-design", report["apps"])
 
     def test_archive_rejects_unpinned_urls_and_invalid_records(self):

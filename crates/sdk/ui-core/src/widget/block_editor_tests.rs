@@ -2249,6 +2249,57 @@ fn action_bridge_emits_uuid_ops_at_unicode_boundaries() {
 }
 
 #[test]
+fn hidden_find_controls_do_not_extend_content_and_reopen_after_layout() {
+    fn layout(editor: &mut BlockEditor) -> f32 {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = HashMap::new();
+        let node = editor.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("editor layout");
+        editor.apply_layout(&taffy, node, Point::ZERO);
+        taffy
+            .layout(node)
+            .expect("editor content")
+            .content_size
+            .height
+    }
+
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("Short draft")]);
+    let before = editor.to_markdown();
+    let hidden_height = layout(&mut editor);
+    assert!(
+        hidden_height < 44.0,
+        "hidden search must not add its overlay height"
+    );
+    let _ = editor.take_structure_dirty();
+    editor.open_find();
+    assert!(
+        editor.take_structure_dirty(),
+        "opening search rebuilds its layout"
+    );
+    assert!(layout(&mut editor) >= 44.0);
+    assert!(editor.find_field.get_rect().height() > 0.0);
+    editor.close_find();
+    assert!(
+        editor.take_structure_dirty(),
+        "closing search removes its layout"
+    );
+    let closed_height = layout(&mut editor);
+    assert!((closed_height - hidden_height).abs() < f32::EPSILON);
+    assert_eq!(editor.to_markdown(), before);
+    assert!(editor.take_edit_ops().is_empty());
+}
+
+#[test]
 fn find_matches_unicode_safely_and_navigates_without_editing() {
     fn find_ranges_are_case_insensitive_and_unicode_byte_safe() {
         assert_eq!(

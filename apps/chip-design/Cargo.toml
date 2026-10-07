@@ -22,6 +22,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
+sha2.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

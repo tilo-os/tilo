@@ -163,6 +163,21 @@ pub trait Resource: Sized + 'static {
         PermissionRequirement::Write
     }
 
+    /// Publish the bounded audited mutation door. Default resources retain
+    /// their existing catalogue. Enabling this also requires a closed
+    /// [`allows_low_mutation`](Self::allows_low_mutation) whitelist.
+    const AUDITED_LOW_MUTATIONS: bool = false;
+
+    /// Opt in an audited state-only mutation to the bounded low-risk door.
+    /// Default-deny: a default `Action::risk()` is insufficient authority.
+    /// Implementations must use a closed whitelist excluding I/O, commands,
+    /// capability grants and destructive mutations. The target also requires
+    /// actual `RiskLevel::Low` and checks the action's current permission.
+    fn allows_low_mutation(action: &Self::Action) -> bool {
+        let _ = action;
+        false
+    }
+
     /// The least any of the resource's actions needs
     /// ([`permission`](Self::permission)): what the generic [`APPLY`] and
     /// group actions are offered under, each invocation then checked
@@ -825,7 +840,7 @@ pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> Enc
 
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
-fn refused<R: Resource>(reason: &str) -> EncodedAction {
+pub(crate) fn refused<R: Resource>(reason: &str) -> EncodedAction {
     let _ = R::ACTION_TYPE;
     EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
@@ -916,7 +931,7 @@ fn declared_args<R: Resource>() -> std::collections::BTreeMap<&'static str, serd
 /// The parameter of [`APPLY`]: one action value, described by
 /// [`Resource::action_schema`] when the resource has one, with what only
 /// restates a named action folded into a reference to it.
-fn apply_param<R: Resource>() -> ActionParam {
+pub(crate) fn apply_param<R: Resource>() -> ActionParam {
     let param = ActionParam::required_owned(
         APPLY_PARAM,
         ParamType::Object,
@@ -927,7 +942,7 @@ fn apply_param<R: Resource>() -> ActionParam {
             .map(|schema| crate::schema::fold_declared(&schema, &declared_args::<R>()))
     });
     match schema {
-        Some(schema) => param.with_schema(schema),
+        Some(schema) => param.with_shared_schema(schema),
         None => param,
     }
 }
@@ -942,7 +957,7 @@ enum TypeSchema {
 #[derive(Default)]
 struct CompiledSchemas {
     epoch: u64,
-    entries: HashMap<(TypeId, TypeSchema), Option<serde_json::Value>>,
+    entries: HashMap<(TypeId, TypeSchema), Option<Arc<serde_json::Value>>>,
 }
 
 static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
@@ -963,18 +978,27 @@ pub fn reset_type_schemas() {
 fn per_type<R: Resource>(
     schema: TypeSchema,
     build: impl FnOnce() -> Option<serde_json::Value>,
-) -> Option<serde_json::Value> {
+) -> Option<Arc<serde_json::Value>> {
     let cache = SCHEMAS.get_or_init(Mutex::default);
-    let key = (TypeId::of::<R>(), schema);
+    cached_schema(cache, (TypeId::of::<R>(), schema), build)
+}
+
+fn cached_schema(
+    cache: &Mutex<CompiledSchemas>,
+    key: (TypeId, TypeSchema),
+    build: impl FnOnce() -> Option<serde_json::Value>,
+) -> Option<Arc<serde_json::Value>> {
     let epoch = {
         let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(found) = store.entries.get(&key) {
+            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+            let _phase = crate::profiling::Phase::start("schema.cached_clone");
             return found.clone();
         }
         store.epoch
     };
     // Build outside the lock: a schema may publish another resource's.
-    let value = build();
+    let value = build().map(Arc::new);
     let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
     // A build started before a code reload cannot repopulate the new cache.
     if store.epoch == epoch {
@@ -1002,7 +1026,7 @@ fn read_apply<R: Resource>(value: serde_json::Value) -> Result<R::Action, String
 /// checked against its own action's schema when the group is built, so this
 /// names those actions rather than repeating their schemas; an `apply`
 /// member carries `apply`'s schema, without its descriptions.
-fn group_param<R: Resource>() -> ActionParam {
+pub(crate) fn group_param<R: Resource>() -> ActionParam {
     use crate::schema::{
         array, constant, describe, nullable, object, one_of, string_enum, undescribed,
     };
@@ -1028,12 +1052,20 @@ fn group_param<R: Resource>() -> ActionParam {
             |schema| undescribed(&schema),
         );
         members.push(object(vec![
-            ("action", constant(APPLY), true),
+            (
+                "action",
+                if R::AUDITED_LOW_MUTATIONS {
+                    string_enum(&[APPLY, crate::APPLY_LOW])
+                } else {
+                    constant(APPLY)
+                },
+                true,
+            ),
             ("args", object(vec![(APPLY_PARAM, action, true)]), true),
         ]));
         Some(array(one_of(members)))
     })
-    .unwrap_or_else(|| serde_json::json!({"type": "array"}));
+    .unwrap_or_else(|| Arc::new(serde_json::json!({"type": "array"})));
     ActionParam::required_owned(
         crate::GROUP_PARAM,
         ParamType::Array,
@@ -1042,10 +1074,12 @@ fn group_param<R: Resource>() -> ActionParam {
             R::LABEL
         ),
     )
-    .with_schema(schema)
+    .with_shared_schema(schema)
 }
 
 fn apply_spec<R: Resource>() -> ActionSpec {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    let _phase = crate::profiling::Phase::start("resource.apply_spec");
     ActionSpec::typed(
         APPLY,
         format!("Apply {} edit", R::LABEL),
@@ -1096,7 +1130,7 @@ fn apply_spec<R: Resource>() -> ActionSpec {
 }
 
 /// How much a requirement asks, least first.
-fn permission_rank(requirement: PermissionRequirement) -> u8 {
+pub(crate) fn permission_rank(requirement: PermissionRequirement) -> u8 {
     match requirement {
         PermissionRequirement::None => 0,
         PermissionRequirement::Read => 1,
@@ -1108,6 +1142,8 @@ fn permission_rank(requirement: PermissionRequirement) -> u8 {
 }
 
 fn group_spec<R: Resource>() -> ActionSpec {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    let _phase = crate::profiling::Phase::start("resource.group_spec");
     ActionSpec::typed(
         crate::GROUP,
         format!("Apply several {} edits as one", R::LABEL),
@@ -1180,6 +1216,8 @@ pub(crate) fn publish_parts<R: Resource>(
     let children = state.map(R::children).unwrap_or_default();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let spec = declaration_spec(&decl);
         // Offered on the items it acts on, with some of its arguments bound
         // ([`items::bound`](crate::items::bound)), it stays published here
@@ -1214,10 +1252,15 @@ pub(crate) fn publish_parts<R: Resource>(
         }
         resource = resource.with_action(spec);
     }
-    resource
+    resource = resource
         .with_action(apply_spec::<R>())
-        .with_action(group_spec::<R>())
-        .with_children(children)
+        .with_action(group_spec::<R>());
+    if R::AUDITED_LOW_MUTATIONS {
+        resource = resource
+            .with_action(crate::low_mutation::apply_spec::<R>())
+            .with_action(crate::low_mutation::group_spec::<R>());
+    }
+    resource.with_children(children)
 }
 
 /// Build the action a declaration produces for JSON arguments, validating them
@@ -1232,6 +1275,9 @@ pub fn build_action<R: Resource>(
 ) -> Result<R::Action, String> {
     if id == crate::GROUP {
         return Err("a group is several actions; build it with `group::build_group`".into());
+    }
+    if id == crate::APPLY_LOW {
+        return crate::low_mutation::build_action::<R>(arguments);
     }
     if id == APPLY {
         let value = arguments
@@ -1400,4 +1446,41 @@ pub fn scope_contains(scope: &str, anchor: &str) -> bool {
     anchor
         .strip_prefix(scope)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+#[cfg(test)]
+mod schema_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn shared_schema_reloads_do_not_retain_or_repopulate_stale_generation() {
+        let cache = Mutex::new(CompiledSchemas::default());
+        let key = (TypeId::of::<()>(), TypeSchema::Apply);
+        let first = cached_schema(&cache, key, || Some(serde_json::json!({"minimum":1}))).unwrap();
+        let reused = cached_schema(&cache, key, || panic!("cached type must not rebuild")).unwrap();
+        assert!(Arc::ptr_eq(&first, &reused));
+        {
+            let mut store = cache.lock().unwrap();
+            store.epoch += 1;
+            store.entries.clear();
+        }
+        let old_build = cached_schema(&cache, key, || {
+            let mut store = cache.lock().unwrap();
+            store.epoch += 1;
+            store.entries.clear();
+            drop(store);
+            Some(serde_json::json!({"minimum":2}))
+        })
+        .unwrap();
+        assert!(
+            cache.lock().unwrap().entries.is_empty(),
+            "old build cannot repopulate new generation"
+        );
+        let current =
+            cached_schema(&cache, key, || Some(serde_json::json!({"minimum":3}))).unwrap();
+        assert_eq!(first["minimum"], 1);
+        assert_eq!(old_build["minimum"], 2);
+        assert_eq!(current["minimum"], 3);
+        assert!(!Arc::ptr_eq(&first, &current));
+    }
 }

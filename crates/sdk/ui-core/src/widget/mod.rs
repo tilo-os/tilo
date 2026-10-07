@@ -21,6 +21,37 @@ use crate::time::Instant;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+/// Private foreground feedback, stripped of logical keys and typed text.
+/// Observers cannot consume the input or obtain a document edit context.
+#[derive(Clone, PartialEq, Eq)]
+pub enum PhysicalInput {
+    Key {
+        key: winit::keyboard::PhysicalKey,
+        state: winit::event::ElementState,
+    },
+    Focused(bool),
+    /// Immutable configuration from the ordinary focused native event stream.
+    Layout(Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>),
+}
+
+impl PhysicalInput {
+    pub fn from_window_event(event: &WindowEvent) -> Option<Self> {
+        match event {
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: false,
+                ..
+            } => Some(Self::Key {
+                key: event.physical_key,
+                state: event.state,
+            }),
+            WindowEvent::Focused(focused) => Some(Self::Focused(*focused)),
+            WindowEvent::KeyboardLayoutChanged(layout) => Some(Self::Layout(layout.clone())),
+            _ => None,
+        }
+    }
+}
+
 /// The app's model, lent to a widget pass. The toolkit only passes it on to
 /// children; the layer that owns the model reads it (the document runtime
 /// through [`crate::doc::document`]). A host passes its model by reference
@@ -510,6 +541,19 @@ pub trait Continuable {
         state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool;
+
+    /// Apply a live owner view to an already-bound resource. This opt-in
+    /// capability receives no writable document and must preserve focus.
+    /// Missing resources or anchors are refused so the host can defer or
+    /// cancel the projection when its authenticated source disappears.
+    fn restore_live_continuation_metadata(
+        &mut self,
+        _metadata: &crate::collaboration::ContinuationMetadata,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
 }
 
 /// Optional session collaboration capability for widgets that own live
@@ -939,6 +983,16 @@ pub trait Widget {
         Ok(())
     }
 
+    /// SDK model service visits retained owners independently of visible children.
+    /// The default preserves the original custom component visitor exactly.
+    #[doc(hidden)]
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        self.visit_components(request.inner())
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,
@@ -1110,6 +1164,10 @@ pub trait Widget {
         theme: &Theme,
         presence: &PresenceCtx,
     );
+
+    /// Observe this app's ordinary foreground physical input before framework
+    /// shortcuts consume it. Keep feedback ephemeral; this is not an input grant.
+    fn observe_physical_input(&mut self, _input: PhysicalInput) {}
 
     /// Handle one input event with the runtime services for this retained node.
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
@@ -2430,6 +2488,7 @@ pub mod binding;
 pub mod capability;
 pub mod controls;
 pub mod decorator;
+pub mod document_effects;
 pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
@@ -2539,6 +2598,7 @@ pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
 pub mod block_editor;
+pub mod paint_damage;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
     DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview, legacy_block_id,
@@ -3398,5 +3458,9 @@ pub(crate) mod control_result_probe {
     }
 }
 
+pub mod keyboard_map;
+pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
 /// Logical screen topology canvas shared by local and native peer displays.
 pub mod display_arrangement;
+mod graph_canvas;
+pub use graph_canvas::{GraphCanvas, GraphCanvasConnection, GraphCanvasNode};

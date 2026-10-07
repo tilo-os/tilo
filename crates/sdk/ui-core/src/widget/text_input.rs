@@ -208,6 +208,14 @@ pub(super) struct SingleLineAttributes {
     pub links: Vec<(usize, usize)>,
 }
 
+#[derive(PartialEq)]
+struct PersonalSpelling {
+    owner: Option<[u8; 32]>,
+    generation: u64,
+    language: String,
+    snapshot: Option<crate::personal_dictionary::Snapshot>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/focus/drag/dirty/secret/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -223,6 +231,7 @@ pub struct TextInput {
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
     text: String,
+    pending_paste: Option<PendingPaste>,
     /// Caret, selection (always on grapheme boundaries), the IME composition,
     /// and the optional per-character admission rule for domain-specific
     /// fields (for example a spreadsheet cell-reference box), which applies to
@@ -322,6 +331,8 @@ pub struct TextInput {
     spell_spans: Vec<(usize, usize)>,
     /// Per-user vocabulary layered over every installed language.
     spell_dictionary: Option<spellcheck::Dictionary>,
+    /// Ephemeral view of the shared host service, never an app vocabulary store.
+    personal_spelling: Option<PersonalSpelling>,
     ignored_spellings: HashSet<String>,
     /// Caches both preview hits and misses so idle redraws never re-query a
     /// dictionary for the same caret word.
@@ -409,6 +420,13 @@ pub struct TextInput {
     content_sized: bool,
     /// Colours spans of a single-line field's text ([`Self::with_span_highlighter`]).
     span_highlighter: Option<SpanHighlighter>,
+}
+
+struct PendingPaste {
+    result: std::sync::mpsc::Receiver<Option<String>>,
+    text: zeroize::Zeroizing<String>,
+    caret: TextPosition,
+    anchor: usize,
 }
 
 /// Colours spans of a field's text from the theme: each `(range, colour)`
@@ -522,6 +540,7 @@ impl TextInput {
             is_focused: false,
             caret_paint_suppressed: false,
             text: String::new(),
+            pending_paste: None,
             core: EditCore::new(),
             typing: TypingRun::default(),
             is_dragging: false,
@@ -565,6 +584,7 @@ impl TextInput {
             spell_cache_key: None,
             spell_spans: Vec::new(),
             spell_dictionary: None,
+            personal_spelling: None,
             ignored_spellings: HashSet::new(),
             autocorrection_preview_key: None,
             autocorrection_preview: None,
@@ -1171,6 +1191,7 @@ impl TextInput {
         if self.text == s {
             return;
         }
+        self.pending_paste = None;
         if self.holds_secret() {
             self.text.zeroize();
             self.last_notified_text.zeroize();
@@ -1272,6 +1293,7 @@ impl TextInput {
 
     /// Does not count as a user edit (dirty stays false).
     pub fn set_cursor_pos(&mut self, pos: usize) {
+        self.pending_paste = None;
         self.core
             .set_caret(grapheme_boundary_at_or_before(&self.text, pos));
         self.goal_x = None;
@@ -1279,6 +1301,7 @@ impl TextInput {
 
     /// Seat the caret at an exact shaped position without counting as an edit.
     pub fn set_caret_position(&mut self, position: TextPosition) {
+        self.pending_paste = None;
         self.core.set_caret_position(TextPosition::with_affinity(
             grapheme_boundary_at_or_before(&self.text, position.byte),
             position.affinity,
@@ -1747,6 +1770,7 @@ impl TextInput {
     /// Restore a document selection's active endpoint after its per-block
     /// bands have been painted, retaining wrap/bidi affinity.
     pub(super) fn set_selection_at(&mut self, anchor: usize, cursor: TextPosition) {
+        self.pending_paste = None;
         let anchor = anchor.min(self.text.len());
         let byte = cursor.byte.min(self.text.len());
         self.core
@@ -3543,6 +3567,7 @@ impl TextInput {
             self.clamp_to_text();
             return false;
         }
+        self.pending_paste = None;
         edit.apply(&mut self.text);
         self.goal_x = None;
         self.typing.touch();
@@ -3647,12 +3672,42 @@ impl TextInput {
     /// Single-line strips all control characters; multiline keeps newlines
     /// (normalising `\r\n`/`\r` to `\n`) and tabs.
     fn do_paste(&mut self) {
-        if let Some(paste) = clipboard_paste() {
+        self.pending_paste = Some(PendingPaste {
+            result: crate::text_selection::request_clipboard_paste(),
+            text: zeroize::Zeroizing::new(self.text.clone()),
+            caret: self.core.caret_position(),
+            anchor: self.core.anchor(),
+        });
+        self.poll_pending_paste();
+    }
+
+    fn poll_pending_paste(&mut self) -> bool {
+        let Some(pending) = self.pending_paste.as_ref() else {
+            return false;
+        };
+        if self.effectively_disabled()
+            || self.text != *pending.text
+            || self.core.caret_position() != pending.caret
+            || self.core.anchor() != pending.anchor
+            || self.core.has_preedit()
+        {
+            self.pending_paste = None;
+            return false;
+        }
+        let paste = match pending.result.try_recv() {
+            Ok(value) => value,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.pending_paste = None;
+        if let Some(paste) = paste {
             let cleaned = self.clean_pasted_text(&paste);
             if !cleaned.is_empty() {
                 self.insert_str(&cleaned);
+                return true;
             }
         }
+        false
     }
 
     fn clean_pasted_text(&self, paste: &str) -> String {
@@ -3746,6 +3801,7 @@ impl TextInput {
     /// for [`SUGGESTION_SETTLE`](crate::text_edit::SUGGESTION_SETTLE) — a
     /// pause at the end of a word or the caret coming back to an earlier one.
     pub(super) fn refresh_suggestion_at(&mut self, now: Instant) {
+        self.refresh_personal_spelling();
         let offers = self.autocorrect_enabled() || self.checks_spelling();
         if !offers || !self.is_focused || self.core.has_preedit() {
             self.caret_word.clear();
@@ -3774,6 +3830,48 @@ impl TextInput {
         self.autocorrection_preview = preview;
     }
 
+    fn personal_word(&self, word: &str) -> bool {
+        self.personal_spelling.as_ref().is_some_and(|personal| {
+            personal
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
+        })
+    }
+
+    fn refresh_personal_spelling(&mut self) {
+        if self.holds_secret() || (!self.checks_spelling() && !self.autocorrect_enabled()) {
+            self.personal_spelling = None;
+            self.spell_dictionary = None;
+            return;
+        }
+        if !self.spell_active && !self.is_focused {
+            return;
+        }
+        let current = PersonalSpelling {
+            owner: crate::local_identity::bound().map(|identity| identity.group_public_key),
+            generation: crate::local_identity::generation(),
+            language: self.spell_language.replace('_', "-").to_ascii_lowercase(),
+            snapshot: crate::personal_dictionary::snapshot().ok(),
+        };
+        if self.personal_spelling.as_ref() != Some(&current) {
+            if self.personal_spelling.as_ref().is_some_and(|previous| {
+                previous.owner != current.owner || previous.generation != current.generation
+            }) {
+                self.ignored_spellings.clear();
+            }
+            let words = current
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.hints(&current.language).collect::<Vec<_>>())
+                .unwrap_or_default();
+            self.spell_dictionary = Some(spellcheck::Dictionary::from_words(words));
+            self.personal_spelling = Some(current);
+            self.spell_cache_key = None;
+            self.clear_suggestion();
+        }
+    }
+
     fn suggestion_for(
         &mut self,
         range: Range<usize>,
@@ -3791,8 +3889,9 @@ impl TextInput {
         let original = self.text.get(range.clone())?.to_string();
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+            .get_or_insert_with(spellcheck::Dictionary::default);
         if dictionary.contains(&original)
+            || self.personal_word(&original)
             || self.ignored_spellings.contains(&original.to_lowercase())
         {
             return None;
@@ -3824,6 +3923,7 @@ impl TextInput {
 
     /// Replace the previewed word with its correction (a click on the chip).
     fn accept_suggestion(&mut self) -> bool {
+        self.refresh_personal_spelling();
         let Some(preview) = self.autocorrection_preview.take() else {
             return false;
         };
@@ -3840,12 +3940,14 @@ impl TextInput {
     }
 
     fn autocorrection_candidate(&mut self) -> Option<AutocorrectionPreview> {
+        self.spell_active = true;
+        self.refresh_personal_spelling();
         let (start, end) = self.word_ending_at_caret()?;
         let original = self.text.get(start..end)?.to_string();
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
-        if dictionary.contains(&original) {
+            .get_or_insert_with(spellcheck::Dictionary::default);
+        if dictionary.contains(&original) || self.personal_word(&original) {
             return None;
         }
         let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
@@ -3896,6 +3998,7 @@ impl TextInput {
     }
 
     fn refresh_spelling(&mut self) {
+        self.refresh_personal_spelling();
         if !self.checks_spelling() || self.text.is_empty() {
             self.spell_spans.clear();
             self.spell_cache_key = None;
@@ -3913,10 +4016,18 @@ impl TextInput {
         let mut spans = spellcheck::spans_for_language(&self.spell_language, &self.text);
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+            .get_or_insert_with(spellcheck::Dictionary::default);
+        let personal = self.personal_spelling.as_ref();
         spans.retain(|&(start, end)| {
             self.text.get(start..end).is_some_and(|word| {
-                !dictionary.contains(word) && !self.ignored_spellings.contains(&word.to_lowercase())
+                !dictionary.contains(word)
+                    && !personal.is_some_and(|personal| {
+                        personal
+                            .snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
+                    })
+                    && !self.ignored_spellings.contains(&word.to_lowercase())
             })
         });
         self.spell_spans = spans;
@@ -4122,11 +4233,17 @@ impl TextInput {
                     replacement,
                 }));
             }
-            menu.push(MenuItem::action(
-                format!("Add ‘{word}’ to dictionary"),
-                || {},
-            ));
-            actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+            if self
+                .personal_spelling
+                .as_ref()
+                .is_some_and(|personal| personal.snapshot.is_some())
+            {
+                menu.push(MenuItem::action(
+                    format!("Add ‘{word}’ to dictionary"),
+                    || {},
+                ));
+                actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+            }
             menu.push(MenuItem::action("Ignore in this field", || {}));
             actions.push(Some(CtxAction::IgnoreInField(word)));
             menu.push(MenuItem::separator());
@@ -4189,11 +4306,16 @@ impl TextInput {
                 self.spell_cache_key = None;
             }
             CtxAction::AddToDictionary(word) => {
-                let dictionary = self
-                    .spell_dictionary
-                    .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
-                if dictionary.add_word(&word) {
-                    let _ = dictionary.save_user_dict();
+                let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
+                    crate::personal_dictionary::edit(
+                        snapshot.revision,
+                        crate::personal_dictionary::Edit::Add(
+                            crate::personal_dictionary::Word::new(&word, None)?,
+                        ),
+                    )
+                });
+                if let Err(error) = result {
+                    tracing::warn!(%error, "could not add the shared personal word");
                 }
                 self.spell_cache_key = None;
                 self.refresh_spelling();
@@ -4537,6 +4659,9 @@ impl Widget for TextInput {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self.poll_pending_paste() {
+            self.notify_user_change(false);
+        }
         let (state, _) = crate::doc::document_ref(state, root);
         let local_value = self
             .local_state
@@ -4853,6 +4978,17 @@ impl Widget for TextInput {
         if self.effectively_disabled() {
             return;
         }
+        if matches!(event,
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
+        ) || matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::Ime(winit::event::Ime::Preedit(..) | winit::event::Ime::Commit(..))
+        ) {
+            self.pending_paste = None;
+        }
         self.clamp_to_text();
 
         // The show/hide control sees input first; a press it takes never
@@ -5062,6 +5198,7 @@ impl Widget for TextInput {
             self.spell_active = true;
         }
         if !focused {
+            self.pending_paste = None;
             self.core.clear_preedit();
         }
     }
