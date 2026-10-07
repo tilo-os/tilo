@@ -376,6 +376,9 @@ suites = [
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
+  "scripts/vm-acceptance/test_app_cohort.py",
+  "scripts/vm-acceptance/test_store_chooser.py",
+  "scripts/vm-acceptance/test_runtime_backing.py",
 ]
 
 [[group]]
@@ -498,6 +501,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-revocation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
 ]

@@ -66,3 +66,8 @@ resolve ambient paths, execute artifacts or create another content service.
 `application/octet-stream` is required because the current platform stages
 non-media content transfers as `.bin`; admission is not a declaration that
 arbitrary binary formats are supported.
+
+The authored package manifest advertises the same JSON and octet-stream inputs
+and the JSON extension, so file discovery sees the implemented handoff. Provider
+registration does not bypass report validation or make a malformed binary input
+a report.

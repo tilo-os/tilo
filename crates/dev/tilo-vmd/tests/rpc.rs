@@ -770,11 +770,11 @@ fn the_device_slot_is_the_machines_own_session() {
 }
 
 #[test]
-fn upload_windows_import_the_same_verified_layer() {
+fn chunked_upload_preserves_verified_layer_and_cache() {
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::spawn(root.path());
-    daemon.client.hello("upload-window-test").unwrap();
-    // Cross a full window and leave a short final chunk.
+    daemon.client.hello("upload-ack-test").unwrap();
+    // Send multiple chunks and leave a short final chunk.
     let data = vec![83_u8; tilo_vm_protocol::UPLOAD_CHUNK_BYTES * 5 + 17];
     let bytes = tarball("usr/bin/shell", &data);
     let hash = import(&mut daemon.client, "shell", &bytes);
@@ -786,10 +786,7 @@ fn upload_windows_import_the_same_verified_layer() {
     );
     assert_eq!(installed.len(), data.len());
     let again = import(&mut daemon.client, "shell", &bytes);
-    assert_eq!(
-        again, hash,
-        "transport windows do not change layer identity"
-    );
+    assert_eq!(again, hash, "chunked uploads preserve layer identity");
     let layers = daemon.client.call(LayerList {}).unwrap();
     assert_eq!(
         layers.len(),

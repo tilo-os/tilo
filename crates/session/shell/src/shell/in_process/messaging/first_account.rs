@@ -203,21 +203,24 @@ struct Actor {
 pub(in crate::shell::in_process) fn new(principal: String, wake: Wake) -> Rc<dyn FirstAccounts> {
     let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
     let sms = super::sms_first::new(principal.clone(), wake.clone());
+    let whatsapp = super::whatsapp_first::new(principal.clone(), wake.clone());
     let native = super::native_first::new(principal.clone(), wake);
-    combine_all(principal, signal, sms, Some(native))
+    combine_all(principal, signal, sms, whatsapp, Some(native))
 }
 #[cfg(test)]
 fn combine(
     principal: String,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
 ) -> Rc<dyn FirstAccounts> {
-    combine_all(principal, signal, sms, None)
+    combine_all(principal, signal, sms, whatsapp, None)
 }
 fn combine_all(
     principal: String,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
     native: Option<Rc<dyn FirstAccounts>>,
 ) -> Rc<dyn FirstAccounts> {
     Rc::new(Combined {
@@ -225,10 +228,12 @@ fn combine_all(
             principal,
             signal: signal.client(),
             sms: sms.client(),
+            whatsapp: whatsapp.client(),
             native: native.as_ref().map(|owner| owner.client()),
         }),
         signal,
         sms,
+        whatsapp,
         native,
     })
 }
@@ -774,23 +779,26 @@ struct Combined {
     port: Arc<CombinedPort>,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
 }
 struct CombinedPort {
     native: Option<EnrollmentClient>,
     principal: String,
     signal: EnrollmentClient,
     sms: EnrollmentClient,
+    whatsapp: EnrollmentClient,
 }
 impl CombinedPort {
     fn account(&self, account: &ServiceAccount) -> &EnrollmentClient {
         if account.service == "tilo"
             && let Some(native) = &self.native
         {
-            native
-        } else if account.service == "sms" {
-            &self.sms
-        } else {
-            &self.signal
+            return native;
+        }
+        match account.service.as_str() {
+            "sms" => &self.sms,
+            "whatsapp" => &self.whatsapp,
+            _ => &self.signal,
         }
     }
 }
@@ -801,6 +809,7 @@ impl FirstAccounts for Combined {
     fn pump(&self, apps: &mut super::super::InProcessApps) {
         self.signal.pump(apps);
         self.sms.pump(apps);
+        self.whatsapp.pump(apps);
         if let Some(native) = &self.native {
             native.pump(apps);
         }
@@ -808,16 +817,11 @@ impl FirstAccounts for Combined {
 }
 impl EnrollmentHost for CombinedPort {
     fn prepare(&self, service: String) -> EnrollmentReviewFuture {
-        let native = self.native.clone();
-        Box::pin(async move {
-            if service != "tilo" {
-                return Err(SendError::Unavailable);
-            }
-            native.ok_or(SendError::Unavailable)?.prepare(service).await
-        })
+        let client = self.account(&ServiceAccount::new(&service, "")).clone();
+        Box::pin(async move { client.prepare(service).await })
     }
     fn begin(&self, service: String) -> PairingFuture {
-        let client = self.signal.clone();
+        let client = self.account(&ServiceAccount::new(&service, "")).clone();
         Box::pin(async move { client.begin(service).await })
     }
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture {
@@ -860,6 +864,20 @@ pub(super) fn fixture_sms(
     source: Arc<dyn super::sms_first::Source>,
 ) -> Rc<dyn FirstAccounts> {
     let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
-    let sms = super::sms_first::fixture(principal.clone(), wake, source);
-    combine(principal, signal, sms)
+    let sms = super::sms_first::fixture(principal.clone(), wake.clone(), source);
+    let whatsapp = super::whatsapp_first::new(principal.clone(), wake.clone());
+    let native = super::native_first::new(principal.clone(), wake);
+    combine_all(principal, signal, sms, whatsapp, Some(native))
+}
+
+#[cfg(test)]
+pub(super) fn fixture_whatsapp(
+    principal: String,
+    wake: Wake,
+    source: Arc<dyn super::whatsapp_first::Source>,
+) -> Rc<dyn FirstAccounts> {
+    let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
+    let sms = super::sms_first::new(principal.clone(), wake.clone());
+    let whatsapp = super::whatsapp_first::fixture(principal.clone(), wake, source);
+    combine(principal, signal, sms, whatsapp)
 }
