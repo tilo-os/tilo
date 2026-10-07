@@ -837,6 +837,21 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.effects.drain(self.alive.clone(), pending, run)
     }
 
+    /// Drain only consequences newly queued by an actual local Document
+    /// invocation. Delayed work keeps that invocation's checked custody, and
+    /// the caller receives success only after every consequence settles.
+    /// Remote/replayed/previously pending entries acquire no caller authority.
+    pub fn drain_causal<K, I>(
+        &self,
+        pending: impl Fn(&R::State) -> Vec<(K, I)> + 'static,
+        run: impl FnMut(I, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) where
+        K: Eq + Hash + Clone + 'static,
+        I: 'static,
+    {
+        self.effects.drain_causal(self.alive.clone(), pending, run);
+    }
+
     /// A button that invokes one effect, through the same door (and the
     /// same confirmation, for a destructive one) as the palette.
     pub fn effect_button<E: Effect>(&self, label: &str, effect: &E) -> Button {

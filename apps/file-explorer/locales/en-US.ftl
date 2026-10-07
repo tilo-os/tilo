@@ -10,6 +10,11 @@ files-shortcuts-summary = Files controls that work with the current desktop keyb
 files-shortcuts-primary = Primary modifier: Ctrl on most desktops, Command on macOS
 files-shortcuts-navigate = Move selection: ↑ and ↓
 files-selection-empty = Select files first.
+files-clipboard-source-unavailable = A selected file has changed or is no longer available. Select it again before copying.
+files-clipboard-unavailable = The workspace file clipboard is unavailable.
+files-clipboard-empty = The workspace file clipboard is empty.
+files-clipboard-undone = Paste undone.
+files-clipboard-partial = Pasted { $count } items. Some items could not be pasted: { $error }
 files-selection-unavailable = An entry is no longer in the folder shown. The selection was not changed.
 files-selection-too-large = Select at most 256 entries in one request, or use Select all.
 files-shortcuts-range = Select a range: Shift + ↑ and ↓
@@ -600,3 +605,9 @@ files-airdrop-action-detail = Verify a manually selected lab receiver on the com
 files-nearby-status = Transfer status
 files-nearby-transfer-unavailable = This transfer is no longer available in this Files window.
 files-nearby-status-detail = Read this transfer’s phase and confirmed byte counts.
+
+files-clipboard-recovered = Recovered { $count } interrupted transfers. Recoverable copies are in Trash.
+files-menu-recover-transfers = Recover interrupted transfers
+files-clipboard-redone = Paste restored.
+
+files-clipboard-cancelled = File transfer cancelled. Recover interrupted transfers before retrying.

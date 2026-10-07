@@ -35,11 +35,19 @@ use crate::files_app::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilesDocAction {
     /// Bookmark `place` at position `at` (the end when `None`).
-    AddBookmark { place: String, at: Option<usize> },
+    AddBookmark {
+        place: String,
+        at: Option<usize>,
+    },
     /// Forget `place`.
-    RemoveBookmark { place: String },
+    RemoveBookmark {
+        place: String,
+    },
     /// Move `place` to position `to`.
-    MoveBookmark { place: String, to: usize },
+    MoveBookmark {
+        place: String,
+        to: usize,
+    },
     /// Queue the filesystem change `op` for `device` to carry out. Undoing
     /// it queues the revert of the operation.
     QueueFileOp {
@@ -48,7 +56,24 @@ pub enum FilesDocAction {
         op: FileOp,
     },
     /// The device carried out the operation `id`: record what it changed.
-    SettleFileOp { id: String, outcome: Outcome },
+    SettleFileOp {
+        id: String,
+        outcome: Outcome,
+    },
+    /// Record already published native objects without executing another copy.
+    RecordClipboardTransfer {
+        receipt: crate::files_app::ClipboardReceipt,
+        device: String,
+    },
+    /// Bookkeeping after native compensation of this exact queued receipt.
+    SettleClipboardUndo {
+        id: String,
+        operation: String,
+    },
+    SettleClipboardRedo {
+        id: String,
+        operation: String,
+    },
 }
 
 impl Action for FilesDocAction {
@@ -59,6 +84,88 @@ impl Action for FilesDocAction {
             Self::MoveBookmark { place, to } => PlacesDoc::move_to(doc, place, *to)?,
             Self::QueueFileOp { id, device, op } => OpsDoc::queue(doc, id, device, op)?,
             Self::SettleFileOp { id, outcome } => OpsDoc::settle(doc, id, outcome)?,
+            Self::RecordClipboardTransfer { receipt, device } => {
+                if uuid::Uuid::parse_str(&receipt.operation).is_err()
+                    || receipt.completed == 0
+                    || receipt.completed > 256
+                    || OpsDoc::ops(doc).iter().any(|op| op.id == receipt.operation)
+                {
+                    return Err(ActionError::Refused(
+                        "invalid or already recorded clipboard receipt".into(),
+                    ));
+                }
+                OpsDoc::queue(
+                    doc,
+                    &receipt.operation,
+                    device,
+                    &FileOp::ClipboardReceipt {
+                        operation: receipt.operation.clone(),
+                    },
+                )?;
+                OpsDoc::settle(
+                    doc,
+                    &receipt.operation,
+                    &Outcome::Done {
+                        changes: vec![crate::file_ops::Change::ClipboardTransfer {
+                            operation: receipt.operation.clone(),
+                        }],
+                    },
+                )?;
+            }
+            Self::SettleClipboardUndo { id, operation } => {
+                let ops = OpsDoc::ops(doc);
+                let matches = ops
+                    .iter()
+                    .find(|queued| queued.id == *id && queued.outcome.is_none())
+                    .and_then(|queued| match &queued.op {
+                        FileOp::Revert { op } => ops.iter().find(|original| original.id == *op),
+                        _ => None,
+                    })
+                    .is_some_and(|original| {
+                        matches!(&original.op,
+                        FileOp::ClipboardReceipt { operation: actual } if actual == operation)
+                    });
+                if !matches {
+                    return Err(ActionError::Refused(
+                        "clipboard Undo no longer names its recorded transfer".into(),
+                    ));
+                }
+                let original = clipboard_history_step(doc, operation, false)?;
+                ui::history_source::steps::settle_compensation(doc, original)
+                    .map_err(ActionError::Refused)?;
+                OpsDoc::settle(
+                    doc,
+                    id,
+                    &Outcome::Done {
+                        changes: vec![crate::file_ops::Change::ClipboardUndo {
+                            operation: operation.clone(),
+                        }],
+                    },
+                )?;
+            }
+            Self::SettleClipboardRedo { id, operation } => {
+                let ops = OpsDoc::ops(doc);
+                let matches = ops.iter().find(|queued| queued.id == *id && queued.outcome.is_none())
+                    .and_then(|queued| match &queued.op { FileOp::Revert { op } => ops.iter().find(|original| original.id == *op), _ => None })
+                    .is_some_and(|original| original.outcome.as_ref().is_some_and(|outcome| outcome.changes().iter().any(|change| matches!(change, crate::file_ops::Change::ClipboardUndo { operation: actual } if actual == operation))));
+                if !matches {
+                    return Err(ActionError::Refused(
+                        "clipboard Redo no longer names its recorded Undo".into(),
+                    ));
+                }
+                let original = clipboard_history_step(doc, operation, true)?;
+                ui::history_source::steps::settle_compensation(doc, original)
+                    .map_err(ActionError::Refused)?;
+                OpsDoc::settle(
+                    doc,
+                    id,
+                    &Outcome::Done {
+                        changes: vec![crate::file_ops::Change::ClipboardTransfer {
+                            operation: operation.clone(),
+                        }],
+                    },
+                )?;
+            }
         }
         Ok(())
     }
@@ -66,8 +173,10 @@ impl Action for FilesDocAction {
     /// Undoing a queued filesystem change takes it back on the filesystem:
     /// the revert of the operation this action queues, queued the same way.
     fn inverse_before(&self, doc: &ui::tilo_actions::Doc) -> Option<Self> {
-        let Self::QueueFileOp { id, device, .. } = self else {
-            return None;
+        let (id, device) = match self {
+            Self::QueueFileOp { id, device, .. } => (id, device),
+            Self::RecordClipboardTransfer { receipt, device } => (&receipt.operation, device),
+            _ => return None,
         };
         let queued = OpsDoc::fresh_id(doc, id);
         Some(Self::QueueFileOp {
@@ -81,14 +190,83 @@ impl Action for FilesDocAction {
         EncodedAction::encode(FileExplorer::ACTION_TYPE, &self.inverse_before(doc)?).ok()
     }
 
+    fn redo_encoded(&self, doc: &ui::tilo_actions::Doc) -> Option<EncodedAction> {
+        let Self::RecordClipboardTransfer { receipt, device } = self else {
+            return None;
+        };
+        let original = OpsDoc::ops(doc).into_iter()
+            .filter(|queued| matches!(&queued.op, FileOp::Revert { op } if op == &receipt.operation))
+            .filter(|queued| queued.outcome.as_ref().is_some_and(|outcome| outcome.changes().iter().any(|change| matches!(change, crate::file_ops::Change::ClipboardUndo { operation } if operation == &receipt.operation))))
+            .max_by_key(|queued| queued.order)?;
+        EncodedAction::encode(
+            FileExplorer::ACTION_TYPE,
+            &Self::QueueFileOp {
+                id: format!("{}-redo", original.id),
+                device: device.clone(),
+                op: FileOp::Revert { op: original.id },
+            },
+        )
+        .ok()
+    }
+
+    fn inverse_requires_settlement(&self) -> bool {
+        matches!(self, Self::RecordClipboardTransfer { .. })
+    }
+
     /// What a device reports it did is content from outside: it syncs, but
     /// no undo takes it back (undoing the operation does).
     fn change_kind(&self) -> ui::tilo_actions::ChangeKind {
         match self {
-            Self::SettleFileOp { .. } => ui::tilo_actions::ChangeKind::External,
+            Self::SettleFileOp { .. }
+            | Self::SettleClipboardUndo { .. }
+            | Self::SettleClipboardRedo { .. } => ui::tilo_actions::ChangeKind::External,
             _ => ui::tilo_actions::ChangeKind::Content,
         }
     }
+}
+
+/// Resolve the exact canonical transfer before changing any settlement state.
+fn clipboard_history_step(
+    doc: &mut Doc,
+    operation: &str,
+    redo: bool,
+) -> Result<automerge::ChangeHash, ActionError> {
+    let mut registry = ActionRegistry::new();
+    ui::tilo_resource::group::register::<FileExplorer>(&mut registry);
+    let mut matching = Vec::new();
+    for hash in ui::history_source::steps::pending_compensations(doc) {
+        if ui::history_source::steps::compensation_is_redo(doc, hash) != redo {
+            continue;
+        }
+        let context = doc.get_change_meta_by_hash(&hash).and_then(|change| {
+            change
+                .message
+                .as_deref()
+                .and_then(ui::tilo_actions::ActionContext::from_change_message)
+        });
+        let Some(compensation) = context.and_then(|context| context.compensation) else {
+            continue;
+        };
+        if compensation.redo.type_id != FileExplorer::ACTION_TYPE {
+            continue;
+        }
+        let Ok(action) = serde_json::from_slice::<FilesDocAction>(&compensation.redo.payload)
+        else {
+            continue;
+        };
+        if matches!(action, FilesDocAction::RecordClipboardTransfer { receipt, .. } if receipt.operation == operation)
+            && ui::tilo_actions::executor::verified_compensation(doc, hash, &registry)
+                .is_ok_and(|inverse| inverse.is_some())
+        {
+            matching.push(hash);
+        }
+    }
+    let [hash] = matching.as_slice() else {
+        return Err(ActionError::Refused(
+            "clipboard receipt history absent, unverified or ambiguous".into(),
+        ));
+    };
+    Ok(*hash)
 }
 
 /// The Files document's state: the bookmarked places, in order, and the
@@ -104,6 +282,43 @@ impl FilesState {
     /// of the operation it reverts (a revert waits until that one is
     /// carried out).
     pub fn pending_for(&self, device: &str) -> Vec<(String, (QueuedOp, Option<Outcome>))> {
+        self.pending_all_for(device)
+            .into_iter()
+            .filter(|(_, (_, outcome))| {
+                outcome.as_ref().is_none_or(|outcome| {
+                    !outcome.changes().iter().any(|change| {
+                        matches!(
+                            change,
+                            crate::file_ops::Change::ClipboardTransfer { .. }
+                                | crate::file_ops::Change::ClipboardUndo { .. }
+                        )
+                    })
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn pending_clipboard_for(
+        &self,
+        device: &str,
+    ) -> Vec<(String, (String, String, bool))> {
+        self.pending_all_for(device)
+            .into_iter()
+            .filter_map(|(id, (_, outcome))| {
+                outcome?.changes().iter().find_map(|change| match change {
+                    crate::file_ops::Change::ClipboardTransfer { operation } => {
+                        Some((id.clone(), (id.clone(), operation.clone(), false)))
+                    }
+                    crate::file_ops::Change::ClipboardUndo { operation } => {
+                        Some((id.clone(), (id.clone(), operation.clone(), true)))
+                    }
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+
+    fn pending_all_for(&self, device: &str) -> Vec<(String, (QueuedOp, Option<Outcome>))> {
         self.ops
             .iter()
             .filter(|op| op.device == device && op.outcome.is_none())
@@ -158,6 +373,17 @@ impl SettingsSchema for FilesPreferences {
 /// The Files resource: the bookmarked places behind every Files window.
 pub struct FileExplorer;
 
+impl FileExplorer {
+    pub(crate) const RECORD_CLIPBOARD_TRANSFER: ui::tilo_resource::ActionRef<
+        Self,
+        (crate::files_app::ClipboardReceipt, String),
+    > = ui::tilo_resource::ActionRef::new("record-clipboard-transfer", &["receipt", "device"]);
+    pub(crate) const SETTLE_CLIPBOARD_UNDO: ui::tilo_resource::ActionRef<Self, (String, String)> =
+        ui::tilo_resource::ActionRef::new("settle-clipboard-undo", &["id", "operation"]);
+    pub(crate) const SETTLE_CLIPBOARD_REDO: ui::tilo_resource::ActionRef<Self, (String, String)> =
+        ui::tilo_resource::ActionRef::new("settle-clipboard-redo", &["id", "operation"]);
+}
+
 impl Resource for FileExplorer {
     const KIND: &'static str = "files.folder";
     const LABEL: &'static str = "Folder";
@@ -182,7 +408,9 @@ impl Resource for FileExplorer {
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        bookmark_declarations()
+        let mut declarations = bookmark_declarations();
+        declarations.extend(clipboard_receipt_declarations());
+        declarations
     }
 
     fn children(state: &FilesState) -> Vec<tilo_actions::Resource> {
@@ -191,6 +419,73 @@ impl Resource for FileExplorer {
         children.extend(published_template_resources());
         children
     }
+}
+
+fn clipboard_receipt_declarations() -> Vec<ActionDecl<FileExplorer>> {
+    vec![
+        ActionDecl::new(
+            "record-clipboard-transfer",
+            "Paste files",
+            vec![
+                ActionParam::required(
+                    "receipt",
+                    ParamType::Object,
+                    "Settled native transfer metadata; grants no authority",
+                ),
+                ActionParam::required("device", ParamType::Text, "Receiving device"),
+            ],
+            |args, _| {
+                let Some(ui::tilo_actions::ArgValue::Object(receipt)) = args.get("receipt") else {
+                    return Err("clipboard receipt absent".into());
+                };
+                Ok(FilesDocAction::RecordClipboardTransfer {
+                    receipt: serde_json::from_value(serde_json::Value::Object(receipt.clone()))
+                        .map_err(|error| error.to_string())?,
+                    device: args
+                        .text("device")
+                        .ok_or("receiving device absent")?
+                        .to_owned(),
+                })
+            },
+        )
+        .tagged(ui::tilo_actions::PROGRAMMATIC_TAG),
+        ActionDecl::new(
+            "settle-clipboard-undo",
+            "Record file compensation",
+            vec![
+                ActionParam::required("id", ParamType::Text, "Current queued Undo"),
+                ActionParam::required("operation", ParamType::Text, "Exact transfer receipt"),
+            ],
+            |args, _| {
+                Ok(FilesDocAction::SettleClipboardUndo {
+                    id: args.text("id").ok_or("queued Undo absent")?.to_owned(),
+                    operation: args
+                        .text("operation")
+                        .ok_or("transfer receipt absent")?
+                        .to_owned(),
+                })
+            },
+        )
+        .tagged(ui::tilo_actions::PROGRAMMATIC_TAG),
+        ActionDecl::new(
+            "settle-clipboard-redo",
+            "Record file restoration",
+            vec![
+                ActionParam::required("id", ParamType::Text, "Current queued Redo"),
+                ActionParam::required("operation", ParamType::Text, "Exact transfer receipt"),
+            ],
+            |args, _| {
+                Ok(FilesDocAction::SettleClipboardRedo {
+                    id: args.text("id").ok_or("queued Redo absent")?.to_owned(),
+                    operation: args
+                        .text("operation")
+                        .ok_or("transfer receipt absent")?
+                        .to_owned(),
+                })
+            },
+        )
+        .tagged(ui::tilo_actions::PROGRAMMATIC_TAG),
+    ]
 }
 
 /// The stored place a caller names: a place as stored, or a folder path on
@@ -342,6 +637,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     }
 
     fn attach(&mut self, cx: SurfaceCx<FileExplorer>) {
+        self.attach_clipboard_compensation(&cx);
         if let Some(source) = cx.file_history() {
             self.show_file_history_in(source);
         }
@@ -388,11 +684,65 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         effect: FilesEffect,
         cx: &mut EffectCx<FileExplorer, Self>,
     ) -> EffectAnswer {
-        Ok(match self.run_effect(effect)? {
+        let recovery =
+            matches!(effect, FilesEffect::RecoverClipboardTransfers) && self.hosted_clipboard();
+        let receipt = matches!(effect, FilesEffect::Paste) && self.hosted_clipboard();
+        Ok(match self.run_effect_for(effect, cx.invocation())? {
             Ran::Done(Some(answer)) => Effected::value(answer),
             Ran::Done(None) => Effected::done(),
             Ran::Pending => {
-                self.await_effect(cx.reply());
+                self.await_effect(if recovery {
+                    cx.reply_then(|files, output, cx| {
+                        let value = output.value.ok_or("clipboard recovery receipt absent")?;
+                        let operations: Vec<String> = serde_json::from_value(
+                            value
+                                .get("operations")
+                                .ok_or("clipboard recovery operations absent")?
+                                .clone(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let device = files
+                            .clipboard_device()
+                            .ok_or("clipboard receiving device absent")?;
+                        let pending = cx.live().with(|state| state.pending_clipboard_for(&device));
+                        for (_, (id, operation, undone)) in pending {
+                            if !undone && operations.contains(&operation) {
+                                cx.invoke(
+                                    FileExplorer::SETTLE_CLIPBOARD_UNDO.with((id, operation)),
+                                );
+                            }
+                        }
+                        if let Some(error) = value.get("error").and_then(serde_json::Value::as_str)
+                        {
+                            return Err(error.to_owned());
+                        }
+                        Ok(Effected::value(value))
+                    })
+                } else if receipt {
+                    cx.reply_then(|files, output, cx| {
+                        let receipt: crate::files_app::ClipboardReceipt = serde_json::from_value(
+                            output.value.ok_or("clipboard host receipt absent")?,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        if receipt.completed > 0 {
+                            files.follow_clipboard_receipt(&receipt);
+                            cx.invoke(
+                                FileExplorer::RECORD_CLIPBOARD_TRANSFER.with((
+                                    receipt.clone(),
+                                    files
+                                        .clipboard_device()
+                                        .ok_or("clipboard receiving device absent")?,
+                                )),
+                            );
+                        }
+                        if let Some(error) = receipt.error {
+                            return Err(error);
+                        }
+                        Ok(Effected::done())
+                    })
+                } else {
+                    cx.reply()
+                });
                 Effected::Pending
             }
         })

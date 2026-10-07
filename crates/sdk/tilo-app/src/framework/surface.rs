@@ -585,6 +585,18 @@ impl<R: Resource> SurfaceCx<R> {
     {
         self.effects.drain(self.alive.clone(), pending, run)
     }
+
+    /// Caller-authorized document consequences, as [`ViewCx::drain_causal`](super::ViewCx::drain_causal).
+    pub fn drain_causal<K, T>(
+        &self,
+        pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
+        run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) where
+        K: Eq + Hash + Clone + 'static,
+        T: 'static,
+    {
+        self.effects.drain_causal(self.alive.clone(), pending, run);
+    }
 }
 
 /// Where a participant is inside a resource, in the resource's own terms, so

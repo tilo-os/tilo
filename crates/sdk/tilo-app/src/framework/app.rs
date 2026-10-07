@@ -440,7 +440,8 @@ pub(crate) fn build_root<A: ResourceApp>(
 pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
     let mut registry = tilo_actions::ActionRegistry::new();
     tilo_resource::group::register::<A::Resource>(&mut registry);
-    registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
+    registry
+        .register::<super::history::ResourceHistoryEdit<A::Resource>>(super::history::EDIT_TYPE);
     registry
 }
 
