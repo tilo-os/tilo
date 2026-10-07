@@ -4112,6 +4112,38 @@ mod task_review_tests {
         (tree, pane, host)
     }
     #[test]
+    fn header_title_uses_current_viewport_and_scope_on_the_first_frame() {
+        for theme in [
+            Theme::light(),
+            Theme::dark(),
+            Theme::high_contrast().with_text_scale(2.0),
+        ] {
+            let (_, mut pane, _) = review_fixture();
+            for (width, height) in [(1600.0, 900.0), (560.0, 560.0), (1600.0, 900.0)] {
+                pane.layout_window(Rect::new(0.0, 0.0, width, height));
+                super::tests::paint_with_theme(&mut pane, &theme);
+                assert_eq!(
+                    *pane.painted_title.borrow(),
+                    t("activity-title-tasks"),
+                    "the first frame after resize/scale change must retain orientation"
+                );
+                let first = pane.painted_title.borrow().clone();
+                super::tests::paint_with_theme(&mut pane, &theme);
+                assert_eq!(*pane.painted_title.borrow(), first);
+            }
+            pane.task_instruction_detail = pane.selected_task.clone();
+            super::tests::paint_with_theme(&mut pane, &theme);
+            assert!(pane.scope_rects.is_empty());
+            assert_eq!(*pane.painted_title.borrow(), t("activity-title-tasks"));
+            pane.task_instruction_detail = None;
+            pane.set_view(ActivityView::CatchUp);
+            super::tests::paint_with_theme(&mut pane, &theme);
+            assert!(pane.scope_rects.is_empty());
+            assert_eq!(*pane.painted_title.borrow(), t("activity-title-catch-up"));
+        }
+    }
+
+    #[test]
     fn reviewed_task_inspector_render_matrix() {
         let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../target/task-review-renders");
@@ -4141,6 +4173,7 @@ mod task_review_tests {
                     pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
                     let mut scene = Scene::new();
                     let mut text = TextRenderer::new();
+                    text.set_text_scale(theme.text_scale);
                     pane.draw(
                         &mut scene,
                         Affine::IDENTITY,
