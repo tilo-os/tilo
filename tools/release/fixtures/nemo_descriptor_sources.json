@@ -1,11 +1,11 @@
 {
   "src/runtime/ggml/loader.cpp": {
     "original": "b637cdc587eac7d626d74b0c9763885c89ea7bd4ff137fae2ad504058be22c0a",
-    "patched": "79cd95c3642a044a946c5ada5ac69d9f6ecdc9b9c71fcc302334b17cb87001dd"
+    "patched": "0aa5fe056b8d8098a572b53c4c8d8a472a3783127fb1ec9c3671edfc0b9ac81a"
   },
   "src/runtime/ggml/runtime.h": {
     "original": "8b16754a48bc69a9d0f9d2bc29913e9cf4a7e9b5321bd118780093010c5c0f25",
-    "patched": "57db4951e7f93a9e0a879cf863d1c6280a10bf5b5f55d3e90937e86c214efa3d"
+    "patched": "3c8c2743dfd866fad12ca64f8573e0e7abd17eb0c3588e924220cb999b47a81e"
   },
   "src/asr/model.h": {
     "original": "08ee01e62c124bbbea64758657728cd68148555e7d0489a281fae8806283aa8b",

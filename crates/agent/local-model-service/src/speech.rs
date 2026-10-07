@@ -2,11 +2,13 @@
 //!
 //! The native engine is for the owned worker process. The compositor uses
 //! its pipe protocol; it never calls the C decoder or opens a model itself.
+#[cfg(feature = "whisper")]
 use std::ffi::{CString, c_char, c_void};
 use std::fs::{self, OpenOptions};
 use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
+#[cfg(feature = "whisper")]
 use std::ptr::NonNull;
 
 use agent_provider_config::local::ModelArtifactFormat;
@@ -16,9 +18,11 @@ use crate::catalog::VerifiedCatalog;
 use crate::{InProcessCapability, installed_in_process_model};
 
 mod model;
+#[cfg(feature = "whisper")]
 mod recognition;
 pub use model::SealedSpeechModel;
 pub mod worker;
+#[cfg(feature = "whisper")]
 pub use recognition::SpeechRecognition;
 
 pub use agent_provider_config::speech::{
@@ -132,6 +136,7 @@ pub fn confine_worker() -> Result<(), SpeechError> {
         .map_err(|_| SpeechError::WorkerStopped)
 }
 
+#[cfg(feature = "whisper")]
 unsafe extern "C" {
     fn tilo_speech_load_fd(fd: i32, length: usize) -> *mut c_void;
     fn tilo_speech_load(bytes: *mut u8, length: usize) -> *mut c_void;
@@ -153,7 +158,9 @@ unsafe extern "C" {
 /// An exclusively owned CPU decoder. Its opaque pointer is neither Send nor
 /// Sync. Keep this in the worker; parent cancellation terminates that owned
 /// process even while native inference is busy. No Rust callback is installed.
+#[cfg(feature = "whisper")]
 pub struct SpeechEngine(NonNull<c_void>);
+#[cfg(feature = "whisper")]
 impl SpeechEngine {
     /// Configure bounded native vocabulary tokens without rewriting output.
     /// Set before starting a new recognition session. Failed replacement clears
@@ -331,6 +338,7 @@ impl SpeechEngine {
         Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
     }
 }
+#[cfg(feature = "whisper")]
 impl Drop for SpeechEngine {
     fn drop(&mut self) {
         // SAFETY: exactly this owner releases this live context exactly once.
@@ -482,6 +490,7 @@ mod tests {
         assert_eq!(input.samples().len(), MAX_SAMPLES);
     }
 
+    #[cfg(feature = "whisper")]
     #[test]
     fn short_or_invalid_model_headers_never_reach_the_native_parser() {
         for mut bytes in [Vec::new(), vec![0; 64], b"lmgg".to_vec()] {

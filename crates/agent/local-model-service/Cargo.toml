@@ -11,6 +11,29 @@ description = "Verified, content-addressed local-model runtime service for Tilo.
 [package.metadata.cargo-machete]
 ignored = ["cc"]
 
+[features]
+default = ["whisper"]
+whisper = []
+# Explicit isolated native qualification; never selected by normal consumers.
+nemo-review = []
+
+[[bin]]
+name = "tilo-speech-worker"
+path = "src/bin/tilo-speech-worker.rs"
+required-features = ["whisper"]
+
+[[example]]
+name = "speech_qualify"
+required-features = ["whisper"]
+
+[[example]]
+name = "speech_benchmark"
+required-features = ["whisper"]
+
+[[example]]
+name = "nemo_speech_worker"
+required-features = ["nemo-review"]
+
 [lib]
 name = "local_model_service"
 path = "src/lib.rs"
