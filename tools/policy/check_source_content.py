@@ -62,11 +62,22 @@ def audit(root, staged=False):
         head = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "HEAD"], capture_output=True)
         if head.returncode not in (0, 1):
             raise ValueError("cannot inspect the previous commit")
-        if head.returncode == 0:
-            for record in git(root, "ls-tree", "-r", "-z", "HEAD").split(b"\0"):
+        parents = ["HEAD"] if head.returncode == 0 else []
+        # A merge inherits already committed assets from both parents. Only
+        # exact parent blobs qualify; editing an exception cannot admit new
+        # bytes. The index manifest still independently pins every asset.
+        merge_path = Path(git(root, "rev-parse", "--git-path", "MERGE_HEAD").decode().strip())
+        if not merge_path.is_absolute():
+            merge_path = root / merge_path
+        try:
+            parents.extend(merge_path.read_text().splitlines())
+        except FileNotFoundError:
+            pass
+        for parent in parents:
+            for record in git(root, "ls-tree", "-r", "-z", parent).split(b"\0"):
                 if record:
                     metadata, path = record.split(b"\t", 1)
-                    previous[path.decode()] = metadata.decode().split()[2]
+                    previous.setdefault(path.decode(), set()).add(metadata.decode().split()[2])
     failures = []
     with subprocess.Popen(
         ["git", "-C", str(root), "cat-file", "--batch"],
@@ -83,7 +94,7 @@ def audit(root, staged=False):
             if len(data) != size or process.stdout.read(1) != b"\n":
                 raise ValueError("incomplete blob: " + path)
             issues = content_issues(data)
-            changed_exception = staged and issues and previous.get(path) != oid
+            changed_exception = staged and issues and oid not in previous.get(path, set())
             if issues and (allowed.get(path) != oid or changed_exception):
                 failures.append(path + ": " + ", ".join(issues) + ("; new/modified non-text or non-LF blobs are forbidden" if changed_exception else ""))
         process.stdin.close()

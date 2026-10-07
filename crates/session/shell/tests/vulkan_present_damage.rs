@@ -129,13 +129,18 @@ impl Server {
     fn captured(&self, previous: u64) -> (Commit, shell::shell::foreign::FrameSnapshot) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            let latest = self.commits.lock().unwrap().last().cloned();
+            // The pre-commit hook records damage before publishing its pixels.
+            // Keep its records stable while observing the production frame;
+            // otherwise the old damage can be paired with the next frame.
+            let commits = self.commits.lock().unwrap();
+            let latest = commits.last().cloned();
             if let Some(commit) = latest
                 && store().frame_seq(commit.surface) > previous
                 && let Some(frame) = store().snapshot(commit.surface)
             {
                 return (commit, frame);
             }
+            drop(commits);
             assert!(
                 Instant::now() < deadline,
                 "WSI pixels never reached capture"

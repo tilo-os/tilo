@@ -817,12 +817,49 @@ fn share_copies_a_link_through_a_real_click() {
     })
     .unwrap();
     app.settle();
+    // settle() flushes effects but does not wait for the NavShell entrance.
+    // click_named reads the current rectangle, then each pointer event runs
+    // another production frame. An entrance can move that rectangle between
+    // hover and press, preventing the Share action from being submitted.
+    // Wait for actual stable presentation before targeting the real button;
+    // extending the later notice timeout cannot recover a missed click.
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(5)),
+        "the watch page must finish its entrance before clicking Share"
+    );
     assert!(
         app.with_surface::<TubeApp, _>(|viewer| !viewer.model_for_test().is_liked(WATCH_ID))
             .unwrap(),
         "not liked to start"
     );
-    click(&mut app, "watch_copy_link");
+    // Start observing immediately after the real pointer sequence, rather
+    // than flushing extra frames against the three-second toast lifetime.
+    app.harness().click_named("watch_copy_link").unwrap();
+    app.with_surface::<TubeApp, _>(|viewer| {
+        assert!(
+            viewer
+                .model_for_test()
+                .notices
+                .iter()
+                .any(|notice| { notice.contains("Link copied") && notice.contains(WATCH_ID) }),
+            "the real pointer sequence must submit Share on the settled watch page"
+        );
+    })
+    .unwrap();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |h| {
+                h.a11y_nodes().iter().any(|(_, node)| {
+                    node.label() == Some("Notifications")
+                        && node.value().is_some_and(|value| {
+                            value.contains("Link copied") && value.contains(WATCH_ID)
+                        })
+                })
+            }),
+        "the real click must publish the copied-link notice before inspecting the model"
+    );
+
     app.with_surface::<TubeApp, _>(|viewer| {
         assert!(
             !viewer.model_for_test().is_liked(WATCH_ID),

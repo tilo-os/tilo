@@ -86,6 +86,7 @@ pub struct ModelView<K> {
     structure_dirty: bool,
     focus_reset: bool,
     autofocus: bool,
+    wake_deadline: Option<Box<dyn Fn() -> Option<crate::time::Instant>>>,
 }
 
 impl<K> ModelView<K>
@@ -116,6 +117,7 @@ where
             structure_dirty: false,
             focus_reset: false,
             autofocus: false,
+            wake_deadline: None,
         }
     }
 
@@ -141,6 +143,18 @@ where
     #[must_use]
     pub fn autofocus_on_change(mut self, autofocus: bool) -> Self {
         self.autofocus = autofocus;
+        self
+    }
+
+    /// Reconcile a time-sensitive projection through the host's existing wake
+    /// scheduler, including while the window is idle. Return None once the
+    /// projection no longer needs a deadline; this never starts a polling loop.
+    #[must_use]
+    pub fn with_wake_deadline(
+        mut self,
+        deadline: impl Fn() -> Option<crate::time::Instant> + 'static,
+    ) -> Self {
+        self.wake_deadline = Some(Box::new(deadline));
         self
     }
 
@@ -364,6 +378,15 @@ where
         self.child.needs_idle_sync()
     }
 
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.wake_deadline
+            .as_ref()
+            .and_then(|deadline| deadline())
+            .into_iter()
+            .chain(self.child.next_wake_deadline())
+            .min()
+    }
+
     fn on_external_event(
         &mut self,
         payload: &str,
@@ -519,6 +542,48 @@ mod tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
     use super::*;
+
+    #[test]
+    fn deadline_reconciles_an_idle_projection_through_the_real_frame_host() {
+        let deadline = Rc::new(Cell::new(
+            crate::time::now() + crate::time::Duration::from_secs(60),
+        ));
+        let expired = Rc::new(Cell::new(false));
+        let projected_deadline = deadline.clone();
+        let projected_expired = expired.clone();
+        let built_expired = expired.clone();
+        let scheduled_deadline = deadline.clone();
+        let scheduled_expired = expired.clone();
+        let view = ModelView::from_document(
+            move |_, _| projected_expired.get() || crate::time::now() >= projected_deadline.get(),
+            move |expired| {
+                built_expired.set(*expired);
+                Box::new(Text::new(if *expired {
+                    "Pairing expired"
+                } else {
+                    "Pairing active"
+                }))
+            },
+        )
+        .with_wake_deadline(move || (!scheduled_expired.get()).then(|| scheduled_deadline.get()));
+        let mut host =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(view), (600, 400));
+        assert!(!expired.get());
+        assert_eq!(
+            host.frame_schedule().next_wake_deadline,
+            Some(deadline.get())
+        );
+        assert!(!host.frame_schedule().needs_animation_frame);
+        // Move the actual projection's deadline to now, without delivering an
+        // input or editing its model. Its existing host wake must remain due.
+        deadline.set(crate::time::now());
+        assert!(host.frame_schedule().next_wake_deadline.unwrap() <= crate::time::now());
+        assert!(host.wait_until(crate::time::Duration::ZERO, |_| expired.get()));
+        assert_eq!(host.frame_schedule().next_wake_deadline, None);
+        assert!(host.a11y_nodes().iter().any(|(_, node)| {
+            node.value() == Some("Pairing expired") || node.label() == Some("Pairing expired")
+        }));
+    }
 
     #[test]
     fn model_view_publishes_each_admitted_child_resource_once() {

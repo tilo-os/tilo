@@ -1,0 +1,27 @@
+[package]
+name = "messages"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
+tilo-messaging = { path = "../../crates/platform/tilo-messaging" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
