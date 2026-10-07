@@ -343,6 +343,7 @@ mod tests {
         let state = chrome.borrow();
         provider.query(SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle: "",
             wanted: &[ResourceKind::Action],

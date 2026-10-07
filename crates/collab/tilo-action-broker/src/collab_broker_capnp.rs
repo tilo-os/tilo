@@ -3843,6 +3843,48 @@ impl CapnpBrokerState {
             .unwrap_or_default()
     }
 
+    /// Clone only current live descriptors of one exact application record.
+    /// Authority is still checked by the normal action visibility/invoke path.
+    pub fn live_surfaces_for_record(
+        &self,
+        application: &str,
+        room: &str,
+        record: &str,
+        family: &str,
+    ) -> Vec<PublishedSurface> {
+        self.surfaces
+            .lock()
+            .map(|surfaces| {
+                surfaces
+                    .values()
+                    .filter(|surface| {
+                        surface.live
+                            && surface.app_id == application
+                            && surface.route.cluster_id == room
+                            && surface.route.record_id == record
+                    })
+                    .map(|surface| PublishedSurface {
+                        peer_id: surface.peer_id,
+                        app_id: surface.app_id.clone(),
+                        route: surface.route.clone(),
+                        live: surface.live,
+                        actions: surface
+                            .actions
+                            .iter()
+                            .filter(|action| {
+                                action.resource_kind == family
+                                    && action.semantic_identity.as_ref().is_some_and(|identity| {
+                                        identity.is_valid() && identity.kind == family
+                                    })
+                            })
+                            .cloned()
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Generation of the eager action-surface source. Reading this never
     /// clones the potentially large application action inventory.
     #[must_use]

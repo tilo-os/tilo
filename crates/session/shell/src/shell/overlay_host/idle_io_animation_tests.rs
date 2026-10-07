@@ -392,6 +392,7 @@ fn successful_radio_reading_refreshes_the_recovered_public_action_availability()
         let rows = provider
             .query(SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "quick-settings.",
                 wanted: &[crate::shell::search::ResourceKind::Action],

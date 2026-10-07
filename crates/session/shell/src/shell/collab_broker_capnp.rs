@@ -179,6 +179,7 @@ pub mod tests {
         let chrome = chrome.borrow();
         provider.query(SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle: "open",
             wanted: &[],

@@ -174,6 +174,7 @@ enum Command {
         query: String,
         json: bool,
         include_programmatic: bool,
+        scope: Option<serde_json::Value>,
     },
     /// Invoke one enumerated action by its stable `(provider, id)`
     /// address — no synthetic input, no window, no scene.
@@ -438,6 +439,7 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
         if response.get("err").is_some() {
             return print_response(
                 &Command::ActionsList {
+                    scope: None,
                     include_programmatic: false,
                     query: "read".into(),
                     json,
@@ -687,17 +689,43 @@ fn parse_actions_command<'a>(
             let mut json = false;
             let mut include_programmatic = false;
             let mut words: Vec<String> = Vec::new();
-            for rest in iter.by_ref() {
+            let mut fields = serde_json::Map::new();
+            while let Some(rest) = iter.next() {
                 if rest == "--json" {
                     json = true;
                 } else if rest == "--programmatic" {
                     include_programmatic = true;
+                } else if let Some(field) = match rest.as_str() {
+                    "--application" => Some("application"),
+                    "--room" => Some("room"),
+                    "--record" => Some("record"),
+                    "--semantic-family" => Some("semantic_family"),
+                    _ => None,
+                } {
+                    let value = iter
+                        .next()
+                        .filter(|value| !value.starts_with("--"))
+                        .ok_or_else(|| {
+                            ParseError::Usage(format!("actions list: {rest} requires a value"))
+                        })?;
+                    if fields.insert(field.into(), value.clone().into()).is_some() {
+                        return Err(ParseError::Usage(format!("actions list: duplicate {rest}")));
+                    }
+                } else if rest.starts_with("--") {
+                    return Err(ParseError::Usage(format!(
+                        "actions list: unknown option {rest}"
+                    )));
                 } else {
                     words.push(rest.clone());
                 }
             }
+            if !fields.is_empty() && fields.len() != 4 {
+                return Err(ParseError::Usage("scoped discovery requires --application, --room, --record and --semantic-family".into()));
+            }
+            let scope = (!fields.is_empty()).then_some(serde_json::Value::Object(fields));
             Ok(Command::ActionsList {
                 query: words.join(" "),
+                scope,
                 json,
                 include_programmatic,
             })
@@ -816,6 +844,21 @@ fn actions_list_wire(query: &str, include_programmatic: bool) -> serde_json::Val
     }
 }
 
+fn actions_list_scoped_wire(
+    query: &str,
+    include_programmatic: bool,
+    scope: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, ParseError> {
+    let mut wire = actions_list_wire(query, include_programmatic);
+    if let Some(scope) = scope {
+        let fields = wire
+            .as_object_mut()
+            .ok_or_else(|| ParseError::Usage("action enumeration wire must be an object".into()))?;
+        fields.insert("scope".into(), scope.clone());
+    }
+    Ok(wire)
+}
+
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
     use serde_json::json;
     let value = match cmd {
@@ -875,8 +918,9 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         Command::ActionsList {
             query,
             include_programmatic,
+            scope,
             ..
-        } => actions_list_wire(query, *include_programmatic),
+        } => actions_list_scoped_wire(query, *include_programmatic, scope.as_ref())?,
         Command::ActionsInvoke {
             provider,
             id,
@@ -1216,7 +1260,7 @@ fn print_usage() {
          instead.\n\
          \n\
          Action model (admin control socket):\n\
-         \x20 actions list [QUERY] [--json] [--programmatic] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
+         \x20 actions list [QUERY] [--json] [--programmatic] [--application ID --room UUID --record ID --semantic-family KIND] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything;\n\
          \x20                               --json adds params, contract and hierarchy)\n\
          \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
@@ -1403,6 +1447,35 @@ mod tests {
     //! socket protocol itself is covered in
     //! `compositor::test_control::tests` and `tests/control_socket_test.rs`.
     use super::*;
+
+    #[test]
+    fn scoped_discovery_uses_exact_bounded_identity_fields() {
+        let parsed = parse(&[
+            "actions",
+            "list",
+            "--application",
+            "so.tilo.store",
+            "--room",
+            "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "--record",
+            "derived:default@tab:f276000000000034",
+            "--semantic-family",
+            "store.catalog",
+            "--programmatic",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(
+            wire(&parsed.command),
+            serde_json::json!({
+                "op": "actions_enumerate", "query": "", "include_programmatic": true,
+                "scope": {"application": "so.tilo.store", "room": "5ba25f73-87c5-447f-a5a6-880dc4249a81", "record": "derived:default@tab:f276000000000034", "semantic_family": "store.catalog"}
+            })
+        );
+        assert!(parse(&["actions", "list", "--application", "so.tilo.store"]).is_err());
+        assert!(parse(&["actions", "list", "--unknown"]).is_err());
+        assert!(parse(&["actions", "list", "--record"]).is_err());
+    }
 
     #[test]
     fn programmatic_discovery_is_explicit_and_uses_the_normal_actions_wire() {

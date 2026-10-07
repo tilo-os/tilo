@@ -1914,6 +1914,7 @@ mod tests {
             let wanted = [ResourceKind::Action];
             let context = |needle| SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle,
                 wanted: &wanted,

@@ -63,6 +63,10 @@ pub(super) fn dispatch(
     lock: &mut LockController,
 ) -> Option<Response> {
     match command {
+        Command::ActionsEnumerate { scope: Some(_), .. } if locked => Some(Response::Err {
+            code: "session_locked".into(),
+            message: "application discovery is unavailable while the session is locked".into(),
+        }),
         Command::ActionsEnumerate { query, .. } if locked => Some(Response::Answer(
             console_control::enumerate(PROVIDER, &resources(locked, lock), query),
         )),
@@ -123,6 +127,34 @@ mod tests {
             args: json!({"password":password}).as_object().unwrap().clone(),
             device: None,
         }
+    }
+
+    #[test]
+    fn scoped_application_discovery_never_substitutes_the_locked_pam_catalogue() {
+        let mut lock = LockController::new(Arc::new(UnavailableVerifier), "owner");
+        let mut command = Command::ActionsEnumerate {
+            query: String::new(),
+            include_programmatic: true,
+            scope: Some(crate::shell::search::ActionDiscoveryScope {
+                application: "so.tilo.store".into(),
+                room: uuid::Uuid::nil().to_string(),
+                record: "derived:default@tab:f276000000000034".into(),
+                semantic_family: "store.catalog".into(),
+            }),
+        };
+        assert!(
+            matches!(dispatch(&mut command, true, &mut lock), Some(Response::Err { code, .. }) if code == "session_locked")
+        );
+        assert!(dispatch(&mut command, false, &mut lock).is_none());
+        let mut normal = Command::ActionsEnumerate {
+            query: "unlock".into(),
+            include_programmatic: false,
+            scope: None,
+        };
+        assert!(
+            matches!(dispatch(&mut normal, true, &mut lock), Some(Response::Answer(value)) if value["actions"].as_array().is_some_and(|rows| rows.len() == 1))
+        );
+        assert!(!lock.is_verifying());
     }
 
     #[test]

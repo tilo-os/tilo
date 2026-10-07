@@ -159,6 +159,7 @@ impl ActionCatalog {
     ) -> Self {
         // Empty `wanted_kinds` ⇒ "any kind" — surveys the whole exported surface.
         let args = QueryArgs {
+            action_scope: None,
             needle: query,
             scope,
             active_provider_id,
@@ -177,6 +178,13 @@ impl ActionCatalog {
         visibility: &dyn ActionVisibility,
         include_programmatic: bool,
     ) -> Self {
+        if args.action_scope.is_some_and(|scope| !scope.is_valid()) {
+            return Self {
+                results: Vec::new(),
+                visible: Vec::new(),
+                hierarchies: Vec::new(),
+            };
+        }
         // Remote callers do not open the palette, which normally maintains
         // retained provider indexes. Start/poll that same asynchronous work
         // here so subsequent requests can discover cold sources too.
@@ -215,6 +223,7 @@ impl ActionCatalog {
         visibility: &dyn ActionVisibility,
     ) -> Self {
         let args = QueryArgs {
+            action_scope: None,
             needle: &resource.id,
             scope,
             active_provider_id,
@@ -280,6 +289,7 @@ impl ActionCatalog {
                 &resource.provider,
                 &resource.id,
                 &QueryArgs {
+                    action_scope: None,
                     needle: "",
                     scope,
                     active_provider_id,

@@ -7820,6 +7820,7 @@ impl ShellOverlayHost {
         let groups = {
             let st = chrome.borrow();
             let args = crate::shell::search::QueryArgs {
+                action_scope: None,
                 needle: &current_query,
                 scope,
                 active_provider_id: active_provider.as_deref(),
@@ -17220,6 +17221,7 @@ impl Widget for ShellOverlayHost {
             search_index_ready =
                 self.search_registry
                     .refresh_indexes(&crate::shell::search::QueryArgs {
+                        action_scope: None,
                         needle: &current_query,
                         scope,
                         active_provider_id: active_provider.as_deref(),

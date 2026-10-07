@@ -11,6 +11,7 @@ fn read(chrome: &Chrome) -> serde_json::Value {
         ActionsProvider::new()
             .query(SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "",
                 wanted: &[crate::shell::search::ResourceKind::Action],

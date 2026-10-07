@@ -95,6 +95,7 @@ mod tests {
         let doc = automerge::AutoCommit::new();
         provider.query(SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Application],

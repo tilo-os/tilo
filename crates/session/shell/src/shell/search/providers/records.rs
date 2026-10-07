@@ -442,6 +442,7 @@ mod tests {
         let doc = automerge::AutoCommit::new();
         provider.query(SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Record],
@@ -463,6 +464,7 @@ mod tests {
         provider.query_page(
             SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Record],
@@ -643,6 +645,7 @@ mod tests {
             let doc = automerge::AutoCommit::new();
             let context = || SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "note",
                 wanted: &[ResourceKind::Record],
@@ -945,6 +948,7 @@ mod tests {
             let doc = automerge::AutoCommit::new();
             let out = provider.query(SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "a.odt",
                 wanted: &[ResourceKind::File],

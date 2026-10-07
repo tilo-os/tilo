@@ -515,6 +515,7 @@ pub enum SearchProximity {
 pub struct SearchContext<'a> {
     /// Effective registry scope, independent of the palette's current filter.
     pub query_scope: Option<SearchScope>,
+    pub action_scope: Option<&'a ActionDiscoveryScope>,
     /// Explicit machine discovery; ordinary palette queries keep this false.
     pub include_programmatic: bool,
     pub needle: &'a str,
@@ -530,10 +531,49 @@ impl SearchContext<'_> {
     }
 }
 
+/// Exact live application discovery, separate from a free-text search needle.
+/// This narrows enumeration; existing actor, route and visibility gates still
+/// determine which descriptors the caller can observe.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionDiscoveryScope {
+    pub application: String,
+    pub room: String,
+    pub record: String,
+    pub semantic_family: String,
+}
+
+impl ActionDiscoveryScope {
+    pub fn is_valid(&self) -> bool {
+        let identifier = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        };
+        identifier(&self.application)
+            && identifier(&self.semantic_family)
+            && uuid::Uuid::parse_str(&self.room).is_ok()
+            && !self.record.is_empty()
+            && self.record.len() <= 512
+            && !self.record.chars().any(char::is_control)
+    }
+
+    pub fn matches_route(&self, application: &str, room: &str, record: &str) -> bool {
+        self.application == application && self.room == room && self.record == record
+    }
+
+    fn allows_provider(provider: &dyn SearchProvider) -> bool {
+        provider.id() == "app-actions"
+    }
+}
+
 /// Arguments for [`SearchRegistry::query`]/[`SearchRegistry::query_grouped`]
 /// — distinct from [`SearchContext`], which is the narrower, per-provider
 /// view built fresh for each provider inside the fan-out loop.
 pub struct QueryArgs<'a> {
+    pub action_scope: Option<&'a ActionDiscoveryScope>,
     pub needle: &'a str,
     pub scope: SearchScope,
     pub active_provider_id: Option<&'a str>,
@@ -780,6 +820,7 @@ impl SearchRegistry {
         }
         let ctx = SearchContext {
             query_scope: Some(args.scope),
+            action_scope: None,
             include_programmatic: false,
             needle: "",
             wanted: &wanted,
@@ -803,6 +844,12 @@ impl SearchRegistry {
         }
         let mut changed = false;
         for provider in self.enabled_providers() {
+            if args
+                .action_scope
+                .is_some_and(|_| !ActionDiscoveryScope::allows_provider(provider.as_ref()))
+            {
+                continue;
+            }
             if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
                 continue;
             }
@@ -821,6 +868,7 @@ impl SearchRegistry {
             }
             let ctx = SearchContext {
                 query_scope: Some(args.scope),
+                action_scope: args.action_scope,
                 include_programmatic: false,
                 needle: args.needle,
                 wanted: &wanted,
@@ -871,6 +919,7 @@ impl SearchRegistry {
         Some(provider.query_page(
             SearchContext {
                 query_scope: Some(args.scope),
+                action_scope: args.action_scope,
                 include_programmatic: false,
                 needle: args.needle,
                 wanted: &wanted,
@@ -954,6 +1003,12 @@ impl SearchRegistry {
             args.wanted_kinds
         );
         for provider in self.enabled_providers() {
+            if args
+                .action_scope
+                .is_some_and(|_| !ActionDiscoveryScope::allows_provider(provider.as_ref()))
+            {
+                continue;
+            }
             if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
                 continue;
             }
@@ -961,6 +1016,7 @@ impl SearchRegistry {
             out.push('\0');
             out.push_str(&provider.search_revision(&SearchContext {
                 query_scope: Some(args.scope),
+                action_scope: args.action_scope,
                 include_programmatic: false,
                 needle: args.needle,
                 wanted: args.wanted_kinds,
@@ -1000,6 +1056,10 @@ impl SearchRegistry {
     ) -> Vec<ProviderQuery<'_>> {
         let mut sources: Vec<_> = self
             .enabled_providers()
+            .filter(|provider| {
+                args.action_scope
+                    .is_none_or(|_| ActionDiscoveryScope::allows_provider(provider.as_ref()))
+            })
             .filter(|provider| scope_allows(provider.as_ref(), args.scope, args.active_provider_id))
             .filter_map(|provider| {
                 let wanted: Vec<_> = provider
@@ -1048,6 +1108,7 @@ impl SearchRegistry {
                 let page = source.provider.query_page(
                     SearchContext {
                         query_scope: Some(args.scope),
+                        action_scope: args.action_scope,
                         include_programmatic,
                         needle: args.needle,
                         wanted: &source.wanted,
@@ -1423,6 +1484,7 @@ mod tests {
             let (doc, root) = mk_doc();
             let query = "夏".repeat(ui::search::MAX_SEARCH_QUERY_SCALARS + 1);
             let args = QueryArgs {
+                action_scope: None,
                 needle: &query,
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -1455,6 +1517,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let args = QueryArgs {
+                action_scope: None,
                 needle: "",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -1535,6 +1598,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let args = QueryArgs {
+                action_scope: None,
                 needle: "",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -1648,6 +1712,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "x",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -1690,6 +1755,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "notes",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -1723,6 +1789,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "title",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -1775,6 +1842,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "rs",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -1811,6 +1879,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let args = QueryArgs {
+                action_scope: None,
                 needle: "note",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -1927,6 +1996,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let args = QueryArgs {
+                action_scope: None,
                 needle: "mailbox",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -2001,6 +2071,7 @@ mod tests {
             let (doc, root) = mk_doc();
             let query = |scope| {
                 reg.query(&QueryArgs {
+                    action_scope: None,
                     needle: "draft",
                     scope,
                     active_provider_id: Some("notes"),
@@ -2062,6 +2133,7 @@ mod tests {
             let (doc, root) = mk_doc();
             let query = |scope| {
                 reg.query(&QueryArgs {
+                    action_scope: None,
                     needle: "draft",
                     scope,
                     active_provider_id: None,
@@ -2089,6 +2161,7 @@ mod tests {
             let (doc, root) = mk_doc();
             let revision = |scope, active_provider_id, wanted_kinds: &[ResourceKind]| {
                 reg.query_revision(&QueryArgs {
+                    action_scope: None,
                     needle: "draft",
                     scope,
                     active_provider_id,
@@ -2126,6 +2199,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "x",
                 scope: SearchScope::ActiveApp,
                 active_provider_id: Some("notes"),
@@ -2175,6 +2249,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "x",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -2213,6 +2288,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "x",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -2253,6 +2329,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "calculator",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -2319,6 +2396,7 @@ mod tests {
                 let chrome = mk_chrome();
                 let (doc, root) = mk_doc();
                 let out = reg.query(&QueryArgs {
+                    action_scope: None,
                     needle,
                     scope: SearchScope::Workspace,
                     active_provider_id: None,
@@ -2368,6 +2446,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "workspace",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -2410,6 +2489,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "notes",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -2471,6 +2551,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
+                action_scope: None,
                 needle: "a",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -2508,6 +2589,7 @@ mod tests {
             let (doc, root) = mk_doc();
             let groups = reg.query_grouped(
                 &QueryArgs {
+                    action_scope: None,
                     needle: "x",
                     scope: SearchScope::Workspace,
                     active_provider_id: None,
@@ -2569,6 +2651,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let refresh_args = QueryArgs {
+                action_scope: None,
                 needle: "calculator",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -2580,6 +2663,7 @@ mod tests {
             refresh_until_ready(&reg, &refresh_args);
             for scope in [SearchScope::All, SearchScope::Workspace] {
                 let out = reg.query(&QueryArgs {
+                    action_scope: None,
                     needle: "calculator",
                     scope,
                     active_provider_id: None,
@@ -2638,6 +2722,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let refresh_args = QueryArgs {
+                action_scope: None,
                 needle: "editor",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -2651,6 +2736,7 @@ mod tests {
             // substring of "Hex Editor", so Files legitimately outranks it.
             let groups = reg.query_grouped(
                 &QueryArgs {
+                    action_scope: None,
                     needle: "editor",
                     scope: SearchScope::Workspace,
                     active_provider_id: None,

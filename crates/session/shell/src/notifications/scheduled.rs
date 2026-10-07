@@ -755,6 +755,7 @@ mod tests {
                 &id,
                 SearchContext {
                     query_scope: None,
+                    action_scope: None,
                     include_programmatic: true,
                     needle: "",
                     wanted: &[ResourceKind::Action],
@@ -966,6 +967,7 @@ mod tests {
                 id,
                 SearchContext {
                     query_scope: None,
+                    action_scope: None,
                     include_programmatic: true,
                     needle: "",
                     wanted: &[ResourceKind::Action],

@@ -4487,6 +4487,7 @@ mod tests {
                 ActionsProvider::new()
                     .query(SearchContext {
                         query_scope: None,
+                        action_scope: None,
                         include_programmatic: false,
                         needle: "bring record",
                         wanted: &[ResourceKind::Action],
@@ -7324,6 +7325,7 @@ mod tests {
                 provider
                     .query(SearchContext {
                         query_scope: None,
+                        action_scope: None,
                         include_programmatic: false,
                         needle: "",
                         wanted: &[ResourceKind::Action],

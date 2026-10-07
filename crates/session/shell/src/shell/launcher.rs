@@ -6721,6 +6721,7 @@ mod tests {
             let page = DesktopWindowsProvider::new().query_page(
                 crate::shell::search::SearchContext {
                     query_scope: None,
+                    action_scope: None,
                     include_programmatic: false,
                     needle: "",
                     wanted: &[],

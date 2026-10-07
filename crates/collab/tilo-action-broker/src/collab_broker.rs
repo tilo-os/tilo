@@ -451,6 +451,21 @@ impl AppActionBroker {
             .unwrap_or_default()
     }
 
+    /// Bounded source selection before copying another application's actions.
+    pub fn live_surfaces_for_record(
+        &self,
+        application: &str,
+        room: &str,
+        record: &str,
+        family: &str,
+    ) -> Vec<crate::collab_broker_capnp::PublishedSurface> {
+        self.state
+            .while_live(|state| {
+                Ok(state.live_surfaces_for_record(application, room, record, family))
+            })
+            .unwrap_or_default()
+    }
+
     /// Read one current advertised action without cloning the whole inventory.
     pub fn published_action(
         &self,

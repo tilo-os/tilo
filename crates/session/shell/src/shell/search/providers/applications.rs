@@ -1774,6 +1774,7 @@ mod tests {
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "hello",
                 wanted: &[ResourceKind::File],
@@ -2079,6 +2080,7 @@ mod tests {
             let doc = AutoCommit::new();
             let ctx = SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "sheets",
                 wanted: &[ResourceKind::Application],
@@ -2119,6 +2121,7 @@ mod tests {
         for needle in ["Dateien", "dateien", "Files"] {
             let ctx = SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Application],
@@ -2248,6 +2251,7 @@ mod tests {
         let doc = AutoCommit::new();
         let ctx = SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle: "unique-tail",
             wanted: &[ResourceKind::Application],
@@ -2298,6 +2302,7 @@ mod tests {
         let page = provider.query_page(
             SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "unique-tail",
                 wanted: &[ResourceKind::Application],
@@ -2327,6 +2332,7 @@ mod tests {
         let doc = AutoCommit::new();
         let ctx = SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle: "anything",
             wanted: &[ResourceKind::Application],
@@ -2392,6 +2398,7 @@ mod tests {
             let chrome = chrome.borrow();
             let ctx = SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Application],
@@ -2504,6 +2511,7 @@ mod tests {
         let doc = AutoCommit::new();
         let ctx = SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle: "unique-source-tail",
             wanted: &[ResourceKind::Application],
@@ -2672,6 +2680,7 @@ mod native_application_tests {
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
@@ -2768,6 +2777,7 @@ mod native_application_tests {
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],

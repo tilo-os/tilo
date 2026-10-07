@@ -223,6 +223,7 @@ fn begin_mirror(
     let mut doc = automerge::AutoCommit::new();
     let rows = provider.query(SearchContext {
         query_scope: None,
+        action_scope: None,
         include_programmatic: true,
         needle: "display.layout.mirror",
         wanted: &[ResourceKind::Action],

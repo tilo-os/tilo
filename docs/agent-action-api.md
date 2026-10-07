@@ -167,6 +167,23 @@ tilo-control actions list so.tilo.browser --programmatic --json
 {"op":"actions_enumerate","query":"so.tilo.browser","include_programmatic":true}
 ```
 
+For a known live application instance, narrow enumeration before unrelated
+providers refresh or query. Use the authenticated `application`, `room`, `record`
+and semantic resource `kind` from its current descriptors; records are opaque
+and may use the `derived:default@tab:…` form.
+
+```sh
+tilo-control actions list --programmatic --json --application so.tilo.store \
+  --room "$ROOM" --record "$RECORD" --semantic-family store.catalog
+```
+
+All four identity fields are required together. This uses the same action door
+and current visibility/role checks, returns only matching live resource actions,
+and never substitutes another record or the locked-session unlock catalogue.
+A cold index can initially be empty; re-enumerate rather than reuse another
+instance's bindings. An oversized exact-family response fails explicitly; narrow
+its free-text query instead of raising the remote transport limit.
+
 This adds programmatic descriptors to bounded enumeration. It keeps the same
 workspace, membership and capability checks and does not alter the human palette.
 Use the returned provider, ID, contract and parameter schema with `actions invoke`.

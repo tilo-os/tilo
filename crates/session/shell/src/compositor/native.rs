@@ -2772,6 +2772,18 @@ impl ControlState for FrameBuilderControlState<'_> {
         query: &str,
         include_programmatic: bool,
     ) -> Result<serde_json::Value, String> {
+        self.enumerate_actions_scoped(query, include_programmatic, None)
+    }
+
+    fn enumerate_actions_scoped(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+        scope: Option<&crate::shell::search::ActionDiscoveryScope>,
+    ) -> Result<serde_json::Value, String> {
+        if scope.is_some_and(|scope| !scope.is_valid()) {
+            return Err("invalid application discovery scope".into());
+        }
         let (doc, root) = self
             .doc
             .ok_or_else(|| "control state has no live document".to_string())?;
@@ -2781,6 +2793,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
             self.fb.host().action_catalog_query(
                 &crate::shell::search::QueryArgs {
+                    action_scope: scope,
                     needle: query,
                     scope: crate::shell::chrome_state::SearchScope::All,
                     active_provider_id: None,
@@ -2821,11 +2834,16 @@ impl ControlState for FrameBuilderControlState<'_> {
                 })
             })
             .collect();
-        Ok(serde_json::json!({
+        let response = serde_json::json!({
             "query": query,
+            "scope": scope,
             "count": actions.len(),
             "actions": actions,
-        }))
+        });
+        if scope.is_some() {
+            test_control::check_scoped_catalogue_size(&response)?;
+        }
+        Ok(response)
     }
 
     /// Resolve one `(provider, id)` address against a fresh catalogue,

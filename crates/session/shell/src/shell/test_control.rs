@@ -188,6 +188,8 @@ pub enum Command {
         query: String,
         #[serde(default)]
         include_programmatic: bool,
+        #[serde(default)]
+        scope: Option<crate::shell::search::ActionDiscoveryScope>,
     },
     /// Invoke one enumerated action by its `(provider, id)` address, with no window, scene or synthetic input.
     ///
@@ -294,6 +296,18 @@ impl TargetEntry {
         }
     }
 }
+/// Leave room for the control envelope within the maintained 1 MiB remote
+/// stdout bound. Oversized exact families refuse instead of silently truncating.
+pub(crate) fn check_scoped_catalogue_size(value: &serde_json::Value) -> Result<(), String> {
+    const MAX_BYTES: usize = 900 * 1024;
+    let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_BYTES {
+        return Err(
+            "scoped action catalogue exceeds the transport budget; narrow its query".into(),
+        );
+    }
+    Ok(())
+}
 
 /// Trait the compositor's main loop implements to give the dispatcher live state. Tests pass mocks with canned data; the real binary passes a closure walking the current `FrameBuilder`'s host.
 pub trait ControlState {
@@ -384,6 +398,21 @@ pub trait ControlState {
             return Err("this control state cannot enumerate programmatic actions".into());
         }
         self.enumerate_actions(query)
+    }
+
+    /// Narrow the same action door without falling back to global discovery.
+    /// # Errors
+    /// Refuses unsupported scoped discovery and propagates catalogue failures.
+    fn enumerate_actions_scoped(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+        scope: Option<&crate::shell::search::ActionDiscoveryScope>,
+    ) -> Result<serde_json::Value, String> {
+        if scope.is_some() {
+            return Err("this control state cannot enumerate scoped application actions".into());
+        }
+        self.enumerate_actions_with_programmatic(query, include_programmatic)
     }
 
     /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
@@ -768,9 +797,14 @@ pub fn dispatch_command<S: ControlState>(
         Command::ActionsEnumerate {
             query,
             include_programmatic,
+            scope,
         } => (
             answer_or_err(
-                state.enumerate_actions_with_programmatic(query, *include_programmatic),
+                if scope.as_ref().is_some_and(|scope| !scope.is_valid()) {
+                    Err("invalid application discovery scope".into())
+                } else {
+                    state.enumerate_actions_scoped(query, *include_programmatic, scope.as_ref())
+                },
                 "enumerate_failed",
             ),
             Vec::new(),
@@ -2652,6 +2686,42 @@ mod tests {
         assert!(effects.is_empty());
     }
 
+    #[test]
+    fn scoped_discovery_refuses_oversized_serialized_catalogues() {
+        let small = serde_json::json!({"actions":[], "count":0});
+        assert!(check_scoped_catalogue_size(&small).is_ok());
+        let large = serde_json::json!({"actions":["x".repeat(900 * 1024)]});
+        let error = check_scoped_catalogue_size(&large).unwrap_err();
+        assert!(error.contains("transport budget"));
+    }
+
+    #[test]
+    fn malformed_or_unsupported_scoped_discovery_does_not_fall_back() {
+        let scope = serde_json::json!({"application":"so.tilo.store", "room":"5ba25f73-87c5-447f-a5a6-880dc4249a81", "record":"derived:default@tab:f276000000000034", "semantic_family":"store.catalog"});
+        let mut wire = serde_json::json!({"op":"actions_enumerate", "query":"", "scope":scope});
+        let valid: Command = serde_json::from_value(wire.clone()).unwrap();
+        let (response, effects) = dispatch_command(&valid, &ActionState);
+        assert!(
+            matches!(response, Response::Err { code, message } if code == "enumerate_failed" && message.contains("cannot enumerate scoped"))
+        );
+        assert!(effects.is_empty());
+        for (key, value) in [
+            ("room", "not-a-room"),
+            ("record", ""),
+            ("semantic_family", "store.catalog\u{1f}private"),
+        ] {
+            wire["scope"][key] = value.into();
+            let invalid: Command = serde_json::from_value(wire.clone()).unwrap();
+            let (response, effects) = dispatch_command(&invalid, &ActionState);
+            assert!(
+                matches!(response, Response::Err { code, message } if code == "enumerate_failed" && message == "invalid application discovery scope")
+            );
+            assert!(effects.is_empty());
+        }
+        wire["scope"]["unknown"] = true.into();
+        assert!(serde_json::from_value::<Command>(wire).is_err());
+    }
+
     const MOCK_INSERT_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
         crate::shell::search::action_api::ActionParam::required(
             "text",
@@ -2687,6 +2757,7 @@ mod tests {
             {
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsEnumerate {
+                        scope: None,
                         include_programmatic: false,
                         query: String::new(),
                     },
@@ -2818,6 +2889,7 @@ mod tests {
                 let state = StaticState::new(&[]);
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsEnumerate {
+                        scope: None,
                         include_programmatic: false,
                         query: String::new(),
                     },
@@ -2838,6 +2910,7 @@ mod tests {
                 assert_eq!(
                     enumerate,
                     Command::ActionsEnumerate {
+                        scope: None,
                         include_programmatic: false,
                         query: "settings".to_string()
                     }
@@ -2848,6 +2921,7 @@ mod tests {
                 assert_eq!(
                     bare,
                     Command::ActionsEnumerate {
+                        scope: None,
                         include_programmatic: false,
                         query: String::new()
                     }

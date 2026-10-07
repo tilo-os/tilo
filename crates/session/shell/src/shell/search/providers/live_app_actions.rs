@@ -289,6 +289,7 @@ struct SurfaceBuildScope {
     scope: crate::shell::chrome_state::SearchScope,
     room: Option<String>,
     app: Option<String>,
+    discovery: Option<crate::shell::search::ActionDiscoveryScope>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -553,9 +554,16 @@ impl LiveAppActionsProvider {
             .chrome
             .search_resource_scope
             .as_ref()
+            .filter(|_| ctx.action_scope.is_none())
             .map_or("", |scope| scope.resource.as_str());
+        let discovery = ctx.action_scope.map_or_else(String::new, |scope| {
+            format!(
+                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                scope.application, scope.room, scope.record, scope.semantic_family
+            )
+        });
         format!(
-            "{:?}\u{1f}{room}\u{1f}{app}\u{1f}{resource}",
+            "{discovery}\u{1f}{:?}\u{1f}{room}\u{1f}{app}\u{1f}{resource}",
             ctx.effective_scope()
         )
     }
@@ -574,6 +582,7 @@ impl LiveAppActionsProvider {
         SurfaceBuildScope {
             key: Self::surface_scope(ctx),
             scope: ctx.effective_scope(),
+            discovery: ctx.action_scope.cloned(),
             room,
             app,
         }
@@ -597,8 +606,18 @@ impl LiveAppActionsProvider {
                 Some(std::thread::current().id());
         }
         let source_generation = broker.surfaces_generation();
-        let entries = broker
-            .surfaces()
+        let surfaces = scope.discovery.as_ref().map_or_else(
+            || broker.surfaces(),
+            |scope| {
+                broker.live_surfaces_for_record(
+                    &scope.application,
+                    &scope.room,
+                    &scope.record,
+                    &scope.semantic_family,
+                )
+            },
+        );
+        let entries = surfaces
             .into_iter()
             .filter(|surface| match scope.scope {
                 crate::shell::chrome_state::SearchScope::All => true,
@@ -728,6 +747,22 @@ impl LiveAppActionsProvider {
         action: PublishedAction,
         rank: i32,
     ) -> Option<SearchResult> {
+        if let Some(scope) = ctx.action_scope {
+            let (current, descriptor) =
+                self.broker
+                    .published_action(&surface.route, &action.resource, &action.action)?;
+            if !current.live
+                || current.peer_id != surface.peer_id
+                || !scope.matches_route(
+                    &current.app_id,
+                    &current.route.cluster_id,
+                    &current.route.record_id,
+                )
+                || descriptor != action
+            {
+                return None;
+            }
+        }
         let id = Self::result_id(&surface, &action);
         let scope = Self::surface_scope(ctx);
         let source_generation = self.broker.surfaces_generation();
@@ -828,7 +863,9 @@ impl LiveAppActionsProvider {
     }
 
     fn set_directory_context(&self, ctx: &SearchContext<'_>, needle: &str) {
-        let scoped_query = if let Some(scope) = &ctx.chrome.search_resource_scope {
+        let scoped_query = if ctx.action_scope.is_some() {
+            format!("{needle}{ID_SEPARATOR}{}", Self::surface_scope(ctx))
+        } else if let Some(scope) = &ctx.chrome.search_resource_scope {
             format!(
                 "{needle}{ID_SEPARATOR}{}{ID_SEPARATOR}{}",
                 scope.peer_id, scope.resource
@@ -893,7 +930,12 @@ impl LiveAppActionsProvider {
             .directory
             .as_ref()
             .map_or(root_page, |directory| vec![directory.root.clone()]);
-        if let Some(resource_scope) = &ctx.chrome.search_resource_scope {
+        if let Some(resource_scope) = ctx
+            .chrome
+            .search_resource_scope
+            .as_ref()
+            .filter(|_| ctx.action_scope.is_none())
+        {
             roots.retain(|root| {
                 root.peer_id == resource_scope.peer_id
                     && root.cluster_id == resource_scope.cluster_id
@@ -904,12 +946,14 @@ impl LiveAppActionsProvider {
             .chrome
             .search_resource_scope
             .as_ref()
+            .filter(|_| ctx.action_scope.is_none())
             .map_or("", |scope| scope.resource.as_str());
         let mut entries = Vec::new();
         let mut pending_directory = Vec::new();
         let mut next_resume = None;
         let actor = ctx.chrome.active_local_user();
-        if ctx.chrome.search_resource_scope.is_none()
+        if ctx.action_scope.is_none()
+            && ctx.chrome.search_resource_scope.is_none()
             && (needle.is_empty() || "jobs status progress".contains(needle))
         {
             for (id, update) in self
@@ -939,6 +983,11 @@ impl LiveAppActionsProvider {
             }
         }
         for root in roots {
+            if ctx.action_scope.is_some_and(|scope| {
+                !scope.matches_route(&root.app_id, &root.cluster_id, &root.record_id)
+            }) {
+                continue;
+            }
             if entries.len() >= root_limit {
                 next_resume = Some(AuxiliaryResume {
                     root_after: resume.root_after,
@@ -1023,6 +1072,18 @@ impl LiveAppActionsProvider {
                     }
                     consumed = consumed.saturating_add(1);
                     if let Some(descriptor) = row.action.clone() {
+                        if ctx.action_scope.is_some_and(|scope| {
+                            descriptor.resource_kind != scope.semantic_family
+                                || descriptor
+                                    .semantic_identity
+                                    .as_ref()
+                                    .is_none_or(|identity| {
+                                        !identity.is_valid()
+                                            || identity.kind != scope.semantic_family
+                                    })
+                        }) {
+                            continue;
+                        }
                         entries.push(AuxiliaryEntry::Directory {
                             root: root.clone(),
                             revision: page.revision.clone(),
@@ -1030,7 +1091,7 @@ impl LiveAppActionsProvider {
                             actor: root_actor.clone(),
                             cursor: remote_cursor.clone(),
                         });
-                    } else if row.has_children {
+                    } else if row.has_children && ctx.action_scope.is_none() {
                         entries.push(AuxiliaryEntry::Resource {
                             root: root.clone(),
                             row,
@@ -1478,6 +1539,11 @@ impl LiveAppActionsProvider {
             .directory_roots(ctx)
             .0
             .into_iter()
+            .filter(|root| {
+                ctx.action_scope.is_none_or(|scope| {
+                    scope.matches_route(&root.app_id, &root.cluster_id, &root.record_id)
+                })
+            })
             .filter(|root| after_peer.is_none_or(|after| root.peer_id > after));
         let page = remaining.by_ref().take(limit).collect::<Vec<_>>();
         let next = remaining
@@ -1902,6 +1968,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 .take(MAX_DIRECTORY_ROOTS_PER_QUERY)
             {
                 if let Some(resource_scope) = &ctx.chrome.search_resource_scope
+                    && ctx.action_scope.is_none()
                     && (root.peer_id != resource_scope.peer_id
                         || root.cluster_id != resource_scope.cluster_id
                         || root.app_id != resource_scope.app_id)
@@ -1945,6 +2012,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     ctx.chrome
                         .search_resource_scope
                         .as_ref()
+                        .filter(|_| ctx.action_scope.is_none())
                         .map_or("", |scope| scope.resource.as_str()),
                 );
                 let page = self
@@ -2164,7 +2232,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     .into_iter()
                     .find(|result| result.id == id);
             }
-            if ctx.chrome.search_resource_scope.is_some() {
+            if ctx.action_scope.is_none() && ctx.chrome.search_resource_scope.is_some() {
                 return None;
             }
             let (app, _, cluster, record, resource, action) = Self::result_parts(id)?;
@@ -2470,6 +2538,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     ctx.chrome
                         .search_resource_scope
                         .as_ref()
+                        .filter(|_| ctx.action_scope.is_none())
                         .map_or("", |scope| scope.resource.as_str()),
                 );
                 return Self::live_aux_page(
@@ -2492,7 +2561,7 @@ impl SearchProvider for LiveAppActionsProvider {
             }
         }
 
-        if ctx.chrome.search_resource_scope.is_some() {
+        if ctx.action_scope.is_none() && ctx.chrome.search_resource_scope.is_some() {
             return SearchPage::exhausted(revision, results);
         }
 
@@ -2651,6 +2720,7 @@ mod tests {
     ) -> SearchContext<'a> {
         SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Action],
@@ -2687,6 +2757,7 @@ mod tests {
         ) -> SearchContext<'a> {
             SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "",
                 wanted,
@@ -3450,6 +3521,7 @@ mod tests {
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         let state = chrome.borrow();
         let args = crate::shell::search::QueryArgs {
+            action_scope: None,
             needle: "Read page content",
             scope: crate::shell::chrome_state::SearchScope::All,
             active_provider_id: None,
@@ -3484,6 +3556,221 @@ mod tests {
         assert!(
             !refused.contains(resource),
             "machine discovery keeps the visibility gate"
+        );
+    }
+
+    struct UnrelatedFiles;
+    impl SearchProvider for UnrelatedFiles {
+        fn id(&self) -> &'static str {
+            "files"
+        }
+        fn name(&self) -> &'static str {
+            "Unrelated files"
+        }
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::Action]
+        }
+        fn query(&self, _: SearchContext<'_>) -> Vec<SearchResult> {
+            panic!("scoped app discovery must not query files");
+        }
+        fn refresh_search_index(&self, _: &SearchContext<'_>) {
+            panic!("scoped app discovery must not refresh files");
+        }
+    }
+
+    fn assert_scoped_absent(
+        registry: &crate::shell::search::SearchRegistry,
+        args: &crate::shell::search::QueryArgs<'_>,
+        scope: &crate::shell::search::ActionDiscoveryScope,
+        record: &str,
+        family: &str,
+    ) {
+        let wrong = crate::shell::search::ActionDiscoveryScope {
+            record: record.into(),
+            semantic_family: family.into(),
+            ..scope.clone()
+        };
+        let wrong_args = crate::shell::search::QueryArgs {
+            action_scope: Some(&wrong),
+            ..*args
+        };
+        let catalog = crate::shell::search::action_api::ActionCatalog::build_query(
+            registry,
+            &wrong_args,
+            &crate::shell::search::action_api::AllVisible,
+            true,
+        );
+        assert!(
+            catalog.enumerate().is_empty(),
+            "a cold/wrong scope cannot inherit previous rows"
+        );
+    }
+
+    #[test]
+    fn scoped_machine_catalogue_excludes_other_records_and_never_queries_files() {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use crate::shell::search::{ActionDiscoveryScope, QueryArgs, SearchRegistry};
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let record = "derived:default@tab:f276000000000034";
+        let mut action = local_action("Inspect catalogue", "inspect");
+        action.resource_kind = "store.catalog".into();
+        action.semantic_identity =
+            tilo_actions::ResourceSemanticIdentity::new("store.catalog", "root");
+        let mut surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", &room),
+            actions: vec![action],
+            live: true,
+        };
+        surface.route.record_id = record.into();
+        let selected = ResourceRef::new(
+            PROVIDER_ID,
+            LiveAppActionsProvider::result_id(&surface, &surface.actions[0]),
+        );
+        let mut unrelated = surface.clone();
+        unrelated.peer_id = 8;
+        unrelated.route.record_id = "another-record".into();
+        broker.replace_published_surfaces_for_test(vec![surface.clone(), unrelated]);
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(UnrelatedFiles));
+        registry.register(Rc::new(LiveAppActionsProvider::new(broker.clone())));
+        let scope = ActionDiscoveryScope {
+            application: "so.tilo.store".into(),
+            room,
+            record: record.into(),
+            semantic_family: "store.catalog".into(),
+        };
+        assert!(
+            scope.is_valid(),
+            "derived records are valid opaque identities"
+        );
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let args = QueryArgs {
+            action_scope: Some(&scope),
+            needle: "",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let catalog = loop {
+            let catalog = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+            if catalog.contains(&selected) || Instant::now() >= deadline {
+                break catalog;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(catalog.enumerate().len(), 1);
+        assert!(catalog.contains(&selected));
+        let refused = ActionCatalog::build_query(
+            &registry,
+            &args,
+            &|_: &ResourceRef, _: &ResourceKind| false,
+            true,
+        );
+        assert!(
+            refused.enumerate().is_empty(),
+            "scope must preserve authority visibility"
+        );
+        for (record, family) in [
+            ("missing-record", "store.catalog"),
+            (record, "wrong.family"),
+        ] {
+            assert_scoped_absent(&registry, &args, &scope, record, family);
+        }
+        surface.live = false;
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        assert!(
+            ActionCatalog::build_query(&registry, &args, &AllVisible, true)
+                .enumerate()
+                .is_empty(),
+            "offline retained rows do not prove a current record"
+        );
+    }
+
+    #[test]
+    fn scoped_directory_discovery_ignores_palette_resource_navigation() {
+        use crate::shell::search::ActionDiscoveryScope;
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let actor = chrome
+            .borrow()
+            .local_user_for_room(&chrome.borrow().tree().desktop.workspaces[0].room);
+        let scope = ActionDiscoveryScope {
+            application: "so.tilo.store".into(),
+            room: room.clone(),
+            record: "derived:default@tab:f276000000000034".into(),
+            semantic_family: "store.catalog".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: scope.application.clone(),
+            cluster_id: room.clone(),
+            record_id: scope.record.clone(),
+        }]);
+        chrome.borrow_mut().search_resource_scope =
+            Some(crate::shell::chrome_state::SearchResourceScope {
+                peer_id: 99,
+                cluster_id: room,
+                app_id: "so.tilo.reader".into(),
+                resource: "unrelated-book".into(),
+                label: "Unrelated".into(),
+                kind: "book".into(),
+            });
+        let doc = AutoCommit::new();
+        let chrome_ref = chrome.borrow();
+        let mut ctx = context("inspect", &chrome_ref, &doc);
+        ctx.action_scope = Some(&scope);
+        provider.set_directory_context(&ctx, "inspect");
+        let mut descriptor = exported("Inspect catalogue", "inspect");
+        descriptor.resource_kind = scope.semantic_family.clone();
+        descriptor.semantic_identity =
+            tilo_actions::ResourceSemanticIdentity::new("store.catalog", "root");
+        provider.directory_pages.borrow_mut().insert(
+            (9, actor, "inspect".into(), Vec::new()),
+            page(
+                vec![CatalogueRow {
+                    provider: "9".into(),
+                    app_id: scope.application.clone(),
+                    parent_resource: String::new(),
+                    resource: CatalogueResource {
+                        id: descriptor.address.resource.clone(),
+                        kind: scope.semantic_family.clone(),
+                        label: "Catalogue".into(),
+                        presentation: None,
+                    },
+                    action: Some(descriptor),
+                    has_children: false,
+                    visibility: None,
+                }],
+                Vec::new(),
+            ),
+        );
+        let result = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].title, "Inspect catalogue");
+        let mut wrong = scope.clone();
+        wrong.record = "different-record".into();
+        let mut ctx = context("inspect", &chrome_ref, &doc);
+        ctx.action_scope = Some(&wrong);
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
         );
     }
 
@@ -4142,6 +4429,7 @@ mod tests {
             let page = provider.query_page(
                 SearchContext {
                     query_scope: None,
+                    action_scope: None,
                     include_programmatic: false,
                     needle: "book",
                     wanted: &wanted,
@@ -4182,6 +4470,7 @@ mod tests {
             let _ = provider.query_page(
                 SearchContext {
                     query_scope: None,
+                    action_scope: None,
                     include_programmatic: false,
                     needle: "",
                     wanted: &wanted,

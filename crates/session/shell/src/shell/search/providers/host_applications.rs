@@ -620,6 +620,7 @@ mod tests {
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "spotify",
                 wanted: &[ResourceKind::Application],
@@ -701,6 +702,7 @@ mod tests {
             let chrome = chrome.borrow();
             let ctx = SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::HostApplication],
@@ -764,6 +766,7 @@ mod tests {
         let doc = AutoCommit::new();
         let ctx = SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle: "unique-tail",
             wanted: &[ResourceKind::HostApplication],
@@ -805,6 +808,7 @@ mod tests {
         let page = provider.query_page(
             SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "unique-tail",
                 wanted: &[ResourceKind::HostApplication],
@@ -848,6 +852,7 @@ mod tests {
         let doc = AutoCommit::new();
         let ctx = SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle: "unique-source-tail",
             wanted: &[ResourceKind::HostApplication],

@@ -474,6 +474,7 @@ mod tests {
     fn palette(chrome: &Chrome, doc: &AutoCommit, needle: &str) -> Vec<SearchResult> {
         let state = chrome.borrow();
         registry().query(&crate::shell::search::QueryArgs {
+            action_scope: None,
             needle,
             scope: SearchScope::All,
             active_provider_id: None,
@@ -729,6 +730,7 @@ mod tests {
         let state = chrome.borrow();
         let groups = registry.query_grouped(
             &crate::shell::search::QueryArgs {
+                action_scope: None,
                 needle: "",
                 scope: SearchScope::All,
                 active_provider_id: None,
@@ -777,6 +779,7 @@ mod tests {
 
         let app_scoped = registry.query_grouped(
             &crate::shell::search::QueryArgs {
+                action_scope: None,
                 needle: "",
                 scope: SearchScope::ActiveApp,
                 active_provider_id: Some("host-apps"),
@@ -797,6 +800,7 @@ mod tests {
         );
 
         let listing = registry.query_exhaustive(&crate::shell::search::QueryArgs {
+            action_scope: None,
             needle: "",
             scope: SearchScope::All,
             active_provider_id: None,
@@ -919,6 +923,7 @@ mod tests {
         let page = DesktopWindowsProvider::new().query_page(
             crate::shell::search::SearchContext {
                 query_scope: None,
+                action_scope: None,
                 include_programmatic: false,
                 needle: "",
                 wanted: KINDS.as_slice(),
