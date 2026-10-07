@@ -1909,10 +1909,9 @@ impl MusicApp {
                 self.playhead_ms = pos as f64;
             }
         }
-        let dur = self.current_duration_ms();
-        if !self.audio.uses_spotify() && dur > 0 && self.playhead_ms >= dur as f64 {
-            self.auto_advance();
-        }
+        // Catalogue duration is display metadata, not an output completion
+        // receipt. Only the decoder's EOS (including governed output drain)
+        // above may advance; crossing the duration can still leave PCM queued.
     }
 
     // ---- transport --------------------------------------------------------

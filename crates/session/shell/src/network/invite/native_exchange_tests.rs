@@ -85,12 +85,12 @@ impl WorkspaceJoinService for ActualService {
 
 #[tokio::test]
 async fn native_enrollment_pinned_exchange_persists_complete_before_send() {
-    Box::pin(actual_exchange(false, false, false)).await;
+    Box::pin(actual_exchange(false, false, None)).await;
 }
 
 #[tokio::test]
 async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_history() {
-    Box::pin(actual_exchange(true, false, false)).await;
+    Box::pin(actual_exchange(true, false, None)).await;
 }
 
 #[allow(
@@ -102,7 +102,7 @@ async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_
     clippy::future_not_send,
     reason = "the mounted journey keeps Rc UI roots on this test runtime thread"
 )]
-async fn actual_exchange(restart: bool, cold_code: bool, mounted: bool) {
+async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted_code::Journey>) {
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
@@ -412,9 +412,10 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: bool) {
     actor.abort();
     let _ = actor.await;
     drop(received);
-    if mounted {
+    if let Some(journey) = mounted {
         Box::pin(mounted_code::run(
             mounted_code::Context {
+                journey,
                 directory: &directory,
                 relay: &relay,
                 publisher: &publisher,

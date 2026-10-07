@@ -272,6 +272,47 @@ impl PersonAccounts {
         )
     }
 
+    /// Publish a protected native SIM account. The scope is an opaque identity;
+    /// modem paths, phone numbers and SIM identifiers stay in private custody.
+    /// # Errors
+    /// Refuses malformed identities, duplicate accounts or an invalid name/generation.
+    #[action]
+    pub fn publish_sms_account(
+        &mut self,
+        id: String,
+        display_name: String,
+        scope: String,
+        generation: u64,
+    ) -> Result<(), Refusal> {
+        if uuid::Uuid::parse_str(&id)
+            .map_err(|_| Refusal::from("a canonical SMS account identity is required"))?
+            .to_string()
+            != id
+            || scope != format!("sms:{id}")
+            || generation == 0
+            || display_name.trim().is_empty()
+            || display_name.chars().count() > 160
+            || display_name.chars().any(char::is_control)
+        {
+            return Err(Refusal::from(
+                "a canonical SIM account, bounded name and generation are required",
+            ));
+        }
+        if self.accounts.get(&Id::from_raw(&id)).is_some() {
+            return Err(Refusal::from(
+                "this account already exists; use its existing setup",
+            ));
+        }
+        self.save_account(
+            id,
+            "sms".into(),
+            display_name,
+            serde_json::json!({"messaging_scope": scope, "linking_generation": generation}),
+            true,
+            0,
+        )
+    }
+
     /// Publish the explicitly reviewed self identity of one native WhatsApp
     /// profile. The caller retains provider proof and credential authority;
     /// this record contains no credential, pairing payload or messaging state.
