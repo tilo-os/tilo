@@ -3681,16 +3681,7 @@ impl GitClientApp {
                 }
                 self.discard_file(area, index);
             }
-            GitClientEffect::Commit { message } => {
-                if self.model.staged.is_empty() {
-                    return Err("there are no staged changes to commit".into());
-                }
-                if message.trim().is_empty() {
-                    return Err("commit message cannot be empty".into());
-                }
-                self.commit_input.set_text(&message);
-                self.do_commit();
-            }
+            GitClientEffect::Commit { message } => self.commit_from_effect(&message)?,
             GitClientEffect::CreateBranch { name } => {
                 if name.trim().is_empty() {
                     return Err("branch name cannot be empty".into());
@@ -3706,31 +3697,7 @@ impl GitClientApp {
                 branch,
                 start,
             } => {
-                let repository = self.repo().ok_or_else(|| t("git-worktree-host-required"))?;
-                let reply = cx.reply();
-                let label = t("git-worktree-running");
-                reply.progress().report(label.clone(), None, None);
-                let (sender, receiver) = mpsc::channel();
-                std::thread::Builder::new()
-                    .name("git-worktree".into())
-                    .spawn(move || {
-                        let result = crate::repo::create_worktree(
-                            &repository,
-                            std::path::Path::new(&path),
-                            &branch,
-                            &start,
-                        )
-                        .map_err(|error| format!("{error:#}"));
-                        let _ = sender.send(result);
-                    })
-                    .map_err(|error| error.to_string())?;
-                self.last_error = None;
-                self.remote_job = Some(RemoteJob {
-                    receiver,
-                    reply: Some(reply),
-                    label,
-                });
-                return Ok(Effected::Pending);
+                return self.start_effect_worktree(cx, path, branch, start);
             }
             GitClientEffect::CheckoutBranch { name } => {
                 self.apply_branch_action(BranchAction::Checkout(name));
@@ -3764,6 +3731,52 @@ impl GitClientApp {
 }
 
 impl GitClientApp {
+    fn commit_from_effect(&mut self, message: &str) -> Result<(), String> {
+        if self.model.staged.is_empty() {
+            return Err("there are no staged changes to commit".into());
+        }
+        if message.trim().is_empty() {
+            return Err("commit message cannot be empty".into());
+        }
+        self.commit_input.set_text(message);
+        self.do_commit();
+        Ok(())
+    }
+
+    fn start_effect_worktree(
+        &mut self,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+        path: String,
+        branch: String,
+        start: String,
+    ) -> EffectAnswer {
+        let repository = self.repo().ok_or_else(|| t("git-worktree-host-required"))?;
+        let reply = cx.reply();
+        let label = t("git-worktree-running");
+        reply.progress().report(label.clone(), None, None);
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("git-worktree".into())
+            .spawn(move || {
+                let result = crate::repo::create_worktree(
+                    &repository,
+                    std::path::Path::new(&path),
+                    &branch,
+                    &start,
+                )
+                .map_err(|error| format!("{error:#}"));
+                let _ = sender.send(result);
+            })
+            .map_err(|error| error.to_string())?;
+        self.last_error = None;
+        self.remote_job = Some(RemoteJob {
+            receiver,
+            reply: Some(reply),
+            label,
+        });
+        Ok(Effected::Pending)
+    }
+
     fn start_effect_remote(
         &mut self,
         action: RemoteAction,
