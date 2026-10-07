@@ -48,7 +48,7 @@ def hash_backing(path, remaining=512 * 1024 * 1024):
 
 
 def probe(uid, name, proc=Path("/proc")):
-    if name not in ("store", "browser", "terminal", "notes", "settings") or not isinstance(uid, int) or uid <= 0:
+    if name not in ("store", "browser", "terminal", "notes", "settings", "calculator") or not isinstance(uid, int) or uid <= 0:
         raise RuntimeError("unsupported public SDK subject")
     processes = []
     total_bytes = 0
@@ -65,6 +65,12 @@ def probe(uid, name, proc=Path("/proc")):
         before_maps = mappings(process)
         if not before_maps or len(before_maps) > 1024:
             raise RuntimeError("resident SDK mappings unobservable or exceed bound")
+        executable = None
+        executable_identity = None
+        if name == "calculator":
+            executable_identity = fingerprint((process / "exe").stat())
+            executable = hash_backing(process / "exe", 2 * 1024 * 1024 * 1024 - total_bytes)
+            total_bytes += executable["bytes"]
         files = {}
         for address, identity in before_maps.items():
             path = identity[3]
@@ -77,9 +83,13 @@ def probe(uid, name, proc=Path("/proc")):
             backing = hash_backing(process / "map_files" / address, 2 * 1024 * 1024 * 1024 - total_bytes)
             total_bytes += backing["bytes"]
             files[path] = {"path": path, "map_range": address, "map_identity": list(identity), **backing}
+        if (executable_identity is not None
+                and executable_identity != fingerprint((process / "exe").stat())):
+            raise RuntimeError("app executable changed during backing observation")
         if before_start != start_time(process) or before_maps != mappings(process):
             raise RuntimeError("SDK process/mappings changed during backing observation")
-        processes.append({"pid": int(process.name), "start_time_ticks": before_start, "runtime": list(files.values())})
+        processes.append({"pid": int(process.name), "start_time_ticks": before_start, "runtime": list(files.values()),
+                          **({"executable": executable} if executable is not None else {})})
         if len(processes) > 16:
             raise RuntimeError("resident SDK subject count exceeds bound")
     if not processes:
