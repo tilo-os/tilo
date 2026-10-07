@@ -13,7 +13,7 @@
     "license": "CC-BY-4.0",
     "attribution": "Google FLEURS dataset authors",
     "source": "https://huggingface.co/datasets/google/fleurs/blob/70bb2e84b976b7e960aa89f1c648e09c59f894dd/README.md",
-    "selection": "First three archive members per language, without listening or selecting recognition results. Five additional distinct utterances per English/French/Mandarin provide 70–90 second splices.",
+    "selection": "First three archive members per language, without listening or selecting recognition results. Five additional distinct utterances per English/French/Mandarin provide 70\u201390 second splices.",
     "manifest_sha256_before_additional_model": "2b5e3f2886662798af3eebb90b519f12b2c012984ab58cad8c78ed573c6c9dab",
     "fixtures": [
       {
@@ -3189,7 +3189,217 @@
         "draft_final_auto_text_identical_to_prior_complete_diagnostic_batch": true,
         "new_observer": null,
         "comparison_sources": "13 successes from the original aborted default batch plus 8 successful separate follow-ups; not an earlier successful full batch",
-        "draft_final_auto_text_identical_to_original_default_observations": true
+        "draft_final_auto_text_identical_to_original_default_observations": true,
+        "summary": {
+          "load": {
+            "model": "small-q5_1",
+            "load_ms": 2774,
+            "threads": 2,
+            "memory_limit_bytes": 1073741824,
+            "loaded_probes": 1,
+            "probes": 1,
+            "observed_primary_probes": 21,
+            "loads": 21,
+            "cold_load_ms": {
+              "median": 2788,
+              "max": 2859
+            }
+          },
+          "short": {
+            "en": {
+              "cases": 3,
+              "text_wer": 0.1096,
+              "auto_text_wer": 0.1096,
+              "text_cer": 0.0341,
+              "auto_text_cer": 0.0341,
+              "draft_prefix_revision_fraction": 0.0263,
+              "draft_ms": {
+                "median": 4303,
+                "max": 4454
+              },
+              "final_ms": {
+                "median": 4428,
+                "max": 4477
+              },
+              "auto_ms": {
+                "median": 8581,
+                "max": 8711
+              },
+              "audio_seconds": 30.78
+            },
+            "de": {
+              "cases": 3,
+              "text_wer": 0.0161,
+              "auto_text_wer": 0.0161,
+              "text_cer": 0.0058,
+              "auto_text_cer": 0.0058,
+              "draft_prefix_revision_fraction": 0.1364,
+              "draft_ms": {
+                "median": 4511,
+                "max": 4653
+              },
+              "final_ms": {
+                "median": 4614,
+                "max": 5059
+              },
+              "auto_ms": {
+                "median": 8793,
+                "max": 9066
+              },
+              "audio_seconds": 41.52
+            },
+            "fr": {
+              "cases": 3,
+              "text_wer": 0.0917,
+              "auto_text_wer": 0.0917,
+              "text_cer": 0.0402,
+              "auto_text_cer": 0.0402,
+              "draft_prefix_revision_fraction": 0.0526,
+              "draft_ms": {
+                "median": 4307,
+                "max": 4540
+              },
+              "final_ms": {
+                "median": 4878,
+                "max": 5185
+              },
+              "auto_ms": {
+                "median": 9561,
+                "max": 9765
+              },
+              "audio_seconds": 41.88
+            },
+            "es": {
+              "cases": 3,
+              "text_wer": 0.0294,
+              "auto_text_wer": 0.0294,
+              "text_cer": 0.0062,
+              "auto_text_cer": 0.0062,
+              "draft_prefix_revision_fraction": 0.0,
+              "draft_ms": {
+                "median": 4326,
+                "max": 4378
+              },
+              "final_ms": {
+                "median": 4640,
+                "max": 4868
+              },
+              "auto_ms": {
+                "median": 8753,
+                "max": 8942
+              },
+              "audio_seconds": 43.92
+            },
+            "ar": {
+              "cases": 3,
+              "text_wer": 0.3188,
+              "auto_text_wer": 0.3188,
+              "text_cer": 0.0973,
+              "auto_text_cer": 0.0973,
+              "draft_prefix_revision_fraction": 0.2,
+              "draft_ms": {
+                "median": 4509,
+                "max": 4519
+              },
+              "final_ms": {
+                "median": 4833,
+                "max": 4839
+              },
+              "auto_ms": {
+                "median": 9074,
+                "max": 9167
+              },
+              "audio_seconds": 38.34
+            },
+            "zh": {
+              "cases": 3,
+              "text_wer": 0.9474,
+              "auto_text_wer": 0.9474,
+              "text_cer": 0.1481,
+              "auto_text_cer": 0.1481,
+              "draft_prefix_revision_fraction": 0.5574,
+              "draft_ms": {
+                "median": 4785,
+                "max": 10324
+              },
+              "final_ms": {
+                "median": 4652,
+                "max": 4892
+              },
+              "auto_ms": {
+                "median": 8754,
+                "max": 8758
+              },
+              "audio_seconds": 32.52
+            }
+          },
+          "long": {
+            "en": {
+              "cases": 1,
+              "text_wer": 0.1731,
+              "auto_text_wer": 0.1731,
+              "text_cer": 0.1133,
+              "auto_text_cer": 0.1133,
+              "draft_prefix_revision_fraction": 0.0,
+              "draft_ms": {
+                "median": 4672,
+                "max": 4672
+              },
+              "final_ms": {
+                "median": 14900,
+                "max": 14900
+              },
+              "auto_ms": {
+                "median": 19960,
+                "max": 19960
+              },
+              "audio_seconds": 70.04
+            },
+            "fr": {
+              "cases": 1,
+              "text_wer": 0.2629,
+              "auto_text_wer": 0.2629,
+              "text_cer": 0.176,
+              "auto_text_cer": 0.176,
+              "draft_prefix_revision_fraction": 1.0,
+              "draft_ms": {
+                "median": 4367,
+                "max": 4367
+              },
+              "final_ms": {
+                "median": 21038,
+                "max": 21038
+              },
+              "auto_ms": {
+                "median": 26179,
+                "max": 26179
+              },
+              "audio_seconds": 87.66
+            },
+            "zh": {
+              "cases": 1,
+              "text_wer": 0.9412,
+              "auto_text_wer": 0.9412,
+              "text_cer": 0.149,
+              "auto_text_cer": 0.149,
+              "draft_prefix_revision_fraction": 0.5,
+              "draft_ms": {
+                "median": 4397,
+                "max": 4397
+              },
+              "final_ms": {
+                "median": 21397,
+                "max": 21397
+              },
+              "auto_ms": {
+                "median": 25389,
+                "max": 25389
+              },
+              "audio_seconds": 89.76
+            }
+          }
+        },
+        "summary_log_sha256": "953fd7c5fe5efbc77088e38725dae33ad3966e75760f451d47f523a851ba647f"
       },
       "logs": {
         "fft-fault-before": {
@@ -4791,6 +5001,47 @@
         "Noisy conversation, older CPU and ARM device qualification"
       ],
       "release_status": "Draft and hold remain; no readiness gate removal, mic/account/trust grant, model/default publication, reboot or deployment"
+    },
+    "document_start_composition": {
+      "contract": "Private document-start observer registration is acknowledged before navigation. Private text snapshots require its presence and idle state. Native trusted and synthetic composition are tracked separately; untrusted end events cannot clear trusted native composition. The retained initial iframe Window supplies the trusted native load boundary, which binds the current Document. Root removal retires its observer; document.open cannot reuse a surviving private marker. SDK composition refusals are confirmed no-edit receipts for Prepare, Start and Final.",
+      "tests": {
+        "general_browser_tests": 42,
+        "actual_native_composition_tests": 4,
+        "native_composition_result": "pass",
+        "native_log_sha256": "c7a2cc7e94c3c573dbad7c6b77155a7665f755394e3ee176136981290f884fa5",
+        "general_browser_result": "pass",
+        "sdk_refusal_transactions_test": "pass: Prepare, Start, Final",
+        "sdk_refusal_log_sha256": "7aeffe2a952555f6133f1b5d7755fc0f7225eebf35b11a5abeecb700cff9c8ac",
+        "focused_iframe_and_document_open_tests": 3,
+        "focused_log_sha256": "d2c452678ed7f324442cd75b22f01af6378f0d3eb4f41c260e84c0bdf0190058",
+        "general_log_sha256": "d99c3c97f4ac7c83ec880f06fc1f69fe40155a1dfef6ece3bd71a250acb22cc9",
+        "ordinary_document_registration_tests": 2,
+        "ordinary_document_registration_result": "pass",
+        "ordinary_document_log_sha256": "763b47d05477d57e7976045f90d256f9092cee83bec65ecb052e5ad170517d83",
+        "required_shell_test_compile": "pass",
+        "ui_all_target_clippy": "pass",
+        "tested_source_matches_candidate": true,
+        "current_head_84ae_ci": {
+          "success": 20,
+          "skipped": 8,
+          "failure": 2,
+          "actual_failure": "legacy_window_between_devices::a_legacy_window_streams_between_two_devices: viewer decodes every frame once it has a keyframe",
+          "focused_candidate_reproductions": "two passes, original assertions unchanged",
+          "classification": "appears transient under full shard load; updated head must pass normal CI"
+        }
+      },
+      "covered": [
+        "composition already active before first private Prepare",
+        "native preedit changes the actual field",
+        "forged end cannot authorize native idle",
+        "focus change retires original lease",
+        "missing observer fails without mutation",
+        "fresh document recovers; old and canceled leases stay retired",
+        "initial about:blank iframe Window reuse and actual native preedit before first Prepare",
+        "document.open listener removal refuses admission without mutation"
+      ],
+      "limits": "Debugger Input.insertText emits an untrusted end in this engine, and focus changes may omit an end. Both retain refusal until a fresh observed document. This is safe admission qualification, not full composing IME delivery qualification.",
+      "privacy": "Composition presence only; no preedit text, caret or field values exported; inspector enabled only by the confined native test fixture, never production."
     }
   }
 }

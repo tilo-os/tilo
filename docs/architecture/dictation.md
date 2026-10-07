@@ -287,8 +287,9 @@ stamps now come from the shared host input contract described above.
    Same-origin iframe input/textarea/rich-text
    finals now use private contexts pinned to their original frame/document, with
    native undo and removal/recovery qualification. Cross-origin/opaque frame
-   ancestry, closed author shadow roots and composition already active when the
-   isolated world starts still need renderer lifecycle support before admission.
+   ancestry and closed author shadow roots still need renderer lifecycle support
+   before admission. Composition is observed in a private document-start world;
+   absent observation refuses admission.
    Selection-less email/number inputs require the privately negotiated native-caret
    bridge described below; legacy clients retain refusal and recovery. A complete assembled
    browser microphone journey remains unqualified. Explicit consent now activates
@@ -955,6 +956,92 @@ normalizing all 20 task commit messages under the newly introduced policy.
 Both example targets and both EN/DE locale key sets remain; all commit/blob
 policy inspections pass. This is native insertion qualification, not a
 physical-microphone or universal custom-editor acceptance claim. The complete
-certified app-broker journey, cross-origin/closed author editor lifecycle and
-already-active composition still require qualification; microphone and release
-approval boundaries remain held.
+certified app-broker journey and cross-origin/closed author editor lifecycle
+remain unqualified. Native composition recovery without a trusted end retains
+conservative refusal; microphone and release approval boundaries remain held.
+
+## Comparable completed decoder batches
+
+These are the same 21 public FLEURS cases: 18 short clips (three per language)
+and three synthetic long splices. Fixed-language final decoder time excludes
+cold loading, capture and field acknowledgement. All use two recognition
+threads, the default allocator and the unchanged 1 GiB address-space cap; Small
+uses the measured serial-mel containment. These are diagnostic inputs, not a
+live conversation or older-device acceptance test.
+
+Short error percentage / median final milliseconds; Mandarin uses CER,
+other languages WER. Lower error is better.
+
+| Language | Tiny | Base | Small q5_1, serial mel |
+|---|---:|---:|---:|
+| English | 16.44% / 739 | 10.96% / 1,211 | 10.96% / 4,428 |
+| German | 27.42% / 703 | 20.97% / 1,231 | 1.61% / 4,614 |
+| French | 36.70% / 696 | 26.61% / 1,268 | 9.17% / 4,878 |
+| Spanish | 16.67% / 612 | 9.80% / 1,282 | 2.94% / 4,640 |
+| Arabic | 59.42% / 716 | 42.03% / 1,350 | 31.88% / 4,833 |
+| Mandarin (CER) | 24.69% / 584 | 33.33% / 1,217 | 14.81% / 4,652 |
+
+Long error percentage / final milliseconds. These are one synthetic splice
+per language, not statistical estimates.
+
+| Language | Tiny | Base | Small q5_1, serial mel |
+|---|---:|---:|---:|
+| English | 66.03% / 1,753 | 64.74% / 3,740 | 17.31% / 14,900 |
+| French | 53.45% / 3,135 | 40.09% / 6,165 | 26.29% / 21,038 |
+| Mandarin (CER) | 45.49% / 4,199 | 42.75% / 6,308 | 14.90% / 21,397 |
+
+Tiny cold-load median is 1132 ms; Base is 2130 ms; Small
+serial-mel is 2788 ms. All three listed batches completed 21 cases without a failed child.
+The earlier default Small batch aborted on Arabic case 1 after 13 successes;
+that failure remains recorded and is not erased by this serial-mel batch.
+
+Memory sampling has different coverage and must not be treated as matched
+worst-case measurements. Tiny has one same-clip observation at 838.36 MiB peak
+virtual / 234.29 MiB resident, leaving 185.64 MiB. Base has four independent
+actual-child probes, worst peak virtual 951.73 MiB / resident 448.27 MiB,
+minimum observed headroom 72.27 MiB. Small has five current serial-mel memory
+probes, minimum headroom 1.60 MiB. RSS is not the RLIMIT_AS budget.
+
+Next quality action: carry the measured quiet-boundary Base segmentation into
+a bounded recognition-worker experiment, then repeat these cases and the
+synthetic capture-to-field journey. The complete quiet-boundary Base batch
+keeps all 18 short outputs byte-identical and improves long EN/FR/ZH to
+17.95% WER / 34.91% WER / 28.24% CER, at 5,093 / 6,820 / 6,718 ms, with
+163.24 MiB minimum sampled virtual-memory headroom over all 21 children.
+Fixed 20-second cuts were rejected because French regressed. Small remains
+unqualified for default use under the current cap. No cap increase, model
+catalogue promotion or benchmark-audio publication accompanies this evidence.
+
+## Composition observation before admission
+
+The host now registers a minimal observer in the private text-input world at
+[document creation](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument),
+through the existing registration queue, before releasing navigation. Every
+private text snapshot requires an existing observer with no active composition;
+a late-created context cannot infer idle from a missed event. The page cannot
+access this world. Native trusted and synthetic composition are separate, so
+a forged page end cannot clear a native start. No field/preedit contents are
+exported. Registration failure closes the host; an absent observer refuses
+admission, and a newly observed document can recover without reviving leases.
+The observer follows the initial iframe Window across its `about:blank`
+transition and binds the current Document at its trusted load boundary. A
+root-removal observer invalidates that binding when `document.open` removes
+listeners; a surviving private-world marker cannot certify idle. The SDK
+classifies this refusal as a confirmed no-edit receipt for Prepare, Start and
+Final.
+
+The full guarded suite passed 42 cases in 234.744 seconds, retaining its
+original assertions and expiry waits with three added pre-admission/lifetime
+cases. Four actual Blink IME journeys passed in the owned hardware-free
+PID/network namespace: preedit before first Prepare in main and initial iframe
+documents, forged end, started
+lease retirement across focus/cancellation, and missing-observer refusal with
+fresh-document recovery. These use actual Input.imeSetComposition and verify
+that preedit changed the native field; they do not substitute synthetic events
+for native composition. The fixture's debugger port is confined and production
+opens none. Initial probes exposed that debugger Input.insertText emits an
+untrusted composition-end and focus movement may emit no end. Neither is a
+trusted idle proof; the guard stays closed until a fresh observed document.
+Full ordinary composing-IME delivery and trusted cancellation recovery still
+need the embedding's native IME path; the safe pre-existing admission gap is
+closed without assuming those completions are trustworthy.

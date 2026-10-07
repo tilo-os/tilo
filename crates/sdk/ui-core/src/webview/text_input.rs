@@ -221,6 +221,7 @@ impl Transactions {
                     code,
                     "busy"
                         | "text_input_changed"
+                        | "text_input_composition"
                         | "text_input_retired"
                         | "invalid_request"
                         | "secret_field"
@@ -705,6 +706,29 @@ mod tests {
             Some(receipt)
         }
     }
+    #[test]
+    fn composition_refusal_confirms_no_edit_for_prepare_start_and_final() {
+        for request in [
+            Request::Prepare,
+            Request::Start(lease()),
+            Request::Commit {
+                lease: lease(),
+                text: "public dictated fixture".to_owned().into(),
+            },
+        ] {
+            let mut transactions = Transactions::default();
+            let (receipt, command) = transactions.admit(request).unwrap();
+            transactions.reply(&serde_json::json!({
+                "request_id": command["request_id"],
+                "ok": false,
+                "code": "text_input_composition",
+            }));
+            assert!(matches!(receipt.poll(), Some(Err(Failure::Rejected))));
+            assert!(receipt.history_status().is_none());
+            assert!(transactions.pending.is_empty());
+        }
+    }
+
     #[test]
     fn native_history_observations_are_original_receipt_scoped_and_strict() {
         for history in [

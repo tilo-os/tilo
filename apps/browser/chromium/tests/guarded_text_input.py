@@ -563,6 +563,35 @@ class GuardedTextInput(unittest.TestCase):
         self.assertEqual(self.main_world('first.value'), 'alpha recovered gamma')
         self.assertEqual(self.main_world('second.value'), 'second')
 
+    def test_document_open_cannot_reuse_removed_composition_observer(self):
+        self.main_world("(()=>{document.open();document.write('<input id=first value=public><input id=second value=second>');document.close();first.focus();return true})()")
+        result = self.request_input('prepare')
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['code'], 'text_input_composition')
+        self.assertEqual(self.main_world('first.value'), 'public')
+        self.assertEqual(self.main_world('second.value'), 'second')
+
+    def test_composition_before_first_private_prepare_is_refused_and_recovers(self):
+        self.main_world("(first.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})),true)")
+        result = self.request_input('prepare')
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['code'], 'text_input_composition')
+        self.unchanged()
+        self.main_world("(first.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})),true)")
+        lease = self.prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.assertTrue(self.request_input('cancel', lease=lease)['ok'])
+        self.unchanged()
+
+    def test_preexisting_composition_blocks_successor_focus_until_it_ends(self):
+        self.main_world("(first.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})),second.focus(),true)")
+        self.assertFalse(self.request_input('prepare')['ok'])
+        self.unchanged()
+        self.main_world("(first.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})),first.focus(),first.setSelectionRange(6,10),true)")
+        lease = self.prepare()
+        self.assertTrue(self.request_input('cancel', lease=lease)['ok'])
+        self.unchanged()
+
     def test_password_otp_and_composition_are_refused(self):
         for target in ['password', 'otp', 'card', 'masked']:
             self.main_world(f'({target}.focus(),true)')
