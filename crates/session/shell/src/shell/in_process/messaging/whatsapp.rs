@@ -24,9 +24,12 @@ pub struct NativeWhatsappHandles {
     pub network: Network,
 }
 
-struct GrantedWhatsappAuthority(WhatsappAccountStartup);
+struct GrantedWhatsappAuthority(WhatsappAccountStartup, std::sync::atomic::AtomicBool);
 impl GrantedWhatsappAuthority {
     fn check(&self) -> Result<(), SendError> {
+        if self.1.load(Ordering::Acquire) {
+            return Err(SendError::Revoked);
+        }
         self.0.identity.check()?;
         if self.0.credential.owner != self.0.identity.owner {
             return Err(SendError::Revoked);
@@ -64,6 +67,16 @@ pub struct NativeWhatsappAccount {
     supervisor: Arc<AccountSupervisor>,
     activation: AtomicU8,
 }
+struct Egress {
+    account: Arc<GrantedWhatsappAuthority>,
+    consent: Arc<super::network::Consent>,
+}
+impl AccountAuthority for Egress {
+    fn check(&self) -> Result<(), SendError> {
+        self.account.check()?;
+        self.consent.check()
+    }
+}
 
 struct Activation<'a> {
     account: &'a NativeWhatsappAccount,
@@ -86,6 +99,48 @@ impl Drop for Activation<'_> {
 }
 
 impl NativeWhatsappAccount {
+    pub(super) fn retire(&self) {
+        self.gate.1.store(true, Ordering::Release);
+        let _ = self.supervisor.unavailable(AccountState::Locked);
+    }
+    pub(super) fn state(&self) -> AccountState {
+        self.client()
+            .account_state(&tilo_messaging::ServiceAccount::new(
+                "whatsapp",
+                &self.gate.0.identity.owner.account,
+            ))
+    }
+    pub(super) fn linking(
+        &self,
+    ) -> Result<Arc<tilo_messaging_protocol::supervisor::whatsapp::WhatsappLinking>, SendError>
+    {
+        self.gate.check()?;
+        self.supervisor.whatsapp_linking()
+    }
+    /// Called only on the original native enrollment worker after profile review.
+    /// Protected temporary egress review precedes constructing any network source.
+    pub(super) fn activate_default(
+        &self,
+        root: std::path::PathBuf,
+        scope: String,
+        policy: &super::network::Policy,
+    ) -> Result<(), SendError> {
+        self.gate.check()?;
+        drop(self.gate.0.credential.profile_key()?);
+        let consent = super::network::request(self.gate.0.identity.clone(), policy)?;
+        self.gate.check()?;
+        let network = Network::native(Arc::new(Egress {
+            account: self.gate.clone(),
+            consent,
+        }))?;
+        crate::session_runtime::runtime()
+            .map_err(|_| SendError::Unavailable)?
+            .block_on(self.activate_native(NativeWhatsappHandles {
+                private_root: root,
+                scope,
+                network,
+            }))
+    }
     pub fn client(&self) -> tilo_messaging::MessagingClient {
         self.supervisor.client()
     }
@@ -136,6 +191,11 @@ impl NativeWhatsappAccount {
             )
         })
         .await
+    }
+}
+impl Drop for NativeWhatsappAccount {
+    fn drop(&mut self) {
+        self.retire();
     }
 }
 
@@ -227,7 +287,10 @@ impl super::super::InProcessApps {
             .identity
             .check()
             .map_err(|_| LaunchError::BindingMismatch)?;
-        let gate = Arc::new(GrantedWhatsappAuthority(startup));
+        let gate = Arc::new(GrantedWhatsappAuthority(
+            startup,
+            std::sync::atomic::AtomicBool::new(false),
+        ));
         let supervisor =
             AccountSupervisor::new_with_authority(&gate.0.identity.owner, Some(gate.clone()))
                 .map_err(|_| LaunchError::BindingMismatch)?;

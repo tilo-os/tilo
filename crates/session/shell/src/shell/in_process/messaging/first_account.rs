@@ -709,7 +709,7 @@ impl Actor {
         );
     }
 }
-fn ensure_contacts(
+pub(super) fn ensure_contacts(
     apps: &mut super::super::InProcessApps,
     identity: &NativeMessagingIdentity,
 ) -> Result<(), SendError> {

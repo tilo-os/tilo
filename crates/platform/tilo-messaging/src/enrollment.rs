@@ -30,6 +30,11 @@ pub type EnrollmentReviewFuture =
 pub type EnrollmentApprovalFuture =
     Pin<Box<dyn Future<Output = Result<String, SendError>> + Send + 'static>>;
 pub trait EnrollmentHost: Send + Sync {
+    /// Prepare private storage review before a service can create device keys.
+    /// The original protected credential owner still decides its grant.
+    fn prepare(&self, _service: String) -> EnrollmentReviewFuture {
+        Box::pin(async { Err(SendError::Unavailable) })
+    }
     fn begin(&self, service: String) -> PairingFuture;
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture;
     /// Propose only. The original protected Passwords owner must separately
@@ -50,6 +55,24 @@ impl EnrollmentClient {
     }
     pub fn principal(&self) -> &str {
         &self.principal
+    }
+    /// # Errors
+    /// Refuses unsupported storage preparation or a foreign private identity.
+    pub async fn prepare(&self, service: String) -> Result<EnrollmentReview, SendError> {
+        if service != "whatsapp" {
+            return Err(SendError::InvalidRequest);
+        }
+        let review = self.host.prepare(service.clone()).await?;
+        if review.account.service != service
+            || review.account.account.is_empty()
+            || review.generation == 0
+            || review.scope.is_empty()
+            || review.scope.len() > 512
+        {
+            self.host.cancel(&review.account);
+            return Err(SendError::Revoked);
+        }
+        Ok(review)
     }
     /// # Errors
     /// Refuses unsupported service selections and malformed private results.
