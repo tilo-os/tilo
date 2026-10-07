@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         let screens = vec![
             ArrangedDisplay {
+                movement_group: None,
                 connector: "fixture-laptop/eDP-1".into(),
                 label: "Laptop · eDP-1".into(),
                 number: 1,
@@ -29,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 movable: true,
             },
             ArrangedDisplay {
+                movement_group: None,
                 connector: "fixture-desktop/eDP-1".into(),
                 label: "Desktop · eDP-1".into(),
                 number: 2,
