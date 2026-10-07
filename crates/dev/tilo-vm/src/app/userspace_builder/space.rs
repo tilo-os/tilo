@@ -24,6 +24,28 @@ fn invalid(message: &str) -> CliError {
 }
 
 impl Archive {
+    /// Time reception, END verification and local capacity scanning together.
+    /// The phase is not a pure network measurement. Refused streams record
+    /// elapsed work but never publish a successful archive byte count.
+    pub(super) fn receive_tracked(
+        reader: &mut impl Read,
+        directory: &Path,
+        receipt: &mut crate::receipt::Receipt,
+        component: &str,
+    ) -> Result<Self, CliError> {
+        let archive = receipt.phase(&format!("receive-{component}"), || {
+            Self::receive(reader, directory)
+        })?;
+        receipt.set(
+            &format!("cohort_archive-{component}"),
+            serde_json::json!({
+                "bytes": archive.bytes,
+                "unpack_estimate_bytes": archive.unpack_bytes,
+            }),
+        );
+        Ok(archive)
+    }
+
     pub(super) fn receive(reader: &mut impl Read, directory: &Path) -> Result<Self, CliError> {
         let mut file = tempfile::tempfile_in(directory)
             .map_err(CliError::io("create private cohort archive"))?;
@@ -214,5 +236,76 @@ mod tests {
             unpack_bytes: u64::MAX,
         };
         assert!(Budget::new([&archive].into_iter(), 1).is_err());
+    }
+
+    #[test]
+    fn tracked_archive_receipt_includes_real_receive_work_and_verified_bytes() {
+        struct Delayed<'a> {
+            reader: Stream<&'a [u8]>,
+            delayed: bool,
+        }
+        impl Read for Delayed<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                if !self.delayed {
+                    self.delayed = true;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                self.reader.read(bytes)
+            }
+        }
+        let bytes = framed(b"verified receipt payload");
+        let mut stream = Stream::new(bytes.as_slice());
+        stream.header(&mut Vec::new()).unwrap();
+        let mut reader = Delayed {
+            reader: stream,
+            delayed: false,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let mut receipt = crate::receipt::Receipt::new(directory.path(), vec![]);
+        let mut archive =
+            Archive::receive_tracked(&mut reader, directory.path(), &mut receipt, "apps+runtime")
+                .unwrap();
+        let mut payload = Vec::new();
+        tar::Archive::new(&mut archive.file)
+            .entries()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .read_to_end(&mut payload)
+            .unwrap();
+        assert_eq!(payload, b"verified receipt payload");
+        let path = receipt.finish(Ok(&serde_json::json!({}))).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(value["phases"][0]["name"], "receive-apps+runtime");
+        assert!(value["phases"][0]["seconds"].as_f64().unwrap() >= 0.019);
+        assert_eq!(value["cohort_archive-apps+runtime"]["bytes"], archive.bytes);
+        assert_eq!(
+            value["cohort_archive-apps+runtime"]["unpack_estimate_bytes"],
+            archive.unpack_bytes
+        );
+    }
+
+    #[test]
+    fn tracked_archive_failure_records_elapsed_without_claiming_verified_bytes() {
+        let bytes = String::from_utf8(framed(b"must reject")).unwrap().replace(
+            crate::builderlayer::END,
+            &format!("{}bad", crate::builderlayer::END),
+        );
+        let mut stream = Stream::new(bytes.as_bytes());
+        stream.header(&mut Vec::new()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut receipt = crate::receipt::Receipt::new(directory.path(), vec![]);
+        assert!(
+            Archive::receive_tracked(&mut stream, directory.path(), &mut receipt, "shell",)
+                .is_err()
+        );
+        let path = receipt.finish(Err(&serde_json::json!({}))).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(value["status"], "failure");
+        assert_eq!(value["phases"][0]["name"], "receive-shell");
+        assert!(value.get("cohort_archive-shell").is_none());
     }
 }

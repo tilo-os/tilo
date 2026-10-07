@@ -64,16 +64,21 @@ restart once through their existing session path. A partial selection failure is
 reported with its completed selections, retained closures and recovery refresh;
 it is never reported as a successful install. There is no reboot.
 
-The aggregate receipt includes ordered build, transfer and import phases, each
-component's stage total, and daemon validation, closure preparation, selection
-and refresh timings. Stage and apply totals contain their child timings; do not
-sum nested entries. The cohort uses one remote builder admission and one metadata
-snapshot on each side for its nine component builds. Each build still uses its canonical
-profile, features, installer and independently verified archive. Transfer and
-import can overlap the following build, so component stage time includes the
-remaining build wait, not necessarily that component's entire build duration.
-The receipt records the admission count; this does not promise a cold-build or
-60-second update time.
+The aggregate receipt separates each component's header/build wait (`build-N`),
+verified archive reception and local capacity scan (`receive-N`), device transfer,
+import and stage total. `cohort_archive-N` records the verified raw archive bytes
+and unpack storage estimate; a refused archive records elapsed reception but no
+successful byte claim. Reception includes framing/hash checks and local I/O, so
+it is not a pure network measurement. `cohort-stream-finish` and
+`cohort-builder-exit` account for the final framing and producer exit wait.
+
+All nine archives are received before capacity admission and device transfer.
+Stage totals contain transfer, import and intervening source checks; apply totals
+contain daemon validation, closure preparation, selection and refresh timings.
+Do not sum nested entries. The cohort uses one remote builder admission and one
+metadata snapshot on each side. Each build retains its canonical profile,
+features, installer and independently verified archive. The admission count does
+not promise a cold-build or 60-second update time.
 
 ## Build profile
 

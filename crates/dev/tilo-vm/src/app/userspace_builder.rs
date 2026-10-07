@@ -80,17 +80,26 @@ impl App {
                 )
             })?;
             validate_member(&packed, component, &inputs.digest, &remote.hello.arch)?;
-            let archive = space::Archive::receive(&mut stream, spool.path())?;
+            let archive = space::Archive::receive_tracked(
+                &mut stream,
+                spool.path(),
+                &mut self.receipt,
+                name,
+            )?;
             staged.push((packed, archive));
         }
-        stream
-            .finish(&mut std::io::stderr())
-            .map_err(CliError::io("finish the cohort stream"))?;
+        self.receipt.phase("cohort-stream-finish", || {
+            stream
+                .finish(&mut std::io::stderr())
+                .map_err(CliError::io("finish the cohort stream"))
+        })?;
         drop(stream);
-        let status = child
-            .0
-            .wait()
-            .map_err(CliError::io("wait for the remote cohort builder"))?;
+        let status = self.receipt.phase("cohort-builder-exit", || {
+            child
+                .0
+                .wait()
+                .map_err(CliError::io("wait for the remote cohort builder"))
+        })?;
         if !status.success() {
             return Err(CliError::CommandFailed {
                 command: line.display(),
