@@ -830,3 +830,70 @@ remain an unqualified assembled broker-publication observation; direct
 connection with an ephemeral signer cannot substitute for production launcher
 admission. Native CEF effects and the production SDK resource-dispatch path
 are qualified separately, without granting access or weakening attestation.
+
+### Base comparison, segmentation and selection-less editor evidence (2026-10-07)
+
+The Base/intermediate comparison **did run**: all 21 pinned public FLEURS
+probes completed under the unchanged two-thread, 1 GiB worker limit, using
+the existing receipt-verified MIT asset. Its earlier sampled children retained
+at least 72.27 MiB address-space margin. Short fixed-language final medians
+were 1.21–1.35 seconds; English/German/French/Spanish/Arabic WER was
+10.96%/20.97%/26.61%/9.80%/42.03%, Mandarin CER 33.33%. Long
+English/French WER remained 64.74%/40.09%, Mandarin CER 42.75%. The
+`current_followup.base` record contains that complete comparison, not an
+unexecuted plan. FFT exception containment does not solve either recognition
+quality or the Small model's narrow memory budget.
+
+These measurements selected a bounded Base segmentation experiment instead
+of a larger model or a higher cap. Six fresh confined children compared the
+same three long splices whole and with fixed 20-second chunks. Whole versus
+chunked English WER was 64.74% versus 23.08% (4.655 versus 5.582 seconds),
+French 40.09% versus 53.45% (6.236 versus 6.598 seconds), Mandarin CER
+42.75% in both (6.365 versus 7.220 seconds). All six completed; sampled
+address-space margins were 158.03–167.99 MiB. **Reject fixed cuts as a
+general default**: they worsen French and do not improve Mandarin.
+`current_followup.base_segmentation` stores paired scores, actual-child
+memory, transcript hashes and raw-log digest. Benchmark-only
+`--chunk-seconds` and `--chunk-silence` permit the next bounded hypothesis
+without changing production, model selection or catalogue publication.
+
+A real CEF probe confirms native insert/Undo works in email and number fields,
+but distinct native caret positions yield identical DOM field/document
+selection snapshots. The durable
+`test_selectionless_dom_snapshot_cannot_bind_two_native_carets` asserts both
+the ambiguity and different resulting native edits, then Undo restores the
+original values. Existing unsupported-field refusal/recovery assertions remain.
+A native atomic caret/owner bridge is required; admitting these fields by
+value alone or by synthesizing keys would weaken the reservation contract.
+The [HTML selection API](https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart)
+limits which input states expose selection. The pinned CEF DOM interface's
+collapsed-selection offsets also do not establish that private native caret.
+No private field text, clipboard, microphone or credentials were used: these
+were synthetic public fixtures in the non-root isolated native host.
+
+The next bounded diagnostic searches for the quietest 100 ms within 25% of
+each nominal 20-second boundary. Three isolated Base probes completed with
+English/French WER 17.95%/34.91% and Mandarin CER 28.24%, final decoding
+5.130/7.490/7.237 seconds. Unlike fixed cuts, all three improve on whole-audio
+Base. This selects quiet boundaries for complete same-corpus qualification,
+not a production promotion. The byte-for-byte short-output comparison uses
+the original complete Base log, whose digest matches the committed receipt.
+
+The added native-history dispatch originally broke browser-target compilation
+by importing its canonical Edit operation identity from a native-only host
+module. The identity now lives in the portable undo module; the host reexports
+the same value. The exact CI wasm package/target check passes, as do native
+history authority tests and the required shell integration compile.
+
+The complete quiet-boundary candidate then ran all **21 primary probes** under
+the same cap and default allocator. All 18 short cases' draft, fixed-language
+final, auto-language final, references and sample counts match the earlier
+complete Base run byte-for-byte. Long English/French WER was 17.95%/34.91%,
+Mandarin CER 28.24%, with final decoding 5.093/6.820/6.718 seconds.
+Each actual child was observed at 20 ms; the narrowest sampled address-space
+margin was 163.24 MiB. The full scored summary, 21 child peaks, transcript
+hashes and raw-log digest are recorded separately from the three exploratory
+probes. Quiet boundaries are the selected next recognition improvement to
+validate in production-worker journeys; they are still benchmark-only. This
+is not evidence for noisy conversational accuracy, older CPU/ARM performance,
+Small-model stability, or a microphone/model release approval.

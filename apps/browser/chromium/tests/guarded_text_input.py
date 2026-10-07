@@ -371,6 +371,49 @@ class GuardedTextInput(unittest.TestCase):
         self.assertEqual(self.main_world('second.value'), 'second')
         self.assertFalse(self.request_input('undo', lease=lease, history_scope='page')['ok'])
 
+    def test_selectionless_dom_snapshot_cannot_bind_two_native_carets(self):
+        for kind, value, insertion in [('email', 'public@example.test', 'safe'),
+                                       ('number', '123.5', '7')]:
+            with self.subTest(kind=kind):
+                self.main_world("(()=>{const e=document.createElement('input');e.id='limitedField';"
+                    f"e.type={json.dumps(kind)};e.value={json.dumps(value)};"
+                    "document.body.append(e);e.focus();window.selectionProbeKeys=0;"
+                    "window.selectionProbeListener=e=>{if(['ArrowLeft','ArrowRight'].includes(e.key))"
+                    "window.selectionProbeKeys++};document.addEventListener('keydown',selectionProbeListener);return true})()")
+                try:
+                    observations, edits = [], []
+                    for move_right in [False, True]:
+                        self.main_world('(limitedField.select(),true)')
+                        keys = ['ArrowLeft', 'ArrowRight'] if move_right else ['ArrowLeft']
+                        expected = self.main_world('selectionProbeKeys') + len(keys)
+                        for key in keys:
+                            self.h.send(op='key', key=key, code=key, down=True)
+                            self.h.send(op='key', key=key, code=key, down=False)
+                        deadline = time.monotonic() + 5
+                        while self.main_world('selectionProbeKeys') < expected:
+                            self.assertLess(time.monotonic(), deadline, 'native key must reach owned renderer')
+                            time.sleep(.01)
+                        observations.append(self.main_world("(()=>{const s=getSelection();return {"
+                            "value:limitedField.value,start:limitedField.selectionStart,"
+                            "end:limitedField.selectionEnd,anchor:s.anchorNode.nodeName,"
+                            "focus:s.focusNode.nodeName,anchorOffset:s.anchorOffset,"
+                            "focusOffset:s.focusOffset,text:s.toString(),type:s.type}})()"))
+                        self.assertEqual(observations[-1]['type'], 'Caret')
+                        refusal = self.request_input('prepare')
+                        self.assertFalse(refusal['ok'], refusal)
+                        self.assertEqual(refusal['code'], 'not_editable', refusal)
+                        self.assertTrue(self.main_world('document.execCommand("insertText",false,' +
+                                                       json.dumps(insertion) + ')'))
+                        edits.append(self.main_world('limitedField.value'))
+                        self.assertTrue(self.main_world('document.execCommand("undo")'))
+                        self.assertEqual(self.main_world('limitedField.value'), value)
+                    self.assertEqual(observations[0], observations[1],
+                        'DOM field/document selection must not pretend to identify a hidden native caret')
+                    self.assertEqual(edits, [insertion + value, value[0] + insertion + value[1:]])
+                    self.unchanged()
+                finally:
+                    self.main_world("(document.removeEventListener('keydown',selectionProbeListener),limitedField.remove(),true)")
+
     def test_selectionless_email_and_number_refuse_deferred_input_and_recover(self):
         for kind, value in [('email', 'public@example.test'), ('number', '123.5')]:
             with self.subTest(kind=kind):

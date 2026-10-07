@@ -41,6 +41,9 @@
 //! Most apps need none of this directly: drop an
 //! [`UndoButton`](crate::widget::UndoButton) into a toolbar and it is wired.
 
+// Canonical Edit operation identity is shared with portable widget dispatch.
+pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
+
 /// What the live undo history can do *right now*, as a widget sees it.
 ///
 /// Published by the host once per frame. Every field is derived from the real

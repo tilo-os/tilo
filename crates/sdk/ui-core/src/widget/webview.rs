@@ -370,7 +370,7 @@ impl Widget for WebView {
         let Some(request) = operation.unscoped() else {
             return Ok(None);
         };
-        if request.type_id != crate::host_chrome::edit::EDIT_OPERATION {
+        if request.type_id != crate::undo::EDIT_OPERATION {
             return Ok(None);
         }
         if !self.focused || !self.engine.supports_guarded_edit_history() {
