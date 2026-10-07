@@ -463,15 +463,15 @@ impl ManagedRuntime {
         if options.allow_unsigned_runtime || options.allow_missing_runtime {
             return Err("managed runtime cannot bypass signature or availability policy".into());
         }
-        let publishers = crate::run::load_trusted_publisher_list()
+        let (bundle_root, _) = crate::run::resolve_runtime(manifest, options)
+            .map_err(|error| error.to_string())?
+            .ok_or("managed agent requires a declared runtime")?;
+        let publishers = crate::run::load_trusted_publishers_for_bundle(&bundle_root)
             .map_err(|error| error.to_string())?
             .unwrap_or_default();
         if options.require_runtime_publisher.is_none() && publishers.is_empty() {
             return Err("managed runtime requires independently configured publisher trust".into());
         }
-        let (bundle_root, _) = crate::run::resolve_runtime(manifest, options)
-            .map_err(|error| error.to_string())?
-            .ok_or("managed agent requires a declared runtime")?;
         let bundle = runtime_bundle::verify_bundle_with(
             &bundle_root,
             &runtime_bundle::VerifyOptions {

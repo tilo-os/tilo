@@ -49,6 +49,7 @@ mod device;
 mod kernel;
 mod reach;
 mod scenario;
+mod userspace;
 
 #[derive(Debug, Clone, Copy)]
 struct ForeignRect {
@@ -3996,6 +3997,9 @@ impl App {
         let slot = self.slot_name(slot)?;
         self.receipt.set("slot", &slot);
         self.receipt.set("component", &component);
+        if component == "userspace" {
+            return self.swap_userspace(&slot, from, builder, profile);
+        }
         if let Some(profile) = profile {
             check_profile(profile, &component, from)?;
             self.receipt.set("profile", profile);
@@ -7848,6 +7852,7 @@ mod tests {
             seat: None,
             outputs: Vec::new(),
             parity: None,
+            session_identity: None,
         }
     }
 

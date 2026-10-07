@@ -1128,11 +1128,12 @@ fn enforce_bundle_policy(
     opts: &RunOptions,
     system_bundle: bool,
 ) -> Result<(), RunError> {
-    let trusted =
-        load_trusted_publisher_list().map_err(|error| RunError::RuntimeBundleSignature {
+    let trusted = load_trusted_publishers_for_bundle(path).map_err(|error| {
+        RunError::RuntimeBundleSignature {
             path: path.to_path_buf(),
             reason: error.to_string(),
-        })?;
+        }
+    })?;
     let require_publisher = match opts.require_runtime_publisher.clone() {
         Some(explicit) => Some(explicit),
         None => trusted
@@ -1337,11 +1338,13 @@ mod system_bundle_tree_policy_tests {
 /// Read operator policy and canonical immutable component publisher pins.
 /// A present invalid component pin fails closed, including when another key
 /// would otherwise validate the bundle.
-pub(crate) fn load_trusted_publisher_list() -> std::io::Result<Option<Vec<String>>> {
+pub(crate) fn load_trusted_publishers_for_bundle(
+    bundle: &Path,
+) -> std::io::Result<Option<Vec<String>>> {
     let path = trusted_publishers_path_from(crate::dev_env::dev_override(
         crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
     ));
-    runtime_bundle::component_pins::load_with_components(&path)
+    runtime_bundle::component_pins::load_for_bundle(&path, bundle)
 }
 
 /// The image's runtime trusted-publisher list.

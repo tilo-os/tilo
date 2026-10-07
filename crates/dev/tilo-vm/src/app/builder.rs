@@ -67,11 +67,26 @@ impl App {
         builder: &[String],
     ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
+        self.build_layer_remote_inventory(remote, vm, component, builder, &inputs)
+            .map(|member| member.layer)
+    }
+
+    pub(super) fn build_layer_remote_inventory(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        component: &Component,
+        builder: &[String],
+        inputs: &crate::source_inputs::Snapshot,
+    ) -> Result<tilo_vm_protocol::UserspaceMember, CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root.clone());
         let metadata = self.cargo_metadata();
         let extra = build::dev_features(&metadata, &component.packages);
-        let mut provenance = build::source_provenance(&worktree, &component.name, "remote");
-        let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
+        let mut provenance = inputs.provenance.clone();
+        provenance.component.clone_from(&component.name);
+        inputs.unchanged(&worktree.root)?;
         let inventory = inputs
             .file
             .path()
@@ -151,13 +166,19 @@ impl App {
         provenance.features = component.build_features(&extra);
         provenance.target = packed.target;
         provenance.toolchain = packed.toolchain;
+        inputs.unchanged(&worktree.root)?;
         let imported = self.receipt.phase("import", || {
             remote.call(LayerImport {
                 source: LayerSource::Upload(upload),
-                provenance: Box::new(provenance),
+                provenance: Box::new(provenance.clone()),
             })
         })?;
-        Ok(imported.hash)
+        Ok(tilo_vm_protocol::UserspaceMember {
+            component: component.name.clone(),
+            layer: imported.hash,
+            build: provenance,
+            source_inventory: inputs.digest.clone(),
+        })
     }
 
     /// Build a native app on the configured architecture's builder, then use

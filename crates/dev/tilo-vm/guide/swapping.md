@@ -25,6 +25,43 @@ defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
 (`python3 os/scripts/install-components.py --list`).
 
+## Matched userspace cohort
+
+```sh
+tilo-vm swap userspace --slot device --builder remote
+```
+
+This worktree operation uses one frozen source inventory to build and import
+launcher, installer, apps plus their exact SDK, AppHost, NativeRuntimeHost,
+control, app CLI, ush and Shell. It requires a daemon advertising
+`userspace.apply`; an older daemon is refused before any build or activation.
+VM-wide services, the greeter, image and kernel are separate operations.
+
+Every import must finish before activation. Changed source, target architecture,
+component identity, generation or owner login refuses the cohort. A byte-identical
+reused layer may retain its original import provenance; the receipt separately
+records the actual candidate source inventory and each exact imported hash.
+
+The maintained installer selects authenticated cohort packages in the candidate
+readonly view, preserving user holds and pins. Old selected SDKs are retained as
+runtime-only signed closures, with immutable trust scoped to their exact version,
+architecture, root and publisher. Old app catalogues and global publisher pins
+are never retained as overlapping layers. An unverifiable closure refuses before
+the owner desktop changes. An intervening selection needing an unadmitted closure
+also refuses the final refresh, leaving the staged generation pending.
+
+The owner's greetd login is preserved and its desktop refreshes once after
+selection, so freshly restored apps use the selected SDK. Ordinary dev slots
+restart once through their existing session path. A partial selection failure is
+reported with its completed selections, retained closures and recovery refresh;
+it is never reported as a successful install. There is no reboot.
+
+The aggregate receipt includes ordered build, transfer and import phases, each
+component's stage total, and daemon validation, closure preparation, selection
+and refresh timings. Stage and apply totals contain their child timings; do not
+sum nested entries. A cohort currently uses the canonical per-component remote
+builder admissions and does not promise a cold-build or 60-second update time.
+
 ## Build profile
 
 A build from your worktree uses the component's manifest profile (`release`
