@@ -23,6 +23,15 @@ SPEC = importlib.util.spec_from_file_location(
 history = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(history)
 
+# Repository-local variables reported by `git rev-parse --local-env-vars`.
+# Temporary histories must neither select nor search the CI checkout/cache.
+GIT_REPOSITORY_ENV = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY", "GIT_DIR",
+    "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_PREFIX", "GIT_REPLACE_REF_BASE",
+    "GIT_NO_REPLACE_OBJECTS", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+)
+
 
 class AppReleaseHistory(unittest.TestCase):
     def setUp(self):
@@ -37,6 +46,8 @@ class AppReleaseHistory(unittest.TestCase):
         environment = mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": str(trace)})
         environment.start()
         self.addCleanup(environment.stop)
+        for variable in GIT_REPOSITORY_ENV:
+            os.environ.pop(variable, None)
         self.addCleanup(self.collect_git_phases, trace)
         self.source = self.root / "source"
         self.remote = self.root / "remote.git"
@@ -151,6 +162,41 @@ class AppReleaseHistory(unittest.TestCase):
             parent = commit
         self.assertEqual(self.git(self.source, "rev-parse", "HEAD"), commits[-1])
         self.assertEqual((self.source / "file").read_text(), messages[-1])
+
+    def test_temporary_histories_ignore_and_restore_inherited_repository_environment(self):
+        unrelated = self.commit("unrelated")
+        objects = self.source / ".git/objects"
+        inherited_cases = [
+            {"GIT_ALTERNATE_OBJECT_DIRECTORIES": str(objects)},
+            {"GIT_OBJECT_DIRECTORY": str(objects), "GIT_DIR": str(self.source / ".git"),
+             "GIT_WORK_TREE": str(self.source), "GIT_INDEX_FILE": str(self.source / ".git/index"),
+             "GIT_COMMON_DIR": str(self.source / ".git")},
+        ]
+        before = {path.relative_to(objects): path.read_bytes()
+                  for path in objects.rglob("*") if path.is_file()}
+        for inherited in inherited_cases:
+            with self.subTest(variables=list(inherited)), mock.patch.dict(os.environ, inherited):
+                fixture = AppReleaseHistory()
+                try:
+                    fixture.setUp()
+                    self.assertNotEqual(subprocess.run(
+                        ["git", "-C", str(fixture.source), "cat-file", "-e", unrelated],
+                        capture_output=True,
+                    ).returncode, 0, "temporary history must not read unrelated cached objects")
+                    base, head = fixture.commit_sequence(["independent-base", "independent-head"])
+                    fixture.publish()
+                    clone = fixture.shallow_clone("main")
+                    self.assertEqual(fixture.git(clone, "rev-list", "--count", "HEAD"), "1")
+                    self.assertEqual(history.prepare_comparison(clone, base, head, (2,)), base)
+                    self.assertEqual(fixture.git(clone, "rev-parse", "HEAD"), head)
+                    self.assertTrue((fixture.source / ".git/objects" / head[:2] / head[2:]).is_file())
+                finally:
+                    fixture.doCleanups()
+                self.assertEqual({variable: os.environ[variable] for variable in inherited}, inherited)
+        self.assertEqual(self.git(self.source, "rev-parse", "HEAD"), unrelated)
+        self.assertEqual((self.source / "file").read_text(), "unrelated")
+        self.assertEqual({path.relative_to(objects): path.read_bytes()
+                          for path in objects.rglob("*") if path.is_file()}, before)
 
     def publish(self):
         self.command("git", "clone", "-q", "--bare", str(self.source), str(self.remote))
