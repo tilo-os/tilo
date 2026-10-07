@@ -6837,6 +6837,9 @@ fn attach_collab_broker_bridges(
             .host_mut()
             .attach_app_action_broker(action_broker);
     }
+    if let Some(review) = broker.task_review() {
+        frame_builder.host_mut().attach_task_review(review);
+    }
     if let Some(realtime) = broker.realtime_fabric_bridge() {
         frame_builder
             .host_mut()
