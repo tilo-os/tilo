@@ -110,6 +110,9 @@ dev_features = ["dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "shell", to = "/usr/bin/shell", mode = "0755" },
+  # The PAM entry point and compositor share the session-recovery contract.
+  # A fresh slot login must run this source's wrapper, not the base image's.
+  { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
 ]
 
 # The control-socket CLI, the one way agents and scripts drive a running
@@ -260,6 +263,7 @@ user_units = ["tilo-app-host.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-app-host", to = "/usr/libexec/tilo-app-host", mode = "0755" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-app-host.service", to = "/usr/lib/systemd/user/tilo-app-host.service", mode = "0644" },
 ]
 
 [[component]]

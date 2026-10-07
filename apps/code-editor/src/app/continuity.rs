@@ -41,6 +41,51 @@ impl Continuable for CodeApp {
         self.pending_continuation = Some(position);
         true
     }
+
+    fn restore_live_continuation_metadata(
+        &mut self,
+        metadata: &ContinuationMetadata,
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if metadata.schema_version != 1 {
+            return false;
+        }
+        let Ok(position) = serde_json::from_slice::<TextPosition>(&metadata.bytes) else {
+            return false;
+        };
+        if !position.valid()
+            || EditorDoc::file(doc, &position.resource_id)
+                .is_none_or(|file| file.deleted || file.kind != "file")
+            || EditorDoc::buffer_text_key(doc, &position.resource_id)
+                .and_then(|text| position.resolve(doc, &text))
+                .is_none()
+        {
+            return false;
+        }
+        if self.active_file_node().is_none() {
+            // Project only the already admitted resource metadata. Opening this
+            // view never reads disk, seeds text, or submits an app action.
+            let mut files = EditorDoc::files(doc);
+            files.sort_by_key(|file| file.path.matches('/').count());
+            self.project_files(files);
+            let Some(node) = self
+                .session
+                .project
+                .node_for_resource(&position.resource_id)
+            else {
+                return false;
+            };
+            if !self.session.open_file(node) {
+                return false;
+            }
+            self.bound_node = None;
+            self.ensure_buffers(doc);
+        }
+        self.active_file_node()
+            .is_some_and(|node| self.buffer_key(node) == position.resource_id)
+            && self.editor.restore_continuation_position(doc, &position)
+    }
 }
 
 impl CodeApp {

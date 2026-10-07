@@ -795,10 +795,9 @@ pub enum ChatRuntime {
     Unavailable,
 }
 
-/// Whether this host offers Chat's native services: attachments imported
-/// from native paths into the on-disk content store, and the shell's voice
-/// service. A browser page has neither.
-pub(crate) fn native_services() -> bool {
+/// Whether this host imports attachments from native paths. Voice support
+/// is reported independently through the host's local media lane.
+pub(crate) fn native_file_access() -> bool {
     matches!(
         tilo_files::availability(tilo_files::Feature::NativePaths),
         tilo_files::Availability::Available
@@ -816,9 +815,8 @@ impl ChatApp {
         app.context_ws.clear();
         app.active_channel.clear();
         app.thread_open = None;
-        app.media_error = (!app.external_services).then(|| {
-            "Calls and screen sharing are unsupported until a media transport is connected".into()
-        });
+        app.media_error =
+            (!app.external_services).then(|| crate::i18n::t("chat-voice-unavailable"));
         app
     }
 
@@ -981,8 +979,13 @@ impl ChatApp {
         match action {
             crate::call::CallAction::Leave => true,
             crate::call::CallAction::Camera | crate::call::CallAction::ShareScreen => false,
-            _ => self.external_services && self.perms.allows(action),
+            _ => self.voice_service_available() && self.perms.allows(action),
         }
+    }
+
+    pub(crate) fn voice_service_available(&self) -> bool {
+        self.external_services
+            || self.native_voice.snapshot.state != ui::native_media::State::Unavailable
     }
 
     /// Whether the local peer may post / react / start a call in the active
@@ -1629,7 +1632,11 @@ impl ChatApp {
         if let Some(n) = self.room_names.get(id)
             && !n.trim().is_empty()
         {
-            return n.clone();
+            return if self.is_me(id) {
+                n.clone()
+            } else {
+                crate::identity::shared_name_label(id, n)
+            };
         }
         if let Some(agent) = self.agent_authors.get(id) {
             return agent.clone();
@@ -1637,7 +1644,11 @@ impl ChatApp {
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
-            return u.name.clone();
+            return if self.is_me(id) {
+                u.name.clone()
+            } else {
+                crate::identity::shared_name_label(id, &u.name)
+            };
         }
         // Your own name, which this had no way to reach until the room named
         // it: `me` is not necessarily a row in `users`, which is built from
@@ -1680,31 +1691,9 @@ impl ChatApp {
             .iter()
             .any(|u| u.id == id && u.name.trim() == named.trim());
         if (named != id || stored) && !named.trim().is_empty() {
-            return named;
+            return crate::identity::shared_name_label(id, &named);
         }
-        format!("Someone ({})", Self::unnamed_tag(id))
-    }
-
-    /// Enough of an unresolved id to tell two unnamed people apart.
-    ///
-    /// The tail rather than the head: these ids share a `peer@` prefix and
-    /// differ in their digits, so the first characters are the ones that
-    /// carry no information.
-    fn unnamed_tag(id: &str) -> String {
-        let body = id.rsplit(['@', ':']).next().unwrap_or(id);
-        let tail: String = body
-            .chars()
-            .rev()
-            .take(4)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        if tail.is_empty() {
-            id.to_string()
-        } else {
-            tail
-        }
+        crate::identity::unnamed_label(id)
     }
 
     /// The avatar monogram for `id`, derived from whatever the room calls them
@@ -2267,7 +2256,7 @@ impl ChatApp {
 
     /// The leading navigation drawer: the workspace rail beside the channel
     /// list, at the shell's sidebar and rail metrics. It docks only while the
-    /// conversation column keeps the shared content minimum; below that it
+    /// conversation column keeps the shared detail minimum; below that it
     /// becomes a floating drawer.
     fn navigation_drawer() -> SidebarDrawer {
         let m = ui::tokens::Metrics::BASE;
@@ -2275,7 +2264,7 @@ impl ChatApp {
         // the channel list (text-sized) beside it.
         SidebarDrawer::new()
             .with_rail()
-            .content_min_width(f64::from(m.content_min_width))
+            .content_min_width(f64::from(m.detail_min_width))
     }
 
     /// The trailing detail drawer, summoned on demand. It docks while the
@@ -4194,6 +4183,51 @@ mod identity_on_screen {
             status: crate::model::Presence::Online,
             is_agent,
         }
+    }
+
+    #[test]
+    fn a_remote_saved_you_name_is_not_the_current_reader() {
+        use ui::widget::Widget as _;
+        let mut app = ChatApp::new_ephemeral();
+        let mut state = ui::State::new();
+        let stranger = "peer@9007495404254172154";
+        ChatDoc::seed_starter(&mut state.doc, stranger, "You", "Y");
+        ChatDoc::push_message(
+            &mut state.doc,
+            "c_general",
+            crate::doc::NewMessage {
+                author: stranger.into(),
+                text: "Retained foreign message".into(),
+                ..crate::doc::NewMessage::default()
+            },
+        );
+        app.sync(&state.doc, &state.root);
+        assert_eq!(
+            app.user(stranger)
+                .expect("observe the actual foreign author in the production roster")
+                .name,
+            "You"
+        );
+        let shown = app.user_name(stranger);
+        assert_ne!(
+            shown, "You",
+            "another person's stored name must not read as the current reader"
+        );
+        assert_eq!(
+            app.display_name(stranger),
+            shown,
+            "mentions and message headers name the same foreign person"
+        );
+        assert!(
+            shown.contains("2154"),
+            "ambiguous names must distinguish the actual participant"
+        );
+        assert_eq!(app.user_name(&app.me.id), "You");
+        assert_eq!(
+            ChatDoc::list_users(&state.doc)[0].name,
+            "You",
+            "presentation must not rewrite saved person data"
+        );
     }
 
     #[test]

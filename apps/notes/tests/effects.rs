@@ -6,7 +6,7 @@ use notes::NotesEffect;
 use notes::actions::page_resource_id;
 use ui::portal::PortalOutcome;
 
-const IMAGE: &[u8] = include_bytes!("../../settings/shots/settings.png");
+const IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
 
 fn shown(app: &mut ui::framework::testing::TestApp<notes::NotesShell>) -> Option<notes::PageId> {
     surface(app, |notes| notes.selected_for_test())

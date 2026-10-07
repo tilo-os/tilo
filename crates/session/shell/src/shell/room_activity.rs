@@ -23,6 +23,7 @@ const SHORTCUT_RUN_RECORD_ATTEMPTS: u32 = 240;
 #[derive(Default)]
 pub(crate) struct NativeActivityHost {
     broker: Option<crate::shell::collab_broker::AppActionBroker>,
+    review: Option<super::task_review::NativeTaskReview>,
     /// Shortcut runs the broker finished whose history is not recorded yet,
     /// with how many refreshes have looked for their changes.
     pub(crate) pending_shortcut_runs:
@@ -103,6 +104,33 @@ fn save_history_map<T: serde::Serialize>(key: &str, values: &HashMap<u64, T>) {
 }
 
 impl ActivityHost for NativeActivityHost {
+    fn task_review_required(&self, room: &str) -> bool {
+        self.review
+            .as_ref()
+            .is_some_and(|review| review.requires_room(room))
+    }
+    fn task_review_snapshot(
+        &self,
+        room: &str,
+    ) -> Option<Result<std::sync::Arc<tilo_desktop::activity::TaskReviewSnapshot>, String>> {
+        self.review.as_ref().map_or_else(
+            || Some(Err("authenticated task owner unavailable".into())),
+            |review| review.snapshot(room),
+        )
+    }
+    fn submit_task_review(
+        &self,
+        request: tilo_desktop::activity::TaskReviewRequest,
+    ) -> Result<(), String> {
+        self.review
+            .as_ref()
+            .ok_or("authenticated task owner unavailable")?
+            .submit(request)
+    }
+    fn poll_task_review(&self, invocation: uuid::Uuid) -> Option<Result<(), String>> {
+        self.review.as_ref()?.poll(invocation)
+    }
+
     fn local_user(&self) -> String {
         crate::shell::state::local_user_id()
     }
@@ -288,6 +316,15 @@ impl RoomActivityPane {
         self.1 = Some(broker.clone());
         self.set_host(Rc::new(NativeActivityHost {
             broker: Some(broker),
+            review: None,
+            pending_shortcut_runs: std::cell::RefCell::default(),
+        }));
+    }
+    pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
+        let broker = self.1.clone();
+        self.set_host(Rc::new(NativeActivityHost {
+            broker,
+            review: Some(review),
             pending_shortcut_runs: std::cell::RefCell::default(),
         }));
     }
@@ -314,6 +351,7 @@ impl RoomActivityPane {
     pub fn apply_deep_link(&mut self, focus: crate::shell::chrome_state::ActivityFocus) {
         self.0
             .apply_deep_link(tilo_desktop::activity::ActivityDeepLink {
+                task_id: focus.task_id,
                 author: focus.author,
                 group_id: focus.group_id,
                 entry_id: focus.entry_id,
@@ -451,6 +489,7 @@ mod tests {
             0,
         );
         let host = Rc::new(NativeActivityHost {
+            review: None,
             broker: None,
             pending_shortcut_runs: std::cell::RefCell::new(vec![finished]),
         });

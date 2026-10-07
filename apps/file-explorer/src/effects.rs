@@ -37,14 +37,29 @@ pub enum FilesEffect {
     #[effect(view, returns)]
     ClearSelection,
     /// Copy selection.
-    #[effect(permission = "read")]
+    #[effect(permission = "read", job)]
     CopySelection,
     /// Cut selection.
+    #[effect(job)]
     CutSelection,
+    /// File clipboard status.
+    ///
+    /// Returns the workspace's current opaque offer and entry count. It does
+    /// not read payloads, grant access, or change this window's selection.
+    #[effect(permission = "read", job, returns)]
+    ClipboardStatus,
+    /// Recover interrupted clipboard transfers.
+    ///
+    /// Uses this receiving record's durable receipts and current file grants.
+    /// Completed transfers remain in place. Interrupted Cut restores its
+    /// source; Copy and remaining recovery objects appear in Trash.
+    #[effect(job, cancellable, returns)]
+    RecoverClipboardTransfers,
     /// Paste.
     ///
     /// Copies (or moves, after Cut) what the window holds into the folder
     /// shown.
+    #[effect(job, cancellable)]
     Paste,
     /// Go to folder…
     ///
@@ -176,13 +191,13 @@ pub enum FilesEffect {
         folder: String,
     },
     /// Copy.
-    #[effect(row, permission = "read")]
+    #[effect(row, permission = "read", job)]
     Copy {
         #[param("The entry's row id")]
         entry: String,
     },
     /// Cut.
-    #[effect(row)]
+    #[effect(row, job)]
     Cut {
         #[param("The entry's row id")]
         entry: String,

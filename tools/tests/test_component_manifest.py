@@ -47,6 +47,12 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         self.assertIn(old, text)
         path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
+    def test_shell_only_recipe_is_refused_before_deployment(self):
+        root = self.fixture()
+        entry = '  { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },'
+        self.edit(root / "os/components.toml", entry + "\n", "")
+        self.assertIn("shell must ship its matching mandatory PAM session wrapper", "\n".join(check.audit(root)))
+
     def test_component_manifest_is_the_only_source_of_builder_copies_and_layers(self):
         with self.subTest(phase='repository passes'):
             self.assertEqual(check.audit(REPO), [])
@@ -133,6 +139,37 @@ class InstallerTests(unittest.TestCase):
                     self.assertEqual(notice.stat().st_mode & 0o777, 0o644)
                     self.assertTrue((layer / "desktop-binaries/usr/bin/tilo-speech-worker").is_file())
 
+    def test_shell_layer_requires_and_installs_its_exact_startup_wrapper(self):
+        copies = [pair
+                  for instruction in check.instructions(REPO / "os/Containerfile")
+                  if instruction.stage == check.INSTALL_STAGE
+                  and instruction.words[0].upper() == "COPY"
+                  for pair in check.copy_pairs(instruction)[1]
+                  if pair[1].startswith("/tilo-components/")]
+        for include_wrapper in (True, False):
+            with self.subTest(staged_wrapper=include_wrapper), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for source, destination in copies:
+                    if not include_wrapper and source == "os/usr/libexec/tilo-session":
+                        continue
+                    target = root / destination.lstrip("/")
+                    if destination.endswith("/"):
+                        target /= Path(source).name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(REPO / source, target)
+                out = self.build_outputs(root)
+                layer = root / "layer"
+                with contextlib.redirect_stderr(io.StringIO()):
+                    status = self.run_installer(
+                        "--manifest", str(root / "tilo-components/components.toml"),
+                        "--from", str(out), "--dest", str(layer), "shell")
+                self.assertEqual(status, 0 if include_wrapper else 1)
+                if include_wrapper:
+                    wrapper = layer / "usr/libexec/tilo-session"
+                    self.assertEqual(wrapper.read_bytes(), (REPO / "os/usr/libexec/tilo-session").read_bytes())
+                    self.assertEqual(wrapper.stat().st_mode & 0o777, 0o755)
+                    self.assertTrue((layer / "usr/bin/shell").is_file())
+
     def build_outputs(self, root: Path) -> Path:
         out = root / "out"
         out.mkdir(parents=True)
@@ -160,6 +197,24 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(unit.read_bytes(), (REPO / "os/usr/lib/systemd/user/tilo-ush.service").read_bytes())
             self.assertIn("Environment=TILO_USH_BIN=/usr/libexec/tilo-ush", unit.read_text())
             self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
+
+    def test_app_host_swap_installs_the_exact_confined_service_with_the_binary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = self.build_outputs(root)
+            (out / "tilo-app-host").write_bytes(b"fixture-app-host")
+            layer = root / "layer"
+            self.assertEqual(self.run_installer("--from", str(out), "--dest", str(layer), "app-host"), 0)
+            self.assertEqual((layer / "usr/libexec/tilo-app-host").read_bytes(), b"fixture-app-host")
+            unit = layer / "usr/lib/systemd/user/tilo-app-host.service"
+            self.assertEqual(unit.read_bytes(), (REPO / "os/usr/lib/systemd/user/tilo-app-host.service").read_bytes())
+            self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
+            self.assertIn("ProtectHome=read-only", unit.read_text())
+            self.assertIn("ProtectSystem=strict", unit.read_text())
+            self.assertIn("%h/.config/tilo-store/registry-checkpoints", unit.read_text())
+            self.assertIn("%h/.local/share/flatpak %h/.cache/flatpak", unit.read_text())
+            manifest = installer.load_manifest(REPO / "os/components.toml")
+            self.assertEqual(manifest.component("app-host").user_units, ("tilo-app-host.service",))
 
     def test_installer_selects_manifest_layers_and_keeps_dev_and_production_apart(self):
         with self.subTest(phase='image layers match manifest'):

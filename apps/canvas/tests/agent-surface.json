@@ -3654,7 +3654,7 @@
     "action": "undo",
     "resource_kind": "canvas.artwork",
     "label": "Undo",
-    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with to, all after a version.",
+    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
     "operation": "Document",
     "params": [
       {
@@ -3669,6 +3669,13 @@
         "ty": "text",
         "required": false,
         "description": "An agent run id from history",
+        "nullable": true
+      },
+      {
+        "name": "by",
+        "ty": "text",
+        "required": false,
+        "description": "Exact author id from history, for steps outside a run",
         "nullable": true
       },
       {
@@ -3935,6 +3942,37 @@
     "description": null,
     "operation": "View",
     "params": []
+  },
+  {
+    "resource": "tilo.host:search",
+    "action": "open",
+    "resource_kind": "tilo.host.search",
+    "label": "Search",
+    "description": null,
+    "operation": "View",
+    "params": [
+      {
+        "name": "query",
+        "ty": "text",
+        "required": false,
+        "description": "Text to search for",
+        "nullable": false
+      },
+      {
+        "name": "scope",
+        "ty": "text",
+        "required": false,
+        "description": "Resource id of the part of the app to search",
+        "nullable": false
+      },
+      {
+        "name": "scope_label",
+        "ty": "text",
+        "required": false,
+        "description": "Name of that part, shown on the scope pill",
+        "nullable": false
+      }
+    ]
   },
   {
     "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dadd%2Dpicture",

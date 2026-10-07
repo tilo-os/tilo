@@ -455,6 +455,11 @@ fn build_settled_workspace_settings_host(
 ) -> (shell::shell::overlay_host::ShellOverlayHost, Chrome) {
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     host.set_motion_reduced(true);
+    let _ = render_host_to_scene(&mut host);
+    // The first layout can mount embedded apps. Apply the real preference to
+    // those new children before measuring the settled pane, then draw again.
+    host.set_motion_reduced(true);
+    let _ = render_host_to_scene(&mut host);
     // Initial fixture record writes can finish asynchronously and show a Saved
     // bubble. Reduced motion removes its fade, not its finite lifetime. Wait
     // for the production hosts to report rest before comparing settled panes.

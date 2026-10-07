@@ -1353,8 +1353,8 @@ mod tests {
     /// nothing.
     #[cfg(feature = "decode")]
     fn sample(name: &str) -> std::path::PathBuf {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("sample-media/media")
+        let p = crate::media::bundled_sample_media()
+            .join("media")
             .join(name);
         assert!(p.exists(), "the bundled fixture {name} is missing");
         p

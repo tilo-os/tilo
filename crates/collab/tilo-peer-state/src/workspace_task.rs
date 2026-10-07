@@ -147,6 +147,13 @@ pub enum WorkspaceTaskCommand {
         sequence: u64,
         phase: WorkspaceTaskExecutionPhase,
     },
+    /// An admitted person cancels exactly the task/run frontier they reviewed.
+    /// Appended to retain every existing encoded command variant index.
+    CancelForRun {
+        task_id: String,
+        run_epoch: u64,
+        after_revision: u64,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -332,6 +339,17 @@ fn dispatch(
         WorkspaceTaskCommand::Retry { task_id, run_epoch } => {
             dispatch_retry(tasks, controls, context, task_id, *run_epoch)
         }
+        WorkspaceTaskCommand::CancelForRun {
+            task_id,
+            run_epoch,
+            after_revision,
+        } => cancel_for_run(
+            tasks,
+            controls,
+            context,
+            task_id,
+            (*run_epoch, *after_revision),
+        ),
     }
 }
 
@@ -866,6 +884,47 @@ fn retry(
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Queued {
+            task_id: task_id.to_owned(),
+        },
+    ))
+}
+
+fn cancel_for_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    fence: (u64, u64),
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: author, .. } = context.actor else {
+        return Err("only a person may cancel a workspace task".into());
+    };
+    let task = task_mut(tasks, task_id)?;
+    let control = controls
+        .get_mut(task_id)
+        .ok_or("task has no execution control")?;
+    if task.status.is_finished()
+        || control.run_epoch != fence.0
+        || control
+            .directions
+            .last()
+            .map_or(0, |direction| direction.revision)
+            != fence.1
+    {
+        return Err("task run or instruction frontier changed; review before cancelling".into());
+    }
+    control.active_run = None;
+    control.execution = None;
+    task.status = WorkspaceTaskStatus::Cancelled;
+    task.updated_at = context.now;
+    task.audit.push(WorkspaceTaskAuditEvent {
+        at: context.now,
+        actor: author.clone(),
+        summary: "Cancelled task".into(),
+    });
+    Ok((
+        task_id.to_owned(),
+        WorkspaceTaskMutationResult::Finished {
             task_id: task_id.to_owned(),
         },
     ))

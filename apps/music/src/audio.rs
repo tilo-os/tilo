@@ -351,6 +351,20 @@ impl AudioEngine {
         }
     }
 
+    /// Safe, device-local diagnostics for the resource action door.
+    pub fn spotify_startup_stage(&self) -> Option<&'static str> {
+        #[cfg(feature = "spotify-native")]
+        {
+            self.native
+                .as_ref()
+                .map(spotify_audio::NativeAudio::startup_stage)
+        }
+        #[cfg(not(feature = "spotify-native"))]
+        {
+            None
+        }
+    }
+
     pub fn prepare_spotify_next(&self, uri: Option<&str>) {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -934,6 +948,7 @@ impl OfflineDownload {
 #[cfg(feature = "audio")]
 struct Inner {
     playbin: gstreamer::Element,
+    governed_output: Option<std::sync::Arc<media::audio_output::gst::Bridge>>,
     /// The `autoaudiosink` at the tail of our explicit sink chain, when it was
     /// built. `autoaudiosink` auto-plugs the concrete real sink
     /// (`pipewiresink`/`pulsesink`/`alsasink`) at READY; introspecting its child
@@ -1037,7 +1052,16 @@ impl AudioBackend {
             // output is audible and verifiable. `autoaudiosink` selects
             // the concrete system sink (pipewire/pulse/alsa); the pad
             // probe lets us confirm real buffers flow.
-            let sink = build_audio_sink(&playbin, &frames, output);
+            let (sink, governed_output) =
+                if matches!(output, AudioOutput::System) && media::audio_output::is_governed() {
+                    let (bin, bridge) =
+                        media::audio_output::gst::sink_bin("tilo_audiosink", "tilo_governed_gain")?;
+                    let sink = bin.by_name("tilo_audiosink");
+                    playbin.set_property("audio-sink", &bin);
+                    (sink, Some(bridge))
+                } else {
+                    (build_audio_sink(&playbin, &frames, output), None)
+                };
             let errored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             // Defensive: never leave the transport muted, and start at a
             // sane volume so "no sound" is never a stuck property.
@@ -1045,6 +1069,7 @@ impl AudioBackend {
             playbin.set_property("volume", 0.8f64);
             Inner {
                 playbin,
+                governed_output,
                 sink,
                 frames,
                 errored,
@@ -1081,6 +1106,9 @@ impl AudioBackend {
             // Fully reset the pipeline before re-pointing it, so a fast skip
             // never leaves the previous stream decoding underneath the new one.
             let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+            if let Some(output) = &self.inner.governed_output {
+                output.reset();
+            }
             self.inner
                 .frames
                 .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -1128,6 +1156,9 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            if let Some(output) = &self.inner.governed_output {
+                output.pause(false);
+            }
             // A stream still downloading to its temp file starts when the file
             // is ready (in `pump`); record the intent and don't touch playbin yet.
             #[cfg(feature = "live")]
@@ -1157,6 +1188,9 @@ impl AudioBackend {
                 }
             }
             let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
+            if let Some(output) = &self.inner.governed_output {
+                output.pause(true);
+            }
         }
         #[cfg(not(feature = "audio"))]
         if let Some(engine) = &mut self.inner.engine {
@@ -1171,6 +1205,9 @@ impl AudioBackend {
         {
             use gstreamer::prelude::*;
             let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+            if let Some(output) = &self.inner.governed_output {
+                output.reset();
+            }
             self.inner
                 .eos
                 .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1208,6 +1245,9 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            if let Some(output) = &self.inner.governed_output {
+                output.flush();
+            }
             if !matches!(
                 self.inner.playbin.current_state(),
                 gstreamer::State::Paused | gstreamer::State::Playing
@@ -1463,6 +1503,19 @@ impl AudioBackend {
                     }
                 }
             }
+            if let Some(error) = self
+                .inner
+                .governed_output
+                .as_ref()
+                .and_then(|output| output.error())
+            {
+                self.inner
+                    .errored
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(mut message) = self.inner.error_msg.lock() {
+                    *message = Some(error);
+                }
+            }
             self.inner
                 .errored
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -1514,6 +1567,11 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             self.inner.eos.load(std::sync::atomic::Ordering::Relaxed)
+                && self
+                    .inner
+                    .governed_output
+                    .as_ref()
+                    .is_none_or(|output| output.drained())
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -1619,6 +1677,9 @@ impl AudioBackend {
     pub fn frames_rendered(&self) -> u64 {
         #[cfg(feature = "audio")]
         {
+            if let Some(output) = &self.inner.governed_output {
+                return output.observation().rendered_frames;
+            }
             self.inner.frames.load(std::sync::atomic::Ordering::Relaxed)
         }
         #[cfg(not(feature = "audio"))]
@@ -1643,6 +1704,12 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            if let Some(output) = &self.inner.governed_output {
+                return output
+                    .observation()
+                    .ready
+                    .then(|| "tilo-governed-pipewire".into());
+            }
             let sink = self.inner.sink.as_ref()?;
             // `autoaudiosink` is a bin that owns the concrete sink as its child;
             // reach it via the `ChildProxy` interface (stable across versions).
@@ -2172,6 +2239,9 @@ fn build_audio_sink_bin(
 impl Drop for AudioBackend {
     fn drop(&mut self) {
         use gstreamer::prelude::*;
+        if let Some(output) = &self.inner.governed_output {
+            output.close();
+        }
         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
         #[cfg(feature = "live")]
         if let Some(p) = self.inner.pending.take() {

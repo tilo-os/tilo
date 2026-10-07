@@ -24,6 +24,7 @@ mod app_settings_tests;
 mod canonical_route;
 mod committed_document;
 mod durable_local_invocation;
+mod file_clipboard;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
@@ -31,6 +32,8 @@ mod invoker;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+#[cfg(target_os = "linux")]
+mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
 #[path = "workspace_memberships.rs"]
@@ -42,7 +45,10 @@ pub use committed_document::{
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::DurableInvocation;
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
-pub use native_media::{NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices};
+pub use native_media::{
+    AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
+    NativeMediaServices,
+};
 pub use published_invocation::OriginalInvocation;
 use published_invocation::{InvocationCaller, OriginalInvocationData};
 
@@ -466,6 +472,8 @@ struct CollabLaunchHandoff {
     protocol: u16,
     app_id: String,
     workspace_id: String,
+    #[serde(default)]
+    executing_peer: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1333,6 +1341,8 @@ struct PendingInvocation {
     last_activity: std::time::Instant,
     /// Starts the shorter acknowledgement deadline for cooperative cancel.
     cancellation_requested_at: Option<std::time::Instant>,
+    /// A retained continuation must observe cancellation after registry removal.
+    cancellation_fence: Arc<AtomicBool>,
 }
 
 struct PreparedEffectCommit {
@@ -1570,6 +1580,7 @@ mod action_host;
 mod app_consent;
 mod launchable;
 mod local_action_host;
+pub use local_action_host::CertifiedPersonContext;
 
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
@@ -1894,6 +1905,7 @@ impl CapnpBrokerState {
                 .ok_or("durable admission unavailable")?
                 .cancel(key)?;
         }
+        pending.cancellation_fence.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -2685,6 +2697,8 @@ struct ContextSub {
     /// Authenticated native membership projection and the exact admission it
     /// came from. Incremental label/presence frames never replace it.
     native: Option<NativeContext>,
+    /// Shares the original receiver; membership refresh belongs to its document row.
+    private_alias: bool,
 }
 
 #[derive(Clone)]
@@ -3242,6 +3256,7 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>()
         };
         for (id, cancellation_expired, pending) in expired {
+            pending.cancellation_fence.store(true, Ordering::Release);
             let (code, message) = if cancellation_expired {
                 (
                     "action_cancellation_timeout",
@@ -5103,6 +5118,7 @@ impl CapnpBrokerState {
                 context: receipt_context,
                 last_activity: std::time::Instant::now(),
                 cancellation_requested_at: None,
+                cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
         self.invocation_generation.fetch_add(1, Ordering::Relaxed);
@@ -5622,13 +5638,20 @@ impl CapnpBrokerState {
         )
     }
 
+    fn disconnect_device_media(&self, peer_id: u64) {
+        if let Some(media) = self.services.native_media.as_ref() {
+            media.disconnect(peer_id);
+        }
+        if let Some(output) = self.services.audio_output.as_ref() {
+            output.disconnect(peer_id);
+        }
+    }
+
     fn remove_connection(&self, peer_id: u64) {
         if let Ok(mut directories) = self.canonical_directories.lock() {
             directories.remove(peer_id);
         }
-        if let Some(media) = self.services.native_media.as_ref() {
-            media.disconnect(peer_id);
-        }
+        self.disconnect_device_media(peer_id);
         // Withdraw provenance before any stale surface can be observed during cleanup.
         match self.host_workers.lock() {
             Ok(mut workers) => {
@@ -5641,9 +5664,7 @@ impl CapnpBrokerState {
         if let Some(realtime) = self.services.realtime.as_ref() {
             realtime.disconnect(peer_id);
         }
-        if let Some(nearby) = self.services.nearby_transfer.as_ref() {
-            nearby.disconnect(peer_id);
-        }
+        self.disconnect_file_transfers(peer_id);
         if let Ok(mut surfaces) = self.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
         {
@@ -5672,6 +5693,7 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>();
             for id in ids {
                 if let Some(invocation) = pending.remove(&id) {
+                    invocation.cancellation_fence.store(true, Ordering::Release);
                     let completion = InvocationCompletion {
                         code: "action_failed".into(),
                         message: "application disconnected before completing the action".into(),
@@ -5722,6 +5744,15 @@ impl CapnpBrokerState {
             }
         }
         self.publish_action_catalogue();
+    }
+
+    fn disconnect_file_transfers(&self, peer_id: u64) {
+        if let Some(nearby) = self.services.nearby_transfer.as_ref() {
+            nearby.disconnect(peer_id);
+        }
+        if let Some(clipboard) = self.services.file_clipboard.as_ref() {
+            clipboard.disconnect(peer_id);
+        }
     }
 
     /// Stable authenticated actor id for native presence and interactions.
@@ -6040,6 +6071,7 @@ impl CapnpBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
             | CollabEvent::RemoteAction { .. } => {
@@ -6260,9 +6292,35 @@ impl CapnpBrokerState {
                     peer_id,
                     tx,
                     native,
+                    private_alias: false,
                 });
         }
         rx
+    }
+
+    fn alias_private_context(&self, channel: &str, alias: &str, peer: u64) {
+        if let Ok(mut channels) = self.channels.lock() {
+            let subscriber = channels
+                .get(channel)
+                .and_then(|entry| {
+                    entry
+                        .context
+                        .iter()
+                        .rev()
+                        .find(|subscriber| subscriber.peer_id == peer)
+                })
+                .map(|subscriber| ContextSub {
+                    peer_id: peer,
+                    tx: subscriber.tx.clone(),
+                    native: subscriber.native.clone(),
+                    private_alias: true,
+                });
+            if let Some(subscriber) = subscriber {
+                let context = &mut channels.entry(alias.to_owned()).or_default().context;
+                context.retain(|entry| entry.peer_id != peer && !entry.tx.is_closed());
+                context.push(subscriber);
+            }
+        }
     }
 
     /// Complete room membership for one retained native receiver. This is
@@ -6387,6 +6445,7 @@ impl CapnpBrokerState {
                 subscribers
                     .context
                     .iter()
+                    .filter(|subscriber| !subscriber.private_alias)
                     .filter_map(|subscriber| {
                         subscriber.native.as_ref().map(|native| {
                             (channel.clone(), subscriber.peer_id, native.admitted.clone())
@@ -6529,6 +6588,20 @@ struct ConnectionLease {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     peer_id: u64,
+}
+
+/// Disconnect even when the `LocalSet` cancels a connection instead of polling it
+/// to EOF. capnp-rpc's first disconnect poll releases exported capabilities and
+/// pipelines synchronously; dropping `RpcSystem` alone does not release those
+/// cycles. No peer response or additional shutdown time is needed here.
+struct DisconnectOnDrop<F: std::future::Future>(Option<F>);
+
+impl<F: std::future::Future> Drop for DisconnectOnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(disconnector) = self.0.take() {
+            let _ = futures::FutureExt::now_or_never(disconnector);
+        }
+    }
 }
 
 struct ConnectionExit {
@@ -6803,11 +6876,23 @@ fn app_settings_capability(
         ));
     };
     let app_id = route.app_id.clone();
+    // Personal vocabulary stays on this device. Admission to a workspace is
+    // insufficient: only the host's private local worker descriptor of the
+    // authenticated person receives the read/edit projection.
+    let dictionary_owner = (identity.host_scope.is_some()
+        && identity.agent_id.is_none()
+        && !identity.verified.capped
+        && !identity
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.capabilities.foreign))
+    .then_some(identity.verified.user_public_key);
     let state = Arc::clone(state);
     let revalidate: runtime_collab::settings::host::Revalidate =
         Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
     Ok(capnp_rpc::new_client(
-        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate),
+        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
+            .with_dictionary_owner(dictionary_owner),
     ))
 }
 
@@ -7220,6 +7305,25 @@ impl channel_handle::Server for CapnpChannelHandle {
         })())
     }
 
+    fn audio_output_command(
+        self: Rc<Self>,
+        params: channel_handle::AudioOutputCommandParams,
+        mut results: channel_handle::AudioOutputCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        let future = (|| self.audio_output_dispatch(params.get()?.get_command()?))();
+        let future = match future {
+            Ok(future) => future,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let snapshot = future.await.map_err(capnp::Error::failed)?;
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|_| capnp::Error::failed("audio output reply encoding failed".into()))?;
+            results.get().set_reply(&bytes);
+            Ok(())
+        })
+    }
+
     fn native_media_command(
         self: Rc<Self>,
         params: channel_handle::NativeMediaCommandParams,
@@ -7496,6 +7600,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         match delegate_nearby_transfer_command(&self.state.services, &context, claimed_app, command)
         {
+            Ok(reply) => {
+                results.get().set_reply_json(&reply);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
+    fn local_file_clipboard(
+        self: Rc<Self>,
+        params: channel_handle::LocalFileClipboardParams,
+        mut results: channel_handle::LocalFileClipboardResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let answer = request
+            .get_command_json()
+            .and_then(|bytes| self.file_clipboard_dispatch(bytes, request.get_on_behalf_of()?));
+        match answer {
             Ok(reply) => {
                 results.get().set_reply_json(&reply);
                 Promise::ok(())
@@ -7866,9 +7991,31 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(roster) => roster,
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
+        let instance = match self.native_private_window_instance() {
+            Ok(instance) => instance,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let document = if instance.is_some() {
+            match self.document_read_context() {
+                Ok(context) => Some(context),
+                Err(error) => return Promise::err(capnp::Error::failed(error)),
+            }
+        } else {
+            None
+        };
         let rx = self
             .state
             .subscribe_context(&self.channel_id, self.peer_id, native.clone());
+        if let Some(instance) = instance {
+            let alias = CrdtRoute::record(
+                &route.app_id,
+                &route.cluster_id,
+                format!("continuation:{instance}"),
+            )
+            .channel_key();
+            self.state
+                .alias_private_context(&self.channel_id, &alias, self.peer_id);
+        }
         let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -7879,6 +8026,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 state: self.state.clone(),
                 route,
                 identity: native.admitted,
+                document,
             }),
             rx: Rc::new(AsyncMutex::new(rx)),
         });
@@ -9274,14 +9422,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "reportContinuation appId must match the certified connection route".into(),
             ));
         }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            return Promise::err(capnp::Error::failed(
-                "reportContinuation requires a durable shell tab id".into(),
-            ));
+        let instance_id = match self.continuation_instance() {
+            Ok(instance) => instance,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
             return Promise::err(capnp::Error::failed(
@@ -9343,14 +9486,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "handoff appId must match the certified connection route".into(),
             ));
         }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            return Promise::err(capnp::Error::failed(
-                "handoff requires a durable shell tab id".into(),
-            ));
+        let instance_id = match self.continuation_instance() {
+            Ok(instance) => instance,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
             return Promise::err(capnp::Error::failed(
@@ -9403,14 +9541,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "clearContinuation appId must match the certified connection route".into(),
             ));
         }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            return Promise::err(capnp::Error::failed(
-                "clearContinuation requires a durable shell tab id".into(),
-            ));
+        let instance_id = match self.continuation_instance() {
+            Ok(instance) => instance,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
             return Promise::err(capnp::Error::failed(
@@ -10594,6 +10727,8 @@ struct NativeContextReadGuard {
     state: Arc<CapnpBrokerState>,
     route: CrdtRoute,
     identity: AdmittedJoinIdentity,
+    /// Native private views retain their original document's current Read custody.
+    document: Option<NativeDocumentReadContext>,
 }
 
 impl NativeContextReadGuard {
@@ -10613,6 +10748,20 @@ impl NativeContextReadGuard {
             guard
                 .state
                 .revalidate_admission(&guard.route, &guard.identity)?;
+            if let Some(context) = &guard.document {
+                context.revalidate().map_err(capnp::Error::failed)?;
+                guard
+                    .state
+                    .services
+                    .committed_documents
+                    .as_ref()
+                    .ok_or_else(|| {
+                        capnp::Error::failed("native private document owner ended".into())
+                    })?
+                    .authorize(context)
+                    .map_err(capnp::Error::failed)?;
+                context.revalidate().map_err(capnp::Error::failed)?;
+            }
         }
         Ok(())
     }
@@ -11195,6 +11344,8 @@ pub(super) fn spawn_configured(
                         );
                     })
                 };
+                #[cfg(any(test, feature = "test-support"))]
+                report_retired_broker_owners(&state, &directories);
                 match run {
                     Ok(()) => return,
                     Err(panic) => {
@@ -11208,6 +11359,24 @@ pub(super) fn spawn_configured(
     fanout.attach_capnp(attached_state);
 
     Ok(thread)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn report_retired_broker_owners(
+    state: &Arc<CapnpBrokerState>,
+    directories: &Rc<LocalActionDirectoryRegistry>,
+) {
+    if std::env::var_os("TILO_IN_PROCESS_TEST_ROOT").is_some() {
+        eprintln!(
+            "native broker retired LocalSet: state refs={}, directory refs={}, registered={:?}",
+            Arc::strong_count(state),
+            Rc::strong_count(directories),
+            directories
+                .directories
+                .try_borrow()
+                .map(|entries| entries.len()),
+        );
+    }
 }
 
 /// Most broker threads a session starts after one unwound, before the
@@ -11593,31 +11762,47 @@ async fn authenticate_launcher_handoff(
     // race. A direct tilo-launcher command never obtains a record and fails
     // closed instead of becoming a way around admin/admission checks.
     for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
-        if services.launcher.as_ref().is_some_and(|service| {
-            service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
-        }) {
-            let creation = services
-                .launcher
-                .as_ref()
-                .ok_or_else(|| LaunchRefusal {
-                    error: capnp::Error::failed("launcher custody ended".into()),
-                    peer: peer.clone(),
-                    answerable: true,
-                })?
-                .application_creation_evidence(pid, &handoff.app_id, &handoff.workspace_id)
-                .map_err(|error| LaunchRefusal {
-                    error: capnp::Error::failed(error),
-                    peer: peer.clone(),
-                    answerable: true,
-                })?;
-            return Ok(media_process.and_then(|process| {
-                native_media::LocalAppConnection::attested(
-                    handoff.app_id,
-                    handoff.workspace_id,
-                    process,
-                    creation,
+        let launch = services
+            .launcher
+            .as_ref()
+            .map(|service| {
+                service.authenticated_launch(pid, &handoff.app_id, &handoff.workspace_id)
+            })
+            .transpose()
+            .map_err(|error| LaunchRefusal {
+                error: capnp::Error::failed(error),
+                peer: peer.clone(),
+                answerable: !handoff.executing_peer,
+            })?
+            .flatten();
+        if let Some(launch) = launch {
+            #[cfg(target_os = "linux")]
+            let media_process = if handoff.executing_peer {
+                Some(
+                    process_binding::bind(stream, media_process, services, pid, &handoff)
+                        .await
+                        .map_err(|error| LaunchRefusal {
+                            error,
+                            peer: peer.clone(),
+                            answerable: false,
+                        })?,
                 )
-            }));
+            } else {
+                media_process
+            };
+            #[cfg(not(target_os = "linux"))]
+            if handoff.executing_peer {
+                return Err(LaunchRefusal {
+                    error: capnp::Error::failed("executing custody requires Linux".into()),
+                    peer,
+                    answerable: false,
+                });
+            }
+            return Ok(native_media::LocalAppConnection::from_launch(
+                handoff,
+                media_process,
+                launch,
+            ));
         }
         if attempt < LAUNCH_RECORD_RACE_RETRIES {
             tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
@@ -11633,7 +11818,7 @@ async fn authenticate_launcher_handoff(
     Err(LaunchRefusal {
         error: capnp::Error::failed(error.into()),
         peer,
-        answerable: true,
+        answerable: !handoff.executing_peer,
     })
 }
 
@@ -11794,6 +11979,7 @@ async fn drive_connection(
         peer_id,
     });
     let rpc = RpcSystem::new(network, Some(client.client));
+    let _disconnect = DisconnectOnDrop(Some(rpc.get_disconnector()));
     rpc.await
 }
 
@@ -11830,6 +12016,7 @@ pub mod tests {
         reason = "test scenarios and fixtures: a failed unwrap is the assertion, and each scenario keeps its setup, guards and awaits in one readable body"
     )]
     use super::*;
+    include!("certified_person_fixture.rs");
     #[cfg(test)]
     use crate::test_support::WorkspaceTree;
     use crate::test_support::WorkspaceTreeHandle;
@@ -13013,6 +13200,62 @@ pub mod tests {
                         .await
                         .err()
                         .expect("ordinary admitted channel cannot mint local process custody");
+                    assert!(error.to_string().contains("launcher-attested"), "{error}");
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_clipboard_raw_admitted_channel_cannot_mint_local_custody() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let channel = fixture.invocation_channel();
+                for command in [
+                    runtime_collab::file_clipboard::Command::Snapshot,
+                    runtime_collab::file_clipboard::Command::Publish {
+                        sources: vec![uuid::Uuid::new_v4().to_string()],
+                        cut: true,
+                    },
+                ] {
+                    let mut request = channel.local_file_clipboard_request();
+                    request
+                        .get()
+                        .set_command_json(&serde_json::to_vec(&command).expect("command"));
+                    request.get().set_on_behalf_of(&[]);
+                    let error = request
+                        .send()
+                        .promise
+                        .await
+                        .err()
+                        .expect("unattested channel must be refused");
+                    assert!(error.to_string().contains("launcher-attested"), "{error}");
+                }
+            })
+            .await;
+    }
+
+    #[cfg(test)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn audio_output_raw_admitted_channel_cannot_open_or_write_host_pcm() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let channel = fixture.invocation_channel();
+                for command in [
+                    runtime_collab::audio_output::Command::Open {},
+                    runtime_collab::audio_output::Command::Write {
+                        generation: 1,
+                        sequence: 1,
+                        samples: vec![123; 1920],
+                    },
+                ] {
+                    let mut rpc = channel.audio_output_command_request();
+                    rpc.get().set_command(&command.encode().unwrap());
+                    let error = rpc.send().promise.await.err().expect(
+                        "an admitted remote/raw route cannot manufacture launcher process custody",
+                    );
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
             })
@@ -14314,6 +14557,7 @@ pub mod tests {
                 state: state.clone(),
                 route: route.clone(),
                 identity: native.admitted,
+                document: None,
             }),
             rx: Rc::new(AsyncMutex::new(queued)),
         });
@@ -15538,6 +15782,15 @@ pub mod tests {
             .expect("cancellable job");
         let refresh_invocation = invocations.try_recv().expect("job invocation");
         assert_eq!(refresh_invocation.id, refresh.id);
+        let retained_cancellation = state
+            .pending_invocations
+            .lock()
+            .expect("pending")
+            .get(&refresh.id)
+            .expect("refresh")
+            .cancellation_fence
+            .clone();
+        assert!(!retained_cancellation.load(Ordering::Acquire));
         assert!(state.request_cancellation(refresh.id, "stranger").is_err());
         state
             .request_cancellation(refresh.id, "owner")
@@ -15565,6 +15818,10 @@ pub mod tests {
             now,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(1),
+        );
+        assert!(
+            retained_cancellation.load(Ordering::Acquire),
+            "the retained worker observes cancellation even after expiry removes the pending job"
         );
         assert!(matches!(
             state.invocation_status(refresh.id),
@@ -15715,6 +15972,51 @@ pub mod tests {
     }
 
     #[test]
+    fn private_context_alias_uses_latest_exact_subscriber_without_duplicate_delivery() {
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let room = uuid::Uuid::new_v4().to_string();
+        let document = CrdtRoute::record("so.tilo.code-editor", &room, "native-project");
+        let private = CrdtRoute::record("so.tilo.code-editor", &room, "continuation:42");
+        let mut old = state.subscribe_context(&document.channel_key(), 7, None);
+        let mut sibling = state.subscribe_context(&document.channel_key(), 8, None);
+        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+        let mut current = state.subscribe_context(&document.channel_key(), 7, None);
+        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+        state.alias_private_context(&document.channel_key(), &private.channel_key(), 99);
+        let request = ui::collaboration::handoff::HandoffRequest::Checkpoint { token: 3 };
+        state.fanout_to_route(
+            &CollabEvent::Handoff {
+                request: request.clone(),
+            },
+            u64::MAX,
+            &private,
+        );
+        assert!(
+            matches!(current.try_recv(), Ok(ContextEnvelope::Handoff(message))
+            if ui::collaboration::handoff::HandoffRequest::decode(&message) == Some(request))
+        );
+        assert!(
+            current.try_recv().is_err(),
+            "a renewed stream must receive each private view once"
+        );
+        assert!(
+            old.try_recv().is_err(),
+            "superseded context receiver cannot receive private views"
+        );
+        assert!(
+            sibling.try_recv().is_err(),
+            "sharing the document does not grant another window's private stream"
+        );
+    }
+
+    #[test]
     fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -15806,6 +16108,7 @@ pub mod tests {
             .with_group("task:release", "Release", "task"),
             last_activity: std::time::Instant::now(),
             cancellation_requested_at: None,
+            cancellation_fence: Arc::new(AtomicBool::new(false)),
         };
         let update = tilo_actions::InvocationUpdate::Failed {
             invocation,

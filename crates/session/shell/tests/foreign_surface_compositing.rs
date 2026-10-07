@@ -377,6 +377,110 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
     }
 }
 
+/// Closing the final window must preserve the empty desktop on every produced
+/// frame, including the first frame before any closing animation has settled.
+/// This checks scene production and retained rasterisation, not physical KMS.
+#[test]
+fn last_window_close_keeps_every_produced_frame_nonblack() {
+    let surface_id = 0x70_0000_0031;
+    store().forget(surface_id);
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tab_binding::adopt_toplevel(
+        &mut tree,
+        surface_id,
+        Some("org.example.last-window".into()),
+    );
+    let workspace = tree.desktop.active;
+    let mut fb = FrameBuilder::with_tree(tree, (W, H));
+    create_fixture_tab_records(&fb);
+    settle(&mut fb);
+    let rect = tile_rect(&mut fb, surface_id);
+    let pixels = solid(
+        as_u32(rect.width()),
+        as_u32(rect.height()),
+        (0xE0, 0x18, 0xA0),
+    );
+    store().publish_rgba(
+        surface_id,
+        &pixels,
+        as_u32(rect.width()),
+        as_u32(rect.height()),
+    );
+    quiesce(&mut fb, surface_id);
+
+    let mut retained = OffscreenRenderer::new(W, H);
+    let mut oracle = OffscreenRenderer::new(W, H);
+    fb.relayout();
+    let before = fb.paint_with_damage();
+    let before_pixels = retained.render_resilient(&before.scene, Color::BLACK);
+    let backdrop = OffscreenRenderer::sample(&before_pixels, W, W - 8, H - 8);
+    assert!(backdrop.0 > 0 || backdrop.1 > 0 || backdrop.2 > 0);
+    assert_eq!(backdrop.3, 255);
+    fb.with_chrome(|chrome| {
+        shell::shell::window_actions::close_active_tab(chrome).expect("ordinary close lifecycle");
+    });
+    let mut doc = automerge::AutoCommit::new();
+    for frame_index in 0..16 {
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        let painted = fb.paint_with_damage();
+        {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            assert_eq!(tree.desktop.active, workspace, "close must retain Home");
+            assert_eq!(tree.desktop.workspaces.len(), 1);
+            assert!(
+                tree.desktop.workspaces[0]
+                    .strips
+                    .iter()
+                    .all(|strip| strip.window_groups.is_empty()),
+                "close must not fabricate a replacement window"
+            );
+        }
+        assert!(fb.foreign_surface_rect(surface_id).is_none());
+        if let Some(regions) = &painted.damage_regions {
+            let rectangles = regions
+                .iter()
+                .map(|r| {
+                    vello::kurbo::Rect::new(
+                        f64::from(r.x),
+                        f64::from(r.y),
+                        f64::from(r.x.saturating_add(r.width)),
+                        f64::from(r.y.saturating_add(r.height)),
+                    )
+                })
+                .collect::<Vec<_>>();
+            retained.render_damage_regions_gpu_wait(&painted.scene, Color::BLACK, &rectangles);
+        } else {
+            retained.render_gpu_wait(&painted.scene, Color::BLACK);
+        }
+        let actual = retained.readback_current();
+        let expected = oracle.render_resilient(&painted.scene, Color::BLACK);
+        assert!(
+            actual
+                .iter()
+                .zip(&expected)
+                .all(|(a, b)| a.abs_diff(*b) <= 2),
+            "retained frame {frame_index} must match its exact full-render oracle"
+        );
+        assert_eq!(
+            OffscreenRenderer::sample(&actual, W, W - 8, H - 8),
+            backdrop,
+            "frame {frame_index} must preserve the painted desktop backdrop"
+        );
+        assert!(
+            actual
+                .chunks_exact(4)
+                .filter(|pixel| pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0)
+                .count()
+                > usize::try_from(W * H / 2).expect("viewport fits usize"),
+            "frame {frame_index} must never become a black output"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    store().forget(surface_id);
+}
+
 /// Paint until the widget tree reaches a steady state.
 ///
 /// Splicing a tab plays the spawn fade, which legitimately keeps
