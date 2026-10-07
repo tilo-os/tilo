@@ -126,3 +126,5 @@ chip-graph-node-missing = This operator no longer exists
 chip-graph-port-missing = This output port no longer exists
 
 chip-synthetic-fixture = Synthetic contract example · No numerical or hardware experiment is represented.
+
+chip-tensor-shape = Tensor (F32): { $shape }

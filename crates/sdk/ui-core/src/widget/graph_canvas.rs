@@ -44,7 +44,7 @@ impl GraphCanvas {
             let mut height = 0.0_f32;
             for (index, &(x, y, w)) in placements.iter().enumerate() {
                 let size = cx
-                    .measure(
+                    .measure_child(
                         index,
                         Size {
                             width: MeasureConstraint::Exact(w),

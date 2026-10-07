@@ -387,13 +387,30 @@ fn add_declaration() -> ActionDecl<OperatorGraph> {
         "add-node",
         "Add operator",
         vec![
-            text("node", "Stable node identity"),
-            text("kind", "Operator kind"),
+            text("node", "Stable node identity").with_schema(serde_json::json!({
+                "type":"string", "minLength":1, "maxLength":64,
+                "pattern":"^[A-Za-z0-9_-]+$", "examples":["input"]
+            })),
+            text("kind", "Operator kind").with_choices([
+                "input",
+                "gate_input",
+                "norm_weight_input",
+                "rms_norm",
+                "apply_norm_weight",
+                "silu",
+                "multiply",
+                "projection_input",
+            ]),
             ActionParam::required(
                 "shape",
                 ParamType::Array,
                 "F32 tensor shape, up to four positive dimensions",
-            ),
+            )
+            .with_schema(serde_json::json!({
+                "type":"array", "minItems":1, "maxItems":4,
+                "items":{"type":"integer", "minimum":1, "maximum":65535},
+                "examples":[[1]]
+            })),
             ActionParam::required(
                 "normalization_width",
                 ParamType::Integer,

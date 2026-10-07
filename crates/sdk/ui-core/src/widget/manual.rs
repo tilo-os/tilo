@@ -279,6 +279,17 @@ impl ManualContext<'_> {
         index: usize,
         proposal: Size<MeasureConstraint>,
     ) -> Result<ChildMeasurement, WidgetLayoutError> {
+        self.measure_child(index, proposal)
+    }
+
+    /// Measure a retained child using layout constraints, without changing geometry.
+    /// # Errors
+    /// Rejects invalid indices/proposals and propagates bounded layout errors.
+    pub fn measure_child(
+        &mut self,
+        index: usize,
+        proposal: Size<MeasureConstraint>,
+    ) -> Result<ChildMeasurement, WidgetLayoutError> {
         let (root, baseline) = self
             .children
             .get(index)
