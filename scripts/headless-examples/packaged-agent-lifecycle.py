@@ -918,6 +918,10 @@ class HeldProvider:
             raise RuntimeError("owned provider fixture did not stop")
 
 
+class ProofTimeout(RuntimeError):
+    """A bounded observation timed out, without claiming effect failure."""
+
+
 def wait_for(label, predicate, process=None, timeout=30):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -927,7 +931,7 @@ def wait_for(label, predicate, process=None, timeout=30):
         if result:
             return result
         time.sleep(0.1)
-    raise RuntimeError(f"timed out waiting for {label}")
+    raise ProofTimeout(f"timed out waiting for {label}")
 
 
 def run(binary, args, env):
@@ -1159,7 +1163,8 @@ def invoke(socket, action, args=None):
     return response["answer"]
 
 
-def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None):
+def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
+                  diagnostic_path=None):
     """Observe the original invocation; admission is not completed work."""
     receipt = acknowledgement.get("receipt")
     if not isinstance(receipt, dict):
@@ -1167,13 +1172,19 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None)
     original = receipt.get("update", {}).get("invocation")
     if not original:
         raise RuntimeError("ordinary action invocation identity is absent")
+    states = {}
+    broker_identity = None
+    unchanged = True
 
     def completed():
-        nonlocal receipt
+        nonlocal receipt, broker_identity, unchanged
         update = receipt.get("update")
         if not isinstance(update, dict) or update.get("invocation") != original:
+            unchanged = False
             raise RuntimeError("ordinary action observation changed its invocation")
         state = update.get("state")
+        if state in {"accepted", "progress", "item", "succeeded", "failed", "cancelled"}:
+            states[state] = min(states.get(state, 0) + 1, 10000)
         if state == "succeeded":
             return receipt
         if state in {"failed", "cancelled"}:
@@ -1187,6 +1198,7 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None)
         broker_id = receipt.get("broker_invocation_id")
         if not isinstance(broker_id, int) or isinstance(broker_id, bool) or broker_id <= 0:
             raise RuntimeError("pending ordinary action has no observable broker identity")
+        broker_identity = broker_id if broker_id <= 2**64 - 1 else None
         response = call(socket, {"op": "actions_status", "invocation_id": broker_id})
         if "err" in response:
             raise RuntimeError("ordinary action terminal observation was refused")
@@ -1195,7 +1207,25 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None)
             raise RuntimeError("ordinary action terminal receipt is absent")
         return None
 
-    return wait_for("original ordinary action terminal success", completed, process)
+    try:
+        return wait_for("original ordinary action terminal success", completed, process)
+    except ProofTimeout as error:
+        if diagnostic_path is not None:
+            # Whitelist only inert correlation and closed lifecycle counters.
+            # Never serialize a receipt, result, error, prompt or action text.
+            safe_original = original if isinstance(original, str) and re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", original
+            ) else None
+            try:
+                diagnostic_path.write_text(json.dumps({
+                    "original_invocation": safe_original,
+                    "broker_invocation_id": broker_identity,
+                    "states_seen": dict(sorted(states.items())),
+                    "original_unchanged": unchanged,
+                }, indent=2) + "\n")
+            except OSError:
+                error.add_note("closed terminal diagnostic could not be written")
+        raise
 
 
 def chrome_state(socket):
@@ -1412,7 +1442,7 @@ def start_managed_agent(socket, room, agent, process):
     return {"semantic": True, "invocation": terminal_invocation(receipt)}
 
 
-def agent_reply_observation(socket, room, record, parent, agent, process):
+def agent_reply_observation(socket, room, record, parent, agent, process, *, diagnostic_path=None):
     """Read the canonical reply in memory and return content-free evidence."""
     reads = [row for row in actions(socket)
              if row.get("application") == "so.tilo.chat"
@@ -1421,7 +1451,8 @@ def agent_reply_observation(socket, room, record, parent, agent, process):
              and row.get("operation") == "read-messages"]
     for read in reads:
         receipt = wait_terminal(
-            socket, invoke(socket, read, {"pageSize": 32}), process
+            socket, invoke(socket, read, {"pageSize": 32}), process,
+            diagnostic_path=diagnostic_path,
         )
         value = terminal_value(receipt)
         content = value.get("content")
@@ -1442,6 +1473,21 @@ def agent_reply_observation(socket, room, record, parent, agent, process):
             return {"typed_actor": reply["author"], "parent": parent,
                     "reply_id": reply["id"]}
     return None
+
+
+def wait_for_agent_reply(socket, room, record, parent, agent, process, output):
+    """Preserve a fresh scene and closed lifecycle evidence before cleanup."""
+    try:
+        return wait_for("Agent's canonical direct Message reply", lambda: agent_reply_observation(
+            socket, room, record, parent, agent, process,
+            diagnostic_path=output / "managed-reply-terminal-timeout.json"), process)
+    except ProofTimeout as error:
+        try:
+            require_ok(call(socket, {"op": "snapshot", "path": str(
+                output / "managed-reply-timeout.png")}))
+        except Exception:
+            error.add_note("fresh reply timeout snapshot could not be captured")
+        raise
 
 
 def canonical_physical_message(socket, room, record, expected, process):
@@ -2445,8 +2491,7 @@ def managed_task_and_message_lifecycle(
                        applied_frontier, process)
     wait_for("rebuilt task model request", lambda: provider.request_count() >= 3, process)
     provider.release_through(2)
-    reply = wait_for("Agent's canonical direct Message reply", lambda: agent_reply_observation(
-        socket, room, record, parent, agent, process), process)
+    reply = wait_for_agent_reply(socket, room, record, parent, agent, process, output)
 
     stopped_from = read_task(socket, room, task_id, process)
     stop_after = stopped_from.get("after_revision")

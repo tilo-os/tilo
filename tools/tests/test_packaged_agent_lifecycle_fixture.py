@@ -24,6 +24,54 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_terminal_timeout_diagnostic_is_closed_and_preserves_original_failure(self):
+        original = "00000000-0000-0000-0000-000000000021"
+        private = "private prompt result error and output"
+        for identity in [original, private]:
+            receipt = {"broker_invocation_id": 37, "update": {
+                "invocation": identity, "state": "accepted", "result": private,
+                "error": private, "text": private}, "private": private}
+            timeout = PROOF.ProofTimeout("bounded observation timeout")
+
+            def expire(_label, completed, _process):
+                self.assertIsNone(completed())
+                self.assertIsNone(completed())
+                raise timeout
+
+            with tempfile.TemporaryDirectory() as directory:
+                path = pathlib.Path(directory) / "closed.json"
+                with patch.object(PROOF, "wait_for", side_effect=expire), \
+                        patch.object(PROOF, "call", return_value={"answer": {"receipt": receipt}}), \
+                        self.assertRaises(PROOF.ProofTimeout) as raised:
+                    PROOF.wait_terminal("socket", {"receipt": receipt}, None, diagnostic_path=path)
+                self.assertIs(raised.exception, timeout)
+                self.assertEqual(json.loads(path.read_text()), {
+                    "original_invocation": original if identity == original else None,
+                    "broker_invocation_id": 37,
+                    "states_seen": {"accepted": 2},
+                    "original_unchanged": True,
+                })
+                self.assertNotIn(private, path.read_text())
+
+    def test_reply_timeout_captures_fresh_scene_without_masking_failure(self):
+        timeout = PROOF.ProofTimeout("original timeout")
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            with patch.object(PROOF, "wait_for", side_effect=timeout), \
+                    patch.object(PROOF, "call", return_value={"ok": True}) as calls, \
+                    patch.object(PROOF, "require_ok"), \
+                    self.assertRaises(PROOF.ProofTimeout) as raised:
+                PROOF.wait_for_agent_reply("socket", "room", "", "parent", "agent", None, output)
+            self.assertIs(raised.exception, timeout)
+            calls.assert_called_once_with("socket", {"op": "snapshot", "path": str(
+                output / "managed-reply-timeout.png")})
+            with patch.object(PROOF, "wait_for", side_effect=timeout), \
+                    patch.object(PROOF, "call", side_effect=RuntimeError("private error")), \
+                    self.assertRaises(PROOF.ProofTimeout) as raised:
+                PROOF.wait_for_agent_reply("socket", "room", "", "parent", "agent", None, output)
+            self.assertIs(raised.exception, timeout)
+            self.assertNotIn("private", " ".join(raised.exception.__notes__))
+
     def test_native_delivery_diagnostic_is_bounded_closed_and_content_free(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory)
