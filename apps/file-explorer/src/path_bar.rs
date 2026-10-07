@@ -635,7 +635,7 @@ mod tests {
                 expected.last().copied()
             );
             let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/sdk/ui-core/assets/fonts"),
+                ui::font_catalog::checkout_root(),
                 "en-US",
             );
             let mut text = TextRenderer::with_font_catalog(&catalog)

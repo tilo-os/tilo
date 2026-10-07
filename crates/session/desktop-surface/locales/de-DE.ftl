@@ -986,3 +986,25 @@ notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
 notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = Für dieses Weckereignis
 notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
+
+activity-task-review-unavailable = Authentifizierte Aufgabensteuerung ist nicht verfügbar. Der bisherige Verlauf bleibt lesbar.
+activity-task-review-history = Aktionsverlauf prüfen
+activity-task-steer = Anweisungen ändern
+activity-task-cancel-run = Diesen Lauf abbrechen
+activity-task-retry-run = Aufgabe erneut versuchen
+activity-task-direction-send = Anweisungen senden
+activity-task-direction-close = Zurück zur Aufgabe
+activity-task-direction-label = Öffentliche Aufgabenanweisungen
+activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
+activity-task-direction-observation = Anweisungen für Lauf { $epoch } nach Revision { $revision }. Ein geänderter Lauf muss erneut geprüft werden.
+activity-task-review-saving = Warten auf das Speichern durch den Arbeitsbereich…
+activity-task-review-saved = Im Arbeitsbereich gespeichert. Die Anwendung durch den Agenten wird separat angezeigt.
+activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
+
+activity-task-next = Nächste Aufgabe
+activity-task-previous = Vorherige Aufgabe
+activity-task-review-source = Arbeitsbereich · Generation { $generation } · Stand { $time }
+activity-task-review-status = { $status } · Agent: { $agent }
+activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
+activity-task-review-direction = { $author }: { $text }
+activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.

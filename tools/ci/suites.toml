@@ -332,7 +332,7 @@ suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py"]
 
 [[group]]
 name = "dist"
-inputs = ["dist/"]
+inputs = ["dist/", "os/registry-runtime-publisher.hex"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
@@ -525,11 +525,6 @@ suites = [
 # listed in the entry's optional `scope`: then only the scope's `filter`
 # (a nextest filterset) within its `test` target runs for that package.
 
-[[cargo]]
-package = "file-explorer"
-# Breadcrumb geometry shapes labels with the shipped toolkit font fixture.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/file-explorer/src/path_bar.rs"]
 
 [[cargo]]
 package = "tilo-ui"
@@ -561,17 +556,6 @@ scope = { inputs = [
   "crates/sdk/tilo-app/src/framework/app.rs",
 ], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
 
-[[cargo]]
-package = "ui-examples"
-# Gallery and type specimen shots render with the toolkit's checked-in fonts.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = [
-  "crates/dev/ui-examples/examples/gallery_shots.rs",
-  "crates/dev/ui-examples/examples/type_specimen_shots.rs",
-  "crates/dev/ui-examples/examples/distinct_letters_shots.rs",
-  "crates/dev/ui-examples/examples/distinct_letters_specimen.rs",
-  "crates/dev/ui-examples/examples/reading_face_shots.rs",
-]
 
 [[cargo]]
 package = "tilo-app-package"
@@ -808,8 +792,8 @@ readers = ["crates/agent/local-model-service/src/main.rs"]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/sdk/font-catalog/src/lib.rs"]
+inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
+readers = ["crates/sdk/font-catalog/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
@@ -847,17 +831,13 @@ scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fca
 
 [[cargo]]
 package = "notes"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
+inputs = ["apps/settings/shots/settings.png"]
 readers = [
   "apps/notes/src/app.rs",
-  "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/src/scenario.rs",
   "apps/notes/tests/effects.rs",
 ]
 
-[[cargo]]
-package = "ebook"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/ebook/src/app/interaction_tests.rs"]
 
 [[cargo]]
 package = "shell"
@@ -873,30 +853,14 @@ inputs = [
 ]
 readers = [
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
-  "crates/session/shell/examples/support/populated_shell_fixture.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
-  "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
-  "crates/session/shell/src/shell/test_support.rs",
-  "crates/session/shell/tests/input_method_wire.rs",
 ]
 
-[[cargo]]
-package = "chat"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/chat/src/component_tests.rs"]
 
-[[cargo]]
-package = "word-processor"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/word-processor/tests/canonical_component.rs"]
 
-[[cargo]]
-package = "tilo-desktop"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
 package = "tilo-relay-protocol"

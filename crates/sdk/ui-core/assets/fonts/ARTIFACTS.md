@@ -1,8 +1,8 @@
 # Preparing immutable font assets
 
-The font files in this catalog are being migrated to immutable artifact storage.
-This preparation change retains the source fonts while establishing a verified
-cache and an offline materialization path for their build consumers.
+Font bytes live in immutable artifact storage. Source checkouts retain their
+reviewed metadata, license notices and provenance. Native builds and packaging
+materialize a verified catalog outside the source tree before using its fonts.
 
 The artifacts.json inventory pins all 37 font files by size, SHA-256 and public
 immutable URL. Each URL uses the full SHA-256 as both its package version and part
@@ -40,7 +40,17 @@ The product scope continues to carry 35 fonts under OFL or LPPL; the OS carries
 carry 37. No font is subset, converted, renamed internally or replaced. Installed
 catalogs retain all selected font bytes and notices and need no runtime fetch.
 
-Source font removal follows integration of preparation into all build and source
-distribution paths, including native tests, SDK, Windows, macOS, Android, web and
-the OS image. Until those paths are tested, the retained font pins are temporary
-migration inventory.
+Cargo source builds prepare the fixture catalog through tilo-font-catalog's
+build script. SDK packaging prepares the selected checkout's product catalog;
+OS staging prepares its OS catalog. No application downloads fonts at runtime.
+CI prewarms the digest cache and runs subsequent preparation offline.
+
+For a self-contained offline SDK, set TILO_FONT_CATALOG_ROOT to a prepared
+catalog whose manifest matches this checkout. The build verifies every selected
+font and license before accepting it. Set CARGO_NET_OFFLINE=true or
+TILO_FONT_ASSETS_OFFLINE=1 to require offline preparation. A fresh checkout with
+neither a prewarmed cache nor a prepared catalog fails clearly.
+
+Font regeneration scripts write candidates to target/font-candidates (or --out).
+Review and publish changed bytes with corresponding manifest and artifact pins;
+never write generated fonts into this metadata directory.
