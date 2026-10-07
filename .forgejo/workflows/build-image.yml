@@ -1539,7 +1539,7 @@ jobs:
       # image assemble. The dev image step takes the result from the builder's
       # cache. A sampler records the builder's peak memory while they overlap.
       - name: Start the dev binaries compile
-        if: steps.release-mode.outputs.dev-fast == 'true'
+        if: steps.release-mode.outputs.dev-fast == 'true' && needs.plan.outputs.signed-development-board != 'true'
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           COMPILER_CACHE: ${{ steps.compiler-cache.outputs.mode }}
@@ -2295,44 +2295,53 @@ jobs:
           # tilo-vm refuses a base older than the VM's; its config carries
           # the fixed dev epoch, so the commit time orders dev bases.
           created="$SOURCE_DATE_ISO"
-          child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
-          cache=()
-          if [[ $COMPILER_CACHE == shared ]]; then
-            cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
-                   --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
+          digest=""
+          if [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]]; then
+            child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
+            cache=()
+            if [[ $COMPILER_CACHE == shared ]]; then
+              cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                     --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
+            fi
+            metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
+            docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+              -f os/Containerfile.dev \
+              --build-arg "BASE_IMAGE=$base" \
+              --build-arg "RPMS_REF=$RPMS_REF" \
+              --build-arg "BASE_REF=$BASE_REF" \
+              --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
+              --build-arg "TILO_BASE_CREATED=$created" \
+              --build-arg "TILO_CARGO_FRESHNESS=$TILO_CARGO_FRESHNESS" \
+              --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_JOBS:-$TILO_CARGO_JOBS}" \
+              --build-arg TILO_DEV_RUST_LTO=off \
+              --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+              "${cache[@]}" \
+              --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.base.name=$base" \
+              --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
+              --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
+              --label sh.tilo.dev.base-trust=integration \
+              --metadata-file "$metadata" \
+              --output "type=image,name=$child,push=true,compression=zstd,compression-level=1" \
+              .
+            digest="$(jq -er '."containerimage.digest"' "$metadata")"
+            echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
+            # No rewrite-timestamp above: the board builds take this image's
+            # layers from this builder, and rewritten ones would be different
+            # blobs, every one of which the boards would push again.
           fi
-          metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
-          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
-            -f os/Containerfile.dev \
-            --build-arg "BASE_IMAGE=$base" \
-            --build-arg "RPMS_REF=$RPMS_REF" \
-            --build-arg "BASE_REF=$BASE_REF" \
-            --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
-            --build-arg "TILO_BASE_CREATED=$created" \
-            --build-arg "TILO_CARGO_FRESHNESS=$TILO_CARGO_FRESHNESS" \
-            --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_JOBS:-$TILO_CARGO_JOBS}" \
-            --build-arg TILO_DEV_RUST_LTO=off \
-            --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
-            "${cache[@]}" \
-            --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.base.name=$base" \
-            --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
-            --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
-            --label sh.tilo.dev.base-trust=integration \
-            --metadata-file "$metadata" \
-            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1" \
-            .
-          digest="$(jq -er '."containerimage.digest"' "$metadata")"
-          echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
-          # No rewrite-timestamp above: the board builds take this image's
-          # layers from this builder, and rewritten ones would be different
-          # blobs, every one of which the boards would push again.
           board_pids=()
           for board in $(jq -r '.[]?' <<< "${BOARDS:-[]}"); do
             name="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-$board"
-            [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]] || name="$name-signed"
-            ( sealed="$(./os/dev/build-board-image.sh "$board" "registry.tilo.so/tilo/tilo-vm@$digest" "$name" \
+            if [[ $TILO_SIGNED_DEVELOPMENT_BOARD == 1 ]]; then
+              name="$name-signed"
+              # Retain production components; add only the maintenance SSH service.
+              board_base="$base"
+            else
+              board_base="registry.tilo.so/tilo/tilo-vm@$digest"
+            fi
+            ( sealed="$(./os/dev/build-board-image.sh "$board" "$board_base" "$name" \
                   2> "$RUNNER_TEMP/tilo-board-$board.log")" \
                 && grep -F "$board:" "$RUNNER_TEMP/tilo-board-$board.log" | sed 's/^/  /' \
                 && { [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]] \
@@ -2343,12 +2352,14 @@ jobs:
                 || { tail -60 "$RUNNER_TEMP/tilo-board-$board.log"; echo "::error::the $board board image failed to build or seal"; exit 1; } ) &
             board_pids+=("$!")
           done
-          DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
-            DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
-            BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
-            BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
-            ./os/dev/publish-dev-disk.sh
-          echo "::notice::dev image published in $(( $(date +%s) - started ))s: registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci"
+          if [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]]; then
+            DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
+              DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
+              BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
+              BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
+              ./os/dev/publish-dev-disk.sh
+            echo "::notice::dev image published in $(( $(date +%s) - started ))s: registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci"
+          fi
           boards_ok=true
           for pid in "${board_pids[@]}"; do wait "$pid" || boards_ok=false; done
           # A broken board layer fails this lane after the generic dev image
