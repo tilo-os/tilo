@@ -5,6 +5,7 @@ Never stages packages, grants trust, closes windows, restarts sessions or reads 
 Run only after the deployment owner hands off the matched cohort.
 """
 import argparse
+import re
 import json
 import re
 import shlex
@@ -231,7 +232,7 @@ def fresh_browser(vm, out):
     old = {binding(r) for r in before_rows}
     opens = [r for r in vm.actions("tab.open-beside") if r.get("provider") == "actions" and r.get("id") == "tab.open-beside"]
     require(len(opens) == 1, "declared new Browser tab action unavailable")
-    invoke(vm, opens[0], {"app": BROWSER}, out, "new-browser-tab", require_job=False)
+    invoke(vm, opens[0], {"app": BROWSER, "background": True}, out, "new-browser-tab", require_job=False)
 
     def probe():
         state = vm.state()
@@ -257,6 +258,47 @@ def fresh_browser(vm, out):
     result = wait_until(probe, 60)
     require(result, "queued Open did not create a new mapped tab and record; existing page left untouched")
     return AppDoor(vm, BROWSER, "browser.page", result[0], out), result[1]
+
+
+def browser_subject(state, tab):
+    """Bind only the new public tab/record to its admitted native process lifetime."""
+    record = mapped_record(state, tab, BROWSER)
+    if record is None:
+        return None
+    proof = state.get("chrome", {}).get("native_window_provenance")
+    require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
+            and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
+            "authenticated Browser worker provenance unavailable")
+    rows = [row for row in proof["windows"] if row.get("room") == tab[0]
+            and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
+    require(len(rows) <= 1, "ambiguous authenticated Browser worker")
+    if not rows:
+        return None
+    worker = rows[0]
+    association = state["workspace_tree"]["local_app_records"][tab[1]]
+    require(worker.get("package_id") == BROWSER
+            and type(worker.get("record_instance")) is int
+            and worker["record_instance"] == association["record_instance"],
+            "Browser worker differs from the public launch record")
+    require(type(worker.get("peer_pid")) is int and worker["peer_pid"] > 0
+            and isinstance(worker.get("peer_start_time_ticks"), str)
+            and worker["peer_start_time_ticks"].isdecimal()
+            and int(worker["peer_start_time_ticks"]) > 0
+            and isinstance(worker.get("adoption_id"), str)
+            and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", worker["adoption_id"])
+            and worker["adoption_id"] != "00000000-0000-0000-0000-000000000000",
+            "Browser process lifetime or adoption unavailable")
+    return worker
+
+
+def browser_executable(shown, layer):
+    rows = [row for row in shown.get("files", []) if row.get("component") == "apps+runtime"
+            and row.get("layer") == layer and isinstance(row.get("path"), str)
+            and row["path"].startswith("/usr/share/tilo-apps/") and row["path"].endswith("/bin/browser")]
+    require(len(rows) == 1 and "link" not in rows[0]
+            and isinstance(rows[0].get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", rows[0]["sha256"]),
+            "selected signed cohort Browser executable unavailable or ambiguous")
+    return rows[0]["sha256"]
 
 
 HTTPS_FIXTURE = json.loads(Path(__file__).resolve().parents[1].joinpath("browser/fixtures/https-functional.json").read_text())
@@ -327,8 +369,13 @@ def run(args):
                 proof["results"][route] = package_flow(door, specs[route], route == "local")
     if "browser" in flows:
         door, tab = fresh_browser(vm, out)
-        mapped(vm, "browser", installed, args.uid, out)
-        proof["results"]["browser"] = dict(browser_flow(door), tab=tab)
+        worker = wait_until(lambda: browser_subject(vm.state(), tab), 60)
+        require(worker, "new Browser has no authenticated observable native worker")
+        mapped(vm, "browser", installed, args.uid, out,
+               executable=browser_executable(shown, shown["slot"]["components"]["apps+runtime"]), selected=worker)
+        require(browser_subject(vm.state(), tab) == worker, "Browser association changed during backing audit")
+        proof["results"]["browser"] = dict(browser_flow(door), tab=tab, worker=worker)
+        require(browser_subject(vm.state(), tab) == worker, "Browser association changed during HTTPS acceptance")
     require(first_json(vm.run("--json", "slot", "show"))["slot"] == shown["slot"], "cohort changed during acceptance")
     (out / "proof.json").write_text(json.dumps(proof, indent=2))
     print(json.dumps(proof))

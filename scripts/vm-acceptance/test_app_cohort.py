@@ -242,6 +242,38 @@ class Jobs(unittest.TestCase):
                 action_jobs.invoke(Untracked(), {"provider": "actions", "id": "open"}, {}, Path(directory), "open", require_job=False)
 
 
+class BrowserWorker(unittest.TestCase):
+    def current(self):
+        value = state(1, 2)
+        worker = {"room":"room", "tab_id":2, "surface_id":102, "package_id":app.BROWSER,
+                  "record_instance":12, "peer_pid":456, "peer_start_time_ticks":"12345",
+                  "adoption_id":"12345678-1234-1234-1234-123456789abc"}
+        value["chrome"] = {"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0,
+                                                     "windows":[worker]}}
+        return value, worker
+
+    def test_uses_public_record_instance_and_exact_new_surface_not_other_workers(self):
+        value, worker = self.current()
+        value["chrome"]["native_window_provenance"]["windows"].append(dict(worker, tab_id=1, surface_id=101, peer_pid=789))
+        self.assertEqual(app.browser_subject(value,("room","2","102")),worker)
+
+    def test_foreign_record_pid_lifetime_ambiguous_or_missing_provenance_refuses(self):
+        for field,bad in [("record_instance",2),("package_id",app.STORE),("peer_pid",True),
+                          ("peer_start_time_ticks",""),("adoption_id","00000000-0000-0000-0000-000000000000")]:
+            value,worker=self.current();worker[field]=bad
+            with self.assertRaises(VmError):app.browser_subject(value,("room","2","102"))
+        value,worker=self.current();value["chrome"]["native_window_provenance"]["windows"].append(dict(worker))
+        with self.assertRaises(VmError):app.browser_subject(value,("room","2","102"))
+        value,_=self.current();value["chrome"]["native_window_provenance"]["omitted"]=1
+        with self.assertRaises(VmError):app.browser_subject(value,("room","2","102"))
+
+    def test_executable_must_be_unique_in_the_current_selected_signed_layer(self):
+        row={"component":"apps+runtime","layer":"a"*64,"path":"/usr/share/tilo-apps/pkg/bin/browser","sha256":"b"*64}
+        self.assertEqual(app.browser_executable({"files":[row]},"a"*64),"b"*64)
+        for rows in [[],[dict(row,layer="c"*64)],[row,row],[dict(row,link="elsewhere")],[dict(row,sha256=None)]]:
+            with self.assertRaises(VmError):app.browser_executable({"files":rows},"a"*64)
+
+
 class FreshBrowser(unittest.TestCase):
     def vm(self, new_record=True, new_surface=True):
         class VM:
@@ -272,7 +304,7 @@ class FreshBrowser(unittest.TestCase):
             door, tab = app.fresh_browser(vm, Path(directory))
         self.assertEqual(door.bound[2], "derived:default@tab:000000000000000c")
         self.assertEqual(tab, ("room", "2", "102"))
-        self.assertEqual(vm.invoked, [("actions", "tab.open-beside", {"app": app.BROWSER})])
+        self.assertEqual(vm.invoked, [("actions", "tab.open-beside", {"app": app.BROWSER, "background": True})])
 
     def test_open_success_without_new_record_or_surface_aborts(self):
         for record, surface in ((False, False), (False, True), (True, False)):

@@ -72,6 +72,15 @@ class Backing(unittest.TestCase):
                 "status": "unrelated_not_verified_against_selected_offer"}])
             self.assertTrue(old.exists())
 
+    def test_selected_browser_hashes_actual_executable_without_namespace_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);process,resident,_=self.fixture(root)
+            (process/"comm").write_text("browser\n")
+            with self.assertRaises(FileNotFoundError):probe.probe(SUBJECT_UID,"browser",root,(123,"12345"))
+            (process/"exe").symlink_to(resident)
+            value=probe.probe(SUBJECT_UID,"browser",root,(123,"12345"))
+            self.assertEqual(value["processes"][0]["executable"]["sha256"],hashlib.sha256(resident.read_bytes()).hexdigest())
+
     def test_calculator_uses_same_exact_backing_protocol(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
