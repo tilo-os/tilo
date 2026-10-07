@@ -355,6 +355,7 @@ impl Plan {
 
 pub struct App {
     pub json: bool,
+    pub target: Option<String>,
     pub worktree: Option<Worktree>,
     pub registry_path: PathBuf,
     pub runner: SystemRunner,
@@ -606,8 +607,16 @@ impl App {
     /// # Errors
     /// No VM selected, or a name the registry does not know.
     pub fn resolve_vm(&self, explicit: Option<&str>) -> Result<Resolved, CliError> {
+        if let (Some(target), Some(name)) = (self.target.as_deref(), explicit)
+            && target != name
+        {
+            return Err(CliError::TargetConflict {
+                target: target.to_owned(),
+                name: name.to_owned(),
+            });
+        }
         let registry = self.registry()?;
-        let (name, source) = if let Some(name) = explicit {
+        let (name, source) = if let Some(name) = explicit.or(self.target.as_deref()) {
             (name.to_owned(), Source::Argument)
         } else {
             let file = self.worktree.as_ref().map(|w| w.root.join(WORKTREE_FILE));
@@ -7176,6 +7185,7 @@ mod tests {
     fn app_with_empty_registry(dir: &Path) -> App {
         App {
             json: false,
+            target: None,
             worktree: None,
             registry_path: dir.join("vms.toml"),
             runner: SystemRunner { cwd: None },
@@ -7183,6 +7193,26 @@ mod tests {
             warnings: Vec::new(),
             peer: None,
         }
+    }
+
+    #[test]
+    fn explicit_target_refuses_unknown_and_conflicting_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        std::fs::write(&app.registry_path, "default = 'default-vm'\n[vms.default-vm]\nhypervisor = 'libvirt'\n[vms.review]\nhypervisor = 'libvirt'\n").unwrap();
+        app.target = Some("review".into());
+        let selected = app.resolve_vm(None).unwrap();
+        assert_eq!(selected.name, "review");
+        assert!(matches!(selected.source, Source::Argument));
+        assert!(matches!(
+            app.resolve_vm(Some("default-vm")),
+            Err(CliError::TargetConflict { .. })
+        ));
+        app.target = Some("unknown".into());
+        assert!(matches!(
+            app.resolve_vm(None),
+            Err(CliError::UnknownVm { .. })
+        ));
     }
 
     #[test]
