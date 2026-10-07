@@ -1844,6 +1844,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d1275808335c5583ea45a4141d631dafcb36b79fa8a5e10b00e356b6af3e08a"
 
 [[package]]
+name = "chip-design"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8617,8 +8630,8 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-content",
  "tilo-contact-directory",
+ "tilo-content",
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-net",
@@ -14103,9 +14116,9 @@ dependencies = [
  "thiserror 2.0.18",
  "threshold-identity",
  "tilo-action-broker",
- "tilo-agent-participant",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-agent-participant",
  "tilo-app-state",
  "tilo-automation",
  "tilo-automerge",
@@ -15666,6 +15679,7 @@ dependencies = [
  "canvas",
  "channel-crypto",
  "chat",
+ "chip-design",
  "clocks",
  "collab-types",
  "contacts",
@@ -16172,6 +16186,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-contact-directory"
+version = "0.1.0"
+dependencies = [
+ "tilo-resource",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-content"
 version = "0.1.0"
 dependencies = [
@@ -16184,15 +16207,6 @@ dependencies = [
  "tilo-paths",
  "tilo-xdg-paths",
  "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-contact-directory"
-version = "0.1.0"
-dependencies = [
- "tilo-resource",
- "uuid",
  "workspace-hack",
 ]
 
@@ -17274,11 +17288,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-actions",
  "tilo-agent-participant",
- "tilo-browser-peer",
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-browser-peer",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-doc",
@@ -18075,6 +18089,7 @@ dependencies = [
  "camera",
  "canvas",
  "chat",
+ "chip-design",
  "clocks",
  "contacts",
  "diffmerge",
