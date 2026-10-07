@@ -1990,7 +1990,7 @@ display-device-move-changed = The device layout changed before this position was
 display-device-move-unconfirmed = The device did not confirm this position. Refresh and try again.
 
 a11y-dictation-literal = Literal dictation
-a11y-dictation-literal-desc = Keep recognised words as spoken. When off, explicit English number corrections such as “two, uh, no, three” become “three”. Names, quoted speech and other disfluencies stay unchanged.
+a11y-dictation-literal-desc = Keep recognised words as spoken. When off, explicit number corrections in English, German, French or Spanish are removed, such as “two, uh, no, three” becoming “three”. Names, quoted speech and other disfluencies stay unchanged.
 input-dictionary-title = Personal dictionary
 input-dictionary-caption = Words you add are available to spelling, the on-screen keyboard and on-device dictation. Your spelling and capitalization are preserved.
 input-dictionary-unavailable = Your local personal dictionary is unavailable in this session.

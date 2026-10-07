@@ -504,20 +504,26 @@ mod tests {
 
     #[test]
     fn final_numeric_repair_and_literal_mode_use_one_original_field_commit() {
-        for (literal, expected) in [
-            (false, "Let me grab three of these"),
-            (true, "Let me grab two, uh, no, three of these"),
+        for (language, literal, expected) in [
+            ("en", false, "Let me grab three of these"),
+            ("en", true, "Let me grab two, uh, no, three of these"),
+            ("de", false, "TiLo braucht drei Stück."),
+            ("de", true, "TiLo braucht zwei, äh, nein, drei Stück."),
+            ("fr", false, "Prendre trois exemplaires."),
+            ("fr", true, "Prendre deux, euh, non, trois exemplaires."),
+            ("es", false, "TiLo necesita tres unidades."),
+            ("es", true, "TiLo necesita dos, eh, no, tres unidades."),
         ] {
             let mut fixture = Fixture::new();
             let id = fixture.consent();
             let directory = tempfile::tempdir().unwrap();
             let pid = directory.path().join("peer");
-            let actor = super::super::runtime::repair_test_peer(&pid);
+            let actor = super::super::runtime::repair_test_peer(&pid, language);
             fixture.state.shell_field_active = true;
             fixture.state.text_commit.dictation.recognition = Some(super::super::Recognition {
                 id,
                 actor,
-                language: "en".into(),
+                language: language.into(),
                 literal,
                 phase: DictationStatus::Listening,
             });

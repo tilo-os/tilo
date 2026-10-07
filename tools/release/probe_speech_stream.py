@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import resource
+import math
+import random
 import selectors
 import struct
 import subprocess
@@ -62,6 +64,45 @@ def verified(root, receipt):
     return path
 
 
+def synthetic_noise(pcm, snr_db):
+    """Deterministic white-noise stress, not a recording of a noisy environment."""
+    samples = [sample[0] for sample in struct.iter_unpack('<h', pcm)]
+    if not samples or snr_db not in (10, 20):
+        raise ValueError('bounded nonempty PCM and reviewed SNR required')
+    signal_rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+    if signal_rms == 0:
+        raise ValueError('cannot assign an SNR to silent input')
+    generator = random.Random(0)
+    noise = [generator.gauss(0, 1) for _ in samples]
+    noise_rms = math.sqrt(sum(value * value for value in noise) / len(noise))
+    scale = signal_rms / (10 ** (snr_db / 20) * noise_rms)
+    noisy, clipped = [], 0
+    actual_noise_power = 0
+    for sample, value in zip(samples, noise):
+        raw = round(sample + value * scale)
+        changed = max(-32768, min(32767, raw))
+        clipped += changed != raw
+        actual_noise_power += (changed - sample) ** 2
+        noisy.append(changed)
+    actual_noise_rms = math.sqrt(actual_noise_power / len(samples))
+    if actual_noise_rms == 0:
+        raise ValueError('quantization made injected noise unobservable')
+    return struct.pack('<' + 'h' * len(noisy), *noisy), {
+        'kind': 'synthetic seeded Gaussian white noise; not real noisy speech',
+        'seed': 0, 'requested_snr_db': snr_db,
+        'achieved_snr_db': 20 * math.log10(signal_rms / actual_noise_rms),
+        'clipped_samples': clipped,
+    }
+
+
+def worker_failure(reply):
+    # Never copy an arbitrary peer message/transcript into an exception.
+    errors = {'protocol', 'model_unavailable', 'model_receipt', 'unsupported_language',
+              'audio_too_long', 'text_too_long', 'recognition', 'worker_stopped'}
+    error = reply.get('error')
+    return error if reply.get('kind') == 'error' and isinstance(error, str) and error in errors else 'unexpected_reply'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', required=True, type=Path)
@@ -69,7 +110,12 @@ def main():
     parser.add_argument('--worker', required=True, type=Path)
     parser.add_argument('--model', choices=('tiny', 'base'), default='base')
     parser.add_argument('--case', required=True)
+    parser.add_argument('--append-case', action='append', default=[])
+    parser.add_argument('--language', choices=('auto', 'en', 'de', 'fr', 'es', 'ar', 'zh'))
+    parser.add_argument('--vocabulary', action='append', default=[])
+    parser.add_argument('--noise-snr-db', type=int, choices=(10, 20))
     parser.add_argument('--cpus', type=int, choices=(1, 2), default=2)
+    parser.add_argument('--first-draft-seconds', type=int, choices=(1, 2, 3), default=1)
     args = parser.parse_args()
     if (os.geteuid() == 0 or os.environ.get('TILO_TEST_PRIVATE_NAMESPACE') != '1'
             or args.manifest.stat().st_size > 1048576):
@@ -82,9 +128,15 @@ def main():
     if model['sha256'] != MODELS[args.model]:
         parser.error('unexpected reviewed model')
     long_language = args.case.removeprefix('long-') if args.case.startswith('long-') else None
-    cases = [case for case in manifest['cases']
-             if (case['language'] == long_language if long_language else case['id'] == args.case)]
-    if len(cases) != (8 if long_language else 1):
+    requested = [args.case, *args.append_case]
+    if len(requested) > 6 or len(set(requested)) != len(requested) or (long_language and args.append_case):
+        parser.error('bounded unique public cases required; long fixtures cannot be appended')
+    cases = ([case for case in manifest['cases'] if case['language'] == long_language]
+             if long_language else [next((case for case in manifest['cases']
+                                          if case['id'] == name), None) for name in requested])
+    if any(case is None for case in cases):
+        parser.error('pinned public case unavailable')
+    if len(cases) != (8 if long_language else len(requested)):
         parser.error('pinned public case collection unavailable')
     model_path = verified(args.manifest.parent, model)
     chunks, references = [], []
@@ -99,7 +151,20 @@ def main():
         chunks.append(chunk)
         references.append(case['reference'])
     pcm = b''.join(chunks)
-    case = dict(cases[0], id=args.case, reference=' '.join(references))
+    if not 0 < len(pcm) <= 120 * 32000:
+        parser.error('assembled public audio exceeds production session bound')
+    original_pcm_sha256 = hashlib.sha256(pcm).hexdigest()
+    noise = None
+    if args.noise_snr_db is not None:
+        pcm, noise = synthetic_noise(pcm, args.noise_snr_db)
+    case = dict(cases[0], id='+'.join(requested), reference=' '.join(references))
+    language = args.language or case['language']
+    if len({case['language'] for case in cases}) > 1 and args.language != 'auto':
+        parser.error('assembled language transitions require explicit auto recognition')
+    public_words = set(case['reference'].split()) | {'TiLo'}
+    if (len(args.vocabulary) > 256 or any(word not in public_words for word in args.vocabulary)
+            or any(not word or len(word) > 128 or any(c.isspace() for c in word) for word in args.vocabulary)):
+        parser.error('vocabulary probe accepts bounded public reference words or unspoken TiLo only')
     if not 0 < len(pcm) <= 120 * 32000 or (long_language and len(pcm) < 60 * 32000):
         parser.error('public audio exceeds production session bound or long fixture is too short')
     cpus = sorted(os.sched_getaffinity(0))[:args.cpus]
@@ -144,7 +209,7 @@ def main():
         sampler = threading.Thread(target=sample_memory)
         sampler.start()
         sequence = 1
-        send(worker.stdin, 0, sequence, json.dumps({'language': case['language']}).encode())
+        send(worker.stdin, 0, sequence, json.dumps({'language': language, 'vocabulary': args.vocabulary}).encode())
         ready = receive(worker.stdout)
         if ready.get('kind') != 'ready' or ready.get('sequence') != sequence:
             raise RuntimeError('production worker did not become ready')
@@ -155,8 +220,9 @@ def main():
         while sent < len(pcm):
             # Model backpressure advances the source clock; samples are retained
             # and never accelerated to make latency look better.
-            if time.monotonic() - capture < sent / 32000 + 1:
-                time.sleep(max(0, sent / 32000 + 1 - (time.monotonic() - capture)))
+            interval = args.first_draft_seconds if sent == 0 else 1
+            if time.monotonic() - capture < sent / 32000 + interval:
+                time.sleep(max(0, sent / 32000 + interval - (time.monotonic() - capture)))
             available = min(len(pcm), int((time.monotonic() - capture) * 16000) * 2)
             while sent < available:
                 end = min(available, sent + 64000)
@@ -168,7 +234,14 @@ def main():
             send(worker.stdin, 2, sequence)
             draft = receive(worker.stdout)
             if draft.get('kind') != 'draft' or draft.get('sequence') != sequence:
-                raise RuntimeError('production draft failed')
+                failure = worker_failure(draft)
+                print('SPEECH_STREAM_FAILURE ' + json.dumps({
+                    'case': case['id'], 'language': language, 'stage': 'draft',
+                    'samples': sent // 2, 'worker_error': failure,
+                    'public_vocabulary': args.vocabulary, 'synthetic_noise': noise,
+                    'memory_peak': peak, 'model_sha256': model['sha256'],
+                }), flush=True)
+                raise RuntimeError('production draft failed: ' + failure)
             text = draft['text']
             if text and first_partial is None:
                 first_partial = (time.monotonic() - capture) * 1000
@@ -192,9 +265,15 @@ def main():
             raise RuntimeError('could not observe production worker memory')
         usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
         print('SPEECH_STREAM_PROBE ' + json.dumps({
-            'case': case['id'], 'model_sha256': model['sha256'], 'cpu_affinity_count': len(cpus),
+            'case': case['id'], 'language': language,
+            'public_sources': [{'id': case['id'], 'sha256': case['sha256']} for case in cases],
+            'input_pcm_sha256': hashlib.sha256(pcm).hexdigest(),
+            'original_pcm_sha256': original_pcm_sha256, 'synthetic_noise': noise,
+            'assembled_language_transition': len({case['language'] for case in cases}) > 1,
+            'public_vocabulary': args.vocabulary, 'model_sha256': model['sha256'], 'cpu_affinity_count': len(cpus),
             'profile': 'builder CPU-affinity constraint; not physical older hardware',
             'audio_seconds': len(pcm)/32000, 'cold_ms': cold_ms,
+            'first_draft_seconds': args.first_draft_seconds,
             'first_partial_from_source_start_ms': first_partial,
             'non_prefix_partial_revisions': revisions, 'drafts': drafts,
             'finalization_ms': final_ms, 'final_text': final['text'],

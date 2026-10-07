@@ -1990,7 +1990,7 @@ display-device-move-changed = Die Geräteanordnung wurde vor der Bestätigung ge
 display-device-move-unconfirmed = Das Gerät hat diese Position nicht bestätigt. Aktualisieren und erneut versuchen.
 
 a11y-dictation-literal = Wörtliches Diktieren
-a11y-dictation-literal-desc = Erkannte Wörter unverändert lassen. Wenn ausgeschaltet, werden eindeutige englische Zahlenkorrekturen wie „two, uh, no, three“ zu „three“. Namen, Zitate und andere Unflüssigkeiten bleiben unverändert.
+a11y-dictation-literal-desc = Erkannte Wörter unverändert lassen. Wenn ausgeschaltet, werden eindeutige Zahlenkorrekturen auf Deutsch, Englisch, Französisch oder Spanisch bereinigt, etwa „zwei, äh, nein, drei“ zu „drei“. Namen, Zitate und andere Unflüssigkeiten bleiben unverändert.
 input-dictionary-title = Persönliches Wörterbuch
 input-dictionary-caption = Hinzugefügte Wörter stehen der Rechtschreibprüfung, der Bildschirmtastatur und dem Diktieren auf dem Gerät zur Verfügung. Schreibweise und Groß- und Kleinschreibung bleiben erhalten.
 input-dictionary-unavailable = Dein lokales persönliches Wörterbuch ist in dieser Sitzung nicht verfügbar.

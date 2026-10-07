@@ -1138,12 +1138,16 @@ Final-text cleanup is a bounded shared speech function with a personal literal
 preference in the existing accessibility section. Settings exposes the
 `SetDictationLiteral` action and its themed toggle. The preference is captured
 when a session starts, so a later Settings change cannot change a recording's
-meaning. Explicit comma-delimited English numeric self-repairs are removed:
+meaning. Explicit comma-delimited numeric self-repairs are removed in selected English,
+German, French and Spanish (including regional tags):
 “Let me grab two, uh, no, three of these” becomes “Let me grab three of these.”
 The replacement retains its spelling. Literal mode, quotations, names,
-uncertain disfluency, decimal/padded numbers and other selected languages are
-preserved. There is no general grammar rewrite, inferred name correction,
-implicit numeric normalization or multilingual cleanup claim. Cleanup affects
+uncertain disfluency, decimal/padded numbers and unsupported languages are
+preserved. Explicit chains keep the last corrected number. Localized markers
+are narrow (`nein`, `non`, `no`); filler removal occurs only inside that numeric
+repair. There is no general grammar rewrite, inferred name correction or
+implicit numeric normalization. Automatic language retains only the English
+rule; it does not infer a cleanup language from a potentially mixed transcript. Cleanup affects
 only the final result and uses the existing original-field single-edit
 insertion and native Undo path; drafts remain provisional. All 14 focused
 headless frontend tests passed, including an actual private-pipe final through
@@ -1151,7 +1155,8 @@ the production compositor service: cleaned and literal modes each delivered
 exactly one original-field commit. The Settings semantic literal action and
 personal spelling file round-trip regressions also passed.
 
-Dictionary integration remains incomplete. The existing spellcheck file now
+The following app-scoped spelling analysis predates the landed shared reader
+integration described below. The existing spellcheck file now
 preserves accepted capitalization and offers `user_spellings()` without a
 second store; lookup remains case-insensitive and old lowercase files work.
 Sandboxed text fields still have app-and-room-scoped config: the launcher
@@ -1293,3 +1298,61 @@ delegates to
 which sends an empty `ImeSetComposition` with an invalid replacement range and
 zero selection offsets. The guarded refusal must therefore live in the
 renderer operation, rather than substituting this browser-host API.
+
+
+### Initial-context and localized cleanup qualification
+
+Public paced speech exposed an opening-context problem independently of native
+field delivery. A fresh actor now anchors the first draft timer to successful
+capture, rather than model startup or consent time. The worker independently
+defers drafts until two seconds of recorded audio have accumulated. This does
+not gate finals: stopping earlier decodes all available audio, and a deferred
+empty draft is never cached as a final. Subsequent drafts retain the one-second
+interval. Deferred input still advances the append-only audio check; shrinking
+it retires the session. The production recognition regression covers early
+finish, cache reuse and refusal of regressed audio.
+
+The new public-only paced probe can assemble up to six receipt-checked clips,
+select automatic recognition for language transitions, add accepted public
+vocabulary, and inject seeded white noise at measured 10/20 dB SNR. It records
+source/input digests, achieved SNR and clipping. Synthetic noise and concatenated
+language transitions are stress probes, not real noisy/code-switch acceptance.
+Unknown peer error strings are redacted; only the worker's typed error enum is
+reported. Four Python tests cover reproducibility, actual SNR/clipping,
+unobservable noise rejection and arbitrary-message redaction.
+
+Before the worker gate, one public Base clip per language scored English 5.26%,
+German 33.33%, French 35.00%, Spanish 13.79%, Arabic 53.33% WER and Mandarin
+39.13% CER. German hints `Hongkong`, `Kowloon`, `TiLo` restored both spoken names
+and reduced that clip's WER to 16.67%, without hallucinating unspoken TiLo.
+This is a vocabulary integration benefit on one public clip, not general
+rare-name accuracy. English at synthetic 20/10 dB scored 10.53%/21.05% WER;
+the assembled English→German transition scored 24.32% WER. None meets the
+very-high-accuracy requirement. An initial German draft failure did not
+reproduce in the subsequent complete matrix; its failing attempt is preserved,
+not removed from the qualification record.
+
+Delaying the first request to two seconds reduced English revisions from five
+to three on two CPUs (first text 2.349→3.165 s), and from four to one in the
+one-CPU comparison (3.178→4.144 s). Both began with `However,` rather than the
+incorrect `Thank you.` and kept the same final. CPU affinity on a build machine
+is not physical older-device timing. Replaying a two-pass agreement policy (inspired by the
+[upstream local-agreement approach](https://github.com/ufal/whisper_streaming))
+over earlier transcripts instead delayed first text to 4.631/7.587 s and still
+revised nine times on the long clip; it was not promoted. These measurements
+expose the remaining accuracy/latency tradeoff, not stable streaming acceptance.
+
+The actual context-gated worker was then rebuilt and run on English,
+dictionary-biased German and Arabic through its confined private pipe. All
+three completed; each returned an empty first draft below 32,000 samples and
+never emitted text below that bound. English first text was 3.374 s with three
+revisions; German first text was 3.610 s with seven revisions and both exact
+name spellings, again without unspoken TiLo; Arabic first text was 4.879 s.
+Final WER remained 5.26%, 16.67% and 53.33%, respectively. This independently
+qualifies the gate's real wire behavior and preserves the accuracy limitation.
+All three stayed below the unchanged 1 GiB address-space limit (peak
+871,300–873,172 KiB); no decoder, permission or sandbox limit was relaxed.
+
+Compact source/model/log receipts and scored results are committed in
+`dictation-quality-probes.json`; raw public probe logs remain in the task evidence
+worktree. No microphone or private dictionary contents entered these probes.
