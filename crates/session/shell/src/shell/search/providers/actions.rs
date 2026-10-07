@@ -175,6 +175,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         "desktop-tour.open"
+        | "topbar.editor.open"
         | "settings.open"
         | "settings.members.open"
         | "settings.privacy.open"
@@ -270,6 +271,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
     match id {
         "shortcut-help.toggle"
         | "desktop-tour.open"
+        | "topbar.editor.open"
         | "overview.toggle"
         | "settings.open"
         | "settings.members.open"
@@ -1009,6 +1011,15 @@ impl Action {
                 }
                 active_workspace_id(st)?;
                 st.request_axis_gather();
+                Ok(())
+            },
+        ),
+        chrome(
+            "topbar.editor.open",
+            "topbar-editor-title",
+            "topbar-editor-hint",
+            |st, _| {
+                st.request_topbar_editor();
                 Ok(())
             },
         ),
@@ -2627,6 +2638,12 @@ impl SearchProvider for ActionsProvider {
         // then keeps the matches and scores them.
         let mut candidates = ActionCandidates::default();
         for action in Action::ALL {
+            if action.id == "topbar.editor.open"
+                && ctx.chrome.fullscreen_group().is_some()
+                && ctx.chrome.is_fullscreen()
+            {
+                continue;
+            }
             // A session not running peer sync has nothing to invite into.
             if action.id.starts_with("peer.") && !ctx.chrome.peer_sync_enabled {
                 continue;
@@ -3476,6 +3493,33 @@ mod tests {
     use automerge::AutoCommit;
     use parking_lot::RwLock;
     use std::sync::Arc;
+
+    #[test]
+    fn topbar_editor_catalogue_opens_the_native_request_and_hides_in_fullscreen() {
+        let chrome = chrome_with_room();
+        let provider = ActionsProvider::new();
+        let results = action_results(&provider, &chrome);
+        let editor = results
+            .iter()
+            .find(|row| row.id == "topbar.editor.open")
+            .expect("public editor action");
+        assert_eq!(editor.operation_kind, tilo_actions::OperationKind::View);
+        assert_eq!(editor.contract, Some(tilo_actions::ActionContract::view()));
+        invoke_action(&results, "topbar.editor.open", &chrome);
+        assert!(chrome.borrow_mut().take_topbar_editor_request());
+        assert!(!chrome.borrow_mut().take_topbar_editor_request());
+        {
+            let mut state = chrome.borrow_mut();
+            state.set_fullscreen_group(Some(1));
+            state.set_fullscreen_presentation(true);
+        }
+        assert!(
+            !action_results(&provider, &chrome)
+                .iter()
+                .any(|row| row.id == "topbar.editor.open")
+        );
+        assert!(!chrome.borrow_mut().take_topbar_editor_request());
+    }
 
     fn chrome_rc() -> crate::shell::chrome_state::Chrome {
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
