@@ -171,6 +171,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "room.activity.acknowledge"
+        | "room.activity.tasks"
         | "tab.menu"
         | "tab.drag.cancel"
         | "history.compare"
@@ -230,13 +232,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
         }
-        id if id.starts_with("navigation.axis.") => {
-            contract = ActionContract::view();
-            contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
-        }
-        // Each is one step: repeating it steps again.
-        id if WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
+        // Navigation and focus each advance one step when repeated.
+        id if id.starts_with("navigation.axis.") || WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
@@ -270,6 +267,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "room.activity.acknowledge"
+        | "room.activity.tasks"
         | "tab.menu"
         | "tab.drag.cancel"
         | "history.compare"
@@ -2835,6 +2834,18 @@ impl SearchProvider for ActionsProvider {
         }
         for (id, label_key, subtitle_key, keywords_key) in [
             (
+                tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE,
+                "search-action-activity-acknowledge",
+                "search-action-activity-acknowledge-subtitle",
+                "search-action-activity-acknowledge-keywords",
+            ),
+            (
+                tilo_desktop::activity::ACTIVITY_TASKS,
+                "search-action-activity-tasks",
+                "search-action-catch-up-tasks-subtitle",
+                "search-action-activity-tasks-keywords",
+            ),
+            (
                 tilo_desktop::activity::HISTORY_COMPARE,
                 "search-action-history-compare",
                 "search-action-history-compare-subtitle",
@@ -3971,6 +3982,8 @@ mod tests {
             "room.activity.open",
             "room.activity.explore",
             "room.activity.replay",
+            "room.activity.acknowledge",
+            "room.activity.tasks",
         ] {
             assert!(
                 out.iter().any(|action| action.id == id

@@ -20,8 +20,8 @@ mod replay;
 mod testing;
 pub use index::*;
 pub use pane::{
-    ActivityView, HISTORY_COMPARE, HISTORY_RESTORE, HISTORY_UNDO, Period, RoomActivityOutcome,
-    RoomActivityPane, RoomScope,
+    ACTIVITY_ACKNOWLEDGE, ACTIVITY_TASKS, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE,
+    HISTORY_UNDO, Period, RoomActivityOutcome, RoomActivityPane, RoomScope,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors
