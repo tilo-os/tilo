@@ -13,6 +13,12 @@ spec.loader.exec_module(probe)
 
 
 class PublicSpeechStressTests(unittest.TestCase):
+    def test_quantized_review_receipt_preserves_existing_models(self):
+        for model, sha in probe.MODELS.items():
+            self.assertEqual(probe.REVIEW_MODELS[model], sha)
+        self.assertEqual(probe.REVIEW_MODELS['base-q8_0'],
+                         'c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9')
+
     def test_typed_failure_does_not_expose_peer_messages(self):
         self.assertEqual(probe.worker_failure({'kind': 'error', 'error': 'recognition'}), 'recognition')
         for reply in [{'kind': 'error', 'error': 'PRIVATE TRANSCRIPT'},

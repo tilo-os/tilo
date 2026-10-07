@@ -1416,3 +1416,104 @@ No reserved holdout clip was decoded. Audio and references stay in the owned rem
 or model weights are committed or installed. Offline regressions independently
 exercise stable/final revision accounting, language-specific scoring, source
 leakage, deterministic noise, stale/missing/failed comparisons and receipt checks.
+
+### Bounded alternative-engine experiments
+
+`probe_asr_candidate.py` and its two native fixtures reproduce the current
+remote comparison. They admit only the exact frozen public suite digest and
+explicit development cases, verify every model/audio receipt, unshare devices
+and networking, restrict affinity to one/two CPUs and retain the production
+1 GiB address-space cap. A 960 MiB live-address-space guard leaves headroom and
+kills only the owned namespace process group. RSS and virtual size are distinct;
+a guard stop is not a measured out-of-memory event or an accuracy result. The
+probe refuses vocabulary conditions it cannot implement rather than silently
+ignoring hints. No production model selection, catalogue, acceptance or trust
+store changes. Native adapters retain raw decoder strings; cleanup cannot hide
+ASR errors. The receipt ledger is `dictation-engine-comparison.json`.
+
+The controlled Whisper comparison links the exact production bridge and existing
+pinned 1.8.3 native archives, with greedy/best-of one, no previous-text context,
+no VAD, serial mel preparation, the existing CPU baseline and identical public
+input. It performs a whole-utterance pass before source-paced cumulative drafts.
+Paced finals mirror the unchanged-input cache, so their near-zero finalization
+excludes worker IPC and original-field acknowledgement. Cold load and source-start
+clock are separate. Model revisions stay
+`ggerganov/whisper.cpp@5359861c739e955e79d9a303bcbc70fb988958b1` (MIT):
+Small Q5_1 SHA `ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb`,
+Small Q8_0 SHA `49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f`,
+and Base Q8_0 SHA `c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9`.
+
+All 24 matched Base FP16/Q8 first-clip offline/paced conditions completed.
+Offline final error fractions matched in each language: English 5.26%, German
+33.33%, French 35%, Spanish 13.79%, Arabic 53.33% WER; Mandarin 39.13% CER.
+German raw finals differed in one capitalized character; the other five were
+byte-identical. Q8's sampled peak RSS was about 64 MiB lower. It is an efficiency observation,
+not a high-accuracy default or an unseen-data result. In the paced German clip,
+the first stable prefix of at least three words arrived at 19.860 s for Base and
+18.261 s for Q8. Q8 produced fourteen non-prefix revisions versus twelve; this
+retrospective stability measure supplies no confidence gate. Both Small
+quantizations crossed the headroom guard before a final on the matched French
+clip, on one and two CPUs, with both default and explicitly isolated one-arena
+allocation profiles. These guarded experiments do not supersede earlier Small
+quality observations or establish that every configuration exceeds the hard cap.
+
+The second candidate is the official
+[NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp/tree/8642eaa5cc51efbc17ad0f3e433944ba858a873f)
+CPU runtime, revision `8642eaa5cc51efbc17ad0f3e433944ba858a873f`, with required
+pinned llama.cpp dependency and SentencePiece
+`31646a467d2051eb904e0b45de3a73e91fe1c1e3`. ASR was built with microphone capture,
+GPU backends and diarization disabled, two build jobs and AVX512 disabled.
+Its Apache-2.0 and third-party notices are retained in the owned source/dependency
+checkout. Official
+[Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/tree/ea30d66debe3740a08b573244286791d423d6b3e)
+Q8 weights are pinned to `ea30d66debe3740a08b573244286791d423d6b3e`, 742090464 bytes,
+SHA `3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1`.
+The [OpenMDW-1.1 terms](https://openmdw.ai/license/1-1/) and exact model card were
+read and retained before download: license-page SHA
+`54761c8fc8f5ba52f73ba50bdb48d8ad2ff6aff9be8be94cbe83abcef69b43ba`, model-card SHA
+`a3344caadf796c084c6b90a9fa5978068fd45e3a019790bebe50489bb3c0f7b7`.
+There was no account prompt, paid service, click-through or model redistribution.
+
+The CLI offline path hit the virtual-space guard. Its file `--stream` mode is
+unpaced and is deliberately refused as a paced measurement. The separate native
+C++ adapter configures CPU threads and the language before stream creation,
+one postprocessing worker, no batching, 160 ms new-audio chunks and an unchanged
+source clock with retained backlog. The pinned public C ABI omits CPU thread
+configuration, so this review fixture uses that revision's internal C++ API;
+it is not a proposed stable application ABI. No confidence/stability output from
+the engine is used as an admission gate. Actual native streaming startup under
+the hard cap refused a **903046144-byte (861.21 MiB) CPU buffer** and exited with
+an observed runtime error before a transcript. Accuracy, first partial, stop-final
+and dictionary boosting are therefore unmeasured for this candidate. Increasing
+the cap was not attempted. The existing production worker admits only Whisper
+GGML artifacts up to 256 MiB; the 742 MB GGUF candidate also requires a separate
+reviewed backend/admission design. The GGUF ran only in the experimental native namespace; no production
+admission limit changed.
+
+The first native build's compiler launcher failed; only that isolated CMake
+configuration disabled caching and was rebuilt. The initial new wrapper's CPU
+accounting measured bwrap rather than the decoder and is explicitly invalidated.
+The corrected probe runs GNU time around the native child inside the PID
+namespace. Guard kills report CPU as unknown plus a sampled lower bound. An
+actual `/proc` process-disappearance race interrupted the matrix after nineteen
+successful records; the sampler was repaired and only five missing conditions
+were rerun. Both original failures remain in the evidence store. Missing process
+observability fails the probe; it never produces acceptance by skipping it.
+
+Two additional Base Q8 probes used the actual private production worker, one CPU
+and the predeclared German Hongkong/Kowloon/TiLo hints. The ephemeral test helper
+initially refused the missing Q8 receipt before recognition; exact size/hash
+admission was added only to that helper and remotely rebuilt. Both one- and
+two-second opening profiles completed, with final WER 16.67%, both spoken names
+present and no TiLo in the final. They are **rejected for streaming quality**:
+early drafts hallucinated URLs, and the two-second profile included unspoken
+TiLo in a draft. Its first text arrived at 3.890 s, the first retrospectively
+stable three-word prefix at 10.258 s, with four revisions, 19.093 CPU seconds,
+295644 KiB peak RSS and 800220 KiB peak virtual space. Stop-to-worker final was
+2.902 ms and excludes actual field acknowledgement. No default changed and no
+heuristic filter or confidence gate was added to hide these failures.
+
+Optional faster-whisper CPU INT8 has not been run. Its published eight-thread,
+beam-five memory figure does not establish feasibility or infeasibility under
+this one/two-thread, beam-one cap. Natural speech conditions, the 32 reserved
+holdout conditions and physical microphone/older-device acceptance remain unrun.
