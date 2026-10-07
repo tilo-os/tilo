@@ -457,3 +457,32 @@ Default environments retain their normal app actions. Closed connections,
 changed sessions, missing acknowledgement and unavailable PTYs fail visibly.
 The matched Shell, SDK runtime and Terminal versions are required for this
 owner lifecycle operation; unsupported workers do not report success.
+
+### Reviewing a Tilo package in Store
+
+Store accepts `.tapp` files through the normal file-open handoff, its shared
+“Review package” file chooser, and the declared `import-package` action. Discover
+Store's current bound resource/action IDs before invoking them; resource IDs are
+session-bound. The action accepts either a sandbox-readable `path` or a handed
+`content` hash, never both. Omitting both opens the ordinary file chooser.
+Opening or reviewing a file does not install it. The optional `reported_size`
+is a preflight refusal hint for oversized handoffs; it never replaces independent
+byte bounds, archive verification or the repository offer size.
+
+Full and thin archives use the same review: every carried payload is hash-checked,
+then canonical signed metadata is matched to an independently verified configured
+repository offer (app, version, root, publisher and thin-package size). An archive's
+own key never creates publisher trust. Unlisted private development packages are
+refused; component and runtime archives use the system updater.
+
+After the review job succeeds, `inspect-catalogue` exposes `imported_package`
+with its app, root and file version. The app details show that version, its signed
+identity and whether the app was already installed. Invoke the separate
+`install-imported-package` action with that exact `app` and `root`, or activate
+“Install reviewed package” in those details. Store rechecks the current offer
+before passing it to the existing authenticated `InstallOffer` installer. The
+installer obtains the canonical offer and validates its runtime and device target;
+reviewing a full file does not bypass fetching or authorize an unavailable runtime.
+Poll each numeric broker job to a terminal outcome, then separately inspect the
+selected app's installed state before invoking its ordinary Open action. A
+pre-existing installed app is an update/reuse test, not a first installation.

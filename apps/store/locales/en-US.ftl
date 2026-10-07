@@ -37,3 +37,27 @@ store-source-timeout = This source took too long to respond. Refresh to try agai
 store-refresh-in-progress = Sources are already refreshing. You can keep browsing.
 store-catalogue-loading = Loading more apps…
 store-catalogue-refreshed = Store refreshed.
+
+# A local archive never authorizes its own publisher.
+store-package-size-refused = Choose a Tilo app package smaller than 64 MiB.
+store-package-invalid = This file is not a valid signed Tilo package.
+store-package-app-only = Choose an app package. System components and runtimes use the system updater.
+store-package-offer-required = This package does not match a verified offer from your configured Tilo repositories. Refresh the catalogue or choose a published package.
+store-package-unavailable = The package file or app service is unavailable.
+store-package-ready = Package verified. Review its details before installing.
+store-package-review-required = Review this exact package before installing it.
+store-package-installed = Package installed. Open it from its app details.
+store-package-choose = Choose a Tilo package
+store-package-review = Review package
+store-package-install = Install reviewed package
+store-package-installing = Installing reviewed package…
+store-package-reviewing = Checking package against verified repositories…
+store-package-source-required = Choose one package file or handed content identity.
+store-package-reviewed-file = Reviewed package file
+store-package-reviewed-version = File version
+store-package-reviewed-root = Signed package identity
+store-package-reviewed-state = Installation
+store-package-reinstall = Already installed; the reviewed offer will be verified before installation.
+store-package-new-install = Not installed on this device.
+store-package-file-type = Tilo package
+store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.

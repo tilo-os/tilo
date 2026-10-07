@@ -196,7 +196,16 @@ impl StoreApp {
         if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
             refresh = refresh.on_action(binding);
         }
+        let mut import = Button::new("store.package.import", &ui::i18n!("store-package-review"));
+        if let Some(binding) = bindings::effect(&StoreEffect::ImportPackage {
+            path: None,
+            content: None,
+            reported_size: None,
+        }) {
+            import = import.on_action(binding);
+        }
         vec![
+            Box::new(import),
             Box::new(ui::search::search_button(
                 ui::search::SearchRequest::this_app(),
             )),
@@ -435,9 +444,18 @@ impl StoreApp {
     /// then keeping it on the device and removing it.
     fn detail_actions(&self, item: &StoreItem) -> Element {
         let action = item.action_kind(self.flatpak_available);
+        let imported = self
+            .imported_review
+            .as_ref()
+            .is_some_and(|(id, _, _)| id == &item.id);
+        let label = if imported {
+            ui::i18n!("store-package-install")
+        } else {
+            self.package_label(action)
+        };
         let mut primary = Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
-            &self.package_label(action),
+            &label,
         )
         .role(ButtonRole::Primary)
         .with_enabled(item.unavailable_action(action).is_none())
@@ -445,7 +463,17 @@ impl StoreApp {
             || format!("{} {}", self.package_label(action), item.name),
             |(_, reason)| reason,
         ));
-        if let Some(binding) = bindings::package(item, action) {
+        let binding = if imported {
+            self.imported_review.as_ref().and_then(|(_, root, _)| {
+                bindings::effect(&StoreEffect::InstallImportedPackage {
+                    app: item.id.clone(),
+                    root: root.clone(),
+                })
+            })
+        } else {
+            bindings::package(item, action)
+        };
+        if let Some(binding) = binding {
             primary = primary.on_action(binding);
         }
         let mut row = Row::new()
@@ -530,6 +558,25 @@ impl StoreApp {
             children.push(notice);
         }
         children.push(self.detail_summary(item, theme));
+        if let Some((app, root, version)) = &self.imported_review
+            && app == &item.id
+        {
+            children.push(Box::new(Section::titled(
+                ui::i18n!("store-package-reviewed-file"),
+                vec![Box::new(PropertyList::new(vec![
+                    Property::new(ui::i18n!("store-package-reviewed-version"), version),
+                    Property::new(ui::i18n!("store-package-reviewed-root"), root),
+                    Property::new(
+                        ui::i18n!("store-package-reviewed-state"),
+                        if item.installed.is_installed() {
+                            ui::i18n!("store-package-reinstall")
+                        } else {
+                            ui::i18n!("store-package-new-install")
+                        },
+                    ),
+                ]))],
+            )));
+        }
         if let Some(store) = &self.images
             && !item.screenshot_urls.is_empty()
         {
