@@ -1652,6 +1652,7 @@ mod tests {
         // Any Super chord is withheld from apps by client routing, so a
         // grant for it could never fire.
         assert!(is_reserved_accelerator("SUPER+KEYX", &defaults()));
+        assert!(is_reserved_accelerator("CTRL+SHIFT+KEYT", &defaults()));
     }
 
     #[test]
@@ -1672,11 +1673,11 @@ mod tests {
             shortcuts: vec![GlobalShortcut {
                 id: "talk".into(),
                 description: None,
-                preferred_trigger: Some("Ctrl+Shift+T".into()),
+                preferred_trigger: Some("Ctrl+Shift+F10".into()),
             }],
         };
         assert_eq!(service.install_approved(&request), vec!["talk"]);
-        let key = PhysicalKey::Code(KeyCode::KeyT);
+        let key = PhysicalKey::Code(KeyCode::F10);
         let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
         assert!(service.claims(&key, chord));
         assert!(!service.claims(&key, Modifiers::from(ModifiersState::CONTROL)));

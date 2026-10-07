@@ -10919,7 +10919,8 @@ mod tests {
     #[cfg(unix)]
     fn initial_catalogue_and_watch_share_one_turn_for_a_busy_native_owner() {
         let cluster = Uuid::new_v4();
-        let snapshot = notebook_action_catalogue_fixture(cluster, 1025);
+        let action_count = 2049;
+        let snapshot = notebook_action_catalogue_fixture(cluster, action_count);
         let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
         let retained = event_bytes(&CollabEvent::ActionCatalogue {
             surfaces: decoded.surfaces,
@@ -11007,11 +11008,15 @@ mod tests {
         );
         assert_eq!(
             initial.unwrap()[0].actions.len(),
-            1025,
+            action_count,
             "complete first baseline"
         );
         let watched = watched.unwrap();
-        assert_eq!(watched[0].actions.len(), 1025, "complete watched baseline");
+        assert_eq!(
+            watched[0].actions.len(),
+            action_count,
+            "complete watched baseline"
+        );
         assert_eq!(
             watched[0].peer_id, 2,
             "the watch delivered its next snapshot"
@@ -11026,7 +11031,7 @@ mod tests {
     #[cfg(unix)]
     fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
         let cluster = Uuid::new_v4();
-        let snapshot = notebook_action_catalogue_fixture(cluster, 2049);
+        let snapshot = notebook_action_catalogue_fixture(cluster, 4097);
         let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
         let retained = event_bytes(&CollabEvent::ActionCatalogue {
             surfaces: decoded.surfaces,

@@ -1988,6 +1988,11 @@ impl ShellOverlayHost {
                 now_playing: std::rc::Rc::new(crate::shell::now_playing::MprisSource),
             },
         );
+        host.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::file_picker::FilePickerProvider::new(
+                host.file_picker_overlay.actions(),
+            ),
+        ));
         // Offer Switch user only where the display manager can open a greeter
         // beside this session; greetd cannot.
         let user_switching = os_actions::user_switching_supported();
@@ -2063,13 +2068,8 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "one shared initialization body for the host interaction surfaces"
     )]
-    fn from_inputs(content: Box<dyn Widget>, mut inputs: OverlayInputs) -> Self {
+    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayInputs) -> Self {
         let file_picker_overlay = FilePickerOverlay::default();
-        inputs.search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::file_picker::FilePickerProvider::new(
-                file_picker_overlay.actions(),
-            ),
-        ));
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
