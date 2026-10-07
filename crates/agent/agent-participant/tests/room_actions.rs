@@ -29,6 +29,9 @@ mod steward;
 pub(crate) mod support;
 
 mod common;
+#[cfg(test)]
+#[path = "room_actions/feedback_journey.rs"]
+mod feedback_journey;
 
 #[cfg(not(test))]
 pub mod mounted_resource;
@@ -637,7 +640,7 @@ impl Browser {
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: self.room.clone(),
-            record: page.record().to_owned(),
+            record: page.wire_record().to_owned(),
         };
         let mutation = page.take_mutation().unwrap();
         self.peer.publish(route.clone(), &mutation).unwrap();
@@ -664,7 +667,11 @@ impl Browser {
             "ada",
             false,
             Seed::Existing {
-                record: ui::record::RecordId::parse(&route.record).unwrap(),
+                record: if route.record.is_empty() {
+                    ui::record::RecordId::package_primary()
+                } else {
+                    ui::record::RecordId::parse(&route.record).unwrap()
+                },
                 changes: changes.into_iter().map(|(_, bytes)| bytes).collect(),
             },
         )

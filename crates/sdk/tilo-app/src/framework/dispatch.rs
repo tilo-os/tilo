@@ -494,7 +494,7 @@ impl<R: Resource> Dispatcher<R> {
     /// such as a drag's final geometry. The door applies it after the
     /// event; if it refuses it, [`Self::refused`] says why.
     pub fn apply(&self, action: &R::Action) {
-        match Invoke::<R>::apply(action) {
+        match Invoke::<R>::checked_apply(action) {
             Ok(invoke) => self.invoke(invoke),
             Err(error) => self.refuse(tilo_resource::APPLY, error.to_string()),
         }

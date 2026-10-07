@@ -125,10 +125,18 @@ def seal(out, source, sequence):
     runtime_key = subprocess.check_output([str(binary), 'key', 'pubkey', '--identity', runtime_identity], text=True).strip()
     require(runtime_key == expected['runtime_publisher'], 'existing accepted runtime publisher differs')
     runtime = out / 'bundle'
-    subprocess.run([str(binary), 'build', '--version', RUNTIME.removeprefix('tilo-runtime/'),
+    versions = out / 'bundles'
+    version_file = out / 'runtime-version'
+    subprocess.run([str(binary), 'build', '--release', RUNTIME.removeprefix('tilo-runtime/'),
                     '--arch', 'x86_64', '--from', '/', '--include', str(out / 'signal-provider'),
                     '--include', '/usr/lib64/libstdc++.so.6', '--include', '/usr/lib64/libz.so.1',
-                    '--identity', runtime_identity, '--out', str(runtime)], check=True)
+                    '--identity', runtime_identity, '--out-root', str(versions),
+                    '--version-out', str(version_file)], check=True)
+    bundle_version = version_file.read_text().strip()
+    require(re.fullmatch(re.escape(RUNTIME.removeprefix('tilo-runtime/'))
+                         + r'\+native\.[0-9a-f]{32}', bundle_version),
+            'Signal runtime must bind its exact native build')
+    shutil.move(versions / bundle_version, runtime)
     subprocess.run([str(binary), 'verify', str(runtime), '--require-signature',
                     '--require-publisher', runtime_key, '--require-arch', 'x86_64'], check=True)
     fixture.probe(out)
@@ -141,7 +149,8 @@ def seal(out, source, sequence):
                     str(out / 'bin/tilo-signal-provider'), app_identity, str(out / 'bin'),
                     str(out / 'provider-package'), str(runtime), version], cwd=ROOT, check=True)
     key = subprocess.check_output([str(binary), 'key', 'pubkey', '--identity', app_identity], text=True).strip()
-    proof.update(package_version=version, app_publisher=key)
+    proof.update(package_version=version, app_publisher=key,
+                 runtime_build='tilo-runtime/' + bundle_version)
     proof['packages'] = {name: inventory(out / name) for name in ('runtime-package', 'provider-package')}
     (out / 'release.json').write_text(json.dumps(proof, sort_keys=True) + '\n')
     verify(out, source, sequence, key)
@@ -153,6 +162,9 @@ def verify(out, source, sequence, trusted_key):
     require({key: proof.get(key) for key in expected} == expected, 'Signal publication provenance differs')
     require(proof['package_version'] == '0.1.' + sequence + '+g' + source
             and proof['app_publisher'] == trusted_key, 'Signal package publisher/version differs')
+    runtime_build = proof.get('runtime_build', '')
+    require(re.fullmatch(re.escape(RUNTIME) + r'\+native\.[0-9a-f]{32}', runtime_build),
+            'Signal runtime must bind its exact native build')
     cli = Path(os.environ.get('TILO_SIGNAL_VERIFIER_BIN_DIR', str(out / 'bin'))) / 'tilo-app-package'
     for name, package_id, kind in (('runtime-package', 'so.tilo.runtime.signal', 'runtime'),
                                    ('provider-package', 'so.tilo.signal-provider', 'app')):
@@ -166,11 +178,16 @@ def verify(out, source, sequence, trusted_key):
         require(manifest['package']['id'] == package_id and manifest['package']['kind'] == kind
                 and manifest['package']['version'] == proof['package_version'], 'Signal package declaration differs')
         field = 'provides' if kind == 'runtime' else 'runtime'
-        require(manifest['package'][field] == RUNTIME and manifest['sandbox']['net']['mode'] == 'off',
+        require(manifest['package'][field] == runtime_build and manifest['sandbox']['net']['mode'] == 'off',
                 'Signal package runtime/network declaration differs')
         if kind == 'app':
-            require(manifest['entrypoint'] == {'bin': 'bin/tilo-signal-provider', 'type': 'cli'},
-                    'Signal executable declaration differs')
+            # Packing serializes Entrypoint's splash defaults into the signed
+            # manifest. Match that canonical declaration, including the absence
+            # of alternate CLI/GUI binaries, rather than the source TOML shape.
+            require(manifest['entrypoint'] == {
+                'bin': 'bin/tilo-signal-provider', 'type': 'cli',
+                'splash-segments': [], 'splash-budget': 100,
+            }, 'Signal executable declaration differs')
 
 
 def main():

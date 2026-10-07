@@ -1838,6 +1838,17 @@ impl App {
             .parse::<u64>()
             .ok()?;
         if self.continuation.last_private_route.as_ref() != Some(&witness) {
+            if self
+                .continuation
+                .last_private_route
+                .as_ref()
+                .is_some_and(|last| last.route != witness.route)
+            {
+                self.continuation.owner_view = Default::default();
+            } else {
+                self.continuation.owner_view.pending = None;
+                self.continuation.owner_view.last_generation = 0;
+            }
             self.continuation.last_published = None;
             self.last_published_playback = None;
             self.last_playback_publish = None;

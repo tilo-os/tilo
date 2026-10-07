@@ -400,6 +400,9 @@ jobs:
       - name: Checkout signing policy
         if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate signed board inputs before native build
+        if: needs.plan.outputs.signed-development-board == 'true'
+        run: python3 os/tests/test_signed_development_board.py
       - name: Install checksum-pinned Cosign
         if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
         uses: ./.forgejo/actions/install-cosign
