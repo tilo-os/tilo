@@ -88,6 +88,22 @@ class SignedBoard(unittest.TestCase):
             self.assertEqual(actual, expected)
             self.assertEqual((root/'usr/share/tilo/cosign.pub').read_bytes(), key)
 
+    def test_signed_board_excludes_new_vm_root_endpoint_and_input_routes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_root(root)
+            for name in policy.VM_ONLY_PATHS:
+                p = root/name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b'generic VM image fixture')
+            retained = root/'etc/ssh/sshd_config'
+            retained.parent.mkdir(parents=True)
+            retained.write_bytes(b'existing SSH configuration fixture')
+            policy.strengthen(root)
+            self.assertTrue(all(not (root/name).exists() for name in policy.VM_ONLY_PATHS))
+            self.assertEqual(retained.read_bytes(), b'existing SSH configuration fixture')
+            self.assertEqual((root/'usr/share/tilo/cosign.pub').read_bytes(), (ROOT/'keys/cosign.pub').read_bytes())
+
     def test_board_parser_accepts_only_exact_signed_policy_and_immutable_key(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

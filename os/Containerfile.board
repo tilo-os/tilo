@@ -43,6 +43,7 @@ COPY os/dev/prepare-hardware-profile.py os/dev/hardware_profile.py /tilo/os/dev/
 COPY os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py /tilo/os/scripts/
 COPY os/hardware/profiles /tilo/os/hardware/profiles
 COPY os/dev/install-board-layer.sh os/dev/signed-development-board-policy.py /tilo/os/dev/
+COPY os/usr/lib/bootc/kargs.d/05-credentials.toml /tilo/os/usr/lib/bootc/kargs.d/
 COPY os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf /tilo/os/usr/lib/systemd/system/sshd.service.d/
 COPY os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf /tilo/os/etc/NetworkManager/conf.d/
 COPY os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee /tilo/os/usr/lib/NetworkManager/dispatcher.d/
@@ -75,7 +76,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && case "$TILO_SIGNED_DEVELOPMENT_BOARD" in \
          0) ;; \
          1) test "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 \
-            && python3 /run/tilo-board/os/dev/signed-development-board-policy.py / ;; \
+            && python3 /run/tilo-board/os/dev/signed-development-board-policy.py / \
+            && install -D -m 0644 /run/tilo-board/os/usr/lib/bootc/kargs.d/05-credentials.toml \
+                 /usr/lib/bootc/kargs.d/05-credentials.toml ;; \
          *) echo 'invalid signed development board flag' >&2; exit 1 ;; \
        esac \
     && bash /run/tilo-board/os/scripts/build-initramfs.sh "$kver" \
