@@ -12,9 +12,7 @@ use crate::doc::PdfDoc;
 use crate::model::FormEntry;
 
 fn engine_fixture(name: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/platform/tilo-pdf/tests/fixtures")
-        .join(name)
+    std::path::Path::new(env!("OUT_DIR")).join(name)
 }
 
 /// The fixture page the tests mark up (`multipage.pdf`'s second page).
