@@ -143,3 +143,39 @@ are requested after its immutable input has been released. Merely passing a
 `/proc/self/fd` path would still reopen through the filesystem and is insufficient.
 The separate native worker must avoid linking conflicting ggml generations into
 one process; no dynamic engine code is loaded from model bytes.
+
+## Pinned native descriptor adapter
+
+`tools/release/fixtures/nemo_descriptor.patch` now implements that loader seam
+against NeMo-Speech.cpp `8642eaa5cc51efbc17ad0f3e433944ba858a873f`.
+The internal `ModelConfig::descriptor` reaches the real recognizer/model factory
+without becoming a CLI parameter. Metadata and tensor reads share one duplicated
+read-only regular-file descriptor; the path is unused in this mode. Releasing
+the input prohibits subsequent tensor reads. Tensor range checks use subtraction
+to reject overflowing offsets. Existing path callers retain their API defaults.
+
+`tools/release/qualify_nemo_descriptor.py --out <fresh-directory>` compiles the
+actual loader, checks the model and recognizer call sites, and runs a tiny GGUF
+through the production reader. It checks caller close/unlink, exact tensor bytes,
+writable and invalid descriptor rejection, overflowing reads, and released-input
+failure. The reproducible remote run passed in 2.943 seconds. Exact original and
+patched source hashes are in `fixtures/nemo_descriptor_sources.json`; the helper
+checks them before and after, copies only a separate source overlay, and leaves
+upstream sources and shared build objects untouched. The initial duplicate-header
+overlay failure remains in the evidence log; the corrected overlay passed.
+
+This is a tested native loading adapter, not an enabled speech worker. Its caller
+must establish immutable input before invoking it: read-only access alone does
+not prevent another writer. The next implementation is a verified immutable
+cached-file witness and separate native worker integration, followed by the
+existing sandbox, protocol and resource journeys. No backend implementation
+approval is pending. Actual release/signing/installation remains held, the
+Whisper 256 MiB admission remains unchanged, and neither the model nor audio
+was used by this adapter regression.
+
+A read-only `FS_IOC_MEASURE_VERITY` query on the existing 742090464-byte review
+object returned `ENOTTY` (25). The current runner storage therefore cannot
+supply this witness. No enable ioctl or filesystem mutation was attempted.
+`dictation-native-descriptor.json` records the adapter and storage evidence.
+File-backed qualification needs an observed supporting filesystem; this is a
+concrete runner/storage limitation, not a backend implementation approval gate.
