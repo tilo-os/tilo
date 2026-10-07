@@ -49,3 +49,12 @@ impl CalendarAlarm {
         None
     }
 }
+
+/// A calendar handoff together with this device's delivered occurrence.
+/// Carrying the local date keeps host recomputation from rearming it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AlarmSchedule {
+    pub alarm: CalendarAlarm,
+    pub enabled_at_ms: i64,
+    pub last_rung: Option<NaiveDate>,
+}

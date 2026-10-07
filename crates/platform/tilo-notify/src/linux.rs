@@ -21,8 +21,8 @@ use zbus::blocking::Connection;
 use zbus::zvariant::Value;
 
 use crate::{
-    AlarmState, CalendarAlarm, Notification, Notifier, NotifyError, PriorityContact, Scheduled,
-    SystemTime,
+    AlarmSchedule, AlarmState, CalendarAlarm, Notification, Notifier, NotifyError, PriorityContact,
+    Scheduled, SystemTime,
 };
 
 type AlarmStateWire = (String, (u8, u8, u8, i64), Vec<i64>, Vec<i64>, String);
@@ -320,7 +320,7 @@ fn remember(service: Service) {
 fn schedule_notification(
     notification: &Notification,
     at: SystemTime,
-    calendar: Vec<(u8, u8, u8, i64)>,
+    calendar: Vec<(u8, u8, u8, i64, String)>,
 ) -> Result<(), NotifyError> {
     crate::validate(notification)?;
     let millis = at
@@ -386,16 +386,25 @@ impl Notifier for SessionNotifier {
         &self,
         notification: &Notification,
         at: SystemTime,
-        alarm: CalendarAlarm,
-        enabled_at_ms: i64,
+        schedule: AlarmSchedule,
     ) -> Result<(), NotifyError> {
+        let alarm = schedule.alarm;
         if !alarm.valid() {
             return Err(NotifyError::Invalid("invalid alarm time or weekdays"));
         }
         schedule_notification(
             notification,
             at,
-            vec![(alarm.hour, alarm.minute, alarm.weekdays, enabled_at_ms)],
+            vec![(
+                alarm.hour,
+                alarm.minute,
+                alarm.weekdays,
+                schedule.enabled_at_ms,
+                schedule
+                    .last_rung
+                    .map(|date| date.to_string())
+                    .unwrap_or_default(),
+            )],
         )
     }
 
