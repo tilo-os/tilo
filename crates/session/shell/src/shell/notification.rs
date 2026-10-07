@@ -22,6 +22,46 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::t_args;
 use crate::shell::room_activity::RoomActivityPane;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NotificationLaunch {
+    pub app_id: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+}
+
+pub(crate) fn scheduled_launch(notification: &Notification) -> Option<NotificationLaunch> {
+    if notification.remote_route.is_some() {
+        return None;
+    }
+    let target = notification
+        .scheduled_target
+        .clone()
+        .filter(tilo_desktop::notifications::ScheduledNotificationTarget::valid)?;
+    Some(NotificationLaunch {
+        app_id: notification.app_id.clone()?,
+        target,
+    })
+}
+
+pub(crate) fn launch_scheduled_notification(
+    request: NotificationLaunch,
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+) -> Result<(), String> {
+    let workspace = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == request.target.room)
+        .cloned()
+        .ok_or("notification's original room is unavailable")?;
+    crate::shell::launcher::queue_package_target_in_workspace(
+        request.app_id,
+        &workspace,
+        request.target.uri,
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Put a startup refusal on the screen and leave it there. The compositor
 /// falling back to a bootstrapped tree means the person is looking at a
 /// desktop that isn't theirs, so `Error` severity + [`PERSISTENT_DISMISS`].
@@ -854,6 +894,25 @@ mod tests {
         remote_activation_routes_command_and_origin_retire_removes_history();
         a_retained_mirrored_notification_routes_its_action_back_to_its_device();
         origin_remote_command_invokes_live_app_closes_toast_and_retires_siblings();
+    }
+
+    #[test]
+    fn scheduled_activation_never_falls_back_to_another_room() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        assert!(!tree.read().desktop.workspaces.is_empty());
+        let request = NotificationLaunch {
+            app_id: "so.tilo.clocks".into(),
+            target: tilo_desktop::notifications::ScheduledNotificationTarget {
+                room: "missing-original-room".into(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                occurrence_ms: 1,
+                uri: "tilo-clocks:alarm/exact-alarm-id".into(),
+            },
+        };
+        assert_eq!(
+            launch_scheduled_notification(request, &tree),
+            Err("notification's original room is unavailable".into())
+        );
     }
 
     #[test]
