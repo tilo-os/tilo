@@ -79,6 +79,57 @@ class SignalProviderRelease(unittest.TestCase):
                     release.seal(root, proof['source'], '1')
                 execute.assert_not_called()
 
+    def test_canonical_entrypoint_defaults_keep_the_exact_executable_policy(self):
+        source = release.release.head()
+        trusted_key = 'f' * 64
+        version = '0.1.1+g' + source
+        canonical = ('bin = "bin/tilo-signal-provider"\n'
+                     'type = "cli"\n'
+                     'splash-segments = []\n'
+                     'splash-budget = 100\n')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proof = release.provenance(source)
+            proof.update(package_version=version, app_publisher=trusted_key)
+            proof['packages'] = {}
+            for name in ('runtime-package', 'provider-package'):
+                package = root / name
+                package.mkdir()
+                (package / 'fixture.tapp').write_bytes(b'fixture package bytes')
+                proof['packages'][name] = release.inventory(package)
+            (root / 'release.json').write_text(json.dumps(proof))
+
+            def inspected(args, **kwargs):
+                runtime = Path(args[-1]).parent.name == 'runtime-package'
+                declaration = ('id = "so.tilo.runtime.signal"\nkind = "runtime"\nprovides' if runtime
+                               else 'id = "so.tilo.signal-provider"\nkind = "app"\nruntime')
+                return ('--- manifest.toml ---\n[package]\n' + declaration
+                        + ' = "' + release.RUNTIME + '"\nversion = "' + version + '"\n'
+                        + '[sandbox.net]\nmode = "off"\n'
+                        + ('' if runtime else '[entrypoint]\n' + entrypoint)
+                        + '--- payload (0 files) ---\n')
+
+            for entrypoint in (canonical,
+                               canonical.replace('bin/tilo-signal-provider', 'bin/other'),
+                               canonical.replace('type = "cli"', 'type = "both"'),
+                               canonical + 'cli-bin = "bin/other"\n',
+                               canonical + 'gui-bin = "bin/other"\n',
+                               canonical.replace('splash-segments = []',
+                                                 'splash-segments = ["bin/other"]'),
+                               canonical.replace('splash-budget = 100', 'splash-budget = 101')):
+                with self.subTest(entrypoint=entrypoint), \
+                        patch.object(release.release, 'head', return_value=source), \
+                        patch.object(release.subprocess, 'run') as verify_signature, \
+                        patch.object(release.subprocess, 'check_output', side_effect=inspected):
+                    if entrypoint == canonical:
+                        release.verify(root, source, '1', trusted_key)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'executable declaration differs'):
+                            release.verify(root, source, '1', trusted_key)
+                    self.assertEqual(verify_signature.call_count, 2)
+                    for call in verify_signature.call_args_list:
+                        self.assertEqual(call.args[0][1:4], ['verify', '--trusted-key', trusted_key])
+
     def test_inventory_refuses_links(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
