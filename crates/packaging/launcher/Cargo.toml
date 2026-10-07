@@ -20,6 +20,10 @@ name = "tilo-launcher"
 path = "src/main.rs"
 
 [[bin]]
+name = "tilo-signal-provider"
+path = "src/bin/tilo-signal-provider.rs"
+
+[[bin]]
 name = "managed-tree-fixture"
 path = "tests/fixtures/managed-tree/main.rs"
 test = false
