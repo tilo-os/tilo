@@ -4,8 +4,72 @@
 mod files_clipboard_tests {
     use super::*;
     use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
+    use std::os::unix::fs::MetadataExt as _;
     use std::path::{Path, PathBuf};
     use tilo_actions::remote::{Pending, PendingPoll};
+
+    struct RetiredOwner {
+        tree: std::sync::Weak<parking_lot::RwLock<crate::shell::state::WorkspaceTree>>,
+        runtime: crate::shell::native_workspace_owner::NativeStateWitness,
+    }
+
+    thread_local! {
+        static RETIRED: std::cell::RefCell<Option<RetiredOwner>> = const { std::cell::RefCell::new(None) };
+    }
+
+    fn restart_lease_diagnostics(profile: &Path) {
+        RETIRED.with(|probe| {
+            if let Some(owner) = &*probe.borrow() {
+                eprintln!(
+                    "retired native owner: tree refs={}, runtime refs={}",
+                    owner.tree.strong_count(),
+                    owner.runtime.retained_owners()
+                );
+            }
+        });
+        eprintln!(
+            "peer sync configured: {}",
+            crate::shell::network::collab_host_configured()
+        );
+        let sentinel = std::fs::metadata(profile.join("workspace.json.writer-lock"));
+        if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+            for entry in entries.flatten() {
+                if sentinel.as_ref().is_ok_and(|wanted| {
+                    std::fs::metadata(entry.path()).is_ok_and(|found| {
+                        found.dev() == wanted.dev() && found.ino() == wanted.ino()
+                    })
+                }) {
+                    let info = std::fs::read_to_string(
+                        Path::new("/proc/self/fdinfo").join(entry.file_name()),
+                    );
+                    eprintln!("native lease fd {:?}: {info:?}", entry.file_name());
+                }
+            }
+        }
+        if let Ok(metadata) = sentinel {
+            let inode = format!(":{}", metadata.ino());
+            match std::fs::read_to_string("/proc/locks") {
+                Ok(locks) => {
+                    for line in locks
+                        .lines()
+                        .filter(|line| line.split_whitespace().any(|field| field.ends_with(&inode)))
+                    {
+                        eprintln!("native lease kernel lock: {line}");
+                    }
+                }
+                Err(error) => eprintln!("cannot inspect kernel locks: {error}"),
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir("/proc/self/task") {
+            for entry in entries.flatten() {
+                eprintln!(
+                    "remaining thread {:?}: {:?}",
+                    entry.file_name(),
+                    std::fs::read_to_string(entry.path().join("comm"))
+                );
+            }
+        }
+    }
 
     const APP: &str = "so.tilo.file-explorer";
     const TABS: [u64; 2] = [601, 602];
@@ -180,7 +244,10 @@ mod files_clipboard_tests {
                     {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
-                    Err(error) => panic!("actual session start failed at {stage}: {error}"),
+                    Err(error) => {
+                        restart_lease_diagnostics(profile);
+                        panic!("actual session start failed at {stage}: {error}");
+                    }
                 }
             }
         }
@@ -645,7 +712,6 @@ mod files_clipboard_tests {
 
     #[test]
     fn mounted_files_redo_restores_exact_copy_and_cut_objects_and_refuses_replacement() {
-        use std::os::unix::fs::MetadataExt as _;
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_redo_restores_exact_copy_and_cut_objects_and_refuses_replacement";
         let Some(profile) = isolated_session_root(TEST) else {
             return;
@@ -1013,7 +1079,6 @@ mod files_clipboard_tests {
 
     #[test]
     fn mounted_files_clipboard_undo_redo_crosses_real_filesystems() {
-        use std::os::unix::fs::MetadataExt as _;
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_clipboard_undo_redo_crosses_real_filesystems";
         let Some(profile) = isolated_session_root(TEST) else {
             return;
@@ -1088,6 +1153,13 @@ mod files_clipboard_tests {
             .unwrap()
             .try_flush()
             .unwrap();
+        let tree = fixture.session.workspace_tree();
+        let probe = RetiredOwner {
+            tree: std::sync::Arc::downgrade(&tree),
+            runtime: tree.read().native_runtime.authority_witness(),
+        };
+        RETIRED.with(|retired| *retired.borrow_mut() = Some(probe));
+        drop(tree);
         drop(fixture);
 
         // Reopen the real session, broker and app records. No source bytes,
