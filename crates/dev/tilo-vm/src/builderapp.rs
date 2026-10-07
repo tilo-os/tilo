@@ -246,12 +246,12 @@ type = "gui"
     fn remote_app_command_and_header_never_fall_back_or_accept_other_sources() {
         assert!(remote_command(&[], "terminal", Path::new("inputs.json")).is_err());
         let line = remote_command(
-            &["rcargo".into(), "--on-builder".into()],
+            &["cargo-dropin".into(), "--on-builder".into()],
             "terminal",
             Path::new("inputs.json"),
         )
         .unwrap();
-        assert_eq!(line.program, "rcargo");
+        assert_eq!(line.program, "cargo-dropin");
         assert_eq!(line.args.first().map(String::as_str), Some("--on-builder"));
         assert!(
             line.args

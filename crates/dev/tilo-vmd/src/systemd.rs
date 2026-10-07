@@ -1266,9 +1266,9 @@ mod tests {
     fn app_install_uses_the_verified_slot_namespace_and_never_ignores_runtime() {
         let command = super::app_install_command(
             123,
-            "slot-user",
+            "you",
             1002,
-            "/var/home/slot-user",
+            "/var/home/you",
             std::path::Path::new("/var/tmp/private/app.tapp"),
         );
         assert_eq!(command.get_program(), "nsenter");
@@ -1279,9 +1279,9 @@ mod tests {
         assert_eq!(&args[..2], ["--target=123", "--mount"]);
         assert!(
             args.windows(4)
-                .any(|args| args == ["runuser", "-u", "slot-user", "--"])
+                .any(|args| args == ["runuser", "-u", "you", "--"])
         );
-        assert!(args.contains(&"HOME=/var/home/slot-user".into()));
+        assert!(args.contains(&"HOME=/var/home/you".into()));
         assert!(args.contains(&"XDG_RUNTIME_DIR=/run/user/1002".into()));
         assert_eq!(
             &args[args.len() - 5..],
@@ -1300,9 +1300,9 @@ mod tests {
         );
         let selected = super::selected_app_install_command(
             123,
-            "slot-user",
+            "you",
             1002,
-            "/var/home/slot-user",
+            "/var/home/you",
             std::path::Path::new("/var/tmp/private/app.tapp"),
             true,
         );
