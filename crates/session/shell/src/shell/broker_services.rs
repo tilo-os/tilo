@@ -1852,6 +1852,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_certificate_policy_time_never_replaces_an_unavailable_origin() {
+        use tilo_action_broker::peer_actions::CertificateAuthority as _;
+        let certificates = NativeCertificates {
+            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+        };
+        for _ in 0..2 {
+            assert!(matches!(certificates.policy_time(), Err(error)
+                if error == tilo_action_broker::peer_actions::PolicyClockError.to_string()));
+        }
+        let certificates = NativeCertificates::default();
+        let captured = certificates.policy_time().unwrap().unwrap();
+        certificates.origin.as_ref().unwrap().invalidate();
+        assert!(certificates.policy_time().is_err());
+        assert!(captured.now_ns().is_err());
+    }
+
     /// Content keyed by `(room, hash)`, standing in for the content store's
     /// room-scoped reads.
     struct ScopedContent {

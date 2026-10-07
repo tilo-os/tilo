@@ -1,0 +1,259 @@
+use super::*;
+use crate::shell::in_process::messaging::{first_account, working_profile::provision};
+use std::{path::Path, sync::mpsc};
+
+struct FixtureSource {
+    streams: Mutex<Option<(UnixStream, UnixStream)>>,
+    linking: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    activations: AtomicUsize,
+}
+impl first_account::Source for FixtureSource {
+    fn provision(
+        &self,
+        identity: NativeMessagingIdentity,
+        _: &Path,
+        policy: crate::shell::in_process::messaging::network::Policy,
+    ) -> Result<provision::Provisioning, SendError> {
+        identity.check()?;
+        let _review =
+            crate::shell::in_process::messaging::network::request(identity.clone(), &policy)?;
+        let (stream, peer) = UnixStream::pair().unwrap();
+        self.linking.lock().unwrap().push(link_daemon(peer));
+        let (send, stopped) = mpsc::sync_channel(1);
+        send.send(Ok(
+            provision::UnpublishedSignalProfile::writer_free_fixture(identity),
+        ))
+        .map_err(|_| SendError::Unavailable)?;
+        Ok(provision::Provisioning { stream, stopped })
+    }
+    fn activate(
+        &self,
+        account: &Arc<NativeSignalAccount>,
+        wake: crate::session_runtime::Wake,
+        storage: NativeSignalStorage,
+        _: crate::shell::in_process::messaging::network::Policy,
+    ) -> Result<NativeSignalActivation, SendError> {
+        self.activations.fetch_add(1, Ordering::SeqCst);
+        let streams = self.streams.lock().unwrap().take().unwrap();
+        let owner = NativeAccountCustody::owner(account.as_ref()).clone();
+        account.activate_on_worker(wake, move |authority| {
+            assemble_fixture(&owner, &storage.history, streams, authority)
+        })
+    }
+}
+
+#[test]
+fn empty_native_messages_first_account_protected_review_receive_reply_and_revoke() {
+    let mut rig = Rig::new();
+    let _paths = xdg_paths::scope_profile(rig.root.path().join("first-owner"));
+    let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
+    let lifecycle = LocalSessionAuthority::new();
+    lifecycle.lifecycle().publish_native_state(false, false);
+    let socket = rig.root.path().join("first-account.sock");
+    let _source = source(&rig, &lifecycle, &socket);
+    let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
+        &rig.root.path().join("first-apps"),
+        &rig.owner.principal,
+        socket,
+    )
+    .unwrap();
+    rig.owner.device = apps.device_id.clone();
+    let vault = accounts::CredentialOwner::deferred(
+        &rig.owner.principal,
+        &apps.device_id,
+        SecretStore::open,
+    )
+    .unwrap();
+    apps.install_credential_owner(vault.clone()).unwrap();
+    rig.broker = vault.broker().unwrap();
+    let (sender, send_peer) = UnixStream::pair().unwrap();
+    let (receiver, receive_peer) = UnixStream::pair().unwrap();
+    let source = Arc::new(FixtureSource {
+        streams: Mutex::new(Some((sender, receiver))),
+        linking: Mutex::default(),
+        activations: AtomicUsize::new(0),
+    });
+    apps.bind_messaging_record_wake(Arc::new(|| {}));
+    apps.bind_messaging_network_prompts(crate::portal::PromptQueueHandle::new(
+        crate::portal::PromptResolver::AutoOutcome(crate::portal::PromptOutcome::AllowOnce),
+    ));
+    apps.first_accounts = Some(first_account::fixture(
+        rig.owner.principal.clone(),
+        Arc::new(|| {}),
+        source.clone(),
+    ));
+    let mut mounted = mount_messages(&mut apps, AccountState::Unavailable);
+    let (account, proposal) = link_and_review(&mut apps, &mut mounted, &source, &vault, &mut rig);
+    let identity = apps.native_messaging_identity(rig.owner.clone()).unwrap();
+    let credential = apps
+        .native_messaging_credential(&identity, rig.request.clone())
+        .unwrap();
+    drop(identity);
+    approve_fixture_profile_key(&mut apps, &credential, proposal);
+    drop(credential);
+    seed_person(&mut apps, &directory());
+    let writes = Arc::new(AtomicUsize::new(0));
+    let daemon = sender_daemon(send_peer, writes.clone());
+    let (arrive, inbox) = receiver_daemon(receive_peer);
+    assert!(
+        mounted
+            .harness
+            .wait_until(ui::time::Duration::from_secs(5), |_| {
+                apps.pump_messaging_records();
+                mounted.client.account_state(&account) == AccountState::Ready
+            }),
+        "the initially empty app loan must become usable after original protected approval"
+    );
+    assert_eq!(source.activations.load(Ordering::SeqCst), 1);
+    let reply = receive_and_reply(&mut apps, &mut mounted, &account, &arrive);
+    revoke_native_permission(&rig, &mut apps, &mut mounted, &reply, &writes);
+    drop(rig);
+    drop(mounted);
+    drop(apps);
+    daemon.join().unwrap();
+    inbox.join().unwrap();
+    for thread in source.linking.lock().unwrap().drain(..) {
+        thread.join().unwrap();
+    }
+}
+
+fn link_and_review(
+    apps: &mut crate::shell::in_process::InProcessApps,
+    mounted: &mut MountedMessages,
+    source: &FixtureSource,
+    vault: &accounts::CredentialOwner,
+    rig: &mut Rig,
+) -> (ServiceAccount, String) {
+    assert!(apps.messaging_services.is_empty());
+    assert!(vault.grants().unwrap().is_empty());
+    effect(
+        &mut mounted.harness,
+        &MessagesEffect::OpenAccountSetup,
+        false,
+    )
+    .unwrap();
+    let begin = MessagesEffect::BeginFirstEnrollment {
+        service: "signal".into(),
+    };
+    assert!(effect(&mut mounted.harness, &begin, false).is_err());
+    let pairing = effect_with_pump(&mut mounted.harness, &begin, true, || {
+        apps.pump_messaging_records();
+    })
+    .unwrap()
+    .value
+    .unwrap();
+
+    let id = pairing["account"].as_str().unwrap().to_owned();
+    rig.owner.account = id.clone();
+    let account = ServiceAccount::new("signal", &id);
+    assert!(
+        !mounted
+            .harness
+            .dump_json()
+            .contains("synthetic-private-link-key")
+    );
+    let finish = MessagesEffect::CompleteFirstEnrollment {
+        service: "signal".into(),
+        account: id.clone(),
+        attempt: pairing["attempt"].as_str().unwrap().into(),
+    };
+    effect_with_pump(&mut mounted.harness, &finish, true, || {
+        apps.pump_messaging_records();
+    })
+    .unwrap();
+    assert!(apps.messaging_services.is_empty());
+    assert_eq!(source.activations.load(Ordering::SeqCst), 0);
+    let review = MessagesEffect::ReviewFirstEnrollment {
+        service: "signal".into(),
+        account: id,
+        display_name: "Fixture Signal".into(),
+    };
+    let proposal = effect_with_pump(&mut mounted.harness, &review, true, || {
+        apps.pump_messaging_records();
+    })
+    .unwrap()
+    .value
+    .unwrap()["proposal"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(vault.grants().unwrap().is_empty());
+    assert_eq!(source.activations.load(Ordering::SeqCst), 0);
+    let pending = vault.proposals().unwrap();
+    let item = pending
+        .iter()
+        .find(|pending| pending.id == proposal)
+        .unwrap()
+        .request
+        .item_id
+        .clone();
+    rig.request = AccessRequest {
+        app_id: "so.tilo.messages".into(),
+        item_id: item,
+        purpose: "Private Signal messaging".into(),
+        origin: Some("https://signal.org".into()),
+    };
+    (account, proposal)
+}
+
+fn receive_and_reply(
+    apps: &mut crate::shell::in_process::InProcessApps,
+    mounted: &mut MountedMessages,
+    account: &ServiceAccount,
+    arrive: &mpsc::Sender<()>,
+) -> MessagesEffect {
+    effect(
+        &mut mounted.harness,
+        &MessagesEffect::OpenPerson {
+            person: PERSON.into(),
+        },
+        false,
+    )
+    .unwrap();
+    let selected = route();
+    let choice = serde_json::json!({"service":"signal","account":account.account,"recipient":selected.recipient,"association":selected.association.as_str(),"scope":selected.scope,"revision":selected.revision}).to_string();
+    effect(
+        &mut mounted.harness,
+        &MessagesEffect::SelectRoute {
+            choice: choice.clone(),
+        },
+        false,
+    )
+    .unwrap();
+    arrive.send(()).unwrap();
+    assert!(
+        mounted
+            .harness
+            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                apps.pump_messaging_records();
+                harness
+                    .a11y_nodes()
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("native private arrival"))
+            })
+    );
+    let reply = MessagesEffect::Send {
+        choice,
+        operation: "native-reply-operation".into(),
+        text: "native private reply".into(),
+    };
+    effect_with_pump(&mut mounted.harness, &reply, true, || {
+        apps.pump_messaging_records();
+    })
+    .unwrap();
+    assert!(
+        mounted
+            .harness
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some("native private reply"))
+    );
+    assert!(
+        !mounted
+            .harness
+            .dump_json()
+            .contains("native private arrival")
+    );
+    assert!(!mounted.harness.dump_json().contains("native private reply"));
+    reply
+}

@@ -21,11 +21,16 @@ cleanup() {
   for pid in "${workers[@]}" "${browsers[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
-  # Chromium may still flush its profile after SIGTERM. Reap our children
-  # before removing it so their writes cannot race recursive removal.
-  for pid in "${workers[@]}" "${browsers[@]}"; do
+  # Supervisors reap Chromium and its adopted descendants before profiles
+  # are removed, including writers which outlive the root browser process.
+  for pid in "${workers[@]}"; do
     wait "$pid" 2>/dev/null || true
   done
+  local closed=true
+  for pid in "${browsers[@]}"; do
+    wait "$pid" || closed=false
+  done
+  "$closed" || { echo 'browser descendants could not be reaped; preserving profiles' >&2; return 1; }
   rm -rf "$profiles"
 }
 trap cleanup EXIT
@@ -33,7 +38,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 for ((shard=0; shard<shards; shard++)); do
   browser_port=$((port + shard))
-  "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
+  python3 tools/web/owned_browser.py "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
     --enable-features=Vulkan --use-vulkan=swiftshader --use-angle=swiftshader \
     --disable-background-timer-throttling --disable-renderer-backgrounding \
     --disable-backgrounding-occluded-windows \

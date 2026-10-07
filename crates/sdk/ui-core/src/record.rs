@@ -2211,13 +2211,18 @@ impl RecordStore {
     }
 }
 
-/// Explicit profile-scoped owner registry. Weak entries never keep a closed writer alive.
+type OwnerIndex =
+    Rc<std::cell::RefCell<HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>>>;
+
+/// Explicit profile-scoped owner registry. Clones share the original registry;
+/// weak entries never keep a closed writer alive.
+#[derive(Clone)]
 pub struct RecordOwners {
     store: Rc<dyn DurableStore>,
     /// A hydrated host-acknowledged browser cache; record sets use it
     /// instead of `store` when present.
     portable: Option<PortableStorage>,
-    owners: HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>,
+    owners: OwnerIndex,
     profile_lifetime: Option<Rc<dyn std::any::Any>>,
 }
 
@@ -2232,7 +2237,7 @@ impl RecordOwners {
         Self {
             store,
             portable: None,
-            owners: HashMap::new(),
+            owners: Rc::default(),
             profile_lifetime: None,
         }
     }
@@ -2287,7 +2292,12 @@ impl RecordOwners {
             return Ok(RecordStore(owner));
         }
         let key = (package_id.to_owned(), workspace_id.to_owned());
-        if let Some(owner) = self.owners.get(&key).and_then(std::rc::Weak::upgrade) {
+        if let Some(owner) = self
+            .owners
+            .borrow()
+            .get(&key)
+            .and_then(std::rc::Weak::upgrade)
+        {
             return Ok(RecordStore(owner));
         }
         let store = RecordStore::new(RecordSet {
@@ -2311,7 +2321,12 @@ impl RecordOwners {
         if let Some(cache) = &self.portable {
             cache.register_record_owner(package_id, workspace_id, &store.0);
         }
-        self.owners.insert(key, Rc::downgrade(&store.0));
+        let entry = Rc::downgrade(&store.0);
+        if let Some(index) = Rc::get_mut(&mut self.owners) {
+            index.get_mut().insert(key, entry);
+        } else {
+            self.owners.borrow_mut().insert(key, entry);
+        }
         Ok(store)
     }
 }

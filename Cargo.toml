@@ -42,6 +42,7 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/platform/tilo-messaging",
     "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
@@ -71,6 +72,7 @@ members = [
     "apps/calendar",
     "apps/camera",
     "apps/chat",
+    "apps/messages",
     "apps/clocks",
     "apps/code-editor",
     "apps/contacts",
@@ -315,6 +317,7 @@ members = [
     "crates/system/host-fs",
     "crates/system/host-info",
     "crates/system/libvirt-domain",
+    "crates/system/messaging-protocol",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",

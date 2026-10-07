@@ -282,6 +282,22 @@ If the environment prohibits user namespaces, use the existing isolated Linux
 builder where these tests can run as container root. Missing capabilities fail
 the command and are recorded in its receipt.
 
+Signal working-profile custody has an explicit native qualification feature:
+`cargo test --locked -p shell --lib --features signal-profile-native-test working_profile::tests`
+and `cargo test --locked -p shell --lib --features signal-profile-native-test verified_enrollment_ram_profile_native_qualification`.
+These execute the production materializer, not a substitute memory policy. They
+require a private tmpfs whose opened mount reports `noswap`, or a host whose swap
+is absent or entirely zram without disk writeback. Otherwise the fixture attempts
+a disposable user/mount namespace; kernels can refuse `noswap` on unprivileged
+mounts, in which case qualification fails. The fixture does not change host swap
+or trust settings. Ordinary custody tests still cover encrypted storage and the
+original protected grant; they do not qualify native working-profile custody.
+A provider lease handed to the launcher cannot use the prelaunch cancellation
+checkpoint. The strict service launcher requires a successful exit of the actual
+private PID-namespace init before collecting the newest bounded working image.
+Forced shutdowns preserve the interrupted marker. Signed-runtime qualification
+remains a separate acceptance requirement.
+
 CI's repository policy tests discover the same app-packaging tests, including
 the build-to-collection handoff regression.
 For an actual installer VM cycle with an already prepared medium, continue using
