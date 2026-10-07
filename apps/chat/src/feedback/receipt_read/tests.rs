@@ -122,7 +122,15 @@ fn fixture_submission(room: &str) -> Submission {
     }
 }
 
-fn mounted_fixture() -> (tempfile::TempDir, Submission, ui::headless::FrameHarness) {
+struct MountedFixture {
+    _temp: tempfile::TempDir,
+    submission: Submission,
+    frame: ui::headless::FrameHarness,
+    permissions: std::rc::Rc<std::cell::RefCell<ui::permissions::PermissionContext>>,
+    records: ui::record::RecordStore,
+}
+
+fn mounted_fixture(author: &str) -> MountedFixture {
     use std::{cell::RefCell, rc::Rc};
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
@@ -171,20 +179,21 @@ fn mounted_fixture() -> (tempfile::TempDir, Submission, ui::headless::FrameHarne
         checkout,
         reveal: None,
     };
+    let permissions = Rc::new(RefCell::new(
+        ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), author),
+            vec![],
+        ),
+    ));
     let context = HostContext::prepare(
         crate::definition(),
         HostContextInputs {
-            records,
+            records: records.clone(),
             views,
             device_id: "device".into(),
             instance_id: 42,
-            permissions: Rc::new(RefCell::new(
-                ui::permissions::PermissionContext::from_capabilities(
-                    ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "visitor"),
-                    vec![],
-                ),
-            )),
-            author: ui::permissions::UserId("visitor".into()),
+            permissions: permissions.clone(),
+            author: ui::permissions::UserId(author.into()),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,
@@ -199,13 +208,21 @@ fn mounted_fixture() -> (tempfile::TempDir, Submission, ui::headless::FrameHarne
         ComponentRunnerInputs::from_native_process(),
     )
     .unwrap();
-    (temp, submission, frame)
+    MountedFixture {
+        _temp: temp,
+        submission,
+        frame,
+        permissions,
+        records,
+    }
 }
 
 #[test]
 fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
-    let (_temp, submission, mut frame) = mounted_fixture();
-    let started = frame
+    let mut fixture = mounted_fixture("visitor");
+    let submission = &fixture.submission;
+    let started = fixture
+        .frame
         .invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 42,
@@ -227,4 +244,110 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
     let receipt: Receipt = serde_json::from_value(value["content"].clone()).unwrap();
     assert_eq!(receipt.digest, submission.digest().unwrap());
     assert_eq!(receipt.destination, submission.destination);
+}
+
+fn maintainer_role(fixture: &MountedFixture, role: ui::permissions::Role) {
+    *fixture.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
+        ui::permissions::Actor::person(Some(role), "maintainer"),
+        vec![],
+    );
+}
+
+#[test]
+fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_reference() {
+    let mut fixture = mounted_fixture("maintainer");
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: 42,
+        address: tilo_actions::ActionAddress::new(
+            format!("chat.feedback:{}", fixture.submission.id),
+            "triage",
+        ),
+    };
+    let arguments = serde_json::json!({"update": {"status": "investigating"}})
+        .as_object()
+        .unwrap()
+        .clone();
+    maintainer_role(&fixture, ui::permissions::Role::Commenter);
+    assert!(
+        fixture
+            .frame
+            .invoke_bound_action(&address, &arguments)
+            .is_err()
+    );
+    let record = fixture.frame.component_record().unwrap().id.clone();
+    assert!(
+        fixture
+            .records
+            .read(&record, |doc| {
+                crate::feedback::report(doc, &fixture.submission.id)
+                    .unwrap()
+                    .unwrap()
+                    .triage
+                    .is_empty()
+            })
+            .unwrap()
+    );
+    maintainer_role(&fixture, ui::permissions::Role::Editor);
+    assert!(
+        fixture
+            .frame
+            .invoke_bound_action(&address, &arguments)
+            .unwrap()
+            .completed()
+            .is_some()
+    );
+    let reference =
+        tilo_reference::ResourceRef::whole("tasks.task", "fixture-task", "Fixture task");
+    let arguments = serde_json::json!({"update": {"status": "task", "reference": reference}})
+        .as_object()
+        .unwrap()
+        .clone();
+    assert!(
+        fixture
+            .frame
+            .invoke_bound_action(&address, &arguments)
+            .unwrap()
+            .completed()
+            .is_some()
+    );
+    fixture.frame.flush_component_records().unwrap();
+    let report = fixture
+        .records
+        .read(&record, |doc| {
+            crate::feedback::report(doc, &fixture.submission.id)
+                .unwrap()
+                .unwrap()
+        })
+        .unwrap();
+    assert_eq!(report.submission, fixture.submission);
+    assert_eq!(report.author, "visitor");
+    assert_eq!(report.triage.len(), 2);
+    assert!(
+        report
+            .triage
+            .iter()
+            .all(|entry| entry.author == "maintainer")
+    );
+    assert_eq!(
+        report.triage[1].update,
+        crate::feedback::TriageUpdate::Task { reference }
+    );
+    maintainer_role(&fixture, ui::permissions::Role::Commenter);
+    assert!(
+        fixture
+            .frame
+            .invoke_bound_action(&address, &arguments)
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .records
+            .read(&record, |doc| {
+                crate::feedback::report(doc, &fixture.submission.id)
+                    .unwrap()
+                    .unwrap()
+            })
+            .unwrap(),
+        report
+    );
 }

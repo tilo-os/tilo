@@ -105,6 +105,19 @@ cannot return a receipt. Host-side document actions retain their existing peer
 publication limitation: publish/local cache completion alone is not a durable
 commit acknowledgment. A separate writer correction requires qualification.
 No anonymous/public-guest submission journey is established by these tests.
+The existing browser frame transport signs document frames as `OpClass::Splice`,
+which maps to Write under governed admission. The app's Comment requirement alone
+does not establish that transport authority. An admitted demo participant and its
+actual overrides must be qualified; never infer a broader document grant from
+permission to submit a report.
+
+Private component paints propagate declared capture protection through the
+existing `SecretPaint` boundary. The browser binds protection to the scene only
+when that GPU output actually presents, so an unpublished update cannot clear
+protection of old visible pixels. The presented-source capture refuses protected
+or unknown protection before copying pixels. This is a protection prerequisite,
+not a complete feedback screenshot adapter: complete classified text geometry
+and explicit focused-surface consent remain required.
 
 For the qualified registered-read path, invoke `read-feedback-receipt` through the
 existing admitted action transport. Check the returned SDK record stamp against the retained Chat
