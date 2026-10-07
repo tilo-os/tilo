@@ -1775,3 +1775,72 @@ production's unchanged 256 MiB admission limit, and this native adapter is not
 the production worker. No model is installed or promoted. Unseen speech,
 natural noise, natural language switching, broader session/cache growth and
 physical-device validation remain to be measured; holdout speech is untouched.
+
+
+The follow-up exposed stress matrix retains eight successful synthetic-noise
+cases, all under the unchanged 1 GiB cap/960 MiB guard, with zero observed
+non-prefix revisions. English stays at 21.05% WER at both 20/10 dB; German
+is 5.56/22.22%, French 0/10%, and Spanish 6.90/3.45% at 20/10 dB. These are seeded
+white-noise stress inputs, not recordings of natural noise. German first text
+is 5.172/5.494 s, so the unchanged raw accuracy does not establish low latency.
+
+Before Spanish 10 dB, PSI memory `some.avg10` rose to 7.05%, exceeding the
+predeclared 5% guard. A later guarded resume stopped before decoding at 13.16%.
+After recovery to 1.12%, the missing Spanish case completed; the next Arabic
+case stopped before decoding at 9.47%. All three stops and all eight completed
+cases remain in the ledger; six cases,
+including Arabic/Mandarin noise and both assembled transitions, are pending.
+No completed case was rerun, no guard was raised, and reserved speech remains
+untouched. `characterize_nemo_serial_stress.py --resume-from` permits only the
+predeclared exposed cases and resumes missing work under the same guards.
+
+A smaller public FastConformer export was researched without downloading its
+weights. The [exporter's source](https://github.com/k2-fsa/sherpa-onnx/blob/master/scripts/nemo/fast-conformer-hybrid-transducer-ctc/export-onnx-transducer.py)
+loads the fixed `stt_en_fastconformer_hybrid_large_streaming_1040ms` checkpoint;
+its [original card](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_en_fastconformer_hybrid_large_streaming_1040ms)
+points to NGC terms. The English-only
+[138 MB ONNX export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-1040ms-int8/tree/8fa6b38d75fcaff6ecbf94f52f2e0e0b7395da22)
+has no license card. It must not inherit the separately named CC-BY-4.0
+`streaming_multi` model's license by assumption. Exact export file hashes were
+read, but no artifact download, runtime qualification or user-bookmark identity
+claim was made; source/license provenance remains to be reviewed.
+
+
+### Native vocabulary fusion on the exposed dictionary case
+
+The pinned RNNT decoder implements per-request context trees through
+`AsrRequestOptions::speech_contexts`; it does not require a CTC language model.
+`DecoderConfig::boosting_tree_alpha` controls fusion, with a default of 1,
+per-token depth scaling 2 and a request boost clamp of 5. These are logits
+used during actual recognition, not replacement of final text. The source
+warns that high greedy boosts can insert or repeat words, so defaults need
+measurement before any production adoption.
+
+A separate receipt-checked adapter uses the predeclared exposed German case
+and exactly its three vocabulary hints. It preserves the selected-language
+check, actual 160 ms source clock, one state slot, CPU-only execution, two
+CPU affinity, 1 GiB cap and 960 MiB guard. The canonical no-hint comparison
+source/binary and original runtime remain untouched. `off` sets fusion alpha
+0; `weak` sets 0.1 with request boost 1. Both complete with **5.56% raw WER**.
+First text is 4.858/4.870 s, meaningful stable prefix 5.332/5.432 s for
+control/weak. Neither inserts the predeclared unspoken TiLo hint in any draft
+or final (case and optional spacing checked without rewriting the transcript).
+This single exposed negative is not general hallucination acceptance, and
+weak fusion shows no measured accuracy improvement here.
+
+Native peak virtual space is 946972/947912 KiB and resident memory
+793144/793312 KiB. Before building, pressure 6.76% stopped the adapter build;
+it compiled successfully after recovery with pressure 0.77%. Default fusion
+stopped before decoding at 6.77%, so its accuracy and false-positive behavior
+remain **unmeasured**. `dictation-vocabulary-characterization.json` retains
+both completed cases, both pre-work stops, exact source/binary/library hashes
+and pending status. `build_nemo_vocabulary_review.py` and
+`probe_nemo_vocabulary_review.py` reproduce this isolated experiment; explicitly
+ignored/unavailable vocabulary requests fail rather than count as qualification.
+
+The already integrated shared dictionary reader remains the production
+vocabulary authority, with opaque binding epochs and revocation/cancellation
+covered by actual frontend journeys. This fixed public native experiment
+neither creates a second dictionary store nor promotes the larger backend.
+The native Q8 artifact still exceeds production admission; no model, release
+hold, recording permission or worker default changed.
