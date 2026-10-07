@@ -4708,7 +4708,13 @@ async fn enqueue_state_inner(
             let result = async {
                 let mut commit = result?;
                 trace_native_publication(
-                    if commit.publish { "durable" } else { "suppressed" },
+                    if commit.activation_error.is_some() {
+                        "activation_error"
+                    } else if commit.publish {
+                        "durable"
+                    } else {
+                        "suppressed"
+                    },
                     &commit.envelope,
                     None,
                 );
