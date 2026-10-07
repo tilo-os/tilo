@@ -4412,6 +4412,13 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "Original draft");
+        feed_root_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+        feed_root_mods(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit("東".into(), Some((0, 3)))),
+            Modifiers::default(),
+        );
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
             .expect("Float publishes the shared-host request");
@@ -4443,22 +4450,15 @@ mod tests {
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, Some(&id));
         render_detached_surfaces(&mut app);
 
-        feed_root_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
         let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
         assert_eq!(
             app.agent_surfaces[&channel].view.composer_main.selection(),
             (0, "Original draft".len())
         );
-        feed_root_mods(
-            &mut app,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Preedit("東".into(), Some((0, 3)))),
-            Modifiers::default(),
-        );
         assert_eq!(
             app.agent_surfaces[&channel].view.composer_main.value(),
             "Original draft",
-            "preedit stays composition-only on the detached editor"
+            "the live preedit stays composition-only on the same detached editor"
         );
         feed_root_mods(
             &mut app,

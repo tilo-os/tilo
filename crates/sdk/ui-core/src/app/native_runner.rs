@@ -82,6 +82,15 @@ struct AppHandler {
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<ImeWindowState>,
+    /// A real preedit belongs to the primary Wayland text-input resource.
+    /// During an exact compositor-authorised Float handoff, keep that
+    /// protocol resource active and route only its keyboard/IME events to the
+    /// same retained editor now painted in the secondary surface.
+    primary_preedit_active: bool,
+    /// Winit emits an empty preedit before a commit from the same Wayland
+    /// `done` batch. Retire at loop idle only if no commit followed it.
+    primary_preedit_clear_pending: bool,
+    floating_ime_continuation: Option<String>,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -297,6 +306,45 @@ mod floating_source_focus_tests {
         );
         assert!(secondary_ime_state(&probe, "a", source, false).is_none());
         assert!(secondary_ime_state(&probe, "b", source, true).is_none());
+    }
+
+    #[test]
+    fn active_floating_preedit_keeps_primary_protocol_and_maps_detached_caret() {
+        let probe = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+            FocusProbe::default(),
+        )));
+        let state = primary_floating_ime_state(&probe, "a", Vec2::new(-800.0, 200.0)).unwrap();
+        assert_eq!(
+            (state.x, state.y, state.width, state.height),
+            (100, 300, 1, 20)
+        );
+        assert!(primary_floating_ime_state(&probe, "b", Vec2::ZERO).is_none());
+
+        let preedit = WindowEvent::Ime(winit::event::Ime::Preedit("composing".into(), None));
+        let commit = WindowEvent::Ime(winit::event::Ime::Commit("committed".into()));
+        let disabled = WindowEvent::Ime(winit::event::Ime::Disabled);
+        assert_eq!(
+            preedit_after_event(&preedit),
+            Some(PrimaryPreeditUpdate::Active)
+        );
+        assert_eq!(
+            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Preedit(
+                String::new(),
+                None,
+            ))),
+            Some(PrimaryPreeditUpdate::PendingClear)
+        );
+        assert_eq!(
+            preedit_after_event(&commit),
+            Some(PrimaryPreeditUpdate::Finished)
+        );
+        assert_eq!(
+            preedit_after_event(&disabled),
+            Some(PrimaryPreeditUpdate::Finished)
+        );
+        assert!(routes_to_floating_ime(&preedit));
+        assert!(routes_to_floating_ime(&commit));
+        assert!(!routes_to_floating_ime(&WindowEvent::Focused(true)));
     }
 
     #[test]
@@ -607,6 +655,42 @@ fn secondary_ime_state(
         purpose,
         rect - desktop_rect.origin().to_vec2(),
     ))
+}
+
+fn primary_floating_ime_state(
+    root: &dyn Widget,
+    id: &str,
+    coordinate_offset: Vec2,
+) -> Option<ImeWindowState> {
+    let (purpose, rect) = root.floating_surface_ime(id)?;
+    Some(ImeWindowState::from_rect(purpose, rect - coordinate_offset))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrimaryPreeditUpdate {
+    Active,
+    PendingClear,
+    Finished,
+}
+
+fn preedit_after_event(event: &WindowEvent) -> Option<PrimaryPreeditUpdate> {
+    match event {
+        WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) if text.is_empty() => {
+            Some(PrimaryPreeditUpdate::PendingClear)
+        }
+        WindowEvent::Ime(winit::event::Ime::Preedit(_, _)) => Some(PrimaryPreeditUpdate::Active),
+        WindowEvent::Ime(winit::event::Ime::Commit(_) | winit::event::Ime::Disabled) => {
+            Some(PrimaryPreeditUpdate::Finished)
+        }
+        _ => None,
+    }
+}
+
+fn routes_to_floating_ime(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+    )
 }
 
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -1367,7 +1451,18 @@ impl AppHandler {
 
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
-        let next = if self.floating_windows.iter().any(|surface| surface.focused) {
+        let continued = self.floating_ime_continuation.as_deref().and_then(|id| {
+            let offset = *self.app.floating.coordinate_offsets.get(id)?;
+            primary_floating_ime_state(self.app.root_widget.as_ref(), id, offset)
+        });
+        if self.floating_ime_continuation.is_some() && continued.is_none() {
+            // The exact editor or host-provided coordinate binding retired.
+            // Never route subsequent source events by a stale surface id.
+            self.floating_ime_continuation = None;
+        }
+        let next = if continued.is_some() {
+            continued
+        } else if self.floating_windows.iter().any(|surface| surface.focused) {
             None
         } else {
             self.app.ime_window_state()
@@ -1551,7 +1646,7 @@ impl AppHandler {
                     rect,
                     content_rect: _,
                     transfer_covered,
-                    coordinate_offset: _,
+                    coordinate_offset,
                 } => match crate::floating_surface::protocol_rect(rect) {
                     Ok(rect) => {
                         crate::floating_surface::handoff_diagnostics::mark(
@@ -1563,8 +1658,25 @@ impl AppHandler {
                                 primary.request_redraw();
                             }
                         }
-                        match self.create_native_floating_window(event_loop, id, token, rect) {
-                            Ok(()) => changed = true,
+                        let continue_ime = self.primary_preedit_active
+                            && primary_floating_ime_state(
+                                self.app.root_widget.as_ref(),
+                                &id,
+                                Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+                            )
+                            .is_some();
+                        match self.create_native_floating_window(
+                            event_loop,
+                            id.clone(),
+                            token,
+                            rect,
+                        ) {
+                            Ok(()) => {
+                                if continue_ime {
+                                    self.floating_ime_continuation = Some(id);
+                                }
+                                changed = true;
+                            }
                             Err(error) => {
                                 tracing::warn!(%error, "could not prepare native floating surface");
                             }
@@ -1588,11 +1700,17 @@ impl AppHandler {
                 }
                 crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
+                    if self.floating_ime_continuation.as_deref() == Some(id.as_str()) {
+                        self.floating_ime_continuation = None;
+                    }
                     self.floating_source_clear_frames.remove(&id);
                     self.floating_destination_present_frames.remove(&id);
                     changed |= self.close_native_floating_window(&id);
                 }
                 crate::floating_surface::FloatingSurfaceHostMessage::Suspended { id } => {
+                    if self.floating_ime_continuation.as_deref() == Some(id.as_str()) {
+                        self.floating_ime_continuation = None;
+                    }
                     self.floating_source_clear_frames.remove(&id);
                     self.floating_destination_present_frames
                         .insert(id.clone(), None);
@@ -3243,6 +3361,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        if std::mem::take(&mut self.primary_preedit_clear_pending) {
+            self.primary_preedit_active = false;
+            self.floating_ime_continuation = None;
+        }
         #[cfg(any(target_os = "macos", windows))]
         self.refresh_host_chrome();
         sync_safe_area(&mut self.app, &window);
@@ -3787,7 +3909,51 @@ impl AppHandler {
         window: &Arc<Window>,
         event: WindowEvent,
     ) {
+        let routed_surface = self
+            .floating_ime_continuation
+            .as_deref()
+            .filter(|_| routes_to_floating_ime(&event))
+            .map(str::to_owned);
+        self.app
+            .root_widget
+            .on_floating_surface_event_source(routed_surface.as_deref());
+        let preedit = preedit_after_event(&event);
+        self.handle_primary_window_event_routed(event_loop, window, event);
         self.app.root_widget.on_floating_surface_event_source(None);
+        if let Some(update) = preedit {
+            match update {
+                PrimaryPreeditUpdate::Active => {
+                    self.primary_preedit_active = true;
+                    self.primary_preedit_clear_pending = false;
+                }
+                PrimaryPreeditUpdate::PendingClear => {
+                    self.primary_preedit_clear_pending = true;
+                }
+                PrimaryPreeditUpdate::Finished => {
+                    self.primary_preedit_active = false;
+                    self.primary_preedit_clear_pending = false;
+                }
+            }
+            if matches!(update, PrimaryPreeditUpdate::Finished) {
+                self.floating_ime_continuation = None;
+            }
+        }
+        if let Some(id) = routed_surface
+            && let Some(surface) = self
+                .floating_windows
+                .iter()
+                .find(|surface| surface.id == id)
+        {
+            surface.window.request_redraw();
+        }
+    }
+
+    fn handle_primary_window_event_routed(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Arc<Window>,
+        event: WindowEvent,
+    ) {
         forward_native_surface_focus(self.app.root_widget.as_mut(), None, &event);
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(window, &event);
@@ -4050,6 +4216,9 @@ impl App {
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
+            primary_preedit_active: false,
+            primary_preedit_clear_pending: false,
+            floating_ime_continuation: None,
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]

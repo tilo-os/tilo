@@ -12,6 +12,7 @@ pub(super) struct SourceFocus {
     source: u64,
     owner: Arc<FloatingToplevelOwner>,
     transfer: Option<Transfer>,
+    preserve_preedit: bool,
 }
 
 impl State {
@@ -23,6 +24,7 @@ impl State {
         owner: Arc<FloatingToplevelOwner>,
     ) {
         let key = (connection, public_id.to_owned());
+        let preserve_preedit = self.input_method_preedit_active;
         let transfer =
             (self.client_input.keyboard_focus() == Some(source)).then_some(Transfer::Float);
         let already_detached = self.floating_toplevels.iter().any(|surface| {
@@ -33,6 +35,7 @@ impl State {
         if let Some(previous) = self.floating_focus_handoffs.get_mut(&key) {
             if !already_detached && previous.source == source && previous.owner == owner {
                 previous.transfer = transfer;
+                previous.preserve_preedit = preserve_preedit;
             }
             return;
         }
@@ -42,6 +45,7 @@ impl State {
                 source,
                 owner,
                 transfer,
+                preserve_preedit,
             },
         );
     }
@@ -63,6 +67,17 @@ impl State {
             .floating_focus_handoffs
             .get_mut(&(connection, public_id.to_owned()))
         {
+            if source.preserve_preedit
+                && self.input_method_preedit_active
+                && self.client_input.keyboard_focus() == Some(source.source)
+            {
+                // The protocol focus never left the source, so Return has no
+                // reverse seat transition to perform. Keeping it there also
+                // preserves the same live composer through the primary frame.
+                source.transfer = None;
+                source.preserve_preedit = false;
+                return;
+            }
             source.transfer =
                 (self.client_input.keyboard_focus() == Some(child)).then_some(Transfer::Return {
                     child,
@@ -102,6 +117,59 @@ impl State {
     pub(crate) fn retire_floating_focus_source(&mut self, surface: u64) {
         self.floating_focus_handoffs
             .retain(|_, source| source.source != surface);
+    }
+
+    /// Keep the real Wayland text-input focus on the exact source while its
+    /// trusted input method owns an unfinished composition. The requested
+    /// target is still authenticated against both sides of the compositor's
+    /// one-shot floating owner binding; an unrelated surface never qualifies.
+    pub(crate) fn preserves_floating_preedit_for(&self, target: u64) -> bool {
+        self.input_method_preedit_active
+            && self
+                .floating_focus_handoffs
+                .iter()
+                .any(|((connection, public_id), source)| {
+                    source.preserve_preedit
+                        && matches!(source.transfer, Some(Transfer::Float))
+                        && self.client_input.keyboard_focus() == Some(source.source)
+                        && self.floating_toplevels.iter().any(|surface| {
+                            surface.surface_id == target
+                                && surface.connection == *connection
+                                && surface.public_id == *public_id
+                                && surface.owner.as_deref() == Some(source.owner.as_ref())
+                                && !surface.suspended
+                        })
+                        && self
+                            .floating_owner_for_surface(source.source)
+                            .ok()
+                            .as_deref()
+                            == Some(source.owner.as_ref())
+                })
+    }
+
+    /// The exact source remains the protocol focus while the editor's live
+    /// composition is painted in its authenticated floating child.
+    pub(crate) fn floating_preedit_source_focus(&self) -> Option<u64> {
+        self.input_method_preedit_active.then_some(())?;
+        self.floating_focus_handoffs
+            .iter()
+            .find_map(|((connection, public_id), source)| {
+                (source.preserve_preedit
+                    && matches!(source.transfer, Some(Transfer::Float))
+                    && self.client_input.keyboard_focus() == Some(source.source)
+                    && self.floating_toplevels.iter().any(|surface| {
+                        surface.connection == *connection
+                            && surface.public_id == *public_id
+                            && surface.owner.as_deref() == Some(source.owner.as_ref())
+                            && !surface.suspended
+                    })
+                    && self
+                        .floating_owner_for_surface(source.source)
+                        .ok()
+                        .as_deref()
+                        == Some(source.owner.as_ref()))
+                .then_some(source.source)
+            })
     }
 
     /// Preserve the exact child seat while the reverse proxy awaits its
@@ -175,6 +243,12 @@ impl State {
                     _ => return None,
                 };
                 self.client_input.surface(target)?;
+                if matches!(source.transfer, Some(Transfer::Float))
+                    && source.preserve_preedit
+                    && self.input_method_preedit_active
+                {
+                    return None;
+                }
                 Some((key.clone(), target))
             });
         if let Some((key, target)) = candidate {

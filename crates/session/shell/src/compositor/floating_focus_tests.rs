@@ -256,3 +256,81 @@ fn floating_focus_refuses_wrong_owner_and_cancelled_reverse_transfer() {
     assert_eq!(fixture.state.client_input.keyboard_focus(), Some(child));
     assert_eq!(fixture.state.floating_return_focus(), None);
 }
+
+#[test]
+fn live_preedit_keeps_exact_source_seat_until_commit_or_same_owner_return() {
+    let mut fixture = Fixture::new();
+    let [source, child, other] = fixture.ids;
+    fixture.state.set_client_keyboard_focus(Some(source));
+    fixture.state.input_method_preedit_active = true;
+    let mut fb = fixture.float();
+    fixture.ready(&mut fb);
+
+    crate::compositor::client_input::sync_keyboard_focus(&mut fixture.state, &fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(source));
+    fixture.state.set_client_keyboard_focus(Some(child));
+    assert_eq!(
+        fixture.state.client_input.keyboard_focus(),
+        Some(source),
+        "the exact floating child cannot deactivate a live composition"
+    );
+
+    fixture.state.set_client_keyboard_focus(Some(other));
+    assert_eq!(
+        fixture.state.client_input.keyboard_focus(),
+        Some(other),
+        "an unrelated focus transition is never proxied"
+    );
+
+    let mut committed = Fixture::new();
+    let [committed_source, committed_child, _] = committed.ids;
+    committed
+        .state
+        .set_client_keyboard_focus(Some(committed_source));
+    committed.state.input_method_preedit_active = true;
+    let mut fb = committed.float();
+    committed.ready(&mut fb);
+    committed.state.input_method_preedit_active = false;
+    crate::compositor::client_input::sync_keyboard_focus(&mut committed.state, &fb);
+    assert_eq!(
+        committed.state.client_input.keyboard_focus(),
+        Some(committed_child)
+    );
+
+    let mut wrong_alias = Fixture::new();
+    let [wrong_source, wrong_child, _] = wrong_alias.ids;
+    wrong_alias
+        .state
+        .set_client_keyboard_focus(Some(wrong_source));
+    wrong_alias.state.input_method_preedit_active = true;
+    let mut fb = wrong_alias.float();
+    wrong_alias.ready(&mut fb);
+    wrong_alias.state.floating_toplevels[0].public_id = "other-conversation".into();
+    wrong_alias
+        .state
+        .set_client_keyboard_focus(Some(wrong_child));
+    assert_eq!(
+        wrong_alias.state.client_input.keyboard_focus(),
+        Some(wrong_child),
+        "same-process ownership cannot substitute for the exact floating id"
+    );
+}
+
+#[test]
+fn return_during_live_preedit_needs_no_reverse_protocol_focus() {
+    let mut fixture = Fixture::new();
+    let [source, _, _] = fixture.ids;
+    fixture.state.set_client_keyboard_focus(Some(source));
+    fixture.state.input_method_preedit_active = true;
+    let mut fb = fixture.float();
+    fixture.ready(&mut fb);
+    crate::compositor::client_input::sync_keyboard_focus(&mut fixture.state, &fb);
+    fixture
+        .state
+        .suspend_floating_toplevel(7, "conversation", None);
+    fixture
+        .state
+        .mark_floating_destination_presented(7, "conversation");
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(source));
+}

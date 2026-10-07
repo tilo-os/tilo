@@ -415,6 +415,14 @@ impl State {
         // A tile showing a dialog sheet types into the sheet, not the window it belongs to.
         let surface_id =
             surface_id.map(|id| crate::compositor::foreign::store().keyboard_target(id));
+        if surface_id.is_some_and(|target| self.preserves_floating_preedit_for(target)) {
+            // The logical floating destination is exact-owner bound, but the
+            // active composer must keep its real text-input-v3 resource until
+            // commit/cancel. Physical keys therefore continue through the
+            // existing source seat; the app's native runner routes them to
+            // the same retained editor during this bounded handoff.
+            return;
+        }
         if self.client_input.keyboard_focus == surface_id {
             return;
         }
@@ -1052,6 +1060,7 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     // A window the person focused while showing it on another device of
     // theirs types there until they use this device again.
     let candidate = handoff
+        .or_else(|| state.floating_preedit_source_focus())
         .or_else(|| state.focused_output_presentation_surface())
         .or_else(|| state.headless_keyboard_focus())
         .or_else(|| state.floating_return_focus())
