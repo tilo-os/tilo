@@ -2556,3 +2556,5 @@ file-picker-owner-required = Nur der aktuelle Arbeitsbereichseigentümer darf di
 file-picker-outside-scope = Dieser Ordner liegt außerhalb der erlaubten Ordner der Dateiauswahl.
 file-picker-operation-unavailable = Dieser Vorgang ist im aktuellen Zustand der Dateiauswahl nicht verfügbar.
 file-picker-declared-operation = Verwende einen veröffentlichten Dateiauswahlvorgang.
+
+portal-chooser-file-grant-unavailable = Die ausgewählte Datei ist nicht mehr verfügbar. Wähle sie erneut aus.

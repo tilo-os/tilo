@@ -2554,3 +2554,5 @@ file-picker-owner-required = Only the current workspace owner can operate this f
 file-picker-outside-scope = This folder is outside the file chooser's permitted roots.
 file-picker-operation-unavailable = This operation is unavailable in the current file chooser state.
 file-picker-declared-operation = Use a declared file chooser operation.
+
+portal-chooser-file-grant-unavailable = The selected file is no longer available. Choose it again.
