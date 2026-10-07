@@ -169,8 +169,13 @@ def verify(out, source, sequence, trusted_key):
         require(manifest['package'][field] == RUNTIME and manifest['sandbox']['net']['mode'] == 'off',
                 'Signal package runtime/network declaration differs')
         if kind == 'app':
-            require(manifest['entrypoint'] == {'bin': 'bin/tilo-signal-provider', 'type': 'cli'},
-                    'Signal executable declaration differs')
+            # Packing serializes Entrypoint's splash defaults into the signed
+            # manifest. Match that canonical declaration, including the absence
+            # of alternate CLI/GUI binaries, rather than the source TOML shape.
+            require(manifest['entrypoint'] == {
+                'bin': 'bin/tilo-signal-provider', 'type': 'cli',
+                'splash-segments': [], 'splash-budget': 100,
+            }, 'Signal executable declaration differs')
 
 
 def main():
