@@ -32,8 +32,21 @@ No physical microphone, user desktop, screen sharing or public listener was used
 Run the existing `native_pair_host` example with `--journey --voice-proof`,
 `--out target/<receipt-dir>` and `--pipewire <private-fixture-prefix>` through the
 configured remote Cargo runner. Build the normal shell, launcher, control,
-package and runtime tools first. Missing dependencies or missing evidence fail
-the journey. The receipt has `mode: native-voice-proof`, no error and no cleanup
+package and runtime tools first, as described in
+[native pair acceptance](native-chat-pair-acceptance.md). With `rcargo`, run:
+
+```sh
+rcargo --on-builder --fetch native-voice-proof/journey.json run --locked \
+  -p shell --example native_pair_host -- \
+  --journey --voice-proof --out target/native-voice-proof \
+  --pipewire /private/pipewire-payload
+```
+
+The private audio payload must exist inside that builder container. Keep the
+whole fixture in the supported session so artifact GC cannot remove its
+thin-app libraries during assembly; do not launch the packager through raw
+container execution. The output directory must be new. Missing dependencies or
+missing evidence fail the journey. The receipt has `mode: native-voice-proof`, no error and no cleanup
 error. Its `qualified: false` field deliberately reserves full-pair qualification
 for the combined Follow and voice journey.
 
