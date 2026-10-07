@@ -123,6 +123,7 @@ chip-op-rms = RMS normalization
 chip-op-apply-weight = Apply normalization weights
 chip-op-silu = SiLU activation
 chip-op-multiply = Multiply
+chip-op-add = Add
 chip-op-projection = Projection input
 chip-port-value = Value
 chip-port-weights = Weights
