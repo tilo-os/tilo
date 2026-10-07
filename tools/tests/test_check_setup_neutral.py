@@ -74,6 +74,33 @@ class SetupNeutralTests(unittest.TestCase):
             found = checker.check(root)
             self.assertEqual([(v.path, v.line) for v in found], [("bad.sh", 2)])
 
+    def test_file_prefilter_preserves_every_reference_kind_and_line_number(self) -> None:
+        lines = [
+            "ordinary text",
+            f"export {WRAPPER.upper()}_ENV_X=1",
+            "/var/" + "home/jdoe/src",
+            "/" + "Users/jdoe/src",
+            "C:" + r"\Users\jdoe\src",
+            "C:/" + "Users/jdoe/src",
+            "/c/" + "Users/jdoe/src",
+            "see .super" + "powers/task.md",
+            "cargo build; supercargoes; /var/home/you; /Users/you",
+            "GET /api/v1/admin/Users/jdoe",
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "source.txt"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            found = checker.file_violations(path, "source.txt")
+            self.assertEqual([(v.path, v.line) for v in found],
+                             [("source.txt", line) for line in range(2, 9)])
+
+    def test_file_prefilter_retains_gitignore_scratch_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / ".gitignore"
+            path.write_text("/.super" + "powers/\n" + WRAPPER + "\n", encoding="utf-8")
+            found = checker.file_violations(path, ".gitignore")
+            self.assertEqual([(v.path, v.line) for v in found], [(".gitignore", 2)])
+
 
 if __name__ == "__main__":
     unittest.main()
