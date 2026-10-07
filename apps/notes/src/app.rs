@@ -2448,7 +2448,6 @@ impl Widget for NotesApp {
         }
         // Transient floating status bubble (bottom-right).
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        self.transfer_toasts.advance(ui::time::now());
         // Toasts stand above the status bubble's corner.
         let gutter = f64::from(theme.tokens.spacing.s4);
         let lift = ui::status_bubble::pill_height(theme) + gutter;
@@ -3251,6 +3250,37 @@ mod tests {
             .expect("the captured import notification remains announced");
         assert_eq!(node.name.as_deref(), Some("Notifications"));
         assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
+    }
+
+    #[test]
+    fn capture_draw_preserves_the_import_notification_lifetime() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining;
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(
+            app.transfer_toasts.iter().next().unwrap().ttl_remaining,
+            lifetime,
+            "the real Notes draw must preserve a capture's transient notification"
+        );
+        assert_eq!(
+            app.transfer_toasts
+                .accessibility()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("Imported Project brief")
+        );
     }
 
     #[test]

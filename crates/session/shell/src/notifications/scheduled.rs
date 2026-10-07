@@ -68,6 +68,8 @@ struct Entry {
     last_rung: Option<NaiveDate>,
     #[serde(default)]
     last_at_ms: Option<i64>,
+    #[serde(default)]
+    token: String,
 }
 impl Entry {
     fn owned(&self, caller: &Owner) -> bool {
@@ -169,6 +171,7 @@ impl ScheduleStore {
             calendar,
             last_rung,
             last_at_ms: None,
+            token: hex::encode(super::random_nonzero_token()),
         };
         let mut entries = self.entries.clone();
         if let Some(old) = entries
@@ -279,19 +282,31 @@ impl ScheduleStore {
                 }
                 None => PortalCaller::new(entry.workspace, entry.app.clone()),
             };
-            due.push(IncomingNotification {
-                dbus_id: bridge.alloc_id(),
-                app_name: entry.app.clone(),
-                summary: entry.title.clone(),
-                body: entry.body.clone(),
-                actions: Vec::new(),
-                expire_timeout: 0,
-                urgency: 1,
-                caller: Some(caller),
-                badge_count: None,
-                contact_endpoint: None,
-                sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
-            });
+            if entry.token.is_empty() {
+                entry.token = hex::encode(super::random_nonzero_token());
+            }
+            let target = tilo_desktop::notifications::ScheduledNotificationTarget {
+                room: entry.room.clone(),
+                token: entry.token.clone(),
+                occurrence_ms: at_ms,
+                uri: entry.activation.clone(),
+            };
+            due.push((
+                IncomingNotification {
+                    dbus_id: bridge.alloc_id(),
+                    app_name: entry.app.clone(),
+                    summary: entry.title.clone(),
+                    body: entry.body.clone(),
+                    actions: Vec::new(),
+                    expire_timeout: 0,
+                    urgency: 1,
+                    caller: Some(caller),
+                    badge_count: None,
+                    contact_endpoint: None,
+                    sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
+                },
+                target,
+            ));
             entry.last_at_ms = Some(at_ms);
             entry.last_rung = DateTime::<Utc>::from_timestamp_millis(at_ms)
                 .map(|date| date.with_timezone(&now.timezone()).date_naive());
@@ -313,8 +328,8 @@ impl ScheduleStore {
         {
             self.commit(entries)?;
         }
-        for notice in due {
-            bridge.push_incoming(notice);
+        for (notice, target) in due {
+            bridge.push_scheduled(notice, target);
         }
         Ok(())
     }
@@ -375,6 +390,140 @@ mod tests {
             due.timestamp_millis(),
             vec![(12, 0, repeat, 1, String::new())],
         )
+    }
+
+    #[test]
+    fn closed_alarm_target_survives_real_history_reload_and_routes_once() {
+        let temp = tempfile::tempdir().expect("private fixture");
+        let due = at("2026-04-14T12:00:00+00:00");
+        let caller = owner(1, "so.tilo.clocks");
+        let mut store =
+            ScheduleStore::open(Some(temp.path().join("schedules.json"))).expect("store");
+        let mut args = alarm_args("alarm", due, 0);
+        args.3 = "tilo-clocks:alarm/exact-alarm-id".into();
+        store.schedule(&caller, args).expect("handoff");
+        let bridge = NotificationBridge::new();
+        store
+            .deliver_due(&bridge, &due, None)
+            .expect("delivery with no app process");
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::default(),
+        );
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        chrome.borrow_mut().set_dnd(true);
+        chrome.borrow_mut().set_notification_bridge(bridge);
+        chrome.borrow_mut().pump_dbus_notifications();
+        let history = crate::shell::notification_history::NotificationHistoryStore::at(
+            temp.path().join("history.json"),
+        );
+        history
+            .save(chrome.borrow().notification_history())
+            .expect("persist real native history");
+        drop(chrome);
+        drop(store);
+        let restored = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::default(),
+        );
+        restored.borrow_mut().set_dnd(true);
+        let notification = history.load().pop().expect("restored alarm");
+        assert!(
+            notification.sender_id.is_none(),
+            "process ids cannot survive restart"
+        );
+        let id = restored.borrow_mut().push_notification_full(notification);
+        assert_eq!(
+            restored.borrow_mut().activate_history_notification(id),
+            tilo_desktop::notifications::HistoryActivation::Invoked
+        );
+        let requests = restored.borrow_mut().take_notification_launch_requests();
+        assert_eq!(requests.len(), 1);
+        let request = requests.first().expect("one verified launch");
+        assert_eq!(request.app_id, "so.tilo.clocks");
+        assert_eq!(request.target.room, caller.room);
+        assert_eq!(request.target.uri, "tilo-clocks:alarm/exact-alarm-id");
+        assert_eq!(request.target.occurrence_ms, due.timestamp_millis());
+        assert_eq!(
+            restored.borrow_mut().activate_history_notification(id),
+            tilo_desktop::notifications::HistoryActivation::Missing
+        );
+        assert!(
+            restored
+                .borrow_mut()
+                .take_notification_launch_requests()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn live_alarm_activation_routes_the_same_exact_target_once() {
+        let caller = owner(1, "so.tilo.clocks");
+        let due = at("2026-04-14T12:00:00+00:00");
+        let mut store = ScheduleStore::open(None).expect("store");
+        let mut args = alarm_args("alarm", due, 0);
+        args.3 = "tilo-clocks:alarm/live-alarm-id".into();
+        store.schedule(&caller, args).expect("handoff");
+        let bridge = NotificationBridge::new();
+        store.deliver_due(&bridge, &due, None).expect("delivery");
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::default(),
+        );
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        chrome.borrow_mut().set_notification_bridge(bridge);
+        chrome.borrow_mut().pump_dbus_notifications();
+        let id = chrome
+            .borrow()
+            .notifications()
+            .first()
+            .expect("live alarm")
+            .id;
+        chrome.borrow_mut().activate_notification(id);
+        let requests = chrome.borrow_mut().take_notification_launch_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].target.uri, "tilo-clocks:alarm/live-alarm-id");
+        assert_eq!(requests[0].target.room, caller.room);
+        chrome.borrow_mut().activate_notification(id);
+        assert!(
+            chrome
+                .borrow_mut()
+                .take_notification_launch_requests()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn wire_notification_cannot_borrow_another_apps_durable_target() {
+        let caller = owner(1, "so.tilo.clocks");
+        let due = at("2026-04-14T12:00:00+00:00");
+        let mut store = ScheduleStore::open(None).expect("store");
+        store
+            .schedule(&caller, alarm_args("alarm", due, 0))
+            .expect("handoff");
+        let bridge = NotificationBridge::new();
+        store.deliver_due(&bridge, &due, None).expect("delivery");
+        let mut notice = bridge.drain_incoming().pop().expect("alarm notice");
+        notice.caller = Some(PortalCaller::new(WorkspaceId(1), "another.app"));
+        bridge.push_incoming(notice);
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::default(),
+        );
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        chrome.borrow_mut().set_notification_bridge(bridge);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(
+            chrome
+                .borrow()
+                .notifications()
+                .first()
+                .expect("wire notice")
+                .scheduled_target
+                .is_none()
+        );
     }
 
     #[test]

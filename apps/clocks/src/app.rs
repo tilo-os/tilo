@@ -22,6 +22,7 @@ use std::{
 use taffy::{NodeId, TaffyTree};
 use ui::framework::{Actions, Dispatcher, Setting};
 use ui::icons::Icon;
+use ui::prelude::Id;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
@@ -41,6 +42,7 @@ pub(crate) struct Shown {
     /// The moment wall clocks show, when a capture pins it; else the
     /// device's clock.
     pub(crate) pinned_now: Option<chrono::DateTime<Utc>>,
+    pub(crate) selected_alarm: Option<Id>,
 }
 
 impl Shown {
@@ -349,7 +351,9 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                 Text::new("No alarms yet. Set one for a future time.").dimmed(),
             ));
         }
-        for (id, alarm) in s.clocks.alarms.iter() {
+        let mut alarms: Vec<_> = s.clocks.alarms.iter().collect();
+        alarms.sort_by_key(|(id, _)| s.selected_alarm.as_ref() != Some(id));
+        for (id, alarm) in alarms {
             let repeat = repeat_summary(&alarm.weekdays());
             let row = Row::new()
                 .push(Box::new(
@@ -381,7 +385,10 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         Clocks::REMOVE_ALARM.with(id.clone()),
                     ),
                 ));
-            col = col.push(Box::new(clock_card(&alarm.label, Box::new(row))));
+            col = col.push(Box::new(
+                clock_card(&alarm.label, Box::new(row))
+                    .selected(s.selected_alarm.as_ref() == Some(id)),
+            ));
         }
         Box::new(col)
     });
@@ -983,6 +990,8 @@ pub struct ClocksApp {
     /// Whether this window is one someone uses, which rings, schedules and
     /// talks to the shell.
     live: bool,
+    pub(crate) record: Option<ui::record::RecordId>,
+    pub(crate) opener: Option<ui::framework::OpenHere>,
     /// Whether the section was chosen from the first state presented.
     opened: bool,
     pub(crate) last_notification: Option<(String, String, String)>,
@@ -1010,6 +1019,7 @@ impl ClocksApp {
             clocks: Clocks::default(),
             device: device.get(),
             pinned_now: None,
+            selected_alarm: None,
         });
         let notice = ui::LocalState::new(None);
         let validation_error = ui::LocalState::new(None);
@@ -1039,6 +1049,8 @@ impl ClocksApp {
             dispatcher: controls.dispatcher,
             device,
             live,
+            record: None,
+            opener: None,
             opened: false,
             last_notification: None,
             notice,
@@ -1184,11 +1196,18 @@ impl ClocksApp {
         }
         let host = self.notifier();
         let device = self.device.clone();
-        let result = crate::native_timers::reconcile(&clocks, &mut delivery, &*host, now, |d| {
-            device
-                .update(|device| device.delivery = d.clone())
-                .map_err(|error| error.to_string())
-        });
+        let result = crate::native_timers::reconcile(
+            self.record.as_ref(),
+            &clocks,
+            &mut delivery,
+            &*host,
+            now,
+            |d| {
+                device
+                    .update(|device| device.delivery = d.clone())
+                    .map_err(|error| error.to_string())
+            },
+        );
         self.refresh_device();
         match result {
             Ok(()) => self.last_scheduled_clocks = Some((clocks, delivery, offset)),
@@ -1324,6 +1343,28 @@ impl ClocksApp {
     }
 
     /// Open the section a clicked notification names.
+    pub(crate) fn activate_uri(&self, uri: &str) {
+        if let Some(record) = crate::native_timers::activation_record(uri)
+            && self.record.as_ref() != Some(&record)
+        {
+            if let Some(opener) = &self.opener {
+                opener.open(&[uri.to_owned()]);
+            }
+            return;
+        }
+        if let Some(id) = crate::native_timers::activation_alarm(uri) {
+            self.dispatcher.effect(&ClocksEffect::OpenAlarm {
+                alarm: id.to_owned(),
+            });
+        } else {
+            match uri {
+                TIMERS_URI => self.set_mode(TIMERS),
+                ALARMS_URI => self.set_mode(ALARMS),
+                _ => {}
+            }
+        }
+    }
+
     fn apply_activations(&self) {
         let uris = self
             .activations
@@ -1331,11 +1372,7 @@ impl ClocksApp {
             .map(|mut pending| std::mem::take(&mut *pending))
             .unwrap_or_default();
         for uri in uris {
-            match uri.as_str() {
-                TIMERS_URI => self.set_mode(TIMERS),
-                ALARMS_URI => self.set_mode(ALARMS),
-                _ => {}
-            }
+            self.activate_uri(&uri);
         }
     }
 }

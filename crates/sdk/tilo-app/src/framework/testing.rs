@@ -292,6 +292,33 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// Launch on a private receiving profile after hydrating an existing
+    /// record in the same room. The production installer validates its
+    /// identity before the app can initialize or open it.
+    ///
+    /// # Errors
+    /// Returns invalid record scope, storage or launch failures.
+    pub fn launched_replica(
+        arguments: &[&str],
+        document: &mut tilo_resource::Doc,
+    ) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let native =
+            ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
+        ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
+            .map_err(operation)?;
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::open(
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Role::Owner,
+            AUTHOR,
+            &arguments,
+            None,
+            None,
+            None,
+        )
+    }
+
     /// The app launched with `arguments` to continue `handoff`'s playback,
     /// as the session launches the target of a media handoff.
     ///
