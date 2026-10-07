@@ -16,7 +16,9 @@ use zeroize::Zeroizing;
 use crate::catalog::VerifiedCatalog;
 use crate::{InProcessCapability, installed_in_process_model};
 
+mod recognition;
 pub mod worker;
+pub use recognition::SpeechRecognition;
 
 pub use agent_provider_config::speech::{
     FRAME, MAX_SAMPLES, MAX_TEXT_BYTES, RequestKind, SAMPLE_RATE, SpeechConfig, SpeechError,
@@ -126,6 +128,7 @@ pub fn confine_worker() -> Result<(), SpeechError> {
 unsafe extern "C" {
     fn tilo_speech_load(bytes: *mut u8, length: usize) -> *mut c_void;
     fn tilo_speech_ready(context: *mut c_void) -> bool;
+    fn tilo_speech_threads(context: *mut c_void, threads: i32) -> bool;
     fn tilo_speech_free(context: *mut c_void);
     fn tilo_speech_accepts(context: *mut c_void, language: *const c_char) -> bool;
     fn tilo_speech_transcribe(
@@ -159,6 +162,20 @@ impl SpeechEngine {
         NonNull::new(pointer)
             .map(Self)
             .ok_or(SpeechError::Recognition)
+    }
+    /// Match the worker's one- or two-CPU budget without oversubscribing it.
+    /// Query the available CPUs before confinement, then pass only this count.
+    /// # Errors
+    /// Rejects any count outside the existing two-thread maximum.
+    pub fn set_threads(&mut self, threads: usize) -> Result<(), SpeechError> {
+        let threads = i32::try_from(threads).map_err(|_| SpeechError::Protocol)?;
+        // SAFETY: the exclusive context is live; this stores only a bounded
+        // integer and creates no threads or retained pointers.
+        if unsafe { tilo_speech_threads(self.0.as_ptr(), threads) } {
+            Ok(())
+        } else {
+            Err(SpeechError::Protocol)
+        }
     }
     /// Allocate CPU decoder arenas after releasing the verified input bytes.
     /// Call before announcing readiness or opening a microphone.

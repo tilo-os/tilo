@@ -1988,3 +1988,6 @@ display-device-move-unavailable = That screen is offline or its arrangement cann
 display-device-move-confirmed = The device confirmed its new display position.
 display-device-move-changed = The device layout changed before this position was confirmed. Try again.
 display-device-move-unconfirmed = The device did not confirm this position. Refresh and try again.
+
+a11y-dictation-literal = Literal dictation
+a11y-dictation-literal-desc = Keep recognised words as spoken. When off, explicit English number corrections such as “two, uh, no, three” become “three”. Names, quoted speech and other disfluencies stay unchanged.

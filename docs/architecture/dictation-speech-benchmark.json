@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "date": "2026-10-06",
+  "date": "2026-10-07",
   "production_decoder": "whisper.cpp 1.8.3 CPU greedy, two threads, best_of=1; weights loaded without state, input released before readiness; fresh decoder state per transcription",
   "limits": {
     "address_space_bytes": 1073741824,
@@ -5147,5 +5147,1027 @@
         }
       }
     }
+  },
+  "production_streaming": {
+    "protocol": "Actual tilo-speech-worker framed Configure/Audio/Draft/Finish; paced public source, private UID65534 PID/network namespace with empty hardware access and ephemeral uninstalled catalogue witness",
+    "source": "tools/release/probe_speech_stream.py",
+    "profiles": "Builder CPU affinity only; physical older CPU and ARM are not qualified",
+    "limits_unchanged": true,
+    "revision_metric": "Count of non-prefix partial revisions; does not imply semantic stability",
+    "runs": [
+      {
+        "case": "en_us-0",
+        "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        "cpu_affinity_count": 2,
+        "profile": "builder CPU-affinity constraint; not physical older hardware",
+        "audio_seconds": 10.56,
+        "cold_ms": 2129.4189520122018,
+        "first_partial_from_source_start_ms": 2187.302334990818,
+        "non_prefix_partial_revisions": 6,
+        "finalization_ms": 1197.4883289949503,
+        "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+        "cpu_user_seconds": 26.406559,
+        "cpu_system_seconds": 0.5900449999999999,
+        "wall_seconds": 15.929844485013746,
+        "worker_exit": 0,
+        "cpu_accounting": "serial worker RUSAGE_CHILDREN delta; witness still running",
+        "memory_limit_bytes": 1073741824,
+        "memory_peak": {
+          "VmPeak": 870596,
+          "VmSize": 870596,
+          "VmHWM": 353612,
+          "VmRSS": 353612,
+          "Threads": 2
+        },
+        "memory_unit": "KiB except Threads",
+        "memory_sample_interval_ms": 20,
+        "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+        "variant": "bounded-worker-before-affinity-and-final-cache",
+        "log_sha256": "7db336b3593346e5caf7e8207930157bc61fd9880cbfde144e22f943853f5736",
+        "first_partial_text": "Thank you.",
+        "draft_count": 10,
+        "draft_receipts": [
+          {
+            "samples": 16001,
+            "wall_ms": 2187.3044749954715,
+            "inference_ms": 1187.176149978768,
+            "text_sha256": "8569efc4ed5a6273140c2b6ec0ab8d99f4398210808fbb7c0cbbae4fbcc21350"
+          },
+          {
+            "samples": 34996,
+            "wall_ms": 3294.445118983276,
+            "inference_ms": 1107.0802939939313,
+            "text_sha256": "3d13166befc2998f4e8dccab39707161b73b19c99497a001fc22f139f9406c1f"
+          },
+          {
+            "samples": 52711,
+            "wall_ms": 4415.409672976239,
+            "inference_ms": 1120.936023973627,
+            "text_sha256": "51f73648c684a4e31873a9f6a01ddc44a12c33a3a87bb71b7afdceaba59043d5"
+          },
+          {
+            "samples": 70646,
+            "wall_ms": 5542.269328987459,
+            "inference_ms": 1126.8294350011274,
+            "text_sha256": "708c163525fefd8153d25ce38b8c28d568cfe838038269602507a0c99cff0d7f"
+          },
+          {
+            "samples": 88676,
+            "wall_ms": 6698.6811609822325,
+            "inference_ms": 1156.3840419985354,
+            "text_sha256": "c8d38d4810d551ecd0a4e29dc1089de6755f79b00fcca7cdc510b82e9948e677"
+          },
+          {
+            "samples": 107178,
+            "wall_ms": 7849.73162697861,
+            "inference_ms": 1151.019004988484,
+            "text_sha256": "c5c7e7683982dbc6141ea2e1e840044f84c5d9ec116929d02715a28b61c09cad"
+          },
+          {
+            "samples": 125595,
+            "wall_ms": 9013.371301989537,
+            "inference_ms": 1163.6064449849073,
+            "text_sha256": "737b9fc90f064014d25cf8f7e8c90593c9fb774ac4fa0a6ebcc3b6d5313afc9f"
+          },
+          {
+            "samples": 144213,
+            "wall_ms": 10204.552376002539,
+            "inference_ms": 1191.1537039850373,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          },
+          {
+            "samples": 163272,
+            "wall_ms": 11386.580480990233,
+            "inference_ms": 1181.997505016625,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          },
+          {
+            "samples": 168960,
+            "wall_ms": 12571.494130999781,
+            "inference_ms": 1184.8891699919477,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          }
+        ],
+        "final_wer": 0.05263157894736842,
+        "exact_batch_final": true
+      },
+      {
+        "case": "en_us-0",
+        "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        "cpu_affinity_count": 1,
+        "profile": "builder CPU-affinity constraint; not physical older hardware",
+        "audio_seconds": 10.56,
+        "cold_ms": 2261.9198329921346,
+        "first_partial_from_source_start_ms": 11869.482003996382,
+        "non_prefix_partial_revisions": 1,
+        "finalization_ms": 24603.087592986412,
+        "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+        "cpu_user_seconds": 61.644562,
+        "cpu_system_seconds": 0.39719299999999996,
+        "wall_seconds": 63.63883100799285,
+        "worker_exit": 0,
+        "cpu_accounting": "serial worker RUSAGE_CHILDREN delta; witness still running",
+        "memory_limit_bytes": 1073741824,
+        "memory_peak": {
+          "VmPeak": 871044,
+          "VmSize": 871044,
+          "VmHWM": 354008,
+          "VmRSS": 354008,
+          "Threads": 3
+        },
+        "memory_unit": "KiB except Threads",
+        "memory_sample_interval_ms": 20,
+        "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+        "variant": "bounded-worker-before-affinity-and-final-cache",
+        "log_sha256": "7db336b3593346e5caf7e8207930157bc61fd9880cbfde144e22f943853f5736",
+        "first_partial_text": "Thank you.",
+        "draft_count": 2,
+        "draft_receipts": [
+          {
+            "samples": 16001,
+            "wall_ms": 11869.484883995028,
+            "inference_ms": 10869.355328992242,
+            "text_sha256": "8569efc4ed5a6273140c2b6ec0ab8d99f4398210808fbb7c0cbbae4fbcc21350"
+          },
+          {
+            "samples": 168960,
+            "wall_ms": 36707.4748960149,
+            "inference_ms": 24836.23763700598,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          }
+        ],
+        "final_wer": 0.05263157894736842,
+        "exact_batch_final": true
+      },
+      {
+        "case": "long-en",
+        "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        "cpu_affinity_count": 2,
+        "profile": "builder CPU-affinity constraint; not physical older hardware",
+        "audio_seconds": 70.04,
+        "cold_ms": 2106.794555002125,
+        "first_partial_from_source_start_ms": 2119.0585320000537,
+        "non_prefix_partial_revisions": 30,
+        "finalization_ms": 1161.2014629936311,
+        "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25-30 years. All nouns alongside the world say for you always begin with a capital letter, even the middle of a sentence. To the north and within an easy reach is a romantic and fascinating town of Cintra in which was made famous to foreigners after a glowing account of its blinterous recorded by Lord Byron. The cabbage juice changes color depending on how acidic, basic alkaline the chemical is. Many people don't think about them as dinosaurs because they have feathers and can fly. The hospital has followed protocol for infection control, including separating the patient from others to prevent possible infection of others. 20th century research has shown that there are two pools of genetic variation hidden and expressed.",
+        "cpu_user_seconds": 139.2354,
+        "cpu_system_seconds": 2.466261,
+        "wall_seconds": 75.2417641269858,
+        "worker_exit": 0,
+        "cpu_accounting": "serial worker RUSAGE_CHILDREN delta; witness still running",
+        "memory_limit_bytes": 1073741824,
+        "memory_peak": {
+          "VmPeak": 882708,
+          "VmSize": 882708,
+          "VmHWM": 362272,
+          "VmRSS": 362272,
+          "Threads": 2
+        },
+        "memory_unit": "KiB except Threads",
+        "memory_sample_interval_ms": 20,
+        "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year. All nouns, alongside the word Sie for you, always begin with a capital letter, even in the middle of a sentence. To the north and within easy reach is the romantic and fascinating town of Sintra and which was made famous to foreigners after a glowing account of its splendours recorded by Lord Byron. The cabbage juice changes color depending on how acidic or basic (alkaline) the chemical is. Many people don't think about them as dinosaurs because they have feathers and can fly. The hospital has followed protocol for infection control, including separating the patient from others to prevent possible infection of others. The Northern Marianas emergency management office said that there were no damages reported in the nation. Twentieth century research has shown that there are two pools of genetic variation: hidden and expressed.",
+        "variant": "bounded-worker-before-affinity-and-final-cache",
+        "log_sha256": "7db336b3593346e5caf7e8207930157bc61fd9880cbfde144e22f943853f5736",
+        "first_partial_text": "Thank you.",
+        "draft_count": 54,
+        "draft_receipts": [
+          {
+            "samples": 16001,
+            "wall_ms": 2119.0606220043264,
+            "inference_ms": 1118.9045469800476,
+            "text_sha256": "8569efc4ed5a6273140c2b6ec0ab8d99f4398210808fbb7c0cbbae4fbcc21350"
+          },
+          {
+            "samples": 33905,
+            "wall_ms": 3211.6138600104023,
+            "inference_ms": 1092.5065279880073,
+            "text_sha256": "f525be826182c25b1c5be8cd2204b70532b091ff3b1371d15affaa6c6cd948ca"
+          },
+          {
+            "samples": 51385,
+            "wall_ms": 4319.742043007864,
+            "inference_ms": 1108.0968829919584,
+            "text_sha256": "b98d532478c8a98618fd45539770a180d39107ccac2dd8a175af018b2c704dde"
+          },
+          {
+            "samples": 69115,
+            "wall_ms": 5437.865172018064,
+            "inference_ms": 1118.0948090041056,
+            "text_sha256": "708c163525fefd8153d25ce38b8c28d568cfe838038269602507a0c99cff0d7f"
+          },
+          {
+            "samples": 87005,
+            "wall_ms": 6585.410968022188,
+            "inference_ms": 1147.5141150003765,
+            "text_sha256": "2360ad24309a8ae99ee8dd7794b3e05d05674251082ebf8cdb96bf73cd6f1bc8"
+          },
+          {
+            "samples": 105366,
+            "wall_ms": 7729.169440019177,
+            "inference_ms": 1143.697011983022,
+            "text_sha256": "c5c7e7683982dbc6141ea2e1e840044f84c5d9ec116929d02715a28b61c09cad"
+          },
+          {
+            "samples": 123666,
+            "wall_ms": 8892.695173999527,
+            "inference_ms": 1163.4940140065737,
+            "text_sha256": "ef616f653ea679f1ab6c1fdf3d84d6dbe64d41481d164a9f4ba69005dfe926be"
+          },
+          {
+            "samples": 142283,
+            "wall_ms": 10086.834344023373,
+            "inference_ms": 1194.1086299775634,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          },
+          {
+            "samples": 161389,
+            "wall_ms": 11275.91732001747,
+            "inference_ms": 1189.0421260031871,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          },
+          {
+            "samples": 180414,
+            "wall_ms": 12457.609391014557,
+            "inference_ms": 1181.6612309776247,
+            "text_sha256": "35c18fb23f93f9783497f21cb9c4521f92b5caf8c0883d7f70ae35d37d2061b3"
+          },
+          {
+            "samples": 199321,
+            "wall_ms": 13646.822259004693,
+            "inference_ms": 1189.1838070005178,
+            "text_sha256": "43a08442604ab88c3abe71696eeba256170eb8e32dd0bb2532a595e9aadbbf31"
+          },
+          {
+            "samples": 218349,
+            "wall_ms": 14872.818325005937,
+            "inference_ms": 1225.9481659857556,
+            "text_sha256": "35c18fb23f93f9783497f21cb9c4521f92b5caf8c0883d7f70ae35d37d2061b3"
+          },
+          {
+            "samples": 237965,
+            "wall_ms": 16067.883583018556,
+            "inference_ms": 1195.0344080105424,
+            "text_sha256": "1e4c61c4acf073285d4222876594f259051bee953c0941c9e0aa5b641395a965"
+          },
+          {
+            "samples": 257086,
+            "wall_ms": 17264.86774699879,
+            "inference_ms": 1196.9513240037486,
+            "text_sha256": "35c18fb23f93f9783497f21cb9c4521f92b5caf8c0883d7f70ae35d37d2061b3"
+          },
+          {
+            "samples": 276237,
+            "wall_ms": 18533.512784022605,
+            "inference_ms": 1268.613035994349,
+            "text_sha256": "68e83799a3009f6b1d1a57f6ae973e6d71942450a1eac6dac060f2a5579b7906"
+          },
+          {
+            "samples": 296536,
+            "wall_ms": 19828.282368020155,
+            "inference_ms": 1294.7263829992153,
+            "text_sha256": "122c27b7af7a79ec90a34aabfd23afd790e6df17763158fb9c416263d082cc2e"
+          },
+          {
+            "samples": 317252,
+            "wall_ms": 21116.522045020247,
+            "inference_ms": 1288.1958470097743,
+            "text_sha256": "5e00c120b530aab144435c43840d1fecae684e4946725808a0ca1376e17204b0"
+          },
+          {
+            "samples": 337864,
+            "wall_ms": 22412.591020023683,
+            "inference_ms": 1296.0373149835505,
+            "text_sha256": "f7a82178320099c3929cfb44188514416fd08ec219618b751a71e2581270ad49"
+          },
+          {
+            "samples": 358601,
+            "wall_ms": 23691.569457005244,
+            "inference_ms": 1278.9457559993025,
+            "text_sha256": "5f31ecc6d79c3bee245909e5cb5b7743aa392060a1f88ce5f9e112b1251fbf4a"
+          },
+          {
+            "samples": 379065,
+            "wall_ms": 24992.837187019177,
+            "inference_ms": 1301.2217700015754,
+            "text_sha256": "f7a82178320099c3929cfb44188514416fd08ec219618b751a71e2581270ad49"
+          },
+          {
+            "samples": 399885,
+            "wall_ms": 26288.669920002576,
+            "inference_ms": 1295.800213003531,
+            "text_sha256": "f7a82178320099c3929cfb44188514416fd08ec219618b751a71e2581270ad49"
+          },
+          {
+            "samples": 420618,
+            "wall_ms": 28743.14624501858,
+            "inference_ms": 2454.4430550013203,
+            "text_sha256": "9b92f2863c6949c2e18eb7ce91b12418e19178ce5ff47be7089b4a1052eb8fc7"
+          },
+          {
+            "samples": 459890,
+            "wall_ms": 29963.57963301125,
+            "inference_ms": 1220.2519169950392,
+            "text_sha256": "d48adec6c6c6c4c5327fe3dae148a5684385b2884e97111050f3ba53e716328f"
+          },
+          {
+            "samples": 479417,
+            "wall_ms": 31205.512788001215,
+            "inference_ms": 1241.9030150049366,
+            "text_sha256": "d0897ad0400b84cc1e14ab42b455c499b0b01fc97b4613d7a086fafc1d87a2ae"
+          },
+          {
+            "samples": 499288,
+            "wall_ms": 32458.58145901002,
+            "inference_ms": 1253.0385210120585,
+            "text_sha256": "d0897ad0400b84cc1e14ab42b455c499b0b01fc97b4613d7a086fafc1d87a2ae"
+          },
+          {
+            "samples": 519337,
+            "wall_ms": 33727.614059025655,
+            "inference_ms": 1269.0007199998945,
+            "text_sha256": "7b6efa7bf727e9cbe32eadf1b76624f7fdfd11d697fbb505fc160a0478f412a5"
+          },
+          {
+            "samples": 539641,
+            "wall_ms": 35011.011763999704,
+            "inference_ms": 1283.3627740037628,
+            "text_sha256": "b73b6dc5061b6561876c79376d174b4a6720dba8b5b4ce0e3b966d1133129ae2"
+          },
+          {
+            "samples": 560176,
+            "wall_ms": 37388.82252300391,
+            "inference_ms": 2377.779508009553,
+            "text_sha256": "fb526652af860c0cfa3f6e67378194cddceefb28b31d5d079fc473ddb44bd8b4"
+          },
+          {
+            "samples": 598221,
+            "wall_ms": 38710.26013902156,
+            "inference_ms": 1321.2897740013432,
+            "text_sha256": "6ae4cd2da55987ef38a491c330295d0fb24f9a72d543d54e24f78b38cbbc4e43"
+          },
+          {
+            "samples": 619364,
+            "wall_ms": 40063.67305101594,
+            "inference_ms": 1353.3618229848798,
+            "text_sha256": "34a291dbcac9dc1b5f9afb73f5b3daa85f26c336a168d208307a06439272a8d2"
+          },
+          {
+            "samples": 641018,
+            "wall_ms": 41444.62463402306,
+            "inference_ms": 1380.9189820021857,
+            "text_sha256": "0257c999b4011cc0abd387fc874b0217c2207b3203863d3382d7fcdae1a5df85"
+          },
+          {
+            "samples": 663114,
+            "wall_ms": 42822.95289300964,
+            "inference_ms": 1378.295498987427,
+            "text_sha256": "41d0726e3e720030765d973b5eec9a9244d090a966283ef396464eb89a1d2b90"
+          },
+          {
+            "samples": 685167,
+            "wall_ms": 44245.6428380101,
+            "inference_ms": 1422.656864975579,
+            "text_sha256": "9fe11af4e06263677f15d722c82645b36240ee26ded580b1e8b5f870d7b33776"
+          },
+          {
+            "samples": 707930,
+            "wall_ms": 45682.38531402312,
+            "inference_ms": 1436.7073159955908,
+            "text_sha256": "ad55ade8374991e7acf9f1ea9ce23846e747429651fffce7f9eb66f2d1b6bd24"
+          },
+          {
+            "samples": 730918,
+            "wall_ms": 48197.31260402477,
+            "inference_ms": 2514.8806589713786,
+            "text_sha256": "a9f0356dcb3e14ae0b177a6506ebc0baf8206a96d692902167798031c3bafa00"
+          },
+          {
+            "samples": 771157,
+            "wall_ms": 49350.94599201693,
+            "inference_ms": 1153.4669770044275,
+            "text_sha256": "6efe990b4b5b4d9bdd992eed9bfa39dce43680328ba60b639765fd610039ec96"
+          },
+          {
+            "samples": 789615,
+            "wall_ms": 50513.250245014206,
+            "inference_ms": 1162.2717030113563,
+            "text_sha256": "ca80e3ad9563a50ea321fa94e674210ba47542050724a19f47c29722322e8af2"
+          },
+          {
+            "samples": 808212,
+            "wall_ms": 51689.41107901628,
+            "inference_ms": 1176.1290930153336,
+            "text_sha256": "aa916722e82896981535c3227ea4efd25fd28fe18a6578ca5b02e652cba1625d"
+          },
+          {
+            "samples": 827030,
+            "wall_ms": 52867.26780800382,
+            "inference_ms": 1177.808587992331,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 845876,
+            "wall_ms": 54049.50588400243,
+            "inference_ms": 1182.207826001104,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 864792,
+            "wall_ms": 55239.535428001545,
+            "inference_ms": 1189.9993240076583,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 883832,
+            "wall_ms": 56429.64361302438,
+            "inference_ms": 1190.0761539873201,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 902874,
+            "wall_ms": 57624.77060200763,
+            "inference_ms": 1195.096209004987,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 921996,
+            "wall_ms": 58822.375501011265,
+            "inference_ms": 1197.5739090121351,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 941158,
+            "wall_ms": 60025.637191021815,
+            "inference_ms": 1202.9453669965733,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 960410,
+            "wall_ms": 61231.846305017825,
+            "inference_ms": 1206.1691540002357,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 979709,
+            "wall_ms": 62437.99635901814,
+            "inference_ms": 1206.0380530019756,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 999007,
+            "wall_ms": 63645.097582018934,
+            "inference_ms": 1207.068612013245,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 1018321,
+            "wall_ms": 64851.796331000514,
+            "inference_ms": 1206.667098973412,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 1037628,
+            "wall_ms": 66064.03138799942,
+            "inference_ms": 1212.2019070084207,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 1057024,
+            "wall_ms": 68397.05121802399,
+            "inference_ms": 2332.989219983574,
+            "text_sha256": "905e27b99595728516b1395b8fa08239dbfb146782ee55fa47a8c8137b147f3a"
+          },
+          {
+            "samples": 1094352,
+            "wall_ms": 69540.81267002039,
+            "inference_ms": 1143.617941008415,
+            "text_sha256": "88061deac23f59b7c01d5a10e93741c6508a275b050d662d650448ca0d630f81"
+          },
+          {
+            "samples": 1112653,
+            "wall_ms": 70698.31827201415,
+            "inference_ms": 1157.4735220056027,
+            "text_sha256": "31b5a1ba3c8dbd75cec40c3a5a594bf8a21a04c14c956a272c76c612833a0238"
+          },
+          {
+            "samples": 1120640,
+            "wall_ms": 71860.20241200458,
+            "inference_ms": 1161.8591400037985,
+            "text_sha256": "31b5a1ba3c8dbd75cec40c3a5a594bf8a21a04c14c956a272c76c612833a0238"
+          }
+        ],
+        "final_wer": 0.1794871794871795,
+        "exact_batch_final": true
+      },
+      {
+        "case": "en_us-0",
+        "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        "cpu_affinity_count": 2,
+        "profile": "builder CPU-affinity constraint; not physical older hardware",
+        "audio_seconds": 10.56,
+        "cold_ms": 2246.7286579776555,
+        "first_partial_from_source_start_ms": 2227.844532986637,
+        "non_prefix_partial_revisions": 6,
+        "finalization_ms": 0.46833400847390294,
+        "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+        "cpu_user_seconds": 23.076309,
+        "cpu_system_seconds": 1.182891,
+        "wall_seconds": 15.10756313498132,
+        "worker_exit": 0,
+        "cpu_accounting": "serial worker RUSAGE_CHILDREN delta; witness still running",
+        "memory_limit_bytes": 1073741824,
+        "memory_peak": {
+          "VmPeak": 872092,
+          "VmSize": 872092,
+          "VmHWM": 355988,
+          "VmRSS": 355988,
+          "Threads": 2
+        },
+        "memory_unit": "KiB except Threads",
+        "memory_sample_interval_ms": 20,
+        "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+        "variant": "bounded-worker-affinity-and-final-cache",
+        "log_sha256": "5560f386df787c8eb66d9c5c79753b2ed19877355354c1b1047968f64d7055e1",
+        "first_partial_text": "Thank you.",
+        "draft_count": 9,
+        "draft_receipts": [
+          {
+            "samples": 16000,
+            "wall_ms": 2227.8472729958594,
+            "inference_ms": 1226.2612709891982,
+            "text_sha256": "8569efc4ed5a6273140c2b6ec0ab8d99f4398210808fbb7c0cbbae4fbcc21350"
+          },
+          {
+            "samples": 35645,
+            "wall_ms": 3465.5914749891963,
+            "inference_ms": 1237.6966509909835,
+            "text_sha256": "2c250607fe0628a7dfb3bfbfba1e17ca040d3a138a158b095b131cc14fb564bb"
+          },
+          {
+            "samples": 55449,
+            "wall_ms": 4630.551882000873,
+            "inference_ms": 1164.9263270082884,
+            "text_sha256": "51f73648c684a4e31873a9f6a01ddc44a12c33a3a87bb71b7afdceaba59043d5"
+          },
+          {
+            "samples": 74088,
+            "wall_ms": 5826.962271996308,
+            "inference_ms": 1196.3770799920894,
+            "text_sha256": "828ce6b8487082ea0a778db745434c74ea43ca5cb1ded5da94a3c75996967815"
+          },
+          {
+            "samples": 93231,
+            "wall_ms": 7003.674481995404,
+            "inference_ms": 1176.6781390178949,
+            "text_sha256": "4c0fd6779dee8449195773cdf7670977cc5cdef77da3962ebe4f1f9fb08767d5"
+          },
+          {
+            "samples": 112058,
+            "wall_ms": 8345.836113003315,
+            "inference_ms": 1342.13224099949,
+            "text_sha256": "c5c7e7683982dbc6141ea2e1e840044f84c5d9ec116929d02715a28b61c09cad"
+          },
+          {
+            "samples": 133533,
+            "wall_ms": 9712.620470003458,
+            "inference_ms": 1366.6430950106587,
+            "text_sha256": "61a0b726e19528f6ae2bc7c381dc7fdbc2e82f97357344d548aa9fc2b4e52c0f"
+          },
+          {
+            "samples": 155401,
+            "wall_ms": 11309.57995299832,
+            "inference_ms": 1596.6206809971482,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          },
+          {
+            "samples": 168960,
+            "wall_ms": 12795.156204985688,
+            "inference_ms": 1484.7541349881794,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          }
+        ],
+        "final_wer": 0.05263157894736842,
+        "exact_batch_final": true
+      },
+      {
+        "case": "en_us-0",
+        "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        "cpu_affinity_count": 1,
+        "profile": "builder CPU-affinity constraint; not physical older hardware",
+        "audio_seconds": 10.56,
+        "cold_ms": 2215.372495003976,
+        "first_partial_from_source_start_ms": 3178.30003000563,
+        "non_prefix_partial_revisions": 4,
+        "finalization_ms": 2.9209950007498264,
+        "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+        "cpu_user_seconds": 15.061931,
+        "cpu_system_seconds": 0.31281899999999996,
+        "wall_seconds": 16.646775764995255,
+        "worker_exit": 0,
+        "cpu_accounting": "serial worker RUSAGE_CHILDREN delta; witness still running",
+        "memory_limit_bytes": 1073741824,
+        "memory_peak": {
+          "VmPeak": 862804,
+          "VmSize": 862804,
+          "VmHWM": 354456,
+          "VmRSS": 354456,
+          "Threads": 1
+        },
+        "memory_unit": "KiB except Threads",
+        "memory_sample_interval_ms": 20,
+        "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+        "variant": "bounded-worker-affinity-and-final-cache",
+        "log_sha256": "5560f386df787c8eb66d9c5c79753b2ed19877355354c1b1047968f64d7055e1",
+        "first_partial_text": "Thank you.",
+        "draft_count": 6,
+        "draft_receipts": [
+          {
+            "samples": 16001,
+            "wall_ms": 3178.3022200106643,
+            "inference_ms": 2178.1588299782015,
+            "text_sha256": "8569efc4ed5a6273140c2b6ec0ab8d99f4398210808fbb7c0cbbae4fbcc21350"
+          },
+          {
+            "samples": 50852,
+            "wall_ms": 5344.691638019867,
+            "inference_ms": 2166.0043349838816,
+            "text_sha256": "51f73648c684a4e31873a9f6a01ddc44a12c33a3a87bb71b7afdceaba59043d5"
+          },
+          {
+            "samples": 85515,
+            "wall_ms": 7587.4233710055705,
+            "inference_ms": 2242.676922993269,
+            "text_sha256": "29ada312ce00aed40748ca58b0adb7f818a6cfb85067cc36505c9ab0082bad7e"
+          },
+          {
+            "samples": 121398,
+            "wall_ms": 9928.571942000417,
+            "inference_ms": 2340.78575798776,
+            "text_sha256": "19703c95f4fb29bf9354fb3840cbb512bbedc9b467c1feb4200717f2783e2742"
+          },
+          {
+            "samples": 158857,
+            "wall_ms": 12157.40391399595,
+            "inference_ms": 2228.686160990037,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          },
+          {
+            "samples": 168960,
+            "wall_ms": 14395.787220011698,
+            "inference_ms": 2238.3599359891377,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          }
+        ],
+        "final_wer": 0.05263157894736842,
+        "exact_batch_final": true
+      },
+      {
+        "case": "long-en",
+        "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        "cpu_affinity_count": 2,
+        "profile": "builder CPU-affinity constraint; not physical older hardware",
+        "audio_seconds": 70.04,
+        "cold_ms": 2112.514727981761,
+        "first_partial_from_source_start_ms": 2144.112702982966,
+        "non_prefix_partial_revisions": 23,
+        "finalization_ms": 2.6919929950963706,
+        "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25-30 years. All nouns alongside the world say for you always begin with a capital letter, even the middle of a sentence. To the north and within an easy reach is a romantic and fascinating town of Cintra in which was made famous to foreigners after a glowing account of its blinterous recorded by Lord Byron. The cabbage juice changes color depending on how acidic, basic alkaline the chemical is. Many people don't think about them as dinosaurs because they have feathers and can fly. The hospital has followed protocol for infection control, including separating the patient from others to prevent possible infection of others. 20th century research has shown that there are two pools of genetic variation hidden and expressed.",
+        "cpu_user_seconds": 132.115609,
+        "cpu_system_seconds": 5.094094,
+        "wall_seconds": 73.78642889799085,
+        "worker_exit": 0,
+        "cpu_accounting": "serial worker RUSAGE_CHILDREN delta; witness still running",
+        "memory_limit_bytes": 1073741824,
+        "memory_peak": {
+          "VmPeak": 885608,
+          "VmSize": 885608,
+          "VmHWM": 360652,
+          "VmRSS": 360652,
+          "Threads": 2
+        },
+        "memory_unit": "KiB except Threads",
+        "memory_sample_interval_ms": 20,
+        "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year. All nouns, alongside the word Sie for you, always begin with a capital letter, even in the middle of a sentence. To the north and within easy reach is the romantic and fascinating town of Sintra and which was made famous to foreigners after a glowing account of its splendours recorded by Lord Byron. The cabbage juice changes color depending on how acidic or basic (alkaline) the chemical is. Many people don't think about them as dinosaurs because they have feathers and can fly. The hospital has followed protocol for infection control, including separating the patient from others to prevent possible infection of others. The Northern Marianas emergency management office said that there were no damages reported in the nation. Twentieth century research has shown that there are two pools of genetic variation: hidden and expressed.",
+        "variant": "bounded-worker-affinity-and-final-cache",
+        "log_sha256": "5560f386df787c8eb66d9c5c79753b2ed19877355354c1b1047968f64d7055e1",
+        "first_partial_text": "Thank you.",
+        "draft_count": 51,
+        "draft_receipts": [
+          {
+            "samples": 16001,
+            "wall_ms": 2144.1149129823316,
+            "inference_ms": 1143.9751629950479,
+            "text_sha256": "8569efc4ed5a6273140c2b6ec0ab8d99f4398210808fbb7c0cbbae4fbcc21350"
+          },
+          {
+            "samples": 34305,
+            "wall_ms": 3258.3168470009696,
+            "inference_ms": 1114.1411129792687,
+            "text_sha256": "f525be826182c25b1c5be8cd2204b70532b091ff3b1371d15affaa6c6cd948ca"
+          },
+          {
+            "samples": 52133,
+            "wall_ms": 4442.889455007389,
+            "inference_ms": 1184.541206981521,
+            "text_sha256": "b98d532478c8a98618fd45539770a180d39107ccac2dd8a175af018b2c704dde"
+          },
+          {
+            "samples": 71086,
+            "wall_ms": 5616.9337010069285,
+            "inference_ms": 1173.9996649848763,
+            "text_sha256": "708c163525fefd8153d25ce38b8c28d568cfe838038269602507a0c99cff0d7f"
+          },
+          {
+            "samples": 89871,
+            "wall_ms": 6777.351408003597,
+            "inference_ms": 1160.385977011174,
+            "text_sha256": "4c0fd6779dee8449195773cdf7670977cc5cdef77da3962ebe4f1f9fb08767d5"
+          },
+          {
+            "samples": 108437,
+            "wall_ms": 7985.364280000795,
+            "inference_ms": 1207.9795809986535,
+            "text_sha256": "c5c7e7683982dbc6141ea2e1e840044f84c5d9ec116929d02715a28b61c09cad"
+          },
+          {
+            "samples": 127765,
+            "wall_ms": 9266.043555981014,
+            "inference_ms": 1280.621695012087,
+            "text_sha256": "3b15743d867661d84ddee42eda9bf4cb852c9bfab09c9ba63fe0582fecb23dcd"
+          },
+          {
+            "samples": 148256,
+            "wall_ms": 10546.47246899549,
+            "inference_ms": 1280.2921520196833,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          },
+          {
+            "samples": 168743,
+            "wall_ms": 11759.43579498562,
+            "inference_ms": 1212.9352050251327,
+            "text_sha256": "2226dab26de694e2bb52e0abacc19fa60d3023c75b6b6002aff32b2020615a64"
+          },
+          {
+            "samples": 188151,
+            "wall_ms": 13078.044811001746,
+            "inference_ms": 1318.494945007842,
+            "text_sha256": "35c18fb23f93f9783497f21cb9c4521f92b5caf8c0883d7f70ae35d37d2061b3"
+          },
+          {
+            "samples": 209248,
+            "wall_ms": 14279.740537982434,
+            "inference_ms": 1201.6640070069116,
+            "text_sha256": "35c18fb23f93f9783497f21cb9c4521f92b5caf8c0883d7f70ae35d37d2061b3"
+          },
+          {
+            "samples": 228475,
+            "wall_ms": 15474.29868299514,
+            "inference_ms": 1194.5284450193867,
+            "text_sha256": "35c18fb23f93f9783497f21cb9c4521f92b5caf8c0883d7f70ae35d37d2061b3"
+          },
+          {
+            "samples": 247588,
+            "wall_ms": 16673.57334899134,
+            "inference_ms": 1199.2438859888352,
+            "text_sha256": "35c18fb23f93f9783497f21cb9c4521f92b5caf8c0883d7f70ae35d37d2061b3"
+          },
+          {
+            "samples": 266777,
+            "wall_ms": 17988.892866007518,
+            "inference_ms": 1315.2889869816136,
+            "text_sha256": "68e83799a3009f6b1d1a57f6ae973e6d71942450a1eac6dac060f2a5579b7906"
+          },
+          {
+            "samples": 287822,
+            "wall_ms": 19298.64957497921,
+            "inference_ms": 1309.7272090089973,
+            "text_sha256": "5e00c120b530aab144435c43840d1fecae684e4946725808a0ca1376e17204b0"
+          },
+          {
+            "samples": 308778,
+            "wall_ms": 20629.111794987693,
+            "inference_ms": 1330.4299390001688,
+            "text_sha256": "5e00c120b530aab144435c43840d1fecae684e4946725808a0ca1376e17204b0"
+          },
+          {
+            "samples": 330065,
+            "wall_ms": 21823.18814599421,
+            "inference_ms": 1194.0365910122637,
+            "text_sha256": "3a8a85e263f6616e2a7cb68ef3d1b1ac3cd49674ce45fb8ecbb2bed37a7f0858"
+          },
+          {
+            "samples": 349171,
+            "wall_ms": 23146.079758997075,
+            "inference_ms": 1322.8570829960518,
+            "text_sha256": "f7a82178320099c3929cfb44188514416fd08ec219618b751a71e2581270ad49"
+          },
+          {
+            "samples": 370337,
+            "wall_ms": 24592.42538898252,
+            "inference_ms": 1446.3100289867725,
+            "text_sha256": "6daa096465c33ad328e763efde05120026496b0409b8c69297c744d8395bc2d3"
+          },
+          {
+            "samples": 393478,
+            "wall_ms": 25950.817381992238,
+            "inference_ms": 1358.323022024706,
+            "text_sha256": "f7a82178320099c3929cfb44188514416fd08ec219618b751a71e2581270ad49"
+          },
+          {
+            "samples": 415213,
+            "wall_ms": 28624.952526995912,
+            "inference_ms": 2674.1063839872368,
+            "text_sha256": "49bfeceb000da3cfa84f3406c832e0c97e169620e8fdeb4bc10bda1fd412abee"
+          },
+          {
+            "samples": 457999,
+            "wall_ms": 31072.474115993828,
+            "inference_ms": 2447.189945989521,
+            "text_sha256": "4ab9e6ca28c95950ac38e3cda72016c71c1a1e8cebaadc0742c14ac6cb4ca717"
+          },
+          {
+            "samples": 497159,
+            "wall_ms": 32329.623455996625,
+            "inference_ms": 1256.9757789897267,
+            "text_sha256": "d0897ad0400b84cc1e14ab42b455c499b0b01fc97b4613d7a086fafc1d87a2ae"
+          },
+          {
+            "samples": 517274,
+            "wall_ms": 33607.29564499343,
+            "inference_ms": 1277.644388988847,
+            "text_sha256": "a24237cc07aa73fa04494358eef9018fce45253f882f2a1523a78c91ddeed03d"
+          },
+          {
+            "samples": 537716,
+            "wall_ms": 34950.96519999788,
+            "inference_ms": 1343.5006930085365,
+            "text_sha256": "7fae7358ce79b1fd0dc60693e1b013a0318b73ed224fa66e5b5c2b7f0bd6ad4f"
+          },
+          {
+            "samples": 559215,
+            "wall_ms": 36261.41650500358,
+            "inference_ms": 1310.4181739909109,
+            "text_sha256": "db1477d3ad0022d0d008c5f99c977cb8a19e78eed2bb45cfdcd33b89f4e22fe5"
+          },
+          {
+            "samples": 580182,
+            "wall_ms": 37583.70634398307,
+            "inference_ms": 1322.2586479969323,
+            "text_sha256": "6ae4cd2da55987ef38a491c330295d0fb24f9a72d543d54e24f78b38cbbc4e43"
+          },
+          {
+            "samples": 601339,
+            "wall_ms": 38917.0547889953,
+            "inference_ms": 1333.3208650001325,
+            "text_sha256": "6ae4cd2da55987ef38a491c330295d0fb24f9a72d543d54e24f78b38cbbc4e43"
+          },
+          {
+            "samples": 622672,
+            "wall_ms": 40291.18653899059,
+            "inference_ms": 1374.0990799851716,
+            "text_sha256": "111527e0c58da178ee21981c9d53abe9b207ff36839820c89326ff15e6ee55d5"
+          },
+          {
+            "samples": 644659,
+            "wall_ms": 41685.170843004016,
+            "inference_ms": 1393.9513739896938,
+            "text_sha256": "67c5e082980cacd0982d169957f62171c314cf68daf9267ea4b29b1629c5ecde"
+          },
+          {
+            "samples": 666962,
+            "wall_ms": 43186.370360985165,
+            "inference_ms": 1501.1643479811028,
+            "text_sha256": "8af359c85f3b0693c0b60d193ee620be3662cd95540a246221f91a094db09903"
+          },
+          {
+            "samples": 690981,
+            "wall_ms": 44656.09219498583,
+            "inference_ms": 1469.6763539977837,
+            "text_sha256": "6317c20ef0ff436f756f27c811d0d3febeef36c67248f45811a095640b78dd68"
+          },
+          {
+            "samples": 714497,
+            "wall_ms": 47280.078271985985,
+            "inference_ms": 2623.940296994988,
+            "text_sha256": "3b2b7cef338a522fe8039bd27f291a4c287500599d072b48e034b8c14c17a804"
+          },
+          {
+            "samples": 756481,
+            "wall_ms": 48527.68504898995,
+            "inference_ms": 1247.4647960043512,
+            "text_sha256": "1288a713dea106255fc33cc2ebb4b5984e1c8d8917f2974c9ab55608300d8a0f"
+          },
+          {
+            "samples": 776443,
+            "wall_ms": 49731.188831996405,
+            "inference_ms": 1203.4599020262249,
+            "text_sha256": "881eb8f51ac8a0e9887a1cc52c161dbc2f5d98e5a0948ee50d0f3f3f2f9ba780"
+          },
+          {
+            "samples": 795699,
+            "wall_ms": 50902.935377991525,
+            "inference_ms": 1171.7155759979505,
+            "text_sha256": "8f8d9001ccead80a87d0993e23cbf3e89eaa69482b3fc81b1a6175c10ce9f1b8"
+          },
+          {
+            "samples": 814447,
+            "wall_ms": 52092.26702697924,
+            "inference_ms": 1189.2995689995587,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 833476,
+            "wall_ms": 53280.90576999239,
+            "inference_ms": 1188.5993629985023,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 852494,
+            "wall_ms": 54474.113503005356,
+            "inference_ms": 1193.1761029991321,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 871585,
+            "wall_ms": 55671.15500898217,
+            "inference_ms": 1197.0150060078595,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 890738,
+            "wall_ms": 56880.94483700115,
+            "inference_ms": 1209.7577370004728,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 910095,
+            "wall_ms": 58092.53252999042,
+            "inference_ms": 1211.5545729757287,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 929480,
+            "wall_ms": 59319.0392240067,
+            "inference_ms": 1226.459193014307,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 949104,
+            "wall_ms": 60599.89910098375,
+            "inference_ms": 1280.5971750058234,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 969598,
+            "wall_ms": 61820.68128400715,
+            "inference_ms": 1220.7488029962406,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 989130,
+            "wall_ms": 63035.52509599831,
+            "inference_ms": 1214.814072009176,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 1008568,
+            "wall_ms": 64430.46757800039,
+            "inference_ms": 1394.7881709900685,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 1030887,
+            "wall_ms": 65798.54889499256,
+            "inference_ms": 1368.0334269884042,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 1052776,
+            "wall_ms": 67229.72933299025,
+            "inference_ms": 1429.592014028458,
+            "text_sha256": "89862de09b360c80ead12be70af796b28c3e72e78b7e1d982fc3dd4393198f7b"
+          },
+          {
+            "samples": 1075675,
+            "wall_ms": 70071.15635598893,
+            "inference_ms": 2841.3233520113863,
+            "text_sha256": "f14cd8db26e79b54afbc0d055c36a42d03f9ccd37385d4f29ec3db20109806b4"
+          },
+          {
+            "samples": 1120640,
+            "wall_ms": 71407.31743499055,
+            "inference_ms": 1336.0035080113448,
+            "text_sha256": "31b5a1ba3c8dbd75cec40c3a5a594bf8a21a04c14c956a272c76c612833a0238"
+          }
+        ],
+        "final_wer": 0.1794871794871795,
+        "exact_batch_final": true
+      }
+    ],
+    "limitations": [
+      "The first two-CPU English partial was incorrectly Thank you; early drafts remain provisional.",
+      "Only one short English clip and one public long English splice were paced through the protocol; batch multilingual accuracy does not qualify multilingual streaming.",
+      "Capture hardware, compositor overlay latency, physical older devices, noise, code switching, personal vocabulary bias and native IME completion remain unqualified."
+    ]
   }
 }

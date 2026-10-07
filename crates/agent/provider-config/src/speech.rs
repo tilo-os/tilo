@@ -2,6 +2,9 @@
 //! Replies carry no Debug implementation: recorded words must not reach logs.
 use serde::{Deserialize, Serialize};
 
+mod cleanup;
+pub use cleanup::clean_final;
+
 pub const SAMPLE_RATE: usize = 16_000;
 pub const MAX_SAMPLES: usize = SAMPLE_RATE * 120;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;

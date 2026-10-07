@@ -12,6 +12,7 @@ static void discard_log(enum ggml_log_level, const char *, void *) {}
 struct SpeechContext {
     whisper_context * model;
     whisper_state * state;
+    int threads;
 };
 
 extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept try {
@@ -23,13 +24,20 @@ extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept try 
     // before decoder arenas are allocated, avoiding an unnecessary peak.
     auto * model = whisper_init_from_buffer_with_params_no_state(bytes, length, params);
     if (!model) return nullptr;
-    auto * context = new (std::nothrow) SpeechContext{model, nullptr};
+    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2};
     if (!context) whisper_free(model);
     return context;
 } catch (...) {
     // Native allocation/model exceptions must never unwind across the Rust ABI.
     // The confined worker reports a typed failure and exits; no automatic retry.
     return nullptr;
+}
+
+extern "C" bool tilo_speech_threads(void * context, int threads) noexcept {
+    auto * ctx = static_cast<SpeechContext *>(context);
+    if (!ctx || threads < 1 || threads > 2) return false;
+    ctx->threads = threads;
+    return true;
 }
 
 extern "C" bool tilo_speech_ready(void * context) noexcept try {
@@ -86,7 +94,7 @@ extern "C" int tilo_speech_transcribe(void * context, const float * samples,
     // Greedy fallback defaults to five candidates and a sevenfold KV arena.
     // Keep one decoder within the worker budget even on uncertain speech.
     params.greedy.best_of = 1;
-    params.n_threads = 2;
+    params.n_threads = handle->threads;
     params.translate = false;
     params.no_context = true;
     params.print_special = false;

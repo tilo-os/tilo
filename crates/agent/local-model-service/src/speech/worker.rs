@@ -1,7 +1,7 @@
 //! One confined child serving a private speech pipe. No microphone is opened.
 use super::{
-    FRAME, RequestKind, SpeechConfig, SpeechEngine, SpeechError, SpeechInput, SpeechReply,
-    speech_model_bytes,
+    FRAME, RequestKind, SpeechConfig, SpeechEngine, SpeechError, SpeechInput, SpeechRecognition,
+    SpeechReply, speech_model_bytes,
 };
 use crate::catalog::VerifiedCatalog;
 use std::io::{Read, Write};
@@ -83,11 +83,14 @@ pub fn serve(
         serde_json::from_slice(payload).map_err(|_| SpeechError::Protocol)?;
     // The exact signed object is now in memory; all files are closed before
     // native parsing. Unsupported confinement fails before Ready and capture.
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(2));
     super::confine_worker()?;
     let mut engine = SpeechEngine::load(&mut bytes)?;
     drop(bytes);
+    engine.set_threads(threads)?;
     engine.prepare()?;
     let language = engine.language(&config.language)?;
+    let mut recognition = SpeechRecognition::default();
     reply(
         output,
         &SpeechReply::Ready {
@@ -105,7 +108,8 @@ pub fn serve(
         match kind {
             RequestKind::Audio => {}
             RequestKind::Draft => {
-                let text = engine.transcribe(session.samples(), &language)?;
+                let text =
+                    recognition.transcribe(&mut engine, session.samples(), &language, false)?;
                 reply(
                     output,
                     &SpeechReply::Draft {
@@ -115,7 +119,8 @@ pub fn serve(
                 )?;
             }
             RequestKind::Finish => {
-                let text = engine.transcribe(session.samples(), &language)?;
+                let text =
+                    recognition.transcribe(&mut engine, session.samples(), &language, true)?;
                 reply(
                     output,
                     &SpeechReply::Done {

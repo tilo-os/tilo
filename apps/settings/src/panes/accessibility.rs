@@ -200,6 +200,9 @@ pub enum AccessibilityEffect {
         #[param("Stable recognition language code", choices = DictationLanguage::ALL.iter().map(|language| language.code()))]
         language: String,
     },
+    /// Preserve recognised words without final-text cleanup.
+    #[effect(idempotent)]
+    SetDictationLiteral { on: bool },
     /// Turn visual alerts on or off.
     #[effect(idempotent)]
     SetVisualAlerts { on: bool },
@@ -280,6 +283,7 @@ pub(crate) fn answer(
                 ScreenReaderVoice::from_label(&voice).ok_or_else(|| not(&voice, "voice"))?;
             Box::new(move |p| p.screen_reader_voice = voice)
         }
+        E::SetDictationLiteral { on } => Box::new(move |p| p.dictation_literal = on),
         E::SetVisualAlerts { on } => Box::new(move |p| p.visual_alerts = on),
         E::SetDictationLanguage { language } => {
             let language = DictationLanguage::from_code(&language)
@@ -338,6 +342,7 @@ struct Shown {
     speech_rate: LocalState<String>,
     speech_voice: LocalState<String>,
     dictation_language: LocalState<String>,
+    dictation_literal: LocalState<bool>,
     visual_alerts: LocalState<bool>,
 }
 
@@ -370,6 +375,7 @@ impl Shown {
             speech_rate: text(),
             speech_voice: text(),
             dictation_language: text(),
+            dictation_literal: flag(),
             visual_alerts: flag(),
         };
         shown.show_appearance(appearance);
@@ -415,6 +421,7 @@ impl Shown {
         self.speech_voice
             .set(access.screen_reader_voice.label().to_owned());
         self.visual_alerts.set(access.visual_alerts);
+        self.dictation_literal.set(access.dictation_literal);
         self.dictation_language
             .set(access.dictation_language.code().to_owned());
     }
@@ -797,6 +804,15 @@ impl AccessibilityPane {
                         ),
                         caption(&t("a11y-dictation-language-desc")),
                         setting_row_described(
+                            &t("a11y-dictation-literal"),
+                            &t("a11y-dictation-literal-desc"),
+                            self.toggle(
+                                "a11y.dictation_literal",
+                                &shown.dictation_literal,
+                                AccessibilityEffect::SET_DICTATION_LITERAL,
+                            ),
+                        ),
+                        setting_row_described(
                             &t("a11y-visual-alerts"),
                             &t("a11y-visual-alerts-desc"),
                             self.toggle(
@@ -991,6 +1007,38 @@ mod tests {
         for language in DictationLanguage::ALL {
             assert_ne!(t(&language.label_key()), language.label_key());
         }
+    }
+
+    #[test]
+    fn dictation_literal_action_preserves_language_and_other_assists() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        set(&mut app, AccessibilityEffect::SetStickyKeys { on: true });
+        set(
+            &mut app,
+            AccessibilityEffect::SetDictationLanguage {
+                language: "en".into(),
+            },
+        );
+        set(
+            &mut app,
+            AccessibilityEffect::SetDictationLiteral { on: true },
+        );
+        let preferences = app.settings::<AccessibilityPrefs>();
+        assert!(preferences.get().dictation_literal);
+        assert!(preferences.get().sticky_keys);
+        assert_eq!(preferences.get().dictation_language.code(), "en");
+        assert_eq!(
+            preferences
+                .document()
+                .section("accessibility")
+                .get("dictation_literal"),
+            Some(&serde_json::json!(true))
+        );
+        set(
+            &mut app,
+            AccessibilityEffect::SetDictationLiteral { on: false },
+        );
+        assert!(!app.settings::<AccessibilityPrefs>().get().dictation_literal);
     }
 
     /// The vision comforts are the appearance section's (one stored value,
