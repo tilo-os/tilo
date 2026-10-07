@@ -30,11 +30,12 @@ await new Promise(done => server.listen(0, '127.0.0.1', done));
 const origin = `https://127.0.0.1:${server.address().port}`;
 process.stdout.write(JSON.stringify({origin}) + '\n');
 const fixture = JSON.parse((await lines.next()).value);
+if (fixture.encryptedRestart) assert.notEqual(process.getuid?.(), 0, 'cold encrypted resource requires an unprivileged sandboxed browser');
 process.env.CHROME ??= '/usr/bin/chromium-browser';
 let browser;
 const stages = [];
 const stage = name => {stages.push(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
-const evidence = resolve(fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
+const evidence = resolve(fixture.encryptedRestart ? 'target/mounted-resource-encrypted' : fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
 const deadline = setTimeout(async () => {
   console.error('Mounted resource journey exceeded its 130-second bound');
@@ -43,6 +44,7 @@ const deadline = setTimeout(async () => {
   process.exit(1);
 }, 130_000);
 try {
+  if (fixture.encryptedRestart) stage('cold-remote-encrypted-canonical-primary');
   // Certificate exceptions exist only inside this disposable fixture browser.
   browser = await launch({args: ['--ignore-certificate-errors', '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader',
@@ -185,7 +187,7 @@ try {
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
   assert.notEqual(await tab.evaluate('document.querySelector("#status").textContent'), 'Shared resource open. Leave to close this session.');
   stage('governed-revocation-refuses-link-reopen');
-  writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
+  writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.encryptedRestart ? 'certified-browser-encrypted-cold' : fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
     app:'so.tilo.chat', stages}, null, 2) + '\n');
 } finally {
   clearTimeout(deadline);
