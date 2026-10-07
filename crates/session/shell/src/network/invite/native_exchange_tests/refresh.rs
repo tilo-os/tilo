@@ -257,7 +257,7 @@ pub(super) async fn restart_after_offline_snapshot(
 
 /// The governor's answer to the relay's authenticated checkpoint request: a
 /// member that may still read the room gets a freshly signed checkpoint.
-async fn refresh_on_request(
+pub(super) async fn refresh_on_request(
     governor: &mut TestGovernor,
     request: tilo_relay::peer::sync_refresh::Request,
 ) -> Result<(), String> {
@@ -276,7 +276,7 @@ async fn refresh_on_request(
         .await
 }
 
-fn publish_committed(
+pub(super) fn publish_committed(
     owner: &TestGovernor,
     publisher: &tilo_relay::RelayCoeditSession,
 ) -> Vec<Vec<u8>> {

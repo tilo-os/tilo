@@ -281,6 +281,17 @@ pub trait OwnerCommitService: Send + Sync {
         true
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
+    /// Commit a certified member's own terminal audit at the actual governor.
+    /// The authenticated caller is retained by the broker, never decoded from
+    /// the receipt. Implementations must recheck current member and signing custody.
+    fn commit_member_effect_receipt(
+        &self,
+        request: OwnerCommitRequest,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> CommitFuture {
+        let _ = (request, caller);
+        Box::pin(async { Err("member effect governor unavailable".into()) })
+    }
     /// [`Self::commit`] for a document write, with the resource kind of its
     /// record as the writing app named it when joining the record. Only an
     /// owner that creates a missing record on the app's first write reads
