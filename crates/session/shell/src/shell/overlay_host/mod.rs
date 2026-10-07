@@ -16599,6 +16599,7 @@ impl ShellOverlayHost {
                 performed
             }
             LayerIntent::Session(action) => {
+                self.layers.power_menu.close();
                 self.execute_session_action(action);
                 true
             }

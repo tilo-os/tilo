@@ -197,6 +197,8 @@ pub struct OutputManagementState {
     powers: Vec<(ZwlrOutputPowerV1, OutputId)>,
     /// Outputs a client has switched off. Absent means on.
     powered_off: BTreeSet<OutputId>,
+    /// Session idle blanking overrides individual output intent.
+    session_blanked: bool,
     power_requests: Vec<(OutputId, bool)>,
     confirmation: Option<DisplayConfirmation>,
     asked: Option<AskedChange>,
@@ -220,6 +222,7 @@ impl OutputManagementState {
             wake: None,
             powers: Vec::new(),
             powered_off: BTreeSet::new(),
+            session_blanked: false,
             power_requests: Vec::new(),
             confirmation: None,
             asked: None,
@@ -261,6 +264,8 @@ impl OutputManagementState {
         self.serial = self.serial.wrapping_add(1).max(1);
         let live: Vec<OutputId> = self.heads.iter().filter_map(|h| h.output).collect();
         self.powered_off.retain(|output| live.contains(output));
+        self.power_requests
+            .retain(|(output, _)| live.contains(output));
         self.powers.retain(|(power, output)| {
             let alive = live.contains(output);
             if !alive {
@@ -558,18 +563,33 @@ impl OutputManagementState {
         }
     }
 
+    /// Reflect the DPMS transition sent to the backend and presenter. Idle
+    /// blanking does not replace a tool's per-output off intent.
+    pub fn set_session_blanked(&mut self, blanked: bool) {
+        if self.session_blanked == blanked {
+            return;
+        }
+        self.session_blanked = blanked;
+        for (power, output) in &self.powers {
+            power.mode(power_mode(self.output_power_on(*output)));
+        }
+    }
+
+    fn output_power_on(&self, output: OutputId) -> bool {
+        !self.session_blanked && !self.powered_off.contains(&output)
+    }
+
     fn set_power(&mut self, output: OutputId, on: bool) {
-        let was_on = !self.powered_off.contains(&output);
         if on {
             self.powered_off.remove(&output);
         } else {
             self.powered_off.insert(output);
         }
-        if was_on != on {
-            self.power_requests.push((output, on));
-        }
+        // Reassert explicit intent even when it matches the cached state:
+        // idle blanking and a connector reset can have switched scanout off.
+        self.power_requests.push((output, on));
         for (power, _) in self.powers.iter().filter(|(_, o)| *o == output) {
-            power.mode(power_mode(on));
+            power.mode(power_mode(self.output_power_on(output)));
         }
     }
 }
@@ -1229,7 +1249,7 @@ impl Dispatch<ZwlrOutputPowerManagerV1, ()> for State {
             let power = data_init.init(id, PowerData { output: live });
             match live {
                 Some(output) => {
-                    power.mode(power_mode(!management.powered_off.contains(&output)));
+                    power.mode(power_mode(management.output_power_on(output)));
                     management.powers.push((power, output));
                 }
                 None => power.failed(),

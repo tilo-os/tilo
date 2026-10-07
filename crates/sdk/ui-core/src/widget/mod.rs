@@ -3436,3 +3436,5 @@ pub(crate) mod control_result_probe {
 
 pub mod keyboard_map;
 pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
+/// Logical screen topology canvas shared by local and native peer displays.
+pub mod display_arrangement;

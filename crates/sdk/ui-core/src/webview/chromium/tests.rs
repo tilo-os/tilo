@@ -1924,6 +1924,11 @@ fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() 
     assert!(events.iter().any(
         |event| matches!(event, WebViewEvent::LoadFinishedAt { uri } if uri == "about:blank")
     ));
+    // Event output and the command reader run independently in the host
+    // fixture. Observe a complete command before opening its recording.
+    wait_for_command(&profile, "owned navigation command", |command| {
+        command["op"] == "scoped_navigation"
+    });
     let mut commands = std::fs::File::open(profile.join("commands")).unwrap();
     let mut navigation = None;
     while let Some(protocol::Packet::Json(value)) = protocol::read_packet(&mut commands).unwrap() {

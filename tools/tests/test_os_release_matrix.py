@@ -192,6 +192,12 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
             )
 
+        with self.subTest(phase='Orange Pi publication has a separate source-specific lock'):
+            orange = concurrency_group("refs/heads/main", "workflow_dispatch", "true", "orangepi-3b-v2-1")
+            self.assertEqual(orange, f"tilo-os-image-orangepi-{SHA}")
+            self.assertNotEqual(orange, concurrency_group("refs/heads/main", "workflow_dispatch", "true"))
+            self.assertNotEqual(orange, concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"))
+
 
 class OsDevLaneTests(unittest.TestCase):
     def test_build_os_dev_calls_a_cached_image_only_dev_build(self):
@@ -486,6 +492,7 @@ def concurrency_group(
     for source, target in [
         ("startsWith(github.ref, 'refs/tags/v')", "ref.startswith('refs/tags/v')"),
         ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
+        ("format('tilo-os-image-orangepi-{0}', github.sha)", "('tilo-os-image-orangepi-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
         ("format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref)",
          "('tilo-os-dev-' + (sha if ref == 'refs/heads/main' else ref))"),

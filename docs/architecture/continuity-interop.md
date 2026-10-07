@@ -296,12 +296,13 @@ wire regression uses this production helper, rather than constructing a separate
 SDK context in the test, so the runtime-lifetime defect is observable in CI.
 Music continues to own Spotify playback; no new playback controller is introduced.
 
-`scripts/headless-examples/cast-session-proof.py` exercises the prebuilt production
-projector against an independent bounded loopback Cast-message fixture. It checks
-TLS control, actual `LOAD`, receiver fetches of the tokenized HLS playlist and
-segment, denial of guessed tokens/private runtime files/traversal, readiness,
-stop and socket disconnect. The fixture supplies HLS bytes; it does **not** claim
-compositor capture, valid decoded video or physical receiver interoperability.
+`scripts/headless-examples/cast-session-proof.py` runs the prebuilt production
+projector against an independent bounded loopback receiver. Its default mode
+observes the DeviceAuth challenge, supplies an authentication error, and requires
+disconnect without readiness, control messages or a media URL. The explicit
+`--legacy-transport-only` mode retains the earlier LOAD/HLS/STOP witness for a
+baseline binary. Neither mode establishes decoded display output or physical
+receiver interoperability; the historical transport success was unauthenticated.
 
 ```bash
 $CARGO build --locked -p tilo-projector --bin tilo-projector
@@ -309,17 +310,73 @@ python3 scripts/headless-examples/cast-session-proof.py \
   --projector target/debug/tilo-projector --evidence target/cast-session-proof.json
 ```
 
-The locked `fcast-sender-sdk` 0.3.0 `chromecast.rs` uses `AllCertVerifier`, accepting
-server certificates and TLS handshake signatures without verification. There is
-no device-auth exchange in that path. A chosen address and encrypted connection
-therefore establish neither receiver authenticity nor a certified Tilo peer.
-The proof deliberately uses an isolated self-signed certificate and reports
-`receiver_authenticated: false`. Never promote this result to authenticated
-pairing, clipboard/workspace trust or an automatic capture authorization.
-[Open Screen's device-auth integration tests](https://chromium.googlesource.com/openscreen/+/7aff9322b2de31ced072e421b1ac31e3aae7745d/cast/test/README.md)
-provide a primary reference for a separate challenge/certificate/revocation
-qualification gate. Audit and implement that adapter boundary before claiming
-secure Cast pairing; retain the existing controller and explicit capture consent.
+#### DeviceAuth implementation and compatibility limits
+
+The checksum-verified SDK patch verifies TLS 1.2/1.3 handshake signatures against
+the presented leaf with Rustls/ring. The self-signed transport certificate policy
+is followed by a required DeviceAuth exchange on that exact connection before
+CONNECT, status, launch or media messages. Each attempt owns a fresh unpredictable
+16-byte OS-random nonce and consumes its pending state once. The proof covers the
+nonce followed by the exact TLS leaf DER. Cancellation and command-channel closure
+win even when a valid reply is simultaneously available. TLS negotiation and
+authentication each have a five-second deadline.
+
+Public receiver anchors (Cast/Eureka) and the separate signed-revocation anchor
+(Cast CRL) are private constants in this verifier. They do not enter OS, browser,
+user or Tilo collaborator trust stores and create no pairing records, accounts,
+ACLs, capture consent or persistent grants. Manufacturer identity establishes
+neither ownership nor capture authorization. HLS encryption is not claimed.
+
+The anchors and retained schemas come from Google's Open Screen repository at
+revision `1c526caf732881bd0aa1ab9479c36861bb225ba6`, fetched through ordinary
+certificate-validated HTTPS and matched to its trust-store includes. DER hashes
+below pin the exact certificate bytes. This records repository provenance; it
+is not independent verification of a Google-signed trust bundle or Git commit
+signature. `LICENSE.OpenScreen` retains the full BSD-3-Clause license.
+
+| Protocol-private purpose | Certificate DER SHA-256 |
+| --- | --- |
+| [Cast Root CA](https://chromium.googlesource.com/openscreen/+/1c526caf732881bd0aa1ab9479c36861bb225ba6/cast/common/certificate/cast_root_ca_cert_der-inc.h) | `809af14700b3fe2611ad597eb1584d6354313b64ccdb3390f097fa3e5826d6ca` |
+| [Eureka Root CA](https://chromium.googlesource.com/openscreen/+/1c526caf732881bd0aa1ab9479c36861bb225ba6/cast/common/certificate/eureka_root_ca_der-inc.h) | `caf6d1e37b532203e01a76bf07187bb731ccd38801565ab2211a2c0ab7f3bc46` |
+| [Cast CRL Root CA](https://chromium.googlesource.com/openscreen/+/1c526caf732881bd0aa1ab9479c36861bb225ba6/cast/common/certificate/cast_crl_root_ca_cert_der-inc.h) | `8b77c60291f9d62764613083f49750b1c5caac2d9efbe5a28edf301f9d84831d` |
+
+Tilo deliberately requires more than the pinned Open Screen compatibility
+defaults: fresh matching nonce, SHA-256 proof, and current signed revocation are
+mandatory. RSASSA-PKCS1-v1_5 is required (including its wire default); proof hash
+must explicitly select SHA-256. Verified certificate links use SHA-2 RSA with
+2048–8192-bit keys; SHA-1 links fail closed. Rustls/WebPKI enforces the certificate
+path, with additional key-size, validity, usage and critical-extension checks.
+Leaf digitalSignature and issuer keyCertSign/CA constraints are required;
+clientAuth EKU is required if EKU is present. All verified certificates, including
+anchors, must be current. The TLS leaf must be current with at most four days
+remaining. Screen projection rejects audio-only policy OID
+`1.3.6.1.4.1.11129.2.5.2` anywhere in the actual verified path, including its anchor.
+
+Exactly one authenticated version-0 revocation list is accepted. Missing,
+malformed, stale, future, invalidly signed, ambiguous or revoking bundles fail
+closed; no network fetch or persistent/cache trust shortcut exists. The proof
+frame is limited to 64 KiB, certificates to 16 KiB and intermediates to eight.
+The authenticated connection expires at the earliest TLS leaf, identity path,
+CRL signer path or CRL expiry. Monotonic and wall-clock checks guard every outgoing
+frame and wake an idle controller; session faults trigger existing resource
+cleanup. Reconnect requires fresh authentication.
+
+These limits can reject legacy and uncertified software receivers. No silent
+fallback, arbitrary environment trust loader, TOFU, second Cast controller or
+Spotify controller is provided. A future explicitly pinned/PIN-authorized
+software-receiver mode needs a distinct trust label. Music owns audio casting
+and Spotify playback; this consumer requires screen capability.
+
+The isolated tests include the exact production verifier source and exercise
+synthetic root/intermediate/device chains, valid connection-bound proof,
+wrong issuers/signatures, TLS-leaf substitution, nonce replay, all certificate
+validity boundaries, path/usage constraints, revocation and capability failures,
+bounded malformed frames, timeout, disconnect and cancellation races. Independent
+wire fixtures admit a synthetic authenticated receiver only through private test
+authorities and verify production anchors reject it before control. These tests
+install no production authority or Tilo peer permission. The production rejection
+journey is separate evidence. Successful manufacturer-authenticated hardware,
+selected compositor capture and decoded physical output remain unqualified.
 
 ### Current immutable image AirPlay codec gate
 

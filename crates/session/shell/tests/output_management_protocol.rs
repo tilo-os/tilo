@@ -644,6 +644,119 @@ fn output_power_switches_one_output_and_reports_it() {
     assert_eq!(harness.tool.power[2], Err(()));
 }
 
+#[test]
+fn explicit_power_requests_reassert_unchanged_on_and_off() {
+    let mut harness = Harness::privileged("docked-laptop");
+    let power = harness
+        .tool
+        .power_manager
+        .as_ref()
+        .expect("power manager")
+        .get_output_power(&harness.tool.outputs[0], &harness.queue.handle(), ());
+    harness.pump("initial power", |tool| tool.power.len() == 1);
+    for (index, on) in [true, true, false, false, true].into_iter().enumerate() {
+        power.set_mode(if on {
+            zwlr_output_power_v1::Mode::On
+        } else {
+            zwlr_output_power_v1::Mode::Off
+        });
+        harness.pump("explicit power acknowledgement", |tool| {
+            tool.power.len() == index + 2
+        });
+        assert_eq!(
+            harness.state.output_management.take_power_requests(),
+            vec![(OutputId(0), on)]
+        );
+    }
+}
+
+#[test]
+fn idle_blanking_is_reported_without_erasing_individual_off_intent() {
+    let mut harness = Harness::privileged("docked-laptop");
+    let power = harness
+        .tool
+        .power_manager
+        .as_ref()
+        .expect("power manager")
+        .get_output_power(&harness.tool.outputs[0], &harness.queue.handle(), ());
+    harness.pump("initial power", |tool| tool.power.len() == 1);
+    harness.state.output_management.set_session_blanked(true);
+    harness.pump("idle blank", |tool| tool.power.len() == 2);
+    assert_eq!(harness.tool.power[1], Ok(zwlr_output_power_v1::Mode::Off));
+    power.set_mode(zwlr_output_power_v1::Mode::On);
+    harness.pump("on while idle blanked", |tool| tool.power.len() == 3);
+    assert_eq!(harness.tool.power[2], Ok(zwlr_output_power_v1::Mode::Off));
+    assert_eq!(
+        harness.state.output_management.take_power_requests(),
+        vec![(OutputId(0), true)]
+    );
+    harness.state.output_management.set_session_blanked(false);
+    harness.pump("idle wake", |tool| tool.power.len() == 4);
+    assert_eq!(harness.tool.power[3], Ok(zwlr_output_power_v1::Mode::On));
+    power.set_mode(zwlr_output_power_v1::Mode::Off);
+    harness.pump("individual off", |tool| tool.power.len() == 5);
+    harness.state.output_management.set_session_blanked(true);
+    harness.state.output_management.set_session_blanked(false);
+    harness.pump("idle cycle keeps individual off", |tool| {
+        tool.power.len() == 7
+    });
+    assert_eq!(harness.tool.power[6], Ok(zwlr_output_power_v1::Mode::Off));
+}
+
+#[test]
+fn removed_connector_discards_queued_wake_and_reconnects_with_fresh_power_control() {
+    let mut harness = Harness::privileged("docked-laptop");
+    let power = harness
+        .tool
+        .power_manager
+        .as_ref()
+        .expect("power manager")
+        .get_output_power(&harness.tool.outputs[1], &harness.queue.handle(), ());
+    harness.pump("initial power", |tool| tool.power.len() == 1);
+    power.set_mode(zwlr_output_power_v1::Mode::Off);
+    harness.pump("queued off", |tool| tool.power.len() == 2);
+    power.set_mode(zwlr_output_power_v1::Mode::On);
+    harness.pump("queued wake", |tool| tool.power.len() == 3);
+    harness
+        .state
+        .set_output_heads(heads_from_outputs(&harness.outputs[..1]));
+    assert!(
+        harness
+            .state
+            .output_management
+            .take_power_requests()
+            .is_empty()
+    );
+    harness.pump("removed power object", |tool| tool.power.len() == 4);
+    assert_eq!(harness.tool.power[3], Err(()));
+    harness
+        .state
+        .set_output_heads(heads_from_outputs(&harness.outputs));
+    // The failed old object cannot command the newly connected output.
+    power.set_mode(zwlr_output_power_v1::Mode::Off);
+    let reconnected = harness
+        .tool
+        .power_manager
+        .as_ref()
+        .expect("power manager")
+        .get_output_power(&harness.tool.outputs[1], &harness.queue.handle(), ());
+    harness.pump("new connector power object", |tool| tool.power.len() == 5);
+    assert_eq!(harness.tool.power[4], Ok(zwlr_output_power_v1::Mode::On));
+    assert!(
+        harness
+            .state
+            .output_management
+            .take_power_requests()
+            .is_empty()
+    );
+    reconnected.set_mode(zwlr_output_power_v1::Mode::On);
+    harness.pump("reconnected explicit wake", |tool| tool.power.len() == 6);
+    assert_eq!(
+        harness.state.output_management.take_power_requests(),
+        vec![(OutputId(1), true)]
+    );
+}
+
 const KANSHI: &str = "/usr/bin/kanshi";
 
 fn unix_now_ms() -> u64 {
