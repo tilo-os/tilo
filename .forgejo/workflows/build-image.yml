@@ -2611,7 +2611,9 @@ jobs:
                 python3-dev python3-pyelftools python3-setuptools swig
             else
               sudo -n dnf install -y bc bison curl dtc flex gcc glibc-devel gnutls-devel make \
-                openssl-devel-engine python3-devel python3-pyelftools python3-setuptools swig
+                python3-devel python3-pyelftools python3-setuptools swig
+              # The loader helper checks the runner-provided native headers.
+              # Do not provision another crypto provider in this workflow.
             fi
             export TILO_ROCKCHIP_LOADER="$TILO_OUTPUT/rockchip-loader"
             ./os/dev/build-orangepi-uboot.sh "$TILO_ROCKCHIP_LOADER"
