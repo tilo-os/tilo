@@ -28,10 +28,16 @@ class AppReleaseHistory(unittest.TestCase):
     def setUp(self):
         if not hasattr(self, "operations"):
             self.operations = []
+            self.git_commands, self.git_regions = {}, {}
             self.started, self.cpu = time.perf_counter(), os.times()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        trace = self.root / "git-phases.json"
+        environment = mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": str(trace)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.addCleanup(self.collect_git_phases, trace)
         self.source = self.root / "source"
         self.remote = self.root / "remote.git"
         self.command("git", "init", "-q", "-b", "main", str(self.source))
@@ -54,6 +60,7 @@ class AppReleaseHistory(unittest.TestCase):
             })
 
     def tearDown(self):
+        self.doCleanups()
         ended = os.times()
         print("Git fixture subprocess timings: " + json.dumps({
             "test": self.id(),
@@ -64,6 +71,35 @@ class AppReleaseHistory(unittest.TestCase):
             "measured_command_wall_seconds": sum(item["wall_seconds"] for item in self.operations),
             "slowest": sorted(self.operations, key=lambda item: item["wall_seconds"], reverse=True)[:5],
         }))
+        print("Git fixture inclusive phases: " + json.dumps({
+            "test": self.id(),
+            "commands": [{"name": name, **numbers} for name, numbers in
+                         sorted(self.git_commands.items(), key=lambda item: item[1]["seconds"], reverse=True)],
+            "regions": [{"category": key[0], "label": key[1], "nesting": key[2], **numbers}
+                        for key, numbers in sorted(self.git_regions.items(),
+                                                   key=lambda item: item[1]["seconds"], reverse=True)[:12]],
+        }))
+
+    def collect_git_phases(self, trace):
+        commands = {}
+        completed = 0
+        for line in trace.read_text().splitlines():
+            event = json.loads(line)
+            if event["event"] == "cmd_name":
+                commands[event["sid"]] = event["name"]
+            elif event["event"] in ("exit", "region_leave"):
+                if event["event"] == "exit":
+                    completed += 1
+                    table, key, seconds = self.git_commands, commands[event["sid"]], event["t_abs"]
+                else:
+                    table = self.git_regions
+                    key = (event["category"], event["label"], event["nesting"])
+                    seconds = event["t_rel"]
+                numbers = table.setdefault(key, {"count": 0, "seconds": 0, "max_seconds": 0})
+                numbers["count"] += 1
+                numbers["seconds"] += seconds
+                numbers["max_seconds"] = max(numbers["max_seconds"], seconds)
+        self.assertGreater(completed, 0, "Git phase profiling must observe completed commands")
 
     def git(self, repository, *args):
         return self.command("git", "-C", str(repository), *args)
