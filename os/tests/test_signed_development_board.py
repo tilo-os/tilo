@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,8 @@ from unittest.mock import patch
 import textwrap
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT/'tools/policy'))
+from check_image_builder_inputs import context_copies, logical_lines
 WORKFLOW = (ROOT/'.forgejo/workflows/build-image.yml').read_text()
 MATRIX_STEP = WORKFLOW.split('        id: matrix\n', 1)[1].split('\n      - name:', 1)[0]
 PLAN = textwrap.dedent(MATRIX_STEP.split('        run: |\n', 1)[1])
@@ -84,6 +87,22 @@ class SignedBoard(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('app inputs changed', result.stdout)
             self.assertEqual(output.read_text(), 'TILO_PREBUILT_APPS=0\n')
+
+    def test_board_sparse_context_contains_every_actual_copy_input(self):
+        recipe = ROOT/'os/Containerfile.board'
+        patterns = [line.strip() for line in recipe.with_name(recipe.name+'.dockerignore').read_text().splitlines()
+                    if line.strip() and not line.lstrip().startswith('#')]
+        # This deliberately small context uses only the blanket exclusion and
+        # explicit file/directory exceptions, not arbitrary pattern semantics.
+        self.assertEqual([p for p in patterns if not p.startswith('!')], ['*'])
+        allowed = [p[1:].rstrip('/') for p in patterns if p.startswith('!')]
+        self.assertTrue(all(not any(c in p for c in '*?[') for p in allowed))
+        missing = []
+        for copy_input in context_copies(logical_lines(recipe.read_text())):
+            for source in copy_input.sources:
+                if not any(source == p or source.startswith(p+'/') for p in allowed):
+                    missing.append(source)
+        self.assertEqual(missing, [], 'Board COPY sources excluded by its sparse Docker context')
 
     def make_root(self, root):
         for directory in ['usr/lib/tilo', 'usr/share/tilo', 'etc/containers']:
