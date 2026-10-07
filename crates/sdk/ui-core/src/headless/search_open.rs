@@ -113,6 +113,56 @@ mod tests {
     }
 
     #[test]
+    fn semantic_search_uses_the_published_host_door_and_refuses_invalid_requests() {
+        let mut frame = FrameHarness::new_with_controlled_inputs(
+            State::new(),
+            Box::new(crate::widget::Text::new("search-fixture")),
+            (640, 480),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        let address = crate::search::search_address();
+        assert!(tilo_actions::door::resolve(&frame.resources(), &address).is_some());
+        let bad = serde_json::json!({"query": 42})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(matches!(
+            frame.invoke_action(&address, &bad, false, None),
+            Err(tilo_actions::DoorError::InvalidArguments(_))
+        ));
+        assert!(frame.action_palette.is_none());
+        let before = frame.dump_json();
+        let request =
+            SearchRequest::within(ScopeDecl::new("folder:inbox", "Inbox")).with_query("invoice");
+        frame
+            .invoke_action(&address, &request.arguments(), false, None)
+            .unwrap();
+        let palette = frame
+            .action_palette
+            .as_deref()
+            .expect("public search opens");
+        assert_eq!(palette.query(), "invoice");
+        assert_eq!(
+            palette.scope().map(|scope| scope.label.as_str()),
+            Some("Inbox")
+        );
+        assert_eq!(
+            frame.dump_json(),
+            before,
+            "opening search does not edit app state"
+        );
+        assert!(
+            matches!(
+                frame.invoke_action(&address, &request.arguments(), false, None),
+                Err(tilo_actions::DoorError::Failed(_))
+            ),
+            "a busy host must refuse instead of silently reporting success"
+        );
+    }
+
+    #[test]
     fn a_component_owned_search_launcher_opens_the_host_palette() {
         use crate::application::{LaunchTarget, RestoreInput};
         use crate::application_test_support as probe;
