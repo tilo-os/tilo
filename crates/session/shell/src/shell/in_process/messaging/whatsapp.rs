@@ -115,7 +115,7 @@ impl NativeWhatsappAccount {
         drop(activation);
         Ok(())
     }
-    /// Use existing OS-keychain state with the host's authorized network factory.
+    /// Use the original approved profile key and authorized network factory.
     /// No network connection, login, provisioning or permission UI is started.
     /// # Errors
     /// Refuses relative storage, missing custody, revoked or duplicate activation.
@@ -143,37 +143,44 @@ async fn assemble_native(
     owner: &Owner,
     handles: NativeWhatsappHandles,
     authority: Arc<dyn ExternalAuthority>,
-    account_authority: Arc<dyn AccountAuthority>,
+    account_authority: Arc<GrantedWhatsappAuthority>,
 ) -> Result<(Arc<ExternalBroker>, WhatsappBootstrap), SendError> {
-    let bootstrap = WhatsappBootstrap::open_system(
+    account_authority.check()?;
+    let bootstrap = WhatsappBootstrap::open_profile(
         &handles.private_root.join("sdk"),
         owner.clone(),
+        account_authority.0.credential.profile_key()?,
         handles.network,
-        account_authority,
+        account_authority.clone(),
     )
     .await?;
-    let journal = tilo_messaging_protocol::journal::EncryptedJournal::open_system(
+    account_authority.check()?;
+    let journal = tilo_messaging_protocol::journal::EncryptedJournal::open(
         &handles.private_root.join("journal"),
         owner,
+        account_authority.0.credential.profile_key()?,
     )
     .map_err(|_| SendError::Unavailable)?;
+    account_authority.check()?;
+    let history = tilo_messaging_protocol::signal_broker::History::open(
+        &handles.private_root.join("history"),
+        owner,
+        account_authority.0.credential.profile_key()?,
+    )?;
+    account_authority.check()?;
     let runtime = tilo_messaging_protocol::whatsapp_runtime::WhatsappRuntime::new(
         owner.clone(),
         bootstrap.client(),
         journal,
     )
     .map_err(|_| SendError::Unavailable)?;
-    let broker = ExternalBroker::open_system(
-        &handles.private_root,
-        Box::new(runtime),
-        handles.scope,
-        authority,
-    )?;
+    let broker = ExternalBroker::new(Box::new(runtime), history, handles.scope, authority)?;
+    account_authority.check()?;
     Ok((Arc::new(broker), bootstrap))
 }
 
 impl super::super::InProcessApps {
-    /// Assemble existing OS-keychain custody on the native worker and register
+    /// Assemble original protected profile custody on the native worker and register
     /// the account's original Messages loan. Locked or failed setup remains
     /// visible through that loan and can be explicitly recovered by the host.
     /// # Errors
