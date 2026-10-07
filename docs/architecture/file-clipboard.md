@@ -225,7 +225,7 @@ picker or sending still reports failure. Privacy policy and grants are unchanged
 
 ## Verification and provenance
 
-All Cargo compilation, tests and offscreen rendering run through `rcargo` on
+All Cargo compilation, tests and offscreen rendering use a Cargo drop-in on
 the existing approved SSH runner with four jobs. Scoped logs distinguish passing
 mounted/lifecycle tests from the strict sandbox and hostile-process proofs; screenshots do not imply
 a live compositor, deployment, full image or hardware qualification.
