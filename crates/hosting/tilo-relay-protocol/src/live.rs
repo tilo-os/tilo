@@ -863,11 +863,15 @@ mod tests {
         };
         let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let channel = collab_types::document_channel_id(&primary.app, room, &primary.record);
-        let mut frame = focused(1);
-        let LiveFrame::Presence(presence) = &mut frame else {
-            unreachable!()
-        };
-        presence.focus = Some(primary.clone());
+        let frame = LiveFrame::Presence(PresenceFrame {
+            seq: 1,
+            sent_at_ms: 1,
+            focus: Some(primary.clone()),
+            pointer: Some([1.0, 2.0]),
+            selection: None,
+            drag: None,
+            participant: None,
+        });
         let bytes = SealedLiveFrame::seal(&frame, |_, retention, cleartext: &[u8]| {
             Ok::<_, String>((
                 EncryptionMetadata::content_key(3, channel, retention),
