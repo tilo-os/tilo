@@ -28,6 +28,8 @@ pub mod records;
 mod working_profile;
 pub use provider::NativeSignalStorage;
 pub use working_profile::NativeSignalWorkingProfile;
+pub(super) mod sms;
+mod sms_first;
 pub mod whatsapp;
 pub use activation::NativeSignalActivation;
 pub use enrollment::{NativeSignalEnrollment, NativeVerifiedSignalEnrollment};
