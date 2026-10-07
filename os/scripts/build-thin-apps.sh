@@ -11,7 +11,7 @@ INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
-TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
+TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
 
 packages=()
 features=()
@@ -76,7 +76,7 @@ unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
 # its own allowlist of variables.
 cd "$REPO"
 read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
-cargo build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
+"${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
     --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
     -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
