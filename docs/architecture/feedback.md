@@ -71,8 +71,10 @@ Use shared toolkit controls, themed/localized presentation and semantic actions.
 The destination receipt adapter must check the **canonical**
 `RecordStore::save_status(record)` at the time it reads the canonical document.
 Use `chat::feedback::receipt_from_record` with the retained canonical owner,
-record id and admitted destination. It checks current durability and room scope
-before reading the report. MemoryOnly, pending saves
+record id and admitted destination. It checks current durability and the store's
+Chat package/room namespace before reading the report. Named records also need
+their matching room stamp; Chat's package-primary document uses its actual store
+namespace rather than a fabricated record stamp. MemoryOnly, pending saves
 and failures are not receipts. The UI's cached Saved indicator is not a receipt
 witness: it can describe earlier heads. Retain the authenticated source identity
 through this adapter; never derive it from report payloads or URLs. The submitting
