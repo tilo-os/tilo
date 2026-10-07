@@ -120,3 +120,12 @@ Tab menus #3205 landed normally at 499f0740d44bca4af2da986839489ed230d4877c from
 Launcher recovery #3277 merged normally at 4e2c99589a8d669e2626018a0f7b30a7183cfe2f. Exact merged-main checks passed 12 shared palette tests, seven native shell cases, shell tests compilation and a rebuilt private compositor search/Escape journey. Merged high-contrast, combined-scale and live captures were inspected. Ranking is the next independent increment; remaining inventory and VM/device limitations stay open.
 
 The live full-loop example now positively checks painted query pixels within the named input bounds. An actual nonblank closed-desktop capture is rejected; the production private search/Escape journey passes all existing and new assertions. [Qualification](evidence/headless-palette-visibility/README.md) distinguishes this observability improvement from an unproven animation failure.
+
+## Top-bar editor increment
+
+The editor adopts shared ButtonFace and ListRowFace, measured title/hint/rows and
+wrapped Add controls. Actual production regressions qualify drag cancellation,
+release activation, stable keyboard focus and submit ownership; theme changes
+invalidate the retained scene. [Qualification](evidence/topbar-editor/README.md).
+Primary chrome at 320px still collides above the editor and remains the next
+independent increment alongside status/device/offline and live window states.
