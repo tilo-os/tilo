@@ -1,0 +1,177 @@
+{
+  "base": "9c6fa609dab6565cd836e1a98ecf16cbcd850c02",
+  "before_production_blobs": {
+    "crates/sdk/ui-core/src/widget/toast.rs": "5f0b6def9d54020a80958128aca5923ffe704068",
+    "crates/session/desktop-surface/src/notifications/stack.rs": "c02ef72109bb4fede68d9a4bebea313fb7717e5e"
+  },
+  "after_source_blobs": {
+    "crates/sdk/ui-core/src/widget/toast.rs": "a0a74587bc4a3441fb4f77de38de317e48e631e3",
+    "crates/session/desktop-surface/src/notifications/stack.rs": "6d2cdf20ea96a8874d8a5bacfcecb405c1264fbf",
+    "crates/session/desktop-surface/examples/notification_banner_shots.rs": "b3bb9b0fd4dd04161af411d39eb63beb08f3e65f"
+  },
+  "renderer": "Mandatory offscreen Vulkan, Mesa llvmpipe CPU ICD; no visible desktop",
+  "captures": [
+    {
+      "name": "before/dark.png",
+      "bytes": 15195,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "378b173c0965882a917b2aa9ef75252cb448eb2dad2efe4293a30aefc53cc508"
+    },
+    {
+      "name": "before/high-contrast.png",
+      "bytes": 27248,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "eec6225f8412f18e5e8399486633328a283c0a0c92e4bd315e8805a0073a580b"
+    },
+    {
+      "name": "before/large-text.png",
+      "bytes": 27581,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "51c47c6e3e736c78b9ee32c71d38517cadc9f11438e27895051fac1813f3c210"
+    },
+    {
+      "name": "before/light.png",
+      "bytes": 17591,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "2eedd27faf8f360b6d455b3db84e6bf4f944e5e9659d05490600dc364191260b"
+    },
+    {
+      "name": "before/narrow.png",
+      "bytes": 25664,
+      "dimensions": [
+        320,
+        300
+      ],
+      "sha256": "0f2648889903c48ac290dffab9cc0989f97e8fc82c736cd2dc54a2f474363c33"
+    },
+    {
+      "name": "before/ui-text.png",
+      "bytes": 29579,
+      "dimensions": [
+        640,
+        300
+      ],
+      "sha256": "7e152e5f42d6fd5dabb53e5c8fb96dec92bb7ef6ceb4cd90043cbb74c765b98e"
+    },
+    {
+      "name": "after/dark.png",
+      "bytes": 15172,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "d57b743cef7713935a4bdd31c020e385b2e2fae8d0d2302676aa22f9ccb8a60c"
+    },
+    {
+      "name": "after/high-contrast.png",
+      "bytes": 28040,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "fbd920ffb65699d15f30e2d44bd495ffa973cb11efbc56376419c48ca30cbd9d"
+    },
+    {
+      "name": "after/large-text.png",
+      "bytes": 27716,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "e1048e3356678b5f857ad3c6b144d3ced8b9df9dc6d9aa299b054da294184abf"
+    },
+    {
+      "name": "after/light.png",
+      "bytes": 17555,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "ac419658b9e9ba992266556f08b13d8922f586a97d656dabed5da23ec1c1a240"
+    },
+    {
+      "name": "after/narrow.png",
+      "bytes": 25848,
+      "dimensions": [
+        320,
+        300
+      ],
+      "sha256": "428c124eae3ea5c767938b5e3d2de4ee91ff1b470adb99d5fa3946020a3ad9eb"
+    },
+    {
+      "name": "after/ui-text.png",
+      "bytes": 29463,
+      "dimensions": [
+        640,
+        300
+      ],
+      "sha256": "da844107ee5bae9188270ce1cf61dc156bef6f59c1a182bcf84642f99b193cf3"
+    },
+    {
+      "name": "error/dark.png",
+      "bytes": 13057,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "c2bd2980d955ceb98e97a62d8f0aec4f10f538be640142f3d3bff86bee8c454e"
+    },
+    {
+      "name": "error/high-contrast.png",
+      "bytes": 24189,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "3a0bb80e65e9fc894f41224c066bbe75a451cac1b629f75c04b030b133bbc3f6"
+    },
+    {
+      "name": "error/large-text.png",
+      "bytes": 23769,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "0498791b43173066014e3d6fcf88ff6afaa8e1f20b4136a169f235cb21b05d02"
+    },
+    {
+      "name": "error/light.png",
+      "bytes": 15479,
+      "dimensions": [
+        440,
+        300
+      ],
+      "sha256": "3d64eeb348a0f9dcfa4164d85349812074d0c7cfea2f62a820f672c388caa671"
+    },
+    {
+      "name": "error/narrow.png",
+      "bytes": 20042,
+      "dimensions": [
+        320,
+        300
+      ],
+      "sha256": "54492df0801142f7b1a1a12b28439d1e0d683318a13f7571b143b43505d30e67"
+    },
+    {
+      "name": "error/ui-text.png",
+      "bytes": 24208,
+      "dimensions": [
+        640,
+        300
+      ],
+      "sha256": "04fe60630388ee01704301cc435e54608e5392564a3be24dc37bc3549d763638"
+    }
+  ]
+}
