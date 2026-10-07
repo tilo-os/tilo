@@ -350,6 +350,10 @@ impl HeadlessBackend {
         let renderer = OffscreenRenderer::try_new(width, height).map_err(|e| {
             format!("HeadlessBackend::new: OffscreenRenderer init failed at {width}x{height}: {e}")
         })?;
+        #[cfg(target_os = "linux")]
+        if let Some(adapter) = renderer.adapter_info() {
+            crate::shader_seed::observe_device(adapter);
+        }
         Ok(Self {
             renderer,
             outputs,
@@ -451,6 +455,8 @@ impl Backend for HeadlessBackend {
         }
         let bg = Color::from_rgb8(0x1A, 0x1B, 0x26);
         self.last_frame = self.renderer.render(scene, bg);
+        #[cfg(target_os = "linux")]
+        crate::shader_seed::after_frame();
     }
 
     fn submit_frame_with_damage(

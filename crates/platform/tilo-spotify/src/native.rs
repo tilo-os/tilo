@@ -97,6 +97,7 @@ enum Command {
 }
 #[derive(Default)]
 struct Status {
+    stage: &'static str,
     transition: Option<String>,
     duration: u64,
     position: u64,
@@ -131,6 +132,7 @@ impl NativeAudio {
             cancel: cancel.clone(),
             next: next.clone(),
         };
+        shared.update(|state| state.stage = "credentials");
         tilo_rt::spawn_thread("music-spotify-audio", move || {
             let result = connection().and_then(|connection| {
                 tilo_rt::block_on(run(uri, account, output, receiver, &shared, connection))
@@ -227,6 +229,25 @@ impl NativeAudio {
     }
     pub fn sink(&self) -> Option<String> {
         self.status.lock().ok()?.sink.clone()
+    }
+    /// Non-secret startup observations; contains no account or grant data.
+    pub fn startup_stage(&self) -> &'static str {
+        self.status.lock().map_or("unavailable", |state| {
+            if state.error.is_some() {
+                "failed"
+            } else if state.eos {
+                "ended"
+            } else if self.frames.load(Ordering::Relaxed) > 0
+                && state
+                    .sink
+                    .as_ref()
+                    .is_some_and(|sink| !sink.contains("fakesink"))
+            {
+                if state.playing { "playing" } else { "paused" }
+            } else {
+                state.stage
+            }
+        })
     }
     pub fn error(&self) -> Option<String> {
         self.status.lock().ok()?.error.take()
@@ -335,6 +356,7 @@ async fn authorized_sink(
     shared: &Shared,
     output: &Output,
 ) -> Result<Option<PcmSink>, String> {
+    shared.update(|state| state.stage = "premium");
     let sink = verified_sink(
         session,
         &shared.cancel,
@@ -357,6 +379,7 @@ async fn run(
     shared: &Shared,
     connection: (SessionConfig, Credentials),
 ) -> Result<(), String> {
+    shared.update(|state| state.stage = "session");
     let session = connect_session(connection, &account).await?;
     let _shutdown = SessionShutdown(session.clone());
     if shared.cancel.load(Ordering::Acquire) {
@@ -372,6 +395,7 @@ async fn run(
     let source = sink.source.clone();
     let volume = sink.volume.clone();
     let actual_sink = sink.sink.clone();
+    shared.update(|state| state.stage = "decoding");
     let config = PlayerConfig {
         bitrate: Bitrate::Bitrate320,
         position_update_interval: Some(Duration::from_millis(250)),

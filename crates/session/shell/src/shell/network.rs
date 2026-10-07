@@ -1625,6 +1625,11 @@ fn spawn_lan_discovery_forwarding(
 }
 
 impl ShellNetwork {
+    /// Retained cryptographic custody for the same native broker's private
+    /// account setup. No key or certificate is created by this projection.
+    pub(crate) fn messaging_host_identity(&self) -> Option<HostIdentity> {
+        self.host_identity.clone()
+    }
     /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared `WorkspaceTree` in a [`WorkspaceTreeReplica`], and
     /// return a handle the shell can use to drive sync. The keypair is
