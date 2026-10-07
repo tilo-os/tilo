@@ -493,6 +493,13 @@ pub(super) fn finishing_test_peer(pid: &std::path::Path) -> Runtime {
 }
 
 #[cfg(test)]
+pub(super) fn repair_test_peer(pid: &std::path::Path) -> Runtime {
+    let peer = tests::peer("repair", pid);
+    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    peer
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -531,12 +538,12 @@ k, s, b = read()
 assert k == 3 and b == b''
 if sys.argv[1] == 'slow': time.sleep(60)
 if sys.argv[1] == 'delayed': time.sleep(18)
-if sys.argv[1] == 'repeated':
+if sys.argv[1] in ('repeated', 'repair'):
     deadline = time.monotonic() + 10
     while not os.path.exists(sys.argv[2] + '.release'):
         assert time.monotonic() < deadline
         time.sleep(0.005)
-reply(dict(kind='done', sequence=s, text='unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
+reply(dict(kind='done', sequence=s, text='Let me grab two, uh, no, three of these' if sys.argv[1] == 'repair' else 'unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
 ";
 
     fn peer_command(mode: &str, pid: &std::path::Path) -> Command {

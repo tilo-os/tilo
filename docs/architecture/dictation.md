@@ -1097,3 +1097,116 @@ was removed after both successful runs. Physical microphones, complete OS
 rendering/fonts, older CPU/ARM and
 noisy conversations remain unqualified. No permission, sandbox rule, package
 limit, model default or release gate changes accompany these fixes.
+
+### Paced worker qualification and conservative cleanup (2026-10-07)
+
+The worker now fixes a quiet audio cut around 20 seconds after a bounded
+lookahead, decodes each confirmed prefix once and revises only its unfinished
+tail. It keeps the existing 120-second PCM, 16-KiB transcript and 1-GiB address
+space limits. All 21 Base public batch probes finished under those limits;
+their draft/final/automatic strings exactly matched the earlier reviewed
+quiet-boundary experiment. Worst measured VM headroom was 164.03 MiB. This
+qualifies that production segmentation path, not every incremental streaming
+schedule.
+
+`tools/release/probe_speech_stream.py` drives the actual framed worker with a
+paced public source, retained audio under backpressure and the existing
+ephemeral catalogue witness inside an unprivileged hardware-free namespace.
+It records first partial, non-prefix revisions, finalization, user/system CPU,
+20-ms sampled VM/RSS peaks and worker exit. Three before/after probes passed:
+
+| Public input / affinity | First partial before / after | Finalization before / after | CPU seconds before / after |
+| --- | --- | --- | --- |
+| English short / two CPUs | 2.187 / 2.228 s | 1197 / 0.468 ms | 27.00 / 24.26 |
+| English short / one CPU | 11.869 / 3.178 s | 24603 / 2.921 ms | 62.04 / 15.37 |
+| English public splice / two CPUs | 2.119 / 2.144 s | 1161 / 2.692 ms | 141.70 / 137.21 |
+
+The worker chooses at most two available CPUs before confinement, so a
+one-CPU affinity profile no longer oversubscribes native inference. Finish
+reuses a draft only when its audio is unchanged and its tail needs no additional
+cut. Completion and failure retire and zeroize both transcript caches. The
+final strings were byte-identical in each before/after pair and to the full
+batch probe. The short English clip scored 5.26% WER and the public English
+splice 17.95% WER under the existing conservative scoring rule. Optimized sampled
+VM peaks were 872092, 862804 and 885608 KiB respectively. These are builder
+affinity profiles, not physical older-hardware results. The two-CPU first
+English hypothesis was incorrectly “Thank you.” Raw revisions and latency
+are evidence of provisional output, not an accuracy or stability guarantee.
+Full metric and digest receipts are in `dictation-speech-benchmark.json`.
+
+Final-text cleanup is a bounded shared speech function with a personal literal
+preference in the existing accessibility section. Settings exposes the
+`SetDictationLiteral` action and its themed toggle. The preference is captured
+when a session starts, so a later Settings change cannot change a recording's
+meaning. Explicit comma-delimited English numeric self-repairs are removed:
+“Let me grab two, uh, no, three of these” becomes “Let me grab three of these.”
+The replacement retains its spelling. Literal mode, quotations, names,
+uncertain disfluency, decimal/padded numbers and other selected languages are
+preserved. There is no general grammar rewrite, inferred name correction,
+implicit numeric normalization or multilingual cleanup claim. Cleanup affects
+only the final result and uses the existing original-field single-edit
+insertion and native Undo path; drafts remain provisional. All 14 focused
+headless frontend tests passed, including an actual private-pipe final through
+the production compositor service: cleaned and literal modes each delivered
+exactly one original-field commit. The Settings semantic literal action and
+personal spelling file round-trip regressions also passed.
+
+Dictionary integration remains incomplete. The existing spellcheck file now
+preserves accepted capitalization and offers `user_spellings()` without a
+second store; lookup remains case-insensitive and old lowercase files work.
+Sandboxed text fields still have app-scoped config, and OSK's learned predictor
+is a separate subsystem. The existing shared text-assistance channel is
+read-only for ordinary apps. Do not turn generic settings updates into a
+personal-dictionary write bypass or bind the full host config directory into
+apps. A typed shared dictionary service must connect existing Add-to-dictionary
+actions, keyboard/autocorrect and recognizer lexical bias to the same normal
+store with bounded words and the existing local authority. Recognition bias,
+pronunciation alternatives and that complete journey remain unqualified.
+
+A native-IME forwarding experiment is saved separately on
+`codex/dictation-native-ime-recovery-wip` at `e03047dd9c`; it is not part of this
+qualified increment. Its SDK dispatch/protocol tests passed. Actual CEF tests
+kept all four existing safety cases green but failed both newly added ordinary
+commit/cancel recovery cases: CEF emits an untrusted composition-end event,
+and its range callback does not acknowledge completion. The observer keeps
+refusing instead of allowing a page-generated end to clear trusted preedit.
+A native backend completion proof is still required. No failing assertion was
+ignored or weakened.
+
+### Separate catalogue handoff
+
+The selected **experiment** is multilingual GGML Base, not a new installed
+default: `ggerganov/whisper.cpp` revision
+`5359861c739e955e79d9a303bcbc70fb988958b1`, `ggml-base.bin`, 147951465 bytes,
+SHA-256 `60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe`.
+The checked-in `dist/local-models/whisper-base/upstream-receipt.json` identifies
+the exact public artifact and complete OpenAI MIT notice: 1063 bytes, SHA-256
+`b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d`.
+The decoder is pinned whisper.cpp 1.8.3 from whisper-rs-sys 0.15.0; its archive
+receipt is `native/upstream/whisper.cpp-receipt.json` (archive SHA-256
+`6986c0fe081241d391f09b9a071fbcbb59720c3563628c3c829057cf69f2a56f`).
+Public FLEURS fixtures retain their pinned CC-BY-4.0 attribution and receipts.
+
+The review-only candidate now contains the unchanged U²-Net plus Tiny, Base
+and Small. The **approved** `catalog-source.json` and signed image catalogue
+still contain only U²-Net, so an ordinary installed desktop still refuses to
+load speech until the reviewed release is approved. No new signing identity,
+trust root, account, API charge or microphone permission is introduced.
+
+The normal route is the existing manual
+`.forgejo/workflows/release-local-model-catalog.yml` on `main`: `review-speech`
+fetches exact upstream receipts and creates a review artifact using the
+existing protected catalogue identity, with trust-key equality checked.
+After explicit release approval and promotion of reviewed source/signed image
+inputs, `publish` uses the existing protected package credential, immutable
+model/license URLs and anonymous exact readback, then reproduces and compares
+the signed image inputs before publishing the catalogue. Image deployment is
+a separate authorized operation. Source support for the four-entry candidate
+is prepared; none of these signing/publication/activation operations ran here.
+
+The actual automatic-approval denial in this task was **removing PR #2974's
+release hold**: forwarded authorization was insufficient in this thread. Do
+not retry that removal or bypass it. Catalogue publication and deployment were
+excluded by the earlier delegation; they were **not** separately denied by
+automatic review. They still require explicit authorization. This release
+boundary does not stop independent source engineering or synthetic acceptance.

@@ -10,7 +10,7 @@ fn main() -> std::process::ExitCode {
 #[cfg(target_os = "linux")]
 mod qualification {
     use clap::Parser;
-    use local_model_service::speech::{MAX_SAMPLES, SAMPLE_RATE, SpeechEngine};
+    use local_model_service::speech::{MAX_SAMPLES, SAMPLE_RATE, SpeechEngine, SpeechRecognition};
     use serde::Deserialize;
     use sha2::{Digest as _, Sha256};
     use std::fs;
@@ -31,12 +31,15 @@ mod qualification {
         /// Isolate one public clip when investigating the model's load budget.
         #[arg(long)]
         single_case: Option<String>,
-        /// Diagnostic only: decode bounded segments; production remains unchanged.
+        /// Diagnostic comparison: decode fixed-size segments.
         #[arg(long, value_parser = clap::value_parser!(u64).range(5..=30))]
         chunk_seconds: Option<u64>,
         /// Diagnostic only: choose the quietest 100 ms within 25% of each boundary.
         #[arg(long, requires = "chunk_seconds")]
         chunk_silence: bool,
+        /// Exercise the bounded recognition path used by the production worker.
+        #[arg(long, conflicts_with = "chunk_seconds")]
+        worker_boundaries: bool,
     }
 
     #[derive(Deserialize)]
@@ -242,10 +245,14 @@ mod qualification {
         engine: &mut SpeechEngine,
         samples: &[f32],
         language: &std::ffi::CString,
-        chunk_seconds: Option<u64>,
-        silence: bool,
+        options: &Options,
     ) -> Result<String, Failure> {
-        let Some(seconds) = chunk_seconds else {
+        if options.worker_boundaries {
+            return SpeechRecognition::default()
+                .transcribe(engine, samples, language, true)
+                .map_err(|_| "production worker recognition failed".into());
+        }
+        let Some(seconds) = options.chunk_seconds else {
             return engine
                 .transcribe(samples, language)
                 .map_err(|_| "recognition failed".into());
@@ -256,7 +263,7 @@ mod qualification {
         let mut text = String::new();
         let mut remaining = samples;
         while !remaining.is_empty() {
-            let boundary = segment_length(remaining, size, silence);
+            let boundary = segment_length(remaining, size, options.chunk_silence);
             let (chunk, next) = remaining.split_at(boundary);
             remaining = next;
             let part = engine
@@ -281,8 +288,7 @@ mod qualification {
         engine: &mut SpeechEngine,
         model: &str,
         probe: &Probe,
-        chunk_seconds: Option<u64>,
-        silence: bool,
+        options: &Options,
     ) -> Result<(), Failure> {
         let language = engine
             .language(&probe.case.language)
@@ -296,21 +302,21 @@ mod qualification {
             .ok_or("prefix")?;
         phase(&probe.case, "draft-fixed-language")?;
         let start = Instant::now();
-        let draft = recognize(engine, prefix, &language, chunk_seconds, silence)
+        let draft = recognize(engine, prefix, &language, options)
             .map_err(|_| "draft recognition failed")?;
         let draft_ms = start.elapsed().as_millis();
         phase(&probe.case, "final-fixed-language")?;
         let start = Instant::now();
-        let text = recognize(engine, &probe.samples, &language, chunk_seconds, silence)
+        let text = recognize(engine, &probe.samples, &language, options)
             .map_err(|_| "recognition failed")?;
         let final_ms = start.elapsed().as_millis();
         phase(&probe.case, "final-auto-language")?;
         let start = Instant::now();
-        let detected = recognize(engine, &probe.samples, &auto, chunk_seconds, silence)
+        let detected = recognize(engine, &probe.samples, &auto, options)
             .map_err(|_| "auto recognition failed")?;
         let auto_ms = start.elapsed().as_millis();
         if probe.case.id.starts_with("long-")
-            && recognize(engine, &probe.samples, &language, chunk_seconds, silence)
+            && recognize(engine, &probe.samples, &language, options)
                 .map_err(|_| "repeated long recognition failed")?
                 != text
         {
@@ -320,7 +326,8 @@ mod qualification {
             "SPEECH_BENCHMARK {}",
             serde_json::json!({
                 "model": model, "id": probe.case.id, "language": probe.case.language,
-                "chunk_seconds": chunk_seconds, "chunk_silence": silence,
+                "chunk_seconds": options.chunk_seconds, "chunk_silence": options.chunk_silence,
+                "worker_boundaries": options.worker_boundaries,
                 "samples": probe.samples.len(), "reference": probe.case.reference,
                 "draft": draft, "text": text, "auto_text": detected,
                 "draft_ms": draft_ms, "final_ms": final_ms, "auto_ms": auto_ms,
@@ -361,13 +368,7 @@ mod qualification {
             })
         );
         for input in probes.into_iter().filter(|probe| probe.case.primary) {
-            probe(
-                &mut engine,
-                &options.model,
-                &input,
-                options.chunk_seconds,
-                options.chunk_silence,
-            )?;
+            probe(&mut engine, &options.model, &input, &options)?;
         }
         Ok(())
     }
@@ -403,6 +404,9 @@ mod qualification {
             }
             if options.chunk_silence {
                 command.arg("--chunk-silence");
+            }
+            if options.worker_boundaries {
+                command.arg("--worker-boundaries");
             }
             let output = bounded_command::run_prepared(
                 command,

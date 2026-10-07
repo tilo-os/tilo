@@ -59,6 +59,7 @@ def main():
             or source["runtimes"] or source["recommendation"]
             or source["schema"] != 1 or source["production"] is not True
             or [m["id"] for m in source["models"]] != ["u2net-subject", "whisper-tiny-multilingual",
+                                                        "whisper-base-multilingual",
                                                         "whisper-small-q5_1-multilingual"]):
         raise ValueError("unexpected speech review candidate")
     subject, *speech_models = source["models"]
@@ -67,7 +68,7 @@ def main():
             or subject["artifact"]["file"] != "artifacts/u2net.onnx"):
         raise ValueError("unexpected artifact paths or changed subject release")
     receipts = []
-    for speech, package in zip(speech_models, ["whisper-tiny", "whisper-small-q5_1"]):
+    for speech, package in zip(speech_models, ["whisper-tiny", "whisper-base", "whisper-small-q5_1"]):
         receipt = json.loads((ROOT / f"dist/local-models/{package}/upstream-receipt.json").read_text())
         base = f"https://code.tilo.so/api/packages/tilo/generic/{package}/{receipt['revision']}"
         if (speech["artifact"] != {"file": f"artifacts/{receipt['file']}",
@@ -81,7 +82,7 @@ def main():
                 or speech["allowed_runtimes"] or speech["context_window"]
                 or any(speech[key] for key in ["vision", "face_recognition", "segmentation"])
                 or speech["required_accelerator_mib"]
-                or speech["required_memory_mib"] != (1024 if package == "whisper-tiny" else 2048)):
+                or speech["required_memory_mib"] != (2048 if package == "whisper-small-q5_1" else 1024)):
             raise ValueError("speech candidate disagrees with reviewed upstream")
         notice = ROOT / f"dist/local-models/{package}/LICENSE"
         if (len(notice.read_bytes()) != receipt["license_size_bytes"]

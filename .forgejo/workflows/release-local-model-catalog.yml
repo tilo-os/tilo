@@ -133,7 +133,7 @@ jobs:
           trap 'rm -rf "$release_dir"' EXIT
           mkdir "$release_dir/artifacts"
           cp dist/local-models/catalog-source.json "$release_dir/source.json"
-          if test "$(jq '.models | length' "$release_dir/source.json")" = 3; then
+          if test "$(jq '.models | length' "$release_dir/source.json")" = 4; then
             python3 -I tools/release/prepare_speech_catalog.py "$release_dir/staged" \
               --source dist/local-models/catalog-source.json
             python3 -I tools/release/publish_speech_artifacts.py "$release_dir/staged"

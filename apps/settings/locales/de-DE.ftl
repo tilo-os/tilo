@@ -1988,3 +1988,6 @@ display-device-move-unavailable = Dieser Bildschirm ist offline oder seine Anord
 display-device-move-confirmed = Das Gerät hat seine neue Bildschirmposition bestätigt.
 display-device-move-changed = Die Geräteanordnung wurde vor der Bestätigung geändert. Erneut versuchen.
 display-device-move-unconfirmed = Das Gerät hat diese Position nicht bestätigt. Aktualisieren und erneut versuchen.
+
+a11y-dictation-literal = Wörtliches Diktieren
+a11y-dictation-literal-desc = Erkannte Wörter unverändert lassen. Wenn ausgeschaltet, werden eindeutige englische Zahlenkorrekturen wie „two, uh, no, three“ zu „three“. Namen, Zitate und andere Unflüssigkeiten bleiben unverändert.

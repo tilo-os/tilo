@@ -70,12 +70,12 @@ def main():
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
     source = json.loads((args.directory / "source.json").read_text())
-    expected = ["whisper-tiny-multilingual", "whisper-small-q5_1-multilingual"]
+    expected = ["whisper-tiny-multilingual", "whisper-base-multilingual", "whisper-small-q5_1-multilingual"]
     if [model["id"] for model in source["models"][1:]] != expected:
         raise ValueError("unexpected staged speech catalog")
     token = os.environ.get("PACKAGE_TOKEN", "")
     root = Path(__file__).resolve().parents[2]
-    for model, package in zip(source["models"][1:], ["whisper-tiny", "whisper-small-q5_1"]):
+    for model, package in zip(source["models"][1:], ["whisper-tiny", "whisper-base", "whisper-small-q5_1"]):
         receipt = json.loads((root / f"dist/local-models/{package}/upstream-receipt.json").read_text())
         base = f"https://code.tilo.so/api/packages/tilo/generic/{package}/{receipt['revision']}"
         artifact = model["artifact"]
@@ -86,7 +86,7 @@ def main():
         publish(args.directory / artifact["file"], artifact["url"], receipt["size_bytes"], receipt["sha256"], token)
         publish(args.directory / f"artifacts/{package}-LICENSE", model["license_url"],
                 receipt["license_size_bytes"], receipt["license_sha256"], token)
-    print("Both speech artifacts and complete MIT notices passed anonymous receipt readback.")
+    print("Reviewed speech artifacts and complete MIT notices passed anonymous receipt readback.")
 
 
 if __name__ == "__main__":

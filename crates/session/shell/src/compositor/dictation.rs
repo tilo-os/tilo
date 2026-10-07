@@ -111,6 +111,8 @@ struct Recognition {
     id: SessionId,
     actor: runtime::Runtime,
     phase: DictationStatus,
+    language: String,
+    literal: bool,
 }
 
 #[derive(PartialEq, Eq)]
@@ -840,6 +842,11 @@ impl State {
             id,
             actor,
             phase: DictationStatus::Loading,
+            language: language.to_owned(),
+            literal: settings_store::load_section("accessibility")
+                .get("dictation_literal")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         });
         Ok(())
     }
@@ -987,6 +994,13 @@ impl State {
                             | DictationStatus::Finishing
                     ) =>
                 {
+                    let recognized = zeroize::Zeroizing::new(text);
+                    let text = agent_provider_config::speech::clean_final(
+                        &recognized,
+                        &recognition.language,
+                        recognition.literal,
+                    )
+                    .into_owned();
                     let result = self
                         .update_dictation(recognition.id, text, now)
                         .and_then(|()| self.finish_dictation(recognition.id, now));

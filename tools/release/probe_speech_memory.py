@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import resource
 from pathlib import Path
 import selectors
 import shutil
@@ -19,6 +20,8 @@ COUNTERS = ("VmPeak", "VmSize", "VmHWM", "VmRSS", "Threads")
 
 
 def observe(command, environment, identity, run, model, case, allocator):
+    usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    started = time.monotonic()
     process = subprocess.Popen(
         command, env=environment, **identity, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -56,11 +59,19 @@ def observe(command, environment, identity, run, model, case, allocator):
         if not all(key in peak for key in COUNTERS):
             raise RuntimeError("could not observe the decoder memory counters")
         result = process.wait()
+        usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        wall_seconds = time.monotonic() - started
+        cpu_user = usage_after.ru_utime - usage_before.ru_utime
+        cpu_system = usage_after.ru_stime - usage_before.ru_stime
         print("SPEECH_MEMORY_PROBE " + json.dumps({
             "run": run, "case": case, "model": model, "exit": result,
             "last_phase": phase, "peak": peak, "phase_peaks": phases,
             "sample_interval_ms": 20, "memory_limit_bytes": 1073741824,
             "allocator": allocator, "memory_values_unit": "KiB except Threads",
+            "wall_seconds": wall_seconds, "cpu_user_seconds": cpu_user,
+            "cpu_system_seconds": cpu_system,
+            "cpu_accounting": "RUSAGE_CHILDREN delta; one serial owned child",
+            "allowed_cpu_count": len(os.sched_getaffinity(0)),
         }), flush=True)
         return result == 0
     finally:

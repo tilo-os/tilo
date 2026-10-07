@@ -249,6 +249,8 @@ mod tests {
         fixture.state.text_commit.dictation.recognition = Some(super::super::Recognition {
             id,
             actor,
+            language: "en".into(),
+            literal: true,
             phase: DictationStatus::Listening,
         });
         fixture.surface.status(DictationStatus::Listening);
@@ -295,6 +297,61 @@ mod tests {
         assert!(fixture.proxy.drain_dictation_commit().is_none());
         let pid = std::fs::read_to_string(pid).unwrap();
         assert!(!std::path::Path::new("/proc").join(pid).exists());
+    }
+
+    #[test]
+    fn final_numeric_repair_and_literal_mode_use_one_original_field_commit() {
+        for (literal, expected) in [
+            (false, "Let me grab three of these"),
+            (true, "Let me grab two, uh, no, three of these"),
+        ] {
+            let mut fixture = Fixture::new();
+            let id = fixture.consent();
+            let directory = tempfile::tempdir().unwrap();
+            let pid = directory.path().join("peer");
+            let actor = super::super::runtime::repair_test_peer(&pid);
+            fixture.state.shell_field_active = true;
+            fixture.state.text_commit.dictation.recognition = Some(super::super::Recognition {
+                id,
+                actor,
+                language: "en".into(),
+                literal,
+                phase: DictationStatus::Listening,
+            });
+            fixture.surface.status(DictationStatus::Listening);
+            fixture.surface.request_finish();
+            fixture.pump();
+            std::fs::write(
+                directory.path().join("peer.release"),
+                b"public fixture release",
+            )
+            .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            while fixture.state.dictation_target_id().is_some()
+                || fixture.state.text_commit.dictation.recognition.is_some()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "final edit and worker teardown must complete"
+                );
+                fixture.pump();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(fixture.state.take_native_dictation_commit());
+            fixture.display.flush_clients().unwrap();
+            let events = fixture.proxy.drain_dictation_commit().unwrap();
+            let commits: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(commits, [expected]);
+            assert!(fixture.proxy.drain_dictation_commit().is_none());
+        }
     }
 
     #[test]
