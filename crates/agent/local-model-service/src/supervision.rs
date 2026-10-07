@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 /// User-systemd supervision. The executable and every vLLM argument come from
 /// [`VllmCommand`], itself constructed only from a verified signed catalog.
 pub struct SystemdSupervisor;
+/// Fixed existing placement shared by capacity admission and runtime launch.
+pub const MODEL_RUNTIME_SLICE: &str = "app.slice";
 #[must_use]
 pub fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
     let mut argv = vec![
@@ -288,6 +290,7 @@ fn launch_container(handle: &ProcessHandle, fixture: bool) -> Result<(), Service
         "--user".into(),
         "--collect".into(),
         "--service-type=exec".into(),
+        format!("--slice={MODEL_RUNTIME_SLICE}"),
         "--unit".into(),
         handle.id.clone(),
         "--property=KillMode=control-group".into(),

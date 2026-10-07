@@ -18,7 +18,7 @@
 # here as a tarball, and refuses to package anything it did not build.
 
 %global tilo_summary Tilo compositor as a Wayland session
-%{!?tilo_version:%global tilo_version 0.1.12}
+%{!?tilo_version:%global tilo_version 0.1.13}
 # Release builds keep 1; a developer build names its commit here (e.g.
 # 0.202609271530.git5764267571) so `rpm -q tilo-session` on a host says which
 # tree is layered. See dist/rpm/host-update.sh.

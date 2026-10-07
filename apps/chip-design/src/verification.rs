@@ -8,6 +8,7 @@ use crate::model::{MAX_REPORT_BYTES, report_id};
 
 pub(super) mod flow;
 mod operators;
+pub(super) mod placement;
 pub(super) mod study;
 mod superblock;
 pub use operators::{Observations, OperatorSummary};
