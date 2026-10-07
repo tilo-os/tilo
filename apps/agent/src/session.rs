@@ -23,6 +23,7 @@ use crate::wire::Link;
 
 mod agent_loop;
 mod chat;
+mod managed_messages;
 use chat::ChatRun;
 
 /// How long a fetched catalogue is trusted before acting fetches it again.
@@ -176,50 +177,6 @@ fn with_param(
     let mut arguments = arguments.clone();
     arguments.insert(param.into(), serde_json::Value::String(text.into()));
     arguments
-}
-
-/// Report one enrolled task update and wait for the broker's answer.
-fn report_enrolled(
-    link: &mut Link,
-    next_request: &mut u64,
-    sequence: &mut u64,
-    acceptance: runtime_collab::EnrolledTaskAcceptance,
-    update: runtime_collab::TaskRunUpdate,
-) -> Result<()> {
-    *sequence = sequence
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("enrolled sequence exhausted"))?;
-    let request_id = *next_request;
-    *next_request = request_id
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("request sequence exhausted"))?;
-    link.send(&CollabRequest::ReportEnrolledTask {
-        request_id,
-        acceptance,
-        sequence: *sequence,
-        update,
-    })?;
-    link.wait_enrolled_reply(request_id)
-}
-
-/// Send one live update as enrolled progress. Best effort: a refusal is
-/// logged and turns live updates off, never the task.
-fn send_live(
-    link: &mut Link,
-    next_request: &mut u64,
-    sequence: &mut u64,
-    acceptance: &runtime_collab::EnrolledTaskAcceptance,
-    message: String,
-) -> bool {
-    report_enrolled(
-        link,
-        next_request,
-        sequence,
-        acceptance.clone(),
-        runtime_collab::TaskRunUpdate::Progress { message },
-    )
-    .inspect_err(|error| tracing::warn!(%error, "live update refused; live updates stop"))
-    .is_ok()
 }
 
 /// What the next task step is built from.
@@ -432,6 +389,7 @@ pub struct Session {
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
     enrolled_custody: Option<runtime_collab::EnrolledRecipientCustody>,
+    managed_messages: Option<managed_messages::ManagedMessages>,
     enrolled_active: Option<runtime_collab::EnrolledTaskAcceptance>,
     enrolled_sequence: u64,
     /// When the agent last asked the room for the document. It asks again
@@ -554,11 +512,12 @@ impl Session {
             name = %cfg.name,
             "joined the room; waiting for the document"
         );
+        let managed_launch = managed.as_ref().map(|context| context.launch.clone());
         let (chooser, enrolled_custody) = match managed {
-            Some((selection, custody)) => {
-                let chooser = Chooser::with_provider(true, cfg.model_timeout, selection);
+            Some(context) => {
+                let chooser = Chooser::with_provider(true, cfg.model_timeout, context.selection);
                 anyhow::ensure!(chooser.is_live(), "managed model gateway unavailable");
-                (chooser, Some(custody))
+                (chooser, Some(context.custody))
             }
             None => (
                 default_selection().map_or_else(
@@ -568,6 +527,14 @@ impl Session {
                 None,
             ),
         };
+        let managed_messages = managed_launch.as_deref().map(|launch| {
+            managed_messages::ManagedMessages::new(
+                &cfg.cluster.to_string(),
+                &cfg.agent_id,
+                launch,
+                chooser.fork_conversational(),
+            )
+        });
         Ok(Self {
             cfg,
             link,
@@ -578,6 +545,7 @@ impl Session {
             dispatched_this_turn: HashSet::new(),
             chooser,
             enrolled_custody,
+            managed_messages,
             enrolled_active: None,
             enrolled_sequence: 0,
             last_route: None,
@@ -676,10 +644,19 @@ impl Session {
             );
         }
         if self.enrolled_custody.is_some() {
+            let message_request = self.next_enrolled_request()?;
+            self.link.send(&CollabRequest::SubscribeAgentMessages {
+                request_id: message_request,
+            })?;
+            let outcome = self.link.wait_agent_message_reply(message_request)?;
+            tracing::info!(
+                acknowledged = matches!(outcome, crate::wire::AgentMessageRpcOutcome::Accepted),
+                "managed Agent Message subscription observed"
+            );
             let request_id = self.next_enrolled_request()?;
             self.link
                 .send(&CollabRequest::SubscribeEnrolledTasks { request_id })?;
-            self.link.wait_enrolled_reply(request_id)?;
+            self.wait_enrolled_reply_managed(request_id)?;
             tracing::info!("managed Agent enrolled subscription acknowledged");
         }
         // A Task run carries its own exact owner-admitted instruction. Do not
@@ -688,7 +665,8 @@ impl Session {
         // explicitly authorized Agent input path.
         tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
         loop {
-            match self.link.recv(Duration::from_millis(100))? {
+            self.pump_managed_messages();
+            match self.recv_with_managed(Duration::from_millis(20))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
                 }
@@ -732,6 +710,85 @@ impl Session {
                 self.link
                     .send(&CollabRequest::UpdateInvocation { id, update })?;
             }
+        }
+    }
+
+    fn handle_managed_message(&mut self, input: runtime_collab::AgentMessageInput) -> Result<()> {
+        let request_ids = [
+            self.next_enrolled_request()?,
+            self.next_enrolled_request()?,
+            self.next_enrolled_request()?,
+        ];
+        let Some(messages) = self.managed_messages.as_mut() else {
+            tracing::warn!("refused Message outside a managed Agent session");
+            return Ok(());
+        };
+        let outcome = messages.handle(&mut self.link, input, request_ids);
+        tracing::info!(?outcome, "managed Agent Message settlement observed");
+        Ok(())
+    }
+
+    fn handle_managed_event(&mut self, event: CollabEvent) -> Result<Option<CollabEvent>> {
+        match event {
+            CollabEvent::AgentMessage(input) => {
+                self.handle_managed_message(input)?;
+                Ok(None)
+            }
+            CollabEvent::AgentMessageReply { request_id, result } => {
+                if let Some(messages) = self.managed_messages.as_mut() {
+                    let outcome = messages.handle_reply(&mut self.link, request_id, &result);
+                    tracing::info!(?outcome, "managed Agent Message stage observed");
+                }
+                Ok(None)
+            }
+            CollabEvent::AgentMessageDisconnected { .. } => {
+                tracing::warn!("managed Agent Message delivery disconnected");
+                Ok(None)
+            }
+            event => Ok(Some(event)),
+        }
+    }
+
+    pub(super) fn recv_with_managed(&mut self, wait: Duration) -> Result<Option<CollabEvent>> {
+        self.pump_managed_messages();
+        let wait = self.managed_messages.as_ref().map_or(wait, |messages| {
+            let bounded = wait.min(Duration::from_millis(20));
+            messages.next_deadline().map_or(bounded, |deadline| {
+                bounded.min(deadline.saturating_duration_since(std::time::Instant::now()))
+            })
+        });
+        let Some(event) = self.link.recv(wait)? else {
+            return Ok(None);
+        };
+        self.handle_managed_event(event)
+    }
+
+    /// Service Message delivery while an enrolled task owns the foreground
+    /// model turn. Unrelated events are restored in their original order.
+    pub(super) fn pump_managed_link(&mut self) -> Result<()> {
+        self.pump_managed_messages();
+        let mut deferred = Vec::new();
+        for _ in 0..128 {
+            let Some(event) = self.link.recv_fresh() else {
+                break;
+            };
+            if let Some(event) = self.handle_managed_event(event)? {
+                deferred.push(event);
+            }
+        }
+        self.link.defer_fresh(deferred);
+        Ok(())
+    }
+
+    fn pump_managed_messages(&mut self) {
+        let Some(messages) = self.managed_messages.as_mut() else {
+            return;
+        };
+        for outcome in messages.poll_ready(&mut self.link) {
+            tracing::info!(?outcome, "managed Agent Message model result observed");
+        }
+        for outcome in messages.expire(std::time::Instant::now()) {
+            tracing::info!(?outcome, "managed Agent Message acknowledgement unresolved");
         }
     }
 
@@ -1127,26 +1184,24 @@ impl Session {
         if !self.live.is_active() {
             return;
         }
-        let Session {
-            live,
-            link,
-            next_broker_request,
-            enrolled_sequence,
-            ..
-        } = self;
+        let mut pending = None;
         let mut send = |message: String| {
-            send_live(
-                link,
-                next_broker_request,
-                enrolled_sequence,
-                &acceptance,
-                message,
-            )
+            pending = Some(message);
+            true
         };
         if flush {
-            live.flush(ui::time::now(), &mut send);
+            self.live.flush(ui::time::now(), &mut send);
         } else {
-            live.tick(ui::time::now(), &mut send);
+            self.live.tick(ui::time::now(), &mut send);
+        }
+        if let Some(message) = pending
+            && let Err(error) = self.send_enrolled_update(
+                acceptance,
+                runtime_collab::TaskRunUpdate::Progress { message },
+            )
+        {
+            tracing::warn!(%error, "live update refused; live updates stop");
+            self.live.stop();
         }
     }
 
@@ -1166,19 +1221,72 @@ impl Session {
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<()> {
         if let Some(acceptance) = self.enrolled_active.clone() {
-            return report_enrolled(
-                &mut self.link,
-                &mut self.next_broker_request,
-                &mut self.enrolled_sequence,
-                acceptance,
-                update,
-            );
+            return self.send_enrolled_update(acceptance, update);
         }
         self.link.send(&CollabRequest::ReportTaskRun {
             run_id: run.run_id,
             lease: run.lease.clone(),
             update,
         })
+    }
+
+    fn send_enrolled_update(
+        &mut self,
+        acceptance: runtime_collab::EnrolledTaskAcceptance,
+        update: runtime_collab::TaskRunUpdate,
+    ) -> Result<()> {
+        self.enrolled_sequence = self
+            .enrolled_sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("enrolled sequence exhausted"))?;
+        let request_id = self.next_enrolled_request()?;
+        self.link.send(&CollabRequest::ReportEnrolledTask {
+            request_id,
+            acceptance,
+            sequence: self.enrolled_sequence,
+            update,
+        })?;
+        self.wait_enrolled_reply_managed(request_id)
+    }
+
+    fn wait_enrolled_reply_managed(&mut self, request_id: u64) -> Result<()> {
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        let mut deferred = Vec::new();
+        let result = loop {
+            if ui::time::now() >= deadline {
+                break Err(anyhow::anyhow!("enrolled RPC acknowledgement uncertain"));
+            }
+            match self.recv_with_managed(Duration::from_millis(20))? {
+                Some(CollabEvent::EnrolledTaskReply {
+                    request_id: received,
+                    result,
+                }) if received == request_id => break result.map_err(anyhow::Error::msg),
+                Some(CollabEvent::EnrolledTaskReply {
+                    request_id: received,
+                    result: Ok(()),
+                }) if received < request_id => {}
+                Some(CollabEvent::EnrolledTaskReply {
+                    request_id: received,
+                    result: Err(error),
+                }) if received < request_id => {
+                    break Err(anyhow::anyhow!(
+                        "an earlier enrolled report was refused: {error}"
+                    ));
+                }
+                Some(CollabEvent::EnrolledTaskDisconnected { detail }) => {
+                    break Err(anyhow::anyhow!(detail));
+                }
+                Some(event) => {
+                    if deferred.len() >= 128 {
+                        break Err(anyhow::anyhow!("enrolled reply queue exhausted"));
+                    }
+                    deferred.push(event);
+                }
+                None => {}
+            }
+        };
+        self.link.defer(deferred);
+        result
     }
 
     /// Publish a typed execution milestone without making Stop wait for its
@@ -1234,7 +1342,7 @@ impl Session {
         let mut deferred = Vec::new();
         while ui::time::now() < deadline {
             let remaining = deadline.saturating_duration_since(ui::time::now());
-            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
+            match self.recv_with_managed(remaining.min(Duration::from_millis(100)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
                     self.link.defer(deferred);
@@ -1305,10 +1413,7 @@ impl Session {
                     "the broker did not answer task cancellation status"
                 ));
             }
-            match self
-                .link
-                .recv((deadline - now).min(Duration::from_millis(100)))?
-            {
+            match self.recv_with_managed((deadline - now).min(Duration::from_millis(100)))? {
                 Some(CollabEvent::TaskRunCancellation {
                     request_id: received,
                     result,
@@ -1336,10 +1441,7 @@ impl Session {
                     "the broker did not answer task cancellation status"
                 ));
             }
-            match self
-                .link
-                .recv((deadline - now).min(Duration::from_millis(100)))?
-            {
+            match self.recv_with_managed((deadline - now).min(Duration::from_millis(100)))? {
                 Some(CollabEvent::TaskRunControl {
                     request_id: received,
                     result,
@@ -1684,10 +1786,7 @@ impl Session {
                 self.link.defer(deferred);
                 return Ok(None);
             }
-            match self
-                .link
-                .recv((deadline - now).min(Duration::from_millis(100)))?
-            {
+            match self.recv_with_managed((deadline - now).min(Duration::from_millis(100)))? {
                 Some(CollabEvent::TaskActionInvocationResult {
                     request_id: received,
                     result,
@@ -1775,7 +1874,7 @@ impl Session {
             self.asked_at = ui::time::now();
             tracing::debug!("asked the room for the document again");
         }
-        match self.link.recv(wait)? {
+        match self.recv_with_managed(wait)? {
             Some(event @ CollabEvent::Document { .. }) => {
                 changed = self.absorb_document_event(&event)?;
             }
@@ -2072,7 +2171,7 @@ impl Session {
         let mut found = None;
         while ui::time::now() < deadline {
             let remaining = deadline.saturating_duration_since(ui::time::now());
-            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
+            match self.recv_with_managed(remaining.min(Duration::from_millis(100)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
                     if let Some(offer) = find(Self::document_broker_offers(
@@ -2410,10 +2509,7 @@ impl Session {
                 self.link.defer(deferred);
                 return Ok(None);
             }
-            match self
-                .link
-                .recv((deadline - now).min(Duration::from_millis(100)))?
-            {
+            match self.recv_with_managed((deadline - now).min(Duration::from_millis(100)))? {
                 Some(CollabEvent::RemoteAction { message }) if wanted(&message) => {
                     self.link.defer(deferred);
                     return Ok(Some(message));
@@ -3058,14 +3154,13 @@ fn describe(action: &RichTextAction) -> String {
     }
 }
 
-fn managed_context(
-    cfg: &Config,
-) -> Result<
-    Option<(
-        crate::providers::ProviderSelection,
-        runtime_collab::EnrolledRecipientCustody,
-    )>,
-> {
+struct ManagedContext {
+    selection: crate::providers::ProviderSelection,
+    custody: runtime_collab::EnrolledRecipientCustody,
+    launch: String,
+}
+
+fn managed_context(cfg: &Config) -> Result<Option<ManagedContext>> {
     let Some(raw) = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT") else {
         return Ok(None);
     };
@@ -3121,7 +3216,11 @@ fn managed_context(
         text("channel_id")?,
     )
     .map_err(anyhow::Error::msg)?;
-    Ok(Some((selection, custody)))
+    Ok(Some(ManagedContext {
+        selection,
+        custody,
+        launch: text("launch")?.to_owned(),
+    }))
 }
 fn validate_enrolled_context(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String> {
     let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
@@ -3155,7 +3254,7 @@ impl Session {
             request_id,
             acceptance: decision.acceptance.clone(),
         })?;
-        self.link.wait_enrolled_reply(request_id)?;
+        self.wait_enrolled_reply_managed(request_id)?;
         tracing::info!("managed Agent enrolled task acceptance acknowledged");
         if !decision.execute {
             return Ok(());
@@ -3485,6 +3584,7 @@ mod tests {
                     dispatched_this_turn: HashSet::new(),
                     chooser: Chooser::new(false, Duration::ZERO),
                     enrolled_custody: managed.then_some(custody),
+                    managed_messages: None,
                     enrolled_active: managed.then_some(acceptance),
                     enrolled_sequence: 0,
                     asked_at: ui::time::now(),
@@ -3750,6 +3850,7 @@ mod tests {
                 dispatched_this_turn: HashSet::new(),
                 chooser: Chooser::new(false, Duration::ZERO),
                 enrolled_custody: Some(custody),
+                managed_messages: None,
                 enrolled_active: Some(acceptance),
                 enrolled_sequence: 0,
                 asked_at: ui::time::now(),

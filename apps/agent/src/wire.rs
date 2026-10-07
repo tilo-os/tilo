@@ -18,6 +18,7 @@ use ui::collaboration::{
 pub struct Link {
     manager: CollaborationManager,
     pending: VecDeque<CollabEvent>,
+    fresh: VecDeque<CollabEvent>,
     last_publication: LastPublication,
 }
 
@@ -27,6 +28,20 @@ enum LastPublication {
     Failed(DocumentPublicationError),
 }
 
+/// The broker's bounded answer to one managed Message RPC.
+///
+/// `Uncertain` means the request may have reached the owner, so a caller must
+/// retain the original invocation and must not manufacture replacement work.
+/// The current RPC's generic error is also uncertain; it is not an
+/// authoritative non-effect receipt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AgentMessageRpcOutcome {
+    Accepted,
+    Uncertain,
+    Disconnected(String),
+}
+
+#[cfg(test)]
 fn take_next_polled(
     pending: &mut VecDeque<CollabEvent>,
     polled: Vec<CollabEvent>,
@@ -60,6 +75,7 @@ impl Link {
         Ok(Self {
             manager,
             pending: VecDeque::new(),
+            fresh: VecDeque::new(),
             last_publication: LastPublication::None,
         })
     }
@@ -96,6 +112,7 @@ impl Link {
         Ok(Self {
             manager,
             pending: VecDeque::new(),
+            fresh: VecDeque::new(),
             last_publication: LastPublication::None,
         })
     }
@@ -123,6 +140,7 @@ impl Link {
         Ok(Self {
             manager,
             pending: VecDeque::new(),
+            fresh: VecDeque::new(),
             last_publication: LastPublication::None,
         })
     }
@@ -214,9 +232,9 @@ impl Link {
             LastPublication::None => return Ok(()),
             LastPublication::Failed(error) => Err(error),
             LastPublication::Pending(receipt) => {
-                self.pending.extend(self.manager.poll());
+                self.fresh.extend(self.manager.poll());
                 let result = receipt.wait(deadline);
-                self.pending.extend(self.manager.poll());
+                self.fresh.extend(self.manager.poll());
                 result
             }
         };
@@ -239,7 +257,10 @@ impl Link {
         const RECV_POLL: Duration = Duration::from_millis(1);
         let deadline = ui::time::now() + timeout;
         loop {
-            if let Some(event) = take_next_polled(&mut self.pending, self.manager.poll()) {
+            if let Some(event) = self.pending.pop_front().or_else(|| {
+                self.fresh.extend(self.manager.poll());
+                self.fresh.pop_front()
+            }) {
                 return Ok(Some(event));
             }
             let now = ui::time::now();
@@ -258,6 +279,20 @@ impl Link {
         for event in events.into_iter().rev() {
             self.pending.push_front(event);
         }
+    }
+
+    /// Queue newly-polled unrelated events after older deferred work.
+    pub(crate) fn defer_fresh(&mut self, events: Vec<CollabEvent>) {
+        self.pending.extend(events);
+    }
+
+    /// Read one newly arrived event without rescanning events that a
+    /// selective session pump already deferred for its normal consumer.
+    pub(crate) fn recv_fresh(&mut self) -> Option<CollabEvent> {
+        if self.fresh.is_empty() {
+            self.fresh.extend(self.manager.poll());
+        }
+        self.fresh.pop_front()
     }
 }
 
@@ -312,6 +347,52 @@ impl Link {
         self.defer(deferred);
         result
     }
+
+    /// Wait for the exact managed Message acknowledgement without consuming
+    /// another message, task, catalogue, or document event.
+    ///
+    /// # Errors
+    /// Returns a transport error if receiving an event fails. A timeout or
+    /// broker disconnect remains a typed outcome so the caller retains the
+    /// original invocation instead of treating uncertainty as refusal.
+    pub(crate) fn wait_agent_message_reply(
+        &mut self,
+        request_id: u64,
+    ) -> Result<AgentMessageRpcOutcome> {
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        let mut deferred = Vec::new();
+        let outcome = loop {
+            if ui::time::now() >= deadline {
+                break AgentMessageRpcOutcome::Uncertain;
+            }
+            match self.recv(Duration::from_millis(20))? {
+                Some(CollabEvent::AgentMessageReply {
+                    request_id: received,
+                    result,
+                }) if received == request_id => {
+                    break match result {
+                        Ok(()) => AgentMessageRpcOutcome::Accepted,
+                        // The current protocol's generic error carries no
+                        // authoritative proof that the owner did not retain
+                        // or perform the request.
+                        Err(_) => AgentMessageRpcOutcome::Uncertain,
+                    };
+                }
+                Some(CollabEvent::AgentMessageDisconnected { detail }) => {
+                    break AgentMessageRpcOutcome::Disconnected(detail);
+                }
+                Some(event) => {
+                    deferred.push(event);
+                    if deferred.len() >= 128 {
+                        break AgentMessageRpcOutcome::Uncertain;
+                    }
+                }
+                None => {}
+            }
+        };
+        self.defer(deferred);
+        Ok(outcome)
+    }
 }
 
 #[cfg(test)]
@@ -319,7 +400,19 @@ pub(crate) fn test_link(transport: impl ui::collaboration::PeerTransport + 'stat
     Link {
         manager: CollaborationManager::with_peer_transport(transport),
         pending: VecDeque::new(),
+        fresh: VecDeque::new(),
         last_publication: LastPublication::None,
+    }
+}
+
+#[cfg(test)]
+impl Link {
+    pub(crate) fn test_fresh(&mut self, events: impl IntoIterator<Item = CollabEvent>) {
+        self.fresh.extend(events);
+    }
+
+    pub(crate) fn test_fresh_len(&self) -> usize {
+        self.fresh.len()
     }
 }
 
@@ -359,6 +452,7 @@ mod tests {
         Link {
             manager: CollaborationManager::with_peer_transport(AcceptedPeer),
             pending: VecDeque::new(),
+            fresh: VecDeque::new(),
             last_publication: LastPublication::None,
         }
     }
@@ -395,6 +489,71 @@ mod tests {
         let mut link = test_link(EnrolledReplies(replies));
         link.wait_enrolled_reply(5).unwrap();
         assert!(link.pending.is_empty());
+    }
+
+    #[test]
+    fn managed_message_wait_defers_every_unrelated_event_in_original_order() {
+        let replies = vec![
+            CollabEvent::RemoteCursorMoved {
+                user_id: "before".into(),
+                x: 1.0,
+                y: 0.0,
+            },
+            CollabEvent::AgentMessageReply {
+                request_id: 7,
+                result: Ok(()),
+            },
+            CollabEvent::RemoteCursorMoved {
+                user_id: "after".into(),
+                x: 2.0,
+                y: 0.0,
+            },
+        ];
+        let mut link = test_link(EnrolledReplies(replies));
+        assert_eq!(
+            link.wait_agent_message_reply(7).unwrap(),
+            AgentMessageRpcOutcome::Accepted
+        );
+        assert!(matches!(
+            link.recv(Duration::ZERO).unwrap(),
+            Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == "before"
+        ));
+        assert!(matches!(
+            link.recv(Duration::ZERO).unwrap(),
+            Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == "after"
+        ));
+    }
+
+    #[test]
+    fn managed_message_wait_bound_retains_the_event_that_exhausted_it() {
+        let mut events = (0..128)
+            .map(|index| CollabEvent::RemoteCursorMoved {
+                user_id: format!("user-{index}"),
+                x: index as f32,
+                y: 0.0,
+            })
+            .collect::<Vec<_>>();
+        events.push(CollabEvent::AgentMessageReply {
+            request_id: 9,
+            result: Ok(()),
+        });
+        let mut link = test_link(EnrolledReplies(events));
+        assert_eq!(
+            link.wait_agent_message_reply(9).unwrap(),
+            AgentMessageRpcOutcome::Uncertain
+        );
+        assert_eq!(link.pending.len() + link.fresh.len(), 129);
+        for index in 0..128 {
+            assert!(matches!(
+                link.recv(Duration::ZERO).unwrap(),
+                Some(CollabEvent::RemoteCursorMoved { user_id, .. })
+                    if user_id == format!("user-{index}")
+            ));
+        }
+        assert!(matches!(
+            link.recv(Duration::ZERO).unwrap(),
+            Some(CollabEvent::AgentMessageReply { request_id: 9, .. })
+        ));
     }
 
     #[test]

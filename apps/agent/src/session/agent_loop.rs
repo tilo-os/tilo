@@ -666,12 +666,13 @@ impl Session {
     }
 
     /// Wait up to `wait` for the turn's next event, then drain the rest.
-    fn pump_turn_waiting(&mut self, wait: Duration) {
+    fn pump_turn_waiting(&mut self, wait: Duration) -> Result<()> {
+        self.pump_managed_link()?;
         let Some(mut turn) = self.turn.take() else {
-            return;
+            return Ok(());
         };
         if turn.ready.is_empty() && turn.finished.is_none() {
-            match turn.rx.recv_timeout(wait) {
+            match turn.rx.recv_timeout(wait.min(Duration::from_millis(20))) {
                 Ok(event) => turn.absorb(event, &mut self.live),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
@@ -681,6 +682,8 @@ impl Session {
         }
         self.turn = Some(turn);
         self.pump_turn();
+        self.pump_managed_link()?;
+        Ok(())
     }
 
     fn set_executing(&mut self, executing: bool) {
@@ -904,7 +907,7 @@ impl Session {
         let mut stepping = Duration::ZERO;
         let mut cancellation_checked = ui::time::now();
         let body = loop {
-            self.pump_turn_waiting(Duration::from_millis(50));
+            self.pump_turn_waiting(Duration::from_millis(50))?;
             if cancellation_checked.elapsed() >= THINKING_CANCELLATION_POLL {
                 match self.task_control_change(run)? {
                     super::TaskControlChange::Current => {}
@@ -1743,7 +1746,7 @@ impl Session {
         while ui::time::now() < deadline {
             self.pump_turn();
             let left = deadline.saturating_duration_since(ui::time::now());
-            match self.link.recv(left.min(Duration::from_millis(20)))? {
+            match self.recv_with_managed(left.min(Duration::from_millis(20)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
                     break;
@@ -1778,7 +1781,7 @@ impl Session {
         while !found && ui::time::now() < deadline {
             self.pump_turn();
             let left = deadline.saturating_duration_since(ui::time::now());
-            match self.link.recv(left.min(Duration::from_millis(20)))? {
+            match self.recv_with_managed(left.min(Duration::from_millis(20)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
                     found = appeared(self);
@@ -2443,6 +2446,14 @@ mod tests {
                         result: Ok(()),
                     });
                 }
+                CollabRequest::AcceptAgentMessage { request_id, .. }
+                | CollabRequest::PrepareAgentMessageReply { request_id, .. }
+                | CollabRequest::CommitAgentMessageReply { request_id, .. } => {
+                    self.events.push(CollabEvent::AgentMessageReply {
+                        request_id: *request_id,
+                        result: Ok(()),
+                    });
+                }
                 CollabRequest::Presence { .. } => {}
                 other => panic!("unexpected request {other:?}"),
             }
@@ -2461,6 +2472,164 @@ mod tests {
 
     fn fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> Fixture {
         paced_fixture(title, world, turns, None)
+    }
+
+    #[test]
+    fn held_model_turn_pumps_message_without_reordering_unrelated_events() {
+        let mut fixture = fixture("held turn", World::default(), Vec::new());
+        let launch = Uuid::from_u128(3).to_string();
+        fixture.session.managed_messages =
+            Some(crate::session::managed_messages::ManagedMessages::new(
+                &fixture.session.cfg.cluster.to_string(),
+                &fixture.session.cfg.agent_id,
+                &launch,
+                Chooser::new(false, Duration::from_secs(1)),
+            ));
+        let invocation = Uuid::from_u128(4).to_string();
+        fixture.session.link.test_fresh(vec![
+            CollabEvent::RemoteCursorMoved {
+                user_id: "preserved".into(),
+                x: 1.0,
+                y: 2.0,
+            },
+            CollabEvent::AgentMessage(runtime_collab::AgentMessageInput {
+                invocation: invocation.clone(),
+                room: fixture.session.cfg.cluster.to_string(),
+                agent: fixture.session.cfg.agent_id.clone(),
+                channel: "agent-conversation".into(),
+                request_row: format!("m_{}", invocation.replace('-', "")),
+                text: "Answer while the task model is held".into(),
+                source_digest: [7; 32],
+                launch,
+                prepared_reply: None,
+            }),
+        ]);
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        fixture.session.turn = Some(ActiveTurn::new(
+            held_rx,
+            crate::live::PlanStream::new(BTreeMap::new()),
+        ));
+
+        for _ in 0..100 {
+            fixture
+                .session
+                .pump_turn_waiting(Duration::from_millis(1))
+                .unwrap();
+            let settled =
+                fixture.sent.borrow().iter().any(|request| {
+                    matches!(request, CollabRequest::CommitAgentMessageReply { .. })
+                });
+            if settled {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(held_tx);
+
+        let sent = fixture.sent.borrow();
+        assert_eq!(
+            sent.iter()
+                .filter(|request| matches!(request, CollabRequest::AcceptAgentMessage { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            sent.iter()
+                .filter(|request| matches!(request, CollabRequest::PrepareAgentMessageReply { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            sent.iter()
+                .filter(|request| matches!(request, CollabRequest::CommitAgentMessageReply { .. }))
+                .count(),
+            1
+        );
+        drop(sent);
+        assert!(matches!(
+            fixture.session.recv_with_managed(Duration::ZERO).unwrap(),
+            Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == "preserved"
+        ));
+    }
+
+    #[test]
+    fn managed_pump_reaches_message_behind_large_unrelated_prefix_without_rescanning() {
+        let mut fixture = fixture("bounded pump", World::default(), Vec::new());
+        let launch = Uuid::from_u128(30).to_string();
+        fixture.session.managed_messages =
+            Some(crate::session::managed_messages::ManagedMessages::new(
+                &fixture.session.cfg.cluster.to_string(),
+                &fixture.session.cfg.agent_id,
+                &launch,
+                Chooser::new(false, Duration::from_secs(1)),
+            ));
+        let mut events = (0_u16..130)
+            .map(|index| CollabEvent::RemoteCursorMoved {
+                user_id: format!("cursor-{index}"),
+                x: f32::from(index),
+                y: 0.0,
+            })
+            .collect::<Vec<_>>();
+        events.push(CollabEvent::AgentMessage(message_input(31, &launch)));
+        fixture.session.link.test_fresh(events);
+
+        fixture.session.pump_managed_link().unwrap();
+        assert_eq!(fixture.session.link.test_fresh_len(), 3);
+        assert!(
+            !fixture
+                .sent
+                .borrow()
+                .iter()
+                .any(|request| matches!(request, CollabRequest::AcceptAgentMessage { .. }))
+        );
+        fixture.session.pump_managed_link().unwrap();
+        assert!(
+            fixture
+                .sent
+                .borrow()
+                .iter()
+                .any(|request| matches!(request, CollabRequest::AcceptAgentMessage { .. }))
+        );
+        assert!(matches!(
+            fixture.session.recv_with_managed(Duration::ZERO).unwrap(),
+            Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == "cursor-0"
+        ));
+    }
+
+    #[test]
+    fn managed_pump_caps_total_serviced_flood_per_tick() {
+        let mut fixture = fixture("flood", World::default(), Vec::new());
+        fixture
+            .session
+            .link
+            .test_fresh((0..300).map(|_| CollabEvent::AgentMessageDisconnected {
+                detail: "bounded diagnostic".into(),
+            }));
+
+        fixture.session.pump_managed_link().unwrap();
+        assert_eq!(fixture.session.link.test_fresh_len(), 172);
+        fixture.session.pump_managed_link().unwrap();
+        assert_eq!(fixture.session.link.test_fresh_len(), 44);
+        fixture.session.pump_managed_link().unwrap();
+        assert_eq!(fixture.session.link.test_fresh_len(), 0);
+    }
+
+    fn message_input(index: u128, launch: &str) -> runtime_collab::AgentMessageInput {
+        let invocation = Uuid::from_u128(index).to_string();
+        runtime_collab::AgentMessageInput {
+            invocation: invocation.clone(),
+            room: Uuid::from_u128(1).to_string(),
+            agent: "agent-1".into(),
+            channel: "agent-conversation".into(),
+            request_row: format!("m_{}", invocation.replace('-', "")),
+            text: "A bounded direct message".into(),
+            source_digest: [9; 32],
+            launch: launch.into(),
+            prepared_reply: Some((
+                Uuid::from_u128(index + 1_000).to_string(),
+                "Retained".into(),
+            )),
+        }
     }
 
     #[allow(
@@ -2552,6 +2721,7 @@ mod tests {
                 Arc::new(Scripted(script.clone())),
             ),
             enrolled_custody: Some(custody),
+            managed_messages: None,
             enrolled_active: Some(acceptance),
             enrolled_sequence: 0,
             asked_at: ui::time::now(),

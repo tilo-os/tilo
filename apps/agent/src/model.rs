@@ -118,6 +118,10 @@ pub struct Chooser {
     turns: Option<Arc<dyn TurnTransport>>,
     /// Timing marks wait here while a streamed turn owns the gateway channel.
     marks: Arc<MarkGate>,
+    /// Real gateway turns are reconstructed when a conversational worker is
+    /// forked. Scripted transports are already independently synchronized
+    /// test capabilities and can be shared directly.
+    gateway_turns: bool,
 }
 
 struct ProviderConnection {
@@ -135,6 +139,7 @@ impl Chooser {
             trace: AtomicU64::new(0),
             turns: None,
             marks: Arc::default(),
+            gateway_turns: false,
         }
     }
 
@@ -155,6 +160,7 @@ impl Chooser {
             trace: AtomicU64::new(0),
             turns: Some(turns),
             marks,
+            gateway_turns: true,
         }
     }
 
@@ -176,6 +182,37 @@ impl Chooser {
             trace: AtomicU64::new(0),
             turns: Some(turns),
             marks: Arc::default(),
+            gateway_turns: false,
+        }
+    }
+
+    /// Fork the already-selected model for an independent conversational
+    /// turn worker.
+    ///
+    /// This never re-reads Settings or changes provider/model selection. A
+    /// real gateway fork gets its own trace and mark gate; scripted tests
+    /// retain their explicit transport while receiving the same independent
+    /// bookkeeping.
+    #[must_use]
+    pub fn fork_conversational(&self) -> Self {
+        if self.gateway_turns {
+            return self.provider.as_ref().map_or_else(
+                || Self::new(self.enabled, self.timeout),
+                |provider| {
+                    Self::with_provider(self.enabled, self.timeout, provider.selection.clone())
+                },
+            );
+        }
+        Self {
+            provider: self.provider.as_ref().map(|provider| ProviderConnection {
+                selection: provider.selection.clone(),
+            }),
+            timeout: self.timeout,
+            enabled: self.enabled,
+            trace: AtomicU64::new(0),
+            turns: self.turns.clone(),
+            marks: Arc::default(),
+            gateway_turns: false,
         }
     }
 
@@ -1120,6 +1157,7 @@ mod tests {
     use crate::plan::Instruction;
     use crate::surface::Offer;
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
     use tilo_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
 
@@ -1130,6 +1168,36 @@ mod tests {
             text: text.into(),
             attrs: BTreeMap::new(),
         }
+    }
+
+    struct CountingTurns(AtomicUsize);
+
+    impl TurnTransport for CountingTurns {
+        fn start(&self, _: TurnRequest) -> std::sync::mpsc::Receiver<TurnEvent> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(TurnEvent::Finished(Err("done".into()))).unwrap();
+            rx
+        }
+    }
+
+    #[test]
+    fn conversational_fork_retains_explicit_scripted_transport() {
+        let turns = Arc::new(CountingTurns(AtomicUsize::new(0)));
+        let chooser = Chooser::scripted(
+            Duration::from_secs(1),
+            agent_provider_config::ProviderProtocol::Anthropic,
+            turns.clone(),
+        );
+        chooser.begin_trace();
+        let fork = chooser.fork_conversational();
+        assert_eq!(fork.trace.load(Ordering::Relaxed), 0);
+        let event = fork
+            .start_turn(serde_json::json!({}), Duration::ZERO, 0)
+            .recv()
+            .unwrap();
+        assert!(matches!(event, TurnEvent::Finished(Err(error)) if error == "done"));
+        assert_eq!(turns.0.load(Ordering::SeqCst), 1);
     }
 
     #[test]
