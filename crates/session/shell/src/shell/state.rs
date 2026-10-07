@@ -917,7 +917,9 @@ impl WorkspaceTree {
             if let Some(owner) = owner {
                 ws.owner = Some(owner);
             }
+            let local = self.native_runtime.preserve_files_home_consent(ws, peer);
             ws.capabilities = caps;
+            ws.capabilities.extend(local);
             ws.tasks = tasks;
             ws.effect_receipts = receipts;
         }
@@ -3292,6 +3294,8 @@ impl WorkspaceTree {
     /// revoke would mutate only the local cache, so a peer would keep
     /// using a capability the owner took away.
     pub fn doc_revoke_capability(&mut self, workspace_id: WorkspaceId, cap_id: &str) {
+        self.native_runtime
+            .forget_files_home_consent(workspace_id, cap_id);
         if tilo_desktop_model::desktop_doc::revoke_capability(&mut self.doc, workspace_id, cap_id) {
             self.commit_room_change();
         }

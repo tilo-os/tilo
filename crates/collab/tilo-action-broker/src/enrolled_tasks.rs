@@ -95,6 +95,9 @@ pub(super) fn disconnect(state: &CapnpBrokerState, peer: u64) {
 
 /// Owner cleanup runs on the existing broker turn, including its orderly shutdown.
 pub(super) async fn retire(state: &CapnpBrokerState, all: bool) -> Result<(), String> {
+    if !retirement_needed(state, all)? {
+        return Ok(());
+    }
     let _order = state.owner_commit_order.lock().await;
     let scopes = {
         let registry = state
@@ -152,6 +155,29 @@ pub(super) async fn retire(state: &CapnpBrokerState, all: bool) -> Result<(), St
         .await?;
     }
     Ok(())
+}
+
+// Ordinary owner operations share the order lock, but an empty enrolled
+// registry has no owner cleanup to serialize. On shutdown first drain every
+// in-flight lifecycle admission; accepting=false then prevents new entries.
+fn retirement_needed(state: &CapnpBrokerState, all: bool) -> Result<bool, String> {
+    if all {
+        let guard = state
+            .lifecycle
+            .write()
+            .map_err(|_| "broker lifecycle unavailable")?;
+        if state.is_accepting() {
+            return Err("enrolled shutdown requires retired admission".into());
+        }
+        drop(guard);
+    }
+    let registry = state
+        .enrolled_tasks
+        .lock()
+        .map_err(|_| "enrolled registry unavailable")?;
+    let needed = !registry.connections.is_empty() || !registry.retired.is_empty();
+    drop(registry);
+    Ok(needed)
 }
 
 impl CapnpBrokerState {

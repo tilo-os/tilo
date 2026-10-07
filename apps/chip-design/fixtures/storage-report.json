@@ -1,12 +1,12 @@
 {
   "assumptions": {
-    "context_tokens": 32768,
+    "context_tokens": 64,
     "kv_bits": 16,
-    "logical_parameters": 27000000000,
+    "logical_parameters": 1024,
     "weight_bits": 4
   },
   "batch_size": 1,
-  "config_sha256": "137754ebd46991bec0c0d9e660dc98256be0b20f0e825b28c95c31de6142d041",
+  "config_sha256": "d10c076a600d7f526026e4dcde3de46b616ff4cf26d1d265e1ecf96781ef8020",
   "evidence": "analytical_storage_bound",
   "full_attention_cache": {
     "excludes": [
@@ -17,19 +17,20 @@
       "workspace",
       "batching"
     ],
-    "full_attention_layers": 16,
-    "kv_elements": 1073741824,
-    "packed_bytes": 2147483648,
+    "full_attention_layers": 2,
+    "kv_elements": 2048,
+    "packed_bytes": 4096,
     "status": "partial_bound"
   },
   "limitations": [
+    "SYNTHETIC contract example. Model, revisions, digests and all values are authored fixtures; no experiment or checkpoint is represented.",
     "Weight bound assumes uniform precision; excludes scales, padding and duplicated storage.",
     "Logical parameter count is a user assumption, not inferred from packed tensor inventory.",
     "Open-weight access does not by itself establish hardware commercialization rights.",
     "Snapshot digest checks integrity, not publisher authentication.",
     "Precision is a storage assumption; quantization quality has not been validated."
   ],
-  "model": "Qwen/Qwen3.8-27B",
+  "model": "Synthetic/Contract-Example",
   "not_estimated": [
     "silicon_area",
     "power",
@@ -37,7 +38,7 @@
     "coding_quality",
     "total_runtime_memory"
   ],
-  "packed_weight_bytes": 13500000000,
-  "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "packed_weight_bytes": 512,
+  "revision": "ad835591193cff5d2a231485cab35f8654c71287",
   "schema_version": 1
 }

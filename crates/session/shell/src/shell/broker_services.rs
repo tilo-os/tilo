@@ -5,6 +5,10 @@ use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
 mod airdrop_transfer;
 mod committed_document;
+#[cfg(target_os = "linux")]
+mod file_clipboard;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
 mod native_effect_tests;
@@ -773,6 +777,22 @@ impl LauncherServices for NativeLauncher {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
             || super::launcher::consume_in_process_launch(pid, app, room)
     }
+    #[cfg(target_os = "linux")]
+    fn attest_executing_process(
+        &self,
+        launcher_pid: u32,
+        peer: &runtime_portal::process_binding::ExecutingPeer,
+        app: &str,
+        room: &str,
+    ) -> bool {
+        let Some((_, start)) = super::launcher::proc_stat(launcher_pid) else {
+            return false;
+        };
+        super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room).is_some()
+            && peer.belongs_to(launcher_pid, start)
+            && super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room)
+                .is_some()
+    }
     fn application_creation_evidence(
         &self,
         pid: u32,
@@ -1345,6 +1365,44 @@ impl ContinuationServices for NativeContinuations {
         instance: u64,
         message: Vec<u8>,
     ) -> Result<(), String> {
+        if matches!(
+            ui::collaboration::handoff::HandoffReport::decode(&message),
+            Some(ui::collaboration::handoff::HandoffReport::OwnerSubscribe { .. })
+        ) {
+            super::personal_continuity_registry::global_registry()
+                .lock()
+                .map_err(|_| "continuation registry unavailable".to_owned())?
+                .refresh_owner_view(
+                    room,
+                    &app,
+                    super::personal_continuity::AppInstanceId(instance),
+                );
+            return Ok(());
+        }
+        if let Some(ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+            token,
+            schema,
+            metadata,
+        }) = ui::collaboration::handoff::HandoffReport::decode(&message)
+        {
+            use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
+            if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations) {
+                return Err("app continuation permission is disabled".into());
+            }
+            return super::personal_continuity_registry::global_registry()
+                .lock()
+                .map_err(|_| "continuation registry unavailable".to_owned())?
+                .claim_owner_view(
+                    room,
+                    app,
+                    super::personal_continuity::AppInstanceId(instance),
+                    token,
+                    ui::collaboration::ContinuationMetadata {
+                        schema_version: schema,
+                        bytes: metadata,
+                    },
+                );
+        }
         super::window_transfer::report_handoff(room, app, instance, &message)
     }
 }
@@ -1447,6 +1505,11 @@ pub fn native_services(
     });
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     HostServices {
+        #[cfg(target_os = "linux")]
+        file_clipboard: membership.as_ref().map(|tree| {
+            Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))
+                as Arc<dyn tilo_action_broker::services::FileClipboardServices>
+        }),
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
         committed_documents,

@@ -804,6 +804,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             }
         }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
             meter.bytes(bytes);
@@ -1207,6 +1208,14 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         }
         CollabEvent::Handoff { request } => {
             meter.add_product(1, std::mem::size_of_val(request));
+            if let super::handoff::HandoffRequest::OwnerView { view } = request {
+                meter.string_capacity(&view.room);
+                meter.string_capacity(&view.app);
+                meter.string_capacity(&view.source);
+                if let Some(metadata) = &view.projection {
+                    meter.add_product(metadata.bytes.capacity(), 1);
+                }
+            }
             if let super::handoff::HandoffRequest::Retire { successor, .. } = request {
                 meter.string_capacity(&successor.room);
                 meter.string_capacity(&successor.record);
@@ -1341,6 +1350,10 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.bytes(bytes);
         }
         CollabEvent::RealtimeCommandResult { result, .. } => match result {
+            Ok(reply) => serialized_bytes(reply, &mut meter),
+            Err(error) => meter.string_capacity(error),
+        },
+        CollabEvent::LocalFileClipboardResult { result, .. } => match result {
             Ok(reply) => serialized_bytes(reply, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -2654,6 +2667,28 @@ impl CollaborationManager {
         tests::native_initial_fixture(app, room, history)
     }
 
+    /// Socket-backed ordering fixture on an actual acknowledged named route.
+    /// This fixture does not establish native caller authority.
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_initial_named_fixture_for_test(
+        route: RouteSpec,
+        history: Vec<u8>,
+    ) -> Self {
+        let (mut manager, _) =
+            tests::native_initial_fixture(&route.app_id, route.cluster_id, history);
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
+            record: route.record,
+            record_kind: None,
+            handle: None,
+        }));
+        manager
+            .await_primary_route()
+            .expect("actual named route acknowledgement");
+        manager
+    }
+
     /// A connected route whose document reads are not Required, as a
     /// standalone runtime admits it.
     #[cfg(all(test, unix))]
@@ -2973,6 +3008,24 @@ impl CollaborationManager {
     #[cfg(all(test, unix))]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
+    }
+
+    /// Retire the actual socket-backed capture generation, as a rejoin does.
+    #[cfg(all(test, unix))]
+    pub(crate) fn retire_document_capture_for_test(&self, route: &RouteSpec) {
+        let Backend::Transport(transport) = &self.backend else {
+            panic!("a broker transport");
+        };
+        let transport = transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .expect("a broker transport");
+        drop(
+            transport
+                .state
+                .document_reads
+                .close_for_test(&route.channel_id()),
+        );
     }
 
     /// Block until the broker worker has finished every command submitted so
@@ -4141,6 +4194,7 @@ struct SettingsLink {
 impl Drop for SettingsLink {
     fn drop(&mut self) {
         self.follower.abort();
+        self.settings.disconnected();
     }
 }
 
@@ -4209,6 +4263,7 @@ async fn link_settings(
                     Ok(view) => view,
                     Err(error) => {
                         tracing::warn!(%error, "settings: following the shell's settings stopped");
+                        settings.disconnected();
                         break;
                     }
                 };
@@ -5687,6 +5742,19 @@ async fn dispatch_sdk_request(
                 .map_err(|error| error.to_string());
             let _ = inbound_tx
                 .send_durable(CollabEvent::NearbyTransferCommandResult { request_id, result });
+        }
+        CollabRequest::LocalFileClipboard {
+            request_id,
+            command,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .local_file_clipboard_command(&command, on_behalf_of.map(|id| *id.0.as_bytes()))
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx
+                .send_durable(CollabEvent::LocalFileClipboardResult { request_id, result });
         }
         CollabRequest::OpenWorkspaceControl {
             session_id,
@@ -8357,7 +8425,27 @@ mod tests {
             handle: None,
         }));
         manager.await_primary_route().unwrap();
-        assert!(manager.send(CollabRequest::document_incremental(b"refused".to_vec())));
+        let route = manager.primary_route().unwrap().route.clone();
+        let ready = broker_state(&manager)
+            .document_reads
+            .close_for_test(&route.channel_id());
+        assert!(
+            manager
+                .try_send_to_route(
+                    route,
+                    CollabRequest::document_incremental(b"refused".to_vec())
+                )
+                .is_ok()
+        );
+        let pending = manager.begin_document_publication_barrier().unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(
+            pending.try_complete(),
+            Ok(None),
+            "certified publication must still await exact route readiness"
+        );
+        assert!(captures.lock().unwrap().signed_ops.is_empty());
+        ready.store(true, Ordering::Release);
         // Signing may fail before the marker enqueue; either path must carry the cause.
         let error = match manager.begin_document_publication_barrier() {
             Ok(receipt) => receipt
