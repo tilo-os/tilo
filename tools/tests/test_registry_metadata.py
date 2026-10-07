@@ -38,9 +38,15 @@ class RegistryMetadataTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 entries = sorted(output.glob("*.json"))
                 self.assertEqual(len(entries), 59)
-                # Archived gallery images remain remote; generate the 59 app
-                # icons and the Notes image fixture locally.
-                self.assertEqual(len(list(media.glob("*"))), 60)
+                # Every screenshot, including the Notes image fixture, is archived.
+                # Observe the exact icon output and the original Settings image pin.
+                self.assertEqual({path.name for path in media.iterdir()},
+                                 {f"{path.stem}.svg" for path in entries})
+                settings = json.loads((output / "settings.json").read_text(encoding="utf-8"))
+                self.assertEqual(len(settings["images"]["en"]), 5)
+                self.assertEqual(settings["images"]["en"][-1]["url"],
+                                 "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/"
+                                 "bd5d23b61827b873b51daf0d84e09db582104b5a93c617c733a5c282191eb96f/settings.png")
                 image_count = 0
                 for path in entries:
                     entry = json.loads(path.read_text(encoding="utf-8"))
