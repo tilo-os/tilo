@@ -613,14 +613,32 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
                     .room_names
                     .get(&actor)
                     .map_or(agent.as_str(), String::as_str);
-                LiveRow::new(format!("chat.person:{agent}"), "chat.agent", label).operation(
-                    ChatEffect::OpenAgentConversation {
-                        workspace: self.context_ws.clone(),
-                        agent: agent.clone(),
-                    }
-                    .bound()
-                    .launchable_when_closed(),
-                )
+                let row = LiveRow::new(format!("chat.person:{agent}"), "chat.agent", label)
+                    .operation(
+                        ChatEffect::OpenAgentConversation {
+                            workspace: self.context_ws.clone(),
+                            agent: agent.clone(),
+                        }
+                        .bound()
+                        .launchable_when_closed(),
+                    );
+                match self.agent_presentation_is_detached(&self.context_ws, agent) {
+                    Some(false) => row.operation(localized_presentation_action(
+                        &ChatEffect::FloatAgentConversation {
+                            workspace: self.context_ws.clone(),
+                            agent: agent.clone(),
+                        },
+                        "chat-agent-float",
+                    )),
+                    Some(true) => row.operation(localized_presentation_action(
+                        &ChatEffect::ReturnAgentConversation {
+                            workspace: self.context_ws.clone(),
+                            agent: agent.clone(),
+                        },
+                        "chat-agent-return",
+                    )),
+                    None => row,
+                }
             })
             .collect()
     }
@@ -675,6 +693,12 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     }
 }
 
+fn localized_presentation_action(effect: &ChatEffect, label: &str) -> ui::tilo_actions::ActionSpec {
+    let mut action = effect.bound();
+    action.label = crate::i18n::t(label);
+    action
+}
+
 fn draft_keys(doc: &Doc) -> Vec<String> {
     let Ok(Some((Value::Object(ObjType::Map), drafts))) = doc.get(ROOT, "rich_drafts") else {
         return Vec::new();
@@ -702,6 +726,51 @@ mod tests {
             is_agent,
             is_self,
         }
+    }
+
+    fn agent_presentation_actions(
+        app: &mut TestApp<ChatShell>,
+    ) -> Vec<ui::tilo_actions::ActionDescriptor> {
+        app.actions()
+            .unwrap()
+            .into_iter()
+            .filter(|action| {
+                action.address.resource == "chat.person:tide"
+                    && matches!(
+                        action.address.action.as_str(),
+                        "float-agent-conversation" | "return-agent-conversation"
+                    )
+            })
+            .collect()
+    }
+
+    fn adopt_agent_surface(
+        app: &mut TestApp<ChatShell>,
+        request: &ui::floating_surface::FloatingSurfaceRequest,
+    ) {
+        let rect = request
+            .initial_rect
+            .expect("Float retains its exact source rect");
+        app.with_widget::<ChatApp, _>(|chat| {
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+                chat,
+                &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                    id: request.id.clone(),
+                    token: "0123456789abcdef0123456789abcdef".into(),
+                    rect: ui::floating_surface::protocol_rect_array(rect),
+                    content_rect: ui::floating_surface::protocol_rect_array(rect),
+                    transfer_covered: true,
+                    coordinate_offset: [0.0, 0.0],
+                },
+            );
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+                chat,
+                &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                    id: request.id.clone(),
+                    rect: ui::floating_surface::protocol_rect_array(rect),
+                },
+            );
+        });
     }
 
     #[test]
@@ -1170,6 +1239,113 @@ mod tests {
                 .iter()
                 .all(|action| action.address.resource != "chat.person:tide"),
             "withdrawing the complete Context withdraws both capabilities"
+        );
+    }
+
+    #[test]
+    fn agent_conversation_publishes_one_current_presentation_view_and_rechecks_membership() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.harness().set_collaboration_context(vec![
+            collaborator("test-author", "Quinten", false, true),
+            collaborator("agent:tide", "Tide", true, false),
+        ]);
+        app.call_on_for(
+            ui::tilo_actions::ActionInvoker::actor("test-author"),
+            "chat.person:tide",
+            "open-agent-conversation",
+            serde_json::json!({}),
+        )
+        .unwrap();
+
+        let offered = agent_presentation_actions(&mut app);
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].address.action, "float-agent-conversation");
+        assert_eq!(
+            offered[0].kind,
+            ui::tilo_actions::OperationKind::View,
+            "moving a view is not a document mutation"
+        );
+        assert_eq!(
+            offered[0].contract.permission,
+            ui::tilo_actions::PermissionRequirement::Read
+        );
+
+        app.call_on_for(
+            ui::tilo_actions::ActionInvoker::actor("test-author"),
+            "chat.person:tide",
+            "float-agent-conversation",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let request = app
+            .with_widget::<ChatApp, _>(|chat| {
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(chat)
+            })
+            .flatten()
+            .expect("the semantic Float uses the shared surface handoff");
+        adopt_agent_surface(&mut app, &request);
+
+        let offered = agent_presentation_actions(&mut app);
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].address.action, "return-agent-conversation");
+        app.call_on_for(
+            ui::tilo_actions::ActionInvoker::actor("test-author"),
+            "chat.person:tide",
+            "return-agent-conversation",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert!(
+            app.with_widget::<ChatApp, _>(|chat| chat
+                .agent_surfaces
+                .values()
+                .any(|surface| surface.placement.is_return_pending()))
+                .unwrap(),
+            "semantic Return uses the same shared return handoff"
+        );
+        assert!(
+            agent_presentation_actions(&mut app).is_empty(),
+            "a transfer in progress cannot be invoked a second time"
+        );
+
+        app.with_widget::<ChatApp, _>(|chat| {
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+                chat,
+                &ui::floating_surface::FloatingSurfaceHostMessage::Suspended {
+                    id: request.id.clone(),
+                },
+            );
+        });
+        assert_eq!(
+            agent_presentation_actions(&mut app)[0].address.action,
+            "float-agent-conversation"
+        );
+
+        app.harness().set_collaboration_context(vec![collaborator(
+            "test-author",
+            "Quinten",
+            false,
+            true,
+        )]);
+        let stale = app.call_on_for(
+            ui::tilo_actions::ActionInvoker::actor("test-author"),
+            "chat.person:tide",
+            "float-agent-conversation",
+            serde_json::json!({}),
+        );
+        assert!(
+            stale.is_err(),
+            "a stale Agent presentation View is withdrawn"
+        );
+        assert!(
+            app.with_widget::<ChatApp, _>(|chat| chat
+                .answer_effect(ChatEffect::FloatAgentConversation {
+                    workspace: chat.context_ws.clone(),
+                    agent: "tide".into(),
+                })
+                .is_err())
+                .unwrap(),
+            "the handler independently rechecks current Agent membership"
         );
     }
 

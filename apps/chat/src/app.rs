@@ -2935,6 +2935,70 @@ impl ChatApp {
                 })
     }
 
+    /// The presentation transition currently offered for this exact live
+    /// Agent conversation. This is per-window state, not document state: a
+    /// caller still has to invoke the row-bound View and pass the fresh
+    /// checks in the corresponding handler.
+    pub(crate) fn agent_presentation_is_detached(
+        &self,
+        workspace: &str,
+        agent: &str,
+    ) -> Option<bool> {
+        if workspace != self.context_ws
+            || !self
+                .workspaces
+                .iter()
+                .any(|candidate| candidate.id == workspace)
+            || !self.room_agents.iter().any(|known| known == agent)
+        {
+            return None;
+        }
+        let channel = ChatDoc::agent_conversation_channel_id(workspace, agent);
+        if self.agent_surfaces.get(&channel).is_some_and(|surface| {
+            surface.view.active_ws == workspace
+                && surface.view.direct_agent.as_deref() == Some(agent)
+                && surface.placement.is_desktop_adopted()
+                && !surface.placement.is_return_pending()
+        }) {
+            return Some(true);
+        }
+        (self.active_ws == workspace
+            && self.active_channel == channel
+            && self.direct_agent.as_deref() == Some(agent)
+            && self.rect.area() > 0.0)
+            .then_some(false)
+    }
+
+    /// Ask the shared placement state machine to return the exact currently
+    /// detached Agent conversation after revalidating the semantic caller's
+    /// live room context. Local pointer/AT recovery after a membership loss
+    /// retains the private editor through [`Self::settle_agent_surface_commands`]
+    /// but uses the same lower-level handoff.
+    pub(crate) fn request_agent_conversation_return(
+        &mut self,
+        workspace: &str,
+        agent: &str,
+    ) -> Result<(), String> {
+        if self.agent_presentation_is_detached(workspace, agent) != Some(true) {
+            return Err("agent conversation is not currently detached".into());
+        }
+        let channel = ChatDoc::agent_conversation_channel_id(workspace, agent);
+        self.request_retained_agent_surface_return(&channel)
+    }
+
+    fn request_retained_agent_surface_return(&mut self, channel: &str) -> Result<(), String> {
+        let surface = self
+            .agent_surfaces
+            .get_mut(channel)
+            .ok_or("agent conversation is not currently detached")?;
+        surface.placement.request_app_return();
+        if !surface.placement.is_return_pending() {
+            return Err("agent conversation return was not accepted".into());
+        }
+        self.request_relayout();
+        Ok(())
+    }
+
     fn settle_returned_agent_surface(&mut self, id: &str, closed: bool) {
         let Some(channel) = self
             .agent_surfaces
@@ -3018,8 +3082,8 @@ impl ChatApp {
             workspace == surface.view.active_ws
                 && surface.view.direct_agent.as_deref() == Some(agent.as_str())
         });
-        if retained_matches && let Some(surface) = self.agent_surfaces.get_mut(&channel) {
-            surface.placement.request_app_return();
+        if retained_matches {
+            let _ = self.request_retained_agent_surface_return(&channel);
         }
     }
 

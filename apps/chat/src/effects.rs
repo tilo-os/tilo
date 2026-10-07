@@ -63,6 +63,12 @@ pub enum ChatEffect {
     /// Open a direct conversation with an Agent authenticated by this room.
     #[effect(view, row)]
     OpenAgentConversation { workspace: String, agent: String },
+    /// Move the open Agent conversation to its own desktop surface.
+    #[effect(view, row, label = "chat-agent-float")]
+    FloatAgentConversation { workspace: String, agent: String },
+    /// Return the detached Agent conversation to Chat.
+    #[effect(view, row, label = "chat-agent-return")]
+    ReturnAgentConversation { workspace: String, agent: String },
     /// Read message
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
@@ -146,6 +152,9 @@ pub enum ChatEffect {
 impl ChatApp {
     /// Answer `effect` for this window.
     pub(crate) fn answer_effect(&mut self, effect: ChatEffect) -> EffectAnswer {
+        if let Some(answer) = self.answer_agent_presentation_effect(&effect) {
+            return answer;
+        }
         match effect {
             ChatEffect::OpenWorkspace { workspace } => {
                 self.reveal_workspace_resource(workspace)?;
@@ -170,23 +179,15 @@ impl ChatApp {
             ChatEffect::OpenAgentConversation { workspace, agent } => {
                 self.open_agent_conversation(&workspace, &agent)?;
             }
+            ChatEffect::FloatAgentConversation { .. }
+            | ChatEffect::ReturnAgentConversation { .. } => {
+                return Err("presentation action was not dispatched".into());
+            }
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
             }
             ChatEffect::AttachFile { channel, path } => {
-                if !self.external_services {
-                    return Err("attachment import unsupported: no host asset transport".into());
-                }
-                let path = path.trim();
-                if path.is_empty() {
-                    return Err("attachment path is empty".into());
-                }
-                if !self.channels.iter().any(|item| item.id == channel) {
-                    return Err("conversation no longer exists".into());
-                }
-                if !self.begin_attachment_import_into(&channel, std::path::Path::new(path)) {
-                    return Err("attachment import was not accepted".into());
-                }
+                self.answer_attach_file(&channel, &path)?;
             }
             ChatEffect::ShareLiveContext => {
                 if !self.channels.iter().any(|channel| {
@@ -243,6 +244,37 @@ impl ChatApp {
             }
         }
         Ok(Effected::done())
+    }
+
+    fn answer_agent_presentation_effect(&mut self, effect: &ChatEffect) -> Option<EffectAnswer> {
+        match effect {
+            ChatEffect::FloatAgentConversation { workspace, agent } => Some(
+                self.float_agent_conversation(workspace, agent)
+                    .map(|()| Effected::done()),
+            ),
+            ChatEffect::ReturnAgentConversation { workspace, agent } => Some(
+                self.request_agent_conversation_return(workspace, agent)
+                    .map(|()| Effected::done()),
+            ),
+            _ => None,
+        }
+    }
+
+    fn answer_attach_file(&mut self, channel: &str, path: &str) -> Result<(), String> {
+        if !self.external_services {
+            return Err("attachment import unsupported: no host asset transport".into());
+        }
+        let path = path.trim();
+        if path.is_empty() {
+            return Err("attachment path is empty".into());
+        }
+        if !self.channels.iter().any(|item| item.id == channel) {
+            return Err("conversation no longer exists".into());
+        }
+        if !self.begin_attachment_import_into(channel, std::path::Path::new(path)) {
+            return Err("attachment import was not accepted".into());
+        }
+        Ok(())
     }
 
     fn native_call_status(&mut self, channel: &str) -> EffectAnswer {
