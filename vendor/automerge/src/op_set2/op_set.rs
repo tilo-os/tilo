@@ -858,6 +858,11 @@ impl OpSet {
     ) -> Option<FoundOpId<'_>> {
         let obj_range = self.scope_to_obj(obj);
         let pos = self.get_op_id_pos(id)?;
+        // A cursor can name a valid operation in a different sequence. Treat
+        // that as an invalid cursor, just as the scoped slow lookup does.
+        if !obj_range.contains(&pos) {
+            return None;
+        }
         let op = self.get(pos)?;
         let visible;
         let index;

@@ -20,6 +20,7 @@
 //! in each frame. Not all app state is a record — a theme or account stays
 //! in the package-level document ([`crate::persist`]) instead.
 
+pub mod bootstrap;
 pub mod capability;
 use std::collections::{BTreeMap, HashMap};
 
