@@ -1,0 +1,114 @@
+//! Certified device display observations, published by the existing compositor.
+//! These are observations, never input permissions or durable display intent.
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceDisplay {
+    pub device: String,
+    pub device_label: String,
+    pub connector: String,
+    pub label: String,
+    pub online: bool,
+    pub local: bool,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_milli: u16,
+}
+
+impl DeviceDisplay {
+    /// Device-qualified semantic identity even when peers have identical ports.
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.device, self.connector)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceDisplaySnapshot {
+    pub publisher_pid: u32,
+    pub publisher_start_ticks: u64,
+    pub displays: Vec<DeviceDisplay>,
+}
+
+impl DeviceDisplaySnapshot {
+    pub fn load() -> Option<Self> {
+        Self::load_at(&snapshot_path()?)
+    }
+
+    /// Read an observation only while its compositor owns the runtime lease.
+    pub fn load_at(path: &std::path::Path) -> Option<Self> {
+        let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        crate::hardware::publisher_live_in(
+            path.parent()?,
+            snapshot.publisher_pid,
+            snapshot.publisher_start_ticks,
+        )
+        .then_some(snapshot)
+    }
+
+    /// Publish under the existing compositor's runtime lease.
+    /// # Errors
+    /// Fails if the private runtime directory is unavailable or writing fails.
+    pub fn save(&self) -> std::io::Result<()> {
+        let path = snapshot_path().ok_or_else(|| std::io::Error::other("runtime unavailable"))?;
+        let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+    }
+}
+
+fn snapshot_path() -> Option<std::path::PathBuf> {
+    tilo_paths::xdg::runtime_dir().map(|path| path.join("tilo/device-display-state.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observations_expire_with_the_compositor_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device-display-state.json");
+        let snapshot = DeviceDisplaySnapshot {
+            publisher_pid: 4_000_000,
+            publisher_start_ticks: 7,
+            displays: vec![DeviceDisplay {
+                device: "peer".into(),
+                device_label: "Peer".into(),
+                connector: "eDP-1".into(),
+                label: "Panel".into(),
+                online: true,
+                local: false,
+                x: 1920,
+                y: 0,
+                width: 1280,
+                height: 720,
+                scale_milli: 1250,
+            }],
+        };
+        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert!(DeviceDisplaySnapshot::load_at(&path).is_none());
+        let lease_path = dir.path().join("publisher-4000000-7.lock");
+        let lease = std::fs::File::create(lease_path).unwrap();
+        assert!(DeviceDisplaySnapshot::load_at(&path).is_none());
+        let lease = advisory_lock::FileLock::try_exclusive(lease).unwrap();
+        assert_eq!(
+            DeviceDisplaySnapshot::load_at(&path),
+            Some(snapshot.clone())
+        );
+        let mut stale = snapshot;
+        stale.publisher_start_ticks += 1;
+        std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        assert!(
+            DeviceDisplaySnapshot::load_at(&path).is_none(),
+            "reused PID cannot vouch for a previous publisher"
+        );
+        stale.publisher_start_ticks -= 1;
+        std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        drop(lease);
+        assert!(
+            DeviceDisplaySnapshot::load_at(&path).is_none(),
+            "stale connector observations disappear after the compositor exits"
+        );
+    }
+}
