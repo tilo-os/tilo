@@ -10,8 +10,8 @@ use ui::agent_task_frontier::{
     AgentDirectionState, AgentQueueState, AgentTaskChoice, AgentTaskFrontier, AgentTaskFrontiers,
 };
 use ui::widget::{
-    Button, ButtonRole, Column, Container, Dropdown, Popover, PopoverSide, Row, Segment, Text,
-    TextInput, ToggleGroup, When, Widget,
+    Badge, Button, ButtonRole, Column, Container, Dropdown, Popover, PopoverSide, Row, Segment,
+    Text, TextInput, ToggleGroup, When, Widget,
 };
 use ui::{LocalState, Theme};
 use vello::kurbo::Rect;
@@ -682,7 +682,13 @@ fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container>
         .with_rhythm(ui::tokens::Rhythm::Related)
         .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
         .push(Box::new(
-            Text::from_state(controls.title, Clone::clone).with_role(ui::tokens::TextRole::Heading),
+            Row::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(
+                    Text::from_state(controls.title, Clone::clone)
+                        .with_role(ui::tokens::TextRole::Heading),
+                ))
+                .push(Box::new(Badge::text(t("agent-quick-kind")))),
         ))
         .push(Box::new(
             Text::from_state(controls.status, Clone::clone).dimmed(),
@@ -1631,6 +1637,16 @@ mod tests {
             return ui::undo::get_state(widget);
         }
         widget.children_mut().into_iter().find_map(editor_state)
+    }
+
+    fn has_accessible_value(widget: &dyn Widget, expected: &str) -> bool {
+        widget
+            .accessibility()
+            .is_some_and(|node| node.value.as_deref() == Some(expected))
+            || widget
+                .children()
+                .into_iter()
+                .any(|child| has_accessible_value(child, expected))
     }
 
     struct MessageOfferHost {
@@ -3109,6 +3125,10 @@ mod tests {
         );
         assert_eq!(composer.title.get(), "Release Notes Agent");
         assert_eq!(composer.status.get(), "Send a message through Chat");
+        assert!(
+            has_accessible_value(&composer, "Agent"),
+            "the visible collaborator kind is also published to accessibility"
+        );
     }
 
     #[test]

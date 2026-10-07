@@ -2463,6 +2463,7 @@ search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprüngli
 search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
 
 agent-quick-title = { $agent }
+agent-quick-kind = Agent
 agent-quick-accessible-name = Agent-Schnellverfasser
 agent-quick-checking = Verfügbare Agent-Aktionen werden geprüft…
 agent-quick-ready = Nachricht über Chat senden

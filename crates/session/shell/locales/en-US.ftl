@@ -2461,6 +2461,7 @@ search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original pl
 search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
 
 agent-quick-title = { $agent }
+agent-quick-kind = Agent
 agent-quick-accessible-name = Agent quick composer
 agent-quick-checking = Checking what this agent can do…
 agent-quick-ready = Send a message through Chat
