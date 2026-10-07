@@ -915,10 +915,17 @@ impl App {
                 component,
                 profile,
                 features,
-            }) => {
-                crate::builderlayer::pack(&component, &profile, &features)?;
-                Ok(Outcome::new("", json!({})))
-            }
+                source_inventory,
+            }) => Self::packed(crate::builderlayer::pack_with_source(
+                &component,
+                &profile,
+                &features,
+                source_inventory.as_deref(),
+            )),
+            Some(Command::AppPack {
+                app,
+                source_inventory,
+            }) => Self::packed(crate::builderapp::pack(&app, &source_inventory)),
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
             Some(Command::Gc {
@@ -928,6 +935,11 @@ impl App {
                 min_age,
             }) => self.gc(dry_run, keep, keep_targets, min_age),
         }
+    }
+
+    fn packed(result: Result<(), CliError>) -> Result<Outcome, CliError> {
+        result?;
+        Ok(Outcome::new("", json!({})))
     }
 
     fn guide(topic: Option<&str>) -> Result<Outcome, CliError> {
@@ -3994,11 +4006,7 @@ impl App {
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
         if let Some(c) = &entry {
-            let fits = if slot == VM_SLOT {
-                c.info.scope == Scope::Vm
-            } else {
-                c.info.scope != Scope::Vm
-            };
+            let fits = (slot == VM_SLOT) == (c.info.scope == Scope::Vm);
             if !fits {
                 return Err(CliError::ScopeMismatch {
                     component,
@@ -4019,6 +4027,7 @@ impl App {
                 std::env::consts::OS,
             )?;
         }
+        let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
         self.check_vm_space(&mut remote, &vm)?;
@@ -4036,11 +4045,12 @@ impl App {
             if let ci::Source::Ci { tag, commit } = source {
                 self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
             } else {
-                worktree_buildable(entry)?;
-                let entry = entry.clone().with_profile(profile);
-                self.build_worktree_layer(&mut remote, &vm, &entry, builder)?
+                self.worktree_component_layer(&mut remote, &vm, entry, builder, profile)?
             }
         };
+        if let Some(inputs) = &cohort_inputs {
+            self.cohort_prerequisites(&slot, &component, inputs)?;
+        }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
         remote = self.connect(&vm)?;
@@ -4070,6 +4080,85 @@ impl App {
             "tilo-vm logs",
             "tilo-vm rollback",
         ]))
+    }
+
+    fn cohort_inputs(
+        &self,
+        component: &str,
+        source: &ci::Source,
+    ) -> Result<Option<crate::source_inputs::Snapshot>, CliError> {
+        if component == "apps+runtime" && matches!(source, ci::Source::Worktree) {
+            crate::source_inputs::Snapshot::create(
+                self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
+                component,
+            )
+            .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn worktree_component_layer(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        entry: &Component,
+        builder: Option<Builder>,
+        profile: Option<&str>,
+    ) -> Result<String, CliError> {
+        let selected = if entry.image_assembled && entry.name == "apps+runtime" {
+            if matches!(builder, Some(Builder::Host | Builder::Vm)) {
+                return Err(CliError::Unsupported {
+                    what: "a host/VM-only cargo build for the paired apps+runtime assembly".into(),
+                    alternative: "tilo-vm swap apps+runtime --builder remote".into(),
+                });
+            }
+            Some(Builder::Remote)
+        } else {
+            worktree_buildable(entry)?;
+            builder
+        };
+        self.build_worktree_layer(remote, vm, &entry.clone().with_profile(profile), selected)
+    }
+
+    /// The same source's normal session components understand its installed pins.
+    fn cohort_prerequisites(
+        &mut self,
+        slot: &str,
+        component: &str,
+        inputs: &crate::source_inputs::Snapshot,
+    ) -> Result<(), CliError> {
+        let root = self
+            .worktree
+            .as_ref()
+            .ok_or(CliError::NotInWorktree)?
+            .root
+            .clone();
+        self.receipt.set(
+            "cohort_source",
+            build::source_provenance(
+                self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
+                component,
+                "remote",
+            ),
+        );
+        let mut outcomes = Vec::new();
+        for component in ["launcher", "install"] {
+            inputs.unchanged(&root)?;
+            let outcome = self.swap(
+                Some(slot.into()),
+                component.into(),
+                "worktree",
+                Some(Builder::Remote),
+                None,
+                KernelFlags::default(),
+            )?;
+            inputs.unchanged(&root)?;
+            outcomes.push(json!({"component": component, "result": outcome.data}));
+            self.receipt.set("cohort_prerequisites", &outcomes);
+        }
+        self.receipt.set("component", component);
+        Ok(())
     }
 
     /// A boot component: the kernel swaps, the rest are refused with their
@@ -4396,6 +4485,19 @@ impl App {
         }
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
+        let arch = remote.hello.arch.clone();
+        let configured = self.registry()?.remote_builders.get(&arch).cloned();
+        let builder = match builder {
+            None if vm.entry.hypervisor == hypervisor::DEVICE => Some(Builder::Remote),
+            other => other,
+        };
+        if vm.entry.hypervisor == hypervisor::DEVICE && !matches!(builder, Some(Builder::Remote)) {
+            return Err(CliError::Unsupported {
+                what: "building an app on a physical device or the caller's host".into(),
+                alternative:
+                    "use --builder remote with the device architecture's configured builder".into(),
+            });
+        }
         let (chosen, note) = choose_builder(
             builder,
             &remote.hello.tools,
@@ -4430,10 +4532,10 @@ impl App {
             }
             Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
             Builder::Remote => {
-                return Err(CliError::Unsupported {
-                    what: "installing an app with --builder remote".into(),
-                    alternative: "--builder vm, or --builder host on Linux".into(),
-                });
+                let command = configured
+                    .filter(|line| !line.is_empty())
+                    .ok_or_else(|| self.no_remote_builder(&arch))?;
+                self.install_app_from_remote(&mut remote, &vm, slot, dir, &command)?
             }
         };
         let what = match (&result.id, &result.version) {
@@ -4462,17 +4564,15 @@ impl App {
         let target = build::target_dir(&self.cargo_metadata());
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
-        let [tools, package] = build::app_package(&target, dir, &tapp);
+        let package = build::app_package(&target, dir, &tapp);
         let runner = &mut self.runner;
         let built = self.receipt.phase("build", || -> Result<(), CliError> {
-            for command in [&tools, &package] {
-                if !runner.interactive(command)? {
-                    return Err(CliError::CommandFailed {
-                        command: command.display(),
-                        status: "failed".into(),
-                        stderr: String::new(),
-                    });
-                }
+            if !runner.interactive(&package)? {
+                return Err(CliError::CommandFailed {
+                    command: package.display(),
+                    status: "failed".into(),
+                    stderr: String::new(),
+                });
             }
             Ok(())
         });
@@ -6465,6 +6565,7 @@ mod tests {
             changed,
             policy,
             actions,
+            cohort_selection: Vec::new(),
             warnings: vec![],
             boot: None,
         }

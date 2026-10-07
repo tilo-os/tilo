@@ -47,6 +47,8 @@ pub struct ModelPane<M: PaneModel> {
     composition_dirty: bool,
     catalog_revision: u64,
     structure_dirty: bool,
+    composition_paint_dirty: bool,
+    drawn_rect: Rect,
     rect: Rect,
 }
 
@@ -58,6 +60,8 @@ impl<M: PaneModel> ModelPane<M> {
             composition_dirty: true,
             catalog_revision: ui::i18n::I18nManager::revision(),
             structure_dirty: false,
+            composition_paint_dirty: true,
+            drawn_rect: Rect::ZERO,
             rect: Rect::ZERO,
         }
     }
@@ -87,6 +91,7 @@ impl<M: PaneModel> Widget for ModelPane<M> {
     ) -> NodeId {
         if self.composition_dirty || self.catalog_revision != ui::i18n::I18nManager::revision() {
             self.composed = None;
+            self.composition_paint_dirty = true;
         }
         let composed = self
             .composed
@@ -144,6 +149,36 @@ impl<M: PaneModel> Widget for ModelPane<M> {
             && let Some(&cn) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
+        }
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.composition_paint_dirty {
+            // Replacement can erase old text between the new child's boxes.
+            // Keep both painted extents until the replacement frame is drawn.
+            regions.push(if self.drawn_rect.is_zero_area() {
+                self.rect
+            } else {
+                self.rect.union(self.drawn_rect)
+            });
+        } else if let Some(composed) = &self.composed {
+            composed.collect_damage(regions);
+        }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.composition_paint_dirty
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|child| child.needs_redraw())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.composition_paint_dirty = false;
+        self.drawn_rect = self.rect;
+        if let Some(composed) = &mut self.composed {
+            composed.mark_drawn();
         }
     }
 

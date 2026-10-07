@@ -129,3 +129,6 @@ mod clipboard_safety;
 mod find_replace;
 
 mod slash_text_input;
+
+#[path = "paragraph_damage.rs"]
+mod paragraph_damage;
