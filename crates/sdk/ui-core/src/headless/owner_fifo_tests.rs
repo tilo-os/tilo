@@ -173,7 +173,7 @@ fn prepared(
         })
         .unwrap();
     let mut bound = BoundAppWidget::new(component);
-    bound.sync(&mut AutoCommit::new(), &ROOT);
+    bound.sync(&AutoCommit::new(), &ROOT);
     assert_eq!(seen.syncs.get(), 1);
     (bound, seen, events)
 }

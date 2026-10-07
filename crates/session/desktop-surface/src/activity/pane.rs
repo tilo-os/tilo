@@ -677,6 +677,8 @@ pub struct RoomActivityPane {
     feed_coverage: FeedCoverage,
     pub(super) scope: RoomScope,
     scope_rects: Vec<(RoomScope, Rect)>,
+    #[cfg(test)]
+    painted_title: RefCell<String>,
     author: Option<String>,
     /// First-seen order, derived from the rows rather than a roster — a
     /// name appears only if that person did something in this room.
@@ -892,6 +894,8 @@ impl RoomActivityPane {
             feed_coverage: FeedCoverage::default(),
             scope: RoomScope::default(),
             scope_rects: Vec::new(),
+            #[cfg(test)]
+            painted_title: RefCell::default(),
             author: None,
             contributors: Vec::new(),
             sheet: Rect::ZERO,
@@ -2970,7 +2974,6 @@ impl RoomActivityPane {
             &card,
         );
 
-        self.draw_title_and_subtitle(scene, transform, tr, theme);
         if self.view == ActivityView::CatchUp {
             // Catch Up is the friendly, focused recap. Full-history scope and
             // mode tabs belong to the deeper views and must not leak into its
@@ -2983,6 +2986,9 @@ impl RoomActivityPane {
             self.draw_scope_chips(scene, transform, tr, theme);
             self.draw_view_tabs(scene, transform, tr, theme);
         }
+        // Title elision must use this frame's scope geometry, not rectangles
+        // retained from an earlier viewport, view, or text scale.
+        self.draw_title_and_subtitle(scene, transform, tr, theme);
 
         self.period_rects.clear();
         self.author_rects.clear();
@@ -4684,6 +4690,8 @@ impl RoomActivityPane {
             .fold(self.sheet.x1 - 16.0, f64::min);
         let title_room = (pills_x0 - f64::from(tokens.spacing.s3) - title_x).max(1.0);
         let title = tr.elide_to_width_style(&title, text_width(title_room), &title_style);
+        #[cfg(test)]
+        self.painted_title.replace(title.clone());
         let (_, title_h) = tr.measure_style(&title, None, &title_style);
         let title_y = self.sheet.y0 + HEADER_TOP;
         tr.draw_style(

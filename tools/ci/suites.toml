@@ -137,6 +137,7 @@ suites = [
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
+  "os/tests/test_installer_firstboot_runtime.py",
   "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_code_refresh.py",
@@ -846,6 +847,7 @@ readers = [
 package = "shell"
 inputs = [
   "apps/browser/tilo-app.toml",
+  "apps/file-explorer/tilo-app.toml",
   "tools/protocols/airdrop_sender.py",
   "tools/test-assets.py",
   "crates/sdk/ui-core/assets/fonts/",
@@ -856,6 +858,8 @@ inputs = [
   "scripts/headless-examples/",
 ]
 readers = [
+  "crates/session/shell/examples/files_clipboard_native.rs",
+  "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",

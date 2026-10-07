@@ -245,6 +245,21 @@ impl LauncherServices for Apps {
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         self.launched.attest(pid, app, room)
     }
+    #[cfg(target_os = "linux")]
+    fn attest_executing_process(
+        &self,
+        launcher_pid: u32,
+        peer: &launcher::services::ExecutingPeer,
+        app: &str,
+        room: &str,
+    ) -> bool {
+        let Some(start) = process_start_time(launcher_pid) else {
+            return false;
+        };
+        self.launched.attest(launcher_pid, app, room)
+            && peer.belongs_to(launcher_pid, start)
+            && self.launched.attest(launcher_pid, app, room)
+    }
 }
 
 /// The profile's service sockets, as an app is connected to them.

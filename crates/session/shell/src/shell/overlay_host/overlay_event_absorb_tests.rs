@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_desktop::i18n::t as desktop_text;
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
@@ -2962,3 +2963,286 @@ mod launcher_recovery_tests;
 
 #[path = "launcher_ranking_tests.rs"]
 mod launcher_ranking_tests;
+
+// Deterministic owned-room fixture: no policy override and no ambient identity.
+fn workspace_name_owner_harness(width: f64, height: f64) -> (AbsorbHarness, tempfile::TempDir) {
+    let profile = tempfile::tempdir().unwrap();
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+    let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture_in(profile.path()).unwrap();
+    let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
+    assert!(is_active_workspace_owner(&chrome.borrow()));
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut host = ShellOverlayHost::new(Box::new(RecordingContent::new(log.clone())))
+        .with_chrome(chrome.clone());
+    let (taffy, root_node) = lay_out_host(&mut host, width, height);
+    (
+        AbsorbHarness {
+            host,
+            chrome,
+            taffy,
+            root_node,
+            log,
+        },
+        profile,
+    )
+}
+
+#[test]
+fn workspace_name_pointer_keys_cancel_reopen_resize_and_commit() {
+    let (mut h, _profile) = workspace_name_owner_harness(1600.0, 900.0);
+    h.chrome
+        .borrow_mut()
+        .open_workspace_settings(WsTab::General);
+    h.host.force_ws_settings_settled();
+    settle(&mut h, 1600.0, 900.0);
+    let original = h
+        .chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .unwrap()
+        .name
+        .clone();
+    let point = h.host.workspace_settings_overlay.name_rect().center();
+    assert!(pump(&mut h, &cursor_moved_at(point)));
+    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(pump(&mut h, &left_button_released()));
+    assert_eq!(
+        h.chrome.borrow().editing_workspace_name.as_deref(),
+        Some(original.as_str())
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Home))));
+    assert_eq!(h.chrome.borrow().editing_workspace_name_selection.cursor, 0);
+    assert!(pump(&mut h, &key_pressed(Key::Character("prefix ".into()))));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+    assert!(h.host.commit_into_chrome_field(" 家"));
+    settle(&mut h, 600.0, 700.0);
+    assert!(
+        h.chrome
+            .borrow()
+            .editing_workspace_name
+            .as_ref()
+            .unwrap()
+            .ends_with(" 家")
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(h.chrome.borrow().editing_workspace_name.is_none());
+    assert!(h.chrome.borrow().overlays.ws_settings);
+    assert_eq!(
+        h.chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .name,
+        original
+    );
+    let point = h.host.workspace_settings_overlay.name_rect().center();
+    assert!(pump(&mut h, &cursor_moved_at(point)));
+    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(pump(&mut h, &left_button_released()));
+    assert!(pump_with_modifiers(
+        &mut h,
+        &key_pressed(Key::Character("a".into())),
+        winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+    ));
+    assert!(pump(
+        &mut h,
+        &key_pressed(Key::Character("Renamed 家".into()))
+    ));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+    assert!(h.chrome.borrow().editing_workspace_name.is_none());
+    assert_eq!(
+        h.chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .name,
+        "Renamed 家"
+    );
+    let mut held_enter = key_pressed(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut held_enter {
+        event.repeat = true;
+    }
+    assert!(pump(&mut h, &held_enter));
+    assert!(pump(&mut h, &key_released(Key::Named(NamedKey::Enter))));
+    assert_eq!(
+        h.chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .name,
+        "Renamed 家"
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(!h.chrome.borrow().overlays.ws_settings);
+    assert!(
+        h.log.borrow().is_empty(),
+        "modal rename input cannot reach app content"
+    );
+}
+
+fn assert_workspace_control_label_pixels(
+    path: &std::path::Path,
+    bounds: Rect,
+    clip: Rect,
+    minimum_contrast: u8,
+) {
+    let image = image::open(path).unwrap().to_rgba8();
+    let (mut low, mut high, mut observed) = (u8::MAX, 0_u8, 0_usize);
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let point = Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+        if bounds.contains(point) && clip.contains(point) {
+            low = low.min(pixel.0[1]);
+            high = high.max(pixel.0[1]);
+            observed = observed.saturating_add(1);
+        }
+    }
+    assert!(observed > 100, "control must be visible");
+    assert!(
+        high.saturating_sub(low) >= minimum_contrast,
+        "control label must contrast with its fill"
+    );
+}
+
+#[test]
+fn workspace_name_native_render_and_resize_matrix() {
+    let out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../target/workspace-name-native");
+    std::fs::create_dir_all(&out).unwrap();
+    for (label, width, height, theme) in [
+        ("dark", 1280_u32, 800_u32, Theme::dark()),
+        ("light-narrow", 600, 700, Theme::light()),
+        (
+            "ui-text",
+            1280,
+            800,
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+        ),
+    ] {
+        let (mut h, _profile) = workspace_name_owner_harness(f64::from(width), f64::from(height));
+        h.chrome
+            .borrow_mut()
+            .open_workspace_settings(WsTab::General);
+        h.host.force_ws_settings_settled();
+        settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+        let point = h.host.workspace_settings_overlay.name_rect().center();
+        assert!(pump(&mut h, &cursor_moved_at(point)));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(pump(&mut h, &left_button_released()));
+        assert!(h.chrome.borrow().editing_workspace_name.is_some());
+        assert!(pump_with_modifiers(
+            &mut h,
+            &key_pressed(Key::Character("a".into())),
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL)
+        ));
+        assert!(
+            h.host
+                .commit_into_chrome_field(&format!("Project {} final name", "W".repeat(38)))
+        );
+        let mut renderer = offscreen::OffscreenRenderer::new(width, height);
+        for state in ["end", "selected-home"] {
+            if state == "selected-home" {
+                assert!(pump_with_modifiers(
+                    &mut h,
+                    &key_pressed(Key::Named(NamedKey::Home)),
+                    winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
+                ));
+                assert_eq!(h.chrome.borrow().editing_workspace_name_selection.cursor, 0);
+                assert!(
+                    !h.chrome
+                        .borrow()
+                        .editing_workspace_name_selection
+                        .is_collapsed()
+                );
+            }
+            settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+            let scene = paint_scene(&mut h, &theme);
+            let path = out.join(format!("{label}-{state}.png"));
+            renderer.render_png(&scene, vello::peniko::Color::BLACK, &path);
+            let invite = h.host.workspace_settings_overlay.invite_rect();
+            let inset = 8.0 * f64::from(theme.ui_scale);
+            assert_workspace_control_label_pixels(
+                &path,
+                Rect::new(
+                    invite.x0 + inset,
+                    invite.y0 + inset,
+                    invite.x1 - inset,
+                    invite.y1 - inset,
+                ),
+                h.host.workspace_settings_overlay.general_body_rect(),
+                80,
+            );
+            let panel = h.host.workspace_settings_overlay.rect();
+            let mut footer_text = TextRenderer::new();
+            let (hint_width, hint_height) = footer_text.measure_style(
+                &desktop_text("workspace-settings-edit-hint"),
+                None,
+                &theme.text(TextRole::Caption),
+            );
+            let inset = f64::from(theme.tokens.spacing.s6);
+            let footer = Rect::new(
+                panel.x1 - inset - f64::from(hint_width),
+                panel.y1 - inset - f64::from(hint_height),
+                panel.x1 - inset,
+                panel.y1 - inset,
+            );
+            assert!(
+                h.host.workspace_settings_overlay.general_body_rect().y1
+                    + f64::from(theme.tokens.spacing.s2)
+                    <= footer.y0 + 0.01
+            );
+            assert_workspace_control_label_pixels(&path, footer, panel, 40);
+            assert!(std::fs::metadata(path).unwrap().len() > 1024);
+        }
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+        assert!(h.chrome.borrow().editing_workspace_name.is_none());
+    }
+}
+
+#[test]
+fn workspace_name_submit_ownership_ends_on_release_focus_loss_and_fresh_press() {
+    for reset in ["release", "focus-loss", "fresh-press"] {
+        let (mut h, _profile) = workspace_name_owner_harness(1280.0, 800.0);
+        h.chrome
+            .borrow_mut()
+            .open_workspace_settings(WsTab::General);
+        h.host.force_ws_settings_settled();
+        settle(&mut h, 1280.0, 800.0);
+        let point = h.host.workspace_settings_overlay.name_rect().center();
+        assert!(pump(&mut h, &cursor_moved_at(point)));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(pump(&mut h, &left_button_released()));
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+        let mut held = key_pressed(Key::Named(NamedKey::Enter));
+        if let WindowEvent::KeyboardInput { event, .. } = &mut held {
+            event.repeat = true;
+        }
+        assert!(pump(&mut h, &held));
+        assert!(h.log.borrow().is_empty());
+        match reset {
+            "release" => {
+                assert!(pump(&mut h, &key_released(Key::Named(NamedKey::Enter))));
+            }
+            "focus-loss" => {
+                let _ = pump(&mut h, &WindowEvent::Focused(false));
+                h.log.borrow_mut().clear();
+            }
+            _ => {}
+        }
+        assert!(!pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+        assert_eq!(
+            h.log.borrow().as_slice(),
+            ["Other"],
+            "a fresh key still reaches app content beside the contextual lens"
+        );
+        assert!(h.chrome.borrow().overlays.ws_settings);
+    }
+}

@@ -3375,6 +3375,83 @@ mod task_review_tests {
         (tree, pane, host)
     }
     #[test]
+    fn header_title_uses_current_viewport_and_scope_on_the_first_frame() {
+        for theme in [
+            Theme::light(),
+            Theme::dark(),
+            Theme::high_contrast().with_text_scale(2.0),
+        ] {
+            let (_, mut pane, _) = review_fixture();
+            pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
+            paint_header_fixture(&mut pane, &Theme::light());
+            for (width, height) in [(1600.0, 900.0), (560.0, 560.0), (1600.0, 900.0)] {
+                pane.layout_window(Rect::new(0.0, 0.0, width, height));
+                paint_header_fixture(&mut pane, &theme);
+                assert_eq!(
+                    *pane.painted_title.borrow(),
+                    t("activity-title-tasks"),
+                    "the first frame after move/resize/scale change must retain orientation"
+                );
+                let first = pane.painted_title.borrow().clone();
+                paint_header_fixture(&mut pane, &theme);
+                assert_eq!(*pane.painted_title.borrow(), first);
+            }
+            pane.set_view(ActivityView::CatchUp);
+            paint_header_fixture(&mut pane, &theme);
+            assert!(pane.scope_rects.is_empty());
+            assert_eq!(*pane.painted_title.borrow(), t("activity-title-catch-up"));
+        }
+    }
+
+    fn paint_header_fixture(pane: &mut RoomActivityPane, theme: &Theme) -> Scene {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        scene
+    }
+
+    #[test]
+    fn activity_header_render_matrix() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/activity-header-renders");
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
+                let (mut tree, mut pane, host) = review_fixture();
+                host.snapshot.borrow_mut().sampled_at_secs = i64::try_from(
+                    SystemTime::now()
+                        .duration_since(ui::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                )
+                .unwrap();
+                pane.refresh(&mut tree);
+                pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
+                paint_header_fixture(&mut pane, &Theme::light());
+                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+                let scene = paint_header_fixture(&mut pane, &theme);
+                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
+                renderer.render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{name}-{size}.png")),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn review_retry_is_offered_for_waiting_tasks_only() {
         let (mut tree, mut pane, host) = review_fixture();
         let id = pane.selected_task.clone().unwrap();

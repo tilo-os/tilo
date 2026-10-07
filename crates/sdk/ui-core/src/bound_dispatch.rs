@@ -1932,7 +1932,7 @@ pub(crate) fn execute_resource_operation(
         let before = applied
             .as_ref()
             .map(|envelope| envelope.base_change_hashes());
-        if let Some(envelope) = applied {
+        if let Some(envelope) = applied.as_ref() {
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
             crate::history_mode::capability::document_action_applied(
@@ -1947,17 +1947,54 @@ pub(crate) fn execute_resource_operation(
             matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. }).then(|| {
                 // Submitted to another host, nothing here shows its effect.
                 before
+                    .as_ref()
                     .and_then(|before| {
                         let after = doc.get_heads();
-                        let changes = doc.diff(&before, &after);
+                        let changes = doc.diff(before, &after);
                         crate::resources::document_action_result(&*widget, doc, address, &changes)
                     })
                     .unwrap_or(serde_json::Value::Null)
             });
-        crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+        let output = tilo_actions::ActionOutput {
             value,
             ..tilo_actions::ActionOutput::default()
-        })
+        };
+        if !matches!(
+            spec.contract.execution,
+            tilo_actions::ExecutionMode::Immediate
+        ) && let Some(envelope) = applied.as_ref()
+            && let Some(effects) = crate::widget::capability::capability_mut::<
+                dyn crate::widget::document_effects::DocumentEffects,
+            >(widget)
+        {
+            let operation = match scope {
+                Some(scope) => crate::widget::ResourceOperation::scoped(
+                    scope,
+                    tilo_actions::OperationKind::Document,
+                    &envelope.action.type_id,
+                    &envelope.action.payload,
+                ),
+                None => crate::widget::ResourceOperation::local(
+                    source_invocation.unwrap_or(invocation),
+                    tilo_actions::OperationKind::Document,
+                    &envelope.action.type_id,
+                    &envelope.action.payload,
+                ),
+            };
+            let before = envelope.base_change_hashes();
+            let applied = crate::widget::document_effects::AppliedDocument {
+                invocation,
+                before: &before,
+                document: doc,
+                output: output.clone(),
+            };
+            effects
+                .start_document_effects(&operation, &applied)
+                .map_err(tilo_actions::DoorError::Failed)?
+                .unwrap_or(crate::widget::ResourceOperationStart::Completed(output))
+        } else {
+            crate::widget::ResourceOperationStart::Completed(output)
+        }
     } else if let Some(readers) =
         crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
     {
@@ -3432,6 +3469,24 @@ impl CallbackBinding {
         request: crate::undo::UndoRequest,
     ) -> Result<Option<crate::state::UndoEntry>, BoundDispatchError> {
         self.history_request_with_registry(outer, request, None)
+    }
+
+    /// Outside changes need a new admitted history invocation: a local
+    /// stack inversion has no current broker caller for its consequence.
+    pub(crate) fn history_uses_compensation(
+        &self,
+        outer: &mut AutoCommit,
+    ) -> Result<bool, BoundDispatchError> {
+        self.with_record_frame(outer, false, |doc, _| {
+            tilo_resource::history::committed_versions(doc)
+                .iter()
+                .any(|version| {
+                    version
+                        .context
+                        .as_ref()
+                        .is_some_and(|context| context.compensation.is_some())
+                })
+        })
     }
 
     pub(crate) fn history_request_with_registry(
