@@ -1386,6 +1386,7 @@ mod tests {
     }
 
     struct ImportOfferHost {
+        registry: String,
         expected: app_host::install::InstallExpectation,
         installs: Arc<AtomicUsize>,
     }
@@ -1397,7 +1398,10 @@ mod tests {
             mut results: app_host::app_host_capnp::app_host::InstallOfferResults,
         ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
             let params = params.get().unwrap();
-            assert_eq!(params.get_registry().unwrap(), "Independent registry");
+            assert_eq!(
+                params.get_registry().unwrap().to_str().unwrap(),
+                self.registry
+            );
             assert_eq!(
                 params.get_app_id().unwrap().to_str().unwrap(),
                 self.expected.app_id
@@ -1423,12 +1427,21 @@ mod tests {
 
     #[test]
     fn package_import_worker_reviews_before_exact_owned_offer_install() {
+        check_import_worker(crate::package_import::tests::signed_fixture());
+    }
+
+    #[test]
+    fn package_import_published_worker_preserves_verified_offer_install_route() {
+        check_import_worker(crate::package_import::tests::published_fixture());
+    }
+
+    fn check_import_worker((bytes, item): (Vec<u8>, StoreItem)) {
         use super::*;
-        let (bytes, item) = crate::package_import::tests::signed_fixture();
         let reviewed =
             crate::package_import::review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
         let installs = Arc::new(AtomicUsize::new(0));
         let (service, connection) = app_host::testing::ConnectedService::start(ImportOfferHost {
+            registry: reviewed.registry.clone(),
             expected: reviewed.expected.clone(),
             installs: installs.clone(),
         })
