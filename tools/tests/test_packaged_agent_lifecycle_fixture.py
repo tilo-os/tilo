@@ -33,7 +33,9 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 private + "\n"
                 + "DEBUG tilo_agent_delivery: native-delivery:sign:in_flight\n"
                 + "WARN unrelated raw error details\n"
-                + "DEBUG tilo_agent_delivery: native-delivery:sign:definitive_refusal\n"
+                + "\x1b[2m2026-10-06T12:00:00Z\x1b[0m "
+                + "\x1b[34mDEBUG\x1b[0m \x1b[35mtilo_agent_delivery\x1b[0m: "
+                + "native-delivery:sign:definitive_refusal\x1b[0m\n"
             )
             result = PROOF.native_delivery_diagnostic(profile)
             self.assertEqual(result, {

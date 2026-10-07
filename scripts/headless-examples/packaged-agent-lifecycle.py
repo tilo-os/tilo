@@ -1829,14 +1829,14 @@ def native_delivery_diagnostic(profile):
         stream.seek(max(0, length - 256 * 1024))
         tail = stream.read(256 * 1024).decode(errors="replace")
     observed = []
+    ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
     marker = re.compile(
-        r"^(?:\x1b\[[0-9;]*m)*\s*"
+        r"^\s*"
         r"(?:\d{4}-\d\d-\d\dT\S+\s+)?DEBUG\s+tilo_agent_delivery:\s+"
-        r"native-delivery:([a-z_]+):([a-z_]+)\s*"
-        r"(?:\x1b\[[0-9;]*m)*$"
+        r"native-delivery:([a-z_]+):([a-z_]+)\s*$"
     )
     for line in tail.splitlines()[-4096:]:
-        matched = marker.fullmatch(line)
+        matched = marker.fullmatch(ansi.sub("", line))
         if matched is None:
             continue
         stage, outcome = matched.groups()
