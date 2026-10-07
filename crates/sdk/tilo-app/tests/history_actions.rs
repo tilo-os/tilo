@@ -418,3 +418,59 @@ fn render_shows_a_past_version() {
     let unknown = refusal(app.call("render", json!({"version": "abcdef12"})));
     assert!(unknown.contains("version"), "{unknown}");
 }
+
+#[test]
+fn undo_author_selector_rejects_invalid_or_ambiguous_requests_without_mutation() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.call("add", json!({"text": "keep"})).unwrap();
+    for args in [
+        json!({"by": ""}),
+        json!({"by": " \n "}),
+        json!({"by": "author\u{0000}"}),
+        json!({"by": "a".repeat(513)}),
+        json!({"by": "agent:one", "run": "run:one"}),
+    ] {
+        assert!(app.call("undo", args).is_err());
+        assert_eq!(cards(&app), ["keep"]);
+    }
+}
+
+#[test]
+fn undo_named_author_preserves_other_authors_and_attributes_the_undo_to_its_caller() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    for (actor, text) in [
+        ("agent:clipboard-helper", "agent card"),
+        ("person:owner", "person card"),
+    ] {
+        app.call_by(
+            tilo_actions::ActionInvoker::actor(actor),
+            "test.board",
+            "add",
+            json!({"text": text}),
+        )
+        .unwrap();
+    }
+    let listed = history(&mut app);
+    let author = listed["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["args"] == r#"{text:"agent card"}"#)
+        .and_then(|entry| entry["by"].as_str())
+        .expect("history publishes the exact invoker");
+    assert_eq!(author, "agent:clipboard-helper");
+    app.call_by(
+        tilo_actions::ActionInvoker::actor("person:owner"),
+        "test.board",
+        "undo",
+        json!({"by": author}),
+    )
+    .unwrap();
+    assert_eq!(cards(&app), ["person card"]);
+    let undo = newest(&mut app);
+    assert_eq!(undo["by"], "person:owner", "{undo}");
+    assert!(
+        undo["action"].as_str().unwrap().starts_with("Undo"),
+        "{undo}"
+    );
+}
