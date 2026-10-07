@@ -14,6 +14,43 @@ use crate::error::DaemonError;
 
 pub(crate) struct VerifiedCohort {
     pub(crate) version: String,
+    pub(crate) packages: Vec<CohortPackage>,
+}
+
+pub(crate) struct CohortPackage {
+    row: InstalledPackage,
+    archive: PathBuf,
+}
+
+fn archive(layer: &Path, row: &InstalledPackage, publisher: &str) -> Result<PathBuf, DaemonError> {
+    let store = layer.join("usr/share/tilo-apps");
+    let path = within(
+        &store,
+        &store.join("cohort").join(format!("{}.tapp", row.id)),
+    )?;
+    let metadata = fs::symlink_metadata(&path).map_err(invalid)?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(invalid("a cohort archive is not immutable root-owned data"));
+    }
+    let bytes = bounded(&path, tilo_app_package::MAX_APP_TAPP_BYTES)?;
+    let tapp = tilo_app_package::tapp::read(bytes.as_slice(), &mut tilo_app_package::DiscardBlobs)
+        .map_err(invalid)?;
+    let key: [u8; 32] = hex::decode(publisher)
+        .map_err(invalid)?
+        .try_into()
+        .map_err(|_| invalid("malformed cohort publisher"))?;
+    if tapp.meta.id.to_hex() != row.package_id_hex
+        || !matches!(
+            tilo_app_package::verify(&tapp.meta, &[key]),
+            tilo_app_package::Verification::Trusted { .. }
+        )
+        || !tapp.missing().is_empty()
+    {
+        return Err(invalid(
+            "cohort archive is not the complete authenticated package",
+        ));
+    }
+    Ok(path)
 }
 
 fn invalid(detail: impl std::fmt::Display) -> DaemonError {
@@ -325,9 +362,71 @@ pub(crate) fn verify(
         closure(&bundle, vec![loader], arch)?;
     }
     closure(&bundle, entries, arch)?;
+    let packages = rows
+        .entries()
+        .iter()
+        .map(|row| {
+            Ok(CohortPackage {
+                row: row.clone(),
+                archive: archive(layer, row, &app_key)?,
+            })
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
     Ok(VerifiedCohort {
         version: manifest.version,
+        packages,
     })
+}
+
+#[derive(serde::Deserialize)]
+struct SelectionReceipt {
+    id: String,
+    root: String,
+    runtime: String,
+    version: String,
+    preserved: bool,
+    pinned: bool,
+    held: bool,
+}
+
+pub(crate) fn select(
+    apply: &mut dyn crate::apply::Apply,
+    session: &crate::apply::Session,
+    cohort: &VerifiedCohort,
+) -> Result<Vec<tilo_vm_protocol::CohortSelection>, DaemonError> {
+    let mut selections = Vec::new();
+    for package in &cohort.packages {
+        let output = apply.install_cohort_app(session, &package.archive)?;
+        let receipts = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("cohort-selection: "))
+            .collect::<Vec<_>>();
+        let [encoded] = receipts.as_slice() else {
+            return Err(invalid(
+                "the installer did not produce one selection receipt",
+            ));
+        };
+        let receipt: SelectionReceipt = serde_json::from_str(encoded).map_err(invalid)?;
+        if receipt.id != package.row.id
+            || (receipt.preserved && !receipt.held)
+            || (!receipt.preserved
+                && (receipt.root != package.row.package_id_hex
+                    || receipt.version != package.row.version
+                    || receipt.runtime != package.row.runtime))
+        {
+            return Err(invalid(
+                "the installer did not select the authenticated cohort package",
+            ));
+        }
+        selections.push(tilo_vm_protocol::CohortSelection {
+            id: receipt.id,
+            root: receipt.root,
+            runtime: receipt.runtime,
+            preserved: receipt.preserved,
+            pinned: receipt.pinned,
+        });
+    }
+    Ok(selections)
 }
 
 #[cfg(test)]

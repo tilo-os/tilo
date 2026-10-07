@@ -6565,6 +6565,7 @@ mod tests {
             changed,
             policy,
             actions,
+            cohort_selection: Vec::new(),
             warnings: vec![],
             boot: None,
         }

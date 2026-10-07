@@ -161,6 +161,14 @@ type = "{entry_type}"
     manifest.publisher.identity = format!("ed25519:{publisher}");
     let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
     let store = layer.join("usr/share/tilo-apps");
+    let archives = store.join("cohort");
+    fs::create_dir_all(&archives).unwrap();
+    tilo_app_package::tapp::write(
+        fs::File::create(archives.join("so.tilo.fixture.tapp")).unwrap(),
+        &packed.meta,
+        Some(&packed),
+    )
+    .unwrap();
     let actual = store.join("payload/fixture");
     let record = store.join("packages/fixture");
     fs::create_dir_all(actual.join("bin")).unwrap();
@@ -238,6 +246,20 @@ fn fixture(root: &Path, case: &str) {
             )
             .unwrap();
         }
+        "archive_missing" => {
+            fs::remove_file(layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp")).unwrap();
+        }
+        "archive_corrupt" => fs::write(
+            layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp"),
+            b"corrupt",
+        )
+        .unwrap(),
+        "archive_escape" => {
+            let archive = layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp");
+            fs::remove_file(&archive).unwrap();
+            std::os::unix::fs::symlink(work.join("outside"), archive).unwrap();
+            fs::write(work.join("outside"), b"outside").unwrap();
+        }
         "record_escape" => {
             let path = layer.join("usr/share/tilo-apps/packages/fixture/manifest.toml");
             fs::remove_file(&path).unwrap();
@@ -272,6 +294,62 @@ fn verify_subject(root: &Path, case: &str) {
     if matches!(case, "valid" | "dual_isa" | "service" | "empty_isa") {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
+        if case == "valid" {
+            let session = crate::apply::Session {
+                slot: "device".into(),
+                unit: "session-3.scope".into(),
+                user: "owner".into(),
+                units: Vec::new(),
+                control_socket: PathBuf::from("/run/owner/control"),
+                stand_in: false,
+                login: None,
+            };
+            let row = &cohort.packages.first().unwrap().row;
+            for variant in ["selected", "wrong-root", "missing", "forged-held", "held"] {
+                let mut receipt = serde_json::json!({
+                    "id": row.id, "version": row.version, "root": row.package_id_hex,
+                    "runtime": row.runtime, "preserved": false, "pinned": true, "held": false,
+                });
+                match variant {
+                    "wrong-root" => receipt["root"] = "11".repeat(32).into(),
+                    "forged-held" => receipt["preserved"] = true.into(),
+                    "held" => {
+                        receipt["root"] = "22".repeat(32).into();
+                        receipt["preserved"] = true.into();
+                        receipt["held"] = true.into();
+                    }
+                    _ => {}
+                }
+                let output = if variant == "missing" {
+                    String::new()
+                } else {
+                    format!("cohort-selection: {receipt}\n")
+                };
+                let mut apply = crate::apply::RecordingApply::default();
+                apply.cohort_replies.push_back(output);
+                let selected = super::select(&mut apply, &session, &cohort);
+                if matches!(variant, "selected" | "held") {
+                    let actions = selected.unwrap();
+                    assert!(
+                        matches!(actions.as_slice(), [tilo_vm_protocol::CohortSelection { id, pinned: true, preserved, .. }]
+                        if id == &row.id && *preserved == (variant == "held"))
+                    );
+                } else {
+                    assert!(
+                        selected.is_err(),
+                        "{variant} must not acknowledge selection"
+                    );
+                }
+                assert_eq!(apply.calls.len(), 1);
+                assert!(
+                    apply
+                        .calls
+                        .first()
+                        .unwrap()
+                        .starts_with("install_cohort_app owner ")
+                );
+            }
+        }
         let mut provenance = tilo_vm_protocol::Provenance::local("apps+runtime");
         provenance.cargo_profile = Some("thin-app".into());
         provenance.cargo_lock_hash = Some("new graph".into());
@@ -334,6 +412,9 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         "executable",
         "escape",
         "record_escape",
+        "archive_missing",
+        "archive_corrupt",
+        "archive_escape",
     ] {
         let root = tempfile::tempdir().unwrap();
         fixture(root.path(), case);

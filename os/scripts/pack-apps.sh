@@ -250,6 +250,10 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         continue
     fi
 
+    if [ -n "${COHORT_TAPP_DIR:-}" ]; then
+        mkdir -p "$COHORT_TAPP_DIR"
+        cp "$tapp" "$COHORT_TAPP_DIR/$id.tapp"
+    fi
     if [ -n "${TAPP_OUT:-}" ]; then
         [ -n "${APP_DIR:-}" ] || die "TAPP_OUT requires a selected APP_DIR"
         cp "$tapp" "$TAPP_OUT"

@@ -208,6 +208,12 @@ pub trait Apply {
         session: &Session,
         tapp: &std::path::Path,
     ) -> Result<String, DaemonError>;
+    /// Select an authenticated development-cohort package, preserving holds.
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError>;
     /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
     /// or with `None` put the image's own kernel back (see [`crate::boot`]).
     /// Returns what the next boot starts, and warnings.
@@ -678,6 +684,8 @@ pub struct RecordingApply {
     /// Answers for the next `control` calls, in order; an echo of the
     /// arguments once they run out.
     pub control_replies: std::collections::VecDeque<ControlResult>,
+    /// Exact normal installer output for production cohort selection tests.
+    pub cohort_replies: std::collections::VecDeque<String>,
     /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
     /// Every call is copied here too, for a test that hands this to a daemon.
@@ -920,6 +928,23 @@ impl Apply for RecordingApply {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
+    }
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError> {
+        self.call(format!(
+            "install_cohort_app {} {}",
+            session.user,
+            tapp.display()
+        ));
+        self.cohort_replies
+            .pop_front()
+            .ok_or_else(|| DaemonError::Apply {
+                step: "select cohort app".into(),
+                detail: "no recorded installer receipt".into(),
+            })
     }
     fn boot_kernel(
         &mut self,

@@ -258,6 +258,7 @@ fn unchanged(record: SlotRecord) -> ApplyResult {
         changed: false,
         policy: Policy::NoRestart,
         actions: Vec::new(),
+        cohort_selection: Vec::new(),
         warnings: Vec::new(),
         boot: None,
     }
@@ -1207,6 +1208,7 @@ impl Daemon {
             changed: true,
             policy,
             actions,
+            cohort_selection: Vec::new(),
             warnings: Vec::new(),
             boot: None,
         })
@@ -1307,13 +1309,25 @@ impl Daemon {
         )?;
         let info = self.component_info(&record, component, info);
         apply::check_scope(&record, component, &info)?;
-        let Some((from, to)) = self.slots.prepare_swap(&record, component, layer, info)? else {
-            return Ok(ApplyResult {
-                warnings,
-                ..unchanged(record)
-            });
+        let mut result = match self.slots.prepare_swap(&record, component, layer, info)? {
+            Some((from, to)) => self.transition(&mut record, &from, &to)?,
+            None => unchanged(record),
         };
-        let mut result = self.transition(&mut record, &from, &to)?;
+        if let Some(cohort) = &cohort {
+            let (_, session) = self.user_slot(name)?;
+            result.cohort_selection.extend(crate::cohort::select(
+                self.apply.as_mut(),
+                &session,
+                cohort,
+            )?);
+            let uid = self.apply.account_uid(&session.user)?;
+            result
+                .actions
+                .extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
+            self.verify_parity(Some(session))?;
+            result.changed = true;
+            result.policy = Policy::SessionRestart;
+        }
         result.warnings.splice(0..0, warnings);
         Ok(result)
     }
@@ -1323,6 +1337,14 @@ impl Daemon {
         let (from, to) = self.slots.rollback_target(&record, target)?;
         if from.number == to.number {
             return Ok(unchanged(record));
+        }
+        if let Some(current) = from.components.get("apps+runtime")
+            && to.components.get("apps+runtime").map(|entry| &entry.layer) != Some(&current.layer)
+        {
+            return Err(DaemonError::InvalidParams(
+                "cannot roll back the selected apps+runtime cohort: user packages may require its SDK; \
+                 select a complete verified cohort instead (unrelated component rollbacks remain available)".into(),
+            ));
         }
         self.transition(&mut record, &from, &to)
     }
@@ -1395,6 +1417,7 @@ impl Daemon {
             changed: true,
             policy,
             actions,
+            cohort_selection: Vec::new(),
             warnings,
             boot,
         })
@@ -1658,6 +1681,62 @@ impl Daemon {
 mod tests {
     use super::*;
     use crate::apply::session_unit;
+
+    #[test]
+    fn cohort_rollback_refuses_before_changing_layers_but_keeps_unrelated_rollback() {
+        let root = tempfile::tempdir().unwrap();
+        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut apply = RecordingApply::with_login("quickuser");
+        apply.mirror = Some(mirror.clone());
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let first = "01".repeat(32);
+        let next = "02".repeat(32);
+        for hash in [&first, &next] {
+            fs::create_dir_all(root.path().join("layers").join(hash).join("usr/bin")).unwrap();
+        }
+        let cohort = daemon
+            .swap(
+                DEVICE_SLOT,
+                "apps+runtime",
+                &first,
+                Some(ComponentInfo::new(Scope::Session, Vec::new())),
+            )
+            .unwrap();
+        daemon
+            .swap(
+                DEVICE_SLOT,
+                "shell",
+                &next,
+                Some(ComponentInfo::new(Scope::Session, Vec::new())),
+            )
+            .unwrap();
+        daemon
+            .rollback(DEVICE_SLOT, Some(cohort.generation))
+            .unwrap();
+        let record = daemon.load_slot(DEVICE_SLOT).unwrap();
+        let calls = mirror.lock().unwrap().len();
+        let error = daemon.rollback(DEVICE_SLOT, Some(0)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("user packages may require its SDK")
+        );
+        assert_eq!(
+            mirror.lock().unwrap().len(),
+            calls,
+            "refusal must precede any layer side effect"
+        );
+        assert_eq!(
+            daemon.load_slot(DEVICE_SLOT).unwrap().current,
+            record.current
+        );
+    }
 
     /// Every connection's hello takes the keep-awake lease; `awake` holds it
     /// longer, reports it, and releases it, and the next hello takes it again.
