@@ -1,7 +1,6 @@
 pub mod actor;
 pub mod behaviour;
 pub mod decoder;
-pub mod device_topology;
 pub mod encoder;
 pub mod hub;
 pub mod identity;

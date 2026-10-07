@@ -1,49 +1,52 @@
 # Native multi-device continuity: first executable slice
 
-The first slice shares logical screen geometry between Displays and native input
-routing. It does not enable real-device input or enroll devices.
+The first slice shares logical screen geometry between Displays and the existing
+personal-device fabric. It does not enable real-device input or enroll devices.
 
 `ui::widget::display_arrangement` is the existing Displays canvas promoted into
 the shared toolkit. Dragging emits a supplied semantic move binding; accessibility
 names include display identity and logical placement. Device-qualified target keys
-can distinguish two devices that both report `eDP-1`. The existing Settings pane
-uses this shared control with its existing staged/confirmed output transactions.
-`settings_store::display_placement` is the common snapping, collision, and shared-edge
-geometry; dimensions are logical units after DPI scale and rotation.
+can distinguish two devices with the same connector name. Settings uses this
+shared control with its existing staged/confirmed output transactions.
+`settings_store::display_placement` supplies common snapping, collision and shared
+edge geometry. The existing fabric's `DisplayRect::logical_placement` validates
+logical extents and reuses that geometry for its boundary crossing. An offline
+source and malformed/overflowing bounds cannot produce a crossing.
 
-`network::device_topology::NativeScreenRouter` validates an observed topology and
-routes boundary crossing to an already-granted exact peer/content surface. It
-checks the actual shared edge intersection, finite coordinates, online state and
-current grant. Keyboard/button routing follows its ephemeral focus lease. Sensitive
-source focus cancels that lease. Revocation and every topology replacement cancel
-focus; reconnect does not resume typing automatically. The receiver must still
-call `State::apply_remote_input`, which enforces its existing share registry,
-lock, physical priority, visibility, focus, reserved chords, and rate limits.
-The router neither creates a grant nor substitutes for certified peer admission.
+The existing `DeviceFabric` owns self-authored screen placements and revision
+ordering; `device_fabric_runtime` owns target-issued input leases, revocation,
+expiry and disconnect cleanup. `permits_spatial_input` factors the existing
+retained-lease gate out of its inbound action handler for direct verification.
+It checks the exact controller, target, nonce, expiry and input capabilities.
+The native keycode injector now converts Linux evdev to XKB on both press and
+release; keysym lookup returns evdev so the same conversion is applied exactly
+once. No second router, permission registry, transport or privileged service is
+added.
 
-The `peer_sync_test::native_screen_crossing_reaches_the_two_peer_seat_without_video`
-fixture uses two real Iroh endpoints with in-memory certificates from one synthetic
-user root, exact synthetic surface grants, postcard
-input serialization, the production transport and the receiving Wayland seat.
-Its two screens have different logical sizes, share the same connector name, and
-represent 2x DPI panels. It checks actual pointer motion, no-grant denial,
-sensitive-source suppression, read-only revocation, receiver lock, offline and
-reconnect focus cancellation. It emits no video stream. This is a headless source
-fixture, not evidence of a real desktop-to-desktop handoff.
+The two-peer fixture uses the existing personal-fabric ALPN over real Iroh
+endpoints, in-memory certificates from one synthetic user root, production
+checkpoint encoding/decoding, input-envelope validation, the runtime's lease gate,
+and `State::apply_personal_fabric_input`. Both peers exchange their own snapshots
+and converge on identical logical topology. The fixture verifies native pointer
+motion and keyboard pressed state, controller-specific held-key release, lock,
+kill switch, missing/wrong/revoked/expired leases, offline/reconnect, rearrangement
+and conflicting revisions. It needs no surface share or video stream. This is a
+headless source fixture, not evidence of a real desktop-to-desktop handoff.
 
 `tilo-ui --example native-displays` captures the same logical rectangles using
 production retained layout/rendering in dark, light and high-contrast themes.
-These device labels are explicitly synthetic example data, never seeded live
-Settings data.
+These labels are explicitly synthetic example data, never seeded live Settings
+content. Captures show the shared control rather than live peer discovery.
 
 ## State boundaries
 
+This slice verifies replication of the personal fabric's logical device topology.
 Existing workspace CRDTs replicate workspace structure and shared semantic app
-resource mutations. Local rendering remains on each machine. Caret, selection,
-scroll, view navigation, hardware modes/DPI and seat focus remain device-local;
-app resources decide which content state is shared. This slice does not claim
-that every process, private app credential, or ephemeral view is replicated.
-It adds no new app-state transport.
+resource mutations; each machine renders locally. Caret, selection, scroll, view
+navigation, hardware modes/DPI and seat focus remain device-local unless an app
+explicitly models them as shared resource state. Private credentials remain local.
+This slice does not prove complete native app-state replication or add a new
+app-state transport.
 
 Files already uses ACL-filtered predictive candidates, bounded predictive workers,
 single-flight hydration, verified byte-range fetching and the existing eviction
@@ -52,14 +55,15 @@ checks. No durable user resource is deleted by this slice.
 
 ## Pending usable integration
 
-The router is not yet wired into physical input dispatch. Authenticated native
-screen advertisements, peer-local surface targeting, topology persistence with
-concurrent edit resolution, an exact device/input consent UX, held-key release on
-handoff, source and destination sensitive-field observations, and live keyboard
-focus reconciliation are still required. Displays currently shows local attached
-outputs; the two-device example demonstrates the shared component, not live peer
-discovery. No real input permission, capture, pairing, device restart or privileged
-service has been added. Do not describe this slice as complete device continuity.
+Live Displays still enumerates local attached outputs. Showing and dragging
+certified peers there needs a host view of existing fabric placements, bindings
+to its existing placement actions, and connector-level treatment of multiple
+outputs per device. The existing native input lifecycle must be exercised with
+actual hosted app focus and sensitive-field observations, differing-DPI physical
+outputs, rearrangement during held input, disconnect/reconnect and concurrent
+app resource mutations. Those are pending integration rather than behaviors
+claimed by the synthetic captures. No real input permission, capture, pairing,
+device restart or security-setting change is performed by this slice.
 
 ## Focused runner verification
 
