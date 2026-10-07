@@ -89,6 +89,12 @@ impl AgentMessageProgressReader {
     pub fn progress(&self, original: uuid::Uuid) -> Option<&AgentMessagePublicProgress> {
         self.visible.get(&original)?.progress.as_ref()
     }
+
+    /// Whether an exact selected status read is already awaiting its reply.
+    #[must_use]
+    pub fn refresh_in_flight(&self) -> bool {
+        self.visible.values().any(|entry| entry.pending.is_some())
+    }
     pub fn unavailable(&self, original: uuid::Uuid) -> bool {
         self.visible
             .get(&original)
@@ -140,13 +146,20 @@ impl AgentMessageProgressReader {
 
     /// An explicit user refresh resets only read observation, never an effect,
     /// model turn, invocation identity, or retained truthful milestone.
-    pub fn request_refresh(&mut self) {
+    #[must_use]
+    pub fn request_refresh(&mut self) -> bool {
+        if self.refresh_in_flight() {
+            return false;
+        }
+        let queued_before = self.queued.len();
         for entry in self.visible.values_mut() {
             entry.first_request = None;
+            entry.last_request = None;
             entry.reads = 0;
             entry.suspended = false;
         }
         self.refresh();
+        self.queued.len() > queued_before
     }
 
     fn refresh_at(&mut self, now: Instant) {
@@ -361,8 +374,22 @@ mod tests {
             reader.progress(parent.0).unwrap().phase,
             AgentMessagePublicPhase::WaitingForReply
         );
-        reader.request_refresh();
-        reader.refresh_at(now + READ_INTERVAL + READ_INTERVAL);
+        assert!(reader.request_refresh());
+        let unchanged = reader
+            .visible
+            .get(&parent.0)
+            .map(|entry| (entry.first_request, entry.reads, entry.suspended));
+        assert!(!reader.request_refresh());
+        assert_eq!(reader.queued.len(), 1);
+        assert_eq!(
+            reader.visible.get(&parent.0).map(|entry| (
+                entry.first_request,
+                entry.reads,
+                entry.suspended
+            )),
+            unchanged,
+            "a refused duplicate explicit refresh leaves its observation window untouched"
+        );
         let id = request(&mut reader);
         respond(&mut reader, id, AgentMessagePublicPhase::Publishing, 1);
         assert_eq!(reader.progress(parent.0).unwrap().generation, 2);
@@ -389,8 +416,7 @@ mod tests {
                 "unknown never automatically issues another read"
             );
         }
-        reader.request_refresh();
-        reader.refresh_at(now + READ_TIMEOUT * 21);
+        assert!(reader.request_refresh());
         let id = request(&mut reader);
         respond(
             &mut reader,
@@ -428,8 +454,7 @@ mod tests {
             reader.progress(parent.0).unwrap().phase,
             AgentMessagePublicPhase::WaitingForReply
         );
-        reader.request_refresh();
-        reader.refresh_at(now + OBSERVATION_WINDOW + READ_INTERVAL);
+        assert!(reader.request_refresh());
         let id = request(&mut reader);
         respond(&mut reader, id, AgentMessagePublicPhase::Publishing, 2);
         assert!(!reader.unavailable(parent.0));

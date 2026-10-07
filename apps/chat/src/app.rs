@@ -94,6 +94,15 @@ struct AgentTaskPresentationControls {
     stop: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentMessageProgressPresentation {
+    original_invocation: uuid::Uuid,
+    request_row: String,
+    progress: Option<ui::agent_message_progress::AgentMessagePublicProgress>,
+    unavailable: bool,
+    refreshing_unavailable: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct AgentSubmission {
     pub(crate) text: String,
@@ -344,6 +353,8 @@ pub(crate) enum Hit {
     AgentTaskCenter(Option<Id>),
     /// Request cancellation of the exact selected active run.
     AgentStop,
+    /// Retry only the bounded public reply-status read for visible requests.
+    AgentMessageRefresh,
     /// Expand or collapse the factual action record on an Agent reply.
     AgentWorkToggle(Id),
     /// A voice-channel member chip in the sidebar — clicking joins the call.
@@ -442,6 +453,7 @@ impl Hit {
             Self::AgentTaskCenter(Some(id)) => format!("chat.agent-task-center:{id}"),
             Self::AgentTaskCenter(None) => "chat.agent-task-center".into(),
             Self::AgentStop => "chat.agent-stop".into(),
+            Self::AgentMessageRefresh => "chat.agent-message-refresh".into(),
             Self::AgentWorkToggle(id) => format!("chat.agent-work:{id}"),
             Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
             Self::CategoryToggle(id) => format!("chat.category-toggle:{id}"),
@@ -663,6 +675,10 @@ pub struct ChatApp {
     pub(crate) timeline_total_height: f64,
     pub(crate) scroll_content: f64,
     pub(crate) scroll_viewport: f64,
+    /// Message rows intersecting the last painted timeline viewport. Render
+    /// cache only; used to keep a committed parent milestone until its exact
+    /// canonical reply is actually visible.
+    pub(crate) visible_message_rows: HashSet<Id>,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
     pub(crate) revealed_range: Option<(Id, String, usize, usize)>,
@@ -782,10 +798,22 @@ pub struct ChatApp {
     pub(crate) agent_tasks:
         HashMap<(Id, Id), Rc<RefCell<ui::agent_task_frontier::AgentTaskFrontiers>>>,
     pub(crate) agent_task_actions: ui::remote_actions::RemoteActions,
+    /// One bounded owner-progress reader shared by the attached and detached
+    /// presentations. Only the parent pumps it; detached views render the same
+    /// authenticated milestones without opening duplicate read streams.
+    pub(crate) agent_message_progress:
+        Rc<RefCell<ui::agent_message_progress::AgentMessageProgressReader>>,
     /// Peer-local composer intent and unsettled exact submissions, keyed like
     /// the private rich draft. They never enter the Chat CRDT.
     pub(crate) agent_intents: ui::LocalState<HashMap<(Id, Id), AgentComposerIntent>>,
     pub(crate) agent_submissions: ui::LocalState<HashMap<(Id, Id), AgentSubmission>>,
+    /// Monotonic peer-local evidence that a composer intent entered its
+    /// authenticated asynchronous transport. This is UI acknowledgement,
+    /// never a durable owner-success claim.
+    pub(crate) agent_submission_acceptances: ui::LocalState<u64>,
+    /// Local acknowledgement that an explicit read-only status refresh was
+    /// queued. It never represents a reply, model turn or owner mutation.
+    pub(crate) agent_message_refresh_acceptances: ui::LocalState<u64>,
     pub(crate) agent_submission_errors: ui::LocalState<HashMap<(Id, Id), String>>,
     /// Peer-local disclosure state for durable Agent action records.
     pub(crate) agent_work_expanded: ui::LocalState<HashSet<Id>>,
@@ -997,6 +1025,7 @@ impl ChatApp {
             timeline_total_height: 0.0,
             scroll_content: 0.0,
             scroll_viewport: 0.0,
+            visible_message_rows: HashSet::new(),
             thread_open: Some("m_concept".into()),
             revealed_message: None,
             revealed_range: None,
@@ -1058,8 +1087,13 @@ impl ChatApp {
             direct_agent: None,
             agent_tasks: HashMap::new(),
             agent_task_actions: ui::remote_actions::RemoteActions::current(),
+            agent_message_progress: Rc::new(RefCell::new(
+                ui::agent_message_progress::AgentMessageProgressReader::default(),
+            )),
             agent_intents: ui::LocalState::new(HashMap::new()),
             agent_submissions: ui::LocalState::new(HashMap::new()),
+            agent_submission_acceptances: ui::LocalState::new(0),
+            agent_message_refresh_acceptances: ui::LocalState::new(0),
             agent_submission_errors: ui::LocalState::new(HashMap::new()),
             agent_work_expanded: ui::LocalState::new(HashSet::new()),
             agent_notice_in_empty_hero: false,
@@ -2153,8 +2187,11 @@ impl ChatApp {
         view.direct_agent = Some(agent.into());
         view.agent_tasks.clone_from(&parent.agent_tasks);
         view.agent_task_actions = parent.agent_task_actions.clone();
+        view.agent_message_progress = Rc::clone(&parent.agent_message_progress);
         view.agent_intents = parent.agent_intents.clone();
         view.agent_submissions = parent.agent_submissions.clone();
+        view.agent_submission_acceptances = parent.agent_submission_acceptances.clone();
+        view.agent_message_refresh_acceptances = parent.agent_message_refresh_acceptances.clone();
         view.agent_submission_errors = parent.agent_submission_errors.clone();
         view.agent_work_expanded = parent.agent_work_expanded.clone();
         view.conversation_surface = true;
@@ -2331,6 +2368,251 @@ impl ChatApp {
             self.canonical_dirty = true;
             self.request_relayout();
         }
+    }
+
+    fn agent_message_original(message: &Message) -> Option<uuid::Uuid> {
+        if !message.is_top_level()
+            || message.agent_intent != Some(crate::model::AgentIntent::Message)
+            || message.author.starts_with("agent:")
+        {
+            return None;
+        }
+        let encoded = message.id.strip_prefix("m_")?;
+        (encoded.len() == 32)
+            .then(|| uuid::Uuid::parse_str(encoded).ok())
+            .flatten()
+            .filter(|id| !id.is_nil())
+    }
+
+    fn presented_agent_message_original(&self, message: &Message) -> Option<uuid::Uuid> {
+        if self.active_ws != self.context_ws {
+            return None;
+        }
+        let agent = self.direct_agent.as_deref()?;
+        let channel = ChatDoc::agent_conversation_channel_id(&self.active_ws, agent);
+        if self.active_channel != channel || message.channel != channel {
+            return None;
+        }
+        Self::agent_message_original(message)
+    }
+
+    pub(crate) fn visible_agent_message_originals(&self) -> Vec<(uuid::Uuid, String)> {
+        const MAX_VISIBLE_ORIGINALS: usize = 32;
+        let relevant = |view: &Self| {
+            let Some(agent) = view.direct_agent.as_deref() else {
+                return Vec::new();
+            };
+            let canonical_author = format!("agent:{agent}");
+            let replied_parents = view
+                .messages
+                .iter()
+                .filter(|reply| {
+                    reply.channel == view.active_channel && reply.author == canonical_author
+                })
+                .filter_map(|reply| reply.parent.clone())
+                .collect::<HashSet<_>>();
+            let mut rows = view
+                .messages
+                .iter()
+                .rev()
+                .filter(|message| message.channel == view.active_channel)
+                .filter_map(|message| {
+                    let original = view.presented_agent_message_original(message)?;
+                    let replied = replied_parents.contains(&message.id);
+                    Some((replied, original, message.id.clone()))
+                })
+                .collect::<Vec<_>>();
+            // A new unanswered request must never be starved by old history.
+            // Answered rows remain demanded behind it until the owner supplies
+            // the exact committed reply correlation used by the UI/snapshot.
+            rows.sort_by_key(|(replied, ..)| *replied);
+            rows.into_iter()
+                .map(|(_, original, row)| (original, row))
+                .collect::<Vec<_>>()
+        };
+        let mut lanes = vec![relevant(self).into_iter()];
+        if !self.conversation_surface {
+            for surface in self.agent_surfaces.values() {
+                if !surface.is_closed()
+                    && surface
+                        .presentation(self.desktop_floating_bounds())
+                        .is_some()
+                {
+                    lanes.push(relevant(&surface.view).into_iter());
+                }
+            }
+        }
+        let mut originals = std::collections::BTreeMap::new();
+        while originals.len() < MAX_VISIBLE_ORIGINALS {
+            let mut advanced = false;
+            for lane in &mut lanes {
+                if originals.len() == MAX_VISIBLE_ORIGINALS {
+                    break;
+                }
+                if let Some((original, row)) = lane.next() {
+                    advanced = true;
+                    originals.entry(original).or_insert(row);
+                }
+            }
+            if !advanced {
+                break;
+            }
+        }
+        originals.into_iter().collect()
+    }
+
+    fn agent_message_progress_presentation(&self) -> Vec<AgentMessageProgressPresentation> {
+        let reader = self.agent_message_progress.borrow();
+        self.visible_agent_message_originals()
+            .into_iter()
+            .map(|(original, request_row)| AgentMessageProgressPresentation {
+                original_invocation: original,
+                request_row,
+                progress: reader.progress(original).cloned(),
+                unavailable: reader.unavailable(original),
+                refreshing_unavailable: reader.unavailable(original) && reader.refresh_in_flight(),
+            })
+            .collect()
+    }
+
+    fn agent_message_progress_snapshot(&self) -> Vec<serde_json::Value> {
+        self.agent_message_progress_presentation()
+            .into_iter()
+            .map(|entry| {
+                use ui::agent_message_progress::AgentMessagePublicPhase;
+                let (generation, phase, reply_row) = entry.progress.map_or_else(
+                    || (serde_json::Value::Null, serde_json::Value::Null, None),
+                    |progress| {
+                        let (phase, reply) = match progress.phase {
+                            AgentMessagePublicPhase::WaitingForReply => ("waiting_for_reply", None),
+                            AgentMessagePublicPhase::Publishing => ("publishing", None),
+                            AgentMessagePublicPhase::NeedsAttention(_) => ("needs_attention", None),
+                            AgentMessagePublicPhase::Committed { reply_row } => {
+                                ("committed", Some(reply_row))
+                            }
+                        };
+                        (
+                            serde_json::json!(progress.generation),
+                            serde_json::json!(phase),
+                            reply,
+                        )
+                    },
+                );
+                serde_json::json!({
+                    "original_invocation": entry.original_invocation,
+                    "request_row": entry.request_row,
+                    "generation": generation,
+                    "phase": phase,
+                    "unavailable": entry.unavailable,
+                    "reply_row": reply_row,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn poll_agent_message_progress(&mut self) {
+        if self.conversation_surface {
+            return;
+        }
+        let before = self.agent_message_progress_presentation();
+        let originals = self.visible_agent_message_originals();
+        let Some(room) = uuid::Uuid::parse_str(&self.context_ws)
+            .ok()
+            .filter(|room| !room.is_nil())
+        else {
+            self.agent_message_progress.borrow_mut().cancel();
+            if before != self.agent_message_progress_presentation() {
+                self.canonical_dirty = true;
+                self.request_relayout();
+            }
+            return;
+        };
+        let mut reader = self.agent_message_progress.borrow_mut();
+        if reader.set_visible(room, &originals).is_err() {
+            reader.cancel();
+            drop(reader);
+            if before != self.agent_message_progress_presentation() {
+                self.canonical_dirty = true;
+                self.request_relayout();
+            }
+            return;
+        }
+        reader.refresh();
+        drop(reader);
+        if before != self.agent_message_progress_presentation() {
+            self.canonical_dirty = true;
+            self.request_relayout();
+        }
+    }
+
+    pub(crate) fn agent_message_progress_label(&self, message: &Message) -> Option<String> {
+        self.agent_message_progress_label_for(message, true)
+    }
+
+    pub(crate) fn agent_message_progress_layout_label(&self, message: &Message) -> Option<String> {
+        self.agent_message_progress_label_for(message, false)
+    }
+
+    pub(crate) fn has_unavailable_agent_message_progress(&self) -> bool {
+        let reader = self.agent_message_progress.borrow();
+        self.visible_agent_message_originals()
+            .iter()
+            .any(|(original, _)| reader.unavailable(*original))
+    }
+
+    pub(crate) fn agent_message_refresh_in_flight(&self) -> bool {
+        self.agent_message_progress.borrow().refresh_in_flight()
+    }
+
+    fn agent_message_progress_label_for(
+        &self,
+        message: &Message,
+        hide_visible_committed: bool,
+    ) -> Option<String> {
+        let original = self.presented_agent_message_original(message)?;
+        let reader = self.agent_message_progress.borrow();
+        let Some(progress) = reader.progress(original) else {
+            return reader
+                .unavailable(original)
+                .then(|| crate::i18n::t("chat-agent-progress-unavailable-empty"));
+        };
+        if let ui::agent_message_progress::AgentMessagePublicPhase::Committed { reply_row } =
+            &progress.phase
+        {
+            let agent = self.direct_agent.as_deref()?;
+            let reply_is_visible = self.messages.iter().any(|reply| {
+                reply.channel == message.channel
+                    && reply.id == *reply_row
+                    && reply.parent.as_deref() == Some(message.id.as_str())
+                    && reply.author == format!("agent:{agent}")
+                    && self.visible_message_rows.contains(&reply.id)
+            });
+            if hide_visible_committed && reply_is_visible {
+                return None;
+            }
+        }
+        let label = match progress.phase {
+            ui::agent_message_progress::AgentMessagePublicPhase::WaitingForReply => {
+                crate::i18n::t("chat-agent-progress-waiting")
+            }
+            ui::agent_message_progress::AgentMessagePublicPhase::Publishing => {
+                crate::i18n::t("chat-agent-progress-publishing")
+            }
+            ui::agent_message_progress::AgentMessagePublicPhase::NeedsAttention(_) => {
+                crate::i18n::t("chat-agent-progress-needs-attention")
+            }
+            ui::agent_message_progress::AgentMessagePublicPhase::Committed { .. } => {
+                crate::i18n::t("chat-agent-progress-saved")
+            }
+        };
+        Some(if reader.unavailable(original) {
+            crate::i18n::t_args(
+                "chat-agent-progress-unavailable",
+                &[("status", label.into())],
+            )
+        } else {
+            label
+        })
     }
 
     fn agent_task_presentation(view: &Self) -> Option<AgentTaskPresentationSnapshot> {
@@ -3556,7 +3838,7 @@ impl ChatApp {
             if hero_notice {
                 status.receipt = None;
             }
-            choice + status.count() + 1
+            choice + status.count() + usize::from(self.has_unavailable_agent_message_progress()) + 1
         });
         let rows = rows.max(1);
         field
@@ -3958,6 +4240,11 @@ impl ChatApp {
                         false,
                     ),
                     Hit::AgentStop => ("Stop current task".into(), Role::Button, false),
+                    Hit::AgentMessageRefresh => (
+                        crate::i18n::t("chat-agent-progress-refresh"),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::AgentWorkToggle(message) => {
                         let expanded = self
                             .agent_work_expanded
@@ -4259,6 +4546,11 @@ impl Collaborative for ChatApp {
         let mut requests = std::mem::take(&mut self.realtime.requests);
         requests.extend(self.resource_navigation_requests());
         requests.extend(self.agent_task_actions.take_collab_requests());
+        requests.extend(
+            self.agent_message_progress
+                .borrow_mut()
+                .take_collab_requests(),
+        );
         let before = self.native_voice.snapshot.state;
         requests.extend(self.native_voice.take_requests(ui::time::now()));
         if before != self.native_voice.snapshot.state {
@@ -4268,6 +4560,14 @@ impl Collaborative for ChatApp {
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        let progress_before = self.agent_message_progress_presentation();
+        self.agent_message_progress
+            .borrow_mut()
+            .handle_collab_event(event);
+        if progress_before != self.agent_message_progress_presentation() {
+            self.canonical_dirty = true;
+            self.request_relayout();
+        }
         self.agent_task_actions.handle_collab_event(event);
         self.poll_agent_tasks();
         match event {
@@ -4736,10 +5036,29 @@ impl Widget for ChatApp {
                     "execution": execution,
                 })
             });
+        let message_submission = self.direct_agent.as_ref().and_then(|agent| {
+            let key = (self.active_ws.clone(), agent.clone());
+            let pending = self.agent_submissions.get();
+            let submission = pending.get(&key)?;
+            (submission.intent == AgentComposerIntent::Message).then(|| {
+                serde_json::json!({
+                    "draft_revision": submission.draft_revision,
+                    "current_revision": self
+                        .composer_main
+                        .private_revision_for(&key.0, &key.1),
+                    "draft_empty": self
+                        .composer_main
+                        .private_plain()
+                        .is_none_or(|draft| draft.is_empty()),
+                })
+            })
+        });
         Some(serde_json::json!({
             "app": "so.tilo.chat",
             "agent_task": current,
             "agent_task_presentation": Self::agent_task_snapshot(self),
+            "agent_message_progress": self.agent_message_progress_snapshot(),
+            "agent_message_submission": message_submission,
         }))
     }
 
@@ -4757,7 +5076,11 @@ impl Widget for ChatApp {
                 .min()
         });
         let receipts = messages.and_then(|_| self.agent_task_actions.next_observation_deadline());
-        [tasks, messages, receipts].into_iter().flatten().min()
+        let agent_messages = self.agent_message_progress.borrow().next_wake_deadline();
+        [tasks, messages, receipts, agent_messages]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
@@ -4927,6 +5250,7 @@ impl Widget for ChatApp {
             surface.view.reload(doc);
             surface.view.sync_composers(doc);
         }
+        self.poll_agent_message_progress();
         self.request_visible_images();
         // Native capture/transport belongs to the shell's lease-bound service.
     }
@@ -5310,16 +5634,20 @@ impl Widget for ChatApp {
                 let author = self
                     .user(&message.author)
                     .map_or("Unknown person", |user| user.name.as_str());
-                let node = AccessNode::new(Role::ListItem)
+                let mut node = AccessNode::new(Role::ListItem)
                     .with_name(format!("{author}: {}", message.text))
                     .with_hashed_key((&message.id, "message"));
+                let mut descriptions = Vec::new();
                 if let Some(work) = &message.work {
-                    node.with_description(crate::render_chat::agent_work_accessible_description(
-                        work,
-                    ))
-                } else {
-                    node
+                    descriptions.push(crate::render_chat::agent_work_accessible_description(work));
                 }
+                if let Some(progress) = self.agent_message_progress_label(message) {
+                    descriptions.push(progress);
+                }
+                if !descriptions.is_empty() {
+                    node = node.with_description(descriptions.join(". "));
+                }
+                node
             })
             .collect();
         let conversation = AccessNode::new(Role::List)
@@ -5508,10 +5836,21 @@ impl Widget for ChatApp {
         }
         let messages_before = matches!(hit, Hit::Send)
             .then(|| ChatDoc::list_messages(state, &self.active_channel).len());
+        let submission_before =
+            matches!(hit, Hit::Send).then(|| self.agent_submission_acceptances.get());
+        let refresh_before = matches!(hit, Hit::AgentMessageRefresh)
+            .then(|| self.agent_message_refresh_acceptances.get());
         self.on_hit(hit, state);
-        messages_before.is_none_or(|before| {
-            ChatDoc::list_messages(state, &self.active_channel).len() == before.saturating_add(1)
-        })
+        let send_accepted = messages_before.is_none_or(|before| {
+            if ChatDoc::list_messages(state, &self.active_channel).len() == before.saturating_add(1)
+            {
+                return true;
+            }
+            submission_before.is_some_and(|before| self.agent_submission_acceptances.get() > before)
+        });
+        send_accepted
+            && refresh_before
+                .is_none_or(|before| self.agent_message_refresh_acceptances.get() > before)
     }
 
     fn name(&self) -> &'static str {
@@ -5784,6 +6123,11 @@ impl ChatApp {
     /// still requests a clean relayout).
     pub(crate) fn request_relayout(&mut self) {
         self.relayout = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_relayout_request(&mut self) -> bool {
+        std::mem::take(&mut self.relayout)
     }
 }
 

@@ -954,6 +954,15 @@ impl ChatApp {
                         .stop();
                 }
             }
+            Hit::AgentMessageRefresh => {
+                if self.has_unavailable_agent_message_progress()
+                    && self.agent_message_progress.borrow_mut().request_refresh()
+                {
+                    self.agent_message_refresh_acceptances.update(|count| {
+                        *count = count.saturating_add(1);
+                    });
+                }
+            }
             Hit::AgentWorkToggle(message) => {
                 self.agent_work_expanded.update(|expanded| {
                     if !expanded.remove(&message) {
@@ -1659,6 +1668,8 @@ impl ChatApp {
                     },
                 );
             });
+            self.agent_submission_acceptances
+                .update(|accepted| *accepted = accepted.saturating_add(1));
             self.poll_agent_tasks();
             return;
         }
@@ -1684,6 +1695,8 @@ impl ChatApp {
                     },
                 );
             });
+            self.agent_submission_acceptances
+                .update(|accepted| *accepted = accepted.saturating_add(1));
             // A local test host, or an already-warm broker connection, may
             // settle synchronously. The same poll is harmless while the
             // durable owner receipt is still pending and never clears the
@@ -3210,7 +3223,14 @@ mod tests {
         );
         render_frame(&mut app, 1280.0, 800.0);
         type_str(&mut app, &mut doc, "Inspect the compact layout");
-        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        let send = Hit::Send.semantic_id();
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &send,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
         assert!(matches!(
             tasks.borrow().queue_state(),
             AgentQueueState::Queued { .. }
@@ -3240,7 +3260,13 @@ mod tests {
         );
         render_frame(&mut app, 1280.0, 800.0);
         type_str(&mut app, &mut doc, "Include keyboard evidence");
-        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &send,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
         assert!(matches!(
             tasks.borrow().direction_state(),
             AgentDirectionState::Saved { revision: 5, .. }
@@ -4663,6 +4689,642 @@ mod tests {
         ));
         assert_eq!(ChatDoc::top_level_count(&doc, "c_general"), before + 1);
         assert_eq!(ChatDoc::draft_text(&doc, "c_general"), "");
+
+        let mut direct_doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut direct_doc, "u_alice", "Alice", "AL");
+        let mut direct = peer("u_alice", "Alice", "AL", 0);
+        direct.room_agents.push("scribe".into());
+        direct.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::new(TaskControlHost::default()) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        direct.reload(&direct_doc);
+        direct.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut direct_doc),
+        );
+        type_str(&mut direct, &mut direct_doc, "Asynchronous message");
+        render_frame(&mut direct, 1280.0, 720.0);
+        let direct_send = Hit::Send.semantic_id();
+        assert!(ui::Widget::perform_semantic_action(
+            &mut direct,
+            &direct_send,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut direct_doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(direct.agent_submission_acceptances.get(), 1);
+        assert!(
+            !ui::Widget::perform_semantic_action(
+                &mut direct,
+                &direct_send,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut direct_doc),
+                &automerge::ROOT,
+            ),
+            "a busy exact submission is declined rather than inviting an AT retry duplicate"
+        );
+        assert_eq!(direct.agent_submission_acceptances.get(), 1);
+    }
+
+    fn write_progress_shots(app: &mut ChatApp, state: &str) {
+        let Some(output) = std::env::var_os("TILO_CHAT_PROGRESS_SHOTS") else {
+            return;
+        };
+        let output = std::path::PathBuf::from(output);
+        std::fs::create_dir_all(&output).unwrap();
+        for (size, width, height) in [("normal", 1600_u32, 900_u32), ("compact", 960, 720)] {
+            for (name, theme) in [
+                ("light", ui::theme::Theme::light()),
+                ("dark", ui::theme::Theme::dark()),
+                (
+                    "high-contrast-200",
+                    ui::theme::Theme::high_contrast().with_text_scale(2.0),
+                ),
+            ] {
+                app.rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+                let mut scene = vello::Scene::new();
+                let mut text = ui::text_render::TextRenderer::new();
+                text.set_text_scale(theme.text_scale);
+                app.draw(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &ui::presence::PresenceCtx::empty(),
+                );
+                ui::offscreen::OffscreenRenderer::new(width, height).render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{state}-{size}-{name}.png")),
+                );
+            }
+        }
+    }
+
+    fn has_progress(node: &ui::a11y::AccessNode) -> bool {
+        node.description
+            .as_deref()
+            .is_some_and(|description| description.contains("Waiting for reply"))
+            || node.children.iter().any(has_progress)
+    }
+
+    struct ProgressFixture {
+        doc: AutoCommit,
+        app: ChatApp,
+        request_row: String,
+        channel: String,
+        fixture_ts: i64,
+        reply_row: &'static str,
+    }
+
+    fn progress_fixture_waiting() -> ProgressFixture {
+        use ui::widget::Collaborative as _;
+
+        let mut doc = AutoCommit::new();
+        let room = "12345678-1234-1234-1234-123456789abc";
+        ChatDoc::seed_workspace(&mut doc, room, "Fixture room", "u_alice", "Alice", "AL", 0)
+            .unwrap();
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        let original = uuid::Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        let request_row = format!("m_{}", original.simple());
+        let fixture_ts = 1_791_244_800;
+        assert!(ChatDoc::post_agent_message(
+            &mut doc,
+            room,
+            "scribe",
+            &request_row,
+            NewMessage {
+                author: "u_alice".into(),
+                ts: fixture_ts,
+                text: "Known fixture request".into(),
+                agent_intent: Some(model::AgentIntent::Message),
+                ..Default::default()
+            },
+        ));
+        app.reload(&doc);
+        app.active_ws = room.into();
+        app.context_ws = room.into();
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(
+            app.visible_agent_message_originals(),
+            vec![(original, request_row.clone())],
+            "the canonical direct request is selected before opening owner demand"
+        );
+        app.poll_agent_message_progress();
+        let request_id = app
+            .agent_message_progress
+            .borrow_mut()
+            .take_collab_requests()
+            .into_iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::ReadAgentMessageProgress {
+                    request_id,
+                    invocation,
+                    request_row: row,
+                    ..
+                } if invocation == original.to_string() && row == request_row => Some(request_id),
+                _ => None,
+            })
+            .expect("the mounted direct conversation requests public owner progress");
+        write_progress_shots(&mut app, "before");
+        app.handle_collab_event(&ui::collaboration::CollabEvent::AgentMessageProgress {
+            request_id,
+            result: Ok(Some(
+                ui::agent_message_progress::AgentMessagePublicProgress {
+                    generation: 4,
+                    phase: ui::agent_message_progress::AgentMessagePublicPhase::WaitingForReply,
+                },
+            )),
+        });
+        let request = app
+            .messages
+            .iter()
+            .find(|message| message.id == request_row)
+            .expect("canonical request row");
+        assert_eq!(
+            app.agent_message_progress_label(request).as_deref(),
+            Some("Waiting for reply")
+        );
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(
+            has_progress(&ui::Widget::accessibility(&app).expect("Chat accessibility tree")),
+            "the painted milestone is exposed through the mounted Chat accessibility tree"
+        );
+        write_progress_shots(&mut app, "waiting");
+        let snapshot = ui::Widget::native_input_snapshot(&app, &doc, &automerge::ROOT)
+            .expect("sanitized Chat snapshot");
+        assert_eq!(snapshot["agent_message_progress"][0]["generation"], 4);
+        assert_eq!(
+            snapshot["agent_message_progress"][0]["phase"],
+            "waiting_for_reply"
+        );
+        assert!(snapshot["agent_message_progress"][0].get("text").is_none());
+
+        ProgressFixture {
+            doc,
+            app,
+            request_row,
+            channel: ChatDoc::agent_conversation_channel_id(room, "scribe"),
+            fixture_ts,
+            reply_row: "m_11111111111111111111111111111111",
+        }
+    }
+
+    fn progress_fixture_unavailable(fixture: ProgressFixture) -> ProgressFixture {
+        use ui::widget::Collaborative as _;
+
+        let ProgressFixture {
+            mut doc,
+            mut app,
+            request_row,
+            channel,
+            fixture_ts,
+            reply_row,
+        } = fixture;
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let surface = app
+            .agent_surfaces
+            .get(&channel)
+            .expect("detached conversation shares the mounted reader");
+        let detached_request = surface
+            .view
+            .messages
+            .iter()
+            .find(|message| message.id == request_row)
+            .expect("detached canonical request row");
+        assert_eq!(
+            surface
+                .view
+                .agent_message_progress_label(detached_request)
+                .as_deref(),
+            Some("Waiting for reply")
+        );
+        let _ = surface
+            .view
+            .agent_message_progress
+            .borrow_mut()
+            .request_refresh();
+        let unavailable_id = surface
+            .view
+            .agent_message_progress
+            .borrow_mut()
+            .take_collab_requests()
+            .into_iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::ReadAgentMessageProgress {
+                    request_id, ..
+                } => Some(request_id),
+                _ => None,
+            })
+            .expect("explicit refresh uses the same shared reader");
+        surface
+            .view
+            .agent_message_progress
+            .borrow_mut()
+            .handle_collab_event(&ui::collaboration::CollabEvent::AgentMessageProgress {
+                request_id: unavailable_id,
+                result: Err("bounded fixture outage".into()),
+            });
+        assert_eq!(
+            surface
+                .view
+                .agent_message_progress_label(detached_request)
+                .as_deref(),
+            Some("Last confirmed: Waiting for reply. Status unavailable."),
+            "an unavailable refresh labels the retained milestone as historical"
+        );
+        write_progress_shots(
+            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
+            "unavailable-detached",
+        );
+
+        ProgressFixture {
+            doc,
+            app,
+            request_row,
+            channel,
+            fixture_ts,
+            reply_row,
+        }
+    }
+
+    fn progress_fixture_refresh_singleflight(fixture: ProgressFixture) -> ProgressFixture {
+        use ui::widget::Collaborative as _;
+
+        let ProgressFixture {
+            mut doc,
+            mut app,
+            request_row,
+            channel,
+            fixture_ts,
+            reply_row,
+        } = fixture;
+        render_detached_surfaces(&mut app);
+        let refresh = Hit::AgentMessageRefresh.semantic_id();
+        let surface = app
+            .agent_surfaces
+            .get_mut(&channel)
+            .expect("detached conversation remains presented");
+        assert!(ui::Widget::perform_semantic_action(
+            &mut *surface.view,
+            &refresh,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(
+            !ui::Widget::perform_semantic_action(
+                &mut *surface.view,
+                &refresh,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ),
+            "a pending read-only refresh is single-flight"
+        );
+        let failed_refresh_id = app
+            .agent_message_progress
+            .borrow_mut()
+            .take_collab_requests()
+            .into_iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::ReadAgentMessageProgress {
+                    request_id, ..
+                } => Some(request_id),
+                _ => None,
+            })
+            .expect("explicit public progress refresh");
+        app.handle_collab_event(&ui::collaboration::CollabEvent::AgentMessageProgress {
+            request_id: failed_refresh_id,
+            result: Err("bounded fixture outage again".into()),
+        });
+
+        ProgressFixture {
+            doc,
+            app,
+            request_row,
+            channel,
+            fixture_ts,
+            reply_row,
+        }
+    }
+
+    fn progress_fixture_committed(fixture: ProgressFixture) -> ProgressFixture {
+        use ui::widget::Collaborative as _;
+
+        let ProgressFixture {
+            mut doc,
+            mut app,
+            request_row,
+            channel,
+            fixture_ts,
+            reply_row,
+        } = fixture;
+        render_detached_surfaces(&mut app);
+        let refresh = Hit::AgentMessageRefresh.semantic_id();
+        let surface = app
+            .agent_surfaces
+            .get_mut(&channel)
+            .expect("detached conversation remains presented after the failed refresh");
+        assert!(
+            surface
+                .view
+                .semantic_hits()
+                .iter()
+                .any(|(_, hit, name, _, _)| {
+                    matches!(hit, Hit::AgentMessageRefresh) && name == "Refresh reply status"
+                }),
+            "the same unavailable result repaints the refresh control as enabled"
+        );
+        assert!(ui::Widget::perform_semantic_action(
+            &mut *surface.view,
+            &refresh,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        let committed_id = app
+            .agent_message_progress
+            .borrow_mut()
+            .take_collab_requests()
+            .into_iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::ReadAgentMessageProgress {
+                    request_id, ..
+                } => Some(request_id),
+                _ => None,
+            })
+            .expect("reenabled user refresh opens one new bounded read");
+        app.handle_collab_event(&ui::collaboration::CollabEvent::AgentMessageProgress {
+            request_id: committed_id,
+            result: Ok(Some(
+                ui::agent_message_progress::AgentMessagePublicProgress {
+                    generation: 5,
+                    phase: ui::agent_message_progress::AgentMessagePublicPhase::Committed {
+                        reply_row: reply_row.into(),
+                    },
+                },
+            )),
+        });
+        let surface = &app.agent_surfaces[&channel];
+        let request = surface
+            .view
+            .messages
+            .iter()
+            .find(|message| message.id == request_row)
+            .expect("detached request before reply");
+        assert_eq!(
+            surface
+                .view
+                .agent_message_progress_label(request)
+                .as_deref(),
+            Some("Reply saved; waiting for conversation"),
+            "a committed owner receipt does not claim that an unpainted reply is visible"
+        );
+        write_progress_shots(
+            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
+            "committed-detached",
+        );
+        let committed = ui::Widget::native_input_snapshot(&app, &doc, &automerge::ROOT)
+            .expect("committed sanitized Chat snapshot");
+        assert_eq!(committed["agent_message_progress"][0]["phase"], "committed");
+        assert_eq!(
+            committed["agent_message_progress"][0]["reply_row"],
+            reply_row
+        );
+
+        ProgressFixture {
+            doc,
+            app,
+            request_row,
+            channel,
+            fixture_ts,
+            reply_row,
+        }
+    }
+
+    fn progress_fixture_reply_visible(fixture: ProgressFixture) {
+        let ProgressFixture {
+            mut doc,
+            mut app,
+            request_row,
+            channel,
+            fixture_ts,
+            reply_row,
+        } = fixture;
+        assert!(ChatDoc::reply_agent_message(
+            &mut doc,
+            &channel,
+            &request_row,
+            reply_row,
+            fixture_ts + 1,
+            "Known fixture reply",
+            &[],
+            "agent:scribe",
+        ));
+        app.reload(&doc);
+        app.agent_surfaces
+            .get_mut(&channel)
+            .unwrap()
+            .view
+            .reload(&doc);
+        let surface = &app.agent_surfaces[&channel];
+        let request = surface
+            .view
+            .messages
+            .iter()
+            .find(|message| message.id == request_row)
+            .expect("request before reply paint");
+        assert_eq!(
+            surface
+                .view
+                .agent_message_progress_label(request)
+                .as_deref(),
+            Some("Reply saved; waiting for conversation")
+        );
+        render_frame(
+            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
+            720.0,
+            640.0,
+        );
+        let surface = &app.agent_surfaces[&channel];
+        let request = surface
+            .view
+            .messages
+            .iter()
+            .find(|message| message.id == request_row)
+            .expect("painted request");
+        assert_eq!(surface.view.agent_message_progress_label(request), None);
+        write_progress_shots(
+            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
+            "reply-visible-detached",
+        );
+        render_frame_with_theme(
+            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
+            720.0,
+            640.0,
+            &ui::theme::Theme::high_contrast().with_text_scale(2.0),
+        );
+        let visible = app.agent_surfaces[&channel]
+            .view
+            .visible_message_rows
+            .clone();
+        let height = app.agent_surfaces[&channel].view.scroll_content;
+        render_frame_with_theme(
+            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
+            720.0,
+            640.0,
+            &ui::theme::Theme::high_contrast().with_text_scale(2.0),
+        );
+        let surface = &app.agent_surfaces[&channel];
+        assert_eq!(surface.view.visible_message_rows, visible);
+        assert_eq!(surface.view.scroll_content, height);
+        assert!(
+            !visible.contains(reply_row),
+            "the HC200 boundary fixture keeps the reply clipped rather than treating it as visible"
+        );
+        let request = surface
+            .view
+            .messages
+            .iter()
+            .find(|message| message.id == request_row)
+            .unwrap();
+        assert_eq!(
+            surface
+                .view
+                .agent_message_progress_label(request)
+                .as_deref(),
+            Some("Reply saved; waiting for conversation"),
+            "a clipped reply retains the saved caption without changing row geometry"
+        );
+    }
+
+    #[test]
+    fn mounted_agent_progress_is_shared_with_detached_view_and_hides_after_exact_reply() {
+        let fixture = progress_fixture_waiting();
+        let fixture = progress_fixture_unavailable(fixture);
+        let fixture = progress_fixture_refresh_singleflight(fixture);
+        let fixture = progress_fixture_committed(fixture);
+        progress_fixture_reply_visible(fixture);
+    }
+
+    fn agent_progress_history_fixture() -> (AutoCommit, uuid::Uuid) {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut newest = uuid::Uuid::nil();
+        for index in 1..=35_u128 {
+            let invocation = uuid::Uuid::from_u128(index);
+            let row = format!("m_{}", invocation.simple());
+            assert!(ChatDoc::post_agent_message(
+                &mut doc,
+                "ws_home",
+                "scribe",
+                &row,
+                NewMessage {
+                    author: "u_alice".into(),
+                    ts: index as i64,
+                    text: "Known fixture request".into(),
+                    agent_intent: Some(model::AgentIntent::Message),
+                    ..Default::default()
+                },
+            ));
+            if index < 35 {
+                assert!(ChatDoc::reply_agent_message(
+                    &mut doc,
+                    &ChatDoc::agent_conversation_channel_id("ws_home", "scribe"),
+                    &row,
+                    &format!("m_{:032x}", 1000 + index),
+                    index as i64,
+                    "Known fixture reply",
+                    &[],
+                    "agent:scribe",
+                ));
+            } else {
+                newest = invocation;
+            }
+        }
+        (doc, newest)
+    }
+
+    #[test]
+    fn agent_progress_bounds_answered_history_without_starving_new_request() {
+        use ui::widget::Collaborative as _;
+
+        let (mut doc, newest) = agent_progress_history_fixture();
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        let visible = app.visible_agent_message_originals();
+        assert_eq!(visible.len(), 32);
+        assert!(
+            visible.iter().any(|(invocation, _)| *invocation == newest),
+            "the newest unanswered request outranks answered history"
+        );
+        let newest_row = format!("m_{}", newest.simple());
+        app.agent_message_progress
+            .borrow_mut()
+            .set_visible(uuid::Uuid::from_u128(99), &[(newest, newest_row.clone())])
+            .unwrap();
+        app.agent_message_progress.borrow_mut().refresh();
+        let unavailable_id = app
+            .agent_message_progress
+            .borrow_mut()
+            .take_collab_requests()
+            .into_iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::ReadAgentMessageProgress {
+                    request_id, ..
+                } => Some(request_id),
+                _ => None,
+            })
+            .unwrap();
+        app.agent_message_progress.borrow_mut().handle_collab_event(
+            &ui::collaboration::CollabEvent::AgentMessageProgress {
+                request_id: unavailable_id,
+                result: Err("bounded fixture outage".into()),
+            },
+        );
+        let newest_message = app
+            .messages
+            .iter()
+            .find(|message| message.id == newest_row)
+            .unwrap();
+        assert_eq!(
+            app.agent_message_progress_label(newest_message).as_deref(),
+            Some("Reply status unavailable"),
+            "a failed first read is visible without inventing a historical phase"
+        );
+
+        let mut copied = app
+            .messages
+            .iter()
+            .find(|message| message.id == format!("m_{}", newest.simple()))
+            .unwrap()
+            .clone();
+        copied.channel = "c_general".into();
+        assert_eq!(
+            app.agent_message_progress_label(&copied),
+            None,
+            "an ordinary-channel row cannot borrow the direct Agent milestone"
+        );
+        render_frame(&mut app, 960.0, 720.0);
+        let _ = app.take_relayout_request();
+        render_frame(&mut app, 960.0, 720.0);
+        assert!(
+            !app.take_relayout_request(),
+            "ordinary history visibility changes do not schedule progress relayout frames"
+        );
     }
 
     #[test]
@@ -5947,6 +6609,7 @@ mod tests {
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, w, h);
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }

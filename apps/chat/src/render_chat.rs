@@ -1683,6 +1683,31 @@ impl ChatApp {
             divider_h,
         );
 
+        let mut visible_rows = std::collections::HashSet::new();
+        let mut row_y = y;
+        let margin = f64::from(theme.tokens.spacing.s2);
+        for row in &rows {
+            let row_rect = Rect::new(area.x0, row_y, area.x1, row_y + row.height());
+            if row_rect.y0 >= area.y0 + margin && row_rect.y1 <= area.y1 - margin {
+                visible_rows.insert(row.idx_id.clone());
+            }
+            row_y += row.height();
+        }
+
+        if self.visible_message_rows != visible_rows {
+            self.visible_message_rows = visible_rows;
+            let progress_changed = rows.iter().any(|row| {
+                self.messages
+                    .iter()
+                    .find(|message| message.id == row.idx_id)
+                    .is_some_and(|message| {
+                        row.progress_label != self.agent_message_progress_label(message)
+                    })
+            });
+            if progress_changed {
+                self.request_relayout();
+            }
+        }
         for rm in &rows {
             self.draw_row(
                 PaintCtx::new(scene, tf, tr, theme),
@@ -1861,6 +1886,16 @@ impl ChatApp {
                 )
             })
         };
+        let progress_label = (!editing)
+            .then(|| self.agent_message_progress_label(m))
+            .flatten();
+        let progress_layout_label = (!editing)
+            .then(|| self.agent_message_progress_layout_label(m))
+            .flatten();
+        let progress_h = progress_layout_label.as_ref().map_or(0.0, |label| {
+            let style = theme.text(TextRole::Caption);
+            f64::from(tr.measure_style(label, Some(text_w), &style).1) + f64::from(sp.s1)
+        });
         // The header, reaction and thread bands are measured through the same
         // helpers the draw pass uses, so the reserved height is the painted
         // height at every text scale.
@@ -1905,6 +1940,8 @@ impl ChatApp {
             header_h,
             body_h,
             work_h,
+            progress_label,
+            progress_h,
             resource_h: if !editing && m.reference.is_some() && m.source_provider.is_some() {
                 2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
             } else {
@@ -1999,6 +2036,18 @@ impl ChatApp {
             );
             *y += rm.work_h;
         }
+        if let Some(label) = &rm.progress_label {
+            let style = theme.text(TextRole::Caption);
+            tr.draw_style(
+                scene,
+                label,
+                theme.tokens.colors.text_dim,
+                tf * Affine::translate((column.text_x, *y)),
+                Some(column.text_width),
+                &style,
+            );
+        }
+        *y += rm.progress_h;
         // Right-click your own message (header + body) opens its menu.
         // Recorded before the reaction / thread hits so those still win in
         // their own sub-regions.
@@ -2745,6 +2794,26 @@ impl ChatApp {
             &tasks,
             hits,
         );
+
+        if self.has_unavailable_agent_message_progress() {
+            let refresh = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
+            let label = crate::i18n::t("chat-agent-progress-refresh");
+            let pending = self.agent_message_refresh_in_flight();
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(refresh, &label)
+                    .control_size(ControlSize::Small)
+                    .disabled(pending)
+                    .hovered(self.hovered(refresh)),
+            );
+            if !pending {
+                ChatApp::push_hit(hits, refresh, Hit::AgentMessageRefresh);
+            }
+            y = refresh.y1 + gap;
+        }
 
         let mode = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
         self.draw_agent_intent_picker(scene, tf, tr, theme, mode, &tasks, hits);
@@ -4029,6 +4098,8 @@ struct RowM {
     header_h: f64,
     body_h: f64,
     work_h: f64,
+    progress_label: Option<String>,
+    progress_h: f64,
     resource_h: f64,
     att_h: f64,
     react_h: f64,
@@ -4052,6 +4123,7 @@ impl RowM {
             + header
             + body
             + self.work_h
+            + self.progress_h
             + self.resource_h
             + self.edited_h
             + self.att_h
@@ -4330,6 +4402,8 @@ mod tests {
             header_h: 0.0,
             body_h: 0.0,
             work_h: 96.0,
+            progress_label: None,
+            progress_h: 0.0,
             resource_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,
