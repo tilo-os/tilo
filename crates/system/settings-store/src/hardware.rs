@@ -316,7 +316,7 @@ pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !leases.iter().any(|(held, _)| *held == path) {
-        std::fs::create_dir_all(dir)?;
+        tilo_files::native::create_dir_all(dir)?;
         let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)
             .map_err(|error| match error {
                 advisory_lock::TryLockError::WouldBlock => {

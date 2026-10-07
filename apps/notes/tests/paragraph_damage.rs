@@ -75,6 +75,14 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str) {
     // The first edit can change the shared save indicator. The subsequent
     // ordinary edit proves stable app chrome forwards the paragraph damage.
     driver.key("x");
+    assert!(
+        driver.settle_for_capture(ui::time::Duration::from_secs(2)),
+        "ordinary navigation and sidebar transitions settle before stable typing"
+    );
+    assert!(
+        !driver.frame_schedule().needs_animation_frame,
+        "the sparse typing baseline must have settled app chrome"
+    );
     let before = driver.scene().clone();
     // A key interaction draws its press and release. Retain the union of
     // actual frame damage; the unchanged release must not erase the press.

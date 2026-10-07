@@ -50,9 +50,32 @@ Legacy foreground workers require the existing filtered notification provider;
 their ongoing notice is persistent and bound to the authenticated bus owner.
 Normal service stop and owner loss withdraw it. Other bus senders cannot close
 or replace the notice. Modern foreground permission remains denied; media and
-notification-detach variants explicitly report unsupported behavior. Sticky
-and redelivery process recovery are reported as unsupported. Bound-client
+notification-detach variants explicitly report unsupported behavior. Foreground START_STICKY recovery is bounded to the original launch sandbox
+and current authority; intent redelivery is unsupported. Bound-client
 lifetimes and independent background execution remain unqualified.
+
+## ARM64 cross-build admission
+
+Signed ARM64 acquisition on an x86_64 builder is staging only: pass `aarch64` as
+`acquire_alpine_runtime.sh`'s third argument. Target repository keys come from the
+immutable image's existing alpine-keys package; apk uses the explicit target key
+directory and disables target package scripts. No host installation or binfmt
+registration occurs. Keep a separate signature-verified development sysroot with
+musl-dev, gcc, gtk4.0-dev and glib-dev, including headers and pkg-config metadata.
+The compiler libraries remain build inputs rather than part of a host install.
+
+Run `build_arm64_entry.sh SYSROOT NEW_ENTRY` with clang/lld on the remote builder.
+It statically links ARM64 musl and that sysroot's GCC compiler builtins.
+Run `mediation/build_arm64_bridge.py --help` for the signed target sysroot and
+existing generic JNI header directory. It uses only target pkg-config search
+paths, strict C warnings and a link that rejects undefined symbols. The current
+framework DEX is architecture-independent. Stage the new ARM64 entry/bridge and
+that same DEX using separate receipts; the unchanged signed fixture can then be
+prepared for aarch64. Actual ELF/signature/receipt checks passed, with runtime
+acceptance explicitly false. Execution drivers accept `--architecture aarch64` and require a matching native
+Linux execution host before launching or admitting the runtime receipt. Native
+ARM64 ART journeys, generated schema/cache inputs and physical graphics/input
+remain separate qualification steps.
 
 ## Build and stage
 
@@ -119,6 +142,38 @@ Prepare the same APK without `--notifications` for
 `--expect-notification-denial`; it must render while refusing foreground admission
 and starting no scoped worker. This case adds no grants.
 
+
+For sticky process-loss acceptance, use that same foreground APK and
+`tools/android/run_sticky_journey.py --fixture-grants --help`.
+`--expect-sticky-incompatibility` requires actual process loss without recovery
+on the previous runtime. The positive journey kills only the exact ART child
+through a pidfd, requires a new process and null-Intent main-looper Service start,
+checks that the application's Activity and private visit counter were not
+restarted, and requires a presented recovery surface and persistent notice.
+It kills ART again, revokes the disposable grants during the entrypoint's
+backoff, and requires the original authority scope to stop before recovery.
+No further writes or service creation may occur; explicit relaunch must deny
+metadata/read/write and preserve private visits. Reports and PNGs remain private.
+
+The entrypoint owns a fresh anonymous memfd journal for each original launch.
+Only currently running foreground services returning START_STICKY are included.
+The recovered framework validates each class against this APK's enabled declared
+services and delivers null Intent, rather than calling the app's Activity again.
+It uses a visible runtime surface and the app's existing foreground notification.
+Normal exit, termination, an empty or malformed journal, missing foreground
+status and normal service stop do not recover. Abnormal signal loss retries at
+most three times with a two-second backoff inside the same original sandbox.
+This adds no background permission or detached host supervisor. Revocation and
+expiry kill that original scope, including the entrypoint and later ART children.
+Service survival after closing the recovery surface remains unqualified.
+
+Compile `test_sticky_entry.c` with strict C warnings on the remote builder and
+run `test_sticky_entry.py HARNESS` to check the production fork/exec supervisor's
+normal exit, SIGTERM, missing/malformed journal, successful retry and crash bound.
+These native tests supplement the actual ART journey; they do not replace it.
+The scoped `android-runtime-supervisor` CI group compiles and runs the same
+production harness automatically; no SDK, ART, network or privileges are needed.
+
 For the successful path, prepare `IntegrationActivity` with `--notifications`,
 then use `tools/android/run_integration_journey.py --fixture-grants --help`.
 The explicit flag authorizes only newly created fixture source-read/output-write
@@ -129,8 +184,8 @@ revokes both grants, then relaunches and requires former URI read/write denials.
 It always revokes outstanding fixture grants and stops its owned processes.
 See the [PR #2908 evidence attachment](https://code.tilo.so/attachments/9cc177c1-c0ef-4607-8872-0a7b1af8c5e0) for actual results and original PNGs.
 Write generated reports under `target/android-acceptance/` or outside the checkout;
-the runners reject output in tracked source. Publish selected reports and PNGs as
-PR attachments or CI artifacts, never private session profiles or signing keys.
+the runners reject output in tracked source. Keep generated reports and PNGs private outside Git; commit source and tests only.
+Never publish private session profiles or signing keys.
 
 For document metadata and editor modes, compile `DocumentActivity.java` with
 `DocumentManifest.xml` into one separately signed APK, then qualify those exact

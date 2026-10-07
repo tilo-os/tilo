@@ -201,3 +201,7 @@ pub mod __private {
             .map_err(|error| error.to_string())
     }
 }
+
+/// Explicit bounded observations of real resource publication on this thread.
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+pub mod profiling;

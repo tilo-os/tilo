@@ -7,7 +7,7 @@
 //! state survives a reopen.
 
 #[cfg(feature = "test-support")]
-pub mod phases;
+pub use super::profiling as phases;
 
 use std::cell::RefCell;
 use std::path::PathBuf;

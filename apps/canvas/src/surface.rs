@@ -3621,6 +3621,31 @@ mod tests {
     use super::*;
     use crate::panels::shortcuts::{GROUPS, tools};
 
+    #[test]
+    fn capture_waits_for_requested_artwork_painting() {
+        let mut doc = ui::tilo_resource::Doc::new();
+        <ArtworkResource as ui::tilo_resource::Resource>::initialize(&mut doc).unwrap();
+        for action in crate::sample::landscape() {
+            ui::tilo_actions::Action::apply(&action, &mut doc).unwrap();
+        }
+        let art = crate::doc::read(&doc);
+        assert!(art.layers.iter().any(|layer| !layer.medium.is_empty()));
+        assert!(!art.marks.is_empty());
+        let tools = Tools::default();
+        let mut surface = CanvasSurface::new(tools.clone());
+        surface.present(&Rc::new(art));
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(surface), (390, 844));
+        harness
+            .wait_for_visuals(std::time::Duration::from_secs(30))
+            .expect("the production capture wait completes");
+        let renderer = tools.renderer.borrow();
+        assert!(
+            !renderer.settling() && !renderer.detail_pending() && !renderer.pictures.decoding(),
+            "capture must await the requested painting, detail tiles and pictures"
+        );
+    }
+
     /// Keys the window's host answers (undo, redo, history, the palette)
     /// or that need the pointer: the canvas is not where they land.
     fn elsewhere(keys: &str) -> bool {
