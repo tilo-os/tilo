@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = []
-native = ["dep:librespot", "dep:gstreamer", "dep:gstreamer-app", "dep:tokio", "dep:tilo-clock", "dep:tilo-rt"]
+native = ["dep:librespot", "dep:gstreamer", "dep:gstreamer-app", "dep:tokio", "dep:tilo-clock", "dep:tilo-rt", "dep:tilo-media"]
 
 [dependencies]
 librespot = { version = "=0.8.0", optional = true, default-features = false, features = ["rustls-tls-native-roots"] }
@@ -16,6 +16,7 @@ gstreamer-app = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["sync", "time"] }
 tilo-clock = { path = "../tilo-clock", optional = true }
 tilo-rt = { path = "../tilo-rt", optional = true }
+tilo-media = { path = "../tilo-media", optional = true, features = ["voice"] }
 account-custody = { path = "../../system/account-custody" }
 accounts = { path = "../../system/accounts" }
 

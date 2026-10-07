@@ -89,6 +89,7 @@
 )]
 
 pub mod audio;
+pub mod audio_output;
 pub mod audio_runtime;
 pub mod cache;
 pub mod calibration;
