@@ -759,6 +759,9 @@ fn spawn_inner(
         tilo_action_broker::services::HostServices::default()
     };
     services.record_content = record_content;
+    services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
+        local_session.lifecycle(),
+    )));
     if certificate_provisioning.uses_harness_devices() && config.is_none() {
         services.native_certificates = None;
     }
