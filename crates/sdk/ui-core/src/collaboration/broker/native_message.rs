@@ -1,5 +1,5 @@
 //! One complete native signed Message publication. No ordinary send fallback.
-use super::{BridgeState, LocalSdkDocumentSigner, SdkRoute};
+use super::{BridgeState, LocalSdkDocumentSigner, SdkDocumentSigner, SdkRoute};
 use crate::invocation_scope::NativeExecutedContribution;
 use collab_types::{DocumentMutation, SignedOp};
 use runtime_collab::document_contribution::{
@@ -372,9 +372,9 @@ async fn sign_complete_native_document(
     signer: &mut LocalSdkDocumentSigner,
     mutation: &DocumentMutation,
 ) -> Result<Vec<u8>, String> {
-    let LocalSdkDocumentSigner::Host(identity) = signer else {
-        return Err("native Message requires the installed native host signer".into());
-    };
+    if !route.committed {
+        return Err("native Message requires an installed committed document owner".into());
+    }
     if !route
         .encryption
         .lock()
@@ -393,11 +393,20 @@ async fn sign_complete_native_document(
     }
     let workspace = route.spec.cluster_id.to_string();
     let record = route.spec.record.as_deref().unwrap_or("");
+    let author = match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            identity.signing_public_key()
+        }
+        LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Host(_) | SdkDocumentSigner::Harness(_),
+        ) => return Err("native Message requires a certified native document signer".into()),
+    };
     let now = crate::time::wall();
     let mut op = SignedOp::new_unsigned(
         payload,
         collab_types::document_artifact_id(&route.spec.app_id, &workspace, record),
-        collab_types::Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+        collab_types::Ed25519PublicKey::from_bytes(author),
         collab_types::document_attestation_id(&route.spec.app_id, &workspace, record),
         collab_types::OpClass::Splice,
         now,
@@ -405,10 +414,18 @@ async fn sign_complete_native_document(
     );
     let unsigned =
         postcard::to_stdvec(&op).map_err(|_| "native Message unsigned document will not encode")?;
-    let signature = identity
-        .sign_collaboration_op(&workspace, &route.spec.app_id, record, &unsigned)
-        .await
-        .map_err(|_| "native Message host signing refused")?;
+    let signature = match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => identity
+            .sign_collaboration_op(&workspace, &route.spec.app_id, record, &unsigned)
+            .map_err(|_| "native Message certified signing refused")?,
+        LocalSdkDocumentSigner::Host(identity) => identity
+            .sign_collaboration_op(&workspace, &route.spec.app_id, record, &unsigned)
+            .await
+            .map_err(|_| "native Message host signing refused")?,
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Host(_) | SdkDocumentSigner::Harness(_),
+        ) => return Err("native Message requires a certified native document signer".into()),
+    };
     op.signature = collab_types::Signature::from_bytes(signature);
     let bytes =
         postcard::to_stdvec(&op).map_err(|_| "native Message signed document will not encode")?;

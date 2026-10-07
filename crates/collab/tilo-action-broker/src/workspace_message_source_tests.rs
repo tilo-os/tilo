@@ -49,7 +49,7 @@ fn native_message_test_directory() -> action_directory::Client {
     };
     descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity {
         kind: "chat.agent".into(),
-        key: "scribe".into(),
+        key: "chat.person:scribe".into(),
     });
     capnp_rpc::new_client(NativeMessageTestDirectory(row))
 }
@@ -85,7 +85,12 @@ async fn native_message_source_repeated_delivery_deduplicates_and_replacement_re
                     provider: page.providers.first().unwrap().provider.clone(),
                     address: tilo_actions::ActionAddress::new("opaque-agent-resource", "message"),
                 },
-                argument: InvokeArgument::Text("Actual original input".into()),
+                argument: InvokeArgument::Json(
+                    serde_json::json!({"value": "Actual original input"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
                 context: None,
                 confirmation: None,
                 revision: Some("message-r1".into()),

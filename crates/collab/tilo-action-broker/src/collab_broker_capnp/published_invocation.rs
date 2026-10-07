@@ -57,8 +57,10 @@ impl OriginalInvocationData {
             .semantic
             .as_ref()
             .ok_or("original Message semantic target unavailable")?;
+        let agent = message_agent_from_semantic_key(&semantic.key)
+            .ok_or("original Message semantic target is not canonical")?;
         Ok(super::workspace_messages::OriginalMessageFacts {
-            agent: semantic.key.clone(),
+            agent: agent.to_owned(),
             request: self.request.clone(),
             caller,
             operation: tilo_joined_room::AgentMessageOperationData {
@@ -290,6 +292,11 @@ impl OriginalInvocationData {
             semantic: offered.semantic_identity.clone(),
         }))
     }
+}
+
+fn message_agent_from_semantic_key(key: &str) -> Option<&str> {
+    key.strip_prefix("chat.person:")
+        .filter(|agent| !agent.is_empty())
 }
 
 /// Immutable original facts; there is no public constructor or deserializer.
@@ -556,5 +563,20 @@ impl CapnpBrokerState {
                 .with_owner_token(original)
         });
         Ok((stream, authorize))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::message_agent_from_semantic_key;
+
+    #[test]
+    fn message_agent_requires_canonical_nonempty_person_key() {
+        assert_eq!(
+            message_agent_from_semantic_key("chat.person:scribe"),
+            Some("scribe")
+        );
+        assert_eq!(message_agent_from_semantic_key("scribe"), None);
+        assert_eq!(message_agent_from_semantic_key("chat.person:"), None);
     }
 }

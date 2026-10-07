@@ -3396,7 +3396,11 @@ async fn drive_shovel(
             SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_)
         )
     );
-    let native_document_source = matches!(signer, LocalSdkDocumentSigner::Host(_));
+    let native_document_source = matches!(
+        signer,
+        LocalSdkDocumentSigner::Host(_)
+            | LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(_))
+    );
     let native_document_budget = native_message::NativeDocumentBudget::default();
     let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
     key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -3852,7 +3856,12 @@ async fn ensure_sdk_route(
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
         spawn_action_stream(&channel, inbound_tx),
-        spawn_invocation_stream(&channel, spec.clone(), native_document_source, inbound_tx),
+        spawn_invocation_stream(
+            &channel,
+            spec.clone(),
+            native_document_source && committed,
+            inbound_tx,
+        ),
         spawn_realtime_stream(&channel, inbound_tx),
         async {
             // This intentionally fails quietly for person sessions. An

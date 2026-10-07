@@ -395,10 +395,14 @@ impl MessageSource {
             agent,
             message,
         } = typed;
+        let original_text = original_message_text(
+            &self.facts.spec.params,
+            self.facts.request.argument.as_deref(),
+        )?;
         if workspace != self.route.cluster_id
             || agent != self.facts.agent
             || message.intent != AgentIntent::Message
-            || Some(message.text.as_str()) != self.facts.request.argument.as_deref()
+            || message.text != original_text
         {
             return Err("Message typed input differs from actual original target or text".into());
         }
@@ -417,6 +421,32 @@ impl MessageSource {
     }
 }
 
+fn original_message_text(
+    params: &[tilo_actions::ActionParam],
+    argument: Option<&str>,
+) -> Result<String, String> {
+    let argument = argument.ok_or("original Message text is unavailable")?;
+    let bound = if let Some(json) = argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
+        let supplied = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+            .map_err(|_| "original Message arguments are not canonical JSON")?;
+        tilo_actions::ActionArgs::bind_json(params, &supplied)
+            .map_err(|_| "original Message arguments do not match its specification")?
+    } else {
+        tilo_actions::ActionArgs::bind(
+            params,
+            [(
+                tilo_actions::PROMPTED_PARAM.to_owned(),
+                tilo_actions::ArgValue::Text(argument.to_owned()),
+            )],
+        )
+        .map_err(|_| "original Message text does not match its specification")?
+    };
+    bound
+        .text(tilo_actions::PROMPTED_PARAM)
+        .map(str::to_owned)
+        .ok_or_else(|| "original Message specification has no prompted text".into())
+}
+
 fn fresh_token<T>(entries: &HashMap<[u8; 32], T>) -> [u8; 32] {
     loop {
         let mut token = [0; 32];
@@ -425,6 +455,42 @@ fn fresh_token<T>(entries: &HashMap<[u8; 32], T>) -> [u8; 32] {
         }
         if !entries.contains_key(&token) {
             return token;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::original_message_text;
+    use tilo_actions::{ARGUMENTS_JSON_PREFIX, ActionParam, PROMPTED_PARAM, ParamType};
+
+    fn params() -> Vec<ActionParam> {
+        vec![ActionParam::required(
+            PROMPTED_PARAM,
+            ParamType::Text,
+            "Message",
+        )]
+    }
+
+    #[test]
+    fn original_message_text_validates_legacy_and_typed_arguments() {
+        assert_eq!(
+            original_message_text(&params(), Some("Hello")).unwrap(),
+            "Hello"
+        );
+        let typed = format!("{ARGUMENTS_JSON_PREFIX}{{\"value\":\"Hello\"}}");
+        assert_eq!(
+            original_message_text(&params(), Some(&typed)).unwrap(),
+            "Hello"
+        );
+
+        for json in [
+            "{}",
+            "{\"value\":1}",
+            "{\"value\":\"Hello\",\"extra\":true}",
+        ] {
+            let malformed = format!("{ARGUMENTS_JSON_PREFIX}{json}");
+            assert!(original_message_text(&params(), Some(&malformed)).is_err());
         }
     }
 }
