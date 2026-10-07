@@ -56,6 +56,9 @@ ARG TILO_HARDWARE_PROFILE
 # The update origin the board image records; a board dev image itself is
 # replaced with `bootc switch` to the next one.
 ARG TILO_TARGET_IMGREF
+# The maintenance base is sealed. Restore its one split-out kernel before
+# generating the board initramfs, and discard only inherited build boot outputs.
+# The split/uki stages below reseal the complete board root with its own DTB.
 ARG TILO_SIGNED_DEVELOPMENT_BOARD=0
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
@@ -67,6 +70,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && case "$TILO_SIGNED_DEVELOPMENT_BOARD" in \
          0) ;; \
          1) test "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 \
+            && set -- /usr/lib/modules/*/ \
+            && test "$#" = 1 && kver="$(basename "$1")" \
+            && set -- /kernel/*/ \
+            && test "$#" = 1 && test "$(basename "$1")" = "$kver" \
+            && test -s "/kernel/$kver/vmlinuz" \
+            && cp -a "/kernel/$kver/vmlinuz" "/usr/lib/modules/$kver/vmlinuz" \
+            && rm -rf /kernel \
+            && rm -f /boot/EFI/Linux/*.efi \
             && dnf install -y --setopt=reposdir=/repo openssh-server \
             && python3 /run/tilo-board/os/dev/signed-development-board-policy.py --maintenance / \
             && systemctl enable sshd.service ;; \
@@ -97,7 +108,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 
 # Nothing may be added to the rootfs after the split: the UKI seals its digest.
 FROM board-root AS split
-RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+RUN mkdir -p /kernel && test -z "$(ls -A /kernel)" \
+    && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 FROM ${BASE_IMAGE} AS uki-tools
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
