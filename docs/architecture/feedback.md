@@ -32,6 +32,9 @@ requires a receipt from the authenticated destination with matching identity,
 destination and payload digest, and persists that receipt before showing Sent.
 Failed or pending writes cannot produce success. Pending reports cannot be
 evicted to make room.
+If the store refuses its first write, the approved payload stays in memory with
+its original identity. Retry persists that same payload before any transport
+call; a refused write is never described as a durable queued report.
 
 Chat exposes `submit-feedback` on text-channel resources, requiring Comment.
 The action validates the channel's workspace, derives attribution from the
@@ -42,6 +45,10 @@ available separately from the ordinary message. The `triage` report action
 requires Write and records attributed status changes, duplicate targets or an
 address of an existing task. A task reference grants no access and creates no
 external task automatically.
+Opening a report reveals its exact message rather than just its channel.
+`read-feedback-receipt` uses Chat's registered semantic reader over the canonical
+record at the SDK's stamped committed heads. The request binds to the published
+report resource and accepts no caller-selected heads, destination or source.
 
 ## Host integration still required
 
@@ -72,6 +79,14 @@ through this adapter; never derive it from report payloads or URLs. The submitti
 host feeds the receipt to `Outbox::confirm_durable_receipt` with that identity.
 Persist masked screenshot bytes before allowing its immutable payload to send.
 
+For remote delivery, invoke `read-feedback-receipt` through the existing admitted
+action transport. Check the returned SDK record stamp against the retained Chat
+record, and the receipt identity, digest and destination against the outbox.
+This projection alone is **not** a durability witness. Accept it only from the
+authenticated destination owner's existing durable action service, after that
+owner's commit completed. A local app dispatch, a replica's Saved indicator or
+caller-supplied JSON must not be promoted to delivery confirmation.
+
 This integration uses the existing public demo deployment. It does not authorize
 publishing, changing access policy or connecting personal resources/accounts.
 
@@ -83,7 +98,7 @@ Run with the configured cargo drop-in:
 cargo test --locked -p tilo-feedback-review --lib
 cargo test --locked -p tilo-feedback --lib
 cargo test --locked -p tilo-app --lib feedback_composer::tests
-cargo test --locked -p chat --lib feedback::tests
+cargo test --locked -p chat --lib feedback::
 cargo clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
 cargo check --locked -p shell --tests
 ```

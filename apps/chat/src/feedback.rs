@@ -15,6 +15,8 @@ use crate::{
 
 const REPORTS: &str = "feedback_reports";
 
+pub(crate) mod receipt_read;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum FeedbackAction {
@@ -299,6 +301,14 @@ pub fn durable_receipt(
     if *save_status != ui::record::RecordSaveStatus::Saved {
         return Err(refused("feedback is awaiting durable destination storage"));
     }
+    receipt_content(doc, id, actual_destination)
+}
+
+fn receipt_content(
+    doc: &Doc,
+    id: &str,
+    actual_destination: &Destination,
+) -> Result<Receipt, ActionError> {
     let report = report(doc, id)?.ok_or_else(|| refused("feedback report not found"))?;
     if report.submission.destination != *actual_destination {
         return Err(refused("feedback destination mismatch"));
@@ -424,11 +434,12 @@ pub fn publish(report: &Report) -> tilo_actions::Resource {
         report.submission.feedback.text.clone(),
     )
     .with_action(
-        crate::effects::ChatEffect::OpenChannel {
-            channel: report.submission.destination.channel.clone(),
+        crate::effects::ChatEffect::RevealMessage {
+            message: format!("m_feedback_{}", report.submission.id),
         }
         .bound(),
     )
+    .with_action(receipt_read::spec(&report.submission.id))
     .with_action(triage_spec(report))
 }
 
