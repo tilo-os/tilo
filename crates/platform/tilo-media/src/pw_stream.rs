@@ -937,6 +937,7 @@ pub trait PlaybackStream: Send {
 
 /// One-shot custody of an output verified by the local device observer.
 /// This descriptor stays in the host; apps never receive it.
+#[cfg(unix)]
 pub struct ObservedPlayback {
     pub socket: std::os::fd::OwnedFd,
     pub cookie: u32,
@@ -947,6 +948,7 @@ pub struct ObservedPlayback {
 ///
 /// # Errors
 /// Fails when native support, the observed daemon or the selected output is unavailable.
+#[cfg(unix)]
 pub fn open_observed_playback(
     config: &PlaybackConfig,
     source: Box<dyn PlaybackSource>,
