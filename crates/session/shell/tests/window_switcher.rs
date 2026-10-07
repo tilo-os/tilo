@@ -442,3 +442,64 @@ fn clicking_a_window_in_the_switcher_goes_there() {
         "the release of the click that chose a window never reaches that window"
     );
 }
+
+#[test]
+fn closing_another_window_while_alt_is_held_keeps_the_intended_selection() {
+    let mut h = Harness::new();
+    h.focus(3);
+    h.focus(1);
+    h.hold_alt();
+    h.tab_with_alt();
+    h.host
+        .window_switcher_mut()
+        .elapse(Duration::from_millis(200));
+    assert!(h.host.close_tab_in_group(20, Some(2)));
+    h.event(
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: PhysicalPosition::new(0.0, 0.0),
+        },
+        ModifiersState::ALT,
+    );
+    let (titles, selected) = listed(&h.switcher_on_screen().expect("surviving session"));
+    assert!(!titles.iter().any(|title| title == "Browser 2"));
+    assert_eq!(selected.as_deref(), Some("Terminal 3"));
+    h.release_alt();
+    let focused = h.focused();
+    drop(h);
+    assert_eq!(focused, 3);
+}
+
+#[test]
+fn closing_the_armed_window_cancels_before_a_later_alt_release() {
+    let mut h = Harness::new();
+    h.focus(4);
+    h.focus(1);
+    h.hold_alt();
+    h.tab_with_alt();
+    h.host
+        .window_switcher_mut()
+        .elapse(Duration::from_millis(200));
+    assert!(h.host.close_tab_in_group(40, Some(4)));
+    h.event(
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: PhysicalPosition::new(0.0, 0.0),
+        },
+        ModifiersState::ALT,
+    );
+    assert!(!h.host.window_switcher_active());
+    assert!(h.switcher_on_screen().is_none());
+    h.key(
+        Key::Named(NamedKey::Alt),
+        ElementState::Released,
+        ModifiersState::empty(),
+    );
+    assert_eq!(h.focused(), 1);
+    h.hold_alt();
+    h.tab_with_alt();
+    h.release_alt();
+    let focused = h.focused();
+    drop(h);
+    assert_ne!(focused, 4, "reopening cannot rearm a closed window");
+}
