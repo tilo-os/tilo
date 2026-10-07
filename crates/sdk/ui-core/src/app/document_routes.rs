@@ -242,6 +242,15 @@ impl App {
     /// Joining a route is insufficient: the owner must apply its capture first.
     pub(super) fn published_action_history_ready(&mut self) -> bool {
         self.refresh_document_routes();
+        self.published_action_history_ready_after_refresh()
+    }
+
+    pub(super) fn published_action_history_ready_after_refresh(&self) -> bool {
+        // A later event may replace owners or the primary route in this batch.
+        // Withhold publication until the normal pump reconciles that new custody.
+        if self.document_routes.witness.as_ref() != self.bound_broker_route() {
+            return false;
+        }
         let route = self
             .document_routes
             .witness

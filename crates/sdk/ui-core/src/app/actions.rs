@@ -624,6 +624,13 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
+        if self.collaboration.manager.is_connected() {
+            self.refresh_document_routes();
+        }
+        self.publish_action_surface_after_refresh();
+    }
+
+    fn publish_action_surface_after_refresh(&mut self) {
         #[cfg(test)]
         {
             self.actions.action_surface_publication_attempts = self
@@ -631,7 +638,9 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
-        if !self.collaboration.manager.is_connected() || !self.published_action_history_ready() {
+        if !self.collaboration.manager.is_connected()
+            || !self.published_action_history_ready_after_refresh()
+        {
             return;
         }
         if self.collaboration.manager.take_action_surface_failed() {
