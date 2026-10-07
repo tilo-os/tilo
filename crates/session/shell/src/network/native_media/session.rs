@@ -246,6 +246,7 @@ async fn maintain(commands: &mpsc::Sender<NetCmd>, running: &Arc<Running>) -> Re
 
 struct StopSlot {
     current: AtomicBool,
+    expired: AtomicBool,
     startup: AtomicU64,
     ready: AtomicBool,
     generation: Mutex<Option<(CaptureStop, Weak<Client>)>>,
@@ -254,6 +255,7 @@ impl StopSlot {
     fn new() -> Self {
         Self {
             current: AtomicBool::new(true),
+            expired: AtomicBool::new(false),
             startup: AtomicU64::new(0),
             ready: AtomicBool::new(false),
             generation: Mutex::new(None),
@@ -262,7 +264,7 @@ impl StopSlot {
     fn begin(&self) -> Result<u64, Issue> {
         let _generation = self.generation.lock();
         if !self.current.load(Ordering::SeqCst) {
-            return Err(Issue::PermissionDenied);
+            return Err(self.stopped_issue());
         }
         self.advance()
     }
@@ -280,9 +282,16 @@ impl StopSlot {
     // explicit unmute intent. A terminal stop never becomes resumable.
     fn check_startup(&self, startup: u64) -> Result<bool, Issue> {
         if !self.current.load(Ordering::SeqCst) {
-            return Err(Issue::PermissionDenied);
+            return Err(self.stopped_issue());
         }
         Ok(self.startup.load(Ordering::SeqCst) == startup)
+    }
+    fn stopped_issue(&self) -> Issue {
+        if self.expired.load(Ordering::SeqCst) {
+            Issue::CaptureFailed
+        } else {
+            Issue::PermissionDenied
+        }
     }
     fn pause(&self) {
         let mut generation = self.generation.lock();
@@ -309,6 +318,7 @@ impl StopSlot {
                 installed = generation.is_some(),
                 "native microphone capture startup deadline expired"
             );
+            self.expired.store(true, Ordering::SeqCst);
             self.current.store(false, Ordering::SeqCst);
             let _ = self.advance();
             if let Some((capture, client)) = generation.take() {
@@ -484,6 +494,7 @@ impl MediaSession for Session {
     )]
     fn tick(&mut self, now: Instant) -> Result<CallState, Issue> {
         if !self.output.current() {
+            tracing::debug!("native call output observation is no longer current");
             self.stop_capture();
             return Err(Issue::SourceLost);
         }
@@ -534,8 +545,13 @@ impl MediaSession for Session {
                     source_current,
                     "native microphone capture fence closed"
                 );
+                let issue = if consent_current && source_current {
+                    intent.slot.stopped_issue()
+                } else {
+                    Issue::PermissionDenied
+                };
                 self.stop_capture();
-                return Err(Issue::PermissionDenied);
+                return Err(issue);
             }
         }
         if !self.install_prepared_capture(&client)? {
@@ -786,10 +802,8 @@ mod tests {
         assert!(slot.current.load(Ordering::SeqCst));
         slot.expire(resumed);
         assert!(!slot.current.load(Ordering::SeqCst));
-        assert!(
-            slot.begin().is_err(),
-            "deadline is terminal for this unmute"
-        );
+        assert_eq!(slot.check_startup(resumed), Err(Issue::CaptureFailed));
+        assert_eq!(slot.begin(), Err(Issue::CaptureFailed));
     }
 
     #[test]

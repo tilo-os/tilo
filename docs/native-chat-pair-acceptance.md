@@ -154,6 +154,28 @@ native FD custody; it never qualifies a native call. Follow also installs the
 complete strip/group/tab focus address, including when the admitted target is
 on another strip.
 
+The next combined run completed actual opt-in Follow, Stop sharing and Stop
+following, then connected both native calls listening muted. Generated-only
+encoder probes passed by node name and by a freshly observed connected socket,
+both before and after playback opened. Native playback now emits bounded silent
+frames while listening so an idle live output does not stall the private graph.
+Capture avoids an asynchronous preroll wait, waits for the original presentation
+clock, and uses a stable local monotonic clock instead of the device clock's
+startup jump. Complete fresh encoded frames receive a monotonic 48 kHz wire
+frame timestamp; device PTS still determines their unchanged 100 ms send lifetime.
+A real-encoder jitter regression fails with the preceding mapping and passes
+with the correction. Future-presentation and receive-expiry regressions cover
+the clock and lifetime boundaries.
+
+Run 38 on 2026-10-07 observed Alice's actual call live, unmuted and actively
+capturing after visible one-shot consent. Bob's next unmute produced no prompt
+within the bounded wait, so the combined receipt is still unqualified and its
+cleanup passed. Opposite-frequency decoding, Leave, fresh rejoin consent and
+removal did not execute. Startup expiry is classified as capture failure while
+current consent and source authority remain valid; genuine denial still reports
+permission denial. A call-state observation before consent now distinguishes
+an ended call from a missing prompt. Physical Yoga/Pi testing remains outstanding.
+
 `journey.json` remains `qualified: false` until every step completes: presented
 native Chat on both peers; opt-in context navigation; Stop and explicit follow
 release; muted joining; visible fresh capture consent; decoded opposite-frequency

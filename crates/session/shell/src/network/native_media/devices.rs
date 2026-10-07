@@ -82,7 +82,14 @@ impl Devices {
                 let mut read = tokio::task::spawn_blocking(observer::observe);
                 let observed = match tokio::time::timeout(FRESH, &mut read).await {
                     Ok(Ok(Ok(observed))) => Some(observed),
-                    _ => None,
+                    Ok(Ok(Err(error))) => {
+                        tracing::debug!(%error, "native audio registry refresh failed");
+                        None
+                    }
+                    _ => {
+                        tracing::debug!("native audio registry refresh worker missed its deadline");
+                        None
+                    }
                 };
                 let Some(owner) = weak.upgrade() else {
                     return;

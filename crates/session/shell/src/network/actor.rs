@@ -2678,7 +2678,10 @@ impl ActorState {
                 // replay the host was asked for repeats what this device saw
                 // before on purpose too: the broker drops what it holds.
                 let new = match msg {
-                    NeighbourMsg::RemoteAction { .. } => true,
+                    // Presence is current state: returning to an earlier
+                    // viewport, including Stop sharing's initial empty view,
+                    // must arrive again instead of being content-deduplicated.
+                    NeighbourMsg::RemoteAction { .. } | NeighbourMsg::AppPresenceV2 { .. } => true,
                     NeighbourMsg::RemoteInput { .. } => mark_new_input(
                         ws,
                         peer,
@@ -5009,6 +5012,80 @@ mod tests {
             .await
             .unwrap();
         (relay, state, host_cert)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn hosted_presence_delivers_a_return_to_the_initial_withdrawn_view() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, _host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        ))
+        .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let a_id = a.id();
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+            HEARTBEAT_INTERVAL,
+        )
+        .await;
+        for mode in [None, Some("shared"), None] {
+            let view = ui::view::ViewSubset {
+                view_mode: mode.map(str::to_owned),
+                ..Default::default()
+            };
+            let presence = tilo_action_broker::collab_presence::to_peer(
+                &ui::presence::PresenceKey::view(&view),
+                &ui::collaboration::PresencePayload::Arrived,
+            )
+            .unwrap();
+            cmd_a
+                .send(NetCmd::Publish {
+                    ws: 42,
+                    msg: NeighbourMsg::AppPresenceV2 {
+                        peer: 7,
+                        app_id: "so.tilo.chat".into(),
+                        cluster_id: "hosted".into(),
+                        presence: presence.clone(),
+                        colour: None,
+                    },
+                })
+                .await
+                .unwrap();
+            let (author, delivered) = tilo_test_env::within("the current hosted viewport", async {
+                loop {
+                    if let Some(NetEvent::Msg {
+                        peer,
+                        msg: NeighbourMsg::AppPresenceV2 { presence, .. },
+                        ..
+                    }) = rx_b.recv().await
+                    {
+                        return (peer, presence);
+                    }
+                }
+            })
+            .await;
+            assert_eq!(author, a_id);
+            assert_eq!(delivered, presence);
+        }
+        relay.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -17,6 +17,7 @@ import pathlib
 import signal
 import select
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -70,7 +71,9 @@ class Fixture:
                "TILO_STATE_PATH": str(profile / "config/tilo/state.json"),
                "TILO_HEADLESS_SIZE": "1280x800",
                "TILO_LAUNCHER_BIN": str(self.binaries / "tilo-launcher"),
-               "GST_PLUGIN_PATH": str(self.pipewire / "usr/lib64/gstreamer-1.0")}
+               "GST_PLUGIN_PATH": str(self.pipewire / "usr/lib64/gstreamer-1.0"),
+               "RUST_LOG": "warn,tilo_media::voice::gst=debug,shell::network::native_media=debug",
+               "GST_DEBUG": "pipewiresrc:5,pipewirecore:5,appsink:5,opusenc:5"}
         for key in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
                     "PIPEWIRE_REMOTE", "PIPEWIRE_RUNTIME_DIR", "TILO_COLLAB_HOST",
                     "TILO_COLLAB_HOSTS", "TILO_APPS_SYSTEM_DIR"):
@@ -122,24 +125,46 @@ class Fixture:
         nodes = packaged.wait_for("only generated source and null output", sources, source)
         self.record(f"{name}-isolated-audio", frequency_hz=frequency,
                     devices=[{"class": n["media.class"], "name": n["node.name"]} for n in nodes])
+        self.encoder_preflight(name, env, nodes)
+
+    def encoder_preflight(self, name, env, nodes, phase="generated-only"):
+        if any(node.get("node.name") not in {"fixture-source", "fixture-sink"} for node in nodes):
+            raise RuntimeError("private encoder preflight found an unapproved audio device")
         # Qualify this generated-only graph before testing the governed FD
         # handoff. This is fixture preflight, never native call acceptance.
         selected = [node for node in nodes if node.get("node.name") == "fixture-source"]
         if len(selected) != 1 or not isinstance(selected[0].get("object.serial"), int):
             raise RuntimeError("private generated source serial is unobservable")
-        try:
-            probe = subprocess.run([
-                "gst-launch-1.0", "-q", "pipewiresrc",
-                f"target-object={selected[0]['object.serial']}", "num-buffers=4", "!",
-                "audioconvert", "!", "audioresample", "!",
-                "audio/x-raw,rate=48000,channels=1,format=S16LE", "!", "opusenc",
-                "frame-size=20", "!", "fakesink", "sync=false",
-            ], env=env, timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        except subprocess.TimeoutExpired as failure:
-            raise RuntimeError("generated-only encoder preflight exceeded startup deadline") from failure
-        if probe.returncode != 0:
-            raise RuntimeError(f"generated-only encoder preflight failed ({probe.returncode})")
-        self.record(f"{name}-generated-only-encoder-preflight")
+        command = [
+            "gst-launch-1.0", "-q", "pipewiresrc",
+            f"target-object={selected[0]['object.serial']}", "do-timestamp=true",
+            "stream-properties=properties,node.dont-fallback=(boolean)true,node.dont-reconnect=(boolean)true,node.dont-move=(boolean)true,node.linger=(boolean)false",
+            "num-buffers=4", "!", "audioconvert", "!", "audioresample", "!",
+            "audio/x-raw,rate=48000,channels=1,format=S16LE", "!", "opusenc",
+            "frame-size=20", "!", "fakesink", "sync=false",
+        ]
+        for bound_fd in (False, True):
+            # This fresh fixture socket tests the FD-enabled plugin separately
+            # from the production observer's one-shot protocol handoff.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as remote:
+                if bound_fd:
+                    remote.settimeout(2)
+                    remote.connect(str(self.root / name / "run/pipewire-0"))
+                arguments = command[:3] + ([f"fd={remote.fileno()}"] if bound_fd else []) + command[3:]
+                try:
+                    probe = subprocess.run(
+                        arguments, env=env, timeout=2, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        pass_fds=(remote.fileno(),) if bound_fd else (),
+                    )
+                except subprocess.TimeoutExpired as failure:
+                    raise RuntimeError(
+                        f"generated-only encoder preflight exceeded startup deadline (fd={bound_fd})"
+                    ) from failure
+                if probe.returncode != 0:
+                    raise RuntimeError(f"generated-only encoder preflight failed ({probe.returncode}, fd={bound_fd})")
+            suffix = "fd-encoder-preflight" if bound_fd else "encoder-preflight"
+            self.record(f"{name}-{phase}-{suffix}")
 
     def stop_private_buses(self):
         # Launcher/SDK helpers may fork a bus out of their process group.
@@ -358,8 +383,13 @@ class Fixture:
         for name, session in sessions.items():
             require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-following.png")}))
         self.act(alice, room, "stop-sharing-live-context")
-        packaged.wait_for("Stop withdraws native context", lambda: (
-            self.act(bob, room, "live-context-status").get("following") is False), bob[1])
+        def withdrawn():
+            publisher = self.act(alice, room, "live-context-status")
+            follower = self.act(bob, room, "live-context-status")
+            (self.output / "context-withdrawal-observation.json").write_text(
+                json.dumps({"publisher": publisher, "follower": follower}, indent=2))
+            return publisher.get("sharing") is False and follower.get("following") is False
+        packaged.wait_for("Stop withdraws native context", withdrawn, bob[1])
         self.act(alice, room, "open-channel", resource=channels[second])
         time.sleep(0.5)
         report = self.act(bob, room, "live-context-status")
@@ -419,6 +449,11 @@ class Fixture:
             call_channel = channel
             self.record(f"{name}-native-call-listening-muted", channel=channel, report=snapshot)
         for name, session in sessions.items():
+            rows = json.loads(subprocess.check_output(["pw-dump"], env=self.env(name), timeout=3))
+            nodes = [row.get("info", {}).get("props", {}) for row in rows
+                     if row.get("type") == "PipeWire:Interface:Node"
+                     and row.get("info", {}).get("props", {}).get("media.class") in {"Audio/Source", "Audio/Sink"}]
+            self.encoder_preflight(name, self.env(name), nodes, phase="muted-call-generated-only")
             self.unmute(name, session, room)
         for name, frequency in (("alice", 1100), ("bob", 700)):
             self.measure(name, frequency)
@@ -428,8 +463,17 @@ class Fixture:
         if packaged.chrome_state(socket).get("pending_grants_count") != 0:
             raise RuntimeError("unrelated permission request precedes fixture consent")
         self.act(session, room, "unmute")
-        packaged.wait_for("fresh one-shot capture consent", lambda: packaged.chrome_state(
-            socket).get("pending_grants_count") == 1, process)
+        def consent_pending():
+            value = self.act(session, room, "call-status")
+            pending = packaged.chrome_state(socket).get("pending_grants_count")
+            (self.output / f"{name}-consent-observation.json").write_text(json.dumps({
+                "call": value, "pending_grants_count": pending,
+            }, indent=2))
+            if value["reported"].get("state") == "ended":
+                raise RuntimeError(f"native call ended before consent: {value['reported'].get('issue')}")
+            return pending == 1
+
+        packaged.wait_for("fresh one-shot capture consent", consent_pending, process)
         before = self.act(session, room, "call-status")["reported"]
         if before.get("capture_active") is not False or before.get("muted") is not True:
             raise RuntimeError("unmute started capture before explicit consent")
@@ -485,10 +529,31 @@ class Fixture:
         rows = json.loads(subprocess.check_output(["pw-dump"], env=self.env(name), timeout=3))
         if not isinstance(rows, list) or not rows:
             raise RuntimeError("private native audio graph is unobservable")
-        streams = [row.get("info", {}).get("props", {}) for row in rows
-                   if row.get("type") == "PipeWire:Interface:Node"]
-        return [node for node in streams if node.get("application.process.id") == str(session[1].pid)
-                and node.get("media.class") in {"Stream/Input/Audio", "Stream/Output/Audio"}]
+        def numeric(value):
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value if value > 0 else None
+            if isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 20:
+                return int(value)
+            return None
+
+        clients = {numeric(row.get("id")): numeric(row.get("info", {}).get("props", {}).get(
+            "application.process.id")) for row in rows if row.get("type") == "PipeWire:Interface:Client"}
+        owned = []
+        for row in rows:
+            node = row.get("info", {}).get("props", {})
+            if row.get("type") != "PipeWire:Interface:Node" or node.get("media.class") not in {
+                    "Stream/Input/Audio", "Stream/Output/Audio"}:
+                continue
+            process_id = numeric(node.get("application.process.id"))
+            if process_id is None:
+                process_id = clients.get(numeric(node.get("client.id")))
+            if process_id is None:
+                raise RuntimeError("private audio stream owner is unobservable")
+            if process_id == session[1].pid:
+                owned.append(node)
+        return owned
 
     def no_audio_streams(self, name, session):
         return not self.audio_streams(name, session)
