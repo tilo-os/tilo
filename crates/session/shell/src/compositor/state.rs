@@ -797,6 +797,7 @@ pub struct State {
     /// Live app-owned secondary surfaces, outside the normal workspace tree.
     pub(crate) floating_toplevels: Vec<FloatingToplevel>,
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
+    floating_focus_handoffs: HashMap<(u64, String), floating_focus::SourceFocus>,
 }
 
 enum AgentNavigationActivation {
@@ -996,6 +997,7 @@ impl State {
         public_id: &str,
         return_frame: Option<FloatingTransferFrame>,
     ) -> bool {
+        self.arm_floating_return_focus(connection, public_id);
         if let Some(frame) = return_frame
             && let Some(surface) = self
                 .floating_toplevels
@@ -1023,12 +1025,14 @@ impl State {
         connection: u64,
         public_id: &str,
     ) -> bool {
-        complete_floating_return_entries(
+        let focus_ready = self.floating_return_presented(connection, public_id);
+        let changed = complete_floating_return_entries(
             &mut self.pending_floating_toplevels,
             &mut self.floating_toplevels,
             connection,
             public_id,
-        )
+        );
+        changed || focus_ready
     }
 
     /// Release the source-frame gate only after the app's primary render
@@ -1072,6 +1076,8 @@ impl State {
     }
 
     pub(crate) fn dismiss_floating_toplevel(&mut self, connection: u64, public_id: &str) -> bool {
+        self.floating_focus_handoffs
+            .remove(&(connection, public_id.to_owned()));
         dismiss_floating_entries(
             &mut self.pending_floating_toplevels,
             &mut self.floating_toplevels,
@@ -1081,6 +1087,8 @@ impl State {
     }
 
     pub(crate) fn dismiss_floating_connection(&mut self, connection: u64) -> bool {
+        self.floating_focus_handoffs
+            .retain(|(owner, _), _| *owner != connection);
         let pending_before = self.pending_floating_toplevels.len();
         let live_before = self.floating_toplevels.len();
         self.pending_floating_toplevels
@@ -1439,6 +1447,7 @@ impl State {
             virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
+            floating_focus_handoffs: HashMap::new(),
             floating_toplevels: Vec::new(),
             floating_toplevel_events: Vec::new(),
         };
@@ -4375,6 +4384,9 @@ fn authenticated_floating_toplevel_identity(
 #[path = "floating_identity_tests.rs"]
 mod floating_identity_tests;
 
+#[path = "floating_focus.rs"]
+mod floating_focus;
+
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
     announced_app_id: Option<String>,
@@ -4558,6 +4570,7 @@ impl CompositorHandler for State {
         let root = foreign_root(surface);
         self.drop_transients_for_surface(id);
         self.surface_handles.remove(&id);
+        self.retire_floating_focus_source(id);
         self.presentation_feedback.destroyed(id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
@@ -5019,6 +5032,7 @@ impl State {
             .retain(|popup| !removed.contains(&surface_id(popup.wl_surface())));
         for id in removed {
             self.client_input.unregister_transient(id);
+            self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
             crate::compositor::foreign::store().forget(id);
         }
     }
@@ -5619,6 +5633,7 @@ impl XdgShellHandler for State {
                 if adopted.is_none() {
                     tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
                     self.client_input.unregister_toplevel(surface_id);
+                    self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
                     surface.send_close();
                     return;
                 }
@@ -5682,6 +5697,8 @@ impl XdgShellHandler for State {
             .position(|candidate| candidate.surface_id == surface_id)
         {
             let surface = self.floating_toplevels.remove(index);
+            self.floating_focus_handoffs
+                .remove(&(surface.connection, surface.public_id.clone()));
             self.floating_toplevel_events
                 .push(FloatingToplevelEvent::Destroyed {
                     connection: surface.connection,
@@ -5718,6 +5735,7 @@ impl XdgShellHandler for State {
         crate::compositor::foreign::store().forget(surface_id);
         // Drop the input router's handle so no event can target a dead surface, and queue the chrome-side tab reap for next tick.
         self.client_input.unregister_toplevel(surface_id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
@@ -6157,6 +6175,7 @@ impl InputMethodHandler for State {
         self.input_method_popups
             .retain(|popup| popup.wl_surface() != surface.wl_surface());
         self.client_input.unregister_transient(id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
         crate::compositor::foreign::store().forget(id);
     }
 

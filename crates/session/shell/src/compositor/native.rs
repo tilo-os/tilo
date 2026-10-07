@@ -1678,10 +1678,11 @@ fn pump_floating_surface_service(
                                 transfer_source,
                                 [app_rect.x0, app_rect.y0],
                                 owner,
+                                source_surface_id,
                             ))
                         });
                     match result {
-                        Ok((request, transfer_frame, transfer_source, coordinate_offset, owner)) => {
+                        Ok((request, transfer_frame, transfer_source, coordinate_offset, owner, source_surface_id)) => {
                             if request.role.uses_app_owned_host() {
                                 let content_rect = request.initial_rect.unwrap_or_else(|| {
                                     Rect::from_center_size(desktop.center(), request.preferred_size)
@@ -1698,6 +1699,9 @@ fn pump_floating_surface_service(
                                         fallback_size,
                                     );
                                 let transfer_covered = transfer_frame.is_some();
+                                if let Some(owner) = owner.as_ref() {
+                                    state.arm_floating_focus(connection, &public_id, source_surface_id, owner.clone());
+                                }
                                 let token = state
                                     .resume_floating_toplevel(
                                         connection,
@@ -1711,7 +1715,7 @@ fn pump_floating_surface_service(
                                         let token = uuid::Uuid::new_v4().simple().to_string();
                                         state.authorize_floating_toplevel(
                                             crate::compositor::state::PendingFloatingToplevel {
-                                                owner,
+                                                owner: owner.clone(),
                                                 token: token.clone(),
                                                 connection,
                                                 public_id: public_id.clone(),

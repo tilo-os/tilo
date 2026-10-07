@@ -437,6 +437,7 @@ impl State {
         };
         let serial = mint_serial(self);
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus);
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
@@ -1026,6 +1027,9 @@ pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let captured = chrome_captures_input(fb);
+    let handoff = (!captured)
+        .then(|| state.apply_floating_focus_handoffs(fb))
+        .flatten();
     // Overlay clicks assign focus directly because they are not represented in
     // the workspace tree. Preserve that assignment across the next tick while
     // the surface is still mapped; otherwise this reconciliation immediately
@@ -1047,9 +1051,10 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     );
     // A window the person focused while showing it on another device of
     // theirs types there until they use this device again.
-    let candidate = state
-        .focused_output_presentation_surface()
+    let candidate = handoff
+        .or_else(|| state.focused_output_presentation_surface())
         .or_else(|| state.headless_keyboard_focus())
+        .or_else(|| state.floating_return_focus())
         .or(overlay_focus)
         .or_else(|| state.personal_keyboard_focus())
         .or_else(|| {
