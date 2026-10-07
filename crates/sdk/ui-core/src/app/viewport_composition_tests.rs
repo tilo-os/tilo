@@ -673,3 +673,28 @@ impl crate::widget::NativeViewBackend for CountingNativeBackend {
     fn set_focus(&mut self, _: bool) {}
     fn set_enabled(&mut self, _: bool) {}
 }
+
+#[test]
+fn native_slider_rebuilds_its_target_style_when_input_capabilities_change() {
+    let value = crate::LocalState::new(0.5);
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(crate::widget::Slider::from_state(&value)),
+    );
+    app.init_layout();
+    frame(&mut app, 600);
+    for environment in [
+        crate::InteractionEnvironment::TOUCH,
+        crate::InteractionEnvironment::POINTER,
+    ] {
+        app.set_interaction_environment(environment);
+        frame(&mut app, 600);
+        assert_eq!(
+            app.root_widget.get_rect().height(),
+            f64::from(environment.minimum_target()),
+            "the native host applies the current input target, not its old cached style"
+        );
+        assert!(!app.root_widget.layout_needs_measure());
+        assert_eq!(value.get(), 0.5, "layout never changes the value");
+    }
+}
