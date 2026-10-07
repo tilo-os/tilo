@@ -9033,10 +9033,13 @@ mod tests {
         assert!(!manager.is_connected());
         assert!(manager.document_publication_failed());
         assert!(
-            !state.document_reads.ready(&route_key, &ready),
-            "a terminal committed-read gate cannot be reopened"
+            state.document_reads.ready(&route_key, &ready),
+            "the test must force the exact internal read gate ready"
         );
-        assert!(!manager.send(CollabRequest::document_incremental(b"late reopen".to_vec())));
+        assert!(
+            !manager.send(CollabRequest::document_incremental(b"late reopen".to_vec())),
+            "force-ready internal gate cannot reopen terminal transport"
+        );
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 1);
         tilo_test_env::wait_until(
             "`state.command_bytes.0.load(Ordering::Acquire) == 0`",
