@@ -384,243 +384,427 @@ async fn wait_certified_native_peer(events: &mut mpsc::Receiver<NetEvent>) {
     .await;
 }
 
-/// Native screen crossing reaches the remote Wayland seat over real Iroh,
-/// using an exact synthetic grant and no SurfaceStreamStart/video payload.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
-    use settings_store::display_placement::Placement;
-    use shell::network::device_topology::{NativeScreen, NativeScreenRouter};
-    use shell::network::{InputEvent, ShareRegistry, StreamingShare};
+use shell::network::actor::PersonalFabricPayload;
+use shell::shell::device_fabric as native_fabric;
+use shell::shell::personal_continuity::DeviceId;
 
-    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
-    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
-    let source_endpoint = addr_a.id;
-    let source_peer = shell::network::behaviour::peer_liveness_handle(&source_endpoint);
-    let target_peer = shell::network::behaviour::peer_liveness_handle(&addr_b.id);
-    let target = addr_b.id;
-    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
-    wait_certified_native_peer(&mut events_a).await;
-    wait_certified_native_peer(&mut events_b).await;
-
-    let screens = vec![
-        NativeScreen {
-            peer: source_peer,
-            connector: "eDP-1".into(),
-            surface: 6,
-            placement: Placement::new(0, 0, 960, 540),
-            online: true,
-        },
-        // A 2560x1440 physical panel at 2x is 1280x720 logical units.
-        NativeScreen {
-            peer: target_peer,
-            connector: "eDP-1".into(),
-            surface: 7,
-            placement: Placement::new(960, 0, 1280, 720),
-            online: true,
-        },
-    ];
-    let mut router = NativeScreenRouter::default();
-    assert!(router.replace(screens.clone()));
-    let mut grants = ShareRegistry::new();
-    let motion = ((959.0, 200.0), (970.0, 205.0));
-    assert!(
-        router
-            .cross((source_peer, 6), motion, &grants, false)
-            .is_none(),
-        "membership and topology do not grant input"
-    );
-    grants.insert(target_peer, 7, StreamingShare::new());
-    assert!(
-        router
-            .cross((source_peer, 6), motion, &grants, true)
-            .is_none(),
-        "sensitive source focus must not export physical input"
-    );
-    let handoff = router
-        .cross((source_peer, 6), motion, &grants, false)
-        .unwrap();
-    assert_eq!(
-        handoff.event,
-        InputEvent::PointerMotion { x: 10.0, y: 205.0 }
-    );
-    cmd_a
-        .send(NetCmd::PublishWorkspaceControl {
-            ws: WS,
-            msg: NeighbourMsg::RemoteInput {
-                peer: source_peer,
-                surface: handoff.surface,
-                event: postcard::to_stdvec(&handoff.event).unwrap(),
+fn native_snapshot(
+    device: &DeviceId,
+    scale_milli: u16,
+    rect: native_fabric::DisplayRect,
+) -> native_fabric::DeviceFabricSnapshot {
+    let stamp = native_fabric::FabricStamp {
+        counter: 1,
+        device: device.clone(),
+    };
+    native_fabric::DeviceFabricSnapshot {
+        schema_version: native_fabric::FABRIC_SCHEMA_VERSION,
+        owner: device.clone(),
+        presence: native_fabric::DevicePresence {
+            device: device.clone(),
+            label: "Synthetic screen".into(),
+            kind: native_fabric::DeviceKind::Laptop,
+            capabilities: native_fabric::FabricCapabilities {
+                display: true,
+                pointer: true,
+                keyboard: true,
+                ..native_fabric::FabricCapabilities::default()
             },
-            route: WorkspaceControlRoute::Direct { target },
-        })
-        .await
-        .unwrap();
-    let event = tilo_test_env::within("native boundary input arrived", async {
+            online: true,
+            last_seen_unix_ms: 1,
+            wake_routes: Vec::new(),
+            stamp: stamp.clone(),
+        },
+        display: Some(native_fabric::DisplayPlacement {
+            device: device.clone(),
+            rect,
+            scale_milli,
+            stamp,
+        }),
+        media: Vec::new(),
+        clipboard: Vec::new(),
+        settings: Vec::new(),
+        wifi: Vec::new(),
+        speakers: shell::shell::speaker_group::SpeakerFabricState::default(),
+        unlock: shell::shell::device_unlock::UnlockFabricState::default(),
+    }
+}
+
+async fn wait_native_payload(
+    events: &mut mpsc::Receiver<NetEvent>,
+    expected_peer: iroh::EndpointId,
+) -> PersonalFabricPayload {
+    tilo_test_env::within("authenticated native fabric payload", async {
         loop {
-            match events_b.recv().await.expect("Iroh receiver remains live") {
-                NetEvent::Msg { peer, msg: NeighbourMsg::RemoteInput { surface, event, .. }, .. } => {
-                    assert_eq!(peer, source_endpoint);
-                    assert_eq!(surface, 7);
-                    break postcard::from_bytes::<InputEvent>(&event).unwrap();
+            match events.recv().await.expect("native actor remains live") {
+                NetEvent::PersonalFabric { peer, user_public_key, payload, .. } => {
+                    assert_eq!(peer, expected_peer);
+                    assert_eq!(user_public_key, ed25519_dalek::SigningKey::from_bytes(&[41; 32]).verifying_key().to_bytes());
+                    return payload;
                 }
-                NetEvent::Msg { msg: NeighbourMsg::SurfaceStreamStart { .. }
-                    | NeighbourMsg::SurfaceFrame { .. }, .. } => panic!("native fixture emitted video"),
+                NetEvent::Msg { msg: NeighbourMsg::SurfaceStreamStart { .. } | NeighbourMsg::SurfaceFrame { .. }, .. } => panic!("native fixture emitted video"),
                 _ => {}
             }
         }
-    }).await;
-    assert_native_receiver_policy(event, source_peer);
-    assert_native_focus_lifecycle(router, screens, grants, source_peer, target_peer);
+    }).await
 }
 
-fn assert_native_receiver_policy(event: shell::network::InputEvent, source_peer: u64) {
+async fn send_native_payload(
+    cmd: &mpsc::Sender<NetCmd>,
+    target: iroh::EndpointId,
+    payload: PersonalFabricPayload,
+) {
+    cmd.send(NetCmd::PublishPersonalFabricTarget {
+        ws: WS,
+        user_public_key: ed25519_dalek::SigningKey::from_bytes(&[41; 32])
+            .verifying_key()
+            .to_bytes(),
+        target,
+        payload,
+    })
+    .await
+    .unwrap();
+}
+
+/// The existing certified personal-fabric lane carries placement and leased
+/// input to the native seat. No surface share, stream, enrollment or new router.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
+    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
+    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
+    let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
+    let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
+    let endpoint_a = addr_a.id;
+    let endpoint_b = addr_b.id;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_certified_native_peer(&mut events_a).await;
+    wait_certified_native_peer(&mut events_b).await;
+    let mut source_fabric = native_fabric::DeviceFabric::default();
+    let mut target_fabric = native_fabric::DeviceFabric::default();
+    source_fabric
+        .upsert(native_snapshot(
+            &source,
+            2000,
+            native_fabric::DisplayRect {
+                x: 0,
+                y: 0,
+                width: 960,
+                height: 540,
+            },
+        ))
+        .unwrap();
+    target_fabric
+        .upsert(native_snapshot(
+            &target,
+            1000,
+            native_fabric::DisplayRect {
+                x: 960,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+        ))
+        .unwrap();
+    send_native_payload(
+        &cmd_b,
+        endpoint_a,
+        PersonalFabricPayload::Snapshot(target_fabric.encode_checkpoint().unwrap()),
+    )
+    .await;
+    let PersonalFabricPayload::Snapshot(bytes) =
+        wait_native_payload(&mut events_a, endpoint_b).await
+    else {
+        panic!("expected native topology snapshot");
+    };
+    let received = native_fabric::DeviceFabric::decode_checkpoint(&bytes).unwrap();
+    assert_eq!(received.snapshots().len(), 1);
+    let remote = received.snapshots().get(&target).unwrap().clone();
+    source_fabric.upsert(remote.clone()).unwrap();
+    let mut advertised_source = native_fabric::DeviceFabric::default();
+    advertised_source
+        .upsert(source_fabric.snapshots().get(&source).unwrap().clone())
+        .unwrap();
+    send_native_payload(
+        &cmd_a,
+        endpoint_b,
+        PersonalFabricPayload::Snapshot(advertised_source.encode_checkpoint().unwrap()),
+    )
+    .await;
+    let PersonalFabricPayload::Snapshot(bytes) =
+        wait_native_payload(&mut events_b, endpoint_a).await
+    else {
+        panic!("expected source topology");
+    };
+    let received = native_fabric::DeviceFabric::decode_checkpoint(&bytes).unwrap();
+    assert_eq!(received.snapshots().len(), 1);
+    target_fabric
+        .upsert(received.snapshots().get(&source).unwrap().clone())
+        .unwrap();
+    assert_eq!(
+        source_fabric, target_fabric,
+        "both native replicas converge on the same logical topology"
+    );
+    let crossing = source_fabric.cross_right_edge(&source, 205).unwrap();
+    assert_eq!(
+        (&crossing.to, crossing.target_x, crossing.target_y),
+        (&target, 0, 205)
+    );
+    let event = native_fabric::FabricInputEvent::PointerMotion {
+        x: crossing.target_x,
+        y: crossing.target_y,
+    };
+    let lease = assert_native_wire_input(
+        &cmd_a,
+        &mut events_b,
+        (endpoint_a, endpoint_b),
+        (&source, &target),
+        event,
+    )
+    .await;
+    assert_native_lease_and_topology(&source, &target, source_fabric, remote, &lease);
+}
+
+async fn assert_native_wire_input(
+    cmd: &mpsc::Sender<NetCmd>,
+    events: &mut mpsc::Receiver<NetEvent>,
+    endpoints: (iroh::EndpointId, iroh::EndpointId),
+    devices: (&DeviceId, &DeviceId),
+    event: native_fabric::FabricInputEvent,
+) -> native_fabric::InputLease {
+    let (source_endpoint, target_endpoint) = endpoints;
+    let (source, target) = devices;
+    let now = tilo_clock::unix_now_ms();
+    let lease = native_fabric::InputLease {
+        controller: source.clone(),
+        target: target.clone(),
+        issued_unix_ms: now,
+        expires_unix_ms: now.saturating_add(60_000),
+        nonce: [9; 16],
+        allow_keyboard: true,
+        allow_pointer: true,
+    };
+    assert!(
+        !native_fabric::permits_spatial_input(None, source, target, (lease.nonce, event), now),
+        "same identity and topology do not grant input"
+    );
+    let envelope = native_fabric::PersonalFabricActionEnvelope {
+        request_id: [1; 16],
+        source: source.clone(),
+        target: target.clone(),
+        issued_unix_ms: now,
+        action: native_fabric::PersonalFabricAction::Input {
+            lease_nonce: lease.nonce,
+            event,
+        },
+    };
+    send_native_payload(
+        cmd,
+        target_endpoint,
+        PersonalFabricPayload::Action(postcard::to_allocvec(&envelope).unwrap()),
+    )
+    .await;
+    let PersonalFabricPayload::Action(bytes) = wait_native_payload(events, source_endpoint).await
+    else {
+        panic!("expected native input action");
+    };
+    let received: native_fabric::PersonalFabricActionEnvelope =
+        postcard::from_bytes(&bytes).unwrap();
+    received.validate_at(source, target, now).unwrap();
+    let native_fabric::PersonalFabricAction::Input { lease_nonce, event } = received.action else {
+        panic!("expected input");
+    };
+    assert!(native_fabric::permits_spatial_input(
+        Some(&lease),
+        source,
+        target,
+        (lease_nonce, event),
+        now
+    ));
+    assert_native_receiver_policy(source, event);
+    lease
+}
+
+fn assert_native_receiver_policy(controller: &DeviceId, event: native_fabric::FabricInputEvent) {
     use shell::compositor::state::State;
-    use shell::network::{ShellView, StreamingShare};
+    use shell::network::ShellView;
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::wayland_server::Display;
-    use vello::kurbo::Rect;
     let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
     let display: Display<State> = Display::new().unwrap();
-    let mut seat = State::new(event_loop.handle(), display.handle());
-    seat.share_registry
-        .insert(source_peer, 7, StreamingShare::new());
-    seat.remote_input_firewall.publish_view(ShellView::new(
-        vec![(7, Rect::new(0.0, 0.0, 1280.0, 720.0))],
-        Some(7),
-        false,
-        false,
+    let mut state = State::new(event_loop.handle(), display.handle());
+    assert!(state.apply_personal_fabric_input(controller, event));
+    let pointer = state.seat.get_pointer().unwrap().current_location();
+    assert_eq!((pointer.x, pointer.y), (0.0, 205.0));
+    assert!(state.apply_personal_fabric_input(
+        controller,
+        native_fabric::FabricInputEvent::Key {
+            keycode: 30,
+            pressed: true,
+            modifiers: 0
+        }
     ));
-    assert!(seat.apply_remote_input(source_peer, 7, event.clone()));
-    let pointer = seat.seat.get_pointer().unwrap().current_location();
-    assert_eq!((pointer.x, pointer.y), (10.0, 205.0));
-    seat.share_registry.set_read_only(source_peer, 7, true);
-    assert!(!seat.apply_remote_input(source_peer, 7, event.clone()));
-    seat.share_registry.set_read_only(source_peer, 7, false);
-    seat.remote_input_firewall.publish_view(
-        ShellView::new(
-            vec![(7, Rect::new(0.0, 0.0, 1280.0, 720.0))],
-            Some(7),
-            false,
-            false,
-        )
-        .locked(true),
+    assert!(
+        state
+            .seat
+            .get_keyboard()
+            .unwrap()
+            .pressed_keys()
+            .iter()
+            .any(|key| u32::from(*key) == 38)
     );
-    assert!(!seat.apply_remote_input(source_peer, 7, event));
+    state.release_personal_fabric_input(controller);
+    assert!(
+        state.seat.get_keyboard().unwrap().pressed_keys().is_empty(),
+        "disconnect/revocation cleanup releases held keys"
+    );
+    // Keysym lookup must convert back to evdev before the common seat injector.
+    for pressed in [true, false] {
+        assert!(state.apply_remote_desktop_action(
+            shell::network::streaming::RemoteAction::KeyboardKeysym {
+                keysym: 0x61,
+                pressed
+            }
+        ));
+        assert_eq!(
+            state
+                .seat
+                .get_keyboard()
+                .unwrap()
+                .pressed_keys()
+                .iter()
+                .any(|key| u32::from(*key) == 38),
+            pressed
+        );
+    }
+    state
+        .remote_input_firewall
+        .publish_view(ShellView::new(Vec::new(), None, false, false).locked(true));
+    assert!(!state.apply_personal_fabric_input(controller, event));
+    state
+        .remote_input_firewall
+        .publish_view(ShellView::new(Vec::new(), None, false, false));
+    state.remote_input_firewall.engage_kill_switch();
+    assert!(!state.apply_personal_fabric_input(controller, event));
 }
 
-fn assert_native_focus_lifecycle(
-    mut router: shell::network::device_topology::NativeScreenRouter,
-    screens: Vec<shell::network::device_topology::NativeScreen>,
-    mut grants: shell::network::ShareRegistry,
-    source_peer: u64,
-    target_peer: u64,
+fn assert_native_lease_and_topology(
+    source: &DeviceId,
+    target: &DeviceId,
+    mut fabric: native_fabric::DeviceFabric,
+    mut remote: native_fabric::DeviceFabricSnapshot,
+    lease: &native_fabric::InputLease,
 ) {
-    use shell::network::InputEvent;
-    let motion = ((959.0, 200.0), (970.0, 205.0));
-    let key = InputEvent::Key {
-        keysym: 30,
+    let event = native_fabric::FabricInputEvent::Key {
+        keycode: 30,
         pressed: true,
         modifiers: 0,
     };
-    assert!(router.focused_input(key.clone(), &grants, false).is_some());
-    grants.set_read_only(target_peer, 7, true);
-    assert!(router.focused_input(key.clone(), &grants, false).is_none());
-    grants.set_read_only(target_peer, 7, false);
+    let now = lease.issued_unix_ms;
+    assert!(!native_fabric::permits_spatial_input(
+        Some(lease),
+        source,
+        target,
+        ([8; 16], event),
+        now
+    ));
+    assert!(!native_fabric::permits_spatial_input(
+        Some(lease),
+        target,
+        source,
+        (lease.nonce, event),
+        now
+    ));
+    assert!(!native_fabric::permits_spatial_input(
+        Some(lease),
+        source,
+        target,
+        (lease.nonce, event),
+        lease.expires_unix_ms.saturating_add(1)
+    ));
     assert!(
-        router.focused_input(key.clone(), &grants, false).is_none(),
-        "renewing a grant cannot resurrect focus"
+        !native_fabric::permits_spatial_input(None, source, target, (lease.nonce, event), now),
+        "revocation discards the retained lease"
     );
+    remote.presence.online = false;
+    remote.presence.stamp.counter = 2;
+    fabric.upsert(remote.clone()).unwrap();
+    assert!(fabric.cross_right_edge(source, 205).is_none());
+    remote.presence.online = true;
+    remote.presence.stamp.counter = 3;
+    remote.display.as_mut().unwrap().rect.x = 1100;
+    fabric.upsert(remote.clone()).unwrap();
     assert!(
-        router
-            .cross((source_peer, 6), motion, &grants, false)
-            .is_some()
+        fabric.cross_right_edge(source, 205).is_none(),
+        "rearrangement leaves a real gap"
     );
-    assert!(router.focused_input(key.clone(), &grants, true).is_none());
+    remote.display.as_mut().unwrap().rect.x = 960;
     assert!(
-        router.focused_input(key.clone(), &grants, false).is_none(),
-        "leaving sensitive focus does not resume typing"
+        matches!(
+            fabric.upsert(remote.clone()),
+            Err(native_fabric::FabricError::ConflictingRevision)
+        ),
+        "concurrent equal revisions cannot silently replace topology"
     );
+    remote.presence.stamp.counter = 4;
+    fabric.upsert(remote).unwrap();
+    assert!(fabric.cross_right_edge(source, 205).is_some());
     assert!(
-        router
-            .cross((source_peer, 6), motion, &grants, false)
-            .is_some()
-    );
-    let mut offline = screens.clone();
-    offline[1].online = false;
-    assert!(router.replace(offline));
-    assert!(
-        router
-            .cross((source_peer, 6), motion, &grants, false)
-            .is_none()
-    );
-    assert!(router.replace(screens));
-    assert!(
-        router.focused_input(key, &grants, false).is_none(),
-        "reconnect requires a new crossing"
+        !native_fabric::permits_spatial_input(None, source, target, (lease.nonce, event), now),
+        "reconnect does not recreate revoked authority"
     );
 }
 
-mod native_geometry {
-    use settings_store::display_placement::Placement;
-    use shell::network::device_topology::{NativeScreen, NativeScreenRouter};
-    use shell::network::{InputEvent, ShareRegistry, StreamingShare};
-
-    fn screen(peer: u64, surface: u64, placement: Placement) -> NativeScreen {
-        NativeScreen {
-            peer,
-            surface,
-            connector: "eDP-1".into(),
-            placement,
-            online: true,
+#[test]
+fn native_screen_geometry_rejects_offline_sources_and_invalid_bounds() {
+    let source = DeviceId::new("source").unwrap();
+    let target = DeviceId::new("target").unwrap();
+    let mut fabric = native_fabric::DeviceFabric::default();
+    let mut local = native_snapshot(
+        &source,
+        2000,
+        native_fabric::DisplayRect {
+            x: 0,
+            y: 0,
+            width: 960,
+            height: 540,
+        },
+    );
+    fabric.upsert(local.clone()).unwrap();
+    fabric
+        .upsert(native_snapshot(
+            &target,
+            1000,
+            native_fabric::DisplayRect {
+                x: 960,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+        ))
+        .unwrap();
+    assert!(fabric.cross_right_edge(&source, 205).is_some());
+    local.presence.online = false;
+    local.presence.stamp.counter = 2;
+    fabric.upsert(local).unwrap();
+    assert!(fabric.cross_right_edge(&source, 205).is_none());
+    assert!(
+        native_fabric::DisplayRect {
+            x: i32::MAX,
+            y: 0,
+            width: 1,
+            height: 1
         }
-    }
-
-    #[test]
-    fn crossing_uses_the_shared_edge_not_only_the_destination_rect() {
-        let mut router = NativeScreenRouter::default();
-        assert!(router.replace(vec![
-            screen(1, 1, Placement::new(0, 0, 100, 100)),
-            screen(2, 2, Placement::new(100, 80, 100, 100)),
-        ]));
-        let mut grants = ShareRegistry::new();
-        grants.insert(2, 2, StreamingShare::new());
-        assert!(
-            router
-                .cross((1, 1), ((99.0, 85.0), (101.0, 85.0)), &grants, false)
-                .is_some()
-        );
-        assert!(
-            router
-                .cross((1, 1), ((90.0, 10.0), (190.0, 90.0)), &grants, false)
-                .is_none()
-        );
-        for point in [(f64::NAN, 85.0), (f64::INFINITY, 85.0), (101.0, f64::NAN)] {
-            assert!(
-                router
-                    .cross((1, 1), ((99.0, 85.0), point), &grants, false)
-                    .is_none()
-            );
+        .logical_placement()
+        .is_none()
+    );
+    assert!(
+        native_fabric::DisplayRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 1
         }
-    }
-
-    #[test]
-    fn invalid_replacement_cancels_focus_and_cannot_leave_old_screens_active() {
-        let mut router = NativeScreenRouter::default();
-        let first = screen(1, 1, Placement::new(0, 0, 100, 100));
-        let second = screen(2, 2, Placement::new(100, 0, 100, 100));
-        assert!(router.replace(vec![first.clone(), second.clone()]));
-        let mut grants = ShareRegistry::new();
-        grants.insert(2, 2, StreamingShare::new());
-        let motion = ((99.0, 50.0), (101.0, 50.0));
-        assert!(router.cross((1, 1), motion, &grants, false).is_some());
-        assert!(!router.replace(vec![first.clone(), first]));
-        assert!(router.cross((1, 1), motion, &grants, false).is_none());
-        let key = InputEvent::Key {
-            keysym: 30,
-            pressed: true,
-            modifiers: 0,
-        };
-        assert!(router.focused_input(key, &grants, false).is_none());
-        assert!(!router.replace(vec![second.clone(), screen(3, 3, second.placement)]));
-    }
+        .logical_placement()
+        .is_none()
+    );
 }
