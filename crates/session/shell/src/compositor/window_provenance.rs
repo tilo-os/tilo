@@ -98,11 +98,14 @@ impl State {
             else {
                 continue;
             };
+            let Some(adoption_id) = super::state::surface_adoption_id(surface) else {
+                continue;
+            };
             if !self.window_is_current(&window) {
                 continue;
             }
             windows.push(serde_json::json!({
-                "room": window.room.to_string(), "tab_id": window.tab,
+                "adoption_id": adoption_id, "room": window.room.to_string(), "tab_id": window.tab,
                 "surface_id": window.surface, "package_id": window.package,
                 "record_instance": window.record, "peer_pid": pid,
                 "peer_start_time_ticks": start.to_string(),

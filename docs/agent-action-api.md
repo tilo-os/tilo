@@ -56,7 +56,9 @@ by a token:
 
 Store's native `open` action is a background action with an explicit JSON result.
 After real adopted-window readiness and revalidation of the original caller, its
-`launch.adopted_window` identifies the surface, package and room. It contains no
+`launch.adopted_window` identifies the surface, package, room and an opaque host-issued adoption UUID.
+The UUID identifies that resource lifetime, including across numeric ID reuse;
+knowing it grants no authority. It contains no
 kernel PID. Legacy hosts may return `launch: null`; that proves no particular
 window and cannot qualify resident-package acceptance. Flatpak Open retains its
 unit-job result contract.
@@ -64,7 +66,8 @@ unit-job result contract.
 The authenticated device owner's existing `state-dump` adds
 `chrome.native_window_provenance`: at most 128 current window associations from
 confined, launcher-attributed Wayland connections. Each row carries the current
-room, tab, surface, package, local record instance and kernel peer PID/start time.
+room, tab, surface, matching adoption UUID, package, local record instance and
+kernel peer PID/start time.
 The dump omits unattested, missing, closed, foreign or reused-process associations;
 `omitted` reports overflow. Agent-control cannot request this owner diagnostic.
 

@@ -216,10 +216,10 @@ class InstalledOpen(unittest.TestCase):
             state["workspace_tree"]["local_app_records"]["8"] = {
                 "room": "room", "app_id": "so.tilo.calculator", "record_instance": 12}
             tabs = state["workspace_tree"]["workspaces"][0]["strips"][0]["window_groups"][0]["tabs"]
-            tabs.append({"id": 8, "tile": {"Foreign": {"app_id": "so.tilo.calculator", "surface_id": 100}}})
+            tabs.append({"id": 8, "tile": {"Foreign": {"app_id": "so.tilo.calculator", "surface_id": 100, "adoption_id": "11111111-1111-4111-8111-111111111111"}}})
         state["chrome"] = {"native_window_provenance": {"method": "authenticated-wayland-peer", "omitted": 0,
             "windows": [{"room": "room", "tab_id": 8, "surface_id": 100, "package_id": "so.tilo.calculator",
-                         "record_instance": 12, "peer_pid": 222, "peer_start_time_ticks": "999"}] if opened else []}}
+                         "adoption_id": "11111111-1111-4111-8111-111111111111", "record_instance": 12, "peer_pid": 222, "peer_start_time_ticks": "999"}] if opened else []}}
         return state
 
     def door(self):
@@ -235,7 +235,7 @@ class InstalledOpen(unittest.TestCase):
         def call(operation, *_):
             if operation == "open":
                 opened.append(True)
-                return {"launch": {"adopted_window": {"package_id": "so.tilo.calculator", "room": "room", "surface_id": 100}}}
+                return {"launch": {"adopted_window": {"package_id": "so.tilo.calculator", "room": "room", "surface_id": 100, "adoption_id": "11111111-1111-4111-8111-111111111111"}}}
         door.call.side_effect = call
         return door
 
@@ -279,8 +279,8 @@ class InstalledOpen(unittest.TestCase):
 
     def test_closed_replaced_foreign_and_unobservable_windows_do_not_qualify(self):
         import copy
-        window = {"package_id": "so.tilo.calculator", "room": "room", "surface_id": 100}
-        for kind in ("closed", "record", "package", "room", "missing", "duplicate"):
+        window = {"package_id": "so.tilo.calculator", "room": "room", "surface_id": 100, "adoption_id": "11111111-1111-4111-8111-111111111111"}
+        for kind in ("closed", "record", "package", "room", "missing", "duplicate", "lifetime", "missing_lifetime"):
             with self.subTest(kind=kind):
                 state = copy.deepcopy(self.subject())
                 proof = state["chrome"]["native_window_provenance"]
@@ -291,10 +291,20 @@ class InstalledOpen(unittest.TestCase):
                 elif kind == "room": proof["windows"][0]["room"] = "foreign-room"
                 elif kind == "missing": state["chrome"].clear()
                 elif kind == "duplicate": proof["windows"].append(copy.deepcopy(proof["windows"][0]))
+                elif kind == "lifetime": proof["windows"][0]["adoption_id"] = "22222222-2222-4222-8222-222222222222"
+                elif kind == "missing_lifetime": proof["windows"][0].pop("adoption_id")
                 if kind in ("closed", "room"):
                     self.assertIsNone(driver.opened_subject(state, window))
                 else:
                     with self.assertRaises(VmError): driver.opened_subject(state, window)
+
+    def test_reused_numeric_surface_cannot_replace_the_opened_resource_lifetime(self):
+        state = self.subject()
+        window = {"package_id": "so.tilo.calculator", "room": "room", "surface_id": 100,
+                  "adoption_id": "11111111-1111-4111-8111-111111111111"}
+        state["chrome"]["native_window_provenance"]["windows"][0]["adoption_id"] = "22222222-2222-4222-8222-222222222222"
+        with self.assertRaises(VmError):
+            driver.opened_subject(state, window)
 
     def test_association_change_during_fd_audit_fails_without_closing(self):
         door = self.door()

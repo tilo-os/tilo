@@ -164,6 +164,10 @@ def opened_subject(state, window):
     if not matches:
         return None
     worker = matches[0]
+    require(isinstance(window.get("adoption_id"), str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", window["adoption_id"])
+            and window["adoption_id"] != "00000000-0000-0000-0000-000000000000"
+            and worker.get("adoption_id") == window["adoption_id"],
+            "opened surface resource lifetime changed or is unobservable")
     require(worker.get("package_id") == window["package_id"]
             and type(worker.get("record_instance")) is int
             and record == f'derived:default@tab:{worker["record_instance"]:016x}',
