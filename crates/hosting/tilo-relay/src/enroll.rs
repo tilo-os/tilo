@@ -3223,8 +3223,10 @@ mod tests {
             let before_key = std::fs::read(&paths.user_pubkey).unwrap();
             let before_cert = std::fs::read(&paths.device_cert).unwrap();
 
-            let mut requester = std::process::Command::new("/bin/sh")
-                .args(["-c", "while :; do sleep 1; done"])
+            // Keep one live requester on its stdin pipe. Killing a shell loop
+            // leaves its timer child holding the test's output handles.
+            let mut requester = std::process::Command::new("/bin/cat")
+                .stdin(std::process::Stdio::piped())
                 .spawn()
                 .unwrap();
             let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
@@ -3480,8 +3482,8 @@ mod tests {
             let identity_dir = identity_parent.path().join("identities");
             let paths = IdentityPaths::under(identity_root.path());
             paths.ensure_directories().unwrap();
-            let mut requester = std::process::Command::new("/bin/sh")
-                .args(["-c", "while :; do sleep 1; done"])
+            let mut requester = std::process::Command::new("/bin/cat")
+                .stdin(std::process::Stdio::piped())
                 .spawn()
                 .unwrap();
             let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
@@ -3525,8 +3527,8 @@ mod tests {
         }
         // Phase `pair_device_rejects_an_expired_requester_before_creating_identity_state`.
         {
-            let mut requester = std::process::Command::new("/bin/sh")
-                .args(["-c", "while :; do sleep 1; done"])
+            let mut requester = std::process::Command::new("/bin/cat")
+                .stdin(std::process::Stdio::piped())
                 .spawn()
                 .unwrap();
             let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
