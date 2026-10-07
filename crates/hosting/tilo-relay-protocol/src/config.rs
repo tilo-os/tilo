@@ -112,6 +112,11 @@ pub struct RelayConfig {
     /// runs for members. Absent: it runs none. Needs `services.compute`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environments: Option<EnvironmentsConfig>,
+
+    /// Public HTTPS resource-page entry of the operator's versioned browser bundle.
+    /// This is a navigation destination, not an admission or content-access grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_browser_page: Option<String>,
 }
 
 /// How a relay's compute worker hosts members' environment sessions.
@@ -425,6 +430,7 @@ impl Default for RelayConfig {
             workspaces: Vec::new(),
             peer_relays: Vec::new(),
             environments: None,
+            resource_browser_page: None,
         }
     }
 }

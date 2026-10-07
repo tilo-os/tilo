@@ -110,6 +110,7 @@ pub mod action;
 pub mod batch;
 pub mod child;
 pub mod collection;
+pub mod content;
 pub mod delta;
 pub mod diff;
 pub mod effect;
@@ -117,6 +118,7 @@ pub mod group;
 pub mod history;
 pub mod items;
 pub mod kind;
+mod low_mutation;
 pub mod model;
 pub mod order;
 pub mod reader;
@@ -135,18 +137,22 @@ pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use kind::{Kinds, ResourceKind};
+pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
 };
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Resource, SearchEntry, action_label,
-    build_action, declaration_spec, encode, origin_now_ms, publish,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Place, Resource, ScopeDecl, SearchBody,
+    SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText, SearchWeight, SharedRecord,
+    action_label, bind_declaration, build_action, declaration_spec, encode, origin_now_ms, publish,
+    reset_type_schemas, scope_contains,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
 pub use text::{PlainText, TextEdit};
+pub use tilo_actions::PermissionRequirement;
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
@@ -171,7 +177,7 @@ pub mod __private {
             anchor: None,
             title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
             text: text.join("\n"),
-            action: None,
+            ..Default::default()
         }]
     }
 
@@ -197,3 +203,7 @@ pub mod __private {
             .map_err(|error| error.to_string())
     }
 }
+
+/// Explicit bounded observations of real resource publication on this thread.
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+pub mod profiling;

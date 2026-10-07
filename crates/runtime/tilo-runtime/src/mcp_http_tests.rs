@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "mcp_admission_tests.rs"]
+mod admission_tests;
 use hyper::HeaderMap;
 use std::sync::Mutex as StdMutex;
 use tilo_actions::InvocationUpdate;

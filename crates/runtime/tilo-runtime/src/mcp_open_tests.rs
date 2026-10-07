@@ -209,6 +209,7 @@ fn row(
             presentation: None,
         },
         action: (!action.is_empty()).then(|| tilo_actions::ActionDescriptor {
+            semantic_identity: None,
             address: tilo_actions::ActionAddress::new(resource, action),
             resource_kind: kind.into(),
             resource_label: label.into(),

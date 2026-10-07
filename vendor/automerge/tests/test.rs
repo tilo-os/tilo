@@ -1,3 +1,5 @@
+#[path = "support/fixture_bytes.rs"]
+mod fixture_bytes;
 use automerge::marks::{ExpandMark, Mark};
 use automerge::sync::{Message, MessageVersion, State};
 //use automerge::op_tree::B;
@@ -2213,14 +2215,16 @@ fn fuzz_crashers() {
     for path in paths {
         // uncomment this line to figure out which fixture is crashing:
         println!("{:?}", path.as_ref().unwrap().path().display());
-        let bytes = fs::read(path.as_ref().unwrap().path());
+        let bytes =
+            fixture_bytes::decode(&fs::read_to_string(path.as_ref().unwrap().path()).unwrap());
         let res = Automerge::load(&bytes.unwrap());
         assert!(res.is_err());
     }
 }
 
 fn fixture(name: &str) -> Vec<u8> {
-    fs::read("./tests/fixtures/".to_owned() + name).unwrap()
+    fixture_bytes::decode(&fs::read_to_string(format!("./tests/fixtures/{name}.hex")).unwrap())
+        .unwrap()
 }
 
 #[test]

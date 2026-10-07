@@ -178,6 +178,8 @@ pub mod tests {
     ) -> Vec<crate::shell::search::SearchResult> {
         let chrome = chrome.borrow();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "open",
             wanted: &[],
             chrome: &chrome,
@@ -263,7 +265,7 @@ pub mod tests {
             ), "unexpected confirmation reply: {confirmation_reply:?}");
             fixture.set_confirmation_required(false);
 
-            let provider = LiveAppActionsProvider::new(fixture.broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(fixture.broker.clone());
             let mut doc = AutoCommit::new();
             let doc_root = automerge::ROOT.clone();
             let _same_room_actor = load_directory_result(&fixture, &provider, &doc, &doc_root).await;
@@ -285,7 +287,7 @@ pub mod tests {
                 .as_ref()
                 .expect("directory result starts through an atomic broker ticket");
             let InvocationDisposition::Pending(ticket) = begin(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -311,7 +313,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -337,7 +339,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -356,7 +358,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),

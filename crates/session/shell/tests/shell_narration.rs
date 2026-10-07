@@ -119,7 +119,7 @@ fn press(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, key: 
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut state,
+            state: ui::widget::Edits::lend(&mut state),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,

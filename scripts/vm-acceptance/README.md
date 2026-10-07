@@ -43,6 +43,53 @@ unless `--out` says otherwise. The exit status is 0 only when every check passes
 The runner refuses to start while another VM is running or when the host lacks the
 guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 
+## Run it in CI
+
+`.forgejo/workflows/vm-acceptance.yml` (Dev / VM acceptance) runs the suite on a
+`runner-disk-100g` runner, whose KVM the dev disk and legacy guest boots already use, so
+a run needs no laptop memory:
+
+```bash
+fgj workflow run vm-acceptance.yml -r main                       # every check on main
+fgj workflow run vm-acceptance.yml -r main -f ref=my-branch -f only=window -f gl=off
+```
+
+`fgj -f` splits values on commas, so a list (`only=B06,A13`, `swap=shell,app:notes`,
+`outputs`) goes through the forge's "Run workflow" form or its dispatch API instead.
+
+It also runs nightly on main, and on pull requests that change this directory: with only
+the checks of the changed check modules (and of the modules importing from them), just
+`provenance` when only this README or unit tests changed, and every check when anything
+else changed (`ci_select.py`).
+
+The base disk is what CI published for the newest main commit at or before `ref`: its
+dev disk (`tilo-vm-disk/main-<sha7>-ci`) when a lane published one, else its dev image
+(`tilo-vm:main-<sha7>-ci-x86_64`, pushed by Build / OS dev for main commits), installed
+with `os/dev/build-image.sh` exactly as Release / Dev VM disk installs it. The workflow
+writes the provenance record itself.
+
+`ref`'s own code reaches the VM the way it does on a laptop: after the slot is up, run.py
+`--swap` runs `tilo-vm swap <component> --builder host` from a worktree of `ref`
+(`--swap-from`), session components and apps into the run's slot, VM-wide ones into `vm`.
+`swap=default` is `shell` plus every `app:<dir>` the ref changed: a branch's own diff
+from main, or for a main commit what changed since the base (nothing when `ref` is the
+base commit), `all` every userspace component in
+`os/components.toml`, `none` nothing, or a list. The job runs in the CI builder image (the
+dev image's Fedora, with the runner's sccache), so swapped binaries link against the
+libraries the VM has. P01 then reads `base <commit> + <components> swapped from <ref>` and
+fails unless every requested swap is the layer its slot runs; the report's header lists
+the swaps. A base more than 20 commits behind `ref` gets a warning at the top of the
+summary: everything not swapped is the base's code.
+
+The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
+libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
+unprivileged user (root cannot hand passt its socket in a session). The runners have no
+GPU, so `gl=auto` creates the VM without virgl and the report records the software
+renderer; frame-timing checks gated to real display hardware report that. The report
+(`report.md`, `report.json`, shots, frame traces) is the run's artifact, `report.md` its
+job summary, and the job fails unless every check passes.
+
+
 ### Startup and GPU (A14, R05)
 
 A14 opens Files before anything else in the run does and times it from the app's own
@@ -65,6 +112,26 @@ image without tilo-vm (the installed-desktop gate in `build-image.yml`):
 ```bash
 ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
   | python3 scripts/vm-acceptance/gpu_check.py
+```
+
+### Cold start of every app (installed-desktop gate)
+
+Every app logs one `APP-STARTUP app=<pkg> total_ms=<ms> phases=<mark>:<ms>,...` line at
+its first presented frame, and `HISTORY-OPEN listed=<n> earlier=<bool> ms=<ms>` when its
+History opens. `app_startup_check.py` reads them from the session log, prints one row per
+app (slowest first, with the phase that took longest) and fails when a launch's first
+frame takes longer than its budget: 1 s, or 600 ms for small single-view apps
+(`acceptance/app_startup.py`), and 1 s for opening History. A launch whose window
+adapter is a CPU rasterizer (llvmpipe in a VM without a GPU) compiles vello's shaders and
+renders on the CPU, so it is held to the VM checks' software budget, 3 s, instead. The
+judgement prints every `APP-STARTUP` line it read, with all its phases. The installed-desktop gate in
+`build-image.yml` runs it after its app checks, having typed a ~2000-character note on the
+real keyboard and reopened Notes on it (`reopen-history`), so a note with thousands of
+changes in its history is part of every judged run. Under TCG it reports without judging.
+
+```bash
+./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/app_startup_check.py --probe)" \
+  | python3 scripts/vm-acceptance/app_startup_check.py --require so.tilo.notes
 ```
 
 ## Provenance
@@ -142,3 +209,40 @@ Touchpad gestures (W15) are driven through the control socket's `swipe` and `pin
 feed the shell's gesture tracker; libinput's own touchpad decoding needs a uinput touchpad
 `tilo-vm input` does not have yet. Not yet drivable, so failing as unobservable: output
 hotplug (B06; a slot's outputs are fixed at creation).
+
+## Terminal after a userspace cohort update
+
+`terminal-cohort.py` exercises an already active owner-controlled slot without
+power, session, permission, keyboard or screenshot operations. It uses the same
+`TiloVm` control transport and bounded wait helper as this suite. First close any
+existing **test** Terminal through its declared tab action: the runner refuses an
+existing Terminal or ambiguous/stale binding rather than touching its contents.
+
+```bash
+TILO_VM_CONFIG=/absolute/path/to/vms.toml \
+  python3 scripts/vm-acceptance/terminal-cohort.py \
+  --binary /absolute/path/to/tilo-vm --vm sysapps \
+  --slot yoga-app-acceptance-1006 --uid 1002 \
+  --cohort-receipt /absolute/path/to/successful-cohort/run.json \
+  --out target/terminal-cohort-new-run
+```
+
+The receipt must be the successful canonical `swap apps+runtime` receipt for
+this VM and slot, with full source commit and inventory digest. The output
+folder must be new. The runner checks that exact layer is installed, discovers
+Open and the live `terminal.session` contracts, binds Inspect/Run/Read to one
+room/record/opaque connection, and invokes a unique harmless `printf` exactly
+once. Broker acceptance is insufficient: every job must reach success. Read
+must report the same Default session, the marker as a standalone output line,
+and a subsequent Default prompt. A slot process probe reads only UID, process
+identity, runtime mappings and ELF hashes; the mapped runtime must equal the
+SDK ELF in that installed layer, and the slot generation/components must remain
+unchanged. Unobservable, ambiguous, stale, refused or truncated subjects fail.
+
+`proof.json`, contracts, job receipts, installed file metadata and the maintained
+CLI command log are saved under `--out`. The source association relies on the
+operator's original canonical activation receipt and daemon layer inventory;
+this script does not replace installer signature/closed-graph validation or
+infer source ancestry from a `native.*` name. No Host permission is granted, and
+no actor is relabelled. On a physical device, run it only after the owner has
+confirmed the matched cohort is active and authorized this test.

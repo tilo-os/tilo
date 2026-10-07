@@ -12,7 +12,7 @@
 //! [`replay_prefix`] rebuilds the document a position names.
 
 use std::collections::{BinaryHeap, HashMap};
-use tilo_clock::{SystemTime, UNIX_EPOCH};
+use tilo_clock::UNIX_EPOCH;
 
 use automerge::ChangeHash;
 use automerge::transaction::{CommitOptions, Transactable};
@@ -65,11 +65,25 @@ fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
 /// Reads every change's metadata (never its operations). For a long history
 /// shown a screen at a time, [`page`] reads only the page.
 pub fn versions(doc: &mut Doc) -> Vec<Version> {
-    doc.get_changes_meta(&[]).iter().map(version_of).collect()
+    // Closes the open transaction, so its change is listed too.
+    doc.get_heads();
+    committed_versions(doc)
 }
 
+/// [`versions`] of the committed document, read through a shared
+/// reference: a transaction still open is not listed.
+pub fn committed_versions(doc: &Doc) -> Vec<Version> {
+    doc.committed_document()
+        .get_changes_meta(&[])
+        .iter()
+        .map(version_of)
+        .collect()
+}
+
+/// Now on the toolkit's wall clock, so a capture that pins the clock stamps
+/// its commits at the pinned time like everything else it shows.
 fn unix_now_secs() -> i64 {
-    SystemTime::now()
+    tilo_clock::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0))
 }

@@ -40,6 +40,9 @@ pub struct Session {
     blob_socket: PathBuf,
     _media: tilo_runtime::profile::MediaHost,
     _membership: crate::shell::state::WorkspaceTreeHandle,
+    // Fields retire in declaration order: stop all save producers and release
+    // membership before flushing, while the profile lock still excludes restart.
+    _final_saves: FinalSessionSaves,
     _lock: advisory_lock::FileLock,
 }
 
@@ -118,6 +121,7 @@ impl Session {
             blob_socket,
             _media: media,
             _membership: tree,
+            _final_saves: FinalSessionSaves,
             _lock: lock,
         })
     }
@@ -129,6 +133,11 @@ impl Session {
     )]
     pub(crate) fn workspace_tree(&self) -> crate::shell::state::WorkspaceTreeHandle {
         self._membership.clone()
+    }
+
+    /// The identity service an app this session connects joins with.
+    pub fn identity_socket(&self) -> &Path {
+        &self.identity_socket
     }
 
     /// Read document media an app in this session's room stored, through
@@ -243,8 +252,19 @@ impl PeerSync {
 }
 
 impl Drop for Session {
-    /// The brokers save the workspace on the state writer thread; the next
-    /// session to take the profile lock must find those saves on disk.
+    fn drop(&mut self) {
+        // Keep brokers owned until retirement and close admission before their
+        // fields retire. BrokerHandle's close is idempotent; the final-save
+        // guard drains any shutdown work after those producers have stopped.
+        self.broker.local_session_lifecycle().close();
+    }
+}
+
+struct FinalSessionSaves;
+
+impl Drop for FinalSessionSaves {
+    /// Broker teardown can enqueue snapshots. Drain them after the brokers
+    /// retire, before the next session can acquire this profile lock.
     fn drop(&mut self) {
         persist::wait_for_saves_within(Duration::from_secs(10));
     }

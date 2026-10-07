@@ -390,7 +390,7 @@ class Compositor:
         The chord matters, and it is the one thing about this beat that
         is easy to get wrong on camera.
 
-        `Super+K`, `Super+Space` and `Alt+Space` open the palette in
+        `Super+Space` and `Alt+Space` open the palette in
         global scope — "search the machine" — which is the only scope
         that offers to open an app you do not already have. `Ctrl+K`
         asks the narrower question, "search inside what I am looking
@@ -407,10 +407,7 @@ class Compositor:
         Wayland client inside another desktop: the host swallows Super
         before the compositor sees it.
         """
-        if chord == "super-k":
-            self.modifiers(logo=True)
-            self.key("k")
-        elif chord == "ctrl-k":
+        if chord == "ctrl-k":
             self.modifiers(ctrl=True)
             self.key("k")
         elif chord == "super-space":
@@ -672,12 +669,12 @@ def main() -> int:
                         "compositor running with the right environment. Nothing "
                         "is driven — the operator types. This is the filming "
                         "mode; Ctrl-C tears it down")
-    p.add_argument("--chord", default="super-k",
-                   choices=("super-k", "super-space", "alt-space", "ctrl-k"),
-                   help="palette chord to open with. The three global ones "
+    p.add_argument("--chord", default="super-space",
+                   choices=("super-space", "alt-space", "ctrl-k"),
+                   help="palette chord to open with. The two global ones "
                         "offer apps this machine does not have; ctrl-k is "
                         "scoped to the focused app and is here to be measured "
-                        "against, not to film (default: super-k)")
+                        "against, not to film (default: super-space)")
     p.add_argument("--hold", type=float, default=0.0,
                    help="extra seconds to leave the session up after the "
                         "final capture (for filming a live window)")
@@ -821,7 +818,7 @@ def main() -> int:
                 print(f"  compositor:  {args.backend} backend, "
                       f"log {shell_log}")
                 print(f"  socket:      {comp.sock}")
-                print(f"\nOpen the palette with Super+K (or Alt+Space if a host "
+                print(f"\nOpen the palette with Super+Space (or Alt+Space if a host "
                       f"desktop\nis eating Super), type \"{QUERY}\", press Enter.\n")
                 print("Ctrl-C to tear it all down. Re-running resets the install "
                       "root,\nso the app is absent again on the next take.")
@@ -992,7 +989,7 @@ def main() -> int:
                 # when nothing is focused — so a check run only at the
                 # start cannot tell them apart. Measured after the app
                 # is up and focused, it can.
-                for chord in ("super-k", "ctrl-k"):
+                for chord in ("super-space", "ctrl-k"):
                     comp.open_palette(chord)
                     time.sleep(0.5)
                     print(f"  with Notes focused, {chord} → scope "

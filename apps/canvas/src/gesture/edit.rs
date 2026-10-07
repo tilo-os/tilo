@@ -36,7 +36,12 @@ pub fn with_groups(art: &Artwork, ids: &[String]) -> Vec<String> {
 /// What a click at `at` picks: the topmost mark there and, unless `inside`
 /// (picking within a group), the rest of its group.
 pub fn pick(art: &Artwork, at: Point, inside: bool) -> Vec<String> {
-    let Some(mark) = art.pick_at(at) else {
+    pick_near(art, at, 0.0, inside)
+}
+
+/// [`pick`] forgiving the pointer `slop` artwork units off a line.
+pub fn pick_near(art: &Artwork, at: Point, slop: f64, inside: bool) -> Vec<String> {
+    let Some(mark) = art.pick_near(at, slop) else {
         return Vec::new();
     };
     if inside {

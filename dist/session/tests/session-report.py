@@ -89,6 +89,76 @@ def main() -> int:
         assert report["frames"]["deadline_late_us"]["p99"] == 3500
         assert report["frames"]["paint_period_us"]["p99"] == 20000
         assert output.stat().st_mode & 0o777 == 0o600
+
+        def gate(log: str, *extra: str) -> subprocess.CompletedProcess[str]:
+            (root / "latest.log").write_text(log)
+            return subprocess.run(
+                [sys.executable, str(REPORTER), "--root", str(root), "--render-gate", *extra],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        enabled = (
+            "direct_scanout_status=enabled format=Xrgb8888 renderer_pci= earlier_failures=0 DRM direct scanout enabled\n"
+        )
+        degraded = (
+            "direct_scanout_status=degraded direct_scanout_reason=\"render: GPU-only absolute deadline exceeded\" "
+            "output=1 hdr=false failures=1 retry_in_ms=500 DRM direct scanout degraded to readback\n"
+        )
+        readback_summary = (
+            "frames=40 direct_frames=0 direct_dropped=0 flip_completions=0 unprofiled_frames=0 window_us=2000000 "
+            "bridge_us=1800000 scanout_us=3000 readback_bytes=866713600 output_bytes=866713600 avg_direct_us=0 "
+            "max_direct_us=0 direct_failures=1 direct_scanout_status=unavailable "
+            "direct_scanout_reason=\"render: GPU-only absolute deadline exceeded\" DRM render phase summary\n"
+        )
+        direct_summary = (
+            "frames=120 direct_frames=120 direct_dropped=0 flip_completions=120 unprofiled_frames=0 window_us=2000000 "
+            "bridge_us=0 scanout_us=0 readback_bytes=0 output_bytes=0 avg_direct_us=6100 max_direct_us=9800 "
+            "direct_failures=1 direct_scanout_status=enabled direct_scanout_reason=\"not-initialized\" DRM render phase summary\n"
+        )
+        # Phase `a_demotion_that_never_recovers_fails_the_gate`.
+        failed = gate(enabled + direct_summary + degraded + readback_summary)
+        assert failed.returncode == 1, failed
+        assert "direct GPU scanout is not presenting" in failed.stderr, failed.stderr
+        assert "readback frames averaged 45000 us" in failed.stderr, failed.stderr
+        # Phase `a_retried_demotion_passes_the_gate`.
+        passed = gate(enabled + degraded + enabled + direct_summary)
+        assert passed.returncode == 0, passed
+        assert "render gate: PASS" in passed.stdout
+        # Phase `direct_frames_over_budget_fail_the_gate`.
+        slow = gate(enabled + direct_summary, "--render-budget-ms", "5")
+        assert slow.returncode == 1 and "direct frames averaged 6100 us" in slow.stderr, slow
+        # Phase `a_required_direct_presenter_must_start`.
+        software = (
+            "direct_scanout_status=unavailable reason=\"renderer and scanout use different GPUs\" DRM direct scanout unavailable\n"
+            "frames=30 direct_frames=0 direct_dropped=0 flip_completions=0 unprofiled_frames=0 window_us=2000000 "
+            "bridge_us=300000 scanout_us=3000 readback_bytes=1 output_bytes=1 direct_scanout_status=unavailable "
+            "direct_scanout_reason=\"renderer and scanout use different GPUs\" DRM render phase summary\n"
+        )
+        assert gate(software).returncode == 0
+        assert gate(software, "--require-direct").returncode == 1
+
+        # Phase `typed_keys_aggregate_per_app`.
+        (root / "latest.log").write_text(
+            "KEY-LATENCY app=so.tilo.notes key_to_commit_us=9000 key_to_submit_us=10000 key_to_present_us=18000\n"
+            "KEY-LATENCY app=so.tilo.notes key_to_commit_us=30000 key_to_submit_us=31000 key_to_present_us=50000\n"
+            "KEY-LATENCY app=so.tilo.notes unanswered=1\n"
+        )
+        keys = subprocess.run(
+            [sys.executable, str(REPORTER), "--root", str(root)],
+            capture_output=True, text=True, check=True,
+        )
+        notes = json.loads(keys.stdout)["flight"]["key_latency_us"]["so.tilo.notes"]
+        assert notes["unanswered"] == 1
+        assert notes["key_to_present_us"] == {
+            "count": 2, "p50": 18000, "p95": 50000, "p99": 50000, "max": 50000,
+        }
+        table = subprocess.run(
+            [sys.executable, str(REPORTER), "--root", str(root), "--key-latency"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "so.tilo.notes: unanswered=1" in table and "p50=18.0ms" in table, table
     print("session report: PASS")
     return 0
 

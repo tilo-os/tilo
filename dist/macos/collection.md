@@ -7,6 +7,10 @@ manifest platform defaults and exclusion reasons. The default output is one
 Applications shortcut. `package --per-app` additionally creates one DMG per app.
 Nothing installs apps, mounts a completed image, opens Finder, or launches code.
 
+For receipt-backed private macOS 27 bundles with the reviewed media/runtime overlay,
+use the separate [staged runtime signer](collection-staged-sign.md). Its signed
+layout remains outside this generic SDK adapter's two-executable policy.
+
 At the initial implementation's source revision, the plan contains 45 SDK apps.
 Ten manifests exclude macOS: containers, disks, firewall, logs, osk, print-centre,
 settings, store, vpn, windows. Browser and Imager support macOS but are separately

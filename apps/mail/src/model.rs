@@ -155,20 +155,6 @@ impl Addr {
         self.email.clone()
     }
 
-    /// Initials for the avatar disc (1-2 chars).
-    pub fn initials(&self) -> String {
-        let base = self.name.clone().unwrap_or_else(|| self.email.clone());
-        let mut chars = base
-            .split(|c: char| c.is_whitespace() || c == '.' || c == '@' || c == '_')
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.chars().next());
-        let a = chars.next().unwrap_or('?');
-        match chars.next() {
-            Some(b) => format!("{}{}", a.to_uppercase(), b.to_uppercase()),
-            None => a.to_uppercase().to_string(),
-        }
-    }
-
     /// RFC 5322 mailbox rendering: `Name <email>` or bare `email`.
     pub fn rfc5322(&self) -> String {
         match &self.name {
@@ -587,6 +573,9 @@ impl ComposeFormat {
 /// crash and syncs across peers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Draft {
+    /// Explicit sender for a reviewed Contacts draft; never follows the sidebar.
+    #[serde(default)]
+    pub sender: Option<DraftSender>,
     pub to: String,
     pub cc: String,
     pub bcc: String,
@@ -607,6 +596,28 @@ pub struct Draft {
     pub attachments: Vec<DraftAttachment>,
     /// If this draft is a reply, the message it answers.
     pub in_reply_to: Option<MessageId>,
+}
+
+impl Draft {
+    /// Whether the persisted composition has any content or reviewed sender.
+    pub fn is_empty(&self) -> bool {
+        self.to.is_empty()
+            && self.cc.is_empty()
+            && self.bcc.is_empty()
+            && self.subject.is_empty()
+            && self.body.is_empty()
+            && self.html_body.as_ref().is_none_or(String::is_empty)
+            && self.calendar_ics.is_none()
+            && self.attachments.is_empty()
+            && self.sender.is_none()
+    }
+}
+
+/// Exact sending account reviewed when preparing a Contacts draft.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftSender {
+    pub account: String,
+    pub email: String,
 }
 
 /// Metadata for one staged draft attachment. The content is addressed by a

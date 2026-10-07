@@ -51,6 +51,9 @@ impl Default for Ground {
 pub struct Layer {
     pub id: String,
     pub name: String,
+    /// Organisational folder; empty for an ungrouped layer. It does not
+    /// change stacking, clipping or how the layers composite.
+    pub group: String,
     /// Fractional position among layers; later is on top.
     pub order: String,
     /// The medium preset that paints this layer's marks, or empty for plain
@@ -98,6 +101,20 @@ pub struct Selection {
     /// How far its edge fades, in units.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub feather: f64,
+    /// Its edge refined to the picture: how much of each pixel near it is
+    /// in, where a path can only say in or out (strands of fur and hair).
+    /// A mask made of the selection draws it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<Matte>,
+}
+
+/// A selection's soft edge: a picture, white where selected and as see-through
+/// as each pixel is out, laid over the artwork at `rect`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Matte {
+    pub src: String,
+    /// `[x, y, w, h]`.
+    pub rect: [f64; 4],
 }
 
 impl Selection {
@@ -233,6 +250,9 @@ pub struct Gradient {
 /// How a mark is coloured and, on a painted layer, how it is painted.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Style {
+    /// Enlarge image pixels with nearest-neighbor sampling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pixelated: bool,
     /// Fill colour: `#rrggbb`, `#rrggbbaa` or `pigment:<name>` from the
     /// layer medium's palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -586,11 +606,17 @@ impl Artwork {
     /// tools that outline erasers pick them; [`Self::mark_at`] passes
     /// through them.
     pub fn pick_at(&self, point: Point) -> Option<&Mark> {
+        self.pick_near(point, 0.0)
+    }
+
+    /// [`Self::pick_at`] forgiving a pointer `slop` artwork units off a
+    /// line or a stroke: a hand's few pixels at the zoom it is shown at.
+    pub fn pick_near(&self, point: Point, slop: f64) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
             self.layer(&mark.layer)
                 .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
                 && (mark.inked() || mark.erases())
-                && mark.hit(point)
+                && mark.hit_within(point, slop)
                 && self.clipped_in(mark, point)
         })
     }
@@ -1333,7 +1359,7 @@ impl Mark {
     /// none of its own to pick.
     pub fn erases(&self) -> bool {
         matches!(self.shape, Shape::Stroke { .. })
-            && crate::brushes::Preset::of(&self.style) == crate::brushes::Preset::Eraser
+            && crate::brushes::Preset::of(&self.style).erases()
     }
 
     /// The area the mark is kept inside, in artwork units, if it has one.
@@ -1448,7 +1474,14 @@ impl Mark {
     /// Whether `point` lands on the mark: inside a filled shape, or near a
     /// line or stroke.
     pub fn hit(&self, point: Point) -> bool {
-        if !self.bounds().contains(point) {
+        self.hit_within(point, 0.0)
+    }
+
+    /// [`Self::hit`] with lines and strokes reaching `slop` artwork units
+    /// further, so a thin line is not missed by a hair at a far zoom.
+    pub fn hit_within(&self, point: Point, slop: f64) -> bool {
+        let slop = slop.max(0.0);
+        if !self.bounds().inflate(slop, slop).contains(point) {
             return false;
         }
         let local = self.affine().inverse() * point;
@@ -1458,7 +1491,7 @@ impl Mark {
             | Shape::Ellipse { .. }
             | Shape::Image { .. } => self.shape.path().contains(local),
             Shape::Polygon { .. } | Shape::Path { .. } if self.shape.closed() => {
-                self.shape.path().contains(local) || self.near_outline(local, 4.0)
+                self.shape.path().contains(local) || self.near_outline(local, 4.0_f64.max(slop))
             }
             Shape::Stroke {
                 hatch: Some(_),
@@ -1477,8 +1510,8 @@ impl Mark {
             }
             .path()
             .contains(local),
-            Shape::Stroke { size, .. } => self.near_outline(local, size * 0.5 + 2.0),
-            _ => self.near_outline(local, self.style.stroke_width * 0.5 + 4.0),
+            Shape::Stroke { size, .. } => self.near_outline(local, size * 0.5 + 2.0_f64.max(slop)),
+            _ => self.near_outline(local, self.style.stroke_width * 0.5 + 4.0_f64.max(slop)),
         }
     }
 

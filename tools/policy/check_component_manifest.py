@@ -179,6 +179,15 @@ def snippet(name: str, output: str, destination: str, *, direct: bool = False) -
 def check_manifest_against_workspace(report: Report, manifest, packages: dict[str, Package]) -> None:
     for component in manifest.components:
         where = report.manifest_line(component.name)
+        if component.name == "shell":
+            companion = next((entry for entry in component.files
+                              if entry.to == "/usr/libexec/tilo-session"), None)
+            if (companion is None or companion.source != "@manifest/usr/libexec/tilo-session"
+                    or companion.optional or str(companion.mode) != "0755"):
+                report.error(where, "shell must ship its matching mandatory PAM session wrapper",
+                             'add { from = "@manifest/usr/libexec/tilo-session", '
+                             'to = "/usr/libexec/tilo-session", mode = "0755" } to shell files; '
+                             'shell-only swaps can otherwise recover locked under an older wrapper.')
         if component.scenario and not (report.repo / component.scenario).is_file():
             report.error(where, f"boot component {component.name!r} names scenario {component.scenario!r}, "
                          "which does not exist",
@@ -336,7 +345,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                for i in install_runs):
         report.error(f"{relative}", f"no `{INSTALL_STAGE}` stage runs install-components.py --by-layer --all",
                      f"restore the stage: FROM ${{BASE_REF}} AS {INSTALL_STAGE}, then RUN "
-                     "python3 .../install-components.py --from /out --from /out/optional --dest /image "
+                     "python3 .../install-components.py --from /out --dest /image "
                      "--by-layer --all")
 
     # Build/stage drift: what the builder compiles and stages versus the manifest.

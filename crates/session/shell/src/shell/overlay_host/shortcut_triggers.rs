@@ -391,6 +391,7 @@ impl ShellOverlayHost {
             return;
         };
         let request = InvokeRequest {
+            on_behalf_of: None,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: bound.target.provider.clone(),

@@ -70,7 +70,7 @@ fn system_override(name: &'static str) -> Option<std::ffi::OsString> {
     clippy::print_stderr,
     reason = "a one-time operator warning; the reader may run before tracing is initialised"
 )]
-fn system_override_from(
+pub(crate) fn system_override_from(
     enabled: bool,
     name: &'static str,
     value: Option<std::ffi::OsString>,

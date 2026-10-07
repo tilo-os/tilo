@@ -2171,9 +2171,6 @@ impl Workspace {
                     Some(identity.clone()),
                 )),
             );
-        let builder = crate::document_media::accept_media_protocol(
-            builder, &endpoint, &identity, &policy, &store,
-        );
         let builder = match (&record_plane, replica_ack_protocol) {
             (Some(records), Some(replica_ack)) => builder
                 .accept(TILO_FS_RECORD_ALPN, records.protocol.clone())

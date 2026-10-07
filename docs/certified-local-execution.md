@@ -28,10 +28,27 @@ registered policy clock. Missing keys or clock, a different execution, revoked
 admission, or a closed run refuses the door. It creates no device, membership,
 grant or permission. A name or UUID cannot construct admitted authority.
 
-The new door supports already-published numeric peer providers. It is not a
-replacement for the standalone runtime's complete launch/workspace door.
-Runtime session-factory and receiver wiring must preserve those capabilities
-and original custody through any asynchronous resolution before adoption.
+The door supports numeric peer providers and application/retained-launch aliases.
+Aliases retain the original signed admission across asynchronous launch and
+recheck it before numeric delivery. Retained launch aliases pin the original
+record; application aliases remain app-scoped. Discovery and launch resolution
+do not create a second operation or replace the original retry key. A director
+requiring an exact app instance must still use its discovered numeric peer.
+
+Standalone's MCP session factory binds each logical HTTP, native or stdio
+session to its existing selected-room certificate, original policy clock and
+host-minted execution. An unavailable or wrong-audience factory refuses the
+session without falling back to a keyless caller. Ordinary workspace and
+builtin doors keep their existing routing under that same authenticated caller;
+application and retained-launch aliases always use the certified door.
+
+One bounded registration table observes the existing native owner's fences.
+Identity/enrollment loss closes the original run lease synchronously. Admission
+registers before rereading its original material, so a concurrent fence cannot
+refresh an old lease. Presented certificates never select the trusted baseline
+used to retire admitted sessions. The table holds at most 512 runs and refuses
+overflow; dropping its registrations or runtime closes retained leases. Ambient
+filesystem changes are reread when custody is checked, not continuously watched.
 
 Eager and directory actions preserve original signed admission and policy time
 through dispatch and retained SDK custody. Any additional foreign-device
@@ -56,7 +73,7 @@ Writer fixture uses synthetic data and a real content-store PNG; it is not a
 Photos, MCP, model, frame-rate or captured-cursor proof.
 
 The local activity stream remains observation, not portable authentication.
-This increment does not publish a pointer, generate motion, register browser
+This path does not publish a pointer, generate motion, register browser
 replicas, install a production receiver, or associate a successful presentation.
 See [the SDK basis](invocation-locus-basis.md) and
 [panorama capture](panorama-capture.md) for the separate target/frame gates.

@@ -288,8 +288,13 @@ impl Desk {
     fn dispatch(&mut self, event: &WindowEvent, mods: ModifiersState) {
         let mut doc = AutoCommit::new();
         let mut focus = None;
-        self.fb
-            .dispatch_event(event, &Modifiers::from(mods), &mut doc, &ROOT, &mut focus);
+        self.fb.dispatch_event(
+            event,
+            &Modifiers::from(mods),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+            &mut focus,
+        );
     }
 
     /// The pointer moving to a logical point, as the compositor hands it on.

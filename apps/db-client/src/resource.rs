@@ -322,7 +322,7 @@ pub(crate) fn sql_dispatcher(dispatcher: &Dispatcher<DbClient>) -> Dispatcher<Pl
 /// entry it acts on, which it names by id and resolves again when invoked.
 /// None carries a password.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "db_client.effects")]
+#[effect(operation = "db_client.effects", device_only)]
 pub enum DbEffect {
     /// Run SQL
     ///
@@ -394,12 +394,12 @@ const SHOP_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_00
 fn sample_connections() -> Vec<ConnectionProfile> {
     let mut sample = ConnectionProfile::sqlite_sample();
     sample.id = SAMPLE_CONNECTION;
-    let mut analytics = ConnectionProfile::new("Analytics · prod", Engine::Postgres);
+    let mut analytics = ConnectionProfile::new("Production analytics", Engine::Postgres);
     analytics.id = ANALYTICS_CONNECTION;
     analytics.host = "db.internal".into();
     analytics.database = "analytics".into();
     analytics.user = "reader".into();
-    let mut shop = ConnectionProfile::new("Shop · staging", Engine::MySql);
+    let mut shop = ConnectionProfile::new("Staging shop", Engine::MySql);
     shop.id = SHOP_CONNECTION;
     shop.host = "mysql.staging".into();
     shop.database = "shop".into();
@@ -421,11 +421,18 @@ impl ResourceApp for DbClientShell {
     }
 
     /// `empty` is the first run; every other scenario shows the bundled
-    /// sample catalog with a query run against it, and `status`, `connect`
-    /// and `confirm` add the status bubble, the new-connection sheet and the
-    /// destructive-statement confirmation.
+    /// sample catalog with a query run against it, on the tab or dialog it
+    /// names (see [`DbClientApp::stage_scenario`]).
     fn scenarios() -> &'static [&'static str] {
-        &["default", "empty", "status", "connect", "confirm"]
+        &[
+            "data",
+            "structure",
+            "wide",
+            "connect",
+            "confirm",
+            "error",
+            "empty",
+        ]
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -448,7 +455,7 @@ impl ResourceApp for DbClientShell {
             .iter()
             .map(crate::actions::add_connection_action)
             .chain([DbAction::EditSql(TextEdit::ReplaceText {
-                text: crate::sample::DEFAULT_QUERY.to_owned(),
+                text: crate::app::scenario_query(name).to_owned(),
             })])
             .filter_map(|action| Invoke::apply(&action).ok())
             .collect()
@@ -490,6 +497,12 @@ impl ResourceSurface<DbClient, DbEffect> for DbClientApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_row(id)
+    }
+
+    /// The open connection's relations, columns, result, transaction and
+    /// local query history: what the live catalog holds, not the document.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.catalog_search_entries()
     }
 }
 

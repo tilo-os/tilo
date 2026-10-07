@@ -136,7 +136,13 @@ fn click_scene(fb: &mut FrameBuilder, outputs: &[Output], at: Point) {
     let mut doc = AutoCommit::new();
     let mut focus = None;
     let mods = Modifiers::default();
-    fb.dispatch_event(&moved, &mods, &mut doc, &ROOT, &mut focus);
+    fb.dispatch_event(
+        &moved,
+        &mods,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &ROOT,
+        &mut focus,
+    );
     for state in [ElementState::Pressed, ElementState::Released] {
         fb.dispatch_event(
             &WindowEvent::MouseInput {
@@ -145,7 +151,7 @@ fn click_scene(fb: &mut FrameBuilder, outputs: &[Output], at: Point) {
                 button: MouseButton::Left,
             },
             &mods,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
             &mut focus,
         );

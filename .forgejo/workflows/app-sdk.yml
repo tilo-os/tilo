@@ -17,6 +17,8 @@ on:
       - "apps/**"
       - "crates/**"
       - "rust-toolchain.toml"
+      - "tools/ci/app_sdk_affected.py"
+      - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
       - "tools/policy/check_app_*"
@@ -33,6 +35,8 @@ on:
       - "apps/**"
       - "crates/**"
       - "rust-toolchain.toml"
+      - "tools/ci/app_sdk_affected.py"
+      - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
       - "tools/policy/check_app_*"
@@ -65,12 +69,11 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
       - name: Merge onto main
@@ -103,7 +106,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       image: ${{ steps.resolve.outputs.image }}
       main: ${{ steps.merge.outputs.main }}
@@ -112,7 +115,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
       # Pull requests test the head merged onto main's current tip (a rerun
       # included), and every job merges this same main commit.
@@ -158,7 +160,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Merge onto main
         uses: ./.forgejo/actions/merge-main
@@ -221,7 +222,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Build tilo-app and tilo-app-package
         run: cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
@@ -259,7 +259,7 @@ jobs:
             > "$RUNNER_TEMP/calculator-macos-entry.json"
           python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["versions"][0]; assert v["target"]["platform"]=="macos" and v["artifact"]["format"]=="macos-app-zip", v' \
             "$RUNNER_TEMP/calculator-macos-entry.json"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: app-sdk-macos-shots
@@ -269,9 +269,8 @@ jobs:
   # Web: the desktop bundle built from the app manifests and every registered
   # app mounted in headless Chromium on WebGPU.
   web:
-    # The release assets come from web-size in this same workflow run.
-    # A failed release build also skips the dependent dev mount/qualification lane.
-    needs: [builder, web-size]
+    # The dev mount does not consume release artifacts; build both lanes in parallel.
+    needs: [builder]
     if: needs.builder.outputs.affected == 'true'
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
@@ -281,11 +280,13 @@ jobs:
       image: ${{ needs.builder.outputs.image }}
     env:
       CDP_PORT: "9333"
+      # Three isolated browsers fit the existing 6-CPU/22-GiB job budget.
+      # Set this back to "2" to roll back without changing any probe.
+      TILO_WEB_SMOKE_SHARDS: "3"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Merge onto main
         uses: ./.forgejo/actions/merge-main
@@ -315,6 +316,48 @@ jobs:
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+      - name: Governed mounted resource journey
+        run: |
+          cargo run --locked -p tilo-agent-participant --example mounted-resource -- \
+            target/tilo-app/web/calculator/bundle
+      - name: Compiled Chat browser disconnect and retry
+        run: |
+          target/debug/tilo-app build apps/chat --platform web
+          cargo run --locked -p tilo-agent-participant --example mounted-resource -- \
+            target/tilo-app/web/chat/bundle --disconnect-retry
+      - name: Compiled Chat browser call consent and lifecycle
+        run: |
+          install -d -m 700 -o nobody target/mounted-resource-voice
+          python3 - <<'PY'
+          import os, pathlib, shlex
+          root = pathlib.Path.cwd()
+          wrapper = root / "target/chat-fixture-chromium"
+          wrapper.write_text("#!/bin/sh\nexec python3 " +
+              shlex.quote(str(root / "tools/web/owned_browser.py")) + " " +
+              shlex.quote(os.environ["CHROME"]) + ' "$@"\n')
+          wrapper.chmod(0o755)
+          PY
+          CHROME="$PWD/target/chat-fixture-chromium" cargo run --locked \
+            --config 'target.x86_64-unknown-linux-gnu.runner=["runuser","--preserve-environment","--user","nobody","--","env","TMPDIR=/tmp","bash","tools/with-test-environment.sh"]' \
+            -p tilo-agent-participant --example mounted-resource -- \
+            target/tilo-app/web/chat/bundle --voice
+      - name: Compiled Chat encrypted resource after host restart
+        run: |
+          install -d -m 700 -o nobody target/mounted-resource-encrypted
+          CHROME="$PWD/target/chat-fixture-chromium" cargo run --locked \
+            --config 'target.x86_64-unknown-linux-gnu.runner=["runuser","--preserve-environment","--user","nobody","--","env","TMPDIR=/tmp","bash","tools/with-test-environment.sh"]' \
+            -p tilo-agent-participant --example mounted-resource -- \
+            target/tilo-app/web/chat/bundle --encrypted-restart
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: app-sdk-mounted-resource
+          path: |
+            target/mounted-resource
+            target/mounted-resource-recovery
+            target/mounted-resource-voice
+            target/mounted-resource-encrypted
+          if-no-files-found: error
       - name: Mount every registered app
         shell: bash
         run: |
@@ -322,46 +365,14 @@ jobs:
           bundle=target/tilo-app/web/calculator/bundle
           (cd "$bundle" && python3 -m http.server 7878 --bind 127.0.0.1) &
           server=$!
-          "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
-            --enable-features=Vulkan --use-vulkan=swiftshader --use-angle=swiftshader \
-            --remote-debugging-port="$CDP_PORT" --user-data-dir="$RUNNER_TEMP/chrome-profile" \
-            about:blank &
-          chrome=$!
-          trap 'kill $server $chrome 2>/dev/null || true' EXIT
-          for _ in $(seq 1 30); do
-            curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null && break
-            sleep 1
-          done
+          trap 'kill $server 2>/dev/null || true' EXIT
           mapfile -t apps < <(python3 -c 'import json,sys; print("\n".join(a["id"] for a in json.load(open(sys.argv[1]))["applications"]))' "$bundle/apps.json")
           mkdir -p "$RUNNER_TEMP/web-shots"
+          # Independent browsers keep each probe foregrounded while using
+          # the existing job CPU/memory budget. Every app and timing stays.
           SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
             http://127.0.0.1:7878 "${apps[@]}" desktop
-      - name: Download exact release private image worker
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
-        with:
-          name: app-sdk-release-compute
-          path: ${{ runner.temp }}/release-compute
-      - name: Qualify exact release private image worker
-        run: |
-          python3 - "$RUNNER_TEMP/release-compute" <<'PY'
-          import hashlib, json, pathlib, sys
-          product = pathlib.Path(sys.argv[1])
-          names = {'compute-worker.mjs', 'compute-domains.mjs', 'compute-protocol.mjs',
-                   'pkg/compute/tilo_browser_compute.js', 'pkg/compute/tilo_browser_compute_bg.wasm'}
-          hashes = json.loads((product / 'sha256.json').read_text())
-          assert set(hashes) == names, 'incomplete release worker manifest'
-          for name in names:
-              assert hashlib.sha256((product / name).read_bytes()).hexdigest() == hashes[name], name
-          PY
-          node crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \
-            "$RUNNER_TEMP/release-compute" "$RUNNER_TEMP/compute-qualification" --no-sandbox
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: always()
-        with:
-          name: app-sdk-compute-qualification
-          path: ${{ runner.temp }}/compute-qualification/qualification.json
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: app-sdk-web-shots
@@ -385,7 +396,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Merge onto main
         uses: ./.forgejo/actions/merge-main
@@ -424,10 +434,47 @@ jobs:
           (output / 'sha256.json').write_text(json.dumps(hashes, sort_keys=True) + '\n')
           PY
       - name: Upload exact release private image worker
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: app-sdk-release-compute
           path: ${{ runner.temp }}/release-compute
+          if-no-files-found: error
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true
+      - name: Headless Chromium for Testing
+        run: |
+          command -v node || dnf install -y nodejs
+          # Chrome's shared-library dependencies; present on current builders.
+          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
+            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+      - name: Download exact release private image worker
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: app-sdk-release-compute
+          path: ${{ runner.temp }}/release-compute-downloaded
+      - name: Qualify exact release private image worker
+        run: |
+          python3 - "$RUNNER_TEMP/release-compute-downloaded" <<'PY'
+          import hashlib, json, pathlib, sys
+          product = pathlib.Path(sys.argv[1])
+          names = {'compute-worker.mjs', 'compute-domains.mjs', 'compute-protocol.mjs',
+                   'pkg/compute/tilo_browser_compute.js', 'pkg/compute/tilo_browser_compute_bg.wasm'}
+          hashes = json.loads((product / 'sha256.json').read_text())
+          assert set(hashes) == names, 'incomplete release worker manifest'
+          for name in names:
+              assert hashlib.sha256((product / name).read_bytes()).hexdigest() == hashes[name], name
+          PY
+          node crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \
+            "$RUNNER_TEMP/release-compute-downloaded" "$RUNNER_TEMP/compute-qualification" --no-sandbox
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: app-sdk-compute-qualification
+          path: ${{ runner.temp }}/compute-qualification/qualification.json
           if-no-files-found: error
       - name: Report compiler cache
         if: always()

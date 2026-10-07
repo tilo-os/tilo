@@ -58,7 +58,7 @@ impl Language {
     /// Human-readable label shown on the badge and in the picker.
     pub fn label(self) -> &'static str {
         match self {
-            Language::PlainText => "Plain Text",
+            Language::PlainText => "Plain text",
             Language::Shell => "Shell",
             Language::Rust => "Rust",
             Language::Sql => "SQL",
@@ -104,23 +104,33 @@ impl Language {
             .unwrap_or(Language::PlainText)
     }
 
-    /// A short one-or-two-letter sigil for the compact list-row badge.
-    pub fn sigil(self) -> &'static str {
+    /// The language's name in the person's language: the proper names of
+    /// programming languages stay as they are; plain text is translated.
+    pub fn name(self) -> String {
         match self {
-            Language::PlainText => "Tx",
-            Language::Shell => "Sh",
-            Language::Rust => "Rs",
-            Language::Sql => "Sql",
+            Language::PlainText => crate::tr("snippets-language-plain-text"),
+            other => other.label().to_string(),
+        }
+    }
+
+    /// The short name the list-row badge shows: the language's own
+    /// abbreviation where it has one, otherwise its name.
+    pub fn badge(self) -> &'static str {
+        match self {
+            Language::PlainText => "Text",
+            Language::Shell => "Shell",
+            Language::Rust => "Rust",
+            Language::Sql => "SQL",
             Language::Git => "Git",
-            Language::Python => "Py",
-            Language::JavaScript => "Js",
-            Language::Json => "{}",
-            Language::Yaml => "Ya",
-            Language::Markdown => "Md",
-            Language::Html => "<>",
-            Language::Css => "Css",
-            Language::Toml => "Tm",
-            Language::Dockerfile => "Dk",
+            Language::Python => "Python",
+            Language::JavaScript => "JS",
+            Language::Json => "JSON",
+            Language::Yaml => "YAML",
+            Language::Markdown => "MD",
+            Language::Html => "HTML",
+            Language::Css => "CSS",
+            Language::Toml => "TOML",
+            Language::Dockerfile => "Docker",
         }
     }
 }
@@ -151,7 +161,7 @@ impl Snippet {
     pub fn blank(folder: &str) -> Self {
         Self {
             id: Uuid::new_v4(),
-            title: "Untitled snippet".to_string(),
+            title: crate::tr("snippets-untitled"),
             language: Language::PlainText,
             folder: folder.to_string(),
             tags: Vec::new(),
@@ -260,12 +270,23 @@ pub enum SmartFolder {
 }
 
 impl SmartFolder {
-    pub fn label(self) -> &'static str {
+    /// The stable, locale-independent key of the folder: control ids and
+    /// sidebar item ids are built from it.
+    pub fn key(self) -> &'static str {
         match self {
-            SmartFolder::All => "All Snippets",
-            SmartFolder::Favorites => "Favorites",
-            SmartFolder::MostUsed => "Most Used",
+            SmartFolder::All => "all",
+            SmartFolder::Favorites => "favorites",
+            SmartFolder::MostUsed => "most-used",
         }
+    }
+
+    /// The folder's name in the person's language.
+    pub fn label(self) -> String {
+        crate::tr(match self {
+            SmartFolder::All => "snippets-folder-all",
+            SmartFolder::Favorites => "snippets-folder-favorites",
+            SmartFolder::MostUsed => "snippets-folder-most-used",
+        })
     }
 }
 
@@ -338,18 +359,15 @@ impl Library {
         counts.into_iter().collect()
     }
 
-    /// Resolve a sidebar [`Selection`] + a search query into the ordered
-    /// list of snippet ids to show in the list pane. Favorites sort
-    /// first within each result set, then by title.
-    pub fn query(&self, selection: &Selection, search: &str) -> Vec<SnippetId> {
-        let parsed = SearchQuery::parse(search);
+    /// Resolve a sidebar [`Selection`] into the ordered list of snippet ids
+    /// to show in the list pane. Favorites sort first, then by title.
+    pub fn query(&self, selection: &Selection) -> Vec<SnippetId> {
         let mut matched: Vec<&Snippet> = self
             .snippets
             .iter()
             .filter(|s| selection_matches(selection, s))
-            .filter(|s| parsed.matches(s))
             .collect();
-        // Smart "Most Used" sorts by usage desc; everything else sorts
+        // Smart "Most used" sorts by usage desc; everything else sorts
         // favorites-first then alphabetical.
         if matches!(selection, Selection::Smart(SmartFolder::MostUsed)) {
             matched.sort_by(|a, b| b.uses.cmp(&a.uses).then(a.title.cmp(&b.title)));
@@ -372,67 +390,6 @@ fn selection_matches(selection: &Selection, snippet: &Snippet) -> bool {
         Selection::Smart(SmartFolder::MostUsed) => snippet.uses > 0,
         Selection::Folder(f) => &snippet.folder == f,
         Selection::Tag(t) => snippet.tags.iter().any(|x| x == t),
-    }
-}
-
-/// A parsed search string. Supports plain terms (matched against title /
-/// body / tags / description) plus `language:rust` and `tag:deploy`
-/// structured filters.
-#[derive(Debug, Default, Clone)]
-pub struct SearchQuery {
-    pub terms: Vec<String>,
-    pub language: Option<Language>,
-    pub tag: Option<String>,
-}
-
-impl SearchQuery {
-    pub fn parse(raw: &str) -> Self {
-        let mut q = SearchQuery::default();
-        for token in raw.split_whitespace() {
-            if let Some(rest) = token.strip_prefix("language:") {
-                q.language = Some(Language::from_slug(&rest.to_lowercase()));
-            } else if let Some(rest) = token.strip_prefix("lang:") {
-                q.language = Some(Language::from_slug(&rest.to_lowercase()));
-            } else if let Some(rest) = token.strip_prefix("tag:") {
-                q.tag = Some(rest.to_lowercase());
-            } else {
-                q.terms.push(token.to_lowercase());
-            }
-        }
-        q
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.terms.is_empty() && self.language.is_none() && self.tag.is_none()
-    }
-
-    /// True if `snippet` satisfies every clause of the query. Plain
-    /// terms are `ANDed` and matched as case-insensitive substrings over
-    /// the searchable text (title, description, body, tags, folder).
-    pub fn matches(&self, snippet: &Snippet) -> bool {
-        if let Some(lang) = self.language
-            && snippet.language != lang
-        {
-            return false;
-        }
-        if let Some(tag) = &self.tag
-            && !snippet.tags.iter().any(|t| t.to_lowercase() == *tag)
-        {
-            return false;
-        }
-        if self.terms.is_empty() {
-            return true;
-        }
-        let haystack = format!(
-            "{} {} {} {} {}",
-            snippet.title,
-            snippet.description,
-            snippet.body,
-            snippet.tags.join(" "),
-            snippet.folder,
-        )
-        .to_lowercase();
-        self.terms.iter().all(|t| haystack.contains(t))
     }
 }
 
@@ -475,45 +432,9 @@ mod tests {
         }
     }
 
-    /// Language/term queries, favourite ordering, smart favourites and folder filters.
+    /// Favourite ordering, smart favourites and folder filters.
     #[test]
     fn library_queries_filter_and_sort() {
-        // Case `query_filters_by_language_token`.
-        {
-            let mut lib = Library::new();
-            lib.insert(Snippet {
-                title: "rust thing".into(),
-                language: Language::Rust,
-                ..Snippet::blank("")
-            });
-            lib.insert(Snippet {
-                title: "shell thing".into(),
-                language: Language::Shell,
-                ..Snippet::blank("")
-            });
-            let ids = lib.query(&Selection::default(), "language:rust");
-            assert_eq!(ids.len(), 1);
-            assert_eq!(lib.get(ids[0]).unwrap().language, Language::Rust);
-        }
-
-        // Case `query_filters_by_plain_term_over_body`.
-        {
-            let mut lib = Library::new();
-            lib.insert(Snippet {
-                title: "deploy".into(),
-                body: "kubectl rollout restart".into(),
-                ..Snippet::blank("")
-            });
-            lib.insert(Snippet {
-                title: "hello".into(),
-                body: "echo hi".into(),
-                ..Snippet::blank("")
-            });
-            let ids = lib.query(&Selection::default(), "kubectl");
-            assert_eq!(ids.len(), 1);
-            assert_eq!(lib.get(ids[0]).unwrap().title, "deploy");
-        }
-
         // Case `favorites_sort_before_others`.
         {
             let mut lib = Library::new();
@@ -527,7 +448,7 @@ mod tests {
                 favorite: false,
                 ..Snippet::blank("")
             });
-            let ids = lib.query(&Selection::default(), "");
+            let ids = lib.query(&Selection::default());
             assert_eq!(lib.get(ids[0]).unwrap().title, "zebra");
         }
 
@@ -544,7 +465,7 @@ mod tests {
                 favorite: false,
                 ..Snippet::blank("")
             });
-            let ids = lib.query(&Selection::Smart(SmartFolder::Favorites), "");
+            let ids = lib.query(&Selection::Smart(SmartFolder::Favorites));
             assert_eq!(ids.len(), 1);
             assert!(lib.get(ids[0]).unwrap().favorite);
         }
@@ -560,7 +481,7 @@ mod tests {
                 title: "b".into(),
                 ..Snippet::blank("Git")
             });
-            let ids = lib.query(&Selection::Folder("Deploy".into()), "");
+            let ids = lib.query(&Selection::Folder("Deploy".into()));
             assert_eq!(ids.len(), 1);
             assert_eq!(lib.get(ids[0]).unwrap().folder, "Deploy");
         }

@@ -213,7 +213,7 @@ fn dispatch_with_modifiers(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &doc_root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -1491,8 +1491,8 @@ fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
     press(&mut host, &layout);
     release(&mut host, &layout);
     // Drive the actual native per-frame focus marker and intent harvest.
-    let mut doc = automerge::AutoCommit::new();
-    host.update(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    host.update(&doc, &automerge::ROOT);
     host.tick_scroll_active_into_view_for_tests();
     host.group_row_mut_for_tests(strip)
         .unwrap()

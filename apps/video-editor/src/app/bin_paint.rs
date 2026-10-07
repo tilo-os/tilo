@@ -5,53 +5,62 @@
 use super::*;
 
 impl VideoEditorApp {
+    /// The bin's ground — the sidebar region docked, the floating drawer as an
+    /// overlay — and the theme for what is drawn on it.
+    pub(super) fn paint_bin_panel(
+        scene: &mut Scene,
+        tf: Affine,
+        theme: &Theme,
+        r: &Regions,
+    ) -> Theme {
+        if r.bin_overlay {
+            paint_floating_panel(scene, tf, r.bin, theme)
+        } else {
+            ui::surface::region(scene, tf, r.bin, ui::surface::Region::Sidebar, theme);
+            theme.in_region(ui::surface::Region::Sidebar)
+        }
+    }
+
     pub(super) fn draw_bin_header(&self, ctx: &mut BinPaintCtx<'_>, r: &Regions) {
         let c = &ctx.theme.tokens.colors;
-        fill_rect(ctx.scene, ctx.transform, r.bin, c.surfaces.raised);
-        stroke_line(
-            ctx.scene,
-            ctx.transform,
-            pane_hairline(ctx.theme),
-            r.bin.x1 - 0.5,
-            r.bin.y0,
-            r.bin.x1 - 0.5,
-            r.bin.y1,
-            1.0,
-        );
         let add = self.add_title_rect(r);
-        let heading_y = text_baseline(add, 11.0, ctx.text);
-        text_w(
+        let band = Rect::new(r.bin.x0, add.y0, add.x0, add.y1);
+        let heading = ctx.theme.text(TextRole::Subheading);
+        let heading_y = text_baseline(band, &heading, ctx.text);
+        let x0 = r.bin.x0 + PAD * ctx.scale;
+        text(
             ctx.scene,
             ctx.text,
             ctx.transform,
-            "MEDIA BIN",
-            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
-            c.text_dim,
-            Point::new(r.bin.x0 + PAD * ctx.scale, heading_y),
+            "Media",
+            &heading,
+            c.text_primary,
+            x0,
+            heading_y,
         );
-        let add = self.add_title_rect(r);
-        let face = ui::widget::ButtonFace::new(add, "+ Title")
-            .style(ui::widget::ButtonStyle::Neutral)
-            .radius(5.0)
-            .text_size(10.5)
-            .weight(TextWeight::Medium)
-            .hovered(add.contains(self.last_mouse));
-        ui::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
-        let count = format!("{} clips", self.project.media.len());
-        let (count_width, _) = ctx.text.measure(&count, 11.0, None);
-        let count_x = r.bin.x1 - 14.0 * ctx.scale - f64::from(count_width);
-        if count_x > add.x1 + 8.0 * ctx.scale {
+        // How many sources the bin holds, as a quiet count beside its name.
+        let count = self.project.media.len().to_string();
+        let count_style = ctx.theme.text(TextRole::Subheading).numeric();
+        let count_x = x0 + text_width(ctx.text, "Media", &heading) + S2;
+        if count_x + text_width(ctx.text, &count, &count_style) < add.x0 - S2 {
             text(
                 ctx.scene,
                 ctx.text,
                 ctx.transform,
                 &count,
-                11.0,
-                c.text_dim,
+                &count_style,
+                c.text_tertiary,
                 count_x,
                 heading_y,
             );
         }
+        let face = ButtonFace::new(add, "Title")
+            .icon(Icon::Plus)
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .accessible_name("New title")
+            .hovered(add.contains(self.last_mouse));
+        Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
     }
 
     pub(super) fn draw_bin_row_visual(
@@ -62,20 +71,20 @@ impl VideoEditorApp {
         rect: Rect,
     ) -> Rect {
         let colors = &ctx.theme.tokens.colors;
-        selection_row(
+        ui::chrome::paint_row_selection(
             ctx.scene,
             ctx.transform,
-            ctx.theme,
             rect,
-            f64::from(ctx.theme.tokens.radii.md),
             ui::chrome::SelectionState::new(
                 self.selected_media == Some(media_id),
                 self.hover_media == Some(media_id),
                 false,
             ),
+            colors.surfaces.content,
+            ctx.theme,
         );
 
-        let row_inset = 8.0 * ctx.scale;
+        let row_inset = S2 * ctx.scale;
         let thumb_height = (rect.height() - 2.0 * row_inset).clamp(0.0, 64.0);
         let thumb_y0 = rect.center().y - thumb_height / 2.0;
         let thumb = Rect::new(
@@ -84,20 +93,22 @@ impl VideoEditorApp {
             rect.x0 + row_inset + 64.0,
             thumb_y0 + thumb_height,
         );
+        let radius = f64::from(ctx.theme.tokens.radii.detail);
         let base = clip_color(ctx.theme, media.palette);
-        fill_round(ctx.scene, ctx.transform, thumb, 5.0, darken(base, 0.25));
+        // The source's own picture on the media ground, as footage is shown
+        // everywhere else; audio draws its waveform there in its label colour.
+        fill_round(
+            ctx.scene,
+            ctx.transform,
+            thumb,
+            radius,
+            colors.media.letterbox,
+        );
         if media.kind.is_visual() {
             if let Some(thumbnail) = self.thumbnails.get(media_id) {
-                blit_thumb(ctx.scene, ctx.transform, thumbnail, thumb, 5.0);
-            } else {
-                for index in 0..3 {
-                    let x = thumb.x0 + 6.0 + f64::from(index) * 18.0;
-                    let block = Rect::new(x, thumb.y0 + 6.0, x + 14.0, thumb.y1 - 6.0);
-                    fill_round(ctx.scene, ctx.transform, block, 2.0, lighten(base, 0.18));
-                }
+                blit_thumb(ctx.scene, ctx.transform, thumbnail, thumb, radius);
             }
         } else {
-            let color = lighten(base, 0.25);
             let inner = Rect::new(
                 thumb.x0 + 4.0,
                 thumb.y0 + 6.0,
@@ -118,10 +129,10 @@ impl VideoEditorApp {
                         source_out: media.duration,
                         media_duration: media.duration,
                         volume: 1.0,
-                        color,
+                        color: base,
                     },
                 ),
-                _ => draw_flat_signal(ctx.scene, ctx.transform, inner, color),
+                _ => draw_flat_signal(ctx.scene, ctx.transform, inner, base),
             }
         }
 
@@ -135,30 +146,18 @@ impl VideoEditorApp {
             )
         };
         if pending {
+            // Still being read: three quiet dots on the media ground.
             for index in 0..3 {
-                let x = thumb.x0 + 10.0 + f64::from(index) * 8.0;
+                let x = thumb.center().x + f64::from(index - 1) * S2;
                 ctx.scene.fill(
                     Fill::NonZero,
                     ctx.transform,
-                    with_alpha(Color::WHITE, 0.35 + 0.2 * f64::from(index)),
+                    colors.media.ink_dim,
                     None,
-                    &Circle::new(Point::new(x, thumb.y1 - 8.0), 2.5),
+                    &Circle::new(Point::new(x, thumb.center().y), 2.0),
                 );
             }
         }
-        let kind_color = match media.kind {
-            MediaKind::Video => colors.semantic.info,
-            MediaKind::Audio => colors.semantic.success,
-            MediaKind::Image => colors.semantic.warning,
-            MediaKind::Text => colors.accent[5],
-        };
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            kind_color,
-            None,
-            &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0),
-        );
         thumb
     }
 
@@ -171,88 +170,80 @@ impl VideoEditorApp {
         thumb: Rect,
     ) {
         let colors = &ctx.theme.tokens.colors;
-        let text_x = thumb.x1 + 12.0 * ctx.scale;
-        let name_h = line_height(ctx.text, 13.0);
-        let sub_h = line_height(ctx.text, 11.0);
+        let name_style = ctx.theme.text(TextRole::Label);
+        let sub_style = ctx.theme.text(TextRole::Caption);
+        let meta_style = ctx.theme.text(TextRole::Caption).numeric();
+        let text_x = thumb.x1 + S2 * ctx.scale;
+        let right = rect.x1 - S2 * ctx.scale;
+        let name_h = line_height(ctx.text, &name_style);
+        let sub_h = line_height(ctx.text, &sub_style);
         let block_top = rect.y0 + (rect.height() - (name_h + S1 + sub_h)) / 2.0;
         let sub_top = block_top + name_h + S1;
+        // The source's length, trailing on the secondary line, so the name
+        // above it has the row's whole width.
+        let length = VideoEditorApp::bin_length(media);
+        let length_w = text_width(ctx.text, &length, &meta_style);
+        let meta_top = sub_top + (sub_h - line_height(ctx.text, &meta_style)) / 2.0;
+        text(
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
+            &length,
+            &meta_style,
+            colors.text_tertiary,
+            right - length_w,
+            meta_top,
+        );
         let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(media_id);
         if !renaming {
-            let available = (rect.x1 - 8.0 - text_x) as f32;
-            let shown = elide_w(&media.name, available, ctx.text);
-            text_w(
+            let available = (right - text_x) as f32;
+            let shown = elide_at(&media.name, available, &name_style, ctx.text);
+            text(
                 ctx.scene,
                 ctx.text,
                 ctx.transform,
                 &shown,
-                &TextStyle::new(13.0).with_weight(TextWeight::Medium),
+                &name_style,
                 colors.text_primary,
-                Point::new(text_x, block_top),
+                text_x,
+                block_top,
             );
         }
-        let subtitle = VideoEditorApp::bin_subtitle(media);
-        let (long, short) = if self.media_is_unreadable(media_id) {
-            (Some(MEDIA_UNREADABLE), Some(MEDIA_UNREADABLE_SHORT))
+        let right = right - length_w - S2;
+        // One secondary fact — what the source is — or, when its bytes cannot
+        // be used, a warning badge saying why in its place.
+        let problem = if self.media_is_unreadable(media_id) {
+            Some((MEDIA_UNREADABLE, MEDIA_UNREADABLE_SHORT))
         } else if self.media_is_projected(media_id) {
-            (Some(MEDIA_NOT_LOCAL), Some(MEDIA_NOT_LOCAL_SHORT))
+            Some((MEDIA_NOT_LOCAL, MEDIA_NOT_LOCAL_SHORT))
         } else {
-            (None, None)
+            None
         };
-        let (subtitle_width, _) = ctx.text.measure(&subtitle, 11.0, None);
-        let right = rect.x1 - 8.0 * ctx.scale;
-        let chip = long.zip(short).and_then(|(long, short)| {
-            [
-                (text_x + f64::from(subtitle_width) + 8.0, long),
-                (text_x + f64::from(subtitle_width) + 8.0, short),
-                (text_x, long),
-                (text_x, short),
-            ]
-            .into_iter()
-            .find(|(x0, label)| {
-                x0 + f64::from(ctx.text.measure(label, 10.5, None).0) + 14.0 <= right
-            })
-        });
-        if chip.is_none_or(|(x0, _)| x0 > text_x) {
+        if let Some((long, short)) = problem {
+            let room = right - text_x;
+            let label = [long, short]
+                .into_iter()
+                .find(|l| ui::widget::BadgeFace::intrinsic_width(l, ctx.text, ctx.theme) <= room)
+                .unwrap_or(short);
+            let w = ui::widget::BadgeFace::intrinsic_width(label, ctx.text, ctx.theme).min(room);
+            let h = ui::widget::BadgeFace::height(ctx.theme);
+            let cy = sub_top + sub_h / 2.0;
+            let badge = Rect::new(text_x, cy - h / 2.0, text_x + w, cy + h / 2.0);
+            ui::widget::BadgeFace::new(badge, label)
+                .style(ui::widget::ChipStyle::Tinted(ui::widget::Tone::Warning))
+                .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
+        } else {
+            let kind = VideoEditorApp::bin_kind_words(media);
+            let shown = elide_at(&kind, (right - text_x) as f32, &sub_style, ctx.text);
             text(
                 ctx.scene,
                 ctx.text,
                 ctx.transform,
-                &subtitle,
-                11.0,
+                &shown,
+                &sub_style,
                 colors.text_dim,
                 text_x,
                 sub_top,
-            );
-        }
-        if let Some((x0, label)) = chip {
-            let width = f64::from(ctx.text.measure(label, 10.5, None).0) + 14.0 * ctx.scale;
-            let top = sub_top - 1.5;
-            let chip = Rect::new(x0, top, x0 + width, sub_top + sub_h + 1.5);
-            fill_round(
-                ctx.scene,
-                ctx.transform,
-                chip,
-                4.0,
-                with_alpha(colors.semantic.warning, 0.20),
-            );
-            stroke_round(
-                ctx.scene,
-                ctx.transform,
-                chip,
-                4.0,
-                with_alpha(colors.semantic.warning, 0.65),
-                1.0,
-            );
-            let baseline = text_baseline(chip, 10.5, ctx.text);
-            text(
-                ctx.scene,
-                ctx.text,
-                ctx.transform,
-                label,
-                10.5,
-                colors.semantic.warning,
-                chip.x0 + 7.0 * ctx.scale,
-                baseline,
             );
         }
     }
@@ -272,8 +263,8 @@ impl VideoEditorApp {
                 ctx.scene,
                 ctx.transform,
                 ctx.theme,
-                row.inset(-FOCUS_RING_INSET),
-                8.0 - FOCUS_RING_INSET,
+                *row,
+                f64::from(ctx.theme.tokens.radii.item),
             );
         }
     }
@@ -286,6 +277,8 @@ impl VideoEditorApp {
         theme: &Theme,
         r: &Regions,
     ) {
+        let panel = Self::paint_bin_panel(scene, tf, theme, r);
+        let theme = &panel;
         let bin_scale = self.bin_ui_scale();
         self.draw_bin_header(
             &mut BinPaintCtx {
@@ -297,7 +290,6 @@ impl VideoEditorApp {
             },
             r,
         );
-        let c = &theme.tokens.colors;
 
         // Clip bin content so a long list can't bleed over the timeline.
         scene.push_layer(
@@ -305,26 +297,25 @@ impl VideoEditorApp {
             vello::peniko::BlendMode::default(),
             1.0,
             tf,
-            &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1),
+            &VideoEditorApp::bin_viewport(r),
         );
         if self.project.media.is_empty() {
-            // Empty state: a real "Import media" affordance (the button opens the
-            // host file picker) plus an honest status line.
-            let cx = r.bin.center().x;
-            let cy = r.bin.y0 + 120.0;
-            let line1 = "No media yet";
-            let (w1, _) = tr.measure(line1, 14.0, None);
-            text(
-                scene,
-                tr,
-                tf,
-                line1,
-                14.0,
-                c.text_primary,
-                cx - f64::from(w1) / 2.0,
-                cy,
-            );
+            // One sentence and the one action that answers it.
+            let area = Rect::new(r.bin.x0, r.bin.y0 + self.bin_list_top(), r.bin.x1, r.bin.y1);
             if let Some(btn) = self.empty_bin_import_rect(r) {
+                let msg = theme.text(TextRole::Body);
+                let h = line_height(tr, &msg);
+                let w = text_width(tr, "No media yet", &msg);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "No media yet",
+                    &msg,
+                    theme.tokens.colors.text_dim,
+                    area.center().x - w / 2.0,
+                    btn.y0 - S3 - h,
+                );
                 draw_button(
                     scene,
                     tf,
@@ -332,7 +323,7 @@ impl VideoEditorApp {
                     theme,
                     btn,
                     "Import media",
-                    true,
+                    ButtonRole::Primary,
                     btn.contains(self.last_mouse),
                 );
             }
@@ -349,37 +340,48 @@ impl VideoEditorApp {
         );
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Bin, r);
         scene.pop_layer();
-        // Last import outcome, pinned to the foot of the pane. It used to be
-        // drawn only inside the empty-bin branch, so once the bin held
-        // anything at all every import error was silent — six sites wrote it
-        // and one read it. Errors tint danger; a plain count stays quiet.
+        // Last import outcome, pinned to the foot of the pane, through the
+        // toolkit's banner: a refusal stays until the next import replaces
+        // it, so it is never only findable by scrolling.
         if let Some(notice) = &self.import_notice {
-            let failed = notice.is_failure();
-            let strip = Rect::new(r.bin.x0, r.bin.y1 - 34.0, r.bin.x1, r.bin.y1);
-            // The severity came with the message from the place that knew the
-            // outcome — a portal refusal is tinted as a refusal even though
-            // its wording looks nothing like a probe's.
-            let tint = notice.level.tint(theme);
-            fill_rect(scene, tf, strip, with_alpha(tint, 0.16));
-            stroke_line(
-                scene,
-                tf,
-                with_alpha(tint, 0.5),
-                strip.x0,
-                strip.y0,
-                strip.x1,
-                strip.y0,
-                1.0,
+            let strip = self.import_notice_rect(r, tr, theme);
+            let kind = notice.level.banner_kind();
+            // One line: the banner's own leading icon and insets take the
+            // rest of the strip.
+            let room = strip.width() - 2.0 * S4 - f64::from(theme.tokens.metrics.icon_md) - S2;
+            let shown = elide_at(
+                &notice.text,
+                room.max(0.0) as f32,
+                &theme.text(TextRole::Body).strong(),
+                tr,
             );
-            let col = if failed {
-                c.semantic.danger
-            } else {
-                c.text_primary
-            };
-            let shown = elide_w(&notice.text, (strip.width() - 24.0) as f32, tr);
-            let baseline = text_baseline(strip, 11.0, tr);
-            text(scene, tr, tf, &shown, 11.0, col, strip.x0 + 12.0, baseline);
+            ui::widget::Banner::paint(
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                strip,
+                &ui::widget::BannerContent::new(kind, &shown),
+                Point::new(f64::MIN, f64::MIN),
+            );
         }
+    }
+
+    /// Where the import outcome's banner sits: the foot of the bin, one
+    /// banner row tall, inset like the rows above it.
+    pub(super) fn import_notice_rect(
+        &self,
+        r: &Regions,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Rect {
+        let title = theme.text(TextRole::Body).strong();
+        let h = (line_height(tr, &title) + S3 * 2.0)
+            .max(f64::from(theme.tokens.metrics.min_pointer_target));
+        let inset = S2 * self.bin_ui_scale();
+        Rect::new(
+            r.bin.x0 + inset,
+            r.bin.y1 - inset - h,
+            r.bin.x1 - inset,
+            r.bin.y1 - inset,
+        )
     }
 
     /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
@@ -402,36 +404,32 @@ impl VideoEditorApp {
         }
         let c = &theme.tokens.colors;
         let p = self.last_mouse;
-        // Drop-lane highlight + insertion marker at the snapped drop time.
+        // Drop-lane highlight + insertion marker at the snapped drop time: an
+        // insertion indicator, in your colour.
         if let Some((_, _, lane)) = self.bin_drop_lane(r) {
             fill_rect(
                 scene,
                 tf,
                 Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1),
-                with_alpha(c.accent[5], 0.16),
+                c.intent.selection_tint,
             );
             let t = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps);
             let x = self.time_to_x(t, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
-            stroke_line(scene, tf, c.accent[5], x, lane.y0, x, lane.y1, 2.0);
+            stroke_line(scene, tf, c.intent.you, x, lane.y0, x, lane.y1, 2.0);
         }
-        // Ghost chip following the cursor.
+        // Ghost chip following the cursor: the clip it will become.
         if let Some(m) = self.project.media(bd.media) {
-            let (w, h) = (154.0, 30.0);
-            let gr = Rect::new(p.x + 12.0, p.y - h / 2.0, p.x + 12.0 + w, p.y + h / 2.0);
-            let ghost_fill = clip_color(theme, m.palette);
-            fill_round(scene, tf, gr, 6.0, with_alpha(ghost_fill, 0.92));
-            stroke_round(scene, tf, gr, 6.0, with_alpha(c.border_focus, 0.9), 1.0);
-            let ghost_label = elide_w(&m.name, (gr.width() - 20.0) as f32, tr);
-            let ghost_y = text_baseline(gr, 12.0, tr);
-            text_w(
-                scene,
-                tr,
-                tf,
-                &ghost_label,
-                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
-                on_fill(theme, ghost_fill).1,
-                Point::new(gr.x0 + 10.0, ghost_y),
-            );
+            let style = theme.text(TextRole::Label);
+            let h = line_height(tr, &style) + S3;
+            let w = (text_width(tr, &m.name, &style) + S4).min(self.bin_width());
+            let gr = Rect::new(p.x + S3, p.y - h / 2.0, p.x + S3 + w, p.y + h / 2.0);
+            let radius = f64::from(theme.tokens.radii.item);
+            let (fill, ink) = on_fill(theme, clip_color(theme, m.palette));
+            ui::surface::shadow(scene, tf, gr, radius, &theme.tokens.elevation.floating);
+            fill_round(scene, tf, gr, radius, fill);
+            let label = elide_at(&m.name, (gr.width() - S4) as f32, &style, tr);
+            let y = text_baseline(gr, &style, tr);
+            text(scene, tr, tf, &label, &style, ink, gr.x0 + S2, y);
         }
     }
 
@@ -462,9 +460,29 @@ impl VideoEditorApp {
             return;
         };
         let rect = VideoEditorApp::bin_name_rect(row);
+        let panel = if r.bin_overlay {
+            theme.on_ground(ui::chrome::panel_ground(theme))
+        } else {
+            theme.in_region(ui::surface::Region::Sidebar)
+        };
         if let Some((_, label)) = self.bin_rename.as_mut() {
             label.apply_layout_external(rect);
-            label.draw(scene, tf, tr, theme, presence);
+            label.draw(scene, tf, tr, &panel, presence);
         }
     }
+}
+
+/// The floating surface a drawer or a summoned side panel stands on: the
+/// floating shadow, then the floating material with its edge at the panel
+/// radius. Returns the theme for what is drawn on it.
+pub(super) fn paint_floating_panel(
+    scene: &mut Scene,
+    tf: Affine,
+    rect: Rect,
+    theme: &Theme,
+) -> Theme {
+    if rect.width() > 0.0 && rect.height() > 0.0 {
+        ui::widget::floating_surface::paint(scene, tf, rect, theme);
+    }
+    theme.on_ground(ui::chrome::panel_ground(theme))
 }

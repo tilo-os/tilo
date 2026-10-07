@@ -75,7 +75,9 @@ use crate::compositor::surface_readback::{
     OwnedShmFrame, ReadbackError, buffer_to_rgba, owned_shm_to_rgba,
 };
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
+use ui::TextRole;
 
+mod commit_damage;
 mod sheets;
 pub use sheets::{PointRoute, SheetLink};
 
@@ -691,6 +693,9 @@ fn sync_dmabuf(fd: libc::c_int, flags: u64) {
 
 /// Per-surface capture + placement state.
 struct ForeignEntry {
+    damage_history: commit_damage::History,
+    #[cfg(any(test, target_os = "linux"))]
+    capture_damage: HashMap<u64, u64>,
     /// Most recent frame, row-major RGBA (`width*height*4` bytes) — reused across commits so a steady-state client costs no reallocation.
     rgba: Vec<u8>,
     width: u32,
@@ -741,12 +746,16 @@ struct ForeignEntry {
     /// fewer than were queued; the newest one finished is what counts.
     shm_queued: u64,
     shm_done: u64,
+    activated_capture: Option<u64>,
     /// The image description the client attached (`wp_color_management`),
     /// read when a 10-bit or YUV buffer is converted for display.
     colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
     /// The current frame at full precision when it carries an HDR signal;
     /// `rgba` is then its tone-mapped SDR rendition.
     hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    /// The current frame when it stayed on the GPU; `rgba` is then empty and
+    /// read back only on demand.
+    gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
 }
 
 impl ForeignEntry {
@@ -761,6 +770,9 @@ impl ForeignEntry {
 
     fn new() -> Self {
         Self {
+            damage_history: commit_damage::History::default(),
+            #[cfg(any(test, target_os = "linux"))]
+            capture_damage: HashMap::new(),
             rgba: Vec::new(),
             width: 0,
             height: 0,
@@ -778,12 +790,14 @@ impl ForeignEntry {
             presented: false,
             colorimetry: None,
             hdr: None,
+            gpu: None,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
             #[cfg(any(test, target_os = "linux"))]
             ready_captures: HashMap::new(),
             shm_queued: 0,
             shm_done: 0,
+            activated_capture: None,
         }
     }
 }
@@ -906,7 +920,20 @@ pub struct FrameSnapshot {
     pub hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
 }
 
-fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, y: i32) {
+/// A subsurface's pixels, tightly packed RGBA.
+struct ChildPixels<'a> {
+    rgba: &'a [u8],
+    width: u32,
+    height: u32,
+}
+
+/// Where a subsurface's pixels are.
+enum ChildSource {
+    Cpu(Vec<u8>),
+    Gpu(Arc<crate::shell::gpu_frames::GpuFrame>),
+}
+
+fn composite_child_rgba(root: &mut FrameSnapshot, child: &ChildPixels<'_>, x: i32, y: i32) {
     if child.rgba.is_empty() || child.width == 0 || child.height == 0 {
         return;
     }
@@ -984,6 +1011,8 @@ pub struct ChildFrame {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
+    painted_frames: Mutex<HashMap<SurfaceId, u64>>,
+    presentation_viewport: Mutex<Option<Rect>>,
     children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
     /// Transient toplevels drawn on their parent's tile, bottom to top.
     sheets: Mutex<Vec<SheetLink>>,
@@ -1027,6 +1056,9 @@ pub enum DmabufRoute {
     Gpu,
     /// The plane fd was CPU-mapped directly — only linear, CPU-visible buffers, but needs no GL context.
     CpuMmap,
+    /// Imported on the presenting GPU and copied into a compositor-owned
+    /// texture; no pixel crossed the CPU.
+    Shared,
 }
 
 /// Which capture route a commit took, for logging + tests.
@@ -1065,6 +1097,7 @@ struct ShmJob {
     surface: SurfaceId,
     /// The surface's shm capture count when this job was queued.
     generation: u64,
+    damage_generation: u64,
     payload: OwnedShmFrame,
 }
 
@@ -1074,6 +1107,8 @@ struct ReadyCapture {
     rgba: Vec<u8>,
     /// The frame at full precision, when it carries an HDR signal.
     hdr: Option<crate::shell::hdr_surface::HdrPlane>,
+    /// The frame, when it stayed on the GPU; `rgba` is then empty.
+    gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     result: Result<(u32, u32, CaptureRoute), String>,
 }
 
@@ -1192,12 +1227,17 @@ impl AsyncDmabufCapture {
                             *rgba = previous;
                         }
                         let colorimetry = store().colorimetry(job.surface);
-                        let mut hdr = None;
-                        let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr).map(
-                            |(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)),
-                        );
-                        let accepted =
-                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
+                        let accepted = if let Some(frame) = share_dmabuf(&job.payload, job.surface)
+                        {
+                            store().stage_gpu_capture(job.surface, job.token, frame)
+                        } else {
+                            let mut hdr = None;
+                            let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
+                                .map(|(width, height, route)| {
+                                    (width, height, CaptureRoute::Dmabuf(route))
+                                });
+                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr)
+                        };
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
@@ -1302,7 +1342,13 @@ impl AsyncShmCapture {
                         let Some(job) = job else { break };
                         match owned_shm_to_rgba(&job.payload, &mut rgba) {
                             Ok((width, height)) => {
-                                store().publish_rgba(job.surface, &rgba, width, height);
+                                store().publish_captured_rgba(
+                                    job.surface,
+                                    &rgba,
+                                    width,
+                                    height,
+                                    job.damage_generation,
+                                );
                             }
                             Err(error) => {
                                 tracing::warn!(
@@ -1408,6 +1454,34 @@ fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
     #[cfg(target_os = "linux")]
     if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
         worker.recycle_pixels(surface, rgba);
+    }
+}
+
+/// Keep an SDR client frame on the GPU: import it on the presenting device
+/// and copy it into a compositor-owned texture. `None` sends it down the
+/// readback route instead (no presenting GPU yet, a 10-bit, half-float or
+/// YUV buffer, or a layout the import cannot describe), reported once per
+/// reason. An 8-bit buffer is shown as it is on either route.
+#[cfg(target_os = "linux")]
+fn share_dmabuf(
+    dmabuf: &Dmabuf,
+    surface: SurfaceId,
+) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
+    static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface) {
+        Ok(frame) => Some(frame),
+        Err(reason) => {
+            let mut reported = REPORTED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !reported.contains(&reason) && reported.len() < 32 {
+                eprintln!(
+                    "tilo compositor: client frame read back through the CPU, not shared on the GPU: {reason}"
+                );
+                reported.push(reason);
+            }
+            None
+        }
     }
 }
 
@@ -1539,6 +1613,66 @@ impl ForeignFrameStore {
             .any(|(id, entry)| id.wrapping_shr(32) == u64::from(client_index) && entry.capturing())
     }
 
+    pub fn capture_seq_for_token(&self, id: SurfaceId, token: u64) -> Option<u64> {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.get(&id)?;
+        let result = (entry.activated_capture == Some(token) && entry.last_error.is_none())
+            .then_some(entry.seq);
+        drop(entries);
+        result
+    }
+
+    /// Exact completed pixel generation; pending/superseded captures are not proof.
+    pub fn presentation_pixels(&self, id: SurfaceId) -> Option<(u64, u64)> {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.get(&id)?;
+        let result =
+            (!entry.capturing() && entry.last_error.is_none() && entry.mapped && entry.seq != 0)
+                .then_some((entry.seq, entry.shm_done));
+        drop(entries);
+        result
+    }
+
+    pub fn begin_presentation_frame(&self, viewport: Rect) {
+        *self
+            .presentation_viewport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(viewport);
+        self.painted_frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    pub fn take_painted_frames(&self) -> HashMap<SurfaceId, u64> {
+        std::mem::take(
+            &mut *self
+                .painted_frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn note_painted_frame(&self, id: SurfaceId, seq: u64, bounds: Rect) {
+        let visible = self
+            .presentation_viewport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some_and(|viewport| bounds.intersect(viewport).area() > 0.0);
+        if visible && !crate::shell::capture_protection::painting_for_capture() {
+            self.painted_frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id, seq);
+        }
+    }
+
     pub fn import_count(&self) -> u64 {
         self.imports.load(Ordering::Relaxed)
     }
@@ -1577,6 +1711,7 @@ impl ForeignFrameStore {
             match r {
                 Ok((w, h)) => {
                     e.hdr = None;
+                    e.gpu = None;
                     e.width = w;
                     e.height = h;
                     e.seq = e.seq.wrapping_add(1);
@@ -1626,6 +1761,18 @@ impl ForeignFrameStore {
         dmabuf: Dmabuf,
         colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
     ) -> Option<(u64, Barrier)> {
+        self.prepare_dmabuf_capture_with_damage(id, client, dmabuf, colorimetry, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn prepare_dmabuf_capture_with_damage(
+        &self,
+        id: SurfaceId,
+        client: Client,
+        dmabuf: Dmabuf,
+        colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+        damage: Option<Vec<Rect>>,
+    ) -> Option<(u64, Barrier)> {
         let token = self
             .next_capture
             .fetch_add(1, Ordering::Relaxed)
@@ -1633,6 +1780,8 @@ impl ForeignFrameStore {
         self.with_entry(id, |entry| {
             entry.capture_tokens.push_back(token);
             entry.colorimetry = colorimetry;
+            let generation = entry.damage_history.begin(damage);
+            entry.capture_damage.insert(token, generation);
         });
         let worker = ASYNC_DMABUF_CAPTURE.get_or_init(AsyncDmabufCapture::spawn);
         match worker {
@@ -1651,6 +1800,7 @@ impl ForeignFrameStore {
                 // No worker owns this token, so it must not remain at the
                 // head of the per-commit queue and steal a later result.
                 self.with_entry(id, |entry| {
+                    entry.capture_damage.remove(&token);
                     if let Some(position) = entry.capture_tokens.iter().position(|v| *v == token) {
                         entry.capture_tokens.remove(position);
                     }
@@ -1662,24 +1812,35 @@ impl ForeignFrameStore {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> bool {
+    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> Option<u64> {
+        self.prepare_shm_capture_with_damage(id, frame, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn prepare_shm_capture_with_damage(
+        &self,
+        id: SurfaceId,
+        frame: OwnedShmFrame,
+        damage: Option<Vec<Rect>>,
+    ) -> Option<u64> {
         let worker = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn);
         match worker {
             Ok(worker) => {
-                let generation = self.with_entry(id, |entry| {
+                let (generation, damage_generation) = self.with_entry(id, |entry| {
                     entry.shm_queued = entry.shm_queued.wrapping_add(1);
-                    entry.shm_queued
+                    (entry.shm_queued, entry.damage_history.begin(damage))
                 });
                 worker.enqueue(ShmJob {
                     surface: id,
                     generation,
+                    damage_generation,
                     payload: frame,
                 });
-                true
+                Some(generation)
             }
             Err(reason) => {
                 self.note_failure(id, reason.clone());
-                false
+                None
             }
         }
     }
@@ -1710,7 +1871,40 @@ impl ForeignFrameStore {
             ReadyCapture {
                 rgba: captured,
                 hdr,
+                gpu: None,
                 result,
+            },
+        );
+        drop(guard);
+        true
+    }
+
+    /// Stage a frame that stayed on the GPU for the commit `token` belongs to.
+    #[cfg(target_os = "linux")]
+    fn stage_gpu_capture(
+        &self,
+        id: SurfaceId,
+        token: u64,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> bool {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = guard.get_mut(&id) else {
+            return false;
+        };
+        if !entry.capture_tokens.contains(&token) {
+            return false;
+        }
+        let size = (frame.width(), frame.height());
+        entry.ready_captures.insert(
+            token,
+            ReadyCapture {
+                rgba: Vec::new(),
+                hdr: None,
+                gpu: Some(frame),
+                result: Ok((size.0, size.1, CaptureRoute::Dmabuf(DmabufRoute::Shared))),
             },
         );
         drop(guard);
@@ -1733,14 +1927,22 @@ impl ForeignFrameStore {
             return None;
         }
         entry.capture_tokens.pop_front();
+        let damage_generation = entry.capture_damage.remove(&token);
         let ready = entry.ready_captures.remove(&token)?;
         let (outcome, imported, recycled) = match ready.result {
             Ok((width, height, route)) => {
                 let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
                 entry.hdr = ready.hdr.map(Arc::new);
+                entry.gpu = ready.gpu;
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
+                let generation =
+                    damage_generation.unwrap_or_else(|| entry.damage_history.begin(None));
+                entry
+                    .damage_history
+                    .publish(entry.seq, generation, (width, height));
+                entry.activated_capture = Some(token);
                 entry.last_error = None;
                 let outcome = match route {
                     CaptureRoute::Dmabuf(route) => CaptureOutcome::Dmabuf {
@@ -1754,6 +1956,7 @@ impl ForeignFrameStore {
             Err(reason) => {
                 entry.rgba.clear();
                 entry.hdr = None;
+                entry.gpu = None;
                 entry.width = 0;
                 entry.height = 0;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1772,6 +1975,40 @@ impl ForeignFrameStore {
     #[cfg(test)]
     fn activate_dmabuf_capture(&self, id: SurfaceId) -> Option<CaptureOutcome> {
         let token = self.with_entry(id, |entry| entry.capture_tokens.front().copied())?;
+        self.activate_dmabuf_capture_token(id, token)
+    }
+
+    /// Activate a completed owned GPU copy through the ordinary capture-token path.
+    #[cfg(test)]
+    pub(crate) fn publish_gpu_for_test(
+        &self,
+        id: SurfaceId,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> Option<CaptureOutcome> {
+        self.publish_damaged_gpu_for_test(id, frame, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_damaged_gpu_for_test(
+        &self,
+        id: SurfaceId,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+        damage: Option<Vec<Rect>>,
+    ) -> Option<CaptureOutcome> {
+        let token = self
+            .next_capture
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(token);
+            if let Some(damage) = damage {
+                let generation = entry.damage_history.begin(Some(damage));
+                entry.capture_damage.insert(token, generation);
+            }
+        });
+        if !self.stage_gpu_capture(id, token, frame) {
+            return None;
+        }
         self.activate_dmabuf_capture_token(id, token)
     }
 
@@ -1803,13 +2040,70 @@ impl ForeignFrameStore {
         self.with_entry(id, |e| {
             e.mapped = true;
             e.hdr = hdr;
+            e.gpu = None;
             e.rgba.clear();
             e.rgba.extend_from_slice(rgba);
             e.width = width;
             e.height = height;
             e.seq = e.seq.wrapping_add(1);
+            let generation = e.damage_history.begin(None);
+            e.damage_history.publish(e.seq, generation, (width, height));
             e.last_error = None;
         });
+    }
+
+    #[cfg(target_os = "linux")]
+    fn publish_captured_rgba(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) {
+        self.with_entry(id, |entry| {
+            entry.mapped = true;
+            entry.hdr = None;
+            entry.gpu = None;
+            entry.rgba.clear();
+            entry.rgba.extend_from_slice(rgba);
+            entry.width = width;
+            entry.height = height;
+            entry.seq = entry.seq.wrapping_add(1);
+            entry
+                .damage_history
+                .publish(entry.seq, generation, (width, height));
+            entry.last_error = None;
+        });
+    }
+
+    /// Exercise the identical capture publication/history seam from pixel
+    /// oracles. Production damage provenance is independently wire-tested.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn publish_damaged_rgba_for_test(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        size: (u32, u32),
+        damage: Vec<Rect>,
+    ) {
+        let generation = self.with_entry(id, |entry| entry.damage_history.begin(Some(damage)));
+        self.publish_captured_rgba(id, rgba, size.0, size.1, generation);
+    }
+
+    /// Buffer-pixel damage across every captured frame since a previous paint.
+    /// Missing/coalesced metadata, extent changes and history overflow return
+    /// None so callers retain the whole-image damage fallback.
+    pub fn frame_damage_between(
+        &self,
+        id: SurfaceId,
+        previous: u64,
+        current: u64,
+        size: (u32, u32),
+    ) -> Option<Vec<Rect>> {
+        self.with_entry(id, |entry| {
+            entry.damage_history.between(previous, current, size)
+        })
     }
 
     /// Record that the last capture failed and drop the stale frame.
@@ -1821,6 +2115,7 @@ impl ForeignFrameStore {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.hdr = None;
+            e.gpu = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1838,6 +2133,7 @@ impl ForeignFrameStore {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.hdr = None;
+            e.gpu = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1857,6 +2153,14 @@ impl ForeignFrameStore {
             guard.apps.insert(connection, app_id.to_string());
         } else {
             guard.apps.remove(&connection);
+        }
+    }
+
+    /// Keep the last displayed protected buffer private when its control
+    /// connection disappears. Toplevel destruction clears this surface latch.
+    pub fn retain_surface_capture_protection(&self, id: SurfaceId, app_id: &str) {
+        if self.is_capture_protected(id, app_id) {
+            self.set_surface_capture_protected(id, true);
         }
     }
 
@@ -1907,6 +2211,7 @@ impl ForeignFrameStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
         drop(guard);
+        crate::shell::gpu_frames::forget_surface(id);
         let mut children = self
             .children
             .lock()
@@ -1968,19 +2273,30 @@ impl ForeignFrameStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
         let content = e.content();
-        let snapshot = if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
-            None
+        if e.width == 0 || e.height == 0 {
+            return None;
+        }
+        let gpu = if e.rgba.is_empty() {
+            Some(e.gpu.clone()?)
         } else {
-            Some(FrameSnapshot {
-                rgba: e.rgba.clone(),
-                width: e.width,
-                height: e.height,
-                seq: e.seq,
-                hdr: e.hdr.clone(),
-            })
+            None
+        };
+        let mut snapshot = FrameSnapshot {
+            rgba: if gpu.is_some() {
+                Vec::new()
+            } else {
+                e.rgba.clone()
+            },
+            width: e.width,
+            height: e.height,
+            seq: e.seq,
+            hdr: e.hdr.clone(),
         };
         drop(guard);
-        let mut snapshot = snapshot?;
+        // A frame that stayed on the GPU is read back here, on demand.
+        if let Some(gpu) = gpu {
+            snapshot.rgba.clone_from(gpu.rgba()?.as_ref());
+        }
         let children = self
             .children
             .lock()
@@ -1992,19 +2308,50 @@ impl ForeignFrameStore {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for child in children {
-            let Some(frame) = guard.get(&child.surface) else {
+        let child_frames: Vec<_> = children
+            .iter()
+            .filter_map(|child| {
+                let frame = guard.get(&child.surface)?;
+                let pixels = if frame.rgba.is_empty() {
+                    frame.gpu.clone().map(ChildSource::Gpu)
+                } else {
+                    Some(ChildSource::Cpu(frame.rgba.clone()))
+                };
+                Some((
+                    child.x,
+                    child.y,
+                    frame.width,
+                    frame.height,
+                    frame.seq,
+                    pixels,
+                ))
+            })
+            .collect();
+        drop(guard);
+        for (x, y, width, height, seq, pixels) in child_frames {
+            let pixels = match pixels {
+                Some(ChildSource::Cpu(rgba)) => Some(rgba),
+                Some(ChildSource::Gpu(gpu)) => gpu.rgba().map(|rgba| rgba.as_ref().clone()),
+                None => None,
+            };
+            snapshot.seq = snapshot.seq.wrapping_add(seq);
+            let Some(rgba) = pixels.filter(|rgba| !rgba.is_empty()) else {
                 continue;
             };
-            composite_child_rgba(&mut snapshot, frame, child.x, child.y);
-            snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
+            composite_child_rgba(
+                &mut snapshot,
+                &ChildPixels {
+                    rgba: &rgba,
+                    width,
+                    height,
+                },
+                x,
+                y,
+            );
             // Subsurfaces live only in the SDR rendition; a window with any
             // is shown through it.
-            if !frame.rgba.is_empty() {
-                snapshot.hdr = None;
-            }
+            snapshot.hdr = None;
         }
-        drop(guard);
         // Subsurfaces are positioned against the whole buffer, so the window
         // is cut out only after they are composited onto it.
         if content != (0, 0, snapshot.width, snapshot.height) {
@@ -2017,6 +2364,42 @@ impl ForeignFrameStore {
             snapshot.height = content.3;
         }
         Some(snapshot)
+    }
+
+    /// The image a tile draws for `id`: straight from the GPU texture when the
+    /// frame stayed there and nothing is composited onto it on the CPU,
+    /// otherwise from [`Self::snapshot`]. Also the frame's HDR plane, if any.
+    pub fn frame_image(
+        &self,
+        id: SurfaceId,
+    ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
+        let has_children = self
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .is_some_and(|children| !children.is_empty());
+        if !has_children {
+            let shared = {
+                let guard = self
+                    .entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.get(&id).and_then(|e| {
+                    let gpu = e.gpu.clone().filter(|_| e.rgba.is_empty())?;
+                    Some((gpu, e.content()))
+                })
+            };
+            if let Some((gpu, content)) = shared {
+                if content.2 == 0 || content.3 == 0 {
+                    return None;
+                }
+                return Some((gpu.image(content), None));
+            }
+        }
+        let snapshot = self.snapshot(id)?;
+        let hdr = snapshot.hdr.clone();
+        Some((frame_image(snapshot), hdr))
     }
 
     /// `rgba`, a `width`×`height` buffer `id` committed, cut to the window
@@ -2589,13 +2972,17 @@ impl ForeignSurfaceWidget {
             return false;
         }
         self.cached_seq = seq;
-        let snapshot = store().snapshot(self.surface_id);
-        self.cached_hdr = snapshot.as_ref().and_then(|frame| frame.hdr.clone());
-        self.cached = snapshot.map(frame_image);
+        let frame = store().frame_image(self.surface_id);
+        if store().frame_seq(self.surface_id) != seq {
+            self.cached_seq = 0;
+            return false;
+        }
+        self.cached_hdr = frame.as_ref().and_then(|(_, hdr)| hdr.clone());
+        self.cached = frame.map(|(image, _)| image);
         self.sheet_images = store()
             .sheets_over(self.surface_id)
             .into_iter()
-            .filter_map(|link| Some((link, frame_image(store().snapshot(link.surface)?))))
+            .filter_map(|link| Some((link, store().frame_image(link.surface)?.0)))
             .collect();
         true
     }
@@ -2615,13 +3002,7 @@ impl ForeignSurfaceWidget {
         let sy = dst.height() / f64::from(image.height.max(1));
         for (link, sheet) in &self.sheet_images {
             if link.modal {
-                crate::shell::overlay_host::fill_scrim(
-                    scene,
-                    transform,
-                    self.rect,
-                    crate::shell::overlay_host::MODAL_SCRIM_ALPHA,
-                    theme,
-                );
+                ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
             }
             let Some(local) = store().sheet_rect_in_root(self.surface_id, link.surface) else {
                 continue;
@@ -2641,6 +3022,22 @@ impl ForeignSurfaceWidget {
                 &Rect::new(0.0, 0.0, f64::from(sheet.width), f64::from(sheet.height)),
             );
         }
+    }
+
+    fn record_foreign_damage(
+        &self,
+        image: &ImageData,
+        brush_transform: Affine,
+        transform: Affine,
+        dst: Rect,
+    ) {
+        super::foreign_damage::record(
+            self.surface_id,
+            image,
+            self.cached_seq,
+            brush_transform,
+            transform.transform_rect_bbox(self.rect.union(dst)),
+        );
     }
 
     /// Register the frame's full-precision plane, when it has one, for the
@@ -2759,18 +3156,18 @@ pub fn paint_output_presentation_surface(
     // An audience surface is deliberately opaque: its renderer may carry
     // transparent margins while loading, but projector pixels must never
     // reveal the presenter's desktop behind the slide.
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &rect);
-    let Some(frame) = store().snapshot(surface_id) else {
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &rect,
+    );
+    let Some((image, _)) = store().frame_image(surface_id) else {
         return;
     };
-    let image = ImageData {
-        data: Blob::new(std::sync::Arc::new(frame.rgba)),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: frame.width,
-        height: frame.height,
-    };
-    if image.width == 0 || image.height == 0 {
+    let (width, height) = (image.width, image.height);
+    if width == 0 || height == 0 {
         return;
     }
     let transform = translated_and_scaled(
@@ -2786,7 +3183,7 @@ pub fn paint_output_presentation_surface(
         transform,
         &brush,
         None,
-        &Rect::new(0.0, 0.0, f64::from(frame.width), f64::from(frame.height)),
+        &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
     );
 }
 
@@ -2848,7 +3245,7 @@ impl Widget for ForeignSurfaceWidget {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.xl);
+        let radius = f64::from(theme.tokens.radii.tile);
         if crate::shell::capture_protection::painting_for_capture()
             && self.capture_protected_rect().is_some()
         {
@@ -2862,9 +3259,15 @@ impl Widget for ForeignSurfaceWidget {
         if let Some(image) = self.cached.clone()
             && let Some(dst) = self.fit_rect(image.width, image.height)
         {
+            store().note_painted_frame(
+                self.surface_id,
+                self.cached_seq,
+                transform.transform_rect_bbox(self.rect),
+            );
             let sx = dst.width() / f64::from(image.width);
             let sy = dst.height() / f64::from(image.height);
             let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
+            self.record_foreign_damage(&image, brush_transform, transform, dst);
             let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
             self.record_hdr_layer(&image, brush_transform, transform, dst);
             if self.preserve_transparency {
@@ -2914,34 +3317,34 @@ impl Widget for ForeignSurfaceWidget {
         // Fixed ramp indices were a guess about which way round the card
         // is, not an answer: `neutral[1]` is near-black on the dark ramp
         // and the card is `#16171b`, so the app's own name measured 1.03:1 and was invisible. `on_card` derives both tiers from the card's actual luminance instead.
-        let tiers = theme.tokens.colors.on_card();
+        let tiers = theme.tokens.colors.on_content();
         let on_card = tiers.ink;
         let on_card_dim = tiers.ink_dim;
-        let size = theme.tokens.typography.scale.xl;
-        let (tw, _) = text_renderer.measure(&headline, size, None);
+        let style = theme.text(TextRole::Title);
+        let (tw, _) = text_renderer.measure_style(&headline, None, &style);
         let cx = self.rect.center().x;
-        let y = self.rect.center().y - f64::from(size) / 2.0;
-        text_renderer.draw_text(
+        let y = self.rect.center().y - f64::from(style.size) / 2.0;
+        text_renderer.draw_style(
             scene,
             &headline,
-            size,
             on_card,
             translated(transform, cx - f64::from(tw) / 2.0, y),
             None,
+            &style,
         );
-        let sm = theme.tokens.typography.scale.sm;
-        let (dw, _) = text_renderer.measure(&detail, sm, None);
-        text_renderer.draw_text(
+        let sm = theme.text(TextRole::Caption);
+        let (dw, _) = text_renderer.measure_style(&detail, None, &sm);
+        text_renderer.draw_style(
             scene,
             &detail,
-            sm,
             on_card_dim,
             translated(
                 transform,
                 cx - f64::from(dw) / 2.0,
-                y + f64::from(size) + 8.0,
+                y + f64::from(style.size) + 8.0,
             ),
             None,
+            &sm,
         );
         self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
     }
@@ -3261,6 +3664,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        let scale = state.surface_scale(id);
         if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
             continue;
         }
@@ -3271,13 +3675,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             && !is_visible_tab(&state.workspace_tree.read(), id)
         {
             if let Some((w, h)) = store().take_remote_configure(id, extent) {
-                configure_to(&toplevel, w, h, tiled);
+                configure_to(&toplevel, id, (w, h), scale, tiled);
                 sent = sent.saturating_add(1);
             }
             continue;
         }
         if let Some((w, h)) = store().take_pending_configure(id) {
-            configure_to(&toplevel, w, h, tiled);
+            configure_to(&toplevel, id, (w, h), scale, tiled);
             sent = sent.saturating_add(1);
             tracing::debug!(
                 target: "shell::compositor::foreign",
@@ -3295,7 +3699,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             continue;
         }
         let (w, h) = fallback;
-        configure_to(&toplevel, w, h, tiled);
+        configure_to(&toplevel, id, (w, h), scale, tiled);
         sent = sent.saturating_add(1);
         tracing::warn!(
             target: "shell::compositor::foreign",
@@ -3314,8 +3718,30 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
 /// writes the pending state into the configure, so the size must be
 /// staged before the send, letting any other pending change (decoration mode) ride the same event.
 #[cfg(target_os = "linux")]
-fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
+fn configure_to(
+    toplevel: &ToplevelSurface,
+    id: SurfaceId,
+    size: (i32, i32),
+    scale: f64,
+    tiled: bool,
+) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
+    let (w, h) = within_client_texture_limit(size, scale);
+    if (w, h) != size {
+        // Whatever laid the tab out this large is a defect: say so, but
+        // still send a size the client can render, since past the limit it
+        // loses its drawing surface and closes the window.
+        tracing::error!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            requested_width = size.0,
+            requested_height = size.1,
+            width = w,
+            height = h,
+            scale,
+            "a tab was laid out larger than a client can render; configuring it to the largest size it can draw",
+        );
+    }
     toplevel.with_pending_state(|pending| {
         pending.size = Some((w, h).into());
         // A tile has a neighbour or the screen edge on every side. Saying so
@@ -3335,6 +3761,29 @@ fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
         }
     });
     toplevel.send_configure();
+}
+
+/// Widest and tallest buffer, in physical pixels, a client is asked to
+/// render: the 2D texture limit every GPU guarantees (WebGPU's default
+/// `max_texture_dimension_2d`). A toolkit sized past it cannot create its
+/// drawing surface at all.
+pub const CLIENT_TEXTURE_LIMIT_PX: i32 = 8192;
+
+/// `size` (logical pixels) kept within [`CLIENT_TEXTURE_LIMIT_PX`] once the
+/// client renders it at `scale`.
+#[must_use]
+pub fn within_client_texture_limit(size: (i32, i32), scale: f64) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the limit over a positive scale is at most the limit itself, well inside i32"
+    )]
+    let limit = ((f64::from(CLIENT_TEXTURE_LIMIT_PX) / scale).floor() as i32).max(1);
+    (size.0.min(limit), size.1.min(limit))
 }
 
 /// The size to configure an opening toplevel to when its tab was never
@@ -4593,7 +5042,9 @@ mod tests {
         store().forget(id);
         let _ = take_published_shm_frames();
         assert!(
-            store().prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+            store()
+                .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+                .is_some()
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !take_published_shm_frames() {

@@ -69,7 +69,7 @@ impl Widget for Stack {
 
     /// Not short-circuited — a child that skipped its pass would miss a
     /// frame of state.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
@@ -170,6 +170,16 @@ impl Widget for Stack {
         for child in &self.children {
             visitor(child.as_ref());
         }
+    }
+
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.children_mut() {
+            request.visit(child)?;
+        }
+        Ok(())
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

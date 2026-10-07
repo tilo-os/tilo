@@ -27,6 +27,14 @@ impl CapnpBrokerState {
         caller: &Caller,
         presentation: &[u8],
     ) -> Result<Arc<dyn ActionHost + Send + Sync>, String> {
+        Ok(self.checked_local_host(caller, presentation)?)
+    }
+
+    fn checked_local_host(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+    ) -> Result<Arc<CertifiedLocalActionHost>, String> {
         // This door never falls back to the legacy wall clock during verification.
         self.registered_policy_time()?
             .ok_or("original policy clock unavailable")?;
@@ -62,6 +70,68 @@ impl CapnpBrokerState {
     }
 }
 
+/// Existing signed personal-device admission, retained with its real execution
+/// and original policy clock. No public constructor, serialized token, key,
+/// device enrolment or account grant is exposed by this projection.
+#[derive(Clone)]
+pub struct CertifiedPersonContext {
+    principal: String,
+    device: String,
+    checked: Arc<CertifiedLocalActionHost>,
+}
+impl CertifiedPersonContext {
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
+    pub fn device(&self) -> &str {
+        &self.device
+    }
+    /// # Errors
+    /// Refuses an ended/revoked session, unavailable original clock or changed
+    /// certificate/admission. Must be called at the actual native I/O boundary.
+    pub fn revalidate(&self) -> Result<(), String> {
+        self.checked
+            .check(&self.checked.caller)
+            .map_err(|_| "personal device admission unavailable".into())
+    }
+}
+impl CapnpBrokerState {
+    /// Project only an already admitted person's own room on a non-foreign
+    /// device. This does not delegate account credentials or mint permissions.
+    /// # Errors
+    /// Refuses forged labels, agents/apps, other rooms/devices, expired or
+    /// revoked certificate/admission, ended execution and missing policy clocks.
+    pub fn certified_person_context(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+    ) -> Result<CertifiedPersonContext, String> {
+        let checked = self.checked_local_host(caller, presentation)?;
+        let certificate = checked
+            .admission
+            .admitted
+            .certificate
+            .as_ref()
+            .ok_or("personal device certificate unavailable")?;
+        let room = uuid::Uuid::parse_str(&checked.admission.room)
+            .map_err(|_| "personal room unavailable")?;
+        if !collab_types::is_person_room(&certificate.user_public_key, &room)
+            || checked.effective.is_foreign_device()
+            || checked.admission.admitted.agent_id.is_some()
+            || checked.admission.admitted.host_scope.is_some()
+        {
+            return Err("native credentials require this person's own admitted device room".into());
+        }
+        let principal = checked.admission.admitted.principal_id.clone();
+        let device = hex::encode(certificate.device_public_key);
+        Ok(CertifiedPersonContext {
+            principal,
+            device,
+            checked,
+        })
+    }
+}
+
 impl CertifiedLocalActionHost {
     fn check(&self, caller: &Caller) -> Result<(), ActionHostError> {
         if caller != &self.caller
@@ -88,12 +158,12 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        // This prerequisite supports only already-published peer actions. Other
-        // doors need their own explicit provenance preservation before exposure.
+        // Numeric peer and application/retained-launch aliases preserve original
+        // custody to the actual numeric dispatch. Other doors remain separate.
         if query
             .provider
             .as_ref()
-            .is_some_and(|provider| provider.parse::<u64>().is_err())
+            .is_some_and(|provider| !certified_provider(provider))
         {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
@@ -111,9 +181,9 @@ impl ActionHost for CertifiedLocalActionHost {
                     })
                 })
                 .map(|mut page| {
-                    page.rows.retain(|row| row.provider.parse::<u64>().is_ok());
+                    page.rows.retain(|row| certified_provider(&row.provider));
                     page.providers
-                        .retain(|provider| provider.provider.parse::<u64>().is_ok());
+                        .retain(|provider| certified_provider(&provider.provider));
                     page
                 });
             complete.complete(result);
@@ -129,7 +199,7 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        if request.target.provider.parse::<u64>().is_err() {
+        if !certified_provider(&request.target.provider) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         self.state.action_invoke_with_origin(
@@ -157,4 +227,16 @@ impl ActionHost for CertifiedLocalActionHost {
         self.check(caller)?;
         self.state.action_cancel(&self.effective, id)
     }
+}
+
+// Only existing provider forms with preserved original SDK-delivery custody.
+fn certified_provider(provider: &str) -> bool {
+    // This is only door classification. The action host independently looks
+    // up the opaque token and revalidates its live registration/custody.
+    if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
+        return true;
+    }
+    provider.parse::<u64>().is_ok()
+        || tilo_actions::remote::application_provider(provider).is_some()
+        || super::launchable::is_launchable_provider(provider)
 }

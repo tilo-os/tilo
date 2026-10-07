@@ -23,7 +23,8 @@ use ui::theme::Theme;
 
 use ui::accesskit::{
     Action as AccessAction, Node as AccessNode, NodeId as AccessNodeId, Rect as AccessRect,
-    Role as AccessRole, TreeId, TreeInfo, TreeUpdate,
+    Role as AccessRole, TextPosition as AccessTextPosition, TextSelection as AccessTextSelection,
+    TreeId, TreeInfo, TreeUpdate,
 };
 
 use crate::compositor::lock_auth::UNAVAILABLE_MSG;
@@ -47,6 +48,7 @@ const LOCK_MEDIA_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 5);
 pub const LOCK_MEDIA_PREVIOUS_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 6);
 pub const LOCK_MEDIA_PLAY_PAUSE_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 7);
 pub const LOCK_MEDIA_NEXT_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 8);
+const LOCK_PASSWORD_TEXT_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 9);
 
 /// The transport button an accessibility node stands for. The lock tree has
 /// no other actionable media node: no player switching, no output routing.
@@ -533,6 +535,26 @@ fn locked_clock_label(view: &LockView<'_>) -> String {
     }
 }
 
+/// The password's text run, attached to `password` with the caret at its
+/// start. AccessKit offers AT-SPI `Text` and `EditableText` only on a field with
+/// a text run; this one stays empty whatever was typed, so it discloses
+/// neither the password nor its length.
+fn password_text_run(password: &mut AccessNode, bounds: Rect) -> AccessNode {
+    let mut run = AccessNode::new(AccessRole::TextRun);
+    run.set_value("");
+    run.set_bounds(access_rect(bounds));
+    let start = AccessTextPosition {
+        node: LOCK_PASSWORD_TEXT_ID,
+        character_index: 0,
+    };
+    password.set_text_selection(AccessTextSelection {
+        anchor: start,
+        focus: start,
+    });
+    password.set_children(vec![LOCK_PASSWORD_TEXT_ID]);
+    run
+}
+
 /// The locked semantic tree has one password target, matching the primary
 /// output. It never publishes a password or masked value to assistive tech.
 pub fn build_accessibility_tree(
@@ -572,6 +594,7 @@ pub fn build_accessibility_tree(
         // else, so it does not expose hidden desktop actions while locked.
         password.add_action(AccessAction::Click);
     }
+    let password_text = password_text_run(&mut password, layout.password);
 
     let mut help = AccessNode::new(AccessRole::Label);
     help.set_label(t("lock-screen-help"));
@@ -581,6 +604,7 @@ pub fn build_accessibility_tree(
     let mut nodes = vec![
         (LOCK_CLOCK_ID, clock),
         (LOCK_PASSWORD_ID, password),
+        (LOCK_PASSWORD_TEXT_ID, password_text),
         (LOCK_HELP_ID, help),
     ];
     if let (Some(player), Some(media)) = (
@@ -837,7 +861,7 @@ pub fn draw_lock_scene_at_time(
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
-            theme.bg_app.with_alpha(1.0),
+            theme.tokens.colors.surfaces.base.with_alpha(1.0),
             None,
             &backdrop,
         );
@@ -904,7 +928,7 @@ fn draw_lock_widget(
     // do, and restored at the end.
     let renderer_scale = text.text_scale();
     text.set_text_scale(1.0);
-    let type_scale = ui::tokens::TypeScale::default();
+    let type_scale = ui::tokens::Typography::default();
     if !view.clock.is_empty() {
         let size = fitted_clock_size(
             text,
@@ -935,7 +959,7 @@ fn draw_lock_widget(
             scene,
             text,
             view.date,
-            scaled_text_size(type_scale.lg, layout.scale, theme),
+            scaled_text_size(type_scale.size(ui::TextRole::Heading), layout.scale, theme),
             theme.text_primary,
             layout.date,
             layout.clock.x1 < layout.panel.x0,
@@ -949,7 +973,7 @@ fn draw_lock_widget(
     // its edge is the derived Panel border rather than a declared colour.
     let panel = RoundedRect::from_rect(
         layout.panel,
-        f64::from(theme.tokens.radii.xl) * layout.scale / f64::from(theme.ui_scale).max(0.1),
+        f64::from(theme.tokens.radii.panel) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
     scene.fill(
         Fill::NonZero,
@@ -971,7 +995,7 @@ fn draw_lock_widget(
         scene,
         text,
         &ui::i18n::I18nManager::lookup_plain("lock-welcome-back"),
-        scaled_text_size(type_scale.xl, layout.scale, theme),
+        scaled_text_size(type_scale.size(ui::TextRole::Title), layout.scale, theme),
         theme.text_primary,
         layout.title,
     );
@@ -988,7 +1012,7 @@ fn draw_lock_widget(
             scene,
             text,
             &label,
-            scaled_text_size(type_scale.sm, layout.scale, theme),
+            scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
             theme.text_dim,
             layout.notifications,
         );
@@ -1008,7 +1032,7 @@ fn draw_lock_media(
 ) {
     let card = RoundedRect::from_rect(
         media.card,
-        f64::from(theme.tokens.radii.lg) * layout.scale / f64::from(theme.ui_scale).max(0.1),
+        f64::from(theme.tokens.radii.control) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
     scene.fill(
         Fill::NonZero,
@@ -1040,9 +1064,10 @@ fn draw_lock_media(
         player,
         image.as_ref(),
     );
-    let type_scale = ui::tokens::TypeScale::default();
-    let title_size = scaled_text_size(type_scale.sm, layout.scale, theme);
-    let caption_size = scaled_text_size(type_scale.xs, layout.scale, theme);
+    let type_scale = ui::tokens::Typography::default();
+    let title_size = scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme);
+    let caption_size =
+        scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme);
     #[allow(
         clippy::cast_possible_truncation,
         reason = "lock output geometry is bounded to compositor dimensions; f32 width is sufficient for text shaping"
@@ -1099,7 +1124,7 @@ fn draw_secondary_lock_widget(
     // Same renderer reset as the primary widget (HIG §7a).
     let renderer_scale = text.text_scale();
     text.set_text_scale(1.0);
-    let type_scale = ui::tokens::TypeScale::default();
+    let type_scale = ui::tokens::Typography::default();
     let text_left = layout.output.x0 + 24.0 * layout.scale;
     let text_right = layout.output.x1 - 24.0 * layout.scale;
     if !view.clock.is_empty() {
@@ -1117,7 +1142,7 @@ fn draw_secondary_lock_widget(
             scene,
             text,
             view.date,
-            scaled_text_size(type_scale.lg, layout.scale, theme),
+            scaled_text_size(type_scale.size(ui::TextRole::Heading), layout.scale, theme),
             theme.text_primary,
             Rect::new(text_left, layout.date.y0, text_right, layout.date.y1),
         );
@@ -1132,7 +1157,7 @@ fn draw_secondary_lock_widget(
         scene,
         text,
         &t("lock-screen-locked"),
-        scaled_text_size(type_scale.lg, layout.scale, theme),
+        scaled_text_size(type_scale.size(ui::TextRole::Heading), layout.scale, theme),
         theme.text_primary,
         Rect::new(
             message.x0,
@@ -1145,7 +1170,7 @@ fn draw_secondary_lock_widget(
         scene,
         text,
         &t("lock-screen-prompt-elsewhere"),
-        scaled_text_size(type_scale.sm, layout.scale, theme),
+        scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
         theme.text_primary,
         Rect::new(
             message.x0,
@@ -1275,7 +1300,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.accent_primary,
+        theme.tokens.colors.intent.inverted,
         None,
         &body,
     );
@@ -1285,7 +1310,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     scene.stroke(
         &Stroke::new((5.0 * layout.scale).max(1.0)),
         Affine::IDENTITY,
-        theme.accent_primary,
+        theme.tokens.colors.intent.inverted,
         None,
         &shackle,
     );
@@ -1297,7 +1322,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.bg_app,
+        theme.tokens.colors.surfaces.base,
         None,
         &keyhole,
     );
@@ -1312,9 +1337,15 @@ fn draw_password_field(
 ) {
     let field = RoundedRect::from_rect(
         layout.password,
-        f64::from(theme.tokens.radii.md) * layout.scale / f64::from(theme.ui_scale).max(0.1),
+        f64::from(theme.tokens.radii.control) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &field);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.base,
+        None,
+        &field,
+    );
     // A subtle border — focused colour, since the field always holds focus
     // while locked.
     scene.stroke(
@@ -1332,7 +1363,11 @@ fn draw_password_field(
             scene,
             text,
             &t("lock-screen-enter-password"),
-            scaled_text_size(ui::tokens::TypeScale::default().base, layout.scale, theme),
+            scaled_text_size(
+                ui::tokens::Typography::default().size(ui::TextRole::Body),
+                layout.scale,
+                theme,
+            ),
             theme.text_dim,
             layout.password,
         );
@@ -1374,7 +1409,7 @@ fn draw_status(
     // One status role for every state (Control sub-line, HIG §9.6): the
     // 14 / 13 / 12 the three states used to pick between were not sizes on
     // the scale and made the row jump as the state changed.
-    let type_scale = ui::tokens::TypeScale::default();
+    let type_scale = ui::tokens::Typography::default();
     let (value, color) = if view.verifying {
         (t("lock-screen-verifying"), theme.text_dim)
     } else if let Some(err) = view.error {
@@ -1386,7 +1421,7 @@ fn draw_status(
             scene,
             text,
             &retry,
-            scaled_text_size(type_scale.sm, layout.scale, theme),
+            scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
             theme.tokens.colors.semantic.danger,
             layout.status,
         );
@@ -1398,7 +1433,7 @@ fn draw_status(
         scene,
         text,
         &value,
-        scaled_text_size(type_scale.sm, layout.scale, theme),
+        scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
         color,
         layout.status,
     );
@@ -1474,6 +1509,19 @@ mod tests {
             assert!(password.supports_action(AccessAction::SetValue));
             assert!(password.supports_action(AccessAction::Click));
             assert_eq!(password.value(), None, "credential values never enter AT");
+            // AT-SPI Text and EditableText need a text run; it stays empty
+            // with the caret at its start, whatever length was typed.
+            assert_eq!(password.children(), [LOCK_PASSWORD_TEXT_ID].as_slice());
+            let (_, run) = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == LOCK_PASSWORD_TEXT_ID)
+                .expect("the password's text run is exported");
+            assert_eq!(run.role(), AccessRole::TextRun);
+            assert_eq!(run.value(), Some(""));
+            let selection = password.text_selection().expect("a caret");
+            assert_eq!(selection.focus.node, LOCK_PASSWORD_TEXT_ID);
+            assert_eq!(selection.focus.character_index, 0);
             assert!(
                 update.nodes.iter().all(|(_, node)| {
                     node.label()

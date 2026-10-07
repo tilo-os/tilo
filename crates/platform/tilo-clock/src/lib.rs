@@ -74,7 +74,12 @@ pub fn now() -> Instant {
     Instant::now()
 }
 
+/// Wall time pinned by [`freeze_wall`], in milliseconds since the Unix epoch;
+/// `0` while the clock runs.
+static FROZEN_WALL_MS: AtomicU64 = AtomicU64::new(0);
+
 /// The current wall-clock time, for timestamps shown to people or persisted.
+/// After [`freeze_wall`] it is that instant, every time.
 #[must_use]
 #[inline]
 #[allow(
@@ -82,7 +87,29 @@ pub fn now() -> Instant {
     reason = "the one sanctioned wall-clock read"
 )]
 pub fn wall() -> SystemTime {
-    SystemTime::now()
+    match FROZEN_WALL_MS.load(Ordering::Relaxed) {
+        0 => SystemTime::now(),
+        ms => UNIX_EPOCH
+            .checked_add(Duration::from_millis(ms))
+            .unwrap_or(UNIX_EPOCH),
+    }
+}
+
+/// Pin the wall clock to `at` for the rest of the process, so a screenshot
+/// capture shows the same date and time on every run. The monotonic clock
+/// ([`now`]) keeps running: animations and timeouts still advance. Never
+/// called in a live session.
+pub fn freeze_wall(at: SystemTime) {
+    let ms = at
+        .duration_since(UNIX_EPOCH)
+        .map_or(1, |since| saturating_u64(since.as_millis()).max(1));
+    FROZEN_WALL_MS.store(ms, Ordering::Relaxed);
+}
+
+/// Whether [`freeze_wall`] pinned the wall clock.
+#[must_use]
+pub fn wall_frozen() -> bool {
+    FROZEN_WALL_MS.load(Ordering::Relaxed) != 0
 }
 
 /// A wall-clock time as `std::time`'s, for crates and APIs that name
@@ -215,6 +242,18 @@ impl Clock for ManualClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frozen_wall_clock_holds_while_the_monotonic_clock_runs() {
+        let at = UNIX_EPOCH + Duration::from_secs(1_782_816_120);
+        let before = now();
+        freeze_wall(at);
+        assert!(wall_frozen());
+        assert_eq!(wall(), at);
+        assert_eq!(unix_now(), 1_782_816_120);
+        assert_eq!(wall(), at, "it stays put");
+        assert!(now() >= before, "the monotonic clock is not frozen");
+    }
 
     #[test]
     fn clocks_agree_on_units_move_only_as_told_and_never_backwards() {

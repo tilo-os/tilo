@@ -413,31 +413,78 @@ impl<'a> PeerPaintCtx<'a> {
     }
 }
 
-/// Draw every participant's playhead as a ghost line down the lanes with
-/// their name above it.
+/// Where one participant's playhead name sits: the playhead's x, and the top
+/// of the line the chip hangs above.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PeerTag {
+    /// Index into [`peer_playheads`].
+    pub peer: usize,
+    pub x: f64,
+    /// Which chip row the name hangs in: 0 is the ruler, every further row
+    /// one chip down into the lanes.
+    pub row: u32,
+    /// The line starts here; the name chip hangs just above it.
+    pub top: f64,
+    /// The horizontal span the name takes, kept clear of the ruler's readings
+    /// when the chip hangs in the ruler.
+    pub span: (f64, f64),
+}
+
+/// Place every participant's playhead name.
 ///
-/// `time_to_x` is the editor's own seconds-to-pixels mapping, passed in
-/// rather than recomputed, so a peer's playhead lands on exactly the pixel the
-/// local one would at the same instant — under the same zoom and scroll, with
-/// no second copy of the arithmetic to drift.
+/// A name hangs in the ruler band, above the lanes, where it covers no clip.
+/// The ruler only has one row, so a name that would land on the local
+/// playhead's time (`taken`) or on a name already placed steps down into the
+/// lanes, one chip at a time, until it finds room.
 ///
-/// Chips step down for each successive peer so two people parked on the same
-/// frame are both readable.
-pub fn draw_peer_playheads(
-    ctx: &mut PeerPaintCtx<'_>,
+/// `name_width` measures a name as its chip will show it.
+pub fn place_peer_tags(
+    presence: &PresenceCtx,
     lanes: Rect,
-    bottom: f64,
+    taken: &[(f64, f64)],
     time_to_x: impl Fn(f64) -> f64,
-) {
-    for (i, peer) in peer_playheads(ctx.presence).iter().enumerate() {
+    mut name_width: impl FnMut(&str) -> f64,
+) -> Vec<PeerTag> {
+    let mut placed: Vec<PeerTag> = Vec::new();
+    for (i, peer) in peer_playheads(presence).iter().enumerate() {
         let x = time_to_x(peer.at);
         if x < lanes.x0 - 0.5 || x > lanes.x1 + 0.5 {
             continue;
         }
-        // The chip hangs above the line, so the line starts far enough down
-        // the lane area to leave room for it inside the timeline.
-        let top = lanes.y0 + CHIP_STEP * (i % 3) as f64;
-        let bar = Rect::new(x - 1.0, top, x + 1.0, bottom);
+        let w = name_width(&presence.display_name(&peer.user));
+        let span = (x, x + w);
+        let clashes = |a: (f64, f64), b: (f64, f64)| a.0 < b.1 && b.0 < a.1;
+        // One more row than there are names placed always has room.
+        let rows = u32::try_from(placed.len()).unwrap_or(u32::MAX);
+        let row = (0..=rows)
+            .find(|row| {
+                let in_ruler_clash = *row == 0 && taken.iter().any(|t| clashes(*t, span));
+                !in_ruler_clash
+                    && !placed
+                        .iter()
+                        .any(|p| p.row == *row && clashes(p.span, span))
+            })
+            .unwrap_or(0);
+        placed.push(PeerTag {
+            peer: i,
+            x,
+            row,
+            top: lanes.y0 + CHIP_STEP * f64::from(row),
+            span,
+        });
+    }
+    placed
+}
+
+/// Draw every participant's playhead as a ghost line down the lanes with
+/// their name above it, where [`place_peer_tags`] put it.
+pub fn draw_peer_playheads(ctx: &mut PeerPaintCtx<'_>, tags: &[PeerTag], bottom: f64) {
+    let peers = peer_playheads(ctx.presence);
+    for tag in tags {
+        let Some(peer) = peers.get(tag.peer) else {
+            continue;
+        };
+        let bar = Rect::new(tag.x - 1.0, tag.top, tag.x + 1.0, bottom);
         ctx.presence.draw_peer_caret_labeled(
             ctx.paint.scene,
             ctx.paint.theme,

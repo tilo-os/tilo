@@ -19,6 +19,12 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
     PathBuf::from("/run/tilo-runtime").join(version)
 }
 
+/// The `LD_LIBRARY_PATH` of a sandbox running on the runtime bundle mounted
+/// for `version`: the bundle's `lib/` directory.
+pub fn runtime_library_path(version: &str) -> PathBuf {
+    runtime_mount_for(version).join("lib")
+}
+
 /// Canonical absolute ELF interpreter paths re-exposed from the runtime
 /// bundle. Ordinary shared libraries are found through the bundle's
 /// `LD_LIBRARY_PATH`; rebinding them here can target host symlinks (for
@@ -188,6 +194,18 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
         argv.push(value.to_string_lossy().into_owned());
     }
     push_accessibility_environment(argv);
+    // Fixed content-free presentation/GPU timing booleans, never an input
+    // injector or output path. Keep arbitrary profiling/scenario environment stripped.
+    for name in [
+        "TILO_PROFILE_PRESENTATION",
+        "TILO_PROFILE_GPU_STAGES",
+        "VELLO_GPU_TIMESTAMPS",
+        "VELLO_GPU_DISPATCH_TIMESTAMPS",
+    ] {
+        if std::env::var(name).is_ok_and(|value| value == "1") {
+            argv.extend(["--setenv".into(), name.into(), "1".into()]);
+        }
+    }
 }
 
 /// Env var publishing the compositor's privileged Wayland socket.
@@ -273,19 +291,24 @@ pub fn push_gpu_selection(
         argv.push(key.to_string());
         argv.push(value);
     }
-    // Read-only: the session writes the seed, apps only start from it, so
-    // no app can plant pipelines another app will run.
     if let Some(seed) = &selection.pipeline_seed {
-        push_bind(
-            argv,
-            "--ro-bind-try",
-            seed,
-            Path::new(crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
-        );
-        argv.push("--setenv".to_string());
-        argv.push(crate::gpu::PIPELINE_SEED_ENV.to_string());
-        argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
+        push_pipeline_seed(argv, seed);
     }
+}
+
+/// Bind the trusted session seed read-only, independently of DRM access.
+pub fn push_pipeline_seed(argv: &mut Vec<String>, seed: &Path) {
+    push_bind(
+        argv,
+        "--ro-bind-try",
+        seed,
+        Path::new(crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
+    );
+    argv.extend([
+        "--setenv".to_string(),
+        crate::gpu::PIPELINE_SEED_ENV.to_string(),
+        crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string(),
+    ]);
 }
 
 /// The Landlock rules that make [`push_gpu_selection`]'s binds usable: the
@@ -345,6 +368,18 @@ pub fn push_trusted_identities_bind(argv: &mut Vec<String>, host_path: &Path) {
         Path::new(SANDBOX_TRUSTED_IDENTITIES_DIR),
     );
 }
+/// Only the selected app/person policy directory is visible to the child.
+pub const SANDBOX_ACTION_AUTHORITY_DIR: &str = "/run/tilo/action-authority";
+
+pub fn push_action_authority_bind(argv: &mut Vec<String>, host_path: &Path) {
+    push_bind(
+        argv,
+        "--ro-bind",
+        host_path.parent().unwrap_or(host_path),
+        Path::new(SANDBOX_ACTION_AUTHORITY_DIR),
+    );
+}
+
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs: `runtime_root`, `service_binds` (fds reach the child by
 /// inheritance, not argv), `dbus_bind`, and whether an identity broker fd is
@@ -488,6 +523,15 @@ fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload
     }
 }
 
+/// Mount a further runtime bundle read-only at its runtime mount. Unlike the
+/// app's own runtime it changes no loader path: the app finds what it needs
+/// inside by path. Returns the mount.
+pub fn push_optional_runtime(argv: &mut Vec<String>, root: &Path, version: &str) -> PathBuf {
+    let mount = runtime_mount_for(version);
+    push_bind(argv, "--ro-bind", root, &mount);
+    mount
+}
+
 fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
@@ -497,7 +541,7 @@ fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     argv.extend([
         "--setenv".to_string(),
         "LD_LIBRARY_PATH".to_string(),
-        runtime_mount.join("lib").display().to_string(),
+        runtime_library_path(runtime_version).display().to_string(),
     ]);
     for canonical in CANONICAL_LOADER_PATHS {
         let in_bundle = runtime_root
@@ -925,6 +969,7 @@ mod tests {
             version: "0.1.0".to_string(),
             kind: crate::manifest::KIND_APP.to_string(),
             runtime: None,
+            optional_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/notes".to_string(),
                 r#type: crate::manifest::EntrypointType::Gui,
@@ -1320,6 +1365,52 @@ mod tests {
         argv.windows(3)
             .find(|w| w[0] == "--setenv" && w[1] == key)
             .map(|w| w[2].as_str())
+    }
+
+    #[test]
+    fn normal_sandbox_forwards_only_the_exact_presentation_observer_boolean() {
+        for value in ["1", "0", "true", "1\n", "/private/log", ""] {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_PROFILE_PRESENTATION", value)
+                .set("TILO_NATIVE_SCENARIO", "/private/input.json")
+                .set("TILO_NATIVE_INPUT_GATE", "private-approval")
+                .set("TILO_PROFILE_OUT", "/private/log")
+                .set("VELLO_GPU_DISPATCH_TIMESTAMPS", value)
+                .set("VELLO_GPU_TIMESTAMPS", value)
+                .set("TILO_PROFILE_GPU_STAGES", value);
+            let argv = build_bwrap_argv(
+                &mk_manifest("off"),
+                Path::new("/host/pkg"),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert!(argv.iter().any(|arg| arg == "--clearenv"));
+            assert_eq!(
+                setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
+                (value == "1").then_some("1")
+            );
+            for key in [
+                "VELLO_GPU_TIMESTAMPS",
+                "VELLO_GPU_DISPATCH_TIMESTAMPS",
+                "TILO_PROFILE_GPU_STAGES",
+            ] {
+                assert_eq!(setenv_value(&argv, key), (value == "1").then_some("1"));
+            }
+            for key in [
+                "TILO_NATIVE_SCENARIO",
+                "TILO_NATIVE_INPUT_GATE",
+                "TILO_PROFILE_OUT",
+            ] {
+                assert_eq!(
+                    setenv_value(&argv, key),
+                    None,
+                    "must not inject input or paths"
+                );
+            }
+        }
     }
 
     #[test]

@@ -101,17 +101,12 @@ class ImagePublicationTests(unittest.TestCase):
                     self.assertNotIn("aws_access_key_id=AWS_ACCESS_KEY_ID", step)
                     if name == "Independently rebuild the release candidate":
                         continue
-                    if "file: os/Containerfile.wpe" in step:
-                        # The engine recipe compiles no Rust and takes no cache settings.
-                        for forbidden in ("SCCACHE_", "AWS_", "aws_", "compiler-cache"):
-                            self.assertNotIn(forbidden, step)
-                        continue
                     self.assertIn("TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}", step)
                     self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE", step)
                     self.assertIn("${{ steps.compiler-cache.outputs.secret-envs }}", step)
                     if name != "Build and cache the compile stages":
                         self.assertIn("browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY", step)
-                        self.assertIn("browser_app_identity=TAPP_PUBLISHER_IDENTITY", step)
+                        self.assertNotIn("browser_app_identity", step)
         with self.subTest(phase='the independent rebuild never sees the cache'):
             repro = self.steps["Independently rebuild the release candidate"]
             self.assertIn("if: steps.release-mode.outputs.publish == 'true'", repro)
@@ -121,7 +116,6 @@ class ImagePublicationTests(unittest.TestCase):
             self.assertIn("TILO_REQUIRE_COMPILER_CACHE=0\n", repro)
             self.assertIn("no-cache: true", repro)
             self.assertIn("browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY", repro)
-            self.assertIn("browser_app_identity=TAPP_PUBLISHER_IDENTITY", repro)
             for forbidden in ("SCCACHE_", "AWS_", "aws_", "compiler-cache"):
                 self.assertNotIn(forbidden, repro)
 
@@ -206,16 +200,20 @@ class AppCollectionPublicationTests(unittest.TestCase):
             stop = script.index("[[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] || exit 0")
             self.assertLess(script.index("build-thin-apps.sh\"\n"), stop)
             self.assertLess(stop, script.index("key generate"))
-            self.assertLess(stop, script.index("RUNTIME_VERSION="))
+            self.assertLess(stop, script.index("RUNTIME_RELEASE="))
 
 
 class DesktopPayloadPublicationTests(unittest.TestCase):
     def test_only_an_unpublishable_branch_dispatch_uses_the_cache(self):
-        build = steps(DESKTOP_WORKFLOW.read_text())["Build and install-test all five target userspaces"]
-        self.assertIn(
-            "TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && "
-            "github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') "
-            "&& '1' || '0' }}", build)
+        workflow_steps = steps(DESKTOP_WORKFLOW.read_text())
+        for name in ("Build and install-test unsigned candidate userspaces",
+                     "Build, install-test and sign protected desktop release userspaces"):
+            with self.subTest(step=name):
+                build = workflow_steps[name]
+                self.assertIn(
+                    "TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && "
+                    "github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') "
+                    "&& '1' || '0' }}", build)
         job = (ROOT / "dist/ci/run-package-job.sh").read_text()
         disabled = job.split("if [[ ${TILO_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then", 1)[1]
         disabled = disabled.split("    else\n", 1)[1].split("    fi\n", 1)[0]

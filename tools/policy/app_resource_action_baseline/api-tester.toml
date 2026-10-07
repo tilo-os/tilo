@@ -1,9 +1,0 @@
-# Audited ceilings of apps/api-tester (tools/policy/check_app_resource_action_contract.py).
-# Each count may only go down; the target is an empty file.
-
-[ratchets.app_action_host]
-"apps/api-tester/src/resource.rs" = 2
-
-[ratchets.standalone_launch]
-"apps/api-tester/src/lib.rs" = 2
-"apps/api-tester/src/main.rs" = 2

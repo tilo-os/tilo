@@ -2,7 +2,7 @@
 
 ```sh
 tilo-vm swap shell                        # your slot, built from this worktree
-tilo-vm swap shell --profile dev          # faster compile, slower binary
+tilo-vm --target review swap shell --profile dev          # faster compile, slower binary
 tilo-vm swap --slot my-slot launcher      # an explicit slot
 tilo-vm swap --slot vm fs                 # a VM-wide component into the vm slot
 tilo-vm swap app:notes                    # one app, installed into your slot's app store
@@ -73,6 +73,34 @@ VM builder. Without `--builder`, a VM image that lacks cargo, rsync or
 python3 makes a Linux host build locally, with a warning before the build
 starts.
 
+`--builder remote` builds on a remote builder of the machine's architecture
+and streams the layer through this host into tilo-vmd's upload, so no binary
+is ever written to this host's disk. The builder is any cargo drop-in whose
+`run` runs the program on a machine of that architecture, in this worktree,
+and passes its stdout through as text lines:
+
+1. `<builder> run -p tilo-vm -- layer-pack --component <name> ...` runs
+   tilo-vm's packer there: the same `cargo build` as above (its output
+   streams here), then `os/scripts/install-components.py`, then the layer
+   tar on stdout as framed base64 lines with its sha256;
+2. tilo-vm decodes those lines straight into the upload and checks the
+   sha256 and size before it imports. A remote `build` that brings its
+   binaries back would put every one of them into `target/` instead;
+3. the layer records `builder = "remote"`, and the target and rustc read
+   from the binary on the builder.
+
+Which builder serves which architecture is set once in `vms.toml`, as the
+drop-in's command line up to the cargo subcommand:
+
+```toml
+[remote_builders]
+aarch64 = ["remote-cargo", "--on-builder"]   # whatever runs `run` on an aarch64 machine
+```
+
+For a device whose architecture is listed there, `--builder remote` is the
+default. For one that is not, `--builder remote` fails and names the line to
+add.
+
 ## CI builds (`--from sha:` / `--from ci:`)
 
 `sha:<commit>` means `ci:main-<sha7>`. The component's manifest `files` are
@@ -102,12 +130,18 @@ restarts. App installs are not generations: `rollback` does not undo them.
 
 | Component scope | Goes into | What happens |
 |---|---|---|
-| `session` (shell, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in |
+| `session` (shell, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in. A laptop's `device` slot (the owner's login) instead merges VM-wide and restarts the desktop and the component's user services in place; the owner stays logged in (`tilo-vm guide devices`) |
 | app (`app:<dir>`) | your slot's app store | nothing restarts; live at next app launch |
-| `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its units restart, and **every slot's session restarts** |
+| `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its active units and the live owner's active user services restart, and **every slot's session restarts** |
 | `boot`, swappable (the kernel: `dev_swap = "reboot"`) | the `vm` slot, plus a boot entry | modules merge with `systemd-sysext refresh`, the kernel becomes the next boot entry, **the VM reboots**; confirmed, it becomes the default (`tilo-vm guide kernel`) |
 | `boot`, scenario-only (UKI, bootloader, initramfs, installer, rollback) | nothing | refused; use the scenario driver the error names (the installer: `tilo-vm scenario install`, `tilo-vm guide scenarios`) |
 | not a component (Containerfile, units, `/etc`, packages) | the VM's image | `tilo-vm vm upgrade --from local`: new image, reboot (`tilo-vm guide images`) |
+
+Component services use `try-restart`: an installed inactive optional service
+stays inactive. Missing, masked or unloadable declared units and manager/restart
+errors still fail the swap. Explicit slot/session restart continues to start its
+required session and user manager; it is a separate lifecycle operation.
+
 
 A VM-wide swap interrupts other agents' sessions, and a kernel swap reboots
 the VM under them, so prefer session components in your own slot.
@@ -145,12 +179,109 @@ what the restarted session printed.
   architecture) or another builder image; the error names the field and
   both values. A dev image names no builder image (it is its own builder),
   so there the target and toolchain stand for it. Warned: a different base
-  image, toolchain or `Cargo.lock`. `apps+runtime` is the exception: thin
-  apps link the image's `libruntime_dylib.so`, so another `Cargo.lock` is
-  refused there. Then move the VM to an image of your commit
-  (`tilo-vm vm upgrade`) or rebase onto the image's commit; never regenerate
-  `Cargo.lock` to match.
+  image, toolchain or `Cargo.lock`. An individual thin app must match its
+  installed toolkit and another `Cargo.lock` is refused. A complete
+  `apps+runtime` layer may carry a different graph only after the daemon verifies
+  every application's signed payload, exact native runtime ABI, architecture,
+  bundled interpreter and closed library graph. Target and builder-image
+  mismatches remain refusals; never regenerate `Cargo.lock` to match.
 - Local builds (`vm`, `host`) are for testing and never promoted; only CI
   builds are.
 - Swapping the same layer twice does nothing. A failed apply leaves the slot
   on its old generation; rerun the swap.
+
+## Explicit targets and failed starts
+
+Use `--target <registered-name>` on any command to select a development VM or
+already-enrolled development machine for just that invocation. It overrides
+`TILO_VM`, `.tilo-vm` and the registry default without changing any of them.
+An unknown target or a conflicting positional VM name fails before connecting.
+For example: `tilo-vm --target review rollback --slot my-slot`.
+
+A runtime swap becomes current only after its restarted sessions pass the
+existing readiness checks. A failed activation restores the previous generation
+and checks it once. The error includes the original failure and whether recovery
+succeeded. If recovery also fails, inspect the journal and retry the named prior
+generation; the pending marker remains for diagnosis. Neither recovery path
+resets account identity or application data. Kernel changes retain their separate
+boot-confirmation lifecycle.
+
+### Worktree apps and their matching runtime
+
+`tilo-vm swap apps+runtime --builder remote` builds every packaged native app and
+its toolkit in one Cargo graph on the configured builder for the slot's actual
+architecture. It verifies the complete source inventory before and after the
+build, signs and verifies the payload-derived runtime ABI, checks loader closure,
+and packs apps through the normal installer. Ephemeral signing keys stay in
+private build staging and are not exported.
+
+The same invocation updates the existing `launcher` and `install` session
+components from that source before activating the cohort. These updates restart
+the selected session; a failure stops the remaining steps and is recorded in the
+normal receipt. Installed component pins must be root-owned and immutable;
+operator `/etc` trust remains effective. No OS image or kernel reboot is needed.
+Older dev images need the matching daemon once, through the normal VM component
+update (`tilo-vm swap vmd --slot vm --builder remote`); a refused cohort leaves the
+existing apps/runtime active. Its receipt records any already applied session
+prerequisites.
+
+`swap app:terminal --builder remote` retains the ordinary app installer and its
+runtime checks. A standalone package whose authored runtime is absent is refused;
+use the paired component above for an unpublished worktree toolkit rather than
+relabeling it as the VM's existing ABI.
+
+### Shell startup companions
+
+A source shell swap installs both `/usr/bin/shell` and the matching
+`/usr/libexec/tilo-session` from that source tree. The session wrapper is a
+mandatory input: an incomplete build fails before a layer can be imported.
+Published image swaps extract both paths from the same selected image.
+
+For a development slot, the normal swap restart opens a fresh PAM session and
+runs the matching wrapper, preserving its account and application data. The
+wrapper initializes that new login's recovery channel; an in-place compositor
+restart keeps the existing login's lock state. Never repair a locked session by
+writing a recovery record. An already-running owner login must use its normal
+logout/login flow when its wrapper needs updating.
+
+To repair a shell-only swap on an older development image, rebuild the paired
+component from the matching source in the existing worktree:
+
+```sh
+TILO_VM_CARGO="$CARGO" tilo-vm swap shell --slot my-slot --builder host --profile dev
+```
+
+Select the registered VM with `TILO_VM` (or `--target` on a current client).
+Set `CARGO` to your Cargo drop-in when using a remote builder. The host path
+packages and uploads its received binary
+and this worktree's mandatory startup companion. The slot restarts through its
+normal PAM unit; no OS image rebuild, account reset or lock override is needed.
+
+### Repeating a host-built component swap
+
+After assembly, `--builder host` computes the same content identity as the
+layer importer and asks the target for its existing layers. If it already
+holds the identical component, the command skips packing and uploading it.
+The receipt records `digest`, `layer_lookup`, `upload = "skipped"` and
+`layer_reused`. Existing layer provenance is retained, as on a duplicate import.
+Changes to file bytes, executable bits or link targets require an upload;
+timestamps alone do not. This is whole-layer reuse, not a binary delta, so a
+wrapper-only change still uploads its newly assembled layer. Imported content
+must match the local digest before it can proceed to swap. A cache hit uses
+the existing RPC protocol and works with older compatible daemons.
+
+### Layer transfer
+
+Host-built layers travel over the existing authenticated daemon connection.
+The client keeps at most four 1 MiB chunks in flight and verifies every reply's
+request id and cumulative byte count before requesting an import. This uses
+the existing protocol and works with already-installed development daemons.
+An import still validates and hashes the staged tree before atomically
+publishing it; applying or rolling back a generation uses the same paths.
+
+Host-build receipts record `assemble`, `digest`, `layer_lookup`, `pack`,
+`transfer` and `import` separately. Use those phases to distinguish packaging,
+transport and validation costs. CI layers are cached by image digest on the
+host. Source builds hash the assembled tree and check the device for matching
+component content before packaging or sending bytes. A cache hit skips both
+packaging and upload; changed content uses the full uncompressed archive.

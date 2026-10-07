@@ -134,6 +134,15 @@ fn arboard_text(handle: &mut arboard::Clipboard, _target: ClipboardTarget) -> Op
 }
 
 impl ClipboardBackend for NativeClipboard {
+    fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        if let Some(wayland) = wayland() {
+            return wayland.request_text(target);
+        }
+        let (reply, result) = std::sync::mpsc::channel();
+        let _ = reply.send(self.text(target));
+        result
+    }
+
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         if Self::set_shared(target, text) {
             return true;
@@ -196,6 +205,14 @@ impl ClipboardBackend for NativeClipboard {
             bytes: std::borrow::Cow::Borrowed(rgba),
         };
         handle.set_image(img).is_ok()
+    }
+
+    fn rich_text(&self) -> Option<crate::RichTextOffer> {
+        #[cfg(target_os = "linux")]
+        if let Some(wayland) = WAYLAND.get() {
+            return wayland.rich_text();
+        }
+        None
     }
 
     fn image(&self) -> Option<crate::ClipboardImage> {

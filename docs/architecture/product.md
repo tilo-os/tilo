@@ -17,7 +17,7 @@ now: keep them working, but do not prioritize them over the focus list.
 | **Email** (mail) | — |
 | **Terminal** | Also becomes a reusable embeddable widget. |
 | **Files** (file-explorer) | — |
-| **Browser** | WPE WebKit with built-in content filtering; extension packages remain inspectable until WebKit exposes activation APIs. |
+| **Browser** | Chromium (a CEF host process) with built-in content filtering and Chrome extensions; the engine ships as its own signed runtime. |
 | **Presentation** (slides) | — |
 | **Calculator / graphing** | A *normal* calculator that also happens to do proper 2D/3D graphing — must feel at home as a calculator, not a graphing tool wearing a calculator hat. |
 | **Typst editor** | — |
@@ -60,8 +60,17 @@ customization hell.
 
 ## Browser engine
 
-The browser embeds WPE WebKit behind `ui`'s webview interface. This provides a
-maintained, non-Chromium engine that can render offscreen inside the Tilo shell.
-Ad blocking uses WebKit content filters compiled from standard filter lists.
-Extension packages can be downloaded and inspected, but activation remains
-disabled until the embedded WebKit API exposes a supported runtime path.
+The browser embeds Chromium behind `ui`'s webview interface, on Linux and
+macOS alike: a native CEF host process (`apps/browser/chromium`) renders pages
+offscreen and talks to the app over a bounded framed pipe
+(`ui::webview::chromium`). Ad blocking matches requests natively with
+adblock-rust inside the host; Chrome extensions load from approved paths.
+
+On Tilo OS the engine is not part of the Browser tapp. It is its own signed
+runtime bundle, `tilo-runtime/<version>-chromium`
+(`ui::webview::chromium::runtime`), which the image installs at
+`/usr/lib/tilo-runtime/<version>`. The Browser's manifest lists it under
+`[package].optional-runtimes`; the launcher verifies it against the trusted
+runtime publishers and mounts it read-only into the Browser's sandbox, so the
+app updates through the registry while the engine stays a verified runtime.
+Without the engine the Browser says so and offers its install.

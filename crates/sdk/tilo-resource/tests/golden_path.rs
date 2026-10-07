@@ -27,7 +27,7 @@ pub enum Stage {
 impl Board {
     /// Rename the board.
     #[action]
-    pub fn rename(&mut self, #[param("New title")] title: String) {
+    pub fn rename(&mut self, #[param("New title", example = "A shared board")] title: String) {
         self.title = title;
     }
 
@@ -452,4 +452,149 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
         out
     })
+}
+
+#[test]
+fn an_action_without_arguments_is_built_when_it_is_taken() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let takings = Arc::new(AtomicUsize::new(0));
+    let clear = Board::declarations()
+        .into_iter()
+        .find(|decl| decl.id == "clear")
+        .unwrap();
+    let counted = Arc::clone(&takings);
+    let decl = tilo_resource::ActionDecl::<Board>::new("clear", "Clear", Vec::new(), {
+        let clear = Arc::clone(&clear.build);
+        move |args, now| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            clear(args, now)
+        }
+    });
+    let resource = tilo_actions::Resource::new("board", "test.board", "Board")
+        .with_action(tilo_resource::declaration_spec(&decl));
+    assert_eq!(
+        takings.load(Ordering::SeqCst),
+        0,
+        "publishing builds nothing"
+    );
+    assert!(matches!(
+        resource.actions[0].input,
+        tilo_actions::ActionInput::Deferred { .. }
+    ));
+    let address = tilo_actions::ActionAddress::new("board", "clear");
+    for taken in 1..=2 {
+        let encoded =
+            tilo_actions::door::encode(std::slice::from_ref(&resource), &address, None).unwrap();
+        assert_eq!(encoded.type_id, Board::ACTION_TYPE);
+        assert_eq!(
+            takings.load(Ordering::SeqCst),
+            taken,
+            "each taking builds anew"
+        );
+    }
+
+    let refusing =
+        tilo_resource::ActionDecl::<Board>::new("refuse", "Refuse", Vec::new(), |_, _| {
+            Err("nothing to clear".into())
+        });
+    let resource = tilo_actions::Resource::new("board", "test.board", "Board")
+        .with_action(tilo_resource::declaration_spec(&refusing));
+    let refused = tilo_actions::door::encode(
+        std::slice::from_ref(&resource),
+        &tilo_actions::ActionAddress::new("board", "refuse"),
+        None,
+    );
+    assert!(
+        matches!(&refused, Err(tilo_actions::DoorError::InvalidArguments(reason)) if reason == "nothing to clear"),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn action_parameter_examples_are_guidance_not_a_value_restriction() {
+    let rename = Board::declarations()
+        .into_iter()
+        .find(|decl| decl.id == "rename")
+        .unwrap();
+    assert_eq!(
+        rename.params[0].schema.as_ref().unwrap()["examples"][0],
+        "A shared board"
+    );
+    let supplied = serde_json::json!({"title": "Another valid title"});
+    let bound =
+        tilo_actions::ActionArgs::bind_json(&rename.params, supplied.as_object().unwrap()).unwrap();
+    let action = (rename.build)(&bound, 0).unwrap();
+    let mut replica = Replica::<Board>::new();
+    replica.apply_action(&action, "Rename").unwrap();
+    assert_eq!(replica.state().unwrap().title, "Another valid title");
+}
+
+#[test]
+fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SCHEMA_BUILDS: AtomicUsize = AtomicUsize::new(0);
+    struct SchemaProbe;
+    impl Resource for SchemaProbe {
+        const KIND: &'static str = "test.schema-probe";
+        const LABEL: &'static str = "Schema probe";
+        const ACTION_TYPE: &'static str = Board::ACTION_TYPE;
+        type State = Board;
+        type Action = <Board as Resource>::Action;
+        fn read(doc: &tilo_resource::Doc) -> Result<Board, tilo_resource::ModelError> {
+            Board::read(doc)
+        }
+        fn action_schema() -> Option<serde_json::Value> {
+            SCHEMA_BUILDS.fetch_add(1, Ordering::SeqCst);
+            let mut schema = Board::action_schema()?;
+            schema["description"] = serde_json::json!("The schema probe's board action");
+            Some(schema)
+        }
+        fn children(state: &Board) -> Vec<tilo_actions::Resource> {
+            Board::children(state)
+        }
+    }
+    let mut replica = Replica::<Board>::new();
+    let empty = tilo_resource::publish::<SchemaProbe>("probe", "Empty", &replica.state().unwrap());
+    assert!(empty.children.is_empty());
+    replica
+        .apply(Board::ADD_CARD.with("Fresh card".into()))
+        .unwrap();
+    let populated =
+        tilo_resource::publish::<SchemaProbe>("probe", "Populated", &replica.state().unwrap());
+    assert_eq!(populated.label, "Populated");
+    assert_eq!(
+        populated.children.len(),
+        1,
+        "live rows are never cached with type schemas"
+    );
+    let schema = |resource: &tilo_actions::Resource| {
+        resource
+            .actions
+            .iter()
+            .find(|action| action.id == tilo_resource::APPLY)
+            .unwrap()
+            .params()
+            .first()
+            .unwrap()
+            .schema
+            .clone()
+            .unwrap()
+    };
+    assert_eq!(schema(&empty), schema(&populated));
+    assert!(
+        std::sync::Arc::ptr_eq(&schema(&empty), &schema(&populated)),
+        "type schemas share immutable storage while live children refresh"
+    );
+    let board = tilo_resource::publish::<Board>("board", "Board", &replica.state().unwrap());
+    assert_ne!(
+        schema(&board),
+        schema(&populated),
+        "resources sharing one action type keep their own declaration folding"
+    );
+    assert_eq!(
+        SCHEMA_BUILDS.load(Ordering::SeqCst),
+        1,
+        "repeated publications and group reuse the compiled action schema"
+    );
 }

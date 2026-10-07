@@ -14,7 +14,7 @@
 use notes::Workspace;
 
 #[test]
-fn tree_operations_keep_shape_order_and_no_orphans() {
+fn tree_operations_keep_shape_and_order() {
     eprintln!("phase create_child_of_selected_appends_under_parent");
     {
         let mut ws = Workspace::new();
@@ -29,8 +29,7 @@ fn tree_operations_keep_shape_order_and_no_orphans() {
         let kids = ws.children_of(Some(parent));
         let ids: Vec<_> = kids.iter().map(|p| p.id).collect();
         assert_eq!(ids, vec![child_a, child_b]);
-        assert_eq!(kids[0].order, 0);
-        assert_eq!(kids[1].order, 1);
+        assert!(kids[0].order < kids[1].order);
         ws.check_invariants().unwrap();
     }
 
@@ -44,7 +43,7 @@ fn tree_operations_keep_shape_order_and_no_orphans() {
         ws.check_invariants().unwrap();
     }
 
-    eprintln!("phase delete_removes_descendants_and_renumbers_siblings");
+    eprintln!("phase delete_removes_descendants_and_keeps_sibling_order");
     {
         let mut ws = Workspace::new();
         let a = ws.create_page(None);
@@ -62,8 +61,7 @@ fn tree_operations_keep_shape_order_and_no_orphans() {
         let roots = ws.children_of(None);
         let root_ids: Vec<_> = roots.iter().map(|p| p.id).collect();
         assert_eq!(root_ids, vec![a, c]);
-        assert_eq!(roots[0].order, 0);
-        assert_eq!(roots[1].order, 1);
+        assert!(roots[0].order < roots[1].order);
         ws.check_invariants().unwrap();
     }
 

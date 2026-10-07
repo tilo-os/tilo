@@ -46,6 +46,7 @@ impl Harness {
             Some(SystemStore {
                 data_dir: system_dir.clone(),
                 payload_dir: system_dir,
+                interfaces: None,
             }),
         ));
         let listener = transport::bind(&socket)?;
@@ -170,4 +171,25 @@ fn install_list_pin_resolve_over_capnp() {
             "pinned bytes should be > 0 after we pinned"
         );
     });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn registry_catalogue_rpc_refuses_caller_supplied_endpoints() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let harness = Harness::new().unwrap();
+            let client = harness.connect().await.unwrap();
+            let mut request = client.registry_catalogue_request();
+            request
+                .get()
+                .set_registry("https://caller-controlled.example.test/");
+            let error = request
+                .send()
+                .promise
+                .await
+                .err()
+                .expect("caller endpoint must be refused");
+            assert!(error.to_string().contains("not configured and enabled"));
+        })
+        .await;
 }

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import importlib.util
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -21,6 +22,10 @@ PUBLISH = REPO / "tools/extensions/publish.sh"
 BASE_URL = "https://code.example/api/packages/tilo/generic"
 FINGERPRINT = "cd" * 32
 PACKAGE = f"/api/packages/tilo/generic/tilo-extension-media-codecs/x86_64-{FINGERPRINT}"
+SPEC = importlib.util.spec_from_file_location("publish_resolver", REPO / "tools/extensions/resolve.py")
+resolver = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = resolver
+SPEC.loader.exec_module(resolver)
 
 FAKE_CURL = textwrap.dedent("""\
     #!/usr/bin/env python3
@@ -139,15 +144,36 @@ class Publish(unittest.TestCase):
             "TILO_PACKAGE_PUBLIC_BASE_URL": BASE_URL,
         }
 
-    def publish(self, document, **env):
+    def publish(self, document, sign_only=False, **env):
         path = self.root / "manifest.json"
         path.write_bytes((json.dumps(document, indent=2) + "\n").encode())
         log = self.root / "requests.log"
         log.unlink(missing_ok=True)
-        result = subprocess.run(["bash", str(PUBLISH), str(path)], capture_output=True, text=True,
+        mode = ["--sign-only"] if sign_only else []
+        result = subprocess.run(["bash", str(PUBLISH), *mode, str(path)], capture_output=True, text=True,
                                 env={**self.env, **env}, cwd=REPO)
         requests = log.read_text().splitlines() if log.exists() else []
         return result, requests
+
+    def test_sign_only_produces_verified_signature_without_registry_or_activation(self):
+        document = manifest()
+        self.env.pop("TILO_PACKAGE_TOKEN")
+        self.env.pop("TILO_PACKAGE_PUBLIC_BASE_URL")
+        result, requests = self.publish(document, sign_only=True,
+            TILO_EXPECTED_EXTENSION_CONTENT_SHA256=resolver.qualification_digest(document))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(requests, [])
+        source = self.root / "manifest.json"
+        self.assertEqual(source.with_suffix(".json.sig").read_text(), self.signature_of(source.read_bytes()))
+        self.assertEqual(list(self.store.iterdir()), [])
+
+    def test_changed_or_missing_reviewed_hash_cannot_sign_only(self):
+        for expected in ("", "00" * 32):
+            result, requests = self.publish(manifest(), sign_only=True,
+                TILO_EXPECTED_EXTENSION_CONTENT_SHA256=expected)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(requests, [])
+            self.assertFalse((self.root / "manifest.json.sig").exists())
 
     def stored(self, name):
         return (self.store / PACKAGE.lstrip("/") / name)
@@ -226,6 +252,28 @@ class Publish(unittest.TestCase):
 class SigningAuthority(unittest.TestCase):
     """The extension-manifest role trusts tilo/tilo main with one OIDC audience;
     AWS cannot tell workflows apart, so only this workflow may request it."""
+
+    def test_sign_only_planner_rejects_ambiguous_or_unpinned_inputs(self):
+        workflow = (REPO / ".forgejo/workflows/extension-manifests.yml").read_text()
+        plan = workflow.split("        id: plan\n", 1)[1].split("\n  resolve:", 1)[0]
+        program = textwrap.dedent(plan.split("        run: |\n", 1)[1])
+        digest = "registry.tilo.so/tilo/tilo-ci@sha256:" + "ab" * 32
+        for images, expected in [("", "ef" * 32), (digest, ""),
+                                 ("registry.tilo.so/tilo/tilo-ci:latest", "ef" * 32),
+                                 (f"{digest} {digest}", "ef" * 32), (digest, "malformed")]:
+            with self.subTest(images=images, expected=expected):
+                with tempfile.TemporaryDirectory() as root:
+                    sentinel = Path(root) / "skopeo-called"
+                    fake = Path(root) / "skopeo"
+                    fake.write_text(f"#!/bin/sh\ntouch '{sentinel}'\nexit 1\n")
+                    fake.chmod(0o755)
+                    result = subprocess.run(["bash", "-c", program], capture_output=True, text=True,
+                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                             "INPUT_IMAGES": images, "INPUT_PUBLISH": "false",
+                             "EXPECTED_CONTENT_SHA256": expected})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("qualification requires one immutable image", result.stdout)
+                    self.assertFalse(sentinel.exists(), "invalid qualification must not pull an image")
 
     def test_only_the_manifest_workflow_requests_the_extension_audience(self):
         workflows = REPO / ".forgejo/workflows"

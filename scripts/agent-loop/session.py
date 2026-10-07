@@ -11,7 +11,9 @@ only sets up and tears down what is around it:
               on your desktop), a private home and runtime profile, and
               `tilo-app dev APP`, which rebuilds and restarts the app on every
               source change. The runtime daemon owns the profile, so an MCP
-              connection survives each restart.
+              connection survives each restart. `--release` builds the app
+              optimised (`tilo-app dev --release`), for work the debug build
+              is too slow to judge; `--profile NAME` picks any Cargo profile.
   mcp APP     the MCP endpoint for that session on stdio: what an agent
               (`.cursor/mcp.json`, Claude Code, a model harness) runs.
   status APP  whether the session is up, its paths and its files folder.
@@ -35,6 +37,7 @@ settings, identity and workspaces are never read or written.
 
 Usage:
   scripts/agent-loop/session.py start apps/canvas
+  scripts/agent-loop/session.py start apps/canvas --release
   scripts/agent-loop/session.py mcp canvas
   scripts/agent-loop/session.py stop canvas
 """
@@ -213,8 +216,13 @@ def start(args) -> int:
     # than drawing a standalone window's bar. The compositor is not told:
     # a login's compositor exports its session to the user manager.
     env["XDG_CURRENT_DESKTOP"] = "tilo:GNOME"
+    dev_command = [str(TILO_APP), "dev", str(app_dir), "--app-only"]
+    if args.release:
+        dev_command.append("--release")
+    elif args.profile:
+        dev_command += ["--profile", args.profile]
     dev = subprocess.Popen(
-        [str(TILO_APP), "dev", str(app_dir), "--app-only"],
+        dev_command,
         env=env,
         stdout=open(logs / "app.log", "wb"),
         stderr=subprocess.STDOUT,
@@ -224,6 +232,7 @@ def start(args) -> int:
         "app": str(app_dir),
         "compositor": compositor.pid,
         "dev": dev.pid,
+        "dev_command": dev_command[1:],
         "wayland_display": env["WAYLAND_DISPLAY"],
         "profile": str(session.profile),
         "runtime_dir": str(session.run),
@@ -579,6 +588,13 @@ def main() -> int:
     begin.add_argument("app", help="the app directory, e.g. apps/canvas")
     begin.add_argument("--timeout", type=float, default=90.0, help="seconds to wait for the compositor")
     begin.add_argument("--foreground", action="store_true", help="stay attached; Ctrl+C stops the session")
+    build = begin.add_mutually_exclusive_group()
+    build.add_argument(
+        "--release",
+        action="store_true",
+        help="build the app optimised (tilo-app dev --release: the thin-app profile)",
+    )
+    build.add_argument("--profile", metavar="NAME", help="build the app in this Cargo profile [default: dev]")
     begin.set_defaults(run=start)
     for name, run, text in (
         ("stop", stop, "stop the session"),

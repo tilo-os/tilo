@@ -29,15 +29,12 @@ native = ["dep:tilo-runner-native"]
 # The collaboration manager's built-in broker transport; see `tilo-ui`'s
 # `broker-transport`. Native only.
 broker-transport = ["tilo-runner-native?/broker-transport"]
-test-support = ["ui-core/test-support"]
+test-support = ["ui-core/test-support", "tilo-resource/test-support"]
 # Backend features of the native runner; on wasm32 they have no effect.
 # `portal` and `notifications` select nothing any more: the platform crates
 # choose each target's file choosers and notifications, and the native runner
 # turns the XDG portals on for Linux itself.
 webview-adblock = ["tilo-runner-native?/webview-adblock"]
-webview-wpe = ["tilo-runner-native?/webview-wpe"]
-# A web view; the SDK picks the engine (WPE WebKit on Linux).
-webview = ["webview-wpe"]
 dmabuf-import = ["tilo-runner-native?/dmabuf-import"]
 gpu-video = ["tilo-runner-native?/gpu-video"]
 mpris = ["tilo-runner-native?/mpris"]
@@ -57,6 +54,8 @@ ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default
 # `#[resource]` and `#[derive(Model)]` expansions resolve through the prelude.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# Portable feedback review, capture and durable delivery contracts.
+tilo-feedback = { version = "0.1.0", path = "../../collab/feedback" }
 # The default search provider over a resource's entries.
 tilo-search = { version = "0.1.0", path = "../search" }
 # Merging a collaborator's change in tests, the way sync does.

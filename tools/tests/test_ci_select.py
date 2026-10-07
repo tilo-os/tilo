@@ -45,6 +45,39 @@ class SelectorTests(unittest.TestCase):
             package("collab-types", "collab-types"),
         ]}
 
+    def test_browser_only_library_is_checked_for_native_and_wasm_without_an_empty_test_run(self):
+        directory = self.root / "web"
+        (directory / "src").mkdir(parents=True)
+        source = directory / "src/lib.rs"
+        source.write_text('//! Browser exports.\n#![cfg(target_arch = "wasm32")]\n')
+        package = {
+            "name": "tilo-web-desktop", "manifest_path": str(directory / "Cargo.toml"),
+            "targets": [{"name": "tilo-web-desktop", "kind": ["lib"], "test": True,
+                         "src_path": str(source)}],
+            "dependencies": [{"name": "base", "path": str(self.root / "base")},
+                             {"name": "wasm-bindgen", "kind": None}],
+        }
+        self.metadata["packages"].append(package)
+        plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+        self.assertIn("tilo-web-desktop", plan["selected"])
+        self.assertIn("tilo-web-desktop", plan["wasm"])
+        self.assertNotIn("tilo-web-desktop", plan["tested"])
+        self.assertTrue(any("-p tilo-web-desktop" in row["packages"]
+                            for row in plan["clippy_matrix"]["include"]))
+        self.assertFalse(any("-p tilo-web-desktop" in row["test_packages"]
+                             for row in plan["matrix"]["include"]))
+        # An actual native integration target must restore test execution,
+        # even while the library remains gated to wasm.
+        native = directory / "tests/native.rs"
+        native.parent.mkdir()
+        native.write_text('#[test] fn native_subject() {}\n')
+        package["targets"].append({"name": "native", "kind": ["test"], "test": True,
+                                   "src_path": str(native)})
+        plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+        self.assertIn("tilo-web-desktop", plan["tested"])
+        self.assertTrue(any("-p tilo-web-desktop" in row["test_packages"]
+                            for row in plan["matrix"]["include"]))
+
     def test_a_recheck_keeps_only_what_the_base_changes_reach(self):
         with self.subTest(phase="the plan narrows to packages the base's own changes reach"):
             self.setUp()
@@ -367,6 +400,10 @@ class SelectorTests(unittest.TestCase):
             self.assertTrue(plan["full"])
             self.assertEqual(plan["selected_count"], plan["workspace_count"])
             self.assertEqual(plan["shard_count"], 1)  # small workspace stays cheap
+        with self.subTest(phase='vendored crates are build inputs'):
+            self.setUp()
+            plan = ci_select.make_plan(self.metadata, self.root, ["vendor/winit/src/lib.rs"], 2)
+            self.assertTrue(plan["full"])
         with self.subTest(phase='unowned deleted crate path forces full workspace'):
             self.setUp()
             plan = ci_select.make_plan(self.metadata, self.root, ["apps/removed/Cargo.toml"], 2)

@@ -2,8 +2,18 @@
 //! Adapters from the shared broker to the native session's existing services.
 use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
+#[cfg(target_os = "linux")]
+mod airdrop_transfer;
 mod committed_document;
+#[cfg(target_os = "linux")]
+mod file_clipboard;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use file_clipboard::test_support::TestTransferPause;
+#[cfg(test)]
+#[path = "broker_services/native_effect_tests.rs"]
+mod native_effect_tests;
 mod nearby_transfer;
+mod resource_views;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
@@ -42,8 +52,42 @@ impl NativeOwnerCommitService {
             network,
         }
     }
+    pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
+        self.owner.clone()
+    }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
+    fn commit_member_effect_receipt(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native effect governor unavailable")?;
+            let room = super::state::RoomId::parse(&request.room).ok_or("invalid effect room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("member receipt requires the actual governing owner".into());
+                }
+            }
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("effect governor custody unavailable: {error}"))?;
+            let receipt = owner.commit_member_effect_receipt(
+                &request,
+                &caller,
+                &governor,
+                &key,
+                std::time::SystemTime::now(),
+            )?;
+            if let Some(network) = network {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(receipt)
+        })
+    }
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
@@ -76,7 +120,67 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
                         .await;
                 }
             }
-            owner.commit_document(request, std::time::SystemTime::now())
+            if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+            ) {
+                return owner.commit_workspace_task_command(request, std::time::SystemTime::now());
+            }
+            if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
+            ) {
+                let (key, governor) =
+                    tilo_identity_host::broker::trusted_current_device(&request.room)
+                        .map_err(|error| format!("effect governor custody unavailable: {error}"))?;
+                owner.commit_effect_receipt(&request, &governor, &key, std::time::SystemTime::now())
+            } else {
+                owner.commit_document(request, std::time::SystemTime::now())
+            }
+        })
+    }
+}
+
+impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitService {
+    fn requires_room(&self, room: &str) -> bool {
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
+    }
+
+    fn health(&self) -> Result<(), String> {
+        self.owner
+            .as_ref()
+            .ok_or("native membership owner unavailable")?
+            .health()
+    }
+
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native membership owner unavailable")?;
+            let room = super::state::RoomId::parse(&request.room)
+                .ok_or("invalid native membership room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("workspace membership requires the governing owner".into());
+                }
+            }
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
+            let receipt = owner.commit_workspace_membership_command(
+                request,
+                &governor,
+                &key,
+                std::time::SystemTime::now(),
+            )?;
+            if let Some(network) = network {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(receipt)
         })
     }
 }
@@ -90,36 +194,54 @@ async fn record_receipt_elsewhere(
     request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
     redacted: &[u8],
 ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-    use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
-    let bound = serde_json::to_string(&BoundCommand {
-        source: CommandSource {
-            room: room.to_string(),
-            heads: Vec::new(),
-        },
-        command: DesktopCommand::RecordEffectReceipt {
-            receipt_json: String::from_utf8(redacted.to_vec())
-                .map_err(|_| "effect receipt is not JSON text")?,
-        },
+    let tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { invocation, .. } =
+        &request.operation
+    else {
+        return Err("missing effect receipt operation".into());
+    };
+    let expected = tilo_peer_state::StatePeer::validate_workspace_effect_receipt_encoding(
+        *invocation,
+        redacted,
+    )?;
+    network
+        .record_governed_effect_receipt(room, *invocation, redacted.to_vec())
+        .await?;
+    // A transport acknowledgement is not our commit barrier: wait until the
+    // governor's signed receipt is in this device's actual admitted room.
+    tokio::time::timeout(GOVERNED_OPEN_TIMEOUT, async {
+        loop {
+            network.check_native_custody(owner, room)?;
+            let receipt = owner.with_current(room, |view| {
+                let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
+                    view.peer()
+                        .admitted_room()
+                        .ok_or("effect room unavailable")?,
+                );
+                if let Some(actual) = effects
+                    .iter()
+                    .find(|effect| effect.invocation == expected.invocation)
+                {
+                    if actual != &expected {
+                        return Err(
+                            "admitted terminal receipt differs from this broker's outcome".into(),
+                        );
+                    }
+                    return Ok(Some(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+                        binding: request.binding()?,
+                        generation: view.generation(),
+                        aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
+                    }));
+                }
+                Ok(None)
+            })?;
+            if let Some(receipt) = receipt {
+                return Ok(receipt);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
     })
-    .map_err(|error| error.to_string())?;
-    let answer = network.invoke_governor(
-        room,
-        tilo_desktop_model::commands::APP_ID,
-        tilo_desktop_model::commands::RESOURCE,
-        tilo_desktop_model::commands::ACTION,
-        Some(serde_json::json!({ "command": bound })),
-    );
-    tokio::time::timeout(GOVERNED_OPEN_TIMEOUT, answer)
-        .await
-        .map_err(|_| "the workspace host did not record the receipt in time; outcome unknown")?
-        .ok_or("the workspace host stopped before recording the receipt; outcome unknown")??;
-    owner.with_current(room, |view| {
-        Ok(tilo_peer_state::owner_commit::OwnerCommitReceipt {
-            binding: request.binding()?,
-            generation: view.generation(),
-            aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
-        })
-    })
+    .await
+    .map_err(|_| "signed effect receipt did not reach the native owner in time; outcome unknown")?
 }
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
@@ -204,30 +326,47 @@ struct SessionContentStore;
 static SESSION_BLOBS: std::sync::Mutex<Option<runtime_fs::blobs::BlobClient>> =
     std::sync::Mutex::new(None);
 
+/// Run `call` against the filesystem daemon's content store as the desktop
+/// session, connecting on first use and again after the daemon went away.
+///
+/// # Errors
+/// Returns why the store could not be reached, or `call`'s refusal.
+pub(super) fn with_session_blobs<T>(
+    call: impl FnOnce(&runtime_fs::blobs::BlobClient) -> Result<T, runtime_fs::blobs::BlobError>,
+) -> Result<T, runtime_fs::blobs::BlobError> {
+    use runtime_fs::blobs::{BlobClient, BlobError};
+
+    let mut session = SESSION_BLOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let client = if let Some(client) = session.as_ref() {
+        client.clone()
+    } else {
+        let socket = ::launcher::services::blob_socket();
+        let client = BlobClient::connect_session(&socket)?;
+        *session = Some(client.clone());
+        client
+    };
+    drop(session);
+    let result = call(&client);
+    if matches!(result, Err(BlobError::Disconnected(_))) {
+        // Reconnect on the next call rather than keep a dead session.
+        *SESSION_BLOBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+    result
+}
+
 impl LaunchContentReader for SessionContentStore {
     fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
-        use runtime_fs::blobs::{BlobClient, BlobError, ReadOutcome};
+        use runtime_fs::blobs::ReadOutcome;
 
-        let mut session = SESSION_BLOBS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let client = if let Some(client) = session.as_ref() {
-            client.clone()
-        } else {
-            let socket = ::launcher::services::blob_socket();
-            let client = BlobClient::connect_session(&socket)
-                .map_err(|error| format!("launch content store: {error}"))?;
-            *session = Some(client.clone());
+        let result = with_session_blobs(|client| {
             client
-        };
-        let result = client
-            .scope(room, app)
-            .and_then(|scoped| scoped.read_all(hash));
-        if matches!(result, Err(BlobError::Disconnected(_))) {
-            // Reconnect on the next launch rather than keep a dead session.
-            *session = None;
-        }
-        drop(session);
+                .scope(room, app)
+                .and_then(|scoped| scoped.read_all(hash))
+        });
         match result {
             Ok(ReadOutcome::Ready { bytes, .. }) => Ok(bytes),
             Ok(ReadOutcome::Pending) => {
@@ -353,12 +492,16 @@ const GOVERNED_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 impl NativeLauncher {
     /// Open `app` through the governor of `workspace`'s room, when another
-    /// device governs it. `None` when this session opens it itself.
+    /// device governs it and opens its apps. `None` when this session opens
+    /// it itself.
     ///
     /// Such a room only holds records its governor created, so a local
     /// launch would open an app whose document the room does not hold. The
     /// governor's open places the window in the room; the session then opens
-    /// its own instance of that window through [`super::peer_windows`].
+    /// its own instance of that window through [`super::peer_windows`]. A
+    /// host governing the room (a node's relay) runs no apps: the session
+    /// runs the app and publishes its window as its own, as it does a legacy
+    /// window, for the room's members to watch.
     fn open_through_governor(
         &self,
         app: &str,
@@ -371,7 +514,7 @@ impl NativeLauncher {
         let answer = self
             .1
             .as_ref()
-            .filter(|network| network.governed_elsewhere(workspace.room))?
+            .filter(|network| network.governor_opens_apps(workspace.room))?
             .invoke_governor(
                 workspace.room,
                 tilo_desktop_model::commands::APP_ID,
@@ -491,6 +634,113 @@ impl LauncherServices for NativeLauncher {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+    fn begin_launch(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &tilo_desktop_model::Workspace,
+        author: Option<&str>,
+    ) -> Result<tilo_action_broker::services::LaunchReadiness, String> {
+        if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
+            if package_root.is_some() {
+                return Err("a host application cannot name a Tilo package root".into());
+            }
+            return super::launch_readiness::observe(|| {
+                super::host_apps::launch(desktop_id, Some(workspace.room.to_string()))
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            });
+        }
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|network| network.governor_opens_apps(workspace.room))
+        {
+            return Err(
+                "observed package startup must be requested from the workspace host".into(),
+            );
+        }
+        let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
+        let selected = match package_root {
+            Some(root) => {
+                let root = root.parse().map_err(|_| "invalid installed package root")?;
+                tilo_installed_apps::read_exact(&catalog, app, root)
+                    .map_err(|error| error.to_string())?
+            }
+            None => tilo_installed_apps::read(&catalog)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|installed| installed.package_id == app),
+        }
+        .ok_or_else(|| {
+            "the exact selected application package is no longer installed".to_string()
+        })?;
+        let mut workspace = workspace.clone();
+        if let Some(person) = author {
+            self.grant_authorship(person, app, &mut workspace);
+        }
+        super::launch_readiness::observe(|| {
+            super::launcher::launch_resolved_in_workspace(selected, &workspace)
+                .map_err(|error| error.to_string())
+        })
+    }
+    fn begin_launch_from_original(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &tilo_desktop_model::Workspace,
+        author: Option<&str>,
+        original: Option<tilo_action_broker::services::ObservedApplicationLaunch>,
+    ) -> Result<tilo_action_broker::services::LaunchReadiness, String> {
+        let native_tree = self
+            .0
+            .as_ref()
+            .filter(|tree| tree.read().installed_native_owner().is_some());
+        let Some(tree) = native_tree else {
+            return self.begin_launch(app, package_root, workspace, author);
+        };
+        if app.starts_with(HOST_APPLICATION_PREFIX) {
+            return self.begin_launch(app, package_root, workspace, author);
+        }
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|network| network.governor_opens_apps(workspace.room))
+        {
+            return Err(
+                "observed package startup must be requested from the workspace host".into(),
+            );
+        }
+        let original =
+            original.ok_or("native observed launch requires its original certified caller")?;
+        if !original.matches(app, package_root, workspace) {
+            return Err("original application launch scope mismatch".into());
+        }
+        original.certificate()?;
+        let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
+        let selected = match package_root {
+            Some(root) => tilo_installed_apps::read_exact(
+                &catalog,
+                app,
+                root.parse().map_err(|_| "invalid installed package root")?,
+            )
+            .map_err(|error| error.to_string())?,
+            None => tilo_installed_apps::read(&catalog)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|installed| installed.package_id == app),
+        }
+        .ok_or("the exact selected application package is no longer installed")?;
+        super::launch_readiness::observe(|| {
+            super::launcher::queue_observed_native_launch(
+                selected,
+                tree.clone(),
+                workspace.room,
+                original,
+            )
+            .map_err(|error| error.to_string())
+        })
+    }
     fn launch_content(
         &self,
         app: &str,
@@ -514,8 +764,47 @@ impl LauncherServices for NativeLauncher {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::AuthenticatedApplicationLaunch>, String> {
+        Ok(super::launcher::authenticated_window_launch(pid, app, room))
+    }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
+            || super::launcher::consume_in_process_launch(pid, app, room)
+    }
+    #[cfg(target_os = "linux")]
+    fn attest_executing_process(
+        &self,
+        launcher_pid: u32,
+        peer: &runtime_portal::process_binding::ExecutingPeer,
+        app: &str,
+        room: &str,
+    ) -> bool {
+        let Some((_, start)) = super::launcher::proc_stat(launcher_pid) else {
+            return false;
+        };
+        super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room).is_some()
+            && peer.belongs_to(launcher_pid, start)
+            && super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room)
+                .is_some()
+    }
+    fn application_creation_evidence(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::ApplicationCreationEvidence>, String> {
+        Ok(
+            super::launcher::attest_trusted_service_launch_for_pid(pid, app, room)
+                .and_then(|identity| identity.application_creation),
+        )
+    }
+    fn note_acted_on(&self, app: &str, _room: &str) {
+        super::launcher::note_launch_acted_on(app);
     }
     fn closes_applications(&self) -> bool {
         super::app_close::installed()
@@ -1075,13 +1364,87 @@ impl ContinuationServices for NativeContinuations {
         instance: u64,
         message: Vec<u8>,
     ) -> Result<(), String> {
+        if matches!(
+            ui::collaboration::handoff::HandoffReport::decode(&message),
+            Some(ui::collaboration::handoff::HandoffReport::OwnerSubscribe { .. })
+        ) {
+            super::personal_continuity_registry::global_registry()
+                .lock()
+                .map_err(|_| "continuation registry unavailable".to_owned())?
+                .refresh_owner_view(
+                    room,
+                    &app,
+                    super::personal_continuity::AppInstanceId(instance),
+                );
+            return Ok(());
+        }
+        if let Some(ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+            token,
+            schema,
+            metadata,
+        }) = ui::collaboration::handoff::HandoffReport::decode(&message)
+        {
+            use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
+            if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations) {
+                return Err("app continuation permission is disabled".into());
+            }
+            return super::personal_continuity_registry::global_registry()
+                .lock()
+                .map_err(|_| "continuation registry unavailable".to_owned())?
+                .claim_owner_view(
+                    room,
+                    app,
+                    super::personal_continuity::AppInstanceId(instance),
+                    token,
+                    ui::collaboration::ContinuationMetadata {
+                        schema_version: schema,
+                        bytes: metadata,
+                    },
+                );
+        }
         super::window_transfer::report_handoff(room, app, instance, &message)
     }
 }
 
 /// The native identity selector and fleet remain native service dependencies.
-pub struct NativeCertificates;
+pub struct NativeCertificates {
+    origin: Result<
+        tilo_action_broker::peer_actions::PolicyOrigin,
+        tilo_action_broker::peer_actions::PolicyClockError,
+    >,
+}
+impl Default for NativeCertificates {
+    fn default() -> Self {
+        Self {
+            origin: tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+                .map(|clock| clock.new_origin()),
+        }
+    }
+}
 impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+        self.origin
+            .as_ref()
+            .map_err(ToString::to_string)?
+            .capture()
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+    fn authorize_with_policy_time(
+        &self,
+        room: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+        time: &tilo_action_broker::peer_actions::PolicyTime,
+    ) -> Result<(), String> {
+        let origin = self.origin.as_ref().map_err(ToString::to_string)?;
+        if !origin.owns(time) {
+            return Err("native certificate policy origin changed".into());
+        }
+        let now = time.now_ns().map_err(|error| error.to_string())?;
+        tilo_user_identity::verify_device_cert_at(certificate, now)
+            .map_err(|_| "native certificate expired at retained policy time")?;
+        self.authorize(room, certificate)
+    }
     fn authorize(
         &self,
         room: uuid::Uuid,
@@ -1105,6 +1468,22 @@ pub fn native_services(
         Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
             as Arc<dyn NativeDocumentReads>
     });
+    let workspace_memberships = membership.as_ref().map(|tree| {
+        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
+            as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
+    });
+    let resource_views = membership
+        .as_ref()
+        .zip(network.as_ref())
+        .map(|(tree, network)| {
+            Arc::new(resource_views::NativeResourceViews {
+                owner: Arc::new(NativeOwnerCommitService::new(
+                    tree.clone(),
+                    Some(network.clone()),
+                )),
+                network: network.clone(),
+            }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
+        });
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
             as Arc<dyn WorkspaceGovernanceServices>
@@ -1125,11 +1504,18 @@ pub fn native_services(
     });
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     HostServices {
+        #[cfg(target_os = "linux")]
+        file_clipboard: membership.as_ref().map(|tree| {
+            Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))
+                as Arc<dyn tilo_action_broker::services::FileClipboardServices>
+        }),
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
         committed_documents,
+        workspace_memberships,
+        resource_views,
         desktop_commands: None,
-        native_certificates: Some(Arc::new(NativeCertificates)),
+        native_certificates: Some(Arc::new(NativeCertificates::default())),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),
@@ -1153,6 +1539,7 @@ pub fn native_services(
         launchable_catalogue: launchable_catalogue_path(),
         // The session's records, installed before any broker starts.
         settings: settings_store::installed_source(),
+        live_activities: Some(super::live_activities::board()),
         ..Default::default()
     }
 }
@@ -1520,6 +1907,78 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_certificate_policy_time_is_retained_and_retires_with_its_service() {
+        use tilo_action_broker::peer_actions::CertificateAuthority;
+
+        let authority = NativeCertificates::default();
+        let first = authority.policy_time().unwrap().unwrap();
+        let second = authority.policy_time().unwrap().unwrap();
+        assert!(first.same_origin(&second));
+        let initial = first.now_ns().unwrap();
+        assert!(second.now_ns().unwrap() >= initial);
+        let replacement = NativeCertificates::default();
+        assert!(!first.same_origin(&replacement.policy_time().unwrap().unwrap()));
+        drop(authority);
+        assert!(first.now_ns().is_err());
+        assert!(second.now_ns().is_err());
+        assert!(replacement.policy_time().unwrap().unwrap().now_ns().is_ok());
+    }
+
+    #[test]
+    fn native_certificate_policy_clock_failure_never_falls_back_to_wall_time() {
+        use tilo_action_broker::peer_actions::CertificateAuthority;
+
+        let authority = NativeCertificates {
+            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+        };
+        assert!(authority.policy_time().is_err());
+    }
+
+    #[test]
+    fn native_certificate_policy_refuses_another_services_retained_origin() {
+        use tilo_action_broker::peer_actions::CertificateAuthority;
+
+        let authority = NativeCertificates::default();
+        let other = NativeCertificates::default();
+        let foreign_time = other.policy_time().unwrap().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
+        let certificate = tilo_joined_room::testing::certificate(&root, &device, "clock test");
+        let room_id = uuid::Uuid::parse_str(tilo_joined_room::testing::ROOM).unwrap();
+        assert_eq!(
+            authority
+                .authorize_with_policy_time(room_id, &certificate, &foreign_time)
+                .unwrap_err(),
+            "native certificate policy origin changed"
+        );
+        drop(other);
+        assert!(foreign_time.now_ns().is_err());
+        assert_eq!(
+            authority
+                .authorize_with_policy_time(room_id, &certificate, &foreign_time)
+                .unwrap_err(),
+            "native certificate policy origin changed"
+        );
+    }
+
+    #[test]
+    fn native_certificate_policy_time_never_replaces_an_unavailable_origin() {
+        use tilo_action_broker::peer_actions::CertificateAuthority as _;
+        let certificates = NativeCertificates {
+            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+        };
+        for _ in 0..2 {
+            assert!(matches!(certificates.policy_time(), Err(error)
+                if error == tilo_action_broker::peer_actions::PolicyClockError.to_string()));
+        }
+        let certificates = NativeCertificates::default();
+        let captured = certificates.policy_time().unwrap().unwrap();
+        certificates.origin.as_ref().unwrap().invalidate();
+        assert!(certificates.policy_time().is_err());
+        assert!(captured.now_ns().is_err());
+    }
 
     /// Content keyed by `(room, hash)`, standing in for the content store's
     /// room-scoped reads.

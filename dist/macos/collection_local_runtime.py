@@ -237,6 +237,8 @@ def compile_adapters(work, plan, guard):
               'TILO_PROFILE_KEY': plan['profile_sha256']}
     if plan.get('extended_locale_catalogs'):
         config['TILO_GST_EXTENDED_CATALOGS'] = '1'
+    if plan.get('media_data'):
+        config['TILO_MEDIA_DATA'] = '1'
     scratch = work / 'adapter-build'
     scratch.mkdir()
     header = scratch / 'local_runtime_config.h'

@@ -36,7 +36,7 @@ use tracing_subscriber::EnvFilter;
 use registry_server::{
     AppState, InspectionPolicy, ModerationService, PromotionJournal, PruneReport,
     PublisherAllowlist, PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage,
-    default_data_dir, inspect_bytes, run_server,
+    default_data_dir, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -257,11 +257,20 @@ enum ApplicationsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show one application and the review id for an exact decision.
+    Show {
+        pubkey: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check the proofs again and allowlist the key for their namespaces.
     Approve {
         pubkey: String,
         #[arg(long)]
         reviewer: String,
+        /// Review id from applications show; refuse a changed application.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Turn an application down; the key's allowlist row is untouched.
     Reject {
@@ -270,6 +279,9 @@ enum ApplicationsCommand {
         reviewer: String,
         #[arg(long)]
         reason: String,
+        /// Review id from applications show; refuse a changed application.
+        #[arg(long)]
+        review_id: Option<String>,
     },
 }
 
@@ -297,6 +309,9 @@ enum ReviewCommand {
         reason: String,
         #[arg(long, hide = true)]
         allow_insecure_local: bool,
+        /// Review id from review show; refuse a replaced request.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Reject a request while retaining an audit record.
     Reject {
@@ -305,6 +320,9 @@ enum ReviewCommand {
         reviewer: String,
         #[arg(long)]
         reason: String,
+        /// Review id from review show; refuse a replaced request.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Immediately hide a public entry while retaining a recoverable copy.
     Quarantine {
@@ -640,7 +658,13 @@ fn collect_submission_artifacts(
         // advertised URL stops serving them. They pass the same inspection.
         let inspection =
             if let Some(bytes) = storage.find_staged_artifact(&version.tapp_blake3_hex)? {
-                inspect_bytes(&pending.change.entry, version, &bytes)?
+                registry_server::inspect_stored_bytes(
+                    storage,
+                    &pending.change.entry,
+                    version,
+                    &bytes,
+                    Some(policy),
+                )?
             } else {
                 let (inspection, bytes) = registry_server::review_version_bytes(
                     storage,
@@ -937,7 +961,13 @@ fn cmd_publish_staged_first_party(
                 );
             };
             let bytes = storage.load_staged_artifact(&artifact.blake3_hex)?;
-            let _inspection = inspect_bytes(&pending.change.entry, version, &bytes)?;
+            let _inspection = registry_server::inspect_stored_bytes(
+                storage,
+                &pending.change.entry,
+                version,
+                &bytes,
+                None,
+            )?;
         }
     }
     let expected_artifacts: usize = staged
@@ -961,6 +991,10 @@ fn cmd_publish_staged_first_party(
             &identity.owner_pubkey_hex,
             journal.candidate_snapshot.issued_at_unix,
         )?;
+        validate_new_native_runtimes(
+            &journal.candidate_snapshot.entries,
+            writer.current()?.as_ref(),
+        )?;
         journal
     } else {
         let current = writer.current()?;
@@ -976,6 +1010,7 @@ fn cmd_publish_staged_first_party(
             .as_ref()
             .map_or_else(Vec::new, |snapshot| snapshot.entries.clone());
         apply_staged_changes(&mut entries, &staged.submissions)?;
+        validate_new_native_runtimes(&entries, current.as_ref())?;
         if entries.len() > authorization.max_snapshot_entries {
             anyhow::bail!("candidate exceeds delegated entry bound");
         }
@@ -1148,6 +1183,53 @@ fn apply_staged_changes(
         }
     }
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
+    Ok(())
+}
+
+/// A new thin app must be installable from the same registry. Collection can
+/// stage an app before its runtime arrives, or while that runtime's artifacts
+/// are unavailable; accepting the app submission does not prove its runtime is
+/// offered. Check the complete candidate before signing or reserving a journal.
+/// Retained versions keep their history when old runtimes leave under retention.
+fn validate_new_native_runtimes(
+    entries: &[registry_types::RegistryEntry],
+    previous: Option<&SignedRegistrySnapshot>,
+) -> anyhow::Result<()> {
+    for entry in entries {
+        if registry_types::is_runtime_package_id(&entry.package_id) {
+            continue;
+        }
+        let retained = previous.and_then(|snapshot| {
+            snapshot
+                .entries
+                .iter()
+                .find(|old| old.package_id == entry.package_id)
+        });
+        for version in &entry.versions {
+            if version.target.native_runtime().is_none()
+                || retained.is_some_and(|old| old.versions.contains(version))
+            {
+                continue;
+            }
+            let offered = entries.iter().any(|provider| {
+                registry_types::is_runtime_package_id(&provider.package_id)
+                    && provider.versions.iter().any(|provided| {
+                        provided.target.platform == version.target.platform
+                            && provided.target.architecture == version.target.architecture
+                            && provided.target.runtime == version.target.runtime
+                    })
+            });
+            if !offered {
+                anyhow::bail!(
+                    "{}@{} ({}) has no offered native runtime {}; keep the app pending until its runtime is collected",
+                    entry.package_id,
+                    version.version,
+                    version.target.architecture,
+                    version.target.runtime.as_deref().unwrap_or_default(),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1468,6 +1550,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
+                        "review_id": pending.review_id()?,
                         "submission": pending,
                         "verified_packages": inspection,
                     }))?
@@ -1496,29 +1579,30 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             reviewer,
             reason,
             allow_insecure_local,
+            review_id,
         } => {
-            let pending = require_pending(&moderation, &package_id)?;
-            let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
-            let allowlist = storage.load_allowlist()?;
-            let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
-            // Serve the reviewed bytes as blobs and thin packages, so clients
-            // fetch only what they lack.
-            // An approved upload becomes the artifact its version's URL names.
-            for (_inspection, bytes) in &reviewed {
-                storage.save_payload_blobs(bytes)?;
-                let digest = blake3::hash(bytes).to_hex().to_string();
-                if storage.load_upload(&digest)?.is_some() {
-                    storage.import_artifact(bytes)?;
-                }
-            }
+            let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
+            let record = registry_server::submission_review::approve(
+                storage,
+                &pending,
+                &reviewer,
+                &reason,
+                unix_now(),
+                InspectionPolicy {
+                    allow_insecure_local,
+                    ..InspectionPolicy::default()
+                },
+            )?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Reject {
             package_id,
             reviewer,
             reason,
+            review_id,
         } => {
-            let record = moderation.reject(&package_id, reviewer, reason, unix_now())?;
+            let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
+            let record = moderation.reject_reviewed(&pending, reviewer, reason, unix_now())?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Quarantine {
@@ -1557,19 +1641,30 @@ fn require_pending(
         .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
 }
 
+fn require_reviewed_pending(
+    moderation: &ModerationService,
+    package_id: &str,
+    review_id: Option<&str>,
+) -> anyhow::Result<registry_server::PendingSubmission> {
+    let pending = require_pending(moderation, package_id)?;
+    if let Some(review_id) = review_id
+        && pending.review_id()? != review_id
+    {
+        return Err(registry_server::ModerationError::PendingChanged(package_id.into()).into());
+    }
+    Ok(pending)
+}
+
 fn fetch_for_decision(
     storage: &Storage,
     pending: &registry_server::PendingSubmission,
     allow_insecure_local: bool,
 ) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
-    if pending.change.action == EntryAction::Delete {
-        return Ok(Vec::new());
-    }
     let policy = InspectionPolicy {
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    registry_server::review_entry_bytes(storage, &pending.change.entry, policy).map_err(Into::into)
+    registry_server::submission_review::inspect(storage, pending, policy)
 }
 
 fn cmd_import_artifact(storage: &Storage, file: &std::path::Path) -> anyhow::Result<()> {
@@ -1809,10 +1904,41 @@ fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::
                 }
             }
         }
-        ApplicationsCommand::Approve { pubkey, reviewer } => {
-            let (_, row) = applications::approve(
+        ApplicationsCommand::Show { pubkey, json } => {
+            let stored = storage
+                .load_publisher_application(&pubkey)?
+                .ok_or_else(|| applications::ApplicationFailure::Unknown(pubkey.clone()))?;
+            let review_id = stored.review_id()?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "review_id": review_id, "application": stored,
+                    }))?
+                );
+            } else {
+                println!(
+                    "{}  {:?}  {}",
+                    pubkey,
+                    stored.status,
+                    stored.namespaces().join(", ")
+                );
+                println!("review id: {review_id}");
+                println!(
+                    "contact: {}\nnote: {}",
+                    stored.application.contact, stored.application.note
+                );
+            }
+        }
+        ApplicationsCommand::Approve {
+            pubkey,
+            reviewer,
+            review_id,
+        } => {
+            let candidate = reviewed_application(storage, &pubkey, review_id.as_deref())?;
+            let (_, row) = applications::approve_reviewed(
                 storage,
-                &pubkey,
+                &candidate,
                 &reviewer,
                 unix_now(),
                 &NetworkProofs::default(),
@@ -1827,12 +1953,34 @@ fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::
             pubkey,
             reviewer,
             reason,
+            review_id,
         } => {
-            applications::reject(storage, &pubkey, &reviewer, &reason, unix_now())?;
+            let candidate = reviewed_application(storage, &pubkey, review_id.as_deref())?;
+            applications::reject_reviewed(storage, &candidate, &reviewer, &reason, unix_now())?;
             info!("rejected the application from {pubkey}");
         }
     }
     Ok(())
+}
+
+fn reviewed_application(
+    storage: &Storage,
+    pubkey: &str,
+    review_id: Option<&str>,
+) -> anyhow::Result<registry_server::applications::StoredApplication> {
+    use registry_server::applications::{ApplicationFailure, ApplicationStatus};
+    let stored = storage
+        .load_publisher_application(pubkey)?
+        .ok_or_else(|| ApplicationFailure::Unknown(pubkey.to_owned()))?;
+    if stored.status != ApplicationStatus::Pending {
+        return Err(ApplicationFailure::NotPending(pubkey.to_owned()).into());
+    }
+    if let Some(expected) = review_id
+        && expected != stored.review_id()?
+    {
+        return Err(ApplicationFailure::Changed(pubkey.to_owned()).into());
+    }
+    Ok(stored)
 }
 
 fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
@@ -1917,6 +2065,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: architecture.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let shared_bytes = b"same verified tapp".to_vec();
             let digest = blake3::hash(&shared_bytes).to_hex().to_string();
@@ -2098,6 +2247,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let mut entry = publisher_entry(&key);
@@ -2189,6 +2339,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 1,

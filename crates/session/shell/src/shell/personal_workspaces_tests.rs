@@ -1013,3 +1013,51 @@ fn deleting_from_the_menu_offers_an_undo() {
     assert!(state.activate_notification(toast));
     assert_eq!(names(&state.tree()), ["Research", "Thesis"]);
 }
+
+#[test]
+fn an_unchanged_tree_is_not_compared_against_the_directory_again() {
+    let ((_, mut laptop, mut laptop_list), (board_device, _, mut board_list)) =
+        two_devices_in_step();
+    laptop_list.publish_local(&laptop, PERSON);
+    let passes = laptop_list.publish_passes;
+    for _ in 0..3 {
+        assert!(!laptop_list.publish_local(&laptop, PERSON));
+    }
+    assert_eq!(laptop_list.publish_passes, passes, "nothing changed");
+
+    // A rename here is written to the directory.
+    let research = id_named(&laptop, "Research");
+    laptop
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == research)
+        .expect("workspace")
+        .name = "Reading".into();
+    assert!(laptop_list.publish_local(&laptop, PERSON));
+    assert!(!laptop_list.publish_local(&laptop, PERSON));
+    assert_eq!(laptop_list.publish_passes, passes + 1);
+
+    // So is a new order.
+    laptop.desktop.workspaces.reverse();
+    assert!(laptop_list.publish_local(&laptop, PERSON));
+    assert_eq!(laptop_list.publish_passes, passes + 2);
+
+    // Another device's list moves the directory under an unchanged tree,
+    // so the next call compares again.
+    let update = board_list
+        .snapshot(&board_device.key, 30)
+        .expect("signed list");
+    laptop_list
+        .merge(&update, &board_device.cert, 40)
+        .expect("same person");
+    laptop_list.publish_local(&laptop, PERSON);
+    assert_eq!(laptop_list.publish_passes, passes + 3);
+    assert!(!laptop_list.publish_local(&laptop, PERSON));
+    assert_eq!(laptop_list.publish_passes, passes + 3);
+
+    // As does bringing the directory into the tree.
+    laptop_list.adopt_into(&mut laptop, &PERSON.to_string());
+    laptop_list.publish_local(&laptop, PERSON);
+    assert_eq!(laptop_list.publish_passes, passes + 4);
+}

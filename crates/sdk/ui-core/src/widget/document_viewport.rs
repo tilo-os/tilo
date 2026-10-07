@@ -973,7 +973,7 @@ impl DocumentViewport {
 }
 
 impl Widget for DocumentViewport {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Content::Widget(c) = &mut self.content {
             c.sync(state, path);
         }

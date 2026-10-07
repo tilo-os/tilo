@@ -6,6 +6,8 @@
 //! off it, so a health check can call a software fallback what it is:
 //!
 //! - the render node the compositor advertised to clients, or why none could be;
+//! - the render nodes with no GPU behind them (a virtio GPU without 3D acceleration), which
+//!   make a machine without a GPU rather than a session that misses one;
 //! - the Vulkan driver the session pinned to it, or why none was;
 //! - the adapter every app window reported (`tilo-gpu:` on its stderr), and every window that
 //!   fell back to a CPU adapter although a GPU is present.
@@ -32,6 +34,9 @@ pub struct GpuHealth {
     pub vulkan_icd: Option<String>,
     /// The node advertised as `zwp_linux_dmabuf_v1`'s main device; `None` while not advertised.
     pub dmabuf_device: Option<String>,
+    /// Render nodes with no GPU behind them, with the reason, by path. When every node on the
+    /// machine is listed here there is no GPU to render on.
+    pub nodes_without_gpu: BTreeMap<String, String>,
     /// Every reason the session or an app is not on the GPU. Empty is healthy.
     pub problems: Vec<String>,
     /// The adapter line each app last reported, by package id.
@@ -112,6 +117,17 @@ pub fn record_probe_failure(reason: &str) {
     });
 }
 
+/// Render nodes exist, but none has a GPU behind it.
+pub fn record_no_renderer(nodes: &[(std::path::PathBuf, String)]) {
+    update(|record| {
+        record.nodes_without_gpu.extend(
+            nodes
+                .iter()
+                .map(|(path, why)| (path.display().to_string(), why.clone())),
+        );
+    });
+}
+
 /// Whether the dmabuf global went out, and on which node.
 pub fn record_dmabuf(advertised: Result<&std::path::Path, &str>) {
     update(|record| match advertised {
@@ -149,6 +165,25 @@ pub fn observe_app_line(package_id: &str, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nodes_without_a_gpu_are_recorded_with_their_reason() {
+        record_no_renderer(&[(
+            std::path::PathBuf::from("/dev/dri/renderD128"),
+            "virtio GPU without 3D acceleration".to_string(),
+        )]);
+        let record = RECORD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_default();
+        assert_eq!(
+            record.nodes_without_gpu["/dev/dri/renderD128"],
+            "virtio GPU without 3D acceleration"
+        );
+        let json = serde_json::to_value(&record).expect("the record serializes");
+        assert!(json["nodes_without_gpu"].is_object(), "{json}");
+    }
 
     #[test]
     fn app_adapter_lines_and_fallbacks_are_recorded() {

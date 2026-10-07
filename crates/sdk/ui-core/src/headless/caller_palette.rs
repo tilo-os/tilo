@@ -1,7 +1,7 @@
 //! Caller-only palette presentation. Submission transfers inert intent to the
 //! host; it never installs a worker route or executes an application effect.
 use super::{
-    Affine, ElementState, FrameHarness, HashMap, InspectionNode, Key, Point, WindowEvent,
+    ElementState, FrameHarness, HashMap, InspectionNode, Key, Point, WindowEvent,
     collect_inspection,
 };
 use crate::action_palette::{ActionPalette, PendingOperation};
@@ -112,7 +112,7 @@ impl FrameHarness {
             event,
             self.input_scale,
             self.modifiers,
-            &mut self.state.doc,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
         self.finish_caller_palette();
@@ -162,7 +162,7 @@ impl FrameHarness {
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut self.state.doc,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             ) {
                 tracing::warn!(%error, "caller local request refused");
@@ -189,12 +189,13 @@ impl FrameHarness {
             results_owner,
             target,
             action,
-            &mut self.state.doc,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         )
     }
 
     pub(super) fn draw_caller_palette(&mut self) {
+        let transform = self.capture_draw_transform();
         if let Some(palette) = &mut self.caller_palette.palette {
             let width = (f64::from(self.viewport.0) - 32.0).clamp(1.0, 640.0);
             palette.layout_with_text(
@@ -205,7 +206,7 @@ impl FrameHarness {
             );
             palette.draw(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,

@@ -11,7 +11,7 @@ use crate::render_thread::RenderThreadHandle;
 #[cfg(feature = "native")]
 use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 #[cfg(feature = "native")]
-use crate::render_thread::{FrameOutcome, RenderRequest, spawn_render_thread};
+use crate::render_thread::{FrameOutcome, RenderRequest};
 #[cfg(feature = "native")]
 use crate::widget::AudiencePresentationWidgetExt as _;
 #[cfg(feature = "native")]
@@ -80,8 +80,24 @@ include!("app/host.rs");
 mod android_text_input;
 #[cfg(feature = "native")]
 mod native_runner;
+/// How an app's error begins when its window stopped without being closed.
+/// The shell recognises it in a failed launch's output.
+pub const WINDOW_LOST: &str = "the window stopped without being closed";
+
+/// Exit status of an app whose window stopped without being closed: the
+/// launcher reports it as a failed launch rather than a clean exit.
+pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
+
+#[cfg(feature = "native")]
+mod surface;
 #[cfg(all(windows, feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
+#[cfg(feature = "native")]
+pub use surface::AppSurface;
+#[cfg(feature = "native")]
+mod embedded;
+#[cfg(feature = "native")]
+pub use embedded::EmbeddedApp;
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
@@ -127,31 +143,6 @@ const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 
-/// Portable, declared launcher payload used by any app that hands verified
-/// qdoc media to another installed app. The broker stages the bytes and owns
-/// the target process; the source app never supplies a local path.
-#[derive(serde::Deserialize)]
-struct ApplicationLaunchPayload {
-    app_id: String,
-    content_hash: String,
-}
-
-impl ApplicationLaunchPayload {
-    fn valid(&self) -> bool {
-        !self.app_id.is_empty()
-            && self.app_id.len() <= 128
-            && self
-                .app_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
-            && self.content_hash.len() == 64
-            && self
-                .content_hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }
-}
-
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
 /// `WindowEvent`(s) and routes through the same handler, so injected and
 /// real-hardware events take the identical code path.
@@ -196,7 +187,10 @@ pub enum UserEvent {
     DevSessionReload,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
-    AccessKit(accesskit_winit::WindowEvent),
+    AccessKit {
+        window_id: winit::window::WindowId,
+        event: accesskit_winit::WindowEvent,
+    },
     /// The soft keyboard queued edits for the focused field.
     #[cfg(all(feature = "native", target_os = "android"))]
     PlatformTextInput,
@@ -205,7 +199,10 @@ pub enum UserEvent {
 #[cfg(feature = "native")]
 impl From<accesskit_winit::Event> for UserEvent {
     fn from(e: accesskit_winit::Event) -> Self {
-        UserEvent::AccessKit(e.window_event)
+        UserEvent::AccessKit {
+            window_id: e.window_id,
+            event: e.window_event,
+        }
     }
 }
 use crate::collaboration::{
@@ -571,8 +568,6 @@ pub struct App {
         crate::collaboration::RouteSpec,
         crate::collaboration::CommittedDocument,
     )>,
-    /// To distinguish app-driven from compositor-driven transitions.
-    pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     persistence: PersistenceRuntime,
     autosave_generation: u64,
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
@@ -644,6 +639,9 @@ struct AppConstructionInputs {
     local_author: ConstructionValue<crate::permissions::UserId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
+    /// The person's colour before a host says it: the stored choice where
+    /// this process may read the person's settings, `None` elsewhere.
+    your_colour: fn() -> Option<crate::tokens::PresenceHue>,
     high_contrast: fn() -> bool,
     reduce_motion: fn() -> bool,
     text_scale: fn() -> f32,
@@ -709,6 +707,7 @@ impl AppConstructionInputs {
             debug_mode: || false,
             theme_store_stamp: || None,
             screen_reader: || None,
+            your_colour: || None,
             high_contrast: || false,
             reduce_motion: || false,
             text_scale: || 1.0,
@@ -750,6 +749,7 @@ impl AppConstructionInputs {
                     None
                 }
             },
+            your_colour: App::stored_your_colour,
             high_contrast: || crate::host::environment().accessibility.high_contrast,
             reduce_motion: || crate::host::environment().accessibility.reduce_motion,
             text_scale: || {
@@ -796,6 +796,7 @@ impl AppConstructionInputs {
                 presence
             }),
             screen_reader: || None,
+            your_colour: || None,
             high_contrast: || false,
             reduce_motion: || false,
             text_scale: || 1.0,
@@ -899,12 +900,14 @@ impl App {
         }
         let history = component.history.take();
         let behaviour = component.behaviour;
+        let input_surface_id = (behaviour.window == crate::application::WindowRole::InputSurface)
+            .then(|| component.app_id().to_owned());
         let Some(component) = assembly.component.take() else {
             return Err(crate::launch::LaunchError::Operation(
                 "component assembly no longer owns its component".to_owned(),
             ));
         };
-        let mut root = Box::new(crate::widget::BoundAppWidget { component });
+        let mut root = Box::new(crate::widget::BoundAppWidget::new(component));
         let mut root_custody = retirement_assembly::AppAssemblyCustody {
             retirement: assembly.retirement.take(),
             root: None,
@@ -932,6 +935,9 @@ impl App {
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
+        if let Some(app_id) = input_surface_id {
+            app.window.app_id = Some(app_id);
+        }
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {
@@ -944,6 +950,9 @@ impl App {
                     app.take_component_close_reports(),
                 ),
             });
+        }
+        if behaviour.window == crate::application::WindowRole::InputSurface {
+            app = app.without_native_document_chrome();
         }
         Ok(app)
     }
@@ -966,6 +975,7 @@ impl App {
         );
         let mut text_renderer = TextRenderer::new();
         text_renderer.set_text_scale(theme.text_scale);
+        text_renderer.apply_typography(&theme.tokens.typography);
         crate::application::ComponentRunnerInputs {
             theme,
             text_renderer,
@@ -1124,7 +1134,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: &mut focus,
@@ -1143,7 +1153,11 @@ impl App {
         };
         let activated = self
             .dispatch_node(focused, |widget, doc, root| {
-                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+                widget.perform_action(
+                    &crate::a11y::Action::Activate,
+                    &mut crate::widget::Edits::lend(doc),
+                    root,
+                )
             })
             .unwrap_or(false);
         if activated {
@@ -1282,14 +1296,14 @@ impl App {
         registration: crate::history_mode::HistoryRegistration,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.root_widget.sync(&self.state.doc, &self.state.root);
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
-        self.history = Some(Box::new(crate::history_mode::host::HistoryHost::new(
-            registration,
-            &self.state.doc,
-        )?));
+        let host = tilo_startup_metrics::span("history-install", || {
+            crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)
+        })?;
+        self.history = Some(Box::new(host));
         if let Some(history) = &mut self.history {
             history.set_control_domain(&self.control_domain);
         }
@@ -1401,7 +1415,7 @@ impl App {
         Self::with_parts(Some(scope), state, root, inputs)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn from_scoped_parts_with_controlled_custody(
         scope: crate::WakeScope,
         state: State,
@@ -1449,6 +1463,9 @@ impl App {
             inputs.pending_continuation_restore = || None;
             inputs.floating_surface_client = || None;
             inputs.startup_presence_scope = || None;
+            // An ephemeral identity wears the default colour, not the
+            // person's.
+            inputs.your_colour = || None;
             inputs
         })
     }
@@ -1550,10 +1567,15 @@ impl App {
                 self.text_renderer
                     .set_text_scale(self.accessibility.text_scale);
                 self.accessibility.text_scale = self.text_renderer.text_scale();
+                let base = self
+                    .accessibility
+                    .base_theme
+                    .clone()
+                    .in_window(&self.accessibility.window);
                 let base = if self.accessibility.a11y.high_contrast {
-                    Theme::high_contrast()
+                    base.with_high_contrast()
                 } else {
-                    self.accessibility.base_theme.clone()
+                    base
                 };
                 let theme = base
                     .with_component_scales(
@@ -1564,12 +1586,19 @@ impl App {
                 self.accessibility.ui_scale = theme.ui_scale;
                 theme
             }
-            PaletteSource::Owned { .. } => self.accessibility.base_theme.clone().with_a11y(
-                &self.accessibility.a11y,
-                self.accessibility.text_scale,
-                self.accessibility.ui_scale,
-            ),
+            PaletteSource::Owned { .. } => self
+                .accessibility
+                .base_theme
+                .clone()
+                .in_window(&self.accessibility.window)
+                .with_a11y(
+                    &self.accessibility.a11y,
+                    self.accessibility.text_scale,
+                    self.accessibility.ui_scale,
+                ),
         };
+        self.text_renderer
+            .apply_typography(&self.theme.tokens.typography);
         // Deliver motion policy before the event loop consults
         // `needs_animation_frame`. This lets custom roots settle their own
         // transitions immediately and prevents a forgotten app-local curve
@@ -1732,6 +1761,7 @@ impl App {
         action: &tilo_actions::ActionSpec,
     ) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
+            semantic_identity: resource.semantic_identity.clone(),
             address: tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
@@ -1800,18 +1830,28 @@ impl App {
 
     fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
         let witness = self.collaboration.manager.primary_route()?.clone();
-        witness
-            .route
-            .record
-            .as_deref()?
-            .strip_prefix("continuation:")?
-            .parse::<u64>()
-            .ok()?;
-        if self.continuation.last_private_route.as_ref() != Some(&witness) {
+        let instance = self.collaboration.manager.private_window_instance()?;
+        if self.continuation.last_private_route.as_ref() != Some(&witness)
+            || self.continuation.private_instance != Some(instance)
+        {
+            if self
+                .continuation
+                .last_private_route
+                .as_ref()
+                .is_some_and(|last| last.route != witness.route)
+                || self.continuation.private_instance != Some(instance)
+            {
+                self.continuation.owner_view = Default::default();
+            } else {
+                self.continuation.owner_view.pending = None;
+                self.continuation.owner_view.last_generation = 0;
+            }
             self.continuation.last_published = None;
+            self.continuation.publication_initialized = false;
             self.last_published_playback = None;
             self.last_playback_publish = None;
             self.continuation.last_private_route = Some(witness.clone());
+            self.continuation.private_instance = Some(instance);
         }
         Some(witness.route)
     }
@@ -1914,6 +1954,34 @@ impl App {
         self.apply_appearance_intent(intent)
     }
 
+    /// The person's stored colour (`identity.colour`) in the settings
+    /// document this process reads, if they chose one. The shell's
+    /// appearance message replaces it with the colour it resolved.
+    fn stored_your_colour() -> Option<crate::tokens::PresenceHue> {
+        crate::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
+    }
+
+    /// Where and for whom this window is shown, as the shell said it over
+    /// the shell-ui channel: the workspace's temperature and the person's
+    /// colour. A window the shell never told stays neutral and keeps the
+    /// colour it started with. Returns whether the theme changed.
+    pub fn set_window_appearance(&mut self, appearance: crate::theme::WindowAppearance) -> bool {
+        if appearance == self.accessibility.window {
+            return false;
+        }
+        self.accessibility.window = appearance;
+        self.rebuild_theme();
+        self.layout.layout_dirty = true;
+        self.layout.structure_dirty = true;
+        true
+    }
+
+    /// What the host said about where and for whom this window is shown.
+    #[must_use]
+    pub fn window_appearance(&self) -> crate::theme::WindowAppearance {
+        self.accessibility.window
+    }
+
     /// What a standalone app read from its host OS, through the same door as
     /// a settings pane's intent. The caller applies each host change once, so
     /// a contrast toggle made in the app holds until the host changes again.
@@ -1940,8 +2008,12 @@ impl App {
     #[cfg(feature = "native")]
     fn apply_appearance_intent(&mut self, intent: crate::theme::AppearanceIntent) -> bool {
         let mut changed = false;
-        if intent.base_theme.name != self.accessibility.base_theme.name
-            || intent.base_theme.accent_primary != self.accessibility.base_theme.accent_primary
+        let base = &self.accessibility.base_theme;
+        // Same name, other temperature or other person: still a new theme.
+        if intent.base_theme.name != base.name
+            || intent.base_theme.tokens.colors.surfaces.content
+                != base.tokens.colors.surfaces.content
+            || intent.base_theme.border_focus != base.border_focus
         {
             self.accessibility.base_theme = intent.base_theme;
             changed = true;
@@ -2081,23 +2153,46 @@ impl App {
     /// beats its enclosing toolbar.
     #[cfg(feature = "native")]
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
+        self.tooltip_placed_at(point)
+            .map(|(rect, label, _)| (rect, label))
+    }
+
+    /// [`Self::tooltip_target_at`] with the side of its control the
+    /// tooltip prefers.
+    #[cfg(feature = "native")]
+    pub(crate) fn tooltip_placed_at(
+        &self,
+        point: Point,
+    ) -> Option<(
+        vello::kurbo::Rect,
+        String,
+        crate::widget::tooltip::TooltipSide,
+    )> {
         if !self.input.interaction.supports_hover() {
             return None;
         }
-        let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
+        let mut best: Option<(
+            f64,
+            vello::kurbo::Rect,
+            String,
+            crate::widget::tooltip::TooltipSide,
+        )> = None;
         for &node in self.layout.node_map.keys() {
-            let Ok(target) = self.inspect_node(node, |widget| widget.tooltip_target_at(point))
-            else {
+            let Ok(target) = self.inspect_node(node, |widget| {
+                widget
+                    .tooltip_target_at(point)
+                    .map(|(rect, tip)| (rect, tip, widget.tooltip_side()))
+            }) else {
                 continue;
             };
-            if let Some((rect, tip)) = target {
+            if let Some((rect, tip, side)) = target {
                 let area = (rect.width() * rect.height()).max(0.0);
-                if best.as_ref().is_none_or(|(a, _, _)| area < *a) {
-                    best = Some((area, rect, tip));
+                if best.as_ref().is_none_or(|(a, _, _, _)| area < *a) {
+                    best = Some((area, rect, tip, side));
                 }
             }
         }
-        best.map(|(_, rect, label)| (rect, label))
+        best.map(|(_, rect, label, side)| (rect, label, side))
     }
 }
 
@@ -2308,8 +2403,7 @@ impl App {
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
-        self.invalidate_widget_resource_cache();
+        self.sync_model(true);
         self.update_focusable_order();
     }
 
@@ -2398,7 +2492,7 @@ impl App {
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.root_widget.sync(&self.state.doc, &self.state.root);
         self.needs_sync = false;
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
@@ -2420,42 +2514,6 @@ impl App {
             };
         }
         self.invalidate_widget_resource_cache();
-    }
-
-    /// Pair with [`crate::persist::open`], which hands back the document the
-    /// previous session left plus its writer:
-    ///
-    /// ```ignore
-    /// let (state, autosave) = tilo_ui::persist::open("so.tilo.my-app");
-    /// tilo_ui::App::from_factory(state, my_app::app_root)
-    ///     .with_autosave(autosave)
-    ///     .run();
-    /// ```
-    #[must_use]
-    /// # Panics
-    /// Fails closed if the host storage lifetime counter is exhausted.
-    #[allow(
-        clippy::expect_used,
-        reason = "storage identity must fail closed rather than wrap and admit an old owner"
-    )]
-    #[cfg(feature = "native")]
-    pub(crate) fn history_storage_generation(&self) -> u64 {
-        self.autosave_generation
-    }
-    #[cfg(feature = "native")]
-    pub(crate) fn install_app_state_history(
-        &mut self,
-        definition: &'static crate::history_mode::HistoryDefinition,
-    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        if self.persistence.records.is_some() {
-            return Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner);
-        }
-        let registration = crate::history_mode::HistoryRegistration::installed_app_state(
-            definition,
-            self.persistence.autosave.as_ref(),
-            uuid::Uuid::new_v4(),
-        )?;
-        self.install_history(registration)
     }
 
     /// Inspect controlled launch composition without opening a native window.
@@ -2486,6 +2544,13 @@ impl App {
     pub fn with_window_app_id(mut self, app_id: impl Into<String>) -> Self {
         self.window.app_id = Some(app_id.into());
         self
+    }
+
+    /// The Wayland application id the window announces when it is not the
+    /// process's own package id: an input surface's, or one set with
+    /// [`Self::with_window_app_id`].
+    pub fn window_app_id(&self) -> Option<&str> {
+        self.window.app_id.as_deref()
     }
 
     /// `None` clears the override and restores automatic resolution.
@@ -2815,6 +2880,10 @@ mod number_input_layout_tests;
 #[path = "app/history_tests.rs"]
 pub(crate) mod framework_history_tests;
 
+#[cfg(test)]
+#[path = "app/person_record_tests.rs"]
+mod person_record_tests;
+
 #[path = "app/history.rs"]
 mod framework_history;
 
@@ -2839,44 +2908,6 @@ mod participant_invocation_tests;
 #[path = "app/large_document_tests.rs"]
 mod large_document_tests;
 
-/// Finish the current writer and every retained outgoing-owner failure before
-/// reporting widget-owned durability. Reports remain owned by the runner.
-///
-/// # Errors
-/// Returns the current writer failure or a retained owner's unresolved failure.
-pub(crate) fn flush_widget_owned_persistence(
-    root: &mut dyn Widget,
-    reports: &mut Vec<crate::application::ComponentCloseReport>,
-) -> Result<(), String> {
-    reports.extend(crate::component_lifecycle::take_component_close_reports(
-        root,
-    ));
-    let current = crate::component_lifecycle::try_flush_owned_persistence(root)
-        .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()));
-    reports.extend(crate::component_lifecycle::take_component_close_reports(
-        root,
-    ));
-    for report in reports.iter_mut() {
-        if report.record_error.is_some() && report.record_retry.is_some() {
-            // The report retains the actual outgoing owner and exact legacy
-            // record target. Successful retry clears only that owner's error.
-            let _ = report.retry_record();
-        }
-    }
-    current?;
-    for report in reports.iter() {
-        if let Some(error) = report
-            .record_error
-            .as_ref()
-            .or(report.view_error.as_ref())
-            .or(report.teardown_error.as_ref())
-        {
-            return Err(error.clone());
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod render_retry_tests {
     use super::*;
@@ -2899,12 +2930,11 @@ mod render_retry_tests {
 mod legacy_owner_routing_tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use std::{collections::HashMap, rc::Rc};
+    use std::collections::HashMap;
 
     struct OwnerProbe {
         label: &'static str,
         report: Option<crate::application::ComponentCloseReport>,
-        flushes: Rc<Cell<usize>>,
     }
 
     impl Widget for OwnerProbe {
@@ -2952,7 +2982,7 @@ mod legacy_owner_routing_tests {
             &mut self,
             target: &str,
             action: &crate::a11y::Action,
-            doc: &mut crate::widget::AppModel,
+            doc: &mut crate::widget::Edits<'_>,
             path: &crate::widget::ModelPath,
         ) -> bool {
             let (doc, _) = crate::doc::document(doc, path);
@@ -2961,7 +2991,8 @@ mod legacy_owner_routing_tests {
             }
             match action {
                 crate::a11y::Action::Activate => {
-                    doc.put(ROOT, "selected", format!("{} named", self.label))
+                    doc.document_mut()
+                        .put(ROOT, "selected", format!("{} named", self.label))
                         .unwrap();
                     true
                 }
@@ -2973,14 +3004,15 @@ mod legacy_owner_routing_tests {
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],
-            doc: &mut crate::widget::AppModel,
+            doc: &mut crate::widget::Edits<'_>,
             path: &crate::widget::ModelPath,
         ) -> bool {
             let (doc, _) = crate::doc::document(doc, path);
             if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
-            doc.put(ROOT, "selected", format!("{} keyed", self.label))
+            doc.document_mut()
+                .put(ROOT, "selected", format!("{} keyed", self.label))
                 .unwrap();
             true
         }
@@ -2991,14 +3023,6 @@ mod legacy_owner_routing_tests {
             &mut self,
         ) -> Vec<crate::application::ComponentCloseReport> {
             self.report.take().into_iter().collect()
-        }
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            assert!(
-                self.report.is_none(),
-                "the outgoing failure has moved into host custody"
-            );
-            self.flushes.set(self.flushes.get() + 1);
-            Some(Ok(()))
         }
     }
     impl crate::widget::AppWidget for OwnerProbe {
@@ -3025,7 +3049,6 @@ mod legacy_owner_routing_tests {
             crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(OwnerProbe {
                 label,
                 report: None,
-                flushes: Rc::new(Cell::new(0)),
             })));
         tile.bind_record(store.clone(), checkout.clone());
         tile
@@ -3132,35 +3155,6 @@ mod legacy_owner_routing_tests {
                     .unwrap(),
                 "first named"
             );
-        }
-
-        // Case `widget_owned_runner_rejects_outgoing_error_drained_before_final_flush`.
-        {
-            let flushes = Rc::new(Cell::new(0));
-            let probe = OwnerProbe {
-                label: "current owner",
-                flushes: Rc::clone(&flushes),
-                report: Some(crate::application::ComponentCloseReport {
-                    recovery: None,
-                    view_error: None,
-                    view_retry: None,
-                    record_error: Some("outgoing owner could not persist".into()),
-                    record_retry: None,
-                    record_retry_target: None,
-                    teardown_error: None,
-                }),
-            };
-            let inputs = crate::launch::LegacyLaunchInputs::new(
-                State::new(),
-                Box::new(probe),
-                crate::persist::DocWriter::disabled("fixture owns storage"),
-            )
-            .with_widget_owned_persistence();
-            assert_eq!(
-                crate::headless::run_initialized(&crate::headless::Spec::default(), inputs),
-                3
-            );
-            assert_eq!(flushes.get(), 1, "the current owner must still be flushed");
         }
     }
 }
@@ -3501,14 +3495,18 @@ pub(crate) mod ordinary_confirmation_tests {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut automerge::AutoCommit,
+            doc: &mut crate::widget::Edits<'_>,
             path: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
             let Some(request) = op
                 .unscoped()
                 .filter(|request| request.type_id == "fixture.control")
             else {
-                return self.child.start_operation(op, doc, path);
+                return self.child.start_operation(
+                    op,
+                    &mut crate::widget::Edits::lend(doc.document_mut()),
+                    path,
+                );
             };
             self.ledger
                 .borrow_mut()
@@ -3581,8 +3579,7 @@ pub(crate) mod ordinary_confirmation_tests {
         let ledger = Rc::new(RefCell::new(vec![]));
         let widget = Fixture {
             child: Box::new(
-                crate::widget::Button::new("ordinary-emitter", "Emit request", None)
-                    .on_action(binding),
+                crate::widget::Button::new("ordinary-emitter", "Emit request").on_action(binding),
             ),
             resources: resources.clone(),
             ledger: ledger.clone(),
@@ -3700,9 +3697,7 @@ pub(crate) mod ordinary_confirmation_tests {
             instance.mount(|_| {}).unwrap();
             let binding = instance.callback_binding();
             (
-                Box::new(crate::widget::BoundAppWidget {
-                    component: instance,
-                }),
+                Box::new(crate::widget::BoundAppWidget::new(instance)),
                 OwnerGuard::Component(binding, host),
             )
         } else {
@@ -3826,7 +3821,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.bindings.clear();
                     app.layout.node_map.clear();
                     app.focused_node = None;
-                    app.root_widget.sync(&mut app.state.doc, &app.state.root);
+                    app.root_widget.sync(&app.state.doc, &app.state.root);
                     layout(app)
                 }
                 Self::Driver(driver) => driver.relayout(),
@@ -4302,7 +4297,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     move |_, _| projection.get(),
                     move |changed| values[usize::from(*changed)].take().unwrap(),
                 );
-                model.sync(&mut automerge::AutoCommit::new(), &automerge::ROOT);
+                model.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
                 let mut host = Host::new(native, old_guard.managed(Box::new(model)));
                 host.activate("Emit request");
                 host.value("CONFIRM");
@@ -4701,11 +4696,131 @@ pub(crate) mod ordinary_confirmation_tests {
             assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
             host.activate("Emit request");
             assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+            if let Host::Native(app) = &host {
+                assert!(app.actions.ordinary_palette_return_focus.is_some());
+            }
             host.activate("Cancel");
             assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+            if let Host::Native(app) = &host {
+                assert!(app.actions.ordinary_palette_return_focus.is_none());
+            }
             assert!(ledger.borrow().is_empty());
         }
     }
+    #[test]
+    fn ordinary_confirmation_cancel_does_not_focus_a_removed_opener() {
+        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+        let mut host = Host::new(true, root);
+        host.act("Emit request", crate::a11y::Action::Focus);
+        assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+        host.activate("Emit request");
+        assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        assert!(
+            app.actions.ordinary_palette_return_focus.is_some(),
+            "the modal actually retained the opener identity before removal"
+        );
+        // Retire the old custody map before removing its retained owner.
+        app.bindings.clear();
+        app.layout.node_map.clear();
+        app.focused_node = None;
+        app.root_widget = Box::new(crate::widget::Button::new(
+            "replacement-control",
+            "Unrelated control",
+        ));
+        app.layout.structure_dirty = true;
+        layout(app);
+        host.activate("Cancel");
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        let published = app.build_a11y_tree_update(1.0);
+        assert!(
+            published
+                .nodes
+                .iter()
+                .any(|(_, node)| { node.label() == Some("Unrelated control") })
+        );
+        assert!(
+            published
+                .nodes
+                .iter()
+                .all(|(_, node)| { node.label() != Some("Emit request") })
+        );
+        assert!(
+            app.focused_node.is_none(),
+            "removed focus must not transfer"
+        );
+        assert!(
+            ledger.borrow().is_empty(),
+            "cancellation executes no action"
+        );
+    }
+
+    #[test]
+    fn native_control_coverage_admits_only_declared_app_and_host_actions() {
+        use tilo_actions::{ActionBinding, ActionSpec, OperationKind, Resource};
+        let (widget, _, _) = fixture_widget(tilo_actions::ConfirmationPolicy::None, source());
+        let missing_binding = |resource_id: &str| {
+            let resource = Resource::new(resource_id, "fixture.coverage", "Missing action")
+                .with_action(
+                    ActionSpec::operation(
+                        "nonexistent",
+                        "Missing action",
+                        OperationKind::View,
+                        "fixture.coverage",
+                        &(),
+                    )
+                    .unwrap(),
+                );
+            ActionBinding::unit_for(&resource, "nonexistent").unwrap()
+        };
+        let controls = crate::widget::Column::new()
+            .push(Box::new(widget))
+            .push(Box::new(
+                crate::widget::Button::new("coverage-search", "Search").on_action(
+                    crate::search::open_search_binding(&crate::search::SearchRequest::this_app()),
+                ),
+            ))
+            .push(Box::new(
+                crate::standalone_history_host::history_control_button(
+                    "coverage-history",
+                    crate::widget::window_header::HistoryControl::Closed,
+                ),
+            ))
+            .push(Box::new(
+                crate::widget::Button::new("coverage-missing-app", "Missing app action")
+                    .on_action(missing_binding("ordinary:fixture")),
+            ))
+            .push(Box::new(
+                crate::widget::Button::new("coverage-missing-host", "Missing host action")
+                    .on_action(missing_binding("tilo.host:search")),
+            ));
+        let mut app = App::from_managed_root_with_controlled_inputs(
+            State::new(),
+            managed(Box::new(controls)),
+        )
+        .unwrap();
+        layout(&mut app);
+        assert!(app.history.is_some(), "the real History owner is installed");
+        let coverage = app.control_action_coverage();
+        for (control, expected) in [
+            ("ordinary-emitter", ControlBindingStatus::Resolved),
+            ("coverage-search", ControlBindingStatus::Resolved),
+            ("coverage-history", ControlBindingStatus::Resolved),
+            ("coverage-missing-app", ControlBindingStatus::StaleAddress),
+            ("coverage-missing-host", ControlBindingStatus::StaleAddress),
+        ] {
+            let entry = coverage
+                .iter()
+                .find(|entry| entry.binding.control_id == control)
+                .unwrap_or_else(|| panic!("missing retained binding {control}"));
+            assert_eq!(entry.status, expected, "binding {control}");
+        }
+    }
+
     #[test]
     fn ordinary_confirmation_native_closed_or_replaced_outer_domain_refuses() {
         for replacement in [false, true] {

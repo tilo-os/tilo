@@ -195,7 +195,7 @@ notes_pid="$(awk 'NF == 2 && $1 ~ /^:/ && $2 ~ /^[0-9]+$/ { pid = $2 } END { pri
 # A note written on the joined device is durable, and Notes says so: the
 # keyboard types it, and the save state reads "Saved", never "Not saved".
 joined_sentence='Written on the joined device.'
-"$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/joined-notes' \
+"$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/joined-notes' \
   > "$out/notes-type.txt" 2>&1 || {
   cat "$out/notes-type.txt" >&2
   die "Notes on the joined device opened no note to type into"

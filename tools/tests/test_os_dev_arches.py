@@ -51,7 +51,7 @@ class OsDevArchesTests(unittest.TestCase):
         self.assertEqual(MODULE.arches("pull_request", paths=["os/etc/chrony.conf"]), ["x86_64"])
         self.assertEqual(MODULE.arches("pull_request", labels=["os-arm64"]), both)
         for path in ("os/kernel/config/aarch64", "os/hardware/profiles/lenovo-83ed.toml",
-                     "os/wpe-buildroot-snapshot.env", "os/dev/uki.sh",
+                     "os/kernel-buildroot-snapshot.env", "os/dev/uki.sh",
                      "os/external-assets/fex-source.env"):
             with self.subTest(path=path):
                 self.assertEqual(MODULE.arches("pull_request", paths=[path]), both)

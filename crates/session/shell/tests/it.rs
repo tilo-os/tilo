@@ -27,8 +27,6 @@ mod support;
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
 mod advertised_globals;
-#[path = "apps_integration.rs"]
-mod apps_integration;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
 #[path = "bluetooth_pairing.rs"]
@@ -131,6 +129,8 @@ mod input_method_wire;
 mod interaction_test;
 #[path = "keyboard_focus_wire.rs"]
 mod keyboard_focus_wire;
+#[path = "keyboard_layout_wire.rs"]
+mod keyboard_layout_wire;
 #[path = "leak_probe.rs"]
 mod leak_probe;
 #[path = "legacy_window_between_devices.rs"]
@@ -183,6 +183,8 @@ mod qs_actions_click_routing;
 mod real_apps_visual;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
+#[path = "remote_typing_wire.rs"]
+mod remote_typing_wire;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
 #[path = "runtime_daemon_process.rs"]
@@ -193,12 +195,16 @@ mod sandbox_check;
 mod server_side_decorations;
 #[path = "session_lock_e2e.rs"]
 mod session_lock_e2e;
+#[path = "session_lock_recovery.rs"]
+mod session_lock_recovery;
 #[path = "shell_chrome_test.rs"]
 mod shell_chrome_test;
 #[path = "shell_narration.rs"]
 mod shell_narration;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
+#[path = "shm_readback.rs"]
+mod shm_readback;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
 #[path = "speaker_calibration_fabric.rs"]
@@ -237,3 +243,6 @@ mod window_transfer_flow;
 mod workspace_settings_state_test;
 #[path = "xdg_activation.rs"]
 mod xdg_activation;
+
+#[path = "vulkan_present_damage.rs"]
+mod vulkan_present_damage;

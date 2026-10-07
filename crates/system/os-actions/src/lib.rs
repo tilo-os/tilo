@@ -64,7 +64,6 @@ pub mod privacy;
 mod process;
 pub mod session;
 pub mod time;
-pub mod tool_intent;
 pub mod users;
 
 pub use audio::{
@@ -139,9 +138,12 @@ pub use time::{
     TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
     set_timezone, valid_timezone,
 };
-pub use tool_intent::{
-    BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,
-    ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute, open_tool, tool_intent_from_env,
+// Typed tool requests are a sandbox service client, kept with the others in
+// runtime-portal; the shell and Settings name them through this crate.
+pub use runtime_portal::tools::{
+    BackupsRoute, ContainerEngine, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV,
+    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute,
+    open_tool, tool_intent_from_env,
 };
 pub use users::AccountRole;
 
@@ -162,6 +164,29 @@ pub(crate) fn block_on<T>(
     tilo_rt::try_app()
         .and_then(|runtime| runtime.block_on(call))
         .map_err(|error| error.to_string())?
+}
+
+/// A radio operation prepared on the owning session thread and executed by
+/// its worker. It carries no borrowed dispatcher or credential.
+pub type RadioWork = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RadioChange {
+    Wifi(bool),
+    Airplane(bool),
+}
+
+impl RadioChange {
+    /// Execute the exact typed operation using this dispatcher's authority.
+    ///
+    /// # Errors
+    /// Returns the dispatcher's original radio-operation refusal.
+    pub fn execute(self, dispatcher: &dyn Dispatcher) -> Result<(), String> {
+        match self {
+            Self::Wifi(enabled) => dispatcher.set_wifi(enabled),
+            Self::Airplane(enabled) => dispatcher.set_airplane_mode(enabled),
+        }
+    }
 }
 
 /// Side-effect interface for the OS actions. The default production impl
@@ -203,6 +228,13 @@ pub trait Dispatcher {
     /// Returns an error message if the network manager is unavailable or the underlying call
     /// fails.
     fn set_wifi(&self, enabled: bool) -> Result<(), String>;
+    /// Prepare an owned radio operation without starting it. Explicit legacy
+    /// dispatchers may return `None` and retain their synchronous contract;
+    /// the production dispatcher always provides worker-safe operations.
+    fn prepare_radio_change(&self, _change: RadioChange) -> Option<RadioWork> {
+        None
+    }
+
     /// Enable or disable the Bluetooth radio.
     ///
     /// # Errors
@@ -340,6 +372,10 @@ pub trait Dispatcher {
 pub struct RealDispatcher;
 
 impl Dispatcher for RealDispatcher {
+    fn prepare_radio_change(&self, change: RadioChange) -> Option<RadioWork> {
+        Some(Box::new(move || change.execute(&Self)))
+    }
+
     fn set_brightness(&self, pct: f32) -> Result<(), String> {
         display::set_brightness(pct)
     }

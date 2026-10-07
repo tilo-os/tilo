@@ -5,7 +5,7 @@
 //! an application could imitate.
 //!
 //! The decisions all live in [`crate::onboarding::Onboarding`]; this
-//! file is only the composition, built from shared `ui` widgets (`Card`,
+//! file is only the composition, built from shared `ui` widgets (`Section`,
 //! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
 //! system theme, focus order and accessibility like the rest of the desktop.
 //!
@@ -15,23 +15,25 @@
 //! allowed unit as Settings, and never blocks setup: the download continues in
 //! the background and the result arrives as a notification.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
 use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, Card, Checkbox, ChoiceCard, Column, FilePicker, FilePickerMode, IconWidget,
-    ProgressBar, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget,
+    Banner, Button, ButtonRole, Checkbox, Column, FilePicker, FilePickerMode, IconWidget, ListRow,
+    ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -290,7 +292,6 @@ pub const KEY_EXISTING: &str = "onboarding.existing";
 pub const KEY_CHOOSE_NEARBY: &str = "onboarding.existing.nearby";
 pub const KEY_CHOOSE_RESTORE: &str = "onboarding.existing.restore";
 pub const KEY_BACK: &str = "onboarding.back";
-pub const KEY_CONNECT_PATH: &str = "onboarding.connect.path";
 pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
 pub const KEY_IMPORT: &str = "onboarding.import";
 pub const KEY_CONNECT_NEARBY: &str = "onboarding.connect.nearby";
@@ -513,6 +514,10 @@ impl Invalidation {
         *self = Self::StructureAndFocus;
     }
 
+    fn structure_pending(self) -> bool {
+        matches!(self, Self::Structure | Self::StructureAndFocus)
+    }
+
     fn take_structure(&mut self) -> bool {
         let present = matches!(self, Self::Structure | Self::StructureAndFocus);
         if present {
@@ -535,6 +540,56 @@ impl Invalidation {
             };
         }
         present
+    }
+}
+
+/// Trusted setup owns these document gates; controls only queue the person's intent.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+enum AcknowledgementKind {
+    IdentityProtection,
+    SkipBackup,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AcknowledgementAction {
+    kind: AcknowledgementKind,
+    path: ObjId,
+    checked: bool,
+}
+
+impl tilo_actions::Action for AcknowledgementAction {
+    fn apply(&self, doc: &mut AutoCommit) -> Result<(), tilo_actions::ActionError> {
+        use automerge::transaction::Transactable as _;
+        let key = match self.kind {
+            AcknowledgementKind::IdentityProtection => KEY_UNDERSTOOD,
+            AcknowledgementKind::SkipBackup => KEY_BACKUP_SKIP_ACKNOWLEDGED,
+        };
+        doc.put(&self.path, key, self.checked)?;
+        Ok(())
+    }
+}
+
+/// The setup actions a person has taken (a button click or its keyboard
+/// shortcut) that `sync` has not handled yet. Buttons record into it from
+/// their click handler; the document never sees a click.
+#[derive(Clone, Default)]
+struct PressedActions(Rc<RefCell<HashSet<&'static str>>>);
+
+impl PressedActions {
+    /// Record `action` for the next `sync`.
+    fn press(&self, action: &'static str) {
+        self.0.borrow_mut().insert(action);
+    }
+
+    /// Whether `action` was taken since the last look, consuming it.
+    fn take(&self, action: &str) -> bool {
+        self.0.borrow_mut().remove(action)
+    }
+
+    /// A button whose click takes `action`.
+    fn button(&self, id: &str, label: &str, action: &'static str) -> Button {
+        let pressed = self.clone();
+        Button::new(id, label).on_click(move || pressed.press(action))
     }
 }
 
@@ -583,6 +638,11 @@ pub struct OnboardingView {
     tour_only: bool,
     /// Raised when the user has finished and the desktop may start.
     finished: bool,
+    /// Actions the person took since `sync` last looked: view state, never
+    /// written to the document.
+    pressed: PressedActions,
+    acknowledgements: Rc<RefCell<Vec<(AcknowledgementKind, bool)>>>,
+    acknowledgement_actions: ui::action_host::ActionHost,
     invalidation: Invalidation,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -593,17 +653,25 @@ pub struct OnboardingView {
     picker: Option<(PickerPurpose, FilePicker)>,
     connect_source_selected: bool,
     connect_passphrase: Arc<Mutex<String>>,
+    /// The backup file to restore from, as typed or chosen.
+    connect_path: ui::LocalState<String>,
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
     identity_dir: Option<PathBuf>,
     nearby: Option<crate::onboarding_nearby::NearbyPairing>,
     nearby_status: Option<String>,
+    /// Why the last pairing attempt ended without joining. The nearby
+    /// screen titles its error with this cause; `error` holds its message.
+    nearby_failure: Option<crate::onboarding_nearby::NearbyFailure>,
     /// The verification code both devices show while pairing waits for
     /// approval.
     nearby_code: Option<String>,
     /// Review renderer only: draw the nearby screen as if pairing were
     /// running, without starting the privileged helper.
     nearby_active_for_snapshot: bool,
+    /// The keys of the choice rows activated since the last sync. A row
+    /// reports its activation here; sync turns each into the same model key
+    /// a button would have set.
     nearby_status_path: Option<PathBuf>,
     codec_setup: Option<CodecSetup>,
     /// Whether this run offers the media codecs step: the pack is available
@@ -823,6 +891,9 @@ impl OnboardingView {
             tour_page: None,
             tour_only: false,
             finished: false,
+            pressed: PressedActions::default(),
+            acknowledgements: Rc::default(),
+            acknowledgement_actions: ui::action_host::ActionHost::new(),
             invalidation: Invalidation::Focus,
             composed: None,
             rect: Rect::ZERO,
@@ -833,11 +904,13 @@ impl OnboardingView {
             picker: None,
             connect_source_selected: false,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
+            connect_path: ui::LocalState::new(String::new()),
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
             nearby: None,
             nearby_status: None,
+            nearby_failure: None,
             nearby_code: None,
             nearby_active_for_snapshot: false,
             nearby_status_path: None,
@@ -851,6 +924,26 @@ impl OnboardingView {
             codec_watching: false,
             synced_at: Instant::now(),
         }
+    }
+
+    /// Take `action` as though its button had been clicked. Review renderers
+    /// and tests walk the ceremony this way; the next `sync` handles it.
+    pub fn press(&self, action: &'static str) {
+        self.pressed.press(action);
+    }
+
+    /// Takes a setup action as its button would, for tests that hand the view
+    /// to a host they then drive.
+    #[cfg(test)]
+    pub(crate) fn presser(&self) -> Box<dyn Fn(&'static str)> {
+        let pressed = self.pressed.clone();
+        Box::new(move |action| pressed.press(action))
+    }
+
+    /// The tour page on screen, counted from 1.
+    #[cfg(test)]
+    pub(crate) fn tour_step(&self) -> Option<u8> {
+        self.tour_page.map(TourPage::number)
     }
 
     /// Offer the media codecs step through `setup`, unless the owner already
@@ -1293,6 +1386,7 @@ impl OnboardingView {
         self.codec_page = false;
         self.codec_error = None;
         self.nearby_status = None;
+        self.nearby_failure = None;
         self.nearby_code = None;
         self.nearby_active_for_snapshot = false;
         let minted = MintedIdentity {
@@ -1542,7 +1636,7 @@ impl OnboardingView {
             // pages retain the viewport stop for Page/Home/End navigation.
             scroll = scroll.without_sequential_focus();
         }
-        let mut scroll = scroll.with_content_gutter(spacing.s3);
+        let mut scroll = scroll;
         if !backup_in_scroll {
             // This is first-run guidance, not an incidental list. Keep the
             // thumb visible whenever content overflows so compact and large
@@ -1608,23 +1702,24 @@ impl OnboardingView {
                 &t("onboarding-backup-confirmation"),
                 &t("onboarding-backup-confirmation-placeholder"),
             ));
-        let action = Button::new(
-            "onboarding.backup.button",
-            &if self.backup_was_verified {
-                t("onboarding-backup-save-another")
+        let action = self
+            .pressed
+            .button(
+                "onboarding.backup.button",
+                &if self.backup_was_verified {
+                    t("onboarding-backup-save-another")
+                } else {
+                    t("onboarding-backup-save")
+                },
+                KEY_BACKUP_BROWSE,
+            )
+            .role(if self.backup_was_verified {
+                // Continue remains the clear completion action after a verified
+                // backup; making another copy is an optional follow-up task.
+                ui::widget::ButtonRole::Secondary
             } else {
-                t("onboarding-backup-save")
-            },
-            Some(KEY_BACKUP_BROWSE),
-        )
-        .fit_content(40.0)
-        .with_style(if self.backup_was_verified {
-            // Continue remains the clear completion action after a verified
-            // backup; making another copy is an optional follow-up task.
-            ui::widget::ButtonStyle::Neutral
-        } else {
-            ui::widget::ButtonStyle::Primary
-        });
+                ui::widget::ButtonRole::Primary
+            });
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -1654,7 +1749,15 @@ impl OnboardingView {
                         KEY_BACKUP_SKIP_ACKNOWLEDGED,
                     )
                     .with_id("onboarding.backup.skip-acknowledged.row")
-                    .with_label(t("onboarding-backup-skip-acknowledgement")),
+                    .with_label(t("onboarding-backup-skip-acknowledgement"))
+                    .on_change({
+                        let pending = Rc::clone(&self.acknowledgements);
+                        move |checked| {
+                            pending
+                                .borrow_mut()
+                                .push((AcknowledgementKind::SkipBackup, checked));
+                        }
+                    }),
                 ))
                 .push(self.identity_actions()),
         )
@@ -1665,54 +1768,54 @@ impl OnboardingView {
         self.nearby.is_some() || self.nearby_active_for_snapshot
     }
 
-    /// The ways forward from a choice screen, one card per flow.
-    fn choice_cards(&self) -> Option<Vec<ChoiceCard>> {
+    /// The ways forward from a choice screen, one row per flow.
+    fn choices(&self) -> Option<[Choice; 2]> {
         match self.flow.screen() {
-            Screen::Intro => Some(vec![
-                ChoiceCard::new(
-                    "onboarding.existing.card",
-                    ui::icons::Icon::User,
-                    t("onboarding-choice-existing"),
-                    t("onboarding-choice-existing-detail"),
-                    Some(KEY_EXISTING),
-                ),
-                ChoiceCard::new(
-                    "onboarding.begin.card",
-                    ui::icons::Icon::Plus,
-                    t("onboarding-choice-create"),
-                    t("onboarding-choice-create-detail"),
-                    Some(KEY_BEGIN),
-                ),
+            Screen::Intro => Some([
+                Choice {
+                    id: "onboarding.existing.card",
+                    icon: ui::icons::Icon::User,
+                    title: "onboarding-choice-existing",
+                    detail: "onboarding-choice-existing-detail",
+                    key: KEY_EXISTING,
+                },
+                Choice {
+                    id: "onboarding.begin.card",
+                    icon: ui::icons::Icon::Plus,
+                    title: "onboarding-choice-create",
+                    detail: "onboarding-choice-create-detail",
+                    key: KEY_BEGIN,
+                },
             ]),
-            Screen::Existing => Some(vec![
-                ChoiceCard::new(
-                    "onboarding.existing.nearby.card",
-                    ui::icons::Icon::Monitor,
-                    t("onboarding-choice-nearby"),
-                    t("onboarding-choice-nearby-detail"),
-                    Some(KEY_CHOOSE_NEARBY),
-                ),
-                ChoiceCard::new(
-                    "onboarding.existing.restore.card",
-                    ui::icons::Icon::Archive,
-                    t("onboarding-choice-restore"),
-                    t("onboarding-choice-restore-detail"),
-                    Some(KEY_CHOOSE_RESTORE),
-                ),
+            Screen::Existing => Some([
+                Choice {
+                    id: "onboarding.existing.nearby.card",
+                    icon: ui::icons::Icon::Monitor,
+                    title: "onboarding-choice-nearby",
+                    detail: "onboarding-choice-nearby-detail",
+                    key: KEY_CHOOSE_NEARBY,
+                },
+                Choice {
+                    id: "onboarding.existing.restore.card",
+                    icon: ui::icons::Icon::Archive,
+                    title: "onboarding-choice-restore",
+                    detail: "onboarding-choice-restore-detail",
+                    key: KEY_CHOOSE_RESTORE,
+                },
             ]),
             _ => None,
         }
     }
 
-    /// The pinned footer of a choice screen: its cards stay in view at every
+    /// The pinned footer of a choice screen: its rows stay in view at every
     /// size, like the action row of the other screens. Intro has nothing to
     /// go back to; the use-existing choice keeps its Back (or keyring retry)
-    /// row below the cards.
+    /// row below the rows.
     fn choice_footer_height(&self, theme: &Theme) -> Option<f32> {
-        let cards = self.choice_cards()?;
+        let choices = self.choices()?;
+        let count = f32::from(u8::try_from(choices.len()).unwrap_or(u8::MAX));
+        let stack = count * choice_row_height(theme);
         let spacing = &theme.tokens.spacing;
-        let count = f32::from(u8::try_from(cards.len()).unwrap_or(u8::MAX));
-        let stack = count * ChoiceCard::height_for(theme) + (count - 1.0).max(0.0) * spacing.s3;
         Some(if self.flow.screen() == Screen::Intro {
             stack + spacing.s4
         } else {
@@ -1720,16 +1823,26 @@ impl OnboardingView {
         })
     }
 
-    fn choice_footer(&self, theme: &Theme, cards: Vec<ChoiceCard>) -> Box<dyn Widget> {
+    fn choice_footer(&self, theme: &Theme, choices: [Choice; 2]) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut stack = Column::new()
+        let rows = choices
+            .into_iter()
+            .map(|choice| {
+                let pressed = self.pressed.clone();
+                Box::new(
+                    ListRow::new(choice.id, t(choice.title))
+                        .icon(choice.icon)
+                        .secondary(t(choice.detail))
+                        .disclosure()
+                        .on_activate(move || pressed.press(choice.key)),
+                ) as Box<dyn Widget>
+            })
+            .collect();
+        let stack = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_horizontal_padding(spacing.s3, spacing.s3)
-            .with_gap(spacing.s3);
-        for card in cards {
-            stack = stack.push(Box::new(card));
-        }
+            .push(Box::new(Section::new(rows)));
         if self.flow.screen() == Screen::Intro {
             return Box::new(
                 Column::new()
@@ -1737,7 +1850,7 @@ impl OnboardingView {
                     .with_intrinsic_height()
                     .with_gap(0.0)
                     .push(Box::new(stack))
-                    // The intro's cards have no action row below them; keep
+                    // The intro's rows have no action row below them; keep
                     // the action row's visible inset from the panel edge.
                     .push(Box::new(Spacer::fixed(spacing.s4))),
             );
@@ -1753,14 +1866,22 @@ impl OnboardingView {
     }
 
     fn identity_footer(&self, theme: &Theme) -> Box<dyn Widget> {
-        if let Some(cards) = self.choice_cards() {
-            return self.choice_footer(theme, cards);
+        if let Some(choices) = self.choices() {
+            return self.choice_footer(theme, choices);
         }
         let acknowledgement = match self.flow.screen() {
             Screen::NoRecovery => Some(
                 Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
                     .with_id("onboarding.understood.row")
-                    .with_label(acknowledgement()),
+                    .with_label(acknowledgement())
+                    .on_change({
+                        let pending = Rc::clone(&self.acknowledgements);
+                        move |checked| {
+                            pending
+                                .borrow_mut()
+                                .push((AcknowledgementKind::IdentityProtection, checked));
+                        }
+                    }),
             ),
             _ => None,
         };
@@ -1792,129 +1913,120 @@ impl OnboardingView {
         match self.flow.screen() {
             Screen::Intro => footer_actions(Vec::new()),
             Screen::Existing if self.recovery_only => footer_actions(vec![Box::new(
-                Button::new(
-                    "onboarding.connect.retry.button",
-                    &t("onboarding-connect-retry-keyring"),
-                    Some(KEY_CONNECT_RETRY),
-                )
-                .fit_content(40.0)
-                .with_icon(ui::icons::Icon::Refresh),
+                self.pressed
+                    .button(
+                        "onboarding.connect.retry.button",
+                        &t("onboarding-connect-retry-keyring"),
+                        KEY_CONNECT_RETRY,
+                    )
+                    .with_icon(ui::icons::Icon::Refresh),
             )]),
-            Screen::Existing => footer_actions(vec![back_button()]),
+            Screen::Existing => footer_actions(vec![back_button(&self.pressed)]),
             Screen::Nearby => {
-                let mut actions = vec![back_button()];
+                let mut actions = vec![back_button(&self.pressed)];
                 if self.nearby_active() {
-                    actions.push(Box::new(
-                        Button::new(
-                            "onboarding.connect.cancel.button",
-                            &t("onboarding-cancel"),
-                            Some(KEY_CONNECT_CANCEL),
-                        )
-                        .fit_content(40.0),
-                    ));
+                    actions.push(Box::new(self.pressed.button(
+                        "onboarding.connect.cancel.button",
+                        &t("onboarding-cancel"),
+                        KEY_CONNECT_CANCEL,
+                    )));
                 } else {
                     actions.push(Box::new(
-                        Button::new(
-                            "onboarding.connect.nearby.button",
-                            &t("onboarding-nearby-try-again"),
-                            Some(KEY_CONNECT_NEARBY),
-                        )
-                        .fit_content(40.0)
-                        .with_icon(ui::icons::Icon::Refresh)
-                        .with_style(ui::widget::ButtonStyle::Primary),
+                        self.pressed
+                            .button(
+                                "onboarding.connect.nearby.button",
+                                &t("onboarding-nearby-try-again"),
+                                KEY_CONNECT_NEARBY,
+                            )
+                            .with_icon(ui::icons::Icon::Refresh)
+                            .role(ui::widget::ButtonRole::Primary),
                     ));
                 }
                 footer_actions(actions)
             }
             Screen::Restore => footer_actions(vec![
-                back_button(),
+                back_button(&self.pressed),
                 Box::new(
-                    Button::new(
-                        "onboarding.import.button",
-                        &t("onboarding-restore-backup"),
-                        Some(KEY_IMPORT),
-                    )
-                    .fit_content(40.0)
-                    .with_icon(ui::icons::Icon::ArrowRight)
-                    .with_style(ui::widget::ButtonStyle::Primary)
-                    .with_enabled(self.connect_source_selected),
+                    self.pressed
+                        .button(
+                            "onboarding.import.button",
+                            &t("onboarding-restore-backup"),
+                            KEY_IMPORT,
+                        )
+                        .with_icon(ui::icons::Icon::ArrowRight)
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(self.connect_source_selected),
                 ),
             ]),
             Screen::NoRecovery => footer_actions(vec![
-                back_button(),
+                back_button(&self.pressed),
                 Box::new(
-                    Button::new(
-                        "onboarding.create.button",
-                        &t("onboarding-create-local-identity"),
-                        Some(KEY_CREATE),
-                    )
-                    .fit_content(40.0)
-                    .with_icon(ui::icons::Icon::Shield)
-                    .with_style(ui::widget::ButtonStyle::Primary)
-                    .with_enabled(self.flow.can_create()),
+                    self.pressed
+                        .button(
+                            "onboarding.create.button",
+                            &t("onboarding-create-local-identity"),
+                            KEY_CREATE,
+                        )
+                        .with_icon(ui::icons::Icon::Shield)
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(self.flow.can_create()),
                 ),
             ]),
             Screen::Done if self.identity_ready_page && self.codec_page => self.codec_actions(),
-            Screen::Done if self.identity_ready_page => Self::finish_action(),
+            Screen::Done if self.identity_ready_page => self.finish_action(),
             Screen::Done if self.portable_backup_only => footer_actions(vec![
+                Box::new(self.pressed.button(
+                    "onboarding.backup.cancel.button",
+                    &t("onboarding-cancel"),
+                    KEY_FINISH,
+                )),
                 Box::new(
-                    Button::new(
-                        "onboarding.backup.cancel.button",
-                        &t("onboarding-cancel"),
-                        Some(KEY_FINISH),
-                    )
-                    .fit_content(40.0),
-                ),
-                Box::new(
-                    Button::new(
-                        "onboarding.backup.done.button",
-                        &t("onboarding-done"),
-                        Some(KEY_BACKUP_CONTINUE),
-                    )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary)
-                    .with_enabled(self.backup_was_verified),
+                    self.pressed
+                        .button(
+                            "onboarding.backup.done.button",
+                            &t("onboarding-done"),
+                            KEY_BACKUP_CONTINUE,
+                        )
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(self.backup_was_verified),
                 ),
             ]),
             Screen::Done if self.backup_was_verified && self.backup_copy_form_open => {
                 footer_actions(vec![Box::new(
-                    Button::new(
-                        "onboarding.backup.continue.button",
-                        &t("onboarding-continue"),
-                        Some(KEY_BACKUP_CONTINUE),
-                    )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    self.pressed
+                        .button(
+                            "onboarding.backup.continue.button",
+                            &t("onboarding-continue"),
+                            KEY_BACKUP_CONTINUE,
+                        )
+                        .role(ui::widget::ButtonRole::Primary),
                 )])
             }
             Screen::Done if self.backup_was_verified => footer_actions(vec![
+                Box::new(self.pressed.button(
+                    "onboarding.backup.another.button",
+                    &t("onboarding-backup-save-another"),
+                    KEY_BACKUP_ANOTHER,
+                )),
                 Box::new(
-                    Button::new(
-                        "onboarding.backup.another.button",
-                        &t("onboarding-backup-save-another"),
-                        Some(KEY_BACKUP_ANOTHER),
-                    )
-                    .fit_content(40.0),
-                ),
-                Box::new(
-                    Button::new(
-                        "onboarding.backup.continue.button",
-                        &t("onboarding-continue"),
-                        Some(KEY_BACKUP_CONTINUE),
-                    )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    self.pressed
+                        .button(
+                            "onboarding.backup.continue.button",
+                            &t("onboarding-continue"),
+                            KEY_BACKUP_CONTINUE,
+                        )
+                        .role(ui::widget::ButtonRole::Primary),
                 ),
             ]),
             Screen::Done => footer_actions(vec![Box::new(
-                Button::new(
-                    "onboarding.backup.continue.button",
-                    &t("onboarding-backup-continue-without"),
-                    Some(KEY_BACKUP_CONTINUE),
-                )
-                .fit_content(40.0)
-                .with_style(ui::widget::ButtonStyle::Neutral)
-                .with_enabled(self.backup_skip_acknowledged),
+                self.pressed
+                    .button(
+                        "onboarding.backup.continue.button",
+                        &t("onboarding-backup-continue-without"),
+                        KEY_BACKUP_CONTINUE,
+                    )
+                    .role(ui::widget::ButtonRole::Secondary)
+                    .with_enabled(self.backup_skip_acknowledged),
             )]),
         }
     }
@@ -1991,14 +2103,13 @@ impl OnboardingView {
                 .push(Box::new(
                     Scrollable::new_vertical()
                         .with_max_height(scroll_height)
-                        .with_content_gutter(theme.tokens.spacing.s3)
                         // Tour pages intentionally teach several concepts;
                         // expose overflow persistently instead of making a
                         // first-time user wait for a transient wheel hint.
                         .always_visible()
                         .with_child(Box::new(content)),
                 ))
-                .push(Self::tour_actions(page)),
+                .push(self.tour_actions(page)),
         )
     }
 
@@ -2053,9 +2164,9 @@ impl OnboardingView {
                         .push(Box::new(
                             Text::new(&number.to_string())
                                 .with_role(ui::tokens::typography::TextRole::Label)
-                                .with_weight(ui::text_render::TextWeight::Semibold)
-                                .with_numeric_style(ui::text_render::NumericStyle::TabularLining)
-                                .with_color(theme.accent_primary),
+                                .strong()
+                                .numeric()
+                                .with_color(theme.text_dim),
                         ))
                         .push(Box::new(
                             Column::new()
@@ -2087,50 +2198,40 @@ impl OnboardingView {
                             .push(Box::new(
                                 Text::new(&t(keys))
                                     .with_role(ui::tokens::typography::TextRole::Label)
-                                    .with_color(theme.accent_primary),
+                                    .with_color(theme.text_primary),
                             ))
                             .push(paragraph(&t(copy), theme)),
                     ),
                     None => paragraph(&t(copy), theme),
                 };
-                body = body.push(Box::new(Card::titled(t(card_title), content)));
+                body = body.push(Box::new(Section::titled(t(card_title), vec![content])));
             }
         }
         Box::new(body)
     }
 
     /// Sticky tour navigation, kept outside the scrollable lesson body.
-    fn tour_actions(page: TourPage) -> Box<dyn Widget> {
+    fn tour_actions(&self, page: TourPage) -> Box<dyn Widget> {
         let (primary_label, primary_key) = if page == TourPage::Start {
             (t("onboarding-tour-enter"), KEY_FINISH)
         } else {
             (t("onboarding-continue"), KEY_TOUR_NEXT)
         };
         footer_actions(vec![
+            Box::new(self.pressed.button(
+                "onboarding.tour.skip.button",
+                &t("onboarding-tour-skip"),
+                KEY_TOUR_SKIP,
+            )),
+            Box::new(self.pressed.button(
+                "onboarding.tour.back.button",
+                &t("onboarding-back"),
+                KEY_TOUR_BACK,
+            )),
             Box::new(
-                Button::new(
-                    "onboarding.tour.skip.button",
-                    &t("onboarding-tour-skip"),
-                    Some(KEY_TOUR_SKIP),
-                )
-                .fit_content(40.0),
-            ),
-            Box::new(
-                Button::new(
-                    "onboarding.tour.back.button",
-                    &t("onboarding-back"),
-                    Some(KEY_TOUR_BACK),
-                )
-                .fit_content(40.0),
-            ),
-            Box::new(
-                Button::new(
-                    "onboarding.tour.next.button",
-                    &primary_label,
-                    Some(primary_key),
-                )
-                .fit_content(40.0)
-                .with_style(ui::widget::ButtonStyle::Primary),
+                self.pressed
+                    .button("onboarding.tour.next.button", &primary_label, primary_key)
+                    .role(ui::widget::ButtonRole::Primary),
             ),
         ])
     }
@@ -2207,10 +2308,13 @@ impl OnboardingView {
             .push(heading(&t("onboarding-nearby-title"), theme))
             .push(paragraph(&t("onboarding-nearby-body"), theme));
         if let Some(error) = &self.error {
-            body = body.push(spaced_banner(
-                Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
-                theme,
-            ));
+            // The banner's title is what went wrong; a screen reader speaks
+            // it first, so it names the cause rather than only the outcome.
+            let banner = match &self.nearby_failure {
+                Some(failure) => Banner::error(failure.title()).with_message(failure.message()),
+                None => Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
+            };
+            body = body.push(spaced_banner(banner, theme));
         }
         let mut status = Column::new()
             .with_no_padding()
@@ -2227,7 +2331,7 @@ impl OnboardingView {
                     Text::new(&grouped_code(code))
                         .with_id("onboarding.nearby.code")
                         .with_role(ui::tokens::typography::TextRole::Display)
-                        .with_numeric_style(ui::text_render::NumericStyle::TabularLining),
+                        .numeric(),
                 ));
         }
         if let Some(message) = &self.nearby_status {
@@ -2244,7 +2348,7 @@ impl OnboardingView {
                     Row::new()
                         .no_wrap()
                         .with_gap(theme.tokens.spacing.s2)
-                        .push(Box::new(Spinner::with_size(20.0)))
+                        .push(Box::new(Spinner::with_size(theme.tokens.metrics.icon_md)))
                         .push(Box::new(text)),
                 ))
             } else {
@@ -2252,7 +2356,7 @@ impl OnboardingView {
             };
         }
         Box::new(
-            body.push(Box::new(Card::new(Box::new(steps))))
+            body.push(Box::new(Section::new(vec![Box::new(steps)])))
                 .push(Box::new(status)),
         )
     }
@@ -2261,19 +2365,16 @@ impl OnboardingView {
     fn restore(&self, theme: &Theme) -> Box<dyn Widget> {
         let compact = self.rect.height() <= 540.0;
         let spacing = &theme.tokens.spacing;
-        let path = TextInput::new(Vec::new())
+        let path = TextInput::from_state(&self.connect_path)
             .with_id("onboarding.connect.path.field")
-            .with_on_change_path(KEY_CONNECT_PATH)
             .with_accessible_name(t("onboarding-connect-file"))
-            .with_placeholder(&t("onboarding-connect-file-placeholder"))
-            .with_font_size(theme.tokens.typography.scale.base);
+            .with_placeholder(&t("onboarding-connect-file-placeholder"));
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
             &t("onboarding-connect-passphrase"),
             &t("onboarding-connect-passphrase-placeholder"),
-        )
-        .with_font_size(theme.tokens.typography.scale.base);
+        );
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -2296,13 +2397,13 @@ impl OnboardingView {
             ))
             .push(Box::new(
                 Row::new().no_wrap().push(Box::new(path)).push(Box::new(
-                    Button::new(
-                        "onboarding.connect.browse.button",
-                        &t("onboarding-connect-browse"),
-                        Some(KEY_CONNECT_BROWSE),
-                    )
-                    .fit_content(40.0)
-                    .with_icon(ui::icons::Icon::FolderOpen),
+                    self.pressed
+                        .button(
+                            "onboarding.connect.browse.button",
+                            &t("onboarding-connect-browse"),
+                            KEY_CONNECT_BROWSE,
+                        )
+                        .with_icon(ui::icons::Icon::FolderOpen),
                 )),
             ));
         let secret = Column::new()
@@ -2375,7 +2476,7 @@ impl OnboardingView {
                         theme,
                     ))
                     .push(paragraph(&t("onboarding-create-failed-message"), theme))
-                    .push(actions(vec![back_button()])),
+                    .push(actions(vec![back_button(&self.pressed)])),
             );
         }
         let compact = self.rect.height() <= 540.0;
@@ -2448,17 +2549,17 @@ impl OnboardingView {
                 theme,
             ))
             .push(paragraph(&body, theme))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-done-next-title"),
-                paragraph(&t("onboarding-done-next-body"), theme),
+                vec![paragraph(&t("onboarding-done-next-body"), theme)],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 if self.backup_was_verified {
                     t("onboarding-done-backup-verified")
                 } else {
                     t("onboarding-done-backup-recommended")
                 },
-                paragraph_with_id(
+                vec![paragraph_with_id(
                     &if self.backup_was_verified {
                         t("onboarding-done-backup-verified-body")
                     } else {
@@ -2466,13 +2567,13 @@ impl OnboardingView {
                     },
                     theme,
                     "onboarding.done.backup-guidance",
-                ),
+                )],
             )));
 
         if self.context == OnboardingContext::FullSystem {
-            page = page.push(Box::new(Card::titled(
+            page = page.push(Box::new(Section::titled(
                 t("onboarding-done-system-care-title"),
-                paragraph(&t("onboarding-done-system-care-body"), theme),
+                vec![paragraph(&t("onboarding-done-system-care-body"), theme)],
             )));
         }
         Box::new(page)
@@ -2524,13 +2625,17 @@ impl OnboardingView {
                 theme,
                 "onboarding.codecs.body",
             ))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-enables-title"),
-                enables,
+                vec![enables],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-source-title"),
-                paragraph_with_id(&codecs_source(), theme, "onboarding.codecs.source"),
+                vec![paragraph_with_id(
+                    &codecs_source(),
+                    theme,
+                    "onboarding.codecs.source",
+                )],
             )));
         Box::new(page)
     }
@@ -2540,11 +2645,11 @@ impl OnboardingView {
             self.codec_page_buttons()
                 .into_iter()
                 .map(|(id, label, key, primary)| {
-                    let button = Button::new(id, &label, Some(key)).fit_content(40.0);
+                    let button = self.pressed.button(id, &label, key);
                     let button = if primary {
                         button
                             .with_icon(ui::icons::Icon::ArrowRight)
-                            .with_style(ui::widget::ButtonStyle::Primary)
+                            .role(ButtonRole::Primary)
                     } else {
                         button
                     };
@@ -2556,30 +2661,31 @@ impl OnboardingView {
 
     /// Sticky final action, deliberately outside the Done screen's scrollable
     /// backup content so it remains visible at narrow and large-text sizes.
-    fn finish_action() -> Box<dyn Widget> {
+    fn finish_action(&self) -> Box<dyn Widget> {
         // Continuing to the desktop is the primary hand-off. The optional
         // tour remains explicit rather than making “Skip” the first desktop
         // action a new user has to decipher.
-        let tour = Button::new(
+        let tour = self.pressed.button(
             "onboarding.tour.start.button",
             &t("onboarding-tour-take"),
-            Some(KEY_TOUR_START),
-        )
-        .fit_content(40.0);
-        let enter = Button::new(
-            "onboarding.finish.button",
-            &t("onboarding-finish"),
-            Some(KEY_FINISH),
-        )
-        .fit_content(40.0)
-        .with_icon(ui::icons::Icon::ArrowRight)
-        .with_style(ui::widget::ButtonStyle::Primary);
+            KEY_TOUR_START,
+        );
+        let enter = self
+            .pressed
+            .button(
+                "onboarding.finish.button",
+                &t("onboarding-finish"),
+                KEY_FINISH,
+            )
+            .with_icon(ui::icons::Icon::ArrowRight)
+            .role(ui::widget::ButtonRole::Primary);
         footer_actions(vec![Box::new(tour), Box::new(enter)])
     }
 }
 
+/// The title at the top of an onboarding page.
 fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::Display))
+    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::LargeTitle))
 }
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded
@@ -2627,7 +2733,7 @@ fn fact_list(
                 .no_wrap()
                 .align_start()
                 .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(IconWidget::new(icon, 20.0).accent()))
+                .push(Box::new(IconWidget::new(icon).dim()))
                 .push(Box::new(
                     Text::new(&text).with_role(ui::tokens::typography::TextRole::Body),
                 )),
@@ -2636,7 +2742,7 @@ fn fact_list(
     Box::new(list)
 }
 
-/// One step of a real sequence: its number in a quiet accent, then the
+/// One step of a real sequence: its number in quiet ink, then the
 /// instruction.
 fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
     Box::new(
@@ -2647,9 +2753,9 @@ fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
             .push(Box::new(
                 Text::new(&number.to_string())
                     .with_role(ui::tokens::typography::TextRole::Body)
-                    .with_weight(ui::text_render::TextWeight::Semibold)
-                    .with_numeric_style(ui::text_render::NumericStyle::TabularLining)
-                    .with_color(theme.accent_primary),
+                    .strong()
+                    .numeric()
+                    .with_color(theme.text_dim),
             ))
             .push(Box::new(
                 Text::new(text).with_role(ui::tokens::typography::TextRole::Body),
@@ -2673,15 +2779,11 @@ fn grouped_code(code: &str) -> String {
     }
 }
 
-fn back_button() -> Box<dyn Widget> {
+fn back_button(pressed: &PressedActions) -> Box<dyn Widget> {
     Box::new(
-        Button::new(
-            "onboarding.back.button",
-            &t("onboarding-back"),
-            Some(KEY_BACK),
-        )
-        .fit_content(40.0)
-        .with_icon(ui::icons::Icon::ArrowLeft),
+        pressed
+            .button("onboarding.back.button", &t("onboarding-back"), KEY_BACK)
+            .with_icon(ui::icons::Icon::ArrowLeft),
     )
 }
 
@@ -2711,16 +2813,6 @@ fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
         state.get(root, key),
         Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), ScalarValue::Boolean(true))
     )
-}
-
-fn read_string(state: &AutoCommit, root: &ObjId, key: &str) -> String {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-            ScalarValue::Str(text) => text.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
 }
 
 fn secret_input(
@@ -2797,14 +2889,20 @@ impl OnboardingView {
             // competes with the tour's own keyboard focus.
             return;
         }
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
         if theme.name.eq_ignore_ascii_case("high contrast") {
             return;
         }
 
         // Quiet, theme-derived depth: two broad accent blooms make the
         // trusted setup surface distinct without becoming illustration.
-        let bloom = colors.accent[5].with_alpha_factor(0.10);
+        let bloom = colors.text_primary.with_alpha_factor(0.10);
         let radius = self.rect.width().max(self.rect.height()) * 0.34;
         scene.fill(
             Fill::NonZero,
@@ -2816,7 +2914,7 @@ impl OnboardingView {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[3].with_alpha_factor(0.07),
+            colors.intent.you.with_alpha_factor(0.07),
             None,
             &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
         );
@@ -2943,12 +3041,33 @@ impl Drop for OnboardingView {
 }
 
 impl Widget for OnboardingView {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+        for (kind, checked) in self.acknowledgements.take() {
+            let action = AcknowledgementAction {
+                kind,
+                path: path.clone(),
+                checked,
+            };
+            if let Err(error) = edits.apply(
+                &mut self.acknowledgement_actions,
+                "tilo.shell.onboarding.acknowledgement",
+                &action,
+                tilo_actions::ActionContext::default(),
+            ) {
+                tracing::warn!(%error, "onboarding acknowledgement refused");
+            }
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one ordered reducer owns all modal OOBE actions and secret cleanup transitions"
     )]
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document_ref(state, root);
         let before = self.flow.screen();
         let tour_before = self.tour_page;
         let ready_before = self.identity_ready_page;
@@ -2961,7 +3080,7 @@ impl Widget for OnboardingView {
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
-        let connect_source_selected = !read_string(state, root, KEY_CONNECT_PATH).trim().is_empty();
+        let connect_source_selected = !self.connect_path.with(|path| path.trim().is_empty());
         if connect_source_selected != self.connect_source_selected {
             self.connect_source_selected = connect_source_selected;
             self.invalidation.structure();
@@ -2977,11 +3096,7 @@ impl Widget for OnboardingView {
             {
                 match purpose {
                     PickerPurpose::ImportIdentity => {
-                        let _ = state.put(
-                            root,
-                            KEY_CONNECT_PATH,
-                            ScalarValue::Str(path.to_string_lossy().into_owned().into()),
-                        );
+                        self.connect_path.set(path.to_string_lossy().into_owned());
                         self.connect_source_selected = true;
                         self.error = None;
                     }
@@ -3018,18 +3133,15 @@ impl Widget for OnboardingView {
             self.invalidation.both();
         }
 
-        if read_bool(state, root, KEY_BEGIN) {
-            let _ = state.put(root, KEY_BEGIN, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_BEGIN) {
             self.flow.begin();
         }
 
-        if read_bool(state, root, KEY_EXISTING) {
-            let _ = state.put(root, KEY_EXISTING, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_EXISTING) {
             self.flow.begin_existing();
         }
 
-        if read_bool(state, root, KEY_CHOOSE_RESTORE) {
-            let _ = state.put(root, KEY_CHOOSE_RESTORE, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_CHOOSE_RESTORE) {
             self.error = None;
             self.flow.choose_restore();
         }
@@ -3037,38 +3149,36 @@ impl Widget for OnboardingView {
         // Choosing the nearby flow is the explicit request to pair, so the
         // screen opens with pairing already under way.
         let mut start_nearby = false;
-        if read_bool(state, root, KEY_CHOOSE_NEARBY) {
-            let _ = state.put(root, KEY_CHOOSE_NEARBY, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Existing {
-                self.error = None;
-                self.nearby_status = None;
-                self.nearby_code = None;
-                self.flow.choose_nearby();
-                start_nearby = true;
-            }
+        if self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing {
+            self.error = None;
+            self.nearby_failure = None;
+            self.nearby_status = None;
+            self.nearby_code = None;
+            self.flow.choose_nearby();
+            start_nearby = true;
         }
 
-        if read_bool(state, root, KEY_CONNECT_BROWSE) {
-            let _ = state.put(root, KEY_CONNECT_BROWSE, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Restore && self.picker.is_none() {
-                let (initial, roots) = onboarding_picker_scope();
-                self.picker = Some((
-                    PickerPurpose::ImportIdentity,
-                    FilePicker::new(t("onboarding-picker-import-title"), initial, roots)
-                        .with_filters(vec![
-                            ui::widget::file_picker::FileFilter::new(
-                                t("onboarding-picker-import-filter"),
-                                &["tilo-identity", "tilo-identity-backup", "json"],
-                            ),
-                            ui::widget::file_picker::FileFilter::all(),
-                        ]),
-                ));
-                self.invalidation.focus();
-            }
+        if self.pressed.take(KEY_CONNECT_BROWSE)
+            && self.flow.screen() == Screen::Restore
+            && self.picker.is_none()
+        {
+            let (initial, roots) = onboarding_picker_scope();
+            self.picker = Some((
+                PickerPurpose::ImportIdentity,
+                FilePicker::new(t("onboarding-picker-import-title"), initial, roots).with_filters(
+                    vec![
+                        ui::widget::file_picker::FileFilter::new(
+                            t("onboarding-picker-import-filter"),
+                            &["tilo-identity", "tilo-identity-backup", "json"],
+                        ),
+                        ui::widget::file_picker::FileFilter::all(),
+                    ],
+                ),
+            ));
+            self.invalidation.focus();
         }
 
-        if read_bool(state, root, KEY_CONNECT_NEARBY) {
-            let _ = state.put(root, KEY_CONNECT_NEARBY, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_CONNECT_NEARBY) {
             start_nearby = true;
         }
         if start_nearby
@@ -3076,38 +3186,38 @@ impl Widget for OnboardingView {
             && self.nearby.is_none()
             && self.persist_progress(PersistedStage::AcquiringIdentity)
         {
-            match (&self.identity_dir, &self.nearby_status_path) {
-                (Some(identity_dir), Some(status_path)) => {
-                    let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
-                    let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
-                        .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
-                    match crate::onboarding_nearby::NearbyPairing::start(
-                        &identity_root,
-                        identity_dir,
-                        status_path,
-                        &label,
-                    ) {
-                        Ok(pairing) => {
-                            self.nearby = Some(pairing);
-                            self.nearby_status = Some(t("onboarding-nearby-waiting"));
-                            self.nearby_code = None;
-                            self.error = None;
-                        }
-                        Err(error) => {
-                            self.error = Some(t_args(
-                                "onboarding-nearby-start-failed",
-                                &[("error", error.into())],
-                            ));
-                        }
+            if let (Some(identity_dir), Some(status_path)) =
+                (&self.identity_dir, &self.nearby_status_path)
+            {
+                let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
+                let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
+                    .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
+                match crate::onboarding_nearby::NearbyPairing::start(
+                    &identity_root,
+                    identity_dir,
+                    status_path,
+                    &label,
+                ) {
+                    Ok(pairing) => {
+                        self.nearby = Some(pairing);
+                        self.nearby_status = Some(t("onboarding-nearby-waiting"));
+                        self.nearby_code = None;
+                        self.error = None;
+                        self.nearby_failure = None;
+                    }
+                    Err(failure) => {
+                        self.error = Some(failure.message());
+                        self.nearby_failure = Some(failure);
                     }
                 }
-                _ => self.error = Some(t("onboarding-nearby-unavailable")),
+            } else {
+                self.error = Some(t("onboarding-nearby-unavailable"));
+                self.nearby_failure = None;
             }
             self.invalidation.structure();
         }
 
-        if read_bool(state, root, KEY_CONNECT_CANCEL) {
-            let _ = state.put(root, KEY_CONNECT_CANCEL, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_CONNECT_CANCEL) {
             self.nearby = None;
             if let Some(path) = &self.nearby_status_path {
                 let _ = std::fs::remove_file(path);
@@ -3138,68 +3248,64 @@ impl Widget for OnboardingView {
                 self.nearby_status = Some(t("onboarding-nearby-connected"));
                 self.invalidation.structure();
             }
-            Some(crate::onboarding_nearby::NearbyEvent::Failed(message)) => {
+            Some(crate::onboarding_nearby::NearbyEvent::Failed(failure)) => {
                 self.nearby = None;
                 self.nearby_code = None;
                 self.nearby_status = None;
-                self.error = Some(message);
+                self.error = Some(failure.message());
+                self.nearby_failure = Some(failure);
                 self.invalidation.structure();
             }
         }
 
-        if read_bool(state, root, KEY_BACKUP_ANOTHER) {
-            let _ = state.put(root, KEY_BACKUP_ANOTHER, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Done
-                && !self.identity_ready_page
-                && !self.portable_backup_only
-                && self.backup_was_verified
-            {
-                self.backup_copy_form_open = true;
-                self.backup_error = None;
-                self.invalidation.both();
-            }
+        if self.pressed.take(KEY_BACKUP_ANOTHER)
+            && self.flow.screen() == Screen::Done
+            && !self.identity_ready_page
+            && !self.portable_backup_only
+            && self.backup_was_verified
+        {
+            self.backup_copy_form_open = true;
+            self.backup_error = None;
+            self.invalidation.both();
         }
 
-        if read_bool(state, root, KEY_BACKUP_BROWSE) {
-            let _ = state.put(root, KEY_BACKUP_BROWSE, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Done
-                && !self.identity_ready_page
-                && self.picker.is_none()
-            {
-                self.backup_error = match (
-                    self.backup_passphrase.lock(),
-                    self.backup_confirmation.lock(),
-                ) {
-                    (Ok(passphrase), Ok(_)) if passphrase.chars().count() < 12 => {
-                        Some(t("onboarding-passphrase-too-short"))
-                    }
-                    (Ok(passphrase), Ok(confirmation)) if *passphrase != *confirmation => {
-                        Some(t("onboarding-passphrase-mismatch"))
-                    }
-                    (Ok(_), Ok(_)) => None,
-                    _ => Some(t("onboarding-passphrase-unavailable")),
-                };
-                if self.backup_error.is_none() {
-                    let (initial, roots) = onboarding_picker_scope();
-                    self.picker = Some((
-                        PickerPurpose::BackupIdentity,
-                        FilePicker::new(t("onboarding-picker-backup-title"), initial, roots)
-                            .with_mode(FilePickerMode::Save)
-                            .with_filters(vec![ui::widget::file_picker::FileFilter::new(
-                                t("onboarding-picker-backup-filter"),
-                                &["tilo-identity"],
-                            )])
-                            .with_filename("tilo-identity-backup.tilo-identity"),
-                    ));
-                    self.invalidation.focus();
-                } else {
-                    self.invalidation.structure();
+        if self.pressed.take(KEY_BACKUP_BROWSE)
+            && self.flow.screen() == Screen::Done
+            && !self.identity_ready_page
+            && self.picker.is_none()
+        {
+            self.backup_error = match (
+                self.backup_passphrase.lock(),
+                self.backup_confirmation.lock(),
+            ) {
+                (Ok(passphrase), Ok(_)) if passphrase.chars().count() < 12 => {
+                    Some(t("onboarding-passphrase-too-short"))
                 }
+                (Ok(passphrase), Ok(confirmation)) if *passphrase != *confirmation => {
+                    Some(t("onboarding-passphrase-mismatch"))
+                }
+                (Ok(_), Ok(_)) => None,
+                _ => Some(t("onboarding-passphrase-unavailable")),
+            };
+            if self.backup_error.is_none() {
+                let (initial, roots) = onboarding_picker_scope();
+                self.picker = Some((
+                    PickerPurpose::BackupIdentity,
+                    FilePicker::new(t("onboarding-picker-backup-title"), initial, roots)
+                        .with_mode(FilePickerMode::Save)
+                        .with_filters(vec![ui::widget::file_picker::FileFilter::new(
+                            t("onboarding-picker-backup-filter"),
+                            &["tilo-identity"],
+                        )])
+                        .with_filename("tilo-identity-backup.tilo-identity"),
+                ));
+                self.invalidation.focus();
+            } else {
+                self.invalidation.structure();
             }
         }
 
-        if read_bool(state, root, KEY_BACKUP_CONTINUE) {
-            let _ = state.put(root, KEY_BACKUP_CONTINUE, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_BACKUP_CONTINUE) {
             if self.portable_backup_only
                 && self.flow.is_done()
                 && self.backup_was_verified
@@ -3231,25 +3337,21 @@ impl Widget for OnboardingView {
             }
         }
 
-        if read_bool(state, root, KEY_CODECS_INSTALL) {
-            let _ = state.put(root, KEY_CODECS_INSTALL, ScalarValue::Boolean(false));
-            if self.codec_page {
-                self.start_codec_install();
-            }
+        if self.pressed.take(KEY_CODECS_INSTALL) && self.codec_page {
+            self.start_codec_install();
         }
 
         for key in [KEY_CODECS_SKIP, KEY_CODECS_CONTINUE] {
-            if read_bool(state, root, key) {
-                let _ = state.put(root, key, ScalarValue::Boolean(false));
+            if self.pressed.take(key) {
                 self.codec_page = false;
             }
         }
 
-        if read_bool(state, root, KEY_BACK) {
-            let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_BACK) {
             self.error = None;
             clear_secret(&self.connect_passphrase);
             self.nearby = None;
+            self.nearby_failure = None;
             self.nearby_status = None;
             self.nearby_code = None;
             if !(self.recovery_only && self.flow.screen() == Screen::Existing) {
@@ -3257,9 +3359,8 @@ impl Widget for OnboardingView {
             }
         }
 
-        if read_bool(state, root, KEY_IMPORT) {
-            let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
-            let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
+        if self.pressed.take(KEY_IMPORT) {
+            let source = PathBuf::from(self.connect_path.get());
             if self.flow.screen() == Screen::Restore && source.as_os_str().is_empty() {
                 self.error = Some(t("onboarding-connect-choose-file-first"));
                 self.invalidation.structure();
@@ -3294,26 +3395,24 @@ impl Widget for OnboardingView {
         // presented trusted chrome (for example after the host keyring's
         // unlock prompt completes). Retry the existing record in place; the
         // minter is idempotent and cannot overwrite metadata.
-        if read_bool(state, root, KEY_CONNECT_RETRY) {
-            let _ = state.put(root, KEY_CONNECT_RETRY, ScalarValue::Boolean(false));
-            if self.recovery_only
-                && self.flow.screen() == Screen::Existing
-                && self.persist_progress(PersistedStage::AcquiringIdentity)
-            {
-                match (self.minter)() {
-                    Ok(identity) => {
-                        self.error = None;
-                        self.flow.complete_connected(identity);
-                        let _ = self.persist_progress(PersistedStage::IdentityReady);
-                        self.invalidation.both();
-                    }
-                    Err(error) => {
-                        self.error = Some(t_args(
-                            "onboarding-keyring-unavailable",
-                            &[("error", error.into())],
-                        ));
-                        self.invalidation.structure();
-                    }
+        if self.pressed.take(KEY_CONNECT_RETRY)
+            && self.recovery_only
+            && self.flow.screen() == Screen::Existing
+            && self.persist_progress(PersistedStage::AcquiringIdentity)
+        {
+            match (self.minter)() {
+                Ok(identity) => {
+                    self.error = None;
+                    self.flow.complete_connected(identity);
+                    let _ = self.persist_progress(PersistedStage::IdentityReady);
+                    self.invalidation.both();
+                }
+                Err(error) => {
+                    self.error = Some(t_args(
+                        "onboarding-keyring-unavailable",
+                        &[("error", error.into())],
+                    ));
+                    self.invalidation.structure();
                 }
             }
         }
@@ -3331,8 +3430,7 @@ impl Widget for OnboardingView {
             self.invalidation.structure();
         }
 
-        if read_bool(state, root, KEY_CREATE) {
-            let _ = state.put(root, KEY_CREATE, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_CREATE) {
             // `can_create` is checked inside `complete` too — this is the outer guard, that one is the invariant.
             if self.flow.can_create() && self.persist_progress(PersistedStage::AcquiringIdentity) {
                 self.error = None;
@@ -3353,19 +3451,16 @@ impl Widget for OnboardingView {
             }
         }
 
-        if read_bool(state, root, KEY_TOUR_START) {
-            let _ = state.put(root, KEY_TOUR_START, ScalarValue::Boolean(false));
-            if self.flow.is_done()
-                && self.identity_ready_page
-                && !self.codec_page
-                && self.persist_progress(PersistedStage::TourNavigate)
-            {
-                self.tour_page = Some(TourPage::Navigate);
-            }
+        if self.pressed.take(KEY_TOUR_START)
+            && self.flow.is_done()
+            && self.identity_ready_page
+            && !self.codec_page
+            && self.persist_progress(PersistedStage::TourNavigate)
+        {
+            self.tour_page = Some(TourPage::Navigate);
         }
 
-        if read_bool(state, root, KEY_TOUR_BACK) {
-            let _ = state.put(root, KEY_TOUR_BACK, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_TOUR_BACK) {
             let next = match self.tour_page {
                 Some(TourPage::Navigate) if self.tour_only => {
                     self.finished = true;
@@ -3394,8 +3489,7 @@ impl Widget for OnboardingView {
             }
         }
 
-        if read_bool(state, root, KEY_TOUR_NEXT) {
-            let _ = state.put(root, KEY_TOUR_NEXT, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_TOUR_NEXT) {
             let next = match self.tour_page {
                 Some(TourPage::Navigate) => Some(TourPage::Organise),
                 Some(TourPage::Organise) => Some(TourPage::Collaborate),
@@ -3416,8 +3510,7 @@ impl Widget for OnboardingView {
             }
         }
 
-        if read_bool(state, root, KEY_TOUR_SKIP) {
-            let _ = state.put(root, KEY_TOUR_SKIP, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_TOUR_SKIP) {
             // This action exists only while a tour page is visible. During
             // first use, clearing the crash journal is the durable record that
             // the person deliberately skipped; a reopened tour has no setup
@@ -3431,8 +3524,7 @@ impl Widget for OnboardingView {
             }
         }
 
-        if read_bool(state, root, KEY_FINISH) {
-            let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
+        if self.pressed.take(KEY_FINISH) {
             let at_tour_end = self.tour_page == Some(TourPage::Start);
             let skipping_tour = self.tour_page.is_none()
                 && self.flow.is_done()
@@ -3634,9 +3726,7 @@ impl Widget for OnboardingView {
                         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            let _ = ctx
-                .state
-                .put(ctx.path, KEY_TOUR_SKIP, ScalarValue::Boolean(true));
+            self.pressed.press(KEY_TOUR_SKIP);
             *ctx.handled = true;
             return;
         }
@@ -3656,9 +3746,7 @@ impl Widget for OnboardingView {
                         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            let _ = ctx
-                .state
-                .put(ctx.path, KEY_BACK, ScalarValue::Boolean(true));
+            self.pressed.press(KEY_BACK);
             *ctx.handled = true;
             return;
         }
@@ -3702,6 +3790,15 @@ impl Widget for OnboardingView {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // Background work (nearby pairing, the codecs worker) changes the
+        // page from `sync` with no input behind it. The compositor presents
+        // only what `update` reports, so a page that is not yet laid out is
+        // a change: otherwise a pairing that fails on the same screen stays
+        // on its code until something unrelated repaints.
+        self.invalidation.structure_pending()
     }
 
     fn take_focus_reset(&mut self) -> bool {
@@ -3830,9 +3927,32 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
     Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
+fn choice_row_height(theme: &Theme) -> f32 {
+    let spacing = &theme.tokens.spacing;
+    let text = theme
+        .text(ui::tokens::typography::TextRole::Body)
+        .line_height_px()
+        + theme
+            .text(ui::tokens::typography::TextRole::Caption)
+            .line_height_px();
+    (text + 2.0 * spacing.s2)
+        .max(theme.tokens.metrics.min_pointer_target + spacing.s2)
+        .ceil()
+}
+
+struct Choice {
+    id: &'static str,
+    icon: ui::icons::Icon,
+    title: &'static str,
+    detail: &'static str,
+    /// The model key the row sets, read by sync like a button's.
+    key: &'static str,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::transaction::Transactable as _;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
     use std::sync::Arc;
@@ -3891,6 +4011,109 @@ mod tests {
         }
     }
 
+    #[test]
+    fn nearby_pairing_news_asks_the_compositor_to_present() {
+        // The helper reports through its status file with no input behind
+        // it. The compositor paints only what `update` reports, so every
+        // change the poll makes must be reported there, or a failure on the
+        // same screen stays hidden behind the code.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity_dir = dir.path().join("identity");
+        std::fs::create_dir(&identity_dir).expect("identity dir");
+        let status = identity_dir.join(".nearby-enrollment-status.json");
+        let report_code = dir.path().join("report-code");
+        let report_failure = dir.path().join("report-failure");
+        let mut helper = Command::new("sh");
+        helper
+            .args([
+                "-c",
+                r#"while [ ! -e "$2" ]; do sleep 0.02; done
+                   printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"
+                   while [ ! -e "$3" ]; do sleep 0.02; done
+                   printf '%s' '{"state":"failed","error":"Permission denied (os error 13)"}' > "$1"
+                   exit 1"#,
+                "helper",
+            ])
+            .arg(&status)
+            .arg(&report_code)
+            .arg(&report_failure);
+        let (mut view, _) = view();
+        view.flow.begin_existing();
+        view.flow.choose_nearby();
+        assert_eq!(view.flow.screen(), Screen::Nearby);
+        view.nearby = Some(
+            crate::onboarding_nearby::NearbyPairing::spawn(
+                helper,
+                &identity_dir,
+                &status,
+                Duration::from_secs(600),
+            )
+            .expect("spawn helper"),
+        );
+        view.nearby_status_path = Some(status);
+        let doc = AutoCommit::new();
+        // The page as it was laid out when pairing started.
+        view.sync(&doc, &automerge::ROOT);
+        let _ = view.take_structure_dirty();
+        assert!(!view.update(&doc, &automerge::ROOT), "nothing new yet");
+
+        std::fs::write(&report_code, b"").expect("let the helper show its code");
+        let deadline = tilo_test_env::hang_deadline();
+        while view.nearby_code.is_none() {
+            assert!(Instant::now() < deadline, "the code never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&doc, &automerge::ROOT);
+        }
+        assert!(
+            view.update(&doc, &automerge::ROOT),
+            "the verification code is presented"
+        );
+        assert!(view.take_structure_dirty());
+        assert!(
+            !view.update(&doc, &automerge::ROOT),
+            "a laid-out page is not presented again"
+        );
+
+        std::fs::write(&report_failure, b"").expect("let the helper fail");
+        while view.nearby.is_some() {
+            assert!(Instant::now() < deadline, "the failure never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&doc, &automerge::ROOT);
+        }
+        assert!(
+            view.error()
+                .is_some_and(|error| error.contains("Permission denied")),
+            "{:?}",
+            view.error()
+        );
+        assert!(
+            view.update(&doc, &automerge::ROOT),
+            "the failure and its Try again are presented"
+        );
+        let composition = view.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_some(),
+            "a failed pairing offers Try again"
+        );
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.nearby.code").is_none(),
+            "the stale code is gone"
+        );
+        // What went wrong is the error's accessible name, not only its
+        // description: a screen reader speaks it first, and the generic
+        // outcome alone would hide that the commit was refused.
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        assert!(
+            names.iter().any(|name| name.contains("Permission denied")),
+            "the cause is named: {names:?}"
+        );
+        assert!(
+            !names.contains(&t("onboarding-connect-failed")),
+            "a refused commit is not reported generically: {names:?}"
+        );
+    }
+
     fn process_group_has_live_member(pgid: i32) -> bool {
         std::fs::read_dir("/proc").is_ok_and(|entries| {
             entries.flatten().any(|entry| {
@@ -3912,8 +4135,14 @@ mod tests {
         })
     }
 
-    fn press(doc: &mut AutoCommit, key: &str) {
-        let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+    fn press(view: &OnboardingView, doc: &mut AutoCommit, key: &'static str) {
+        // Checkboxes are bound to the document; every other action is a
+        // click on the view's button.
+        if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+        } else {
+            view.press(key);
+        }
     }
 
     fn escape_event() -> WindowEvent {
@@ -3948,7 +4177,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: document,
+                state: ui::widget::Edits::lend(document),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -3979,6 +4208,15 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: winit::event::MouseButton::Left,
+        }
+    }
+
+    fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
+        if let Some(name) = widget.accessibility().and_then(|node| node.name) {
+            names.push(name);
+        }
+        for child in widget.children() {
+            accessible_names(child, names);
         }
     }
 
@@ -4018,7 +4256,7 @@ mod tests {
 
     fn finish_identity(view: &mut OnboardingView, document: &mut AutoCommit) {
         for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-            press(document, key);
+            press(view, document, key);
             view.sync(document, &automerge::ROOT);
         }
         assert_eq!(view.flow().screen(), Screen::Done);
@@ -4086,8 +4324,8 @@ mod tests {
             // The keyboard/action route carries the same guard as the disabled
             // button. A stale or malicious document action cannot silently skip
             // the only recovery decision.
-            press(&mut document, KEY_BACKUP_CONTINUE);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BACKUP_CONTINUE);
+            view.sync(&document, &automerge::ROOT);
             assert!(
                 !view.identity_ready_page,
                 "continuing without a backup requires an explicit acknowledgement"
@@ -4097,16 +4335,16 @@ mod tests {
                 Some(PersistedStage::IdentityReady)
             );
 
-            press(&mut document, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            view.sync(&mut document, &automerge::ROOT);
-            press(&mut document, KEY_BACKUP_CONTINUE);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            view.sync(&document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BACKUP_CONTINUE);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(
                 load_progress(&identity_dir).expect("load progress"),
                 Some(PersistedStage::ReadyToEnter)
             );
-            press(&mut document, KEY_FINISH);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_FINISH);
+            view.sync(&document, &automerge::ROOT);
             assert!(view.finished());
             assert!(!has_pending_progress(&identity_dir));
         }
@@ -4146,8 +4384,8 @@ mod tests {
             assert_eq!(backup.flow().screen(), Screen::Done);
             assert!(!backup.identity_ready_page);
             let mut blocked_finish = AutoCommit::new();
-            press(&mut blocked_finish, KEY_FINISH);
-            backup.sync(&mut blocked_finish, &automerge::ROOT);
+            press(&backup, &mut blocked_finish, KEY_FINISH);
+            backup.sync(&blocked_finish, &automerge::ROOT);
             assert!(!backup.finished(), "backup choice cannot be bypassed");
 
             store_progress(directory.path(), PersistedStage::IdentityReadyBackedUp)
@@ -4170,8 +4408,8 @@ mod tests {
             assert!(!done.flow().can_create(), "resume never reopens creation");
 
             let mut document = AutoCommit::new();
-            press(&mut document, KEY_TOUR_START);
-            done.sync(&mut document, &automerge::ROOT);
+            press(&done, &mut document, KEY_TOUR_START);
+            done.sync(&document, &automerge::ROOT);
             assert_eq!(done.tour_page, Some(TourPage::Navigate));
             assert!(
                 done.presents_desktop_context(),
@@ -4184,26 +4422,26 @@ mod tests {
 
             let mut navigate_restart = OnboardingView::new(directory.path().to_path_buf());
             assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
-            press(&mut document, KEY_TOUR_NEXT);
-            navigate_restart.sync(&mut document, &automerge::ROOT);
+            press(&navigate_restart, &mut document, KEY_TOUR_NEXT);
+            navigate_restart.sync(&document, &automerge::ROOT);
             assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
 
             let mut organise_restart = OnboardingView::new(directory.path().to_path_buf());
             assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
-            press(&mut document, KEY_TOUR_NEXT);
-            organise_restart.sync(&mut document, &automerge::ROOT);
+            press(&organise_restart, &mut document, KEY_TOUR_NEXT);
+            organise_restart.sync(&document, &automerge::ROOT);
             assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
 
             let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
             assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
-            press(&mut document, KEY_TOUR_NEXT);
-            collaborate_restart.sync(&mut document, &automerge::ROOT);
+            press(&collaborate_restart, &mut document, KEY_TOUR_NEXT);
+            collaborate_restart.sync(&document, &automerge::ROOT);
             assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
 
             let mut start_restart = OnboardingView::new(directory.path().to_path_buf());
             assert_eq!(start_restart.tour_page, Some(TourPage::Start));
-            press(&mut document, KEY_FINISH);
-            start_restart.sync(&mut document, &automerge::ROOT);
+            press(&start_restart, &mut document, KEY_FINISH);
+            start_restart.sync(&document, &automerge::ROOT);
             assert!(start_restart.finished());
             assert!(!has_pending_progress(directory.path()));
 
@@ -4256,8 +4494,8 @@ mod tests {
             view.identity_dir = Some(blocked_parent.join("identity"));
             let mut document = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-                press(&mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                press(&view, &mut document, key);
+                view.sync(&document, &automerge::ROOT);
             }
 
             assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -4287,12 +4525,12 @@ mod tests {
         {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_BEGIN);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.flow().screen(), Screen::NoRecovery);
 
-            press(&mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_CREATE);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(calls.load(Ordering::SeqCst), 0, "no key was minted");
             assert_eq!(v.flow().screen(), Screen::NoRecovery, "still on the gate");
         }
@@ -4300,15 +4538,15 @@ mod tests {
         {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_UNDERSTOOD);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_BEGIN);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_UNDERSTOOD);
+            v.sync(&doc, &automerge::ROOT);
             assert!(v.flow().can_create());
-            press(&mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_CREATE);
+            v.sync(&doc, &automerge::ROOT);
             // A second sync must not re-fire — the key is consumed.
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             assert_eq!(v.flow().screen(), Screen::Done);
             assert!(v.flow().is_done());
@@ -4317,19 +4555,19 @@ mod tests {
         {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_UNDERSTOOD);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_BEGIN);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_UNDERSTOOD);
+            v.sync(&doc, &automerge::ROOT);
             let _ = doc.put(
                 &automerge::ROOT,
                 KEY_UNDERSTOOD,
                 ScalarValue::Boolean(false),
             );
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert!(!v.flow().can_create());
-            press(&mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_CREATE);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         }
         // Phase `a_failed_mint_is_surfaced_rather_than_hidden`.
@@ -4337,12 +4575,12 @@ mod tests {
         {
             let mut v = OnboardingView::with_minter(Box::new(|| Err("disk full".to_string())));
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_UNDERSTOOD);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_BEGIN);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_UNDERSTOOD);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_CREATE);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.error(), Some("disk full"));
             assert_eq!(
                 v.flow().screen(),
@@ -4350,8 +4588,8 @@ mod tests {
                 "a failed write is not a completed identity"
             );
             assert!(!v.flow().is_done());
-            press(&mut doc, KEY_FINISH);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_FINISH);
+            v.sync(&doc, &automerge::ROOT);
             assert!(!v.finished(), "failure must not release the desktop");
         }
         // Phase `finishing_releases_the_desktop`.
@@ -4359,18 +4597,18 @@ mod tests {
             let (mut v, _) = view();
             let mut doc = AutoCommit::new();
             assert!(!v.finished());
-            press(&mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_UNDERSTOOD);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_BACKUP_CONTINUE);
-            v.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_FINISH);
-            v.sync(&mut doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_BEGIN);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_UNDERSTOOD);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_CREATE);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_BACKUP_CONTINUE);
+            v.sync(&doc, &automerge::ROOT);
+            press(&v, &mut doc, KEY_FINISH);
+            v.sync(&doc, &automerge::ROOT);
             assert!(v.finished());
         }
     }
@@ -4385,54 +4623,54 @@ mod tests {
         {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_BEGIN);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_UNDERSTOOD);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_CREATE);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BEGIN);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_UNDERSTOOD);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_CREATE);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_CONTINUE);
+            view.sync(&doc, &automerge::ROOT);
 
-            press(&mut doc, KEY_TOUR_START);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_START);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Navigate));
             assert!(!view.finished());
 
-            press(&mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_NEXT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Organise));
-            press(&mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_NEXT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Collaborate));
 
-            press(&mut doc, KEY_FINISH);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_FINISH);
+            view.sync(&doc, &automerge::ROOT);
             assert!(
                 !view.finished(),
                 "the tour cannot finish before its hand-off page"
             );
 
-            press(&mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_NEXT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Start));
 
-            press(&mut doc, KEY_TOUR_BACK);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_BACK);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Collaborate));
-            press(&mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_FINISH);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_NEXT);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_FINISH);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.finished());
         }
         // Phase `every_tour_page_exposes_an_explicit_skip_action`.
         {
             let mut view = OnboardingView::new_tour();
             let mut doc = AutoCommit::new();
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
 
             for page in [
                 TourPage::Navigate,
@@ -4440,18 +4678,18 @@ mod tests {
                 TourPage::Collaborate,
             ] {
                 assert_eq!(view.tour_page, Some(page));
-                let actions = OnboardingView::tour_actions(page);
+                let actions = view.tour_actions(page);
                 let node = accessibility_for_id(actions.as_ref(), "onboarding.tour.skip.button")
                     .expect("tour page exposes Skip tour");
                 assert_eq!(node.name.as_deref(), Some("Skip tour"));
                 if page != TourPage::Collaborate {
-                    press(&mut doc, KEY_TOUR_NEXT);
-                    view.sync(&mut doc, &automerge::ROOT);
+                    press(&view, &mut doc, KEY_TOUR_NEXT);
+                    view.sync(&doc, &automerge::ROOT);
                 }
             }
 
-            press(&mut doc, KEY_TOUR_SKIP);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_SKIP);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.finished(), "Skip tour dismisses a reopened tour");
         }
         // Phase `first_use_skip_works_on_every_tour_page_and_clears_progress`.
@@ -4469,8 +4707,8 @@ mod tests {
                 let mut document = AutoCommit::new();
 
                 assert_eq!(view.tour_page, Some(page));
-                press(&mut document, KEY_TOUR_SKIP);
-                view.sync(&mut document, &automerge::ROOT);
+                press(&view, &mut document, KEY_TOUR_SKIP);
+                view.sync(&document, &automerge::ROOT);
 
                 assert!(view.finished(), "Skip tour must work from {page:?}");
                 assert!(
@@ -4485,12 +4723,12 @@ mod tests {
                 let mut view = OnboardingView::new_tour();
                 let mut document = AutoCommit::new();
                 for _ in 0..next_presses {
-                    press(&mut document, KEY_TOUR_NEXT);
-                    view.sync(&mut document, &automerge::ROOT);
+                    press(&view, &mut document, KEY_TOUR_NEXT);
+                    view.sync(&document, &automerge::ROOT);
                 }
 
                 assert!(dispatch_escape(&mut view, &mut document));
-                view.sync(&mut document, &automerge::ROOT);
+                view.sync(&document, &automerge::ROOT);
                 assert!(
                     view.finished(),
                     "Escape must close a reopened tour after {next_presses} advances"
@@ -4507,22 +4745,22 @@ mod tests {
                 "reopening must not forge identity state"
             );
 
-            press(&mut doc, KEY_TOUR_BACK);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_BACK);
+            view.sync(&doc, &automerge::ROOT);
             assert!(
                 view.finished(),
                 "Back on the first page closes a reopened tour"
             );
 
             let mut view = OnboardingView::new_tour();
-            press(&mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_FINISH);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_NEXT);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_NEXT);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_TOUR_NEXT);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_FINISH);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.finished(), "Done closes the reopened tour");
         }
         // Phase `resumed_tour_preserves_focus_reset_and_reduced_motion_navigation`.
@@ -4551,8 +4789,8 @@ mod tests {
             );
 
             let mut document = AutoCommit::new();
-            press(&mut document, KEY_TOUR_NEXT);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_TOUR_NEXT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Collaborate));
             assert_eq!(
                 load_progress(directory.path()).expect("updated tour journal"),
@@ -4590,7 +4828,6 @@ mod tests {
                 assert!(navigation.contains("Command+K"));
                 assert!(navigation.contains("Option+Space"));
             } else {
-                assert!(navigation.contains("Super+K"));
                 assert!(navigation.contains("Super+Space"));
             }
             assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
@@ -4765,14 +5002,14 @@ mod tests {
         // Phase `screen_transitions_track_forward_and_back_direction`.
         {
             let (mut view, _) = view();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            view.sync(&mut doc, &root);
-            let _ = doc.put(&root, KEY_BEGIN, true);
-            view.sync(&mut doc, &root);
+            view.sync(&doc, &root);
+            view.pressed.press(KEY_BEGIN);
+            view.sync(&doc, &root);
             assert_eq!(view.transition_direction, 1.0);
-            let _ = doc.put(&root, KEY_BACK, true);
-            view.sync(&mut doc, &root);
+            view.pressed.press(KEY_BACK);
+            view.sync(&doc, &root);
             assert_eq!(view.transition_direction, -1.0);
         }
         // Phase `escape_follows_back_on_reversible_identity_steps_only`.
@@ -4784,28 +5021,28 @@ mod tests {
                 !dispatch_escape(&mut view, &mut document),
                 "intro must not be dismissible before an identity exists"
             );
-            press(&mut document, KEY_EXISTING);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_EXISTING);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
-            press(&mut document, KEY_CHOOSE_RESTORE);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_CHOOSE_RESTORE);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Restore);
             assert!(dispatch_escape(&mut view, &mut document));
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(
                 view.flow.screen(),
                 Screen::Existing,
                 "escape leaves a flow for the choice it was opened from"
             );
             assert!(dispatch_escape(&mut view, &mut document));
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Intro);
 
-            press(&mut document, KEY_BEGIN);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BEGIN);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::NoRecovery);
             assert!(dispatch_escape(&mut view, &mut document));
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Intro);
         }
         // Phase `reduced_motion_does_not_request_transition_frames`.
@@ -4823,14 +5060,14 @@ mod tests {
             assert!(recovery.recovery_only);
             assert_eq!(recovery.flow.screen(), Screen::Existing);
             let mut document = AutoCommit::new();
-            press(&mut document, KEY_BACK);
-            recovery.sync(&mut document, &automerge::ROOT);
+            press(&recovery, &mut document, KEY_BACK);
+            recovery.sync(&document, &automerge::ROOT);
             assert_eq!(recovery.flow.screen(), Screen::Existing);
-            press(&mut document, KEY_CHOOSE_RESTORE);
-            recovery.sync(&mut document, &automerge::ROOT);
+            press(&recovery, &mut document, KEY_CHOOSE_RESTORE);
+            recovery.sync(&document, &automerge::ROOT);
             assert_eq!(recovery.flow.screen(), Screen::Restore);
-            press(&mut document, KEY_BACK);
-            recovery.sync(&mut document, &automerge::ROOT);
+            press(&recovery, &mut document, KEY_BACK);
+            recovery.sync(&document, &automerge::ROOT);
             assert_eq!(
                 recovery.flow.screen(),
                 Screen::Existing,
@@ -4869,17 +5106,13 @@ mod tests {
                 }),
             );
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_EXISTING);
-            press(&mut doc, KEY_CHOOSE_RESTORE);
-            let _ = doc.put(
-                &automerge::ROOT,
-                KEY_CONNECT_PATH,
-                ScalarValue::Str("/media/backup/primary.json".into()),
-            );
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_EXISTING);
+            press(&view, &mut doc, KEY_CHOOSE_RESTORE);
+            view.connect_path.set("/media/backup/primary.json".into());
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.flow().screen(), Screen::Restore);
-            press(&mut doc, KEY_IMPORT);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_IMPORT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(imported.load(Ordering::SeqCst), 1);
             assert_eq!(view.flow().screen(), Screen::Done);
             assert!(view.flow().is_done());
@@ -4910,16 +5143,12 @@ mod tests {
             view.identity_dir = Some(identity_dir.clone());
             let mut document = AutoCommit::new();
 
-            press(&mut document, KEY_EXISTING);
-            press(&mut document, KEY_CHOOSE_RESTORE);
-            let _ = document.put(
-                &automerge::ROOT,
-                KEY_CONNECT_PATH,
-                ScalarValue::Str("/media/backup/primary.json".into()),
-            );
-            view.sync(&mut document, &automerge::ROOT);
-            press(&mut document, KEY_IMPORT);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_EXISTING);
+            press(&view, &mut document, KEY_CHOOSE_RESTORE);
+            view.connect_path.set("/media/backup/primary.json".into());
+            view.sync(&document, &automerge::ROOT);
+            press(&view, &mut document, KEY_IMPORT);
+            view.sync(&document, &automerge::ROOT);
 
             assert!(
                 observed_precommit.load(Ordering::SeqCst),
@@ -4938,16 +5167,13 @@ mod tests {
                 Box::new(|_, _| Err("not a Tilo identity".to_string())),
             );
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_EXISTING);
-            press(&mut doc, KEY_CHOOSE_RESTORE);
-            view.sync(&mut doc, &automerge::ROOT);
-            let _ = doc.put(
-                &automerge::ROOT,
-                KEY_CONNECT_PATH,
-                ScalarValue::Str("/media/identity.tilo-identity".into()),
-            );
-            press(&mut doc, KEY_IMPORT);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_EXISTING);
+            press(&view, &mut doc, KEY_CHOOSE_RESTORE);
+            view.sync(&doc, &automerge::ROOT);
+            view.connect_path
+                .set("/media/identity.tilo-identity".into());
+            press(&view, &mut doc, KEY_IMPORT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.flow().screen(), Screen::Restore);
             assert_eq!(view.error(), Some("not a Tilo identity"));
         }
@@ -4958,9 +5184,9 @@ mod tests {
                 Box::new(|_, _| Err("importer must not run without a path".to_string())),
             );
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_EXISTING);
-            press(&mut doc, KEY_CHOOSE_RESTORE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_EXISTING);
+            press(&view, &mut doc, KEY_CHOOSE_RESTORE);
+            view.sync(&doc, &automerge::ROOT);
             let theme = Theme::dark();
             let disabled = accessibility_for_id(
                 &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
@@ -4971,20 +5197,17 @@ mod tests {
                 disabled.state.disabled,
                 "restore must be visibly and semantically disabled without a selected source"
             );
-            press(&mut doc, KEY_IMPORT);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_IMPORT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.flow().screen(), Screen::Restore);
             assert_eq!(
                 view.error(),
                 Some("Choose an encrypted backup or legacy identity file first.")
             );
 
-            let _ = doc.put(
-                &automerge::ROOT,
-                KEY_CONNECT_PATH,
-                ScalarValue::Str("/media/identity.tilo-identity".into()),
-            );
-            view.sync(&mut doc, &automerge::ROOT);
+            view.connect_path
+                .set("/media/identity.tilo-identity".into());
+            view.sync(&doc, &automerge::ROOT);
             let enabled = accessibility_for_id(
                 &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
                 "onboarding.import.button",
@@ -4999,15 +5222,15 @@ mod tests {
         {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_EXISTING);
-            press(&mut doc, KEY_CHOOSE_RESTORE);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_CONNECT_BROWSE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_EXISTING);
+            press(&view, &mut doc, KEY_CHOOSE_RESTORE);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_CONNECT_BROWSE);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.picker.is_some());
 
             view.picker.as_mut().expect("picker").1.click_cancel();
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.picker.is_none());
             assert_eq!(view.flow().screen(), Screen::Restore);
         }
@@ -5049,8 +5272,8 @@ mod tests {
 
             *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
             *view.backup_confirmation.lock().unwrap() = "does not match".into();
-            press(&mut doc, KEY_BACKUP_BROWSE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_BROWSE);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.picker.is_none());
             assert!(
                 view.backup_error
@@ -5060,17 +5283,17 @@ mod tests {
             );
 
             *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
-            press(&mut doc, KEY_BACKUP_BROWSE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_BROWSE);
+            view.sync(&doc, &automerge::ROOT);
             view.picker.as_mut().expect("save picker").1.click_cancel();
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.picker.is_none());
             assert_eq!(exports.load(Ordering::SeqCst), 0);
 
-            press(&mut doc, KEY_BACKUP_BROWSE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_BROWSE);
+            view.sync(&doc, &automerge::ROOT);
             view.picker.as_mut().expect("save picker").1.click_open();
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(exports.load(Ordering::SeqCst), 1);
             assert!(view.backup_saved.is_some());
             assert!(view.backup_error.is_none());
@@ -5081,8 +5304,8 @@ mod tests {
             assert!(view.backup_passphrase.lock().unwrap().is_empty());
             assert!(view.backup_confirmation.lock().unwrap().is_empty());
 
-            press(&mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_CONTINUE);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.identity_ready_page);
             assert_eq!(
                 load_progress(progress.path()).expect("ready progress"),
@@ -5131,8 +5354,8 @@ mod tests {
                 .expect("verified backup progress");
 
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_CONTINUE);
+            view.sync(&doc, &automerge::ROOT);
 
             assert!(view.finished());
             assert!(!view.identity_ready_page);
@@ -5149,8 +5372,8 @@ mod tests {
             assert!(!view.backup_copy_form_open);
 
             let mut document = AutoCommit::new();
-            press(&mut document, KEY_BACKUP_ANOTHER);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BACKUP_ANOTHER);
+            view.sync(&document, &automerge::ROOT);
 
             assert!(
                 view.backup_copy_form_open,
@@ -5201,7 +5424,7 @@ mod tests {
             KEY_BACKUP_SKIP_ACKNOWLEDGED,
             KEY_BACKUP_CONTINUE,
         ] {
-            press(doc, key);
+            press(view, doc, key);
             view.sync(doc, &automerge::ROOT);
         }
     }
@@ -5237,12 +5460,20 @@ mod tests {
             "RPM Fusion",
             "Cisco (OpenH264)",
             "Tilo does not host or distribute them",
+            "OpenH264 Video Codec provided by Cisco Systems, Inc.",
+            "https://www.openh264.org/BINARY_LICENSE.txt",
         ] {
             assert!(
                 lines.iter().any(|line| line.contains(needle)),
                 "{needle}: {lines:?}"
             );
         }
+        let source = accessibility_for_id(
+            view.composed.as_deref().expect("rendered codecs page"),
+            "onboarding.codecs.source",
+        )
+        .expect("codec licensing explanation must be accessible");
+        assert_eq!(source.name.as_deref(), Some(codecs_source().as_str()));
         assert_eq!(
             &lines[lines.len() - 2..],
             ["Not now", "Install media codecs"],
@@ -5251,8 +5482,8 @@ mod tests {
         assert!(fake.runs().is_empty(), "reaching the step installs nothing");
         // The step blocks neither the tour nor finishing only by accident:
         // both wait until the person chose.
-        press(&mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_FINISH);
+        view.sync(&doc, &automerge::ROOT);
         assert!(!view.finished());
         assert!(view.codec_page_visible());
     }
@@ -5267,10 +5498,10 @@ mod tests {
         ));
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
-        press(&mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_CODECS_INSTALL);
+        view.sync(&doc, &automerge::ROOT);
         view.wait_for_codec_install();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert_eq!(fake.runs(), vec![CodecAction::Install]);
         assert_eq!(view.codec_status().state, PackState::Installed);
         layout(&mut view);
@@ -5283,13 +5514,13 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(lines.last().map(String::as_str), Some("Continue"));
-        press(&mut doc, KEY_CODECS_CONTINUE);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_CODECS_CONTINUE);
+        view.sync(&doc, &automerge::ROOT);
         assert!(!view.codec_page_visible());
         layout(&mut view);
         assert_eq!(stage_label(&view).as_deref(), Some("Step 5 of 5"));
-        press(&mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_FINISH);
+        view.sync(&doc, &automerge::ROOT);
         assert!(view.finished());
     }
 
@@ -5300,12 +5531,12 @@ mod tests {
         let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
-        press(&mut doc, KEY_CODECS_SKIP);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_CODECS_SKIP);
+        view.sync(&doc, &automerge::ROOT);
         assert!(!view.codec_page_visible());
         assert!(fake.runs().is_empty());
-        press(&mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_FINISH);
+        view.sync(&doc, &automerge::ROOT);
         assert!(view.finished());
     }
 
@@ -5330,8 +5561,8 @@ mod tests {
         ));
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
-        press(&mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_CODECS_INSTALL);
+        view.sync(&doc, &automerge::ROOT);
         // Nothing wakes the compositor for the worker, so the view does.
         let limit = Instant::now().checked_add(BACKGROUND_POLL).unwrap();
         assert!(
@@ -5346,7 +5577,7 @@ mod tests {
             view.needs_animation_frame(),
             "a status change asks for a frame"
         );
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
         assert_eq!(view.codec_status().state, PackState::Installing);
         assert!(lines.contains(&"Installing media codecs".to_string()));
@@ -5356,14 +5587,14 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(lines.last().map(String::as_str), Some("Continue"));
-        press(&mut doc, KEY_CODECS_CONTINUE);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_CODECS_CONTINUE);
+        view.sync(&doc, &automerge::ROOT);
         assert!(
             !view.codec_page_visible(),
             "the download does not hold setup"
         );
-        press(&mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_FINISH);
+        view.sync(&doc, &automerge::ROOT);
         assert!(view.finished());
         release.send(()).unwrap();
     }
@@ -5377,10 +5608,10 @@ mod tests {
         );
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
-        press(&mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_CODECS_INSTALL);
+        view.sync(&doc, &automerge::ROOT);
         view.wait_for_codec_install();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
         assert!(lines.contains(&"Media codecs will install once you are online".to_string()));
         assert!(
@@ -5402,17 +5633,17 @@ mod tests {
         ));
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
-        press(&mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_CODECS_INSTALL);
+        view.sync(&doc, &automerge::ROOT);
         view.wait_for_codec_install();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
         assert!(lines.contains(&"Media codecs could not be installed".to_string()));
         assert!(lines.contains(&"Access denied: not an administrator".to_string()));
         assert_eq!(&lines[lines.len() - 2..], ["Skip", "Try again"]);
         layout(&mut view);
-        press(&mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        press(&view, &mut doc, KEY_CODECS_INSTALL);
+        view.sync(&doc, &automerge::ROOT);
         view.wait_for_codec_install();
         assert_eq!(
             fake.runs(),
@@ -5468,8 +5699,8 @@ mod tests {
                 Some(KEY_BACKUP_CONTINUE),
             ] {
                 if let Some(k) = step {
-                    press(&mut doc, k);
-                    v.sync(&mut doc, &automerge::ROOT);
+                    press(&v, &mut doc, k);
+                    v.sync(&doc, &automerge::ROOT);
                 }
                 let theme = Theme::dark();
                 let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -5485,8 +5716,8 @@ mod tests {
                 let (mut connect, _) = view();
                 let mut connect_doc = AutoCommit::new();
                 for key in keys {
-                    press(&mut connect_doc, key);
-                    connect.sync(&mut connect_doc, &automerge::ROOT);
+                    press(&connect, &mut connect_doc, key);
+                    connect.sync(&connect_doc, &automerge::ROOT);
                 }
                 let theme = Theme::dark();
                 let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -5643,8 +5874,8 @@ mod tests {
                 }));
                 let mut document = AutoCommit::new();
                 for key in keys {
-                    press(&mut document, key);
-                    view.sync(&mut document, &automerge::ROOT);
+                    press(&view, &mut document, key);
+                    view.sync(&document, &automerge::ROOT);
                 }
                 if error_state {
                     view.error =
@@ -5914,8 +6145,8 @@ mod tests {
                 let (mut view, _) = view();
                 let mut document = AutoCommit::new();
                 for key in keys {
-                    press(&mut document, key);
-                    view.sync(&mut document, &automerge::ROOT);
+                    press(&view, &mut document, key);
+                    view.sync(&document, &automerge::ROOT);
                 }
                 let mut text = ui::text_render::TextRenderer::new();
                 let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -5957,7 +6188,7 @@ mod tests {
                         .unwrap_or_else(|| panic!("choice screen exposes {id}"));
                     assert!(focusable, "{id} must be a keyboard focus stop");
                     assert!(
-                        rect.height() >= 64.0
+                        rect.height() >= f64::from(theme.tokens.metrics.min_pointer_target)
                             && rect.x0 >= panel.x0 + 8.0
                             && rect.x1 <= panel.x1 - 8.0
                             && rect.y0 >= scroll.y1
@@ -5966,12 +6197,15 @@ mod tests {
                         theme.name,
                     );
                     if let Some(previous) = previous {
-                        assert!(rect.y0 >= previous.y1 + 8.0, "cards need a gap");
-                        assert!((rect.x0 - previous.x0).abs() < 0.5, "cards share an edge");
+                        assert!(
+                            (rect.y0 - previous.y1).abs() < 0.5,
+                            "the choices are one list, edge to edge"
+                        );
+                        assert!((rect.x0 - previous.x0).abs() < 0.5, "rows share an edge");
                     }
                     previous = Some(rect);
-                    let node = accessibility_for_id(&view, id).expect("card semantics");
-                    assert_eq!(node.role, ui::a11y::Role::Button);
+                    let node = accessibility_for_id(&view, id).expect("row semantics");
+                    assert_eq!(node.role, ui::a11y::Role::ListItem);
                     assert!(
                         node.value.as_deref().is_some_and(|value| !value.is_empty()),
                         "{id} announces its description"
@@ -5983,8 +6217,8 @@ mod tests {
         {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
-            press(&mut document, KEY_EXISTING);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_EXISTING);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
             let theme = Theme::dark();
             let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
@@ -5993,8 +6227,8 @@ mod tests {
                 "the choice screen is not the restore form"
             );
 
-            press(&mut document, KEY_CHOOSE_RESTORE);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_CHOOSE_RESTORE);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Restore);
             let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
             assert!(accessibility_for_id(&*composition, "onboarding.connect.path.field").is_some());
@@ -6002,14 +6236,14 @@ mod tests {
                 accessibility_for_id(&*composition, "onboarding.nearby.status").is_none(),
                 "restore does not carry the nearby flow"
             );
-            press(&mut document, KEY_BACK);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BACK);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
 
             // Without an identity directory the helper cannot start; the
             // nearby screen still opens and reports why, with a retry.
-            press(&mut document, KEY_CHOOSE_NEARBY);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_CHOOSE_NEARBY);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Nearby);
             assert_eq!(
                 view.error(),
@@ -6025,15 +6259,15 @@ mod tests {
                 accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_some(),
                 "a failed start offers Try again"
             );
-            press(&mut document, KEY_BACK);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BACK);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
             assert!(
                 view.error().is_none(),
                 "back leaves the flow's error behind"
             );
-            press(&mut document, KEY_BACK);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BACK);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Intro);
         }
         // Phase `nearby_shows_cancel_while_pairing_runs`.
@@ -6072,8 +6306,8 @@ mod tests {
         {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
-            press(&mut document, KEY_BEGIN);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BEGIN);
+            view.sync(&document, &automerge::ROOT);
 
             let theme = Theme::dark();
             let mut text = ui::text_render::TextRenderer::new();
@@ -6119,7 +6353,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut document,
+                        state: ui::widget::Edits::lend(&mut document),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -6129,6 +6363,10 @@ mod tests {
                 );
                 assert!(handled, "the labelled checkbox row must handle {event:?}");
             }
+            view.settle(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+            );
             assert!(read_bool(&document, &automerge::ROOT, KEY_UNDERSTOOD));
         }
         // Phase `continue_without_backup_pointer_target_advances_to_ready_page`.
@@ -6136,8 +6374,8 @@ mod tests {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-                press(&mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                press(&view, &mut document, key);
+                view.sync(&document, &automerge::ROOT);
             }
             document
                 .put(
@@ -6146,7 +6384,7 @@ mod tests {
                     ScalarValue::Boolean(true),
                 )
                 .expect("acknowledge backup risk");
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
 
             let theme = Theme::dark();
             let mut text = ui::text_render::TextRenderer::new();
@@ -6179,7 +6417,8 @@ mod tests {
                 })
                 .expect("continue without backup button");
             assert!(
-                button.width() >= 44.0 && button.height() >= 40.0,
+                button.width() >= 44.0
+                    && button.height() >= f64::from(theme.tokens.metrics.min_pointer_target),
                 "backup continuation needs a practical pointer target: {button:?}"
             );
 
@@ -6195,7 +6434,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut document,
+                        state: ui::widget::Edits::lend(&mut document),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -6210,7 +6449,7 @@ mod tests {
                     );
                 }
             }
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert!(
                 view.identity_ready_page,
                 "pointer activation must reach Ready"
@@ -6468,14 +6707,14 @@ mod tests {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-                press(&mut doc, key);
-                view.sync(&mut doc, &automerge::ROOT);
+                press(&view, &mut doc, key);
+                view.sync(&doc, &automerge::ROOT);
             }
             assert_eq!(view.flow().screen(), Screen::Done);
-            press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            view.sync(&mut doc, &automerge::ROOT);
-            press(&mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&mut doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_CONTINUE);
+            view.sync(&doc, &automerge::ROOT);
 
             let theme = Theme::dark().with_text_scale(1.3);
             let mut text = ui::text_render::TextRenderer::new();
@@ -6529,8 +6768,8 @@ mod tests {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-                press(&mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                press(&view, &mut document, key);
+                view.sync(&document, &automerge::ROOT);
             }
             assert_eq!(view.flow().screen(), Screen::Done);
 
@@ -6588,12 +6827,12 @@ mod tests {
                     KEY_BACKUP_CONTINUE,
                     KEY_TOUR_START,
                 ] {
-                    press(&mut doc, key);
-                    view.sync(&mut doc, &automerge::ROOT);
+                    press(&view, &mut doc, key);
+                    view.sync(&doc, &automerge::ROOT);
                 }
                 for _ in 0..next_presses {
-                    press(&mut doc, KEY_TOUR_NEXT);
-                    view.sync(&mut doc, &automerge::ROOT);
+                    press(&view, &mut doc, KEY_TOUR_NEXT);
+                    view.sync(&doc, &automerge::ROOT);
                 }
 
                 let theme = Theme::dark().with_text_scale(1.3);

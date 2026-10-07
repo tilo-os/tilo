@@ -344,3 +344,37 @@ fn clients_are_configured_with_their_laid_out_tab_size_or_eventually_anyway() {
         );
     }
 }
+
+/// A slow host once laid a new tab out tens of thousands of pixels wide.
+/// The client was configured to that width, could not create a drawing
+/// surface past the GPU's texture limit, closed its window and exited, and
+/// every app opened on the device vanished the same way. However large a tab
+/// is laid out, the client is asked for a size it can render at its scale.
+#[test]
+fn a_runaway_tab_is_configured_to_a_size_the_client_can_render() {
+    let mut h = Harness::new();
+    h.state.scale = 2.0;
+    let configures = open_a_window(&mut h);
+
+    h.lay_tabs_out(Rect::new(0.0, 0.0, 780.0, 792.0));
+    h.flush_configures();
+    for width in [5089.0, 36736.0] {
+        h.lay_tabs_out(Rect::new(0.0, 0.0, width, 792.0));
+        h.flush_configures();
+    }
+
+    let seen = configures.lock().expect("configures").clone();
+    assert_eq!(seen.first(), Some(&(780, 792)), "configures: {seen:?}");
+    let limit = shell::compositor::foreign::CLIENT_TEXTURE_LIMIT_PX / 2;
+    assert!(
+        seen.iter()
+            .all(|&(w, height)| w <= limit && height <= limit),
+        "a configure asked the client for more than {limit} logical px at \
+         scale 2, past what it can render: {seen:?}",
+    );
+    assert_eq!(
+        seen.last(),
+        Some(&(limit, 792)),
+        "the runaway width is held at the largest the client can draw: {seen:?}",
+    );
+}

@@ -16,16 +16,14 @@ use std::rc::Rc;
 
 use serde_json::{Value, json};
 use ui::a11y::{AccessNode, Role};
-use ui::automerge::{AutoCommit, ObjId};
 use ui::framework::{Dispatcher, ResourceSurface, SurfaceCx};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
-use ui::tilo_actions::{self, ActionOutput, InvocationUpdate};
+use ui::tilo_actions::{self, ActionOutput};
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use ui::vello::peniko::Fill;
 use ui::widget::{
-    AppModel, EventCtx, ModelPath, PenSample, ResourceOperation, ResourceOperationStart,
-    SelectionHandle, SelectionHandles, Widget,
+    AppModel, EventCtx, ModelPath, PenSample, SelectionHandle, SelectionHandles, Widget,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -42,7 +40,7 @@ use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
 use crate::model::{Artwork, Mark, Shape};
 use crate::render::{Options, Renderer};
-use crate::resource::{ArtworkResource, ExportSvg, VIEW_TYPE, ViewOp};
+use crate::resource::{ArtworkResource, ExportSvg, ViewOp};
 use crate::view_ops;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
@@ -53,6 +51,26 @@ const CLICKED_SHAPE: f64 = 100.0; // the size of a mark in the artwork, not on-s
 const TEXT_SIZE: f64 = 32.0; // a size of lettering in the artwork, not on-screen spacing
 /// How much one wheel notch of a pinch or a zoom key zooms.
 const ZOOM_STEP: f64 = 1.25;
+
+/// Whole-cell enlargement and reciprocal reductions; choosing down keeps a
+/// fitted sheet wholly visible. Rounding near exact steps avoids float drift.
+fn pixel_zoom(desired: f64, up: bool) -> f64 {
+    let desired = desired.clamp(0.05, 64.0);
+    if desired >= 1.0 {
+        if up {
+            (desired - 1e-9).ceil()
+        } else {
+            (desired + 1e-9).floor()
+        }
+    } else {
+        let inverse = 1.0 / desired;
+        1.0 / if up {
+            (inverse + 1e-9).floor()
+        } else {
+            (inverse - 1e-9).ceil()
+        }
+    }
+}
 
 pub use crate::tools::{Tool, Tools, ViewRequest};
 
@@ -138,8 +156,15 @@ pub struct CanvasSurface {
     /// view follows them until the person zooms or pans.
     fitted_to: Option<(f64, f64, f64, f64)>,
     moved_by_hand: bool,
+    /// Mouse-wheel notches use the shared motion driver; trackpad input
+    /// follows the hand directly. This is view state, never document history.
+    zoom_motion: Option<(ui::animation::Animated<f64>, Point)>,
+    zoom_duration: ui::time::Duration,
+    motion_reduced: bool,
     /// Shapes text for looks and exports, which run outside a frame.
     look_text: Option<TextRenderer>,
+    pictures: crate::background::Pictures,
+    finding: bool,
     tools: Tools,
     /// The tool the modes below belong to; a change of tool ends them.
     tool: Tool,
@@ -169,18 +194,11 @@ pub struct CanvasSurface {
     /// Focus came from a press on the canvas, not the keyboard: the
     /// pointer already says where the person is, so no ring is drawn.
     pressed_into_focus: bool,
-    /// Whether the window was narrower than the compact breakpoint the last
-    /// time the canvas looked; `None` before it first did.
-    was_narrow: Option<bool>,
-    /// Whether the sidebar was shown, and where the canvas ended, the last
-    /// time the canvas looked at the window's width.
-    width_seen: Option<(bool, f64)>,
     space: bool,
     modifiers: ModifiersState,
     /// What the pen reported with the pointer's newest move or press; none
     /// when a mouse moved it.
     stylus: Option<PenSample>,
-    results: HashMap<tilo_actions::InvocationId, InvocationUpdate>,
     /// The theme's sizes as of the last layout, for handles hit-tested
     /// between frames.
     metrics: ui::tokens::Metrics,
@@ -200,14 +218,18 @@ impl CanvasSurface {
             // The artboard sits in the middle of the room it is given.
             viewport: ui::widget::ViewportState::new()
                 .with_zoom_bounds(0.05, 64.0)
-                .with_padding(24.0)
                 .with_alignment(
                     ui::widget::SmallContentAlign::Center,
                     ui::widget::SmallContentAlign::Center,
                 ),
             fitted_to: None,
             moved_by_hand: false,
+            zoom_motion: None,
+            zoom_duration: ui::tokens::Durations::default().fast(),
+            motion_reduced: false,
             look_text: None,
+            pictures: crate::background::Pictures::default(),
+            finding: false,
             tools,
             tool,
             drag: None,
@@ -226,12 +248,9 @@ impl CanvasSurface {
             staged_view: None,
             focused: false,
             pressed_into_focus: false,
-            was_narrow: None,
-            width_seen: None,
             space: false,
             modifiers: ModifiersState::empty(),
             stylus: None,
-            results: HashMap::new(),
             metrics: ui::tokens::Metrics::BASE,
             spacing: ui::tokens::Spacing::BASE,
         }
@@ -276,6 +295,12 @@ impl CanvasSurface {
     /// How far the pointer may travel, in screen pixels, and still click.
     fn click_slop(&self) -> f64 {
         f64::from(self.spacing.s1)
+    }
+
+    /// How far off a line or stroke a click still picks it, in artwork
+    /// units: a few screen pixels, whatever the zoom.
+    fn pick_slop(&self) -> f64 {
+        self.units(f64::from(self.spacing.s1))
     }
 
     /// How near, in screen pixels, a dragged edge snaps to another.
@@ -459,8 +484,20 @@ impl CanvasSurface {
             }
         };
         *self.tools.picking.borrow_mut() = None;
-        let Some(ui::portal::ContentsOutcome::Picked(files)) = answer else {
-            return;
+        // A chooser that could not answer, or a file that is no picture,
+        // is said beside the title, as Files' answers are: never silence.
+        let notice = self.tools.notice.clone();
+        let said = move |why: String| {
+            notice.set(Some(ui::i18n::I18nManager::format(
+                "canvas-picture-failed",
+                &[("why", why.into())],
+            )));
+        };
+        let files = match answer {
+            Some(ui::portal::ContentsOutcome::Picked(files)) => files,
+            Some(ui::portal::ContentsOutcome::Cancelled) => return,
+            Some(ui::portal::ContentsOutcome::Failed(why)) => return said(why),
+            None => return said(ui::i18n::I18nManager::lookup_plain("canvas-chooser-gone")),
         };
         let Some(file) = files.into_iter().next() else {
             return;
@@ -472,15 +509,13 @@ impl CanvasSurface {
                     self.select_made(vec!["picture".into()]);
                     self.tools.tool.set(Tool::Select);
                 }
-                Err(error) => {
-                    tracing::warn!(target: "canvas", %error, "the picture was not opened");
-                }
+                Err(error) => said(error),
             }
             return;
         }
         match crate::resource::keep_picture_bytes(&file.name, &file.bytes) {
             Ok((src, size)) => self.place_picture(src, size),
-            Err(error) => tracing::warn!(target: "canvas", %error, "the picture was not placed"),
+            Err(error) => said(error),
         }
     }
 
@@ -726,9 +761,14 @@ impl CanvasSurface {
                     .map(crate::model::Selection::region)
             })
             .flatten();
-        // Sampling one layer, the chosen one (the top one when none is).
-        let layers = (self.tools.sampling.with(|sampling| *sampling)
-            == crate::tools::Sampling::Layer)
+        // Sampling one layer, the chosen one (the top one when none is):
+        // the bucket's own choice, or the wand's.
+        let sampling = if fill {
+            &self.tools.fill_sampling
+        } else {
+            &self.tools.sampling
+        };
+        let layers = (sampling.with(|sampling| *sampling) == crate::tools::Sampling::Layer)
             .then(|| {
                 self.ink()
                     .layer
@@ -738,7 +778,7 @@ impl CanvasSurface {
             .map(|layer| vec![layer]);
         let query = crate::author::ColourQuery {
             at: Some(at),
-            tolerance: crate::author::TOLERANCE,
+            tolerance: self.tools.tolerance.with(|tolerance| *tolerance),
             // Ctrl finds the colour everywhere, touching or not.
             everywhere: !fill && self.modifiers.control_key(),
             layers,
@@ -774,6 +814,11 @@ impl CanvasSurface {
     /// The brush or eraser lands at `at`: a stroke, carried on from the
     /// selected stroke when it lands on its end; or the stroke eraser.
     fn press_brush(&self, at: Point, tool: Tool) -> Drag {
+        let at = if self.tools.preset.with(|preset| preset.pixel()) {
+            Point::new((at.x + 1e-9).floor(), (at.y + 1e-9).floor())
+        } else {
+            at
+        };
         let erase = tool == Tool::Eraser || self.stylus.is_some_and(|stylus| stylus.eraser);
         let ink = self.ink();
         if erase && self.tools.erasing.with(|erasing| *erasing) == crate::tools::Erasing::Strokes {
@@ -894,7 +939,7 @@ impl CanvasSurface {
             });
         }
         let inside_group = double || self.modifiers.control_key();
-        let hit = edit::pick(&self.art, at, inside_group);
+        let hit = edit::pick_near(&self.art, at, self.pick_slop(), inside_group);
         if double && let [id] = hit.as_slice() {
             let id = id.clone();
             if self.enter(&id) {
@@ -982,6 +1027,11 @@ impl CanvasSurface {
                 *now = at;
             }
             Some(Drag::Stroke { draft, .. }) => {
+                let at = if self.tools.preset.with(|preset| preset.pixel()) {
+                    Point::new((at.x + 1e-9).floor(), (at.y + 1e-9).floor())
+                } else {
+                    at
+                };
                 draft.push(at, seconds, zoom, pressure);
             }
             Some(Drag::Sweep { path, crossed }) => {
@@ -1306,7 +1356,14 @@ impl CanvasSurface {
                 id: Some(id),
                 points,
                 size: ink.width,
-                brush: Some("eraser".into()),
+                brush: Some(
+                    if self.tools.preset.with(|preset| preset.pixel()) {
+                        "pixel-eraser"
+                    } else {
+                        "eraser"
+                    }
+                    .into(),
+                ),
                 clip,
                 opacity: (strength < 1.0).then_some((strength * 100.0).round() / 100.0),
                 params: (hardness < 0.995).then(|| {
@@ -1404,19 +1461,76 @@ impl CanvasSurface {
     }
 
     fn zoom_by(&mut self, factor: f64, focal: Option<Point>) {
+        self.zoom_motion = None;
+        let old = self.zoom();
+        let target = if self.tools.preset.with(|preset| preset.pixel()) {
+            pixel_zoom(old * factor, factor > 1.0)
+        } else {
+            old * factor
+        };
         match focal {
-            Some(focal) => self.viewport.zoom_at(factor, focal),
-            None => self.viewport.zoom_by(factor),
+            Some(focal) => self.viewport.zoom_at(target / old, focal),
+            None => self.viewport.zoom_by(target / old),
         }
         self.moved_by_hand = true;
     }
 
+    fn wheel(
+        &mut self,
+        delta: &ui::winit::event::MouseScrollDelta,
+        modifiers: ModifiersState,
+        scale: f64,
+    ) -> bool {
+        if let ui::winit::event::MouseScrollDelta::LineDelta(_, y) = delta
+            && (modifiers.control_key() || modifiers.super_key())
+            && !self.motion_reduced
+            && *y != 0.0
+        {
+            self.advance_zoom();
+            let raw = f64::from(*y) * 56.0;
+            let factor = if raw > 0.0 {
+                1.0 + raw / 240.0
+            } else {
+                1.0 / (1.0 - raw / 240.0)
+            };
+            let from = self.zoom().ln();
+            let target = self
+                .zoom_motion
+                .as_ref()
+                .map_or_else(|| self.zoom(), |(motion, _)| motion.to().exp());
+            let (min, max) = self.viewport.zoom_bounds();
+            let target = (target * factor).clamp(min, max).ln();
+            self.zoom_motion = Some((
+                ui::animation::Animated::new(
+                    from,
+                    target,
+                    self.zoom_duration,
+                    ui::animation::Curve::EaseOut,
+                ),
+                self.cursor,
+            ));
+            self.moved_by_hand = true;
+            return true;
+        }
+        self.zoom_motion = None;
+        if !self
+            .viewport
+            .on_wheel(delta, &modifiers, self.cursor, scale)
+        {
+            return false;
+        }
+        self.moved_by_hand = true;
+        true
+    }
+
     fn zoom_to_fit(&mut self) {
+        self.zoom_motion = None;
         self.viewport.reset_to_fit();
         self.moved_by_hand = false;
     }
 
     fn zoom_to_selection(&mut self) {
+        self.zoom_motion = None;
         if let Some((bounds, _)) = edit::frame(&self.art, &self.selection) {
             let margin = bounds.width().max(bounds.height()) * 0.1;
             self.viewport.zoom_to_rect(bounds.inflate(margin, margin));
@@ -1426,22 +1540,60 @@ impl CanvasSurface {
 
     /// Carry out a change of view asked for by the zoom buttons, and tell
     /// them how far the canvas is zoomed now.
+    /// Carry out the canvas's keys pressed while something else had the
+    /// focus.
+    fn follow_keys(&mut self) {
+        if let Some(ids) = self.tools.pick_objects.with(Clone::clone) {
+            self.tools.pick_objects.set(None);
+            self.selection = ids
+                .into_iter()
+                .filter(|id| self.art.mark(id).is_some())
+                .collect();
+            self.tools.tool.set(Tool::Select);
+            self.tools.selection.set(self.selection.clone());
+        }
+        if self.tools.keys.with(Vec::is_empty) {
+            return;
+        }
+        let keys = self.tools.keys.with(Clone::clone);
+        self.tools.keys.set(Vec::new());
+        for pressed in keys {
+            self.key(&pressed.key, pressed.text.as_deref(), pressed.modifiers);
+        }
+    }
+
     fn follow_view(&mut self) {
         if self.rect.width() > 1.0
             && let Some(request) = self.tools.view.with(|view| *view)
         {
+            self.zoom_motion = None;
             self.tools.view.set(None);
             match request {
                 ViewRequest::ZoomIn => self.zoom_by(ZOOM_STEP, None),
                 ViewRequest::ZoomOut => self.zoom_by(1.0 / ZOOM_STEP, None),
                 ViewRequest::Fit => self.zoom_to_fit(),
+                ViewRequest::Pixel => {
+                    self.viewport.set_zoom(pixel_zoom(self.zoom(), false));
+                    self.moved_by_hand = true;
+                }
                 ViewRequest::Actual => {
+                    self.zoom_motion = None;
                     self.viewport.set_zoom(1.0);
                     self.moved_by_hand = true;
                 }
             }
         }
         self.follow_width();
+        if self.tools.preset.with(|preset| preset.pixel()) && !self.moved_by_hand {
+            self.viewport.set_zoom(pixel_zoom(self.zoom(), false));
+        }
+        if self.tools.preset.with(|preset| preset.pixel())
+            && (self.zoom() - self.zoom().round()).abs() < 1e-9
+        {
+            let origin = self.viewport.content_point_to_screen(Point::ORIGIN);
+            self.viewport
+                .pan_by(origin.x - origin.x.round(), origin.y - origin.y.round());
+        }
         let zoom = self.zoom();
         if self.tools.zoom.with(|shown| (*shown - zoom).abs() > 1e-9) {
             // The readout is drawn before the canvas: wake the window so it
@@ -1467,28 +1619,25 @@ impl CanvasSurface {
         }
     }
 
-    /// Put the sidebar away when the window becomes narrower than the
-    /// compact breakpoint, and bring it back when it widens again. Only a
-    /// crossing changes it, so a person who opens or closes it in between
-    /// keeps their choice.
-    fn follow_width(&mut self) {
+    fn advance_zoom(&mut self) {
+        let Some((motion, focal)) = self.zoom_motion else {
+            return;
+        };
+        let now = ui::time::now();
+        self.viewport
+            .zoom_at(motion.current(now).exp() / self.zoom(), focal);
+        if motion.done(now) {
+            self.zoom_motion = None;
+        }
+    }
+
+    /// Tell the strip over the canvas how much room it has. The window
+    /// shell docks the inspector, or makes it a drawer, as the window's
+    /// width asks.
+    fn follow_width(&self) {
         if self.rect.width() <= 1.0 {
             return;
         }
-        let shown = self.tools.sidebar.with(|shown| *shown);
-        // The sidebar just shown or put away, with the canvas not laid out
-        // again yet: its width says nothing about the window until it is.
-        let seen = self.width_seen.replace((shown, self.rect.x1));
-        if seen.is_some_and(|(was, x1)| was != shown && (x1 - self.rect.x1).abs() < 0.5) {
-            self.width_seen = seen;
-            return;
-        }
-        let sidebar = if shown {
-            f64::from(crate::SIDEBAR)
-        } else {
-            0.0
-        };
-        let window = self.rect.x1 + sidebar;
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -1498,13 +1647,6 @@ impl CanvasSurface {
             (self.rect.width().max(0.0) as u32) / crate::tools::ROOM_STEP * crate::tools::ROOM_STEP;
         if self.tools.room.with(|shown| *shown != room) {
             self.tools.room.writer().set(room);
-        }
-        let narrow = window < f64::from(self.metrics.compact_breakpoint);
-        if self.was_narrow != Some(narrow) {
-            if self.was_narrow.is_some() || narrow {
-                self.tools.sidebar.writer().set(!narrow);
-            }
-            self.was_narrow = Some(narrow);
         }
     }
 
@@ -1524,6 +1666,7 @@ impl CanvasSurface {
             ("-" | "_", _, _) => self.zoom_by(1.0 / ZOOM_STEP, None),
             ("0", true, _) | ("!" | "1", false, true) => self.zoom_to_fit(),
             ("1", true, _) | ("0" | ")", false, true) => {
+                self.zoom_motion = None;
                 self.viewport.set_zoom(1.0);
                 self.moved_by_hand = true;
             }
@@ -1611,6 +1754,7 @@ impl CanvasSurface {
                 self.select(Vec::new());
                 true
             }
+            Key::Character(ch) if self.tools.size_key(ch) => true,
             Key::Character(ch) if !modifiers.alt_key() => {
                 let Some(tool) = Tool::ALL
                     .into_iter()
@@ -1962,9 +2106,9 @@ impl CanvasSurface {
     }
 
     /// The revision a view answers about: the document's heads.
-    fn revision(doc: &mut AutoCommit) -> String {
+    fn revision(heads: &[ui::automerge::ChangeHash]) -> String {
         let mut hasher = blake3::Hasher::new();
-        for head in doc.get_heads() {
+        for head in heads {
             hasher.update(head.as_ref());
         }
         hasher
@@ -1978,34 +2122,37 @@ impl CanvasSurface {
     /// The artwork at `version` (a change id or a checkpoint name), its
     /// revision and the version's name; now when `version` is absent.
     fn at_version(
-        doc: &mut AutoCommit,
+        cx: &Reading,
         version: Option<&str>,
     ) -> Result<(Artwork, String, Option<String>), String> {
         let Some(version) = version else {
-            return Ok((crate::doc::read(doc), Self::revision(doc), None));
+            let document = cx
+                .document()
+                .ok_or_else(|| "the artwork is not open here".to_owned())?;
+            return Ok((
+                crate::doc::read(&document),
+                Self::revision(&cx.heads()),
+                None,
+            ));
         };
-        let heads = ui::history_source::steps::resolve(doc, version)?;
-        let mut past = doc
-            .fork_at(&heads)
-            .map_err(|error| format!("version {version:?} is not in this artwork: {error}"))?;
-        let name = ui::framework::history::version_name(&heads);
+        let past = cx.version(version)?;
         Ok((
-            crate::doc::read(&past),
-            Self::revision(&mut past),
-            Some(name),
+            crate::doc::read(&past.doc),
+            Self::revision(&past.heads),
+            Some(past.name),
         ))
     }
 
     /// The two versions a diff compares; `to` is now when absent.
     fn versions(
-        doc: &mut AutoCommit,
+        cx: &Reading,
         now: &Artwork,
         diff: &crate::resource::Diff,
     ) -> Result<view_ops::Versions, String> {
-        let (before, _, from) = Self::at_version(doc, Some(&diff.from))?;
+        let (before, _, from) = Self::at_version(cx, Some(&diff.from))?;
         let (after, to) = match &diff.to {
             Some(to) => {
-                let (after, _, to) = Self::at_version(doc, Some(to))?;
+                let (after, _, to) = Self::at_version(cx, Some(to))?;
                 (after, to)
             }
             None => (now.clone(), None),
@@ -2082,13 +2229,148 @@ impl CanvasSurface {
         }))
     }
 
-    fn answer(&mut self, op: &ViewOp, doc: &mut AutoCommit) -> Result<ActionOutput, String> {
+    /// The invocation sees one immutable revision, even when the person edits
+    /// while its settled picture is being rendered.
+    fn picture_job(&self, op: ViewOp, cx: &mut Reading) -> ui::framework::EffectAnswer {
+        let version = match &op {
+            ViewOp::Look(look) => look.version.as_deref(),
+            _ => None,
+        };
+        let (art, revision, shown) = Self::at_version(cx, version)?;
+        let path = match &op {
+            ViewOp::Export(export) => export.path.clone(),
+            _ => None,
+        };
+        let pictures = self.pictures.clone();
+        let content = crate::content::store();
+        let output_store = content.clone();
+        let phase = ui::i18n::I18nManager::lookup_plain("canvas-rendering-artwork");
+        Ok(cx.thread(
+            move |progress| {
+                progress.report(phase, None, None);
+                pictures.render(&art, content, &op)
+            },
+            move |_, result, _| {
+                let (picture, mut info) = result?;
+                if let Some(path) = &path {
+                    let extensions: &[&str] = match picture.format {
+                        "jpeg" => &["jpg", "jpeg"],
+                        "webp" => &["webp"],
+                        _ => &["png"],
+                    };
+                    let written = crate::document::export_to(path, extensions, &picture.bytes)?;
+                    if let Value::Object(fields) = &mut info {
+                        fields.insert("path".into(), written.into());
+                    }
+                }
+                Self::picture_output(&picture, info, &revision, shown.as_deref(), &output_store)
+                    .map(ui::framework::Effected::Done)
+            },
+        ))
+    }
+
+    fn picture_output(
+        picture: &view_ops::Picture,
+        mut info: Value,
+        revision: &str,
+        shown: Option<&str>,
+        content: &tilo_content::ContentStore,
+    ) -> Result<ActionOutput, String> {
+        let hash = content
+            .put(&picture.bytes)
+            .map_err(|error| format!("the picture could not be stored: {error}"))?;
+        let address = tilo_actions::content_resource(&hash)
+            .ok_or_else(|| "the picture has no content address".to_owned())?;
+        if let Value::Object(fields) = &mut info {
+            fields.insert("revision".into(), revision.into());
+            fields.insert("content".into(), address.clone().into());
+            if let Some(shown) = shown {
+                fields.insert("version".into(), shown.into());
+            }
+        }
+        Ok(ActionOutput {
+            value: Some(info),
+            resources: vec![address],
+        })
+    }
+
+    /// The model and edge filter share the framework's progress, permission
+    /// checks and attributed completion for buttons and semantic callers.
+    fn area_job(
+        &mut self,
+        select: crate::selection::Select,
+        cx: &mut Reading,
+    ) -> ui::framework::EffectAnswer {
+        if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+            return Err("image area finding needs background threads on this platform".into());
+        }
+        if self.finding {
+            return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-busy"));
+        }
+        if select.subject != Some(true) && select.refine.is_none() {
+            return Err(
+                "give subject: true or refine: units; use select for geometric areas".into(),
+            );
+        }
+        let (art, _, _) = Self::at_version(cx, None)?;
+        let mut document = cx
+            .document()
+            .ok_or_else(|| "the artwork is not open here".to_owned())?
+            .clone();
+        if let Some(layer) = &select.layer
+            && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
+        {
+            return Err(format!("there is no picture layer {layer:?}"));
+        }
+        let pictures = self.pictures.clone();
+        let content = crate::content::store();
+        let sampled = art.clone();
+        let request = select.clone();
+        let phase = ui::i18n::I18nManager::lookup_plain(if select.subject == Some(true) {
+            "canvas-finding-subject"
+        } else {
+            "canvas-refining-edge"
+        });
+        self.finding = true;
+        self.tools.notice.set(Some(phase.clone()));
+        Ok(cx.thread(
+            move |progress| {
+                progress.report(phase, None, None);
+                pictures.prepare(&sampled, content, &request)?.finish()
+            },
+            move |surface, result, cx| {
+                surface.finding = false;
+                surface.tools.notice.set(None);
+                let (area, matte, found) = result?;
+                if cx.live().with(|current| current != &art) {
+                    return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-changed"));
+                }
+                if cx.dispatcher().read_only() {
+                    return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-read-only"));
+                }
+                let subject = select.subject == Some(true);
+                let action = crate::author::found(select, area, matte);
+                ui::tilo_actions::Action::apply(&action, &mut document).map_err(|error| error.to_string())?;
+                let mut answer = json!({"selection": crate::answer::selection(&crate::doc::read(&document))});
+                if subject && let Value::Object(fields) = &mut answer {
+                    fields.insert("found_by".into(), json!({"model": found.model, "load_ms": found.load_ms, "infer_ms": found.infer_ms, "refine_ms": found.refine_ms}));
+                }
+                let CanvasAction::Select(select) = action else {
+                    return Err("the finder did not produce a selection".into());
+                };
+                cx.invoke(ArtworkResource::SELECT_FOUND.with((select.d, select.matte, select.mode, select.feather)));
+                Ok(ui::framework::Effected::value(answer))
+            },
+        ))
+    }
+
+    fn answer(&mut self, op: &ViewOp, cx: &Reading) -> Result<ActionOutput, String> {
         let version = match op {
             ViewOp::Look(look) => look.version.as_deref(),
             ViewOp::Inspect(inspect) => inspect.version.as_deref(),
             _ => None,
         };
-        let (art, revision, shown) = Self::at_version(doc, version)?;
+        let (art, revision, shown) = Self::at_version(cx, version)?;
         let stamp = |info: &mut Value| {
             if let Value::Object(fields) = info {
                 fields.insert("revision".into(), revision.clone().into());
@@ -2106,7 +2388,7 @@ impl CanvasSurface {
                     resources: Vec::new(),
                 });
             };
-            let hash = tilo_content::ContentStore::for_app()
+            let hash = crate::content::store()
                 .put(&picture.bytes)
                 .map_err(|error| format!("the picture could not be stored: {error}"))?;
             let address = tilo_actions::content_resource(&hash)
@@ -2137,7 +2419,7 @@ impl CanvasSurface {
                 export,
             ))),
             ViewOp::Diff(diff) => {
-                let versions = Self::versions(doc, &art, diff)?;
+                let versions = Self::versions(cx, &art, diff)?;
                 let look = diff.look.unwrap_or(false);
                 picture(view_ops::diff(
                     &mut self.tools.renderer.borrow_mut(),
@@ -2181,6 +2463,7 @@ impl CanvasSurface {
                 resources: Vec::new(),
             }),
             ViewOp::SaveArtwork(save) => saved(crate::document::save(&art, save), &stamp),
+            ViewOp::FindArea(_) => Err("area finding is handled as a job".into()),
         }
     }
 
@@ -2196,7 +2479,7 @@ impl CanvasSurface {
             return None;
         }
         self.art
-            .pick_at(self.content_point(self.cursor))
+            .pick_near(self.content_point(self.cursor), self.pick_slop())
             .filter(|mark| !self.selection.contains(&mark.id))
     }
 
@@ -2213,6 +2496,7 @@ impl CanvasSurface {
         self.overlay_selection(scene, to_screen, theme);
         self.overlay_drag(scene, to_screen, theme);
         self.overlay_paths(scene, to_screen, theme);
+        self.overlay_footprint(scene, to_screen, theme);
         if let Some(session) = &self.text {
             self.draw_caret(scene, to_screen, theme, text, session);
         }
@@ -2278,7 +2562,7 @@ impl CanvasSurface {
             scene.fill(
                 Fill::NonZero,
                 at,
-                theme.bg_app.multiply_alpha(0.6),
+                theme.tokens.colors.surfaces.content.multiply_alpha(0.6),
                 None,
                 &whole,
             );
@@ -2288,7 +2572,13 @@ impl CanvasSurface {
         let mut edge = whole;
         edge.apply_affine(at);
         let dashes = Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]);
-        scene.stroke(&dashes, Affine::IDENTITY, theme.accent_primary, None, &edge);
+        scene.stroke(
+            &dashes,
+            Affine::IDENTITY,
+            theme.tokens.colors.intent.you,
+            None,
+            &edge,
+        );
     }
 
     /// The selected area's outline, and the area being selected.
@@ -2314,13 +2604,38 @@ impl CanvasSurface {
             let mut outline = crate::render::silhouette(mark);
             outline.apply_affine(to_screen * mark.affine());
             let marked = hovered == Some(mark.id.as_str()) || self.selection.contains(&mark.id);
-            crate::render::eraser_outline(scene, &outline, marked.then_some(theme.accent_primary));
+            ui::widget::selection_handles::ToolFeedback::Erased { marked }
+                .draw(scene, &outline, theme);
         }
+    }
+
+    /// The brush's or eraser's footprint round the pointer: a ring as wide
+    /// as the mark it lays at this zoom, dark and light so it reads on any
+    /// paint, as a painter's hand expects to see where it will land.
+    fn overlay_footprint(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
+        if !matches!(self.current_tool(), Tool::Brush | Tool::Eraser)
+            || self.space
+            || matches!(self.drag, Some(Drag::Pan))
+            || !self.rect.contains(self.cursor)
+        {
+            return;
+        }
+        let ring = Circle::new(
+            self.content_point(self.cursor),
+            self.tools.brush_size() / 2.0,
+        );
+        // Too small to read as a ring: the crosshair says where it lands.
+        if ring.radius * self.zoom() < 2.0 {
+            return;
+        }
+        let mut path = ui::vello::kurbo::Shape::to_path(&ring, 0.1);
+        path.apply_affine(to_screen);
+        ui::widget::selection_handles::ToolFeedback::Footprint.draw(scene, &path, theme);
     }
 
     /// What is hovered and picked: outlines, the frame and its guides.
     fn overlay_selection(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let zoom = self.zoom();
         let hair = Stroke::new(1.0);
         let line = Stroke::new(1.5);
@@ -2427,7 +2742,7 @@ impl CanvasSurface {
 
     /// What a drag is making: a marquee, a shape, a stroke on a plain layer.
     fn overlay_drag(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let hair = Stroke::new(1.0);
         match &self.drag {
             Some(Drag::Marquee { start, now, .. }) => {
@@ -2435,7 +2750,7 @@ impl CanvasSurface {
                 scene.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
-                    accent.multiply_alpha(0.08),
+                    theme.tokens.colors.intent.selection_tint,
                     None,
                     &area,
                 );
@@ -2505,7 +2820,7 @@ impl CanvasSurface {
 
     /// The path the pen is laying down, or the points of one being edited.
     fn overlay_paths(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let line = Stroke::new(1.5);
         let screen = |mut path: BezPath, affine: Affine| {
             path.apply_affine(to_screen * affine);
@@ -2618,7 +2933,7 @@ impl CanvasSurface {
         let leading = size * line_height.unwrap_or(1.2);
         #[allow(clippy::cast_precision_loss, reason = "a text has at most 2000 lines")]
         let top = y - size * 0.8 + leading * row as f64;
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let at = to_screen * affine;
         let caret_line = Line::new(
             at * Point::new(left + prefix, top),
@@ -2735,8 +3050,8 @@ fn draw_anchor(
     active: bool,
     handles: bool,
 ) {
-    let accent = theme.accent_primary;
-    let surface = theme.tokens.colors.surfaces.base;
+    let accent = theme.tokens.colors.intent.you;
+    let surface = theme.tokens.colors.surfaces.raised;
     let line = Stroke::new(1.0);
     let at = to_screen * anchor.at;
     if handles {
@@ -2766,6 +3081,14 @@ fn draw_anchor(
 }
 
 impl Widget for CanvasSurface {
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
+        if reduced && let Some((motion, focal)) = self.zoom_motion.take() {
+            self.viewport
+                .zoom_at(motion.to().exp() / self.zoom(), focal);
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2775,6 +3098,8 @@ impl Widget for CanvasSurface {
         use ui::widget::TaffyTreeExt as _;
         self.metrics = theme.tokens.metrics;
         self.spacing = theme.tokens.spacing;
+        self.set_motion_reduced(theme.reduce_motion);
+        self.zoom_duration = theme.tokens.motion.durations.fast();
         // Room for a selection frame's handles and the rotation handle.
         let least = taffy::Dimension::length(self.metrics.min_pointer_target * 4.0);
         // The room its parent leaves along either axis: in a column under
@@ -2836,7 +3161,9 @@ impl Widget for CanvasSurface {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.advance_zoom();
         self.follow_tool();
+        self.follow_keys();
         self.follow_view();
         self.follow_crop();
         self.take_picked();
@@ -2847,13 +3174,19 @@ impl Widget for CanvasSurface {
             transform,
             &self.rect,
         );
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
         let to_screen = transform * self.viewport.content_to_screen();
         let board = self.art.bounds();
-        let zoom = self.zoom();
-        // The sheet lies on the table: the theme's own lift under it.
+        // The sheet is an object lifted off the content ground: the one
+        // soft shadow a floating thing casts, and an edge measured against
+        // the ground it sits on.
         let sheet = self.viewport.content_to_screen().transform_rect_bbox(board);
-        ui::surface::shadow(scene, transform, sheet, 0.0, &theme.tokens.elevation.e2);
+        ui::surface::shadow(
+            scene,
+            transform,
+            sheet,
+            0.0,
+            &theme.tokens.elevation.floating,
+        );
         let options = Options {
             reference: self
                 .art
@@ -2861,6 +3194,15 @@ impl Widget for CanvasSurface {
                 .as_ref()
                 .is_some_and(|reference| reference.visible),
             wet: self.wet(),
+            detail: Some(crate::detail::Detail {
+                visible: to_screen
+                    .inverse()
+                    .transform_rect_bbox(transform.transform_rect_bbox(self.rect))
+                    .intersect(board),
+                pixels_per_unit: to_screen.determinant().abs().sqrt(),
+                wait: false,
+            }),
+            live: true,
             ..Options::default()
         };
         if let Some(shown) = self.shown() {
@@ -2878,22 +3220,10 @@ impl Widget for CanvasSurface {
                 .borrow_mut()
                 .draw(&art, scene, to_screen, text_renderer, &options);
         }
-        scene.stroke(
-            &Stroke::new(1.0 / zoom),
-            to_screen,
-            theme.border_standard,
-            None,
-            &board,
-        );
+        ui::surface::ContentFrame::Sheet.draw(scene, transform, sheet, theme);
         self.paint_overlay(scene, to_screen, theme, text_renderer);
         if self.focused && !self.pressed_into_focus {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &self.rect.inset(-1.0),
-            );
+            ui::widget::paint_focus_ring(scene, transform, self.rect.inset(-2.0), 0.0, theme);
         }
         scene.pop_layer();
     }
@@ -2915,6 +3245,7 @@ impl Widget for CanvasSurface {
             }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) if self.rect.contains(self.cursor) => {
+                    self.zoom_motion = None;
                     self.stylus = ctx.pen();
                     if !self.focused {
                         self.pressed_into_focus = true;
@@ -2924,7 +3255,32 @@ impl Widget for CanvasSurface {
                     self.press(self.cursor);
                     *ctx.handled = true;
                 }
+                // A right-click is about what is under it: with the
+                // selecting tool it picks that mark first, as a left click
+                // would, and the menu over the canvas offers what to do
+                // with it. It leaves the press to that menu.
+                (ElementState::Pressed, MouseButton::Right)
+                    if self.rect.contains(self.cursor) && self.drag.is_none() =>
+                {
+                    if !self.focused {
+                        self.pressed_into_focus = true;
+                    }
+                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.current_tool() == Tool::Select && self.points.is_none() {
+                        let at = self.content_point(self.cursor);
+                        let hit = edit::pick_near(&self.art, at, self.pick_slop(), false);
+                        if hit.is_empty() {
+                            if !self.frame().is_some_and(|frame| frame.contains(at)) {
+                                self.select(Vec::new());
+                            }
+                        } else if !hit.iter().all(|id| self.selection.contains(id)) {
+                            self.select(hit);
+                        }
+                        self.tools.selection.set(self.selection.clone());
+                    }
+                }
                 (ElementState::Pressed, MouseButton::Middle) if self.rect.contains(self.cursor) => {
+                    self.zoom_motion = None;
                     self.viewport.begin_pan(self.cursor);
                     self.drag = Some(Drag::Pan);
                     *ctx.handled = true;
@@ -2938,18 +3294,14 @@ impl Widget for CanvasSurface {
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
-                if self.viewport.on_wheel(
-                    delta,
-                    &ctx.modifiers.state(),
-                    self.cursor,
-                    ctx.scale_factor,
-                ) {
-                    self.moved_by_hand = true;
+                if self.wheel(delta, ctx.modifiers.state(), ctx.scale_factor) {
                     *ctx.handled = true;
                 }
             }
             WindowEvent::PinchGesture { delta, .. } if self.rect.contains(self.cursor) => {
-                self.zoom_by((1.0 + delta).max(0.1), Some(self.cursor));
+                self.zoom_motion = None;
+                self.viewport.zoom_at((1.0 + delta).max(0.1), self.cursor);
+                self.moved_by_hand = true;
                 *ctx.handled = true;
             }
             WindowEvent::Ime(ime) if self.text.is_some() => {
@@ -2974,42 +3326,6 @@ impl Widget for CanvasSurface {
             }
             _ => {}
         }
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[VIEW_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        if request.type_id != VIEW_TYPE {
-            return Ok(None);
-        }
-        let view: ViewOp = serde_json::from_slice(request.payload)
-            .map_err(|error| format!("not a canvas view: {error}"))?;
-        // An answer shows every picture: it waits for those still decoding.
-        self.tools.renderer.borrow_mut().pictures.patient = true;
-        let output = self.answer(&view, doc);
-        self.tools.renderer.borrow_mut().pictures.patient = false;
-        let output = output?;
-        Ok(Some(ResourceOperationStart::Completed(output)))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<InvocationUpdate> {
-        self.results.remove(&invocation)
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
@@ -3062,13 +3378,29 @@ impl Widget for CanvasSurface {
             .then(|| self.ime_caret.get().unwrap_or(self.rect))
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        // Still captures must await the requested image and paint work;
+        // asking for frames alone does not declare an unfinished placeholder.
+        let renderer = self.tools.renderer.borrow();
+        self.finding
+            || renderer.pictures.decoding()
+            || renderer.detail_pending()
+            || renderer.settling()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
         // drawing until it has caught up. A picture being chosen, or
-        // decoded, is waited for.
-        self.wet().is_some()
+        // decoded, is waited for. Close up, the finer tiles of a painted
+        // layer arrive as they are simulated, and a painted layer's
+        // simulation catches up with a stroke just laid.
+        self.zoom_motion.is_some()
+            || self.wet().is_some()
             || self.tools.picking.borrow().is_some()
+            || self.finding
             || self.tools.renderer.borrow().pictures.decoding()
+            || self.tools.renderer.borrow().detail_pending()
+            || self.tools.renderer.borrow().settling()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<CursorIcon> {
@@ -3112,8 +3444,19 @@ impl Widget for CanvasSurface {
         })
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.follow_keys();
         self.follow_view();
+        // How large a brush can be follows the artwork's size.
+        let extent = self.art.width.max(self.art.height);
+        if extent > 0.0
+            && self
+                .tools
+                .extent
+                .with(|known| (*known - extent).abs() > f64::EPSILON)
+        {
+            self.tools.extent.set(extent);
+        }
         // The panels show what is selected.
         if self.tools.selection.with(|shown| *shown != self.selection) {
             self.tools.selection.set(self.selection.clone());
@@ -3133,8 +3476,38 @@ impl Widget for CanvasSurface {
     }
 }
 
-impl ResourceSurface<ArtworkResource> for CanvasSurface {
+/// What a canvas view reads the artwork through.
+type Reading = ui::framework::EffectCx<ArtworkResource, CanvasSurface>;
+
+impl ResourceSurface<ArtworkResource, ViewOp> for CanvasSurface {
+    /// Settled pictures and image areas run as jobs; other views answer
+    /// directly from the current artwork or the version the caller named.
+    fn effect(
+        &mut self,
+        op: ViewOp,
+        cx: &mut ui::framework::EffectCx<ArtworkResource, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if matches!(op, ViewOp::Look(_) | ViewOp::Export(_))
+            && ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available
+        {
+            return self.picture_job(op, cx);
+        }
+        if let ViewOp::FindArea(select) = op {
+            return self.area_job(select.into(), cx);
+        }
+        self.answer(&op, cx).map(ui::framework::Effected::Done)
+    }
+
     fn present(&mut self, state: &Rc<Artwork>) {
+        // A differently sized sheet needs its own fit; keeping a hand-panned
+        // sprite view can otherwise put a newly opened photograph off screen.
+        if self.art.width.to_bits() != state.width.to_bits()
+            || self.art.height.to_bits() != state.height.to_bits()
+        {
+            self.moved_by_hand = false;
+            self.fitted_to = None;
+            self.zoom_motion = None;
+        }
         self.expected.retain(|id| state.mark(id).is_none());
         let expected = &self.expected;
         self.selection
@@ -3167,6 +3540,9 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
     }
 
     fn attach(&mut self, cx: SurfaceCx<ArtworkResource>) {
+        if let Some(content) = cx.content() {
+            self.tools.renderer.borrow_mut().pictures.read_from(content);
+        }
         self.read_only = cx.read_only();
         self.dispatcher = Some(cx.dispatcher());
     }
@@ -3244,6 +3620,31 @@ mod tests {
 
     use super::*;
     use crate::panels::shortcuts::{GROUPS, tools};
+
+    #[test]
+    fn capture_waits_for_requested_artwork_painting() {
+        let mut doc = ui::tilo_resource::Doc::new();
+        <ArtworkResource as ui::tilo_resource::Resource>::initialize(&mut doc).unwrap();
+        for action in crate::sample::landscape() {
+            ui::tilo_actions::Action::apply(&action, &mut doc).unwrap();
+        }
+        let art = crate::doc::read(&doc);
+        assert!(art.layers.iter().any(|layer| !layer.medium.is_empty()));
+        assert!(!art.marks.is_empty());
+        let tools = Tools::default();
+        let mut surface = CanvasSurface::new(tools.clone());
+        surface.present(&Rc::new(art));
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(surface), (390, 844));
+        harness
+            .wait_for_visuals(std::time::Duration::from_secs(30))
+            .expect("the production capture wait completes");
+        let renderer = tools.renderer.borrow();
+        assert!(
+            !renderer.settling() && !renderer.detail_pending() && !renderer.pictures.decoding(),
+            "capture must await the requested painting, detail tiles and pictures"
+        );
+    }
 
     /// Keys the window's host answers (undo, redo, history, the palette)
     /// or that need the pointer: the canvas is not where they land.

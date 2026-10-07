@@ -96,8 +96,8 @@ control socket past it.
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
 
 ```bash
-cargo build -p shell --bin tilo-control      # lands in target/debug, NOT on PATH
-alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/shell --bin tilo-control
+cargo build -p tilo-control                 # lands in target/debug; images ship /usr/bin/tilo-control
+alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/control-cli
 
 qc actions list Calculator --json           # inspect search results without opening the palette
 qc actions invoke applications dev.tilo.calculator # invoke the exact discovered identity
@@ -143,7 +143,16 @@ when pending, use `actions status INVOCATION_ID` until it reaches a terminal
 state. Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
-presented app identity, surface, frame count, and rendering errors.
+presented app identity, surface, frame count, and rendering errors for foreign
+Wayland clients. It does not observe apps mounted inside the compositor:
+`actions:window.new.terminal` mounts Terminal in-process, with `AppPlaceholder`
+as its persisted tile kind. Neither that kind nor an empty `foreign_frames`
+reply proves the hosted app failed to render. Verify its exported
+`inspect-session` operation to completion, its laid-out `terminal` target and
+a private headless snapshot. Process startup additionally requires an open
+session with input available; rendering a missing-runtime explanation is not
+a working PTY. The separately discovered `applications:so.tilo.terminal`
+launches the packaged app and should be checked with foreign-frame counters.
 
 `scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
 invocation against an isolated compositor. `app-launch-proof.py` selects native
@@ -420,7 +429,8 @@ For example:
 They flow through `quick_ui::offscreen::OffscreenRenderer` and run a single
 `sync → build_layout → compute_layout → apply_layout → draw` cycle — no event
 loop. Browser also offers focused deterministic chrome states and, with the
-`wpe` feature, `--shots-live` for the real engine-to-frame path.
+Chromium engine runtime installed, `--shots-live` for the real engine-to-frame
+path.
 
 ## Per-app interaction: `--headless-drive`
 
@@ -541,7 +551,7 @@ Two things it pins that are easy to get wrong by hand:
 
 - The socket takes **winit** key names. `Enter` works; `Return` is an
   xkb name and comes back as a `parse_error`.
-- **`Super+K`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
+- **`Super+Space`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
   only widens to global when nothing is focused — so it appears to work
   on an empty workspace and stops working once there is a tab in front
   of you. The script measures both scopes after the app is up, where

@@ -39,3 +39,11 @@ greeter-larger-text = Larger text
 greeter-high-contrast = High contrast
 greeter-screen-reader = Screen reader
 greeter-accounts = Accounts on this computer
+
+greeter-auth-response = Authentication response
+greeter-auth-respond = Respond to authentication challenge
+greeter-auth-cancel = Cancel sign-in
+greeter-auth-cancelling = Cancelling sign-in…
+greeter-auth-cancelled = Sign-in cancelled
+
+greeter-session-diagnostics = Configure timing diagnostics for this sign-in

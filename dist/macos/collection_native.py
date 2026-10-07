@@ -180,7 +180,7 @@ def verify_signatures(app, identity, mode, architecture):
     for item in code + [app]:
         command = ['/usr/bin/codesign', '--verify', '--strict', '--all-architectures']
         if identity['sha1'] != '-':
-            command += ['-R', f'anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
+            command += ['-R', f'=anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
         run(command + [item])
         arches = ['arm64', 'x86_64'] if architecture == 'universal' else [architecture]
         for arch in arches:

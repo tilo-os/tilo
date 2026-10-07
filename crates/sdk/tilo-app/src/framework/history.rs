@@ -16,6 +16,7 @@
 //! takes the place of this one.
 
 use std::collections::HashSet;
+use ui_core::automerge::transaction::Transactable;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,6 +45,9 @@ pub(crate) enum HistoryEdit {
     Undo {
         steps: Option<u32>,
         run: Option<String>,
+        /// An exact author id from history for steps outside a run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
         /// Every step after this version instead.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<String>,
@@ -67,10 +71,16 @@ fn limit(steps: Option<u32>, default: usize) -> usize {
 impl tilo_actions::Action for HistoryEdit {
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
-            Self::Undo { steps, run, to } => {
+            Self::Undo { steps, run, by, to } => {
                 let (scope, default) = match run {
                     Some(run) => (Scope::Run(run.clone()), usize::MAX),
-                    None => (Scope::invoking(doc), 1),
+                    None => (
+                        by.as_ref().map_or_else(
+                            || Scope::invoking(doc),
+                            |author| Scope::Invoker(author.clone()),
+                        ),
+                        1,
+                    ),
                 };
                 match to {
                     Some(to) => steps::resolve(doc, to)
@@ -95,6 +105,129 @@ impl tilo_actions::Action for HistoryEdit {
             Self::Checkpoint { .. } => ChangeKind::Housekeeping,
             _ => ChangeKind::Content,
         }
+    }
+}
+
+/// The resource's own registry is the only decoder for its recorded
+/// compensation. Wire context never installs a decoder or a caller.
+pub(crate) struct ResourceHistoryEdit<R> {
+    edit: HistoryEdit,
+    resource: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R> std::fmt::Debug for ResourceHistoryEdit<R> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.edit.fmt(formatter)
+    }
+}
+
+impl<'de, R> Deserialize<'de> for ResourceHistoryEdit<R> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self {
+            edit: HistoryEdit::deserialize(deserializer)?,
+            resource: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R> {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
+        if let HistoryEdit::Redo { steps: count } = &self.edit {
+            let scope = Scope::invoking(doc);
+            let mut registry = tilo_actions::ActionRegistry::new();
+            tilo_resource::group::register::<R>(&mut registry);
+            let mut original = doc.fork();
+            return steps::redo_with(doc, &scope, limit(*count, 1), |version| {
+                if tilo_actions::executor::verified_compensation(
+                    &mut original,
+                    version.hash,
+                    &registry,
+                )
+                .map_err(|error| error.to_string())?
+                .is_none()
+                {
+                    return Ok(None);
+                }
+                let recorded = version
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.compensation.as_ref())
+                    .ok_or("verified redo compensation absent")?;
+                let action = registry
+                    .decode(&recorded.redo)
+                    .map_err(|error| error.to_string())?;
+                let restoration = action
+                    .redo_encoded(&original)
+                    .ok_or("redo requires the recorded outside operation's declared restoration")?;
+                let restoration = registry
+                    .decode(&restoration)
+                    .map_err(|error| error.to_string())?;
+                if restoration.locus() != ExecutionLocus::ClientLocal {
+                    return Err("history restoration requires another execution locus".into());
+                }
+                Ok(Some(steps::UndoCompensation {
+                    action: restoration,
+                    requires_settlement: action.inverse_requires_settlement(),
+                }))
+            })
+            .map(drop)
+            .map_err(ActionError::Refused);
+        }
+        let HistoryEdit::Undo {
+            steps: count,
+            run,
+            by,
+            to,
+        } = &self.edit
+        else {
+            return self.edit.apply(doc);
+        };
+        let (scope, default) = match run {
+            Some(run) => (Scope::Run(run.clone()), usize::MAX),
+            None => (
+                by.as_ref().map_or_else(
+                    || Scope::invoking(doc),
+                    |author| Scope::Invoker(author.clone()),
+                ),
+                1,
+            ),
+        };
+        let mut registry = tilo_actions::ActionRegistry::new();
+        tilo_resource::group::register::<R>(&mut registry);
+        let mut original = doc.fork();
+        let compensate = |version: &Version| {
+            let Some(action) = tilo_actions::executor::verified_compensation(
+                &mut original,
+                version.hash,
+                &registry,
+            )
+            .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            if action.locus() != ExecutionLocus::ClientLocal {
+                return Err("history compensation requires another execution locus".into());
+            }
+            let requires_settlement = version
+                .context
+                .as_ref()
+                .and_then(|context| context.compensation.as_ref())
+                .map(|compensation| registry.decode(&compensation.redo))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .is_some_and(|original| original.inverse_requires_settlement());
+            Ok(Some(steps::UndoCompensation {
+                action,
+                requires_settlement,
+            }))
+        };
+        match to {
+            Some(to) => steps::resolve(doc, to)
+                .and_then(|heads| steps::undo_since_with(doc, &scope, &heads, compensate)),
+            None => steps::undo_with(doc, &scope, limit(*count, default), compensate),
+        }
+        .map(drop)
+        .map_err(ActionError::Refused)
     }
 }
 
@@ -210,11 +343,17 @@ fn edit_specs() -> Vec<ActionSpec> {
         edit(
             "undo",
             "Undo",
-            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with to, all after a version.",
+            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
             vec![
                 steps("How many steps, newest first"),
                 ActionParam::optional("run", ParamType::Text, "An agent run id from history")
                     .nullable(),
+                ActionParam::optional(
+                    "by",
+                    ParamType::Text,
+                    "Exact author id from history, for steps outside a run",
+                )
+                .nullable(),
                 ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
             ],
             |args| {
@@ -222,7 +361,20 @@ fn edit_specs() -> Vec<ActionSpec> {
                 if to.is_some() && args.integer("steps").is_some() {
                     return Err("give steps or to, not both".into());
                 }
+                let by = args.text("by").map(str::trim).map(str::to_owned);
+                if by.as_ref().is_some_and(|author| {
+                    author.is_empty() || author.len() > 512 || author.chars().any(char::is_control)
+                }) {
+                    return Err(
+                        "author id must be nonempty, at most 512 bytes, and contain no controls"
+                            .into(),
+                    );
+                }
+                if by.is_some() && args.text("run").is_some() {
+                    return Err("choose an author or a run, not both".into());
+                }
                 Ok(HistoryEdit::Undo {
+                    by,
                     steps: steps_arg(args)?,
                     run: args.text("run").map(str::to_owned),
                     to,
@@ -406,8 +558,8 @@ pub struct HistoryVersion {
 const AGENT_RUN: &str = "agent-run";
 
 /// The last `last` versions, oldest first, as [`HistoryVersion`]s.
-pub(crate) fn recent(doc: &mut AutoCommit, last: usize) -> Vec<HistoryVersion> {
-    let versions = tilo_resource::history::versions(doc);
+pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
+    let versions = tilo_resource::history::committed_versions(doc);
     let undone = steps::undone(doc);
     let checkpoints = steps::checkpoints(doc);
     let total = versions.len();
@@ -474,13 +626,13 @@ impl HistoryFeeds {
     }
 
     /// Show the versions up to `doc`'s heads, when they moved.
-    pub(crate) fn refresh(&self, doc: &mut AutoCommit) {
+    pub(crate) fn refresh(&self, doc: &AutoCommit) {
         let mut list = self.0.borrow_mut();
         list.feeds.retain(|(alive, _, _)| alive.strong_count() > 0);
         if list.feeds.is_empty() {
             return;
         }
-        let heads = doc.get_heads();
+        let heads = doc.committed_heads();
         if list.heads == heads {
             return;
         }
@@ -543,8 +695,8 @@ fn carry_over(listed: &mut [Value]) {
 }
 
 /// The versions as `history` lists them: the last `last`, oldest first.
-pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
-    let versions = tilo_resource::history::versions(doc);
+pub(crate) fn history(doc: &AutoCommit, last: usize) -> Value {
+    let versions = tilo_resource::history::committed_versions(doc);
     let undone = steps::undone(doc);
     let checkpoints = steps::checkpoints(doc);
     let total = versions.len();
@@ -559,7 +711,7 @@ pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
         "versions": listed,
         "carried": "run, run_id, by and time_ms, where absent, are the version before's",
         "total": total,
-        "now": version_name(&doc.get_heads()),
+        "now": version_name(&doc.base_heads()),
         "checkpoints": checkpoints.iter().map(|checkpoint| json!({
             "name": checkpoint.name,
             "version": version_name(&checkpoint.heads),
@@ -571,7 +723,7 @@ pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
 ///
 /// # Errors
 /// Returns a malformed request or an unknown version.
-pub(crate) fn answer(doc: &mut AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
+pub(crate) fn answer(doc: &AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
     let view: HistoryView =
         serde_json::from_slice(payload).map_err(|error| format!("not a history view: {error}"))?;
     let value = match view {
@@ -580,9 +732,9 @@ pub(crate) fn answer(doc: &mut AutoCommit, payload: &[u8]) -> Result<ActionOutpu
             let from = steps::resolve(doc, &from)?;
             let to = match to {
                 Some(to) => steps::resolve(doc, &to)?,
-                None => doc.get_heads(),
+                None => doc.base_heads(),
             };
-            let items: Vec<Value> = steps::changed_items(doc, &from, &to)
+            let items: Vec<Value> = steps::changed_items(&mut doc.clone(), &from, &to)
                 .into_iter()
                 .map(|item| json!({"item": item.path, "change": item.change}))
                 .collect();
@@ -605,9 +757,19 @@ fn ledger(patches: &[Patch], prefix: &str, put: bool) -> Vec<String> {
         .iter()
         .filter(|patch| patch.path.is_empty())
         .filter_map(|patch| match (&patch.action, put) {
-            (PatchAction::PutMap { key, .. }, true) | (PatchAction::DeleteMap { key }, false) => {
+            (PatchAction::PutMap { key, value, .. }, true)
+                if prefix != steps::UNDONE_KEY
+                    || value.0.as_i64().is_none_or(|attempt| attempt <= 0) =>
+            {
                 key.strip_prefix(prefix).map(str::to_owned)
             }
+            (PatchAction::PutMap { key, value, .. }, false)
+                if prefix == steps::UNDONE_KEY
+                    && value.0.as_i64().is_some_and(|attempt| attempt > 0) =>
+            {
+                key.strip_prefix(prefix).map(str::to_owned)
+            }
+            (PatchAction::DeleteMap { key }, false) => key.strip_prefix(prefix).map(str::to_owned),
             _ => None,
         })
         .collect()
@@ -646,9 +808,9 @@ fn items(patches: &[Patch]) -> Vec<String> {
 /// or brought back, the items a restore wrote, the checkpoint it named.
 pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Option<Value> {
     let mut doc = doc.clone();
-    let now = version_name(&doc.get_heads());
+    let now = version_name(&doc.base_heads());
     let described = |hashes: Vec<String>, doc: &mut AutoCommit| -> Vec<Value> {
-        let versions = tilo_resource::history::versions(doc);
+        let versions = tilo_resource::history::committed_versions(doc);
         versions
             .iter()
             .rev()
@@ -682,4 +844,46 @@ pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Optio
         _ => return None,
     };
     Some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui_core::automerge::{ROOT, ReadDoc};
+
+    #[test]
+    fn history_and_diff_leave_the_callers_open_edit_uncommitted() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "saved", 1_i64).unwrap();
+        let first = doc.commit().unwrap();
+        doc.put(ROOT, "saved", 2_i64).unwrap();
+        let second = doc.commit().unwrap();
+        doc.put(ROOT, "draft", true).unwrap();
+        let before = (doc.base_heads(), doc.pending_ops());
+        assert!(before.1 > 0);
+
+        let listed = history(&doc, 50);
+        assert_eq!(listed["total"], json!(2));
+        assert_eq!(listed["now"], json!(version_name(&[second])));
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+
+        let payload = serde_json::to_vec(&HistoryView::Diff {
+            from: first.to_string(),
+            to: Some(second.to_string()),
+        })
+        .unwrap();
+        let diff = answer(&doc, &payload).unwrap().value.unwrap();
+        assert!(
+            diff["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["item"] == "saved")
+        );
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+        assert_eq!(
+            doc.get(ROOT, "draft").unwrap().unwrap().0.as_bool(),
+            Some(true)
+        );
+    }
 }

@@ -692,3 +692,28 @@ fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
 
     store().forget(KEYBOARD);
 }
+
+#[test]
+fn disconnect_retains_the_displayed_secret_until_its_surface_is_destroyed() {
+    const SURFACE: u64 = 0xCA97_0010;
+    const CONNECTION: u64 = 0xCA97_0C10;
+    const APP: &str = "org.example.capture-protection.disconnected";
+    store().forget(SURFACE);
+    store().release_capture_protection(CONNECTION);
+    let mut fb = adopt(SURFACE, APP);
+    show_client(&mut fb, SURFACE);
+    let rect = tile_rect(&mut fb, SURFACE);
+    store().request_app_capture_protection(CONNECTION, APP, true);
+    store().retain_surface_capture_protection(SURFACE, APP);
+    store().release_capture_protection(CONNECTION);
+    let scene = frame(&mut fb);
+    let (shot, width, _) = CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen())
+        .expect("disconnected screenshot");
+    assert_eq!(count_near(&interior_samples(&shot, width, rect), CLIENT), 0);
+    drop(fb);
+    store().forget(SURFACE);
+    assert!(
+        !store().is_capture_protected(SURFACE, APP),
+        "destroying the surface clears its protection latch"
+    );
+}

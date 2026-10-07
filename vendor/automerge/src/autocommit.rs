@@ -379,6 +379,44 @@ impl AutoCommit {
         })
     }
 
+    /// The committed document: everything but the changes of a transaction
+    /// still open. Reads it without closing that transaction, so a holder of
+    /// `&self` can read history; a host that commits before handing the
+    /// document out sees all of it.
+    pub fn committed_document(&self) -> &Automerge {
+        &self.doc
+    }
+
+    /// The heads of the committed document ([`Self::committed_document`]),
+    /// or of the isolated view when the document is isolated: what
+    /// [`Self::get_heads`] answers once no transaction is open.
+    pub fn committed_heads(&self) -> Vec<ChangeHash> {
+        self.isolation
+            .clone()
+            .unwrap_or_else(|| self.doc.get_heads())
+    }
+
+    /// A copy of the committed document ([`Self::committed_document`]) as it
+    /// was at `heads`: what [`Self::fork_at`] makes, read from `&self`.
+    pub fn committed_fork_at(&self, heads: &[ChangeHash]) -> Result<Self, AutomergeError> {
+        Ok(Self {
+            doc: self.doc.fork_at(heads)?,
+            transaction: None,
+            patch_log: PatchLog::inactive(),
+            diff_cursor: vec![],
+            diff_cache: None,
+            save_cursor: vec![],
+            isolation: None,
+        })
+    }
+
+    /// The patches from `before` to `after` in the committed document
+    /// ([`Self::committed_document`]), without the diff cursor or cache
+    /// [`Self::diff`] keeps.
+    pub fn committed_diff(&self, before: &[ChangeHash], after: &[ChangeHash]) -> Vec<Patch> {
+        self.doc.diff(before, after)
+    }
+
     /// Get the inner document.
     #[doc(hidden)]
     pub fn document(&mut self) -> &Automerge {

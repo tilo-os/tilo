@@ -1,0 +1,16 @@
+[Unit]
+Description=Unlock %f with another of your devices
+DefaultDependencies=no
+After=systemd-udev-trigger.service tpm2.target
+Conflicts=shutdown.target initrd-switch-root.target
+Before=shutdown.target initrd-switch-root.target
+
+[Service]
+Type=simple
+# Answers systemd-cryptsetup's passphrase request for %f once a sibling
+# released its half; the prompt stays up meanwhile for a typed passphrase.
+# Stopping it (tilo-root-discover does once the volume is open) wipes the
+# material, the network profiles and the links.
+ExecStart=/usr/bin/tilo-sibling-unlock unlock %f
+KillMode=mixed
+TimeoutStopSec=15

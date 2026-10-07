@@ -67,7 +67,6 @@ os/tests/imager_broker_credentials.sh
 os/tests/imager_ephemeral_runner.sh
 os/tests/imager_ephemeral_runner_windows.sh
 os/tests/imager_linux_release_trust.sh
-os/tests/wpe_reproducibility_invariants.sh
 os/tests/generation_series_security.sh
 os/tests/system_extension_invariants.sh
 os/tests/tinker_subprocess_invariants.sh

@@ -111,6 +111,7 @@ fn version(number: &str, url: &str, tapp: &[u8]) -> RegistryVersion {
             architecture: native_target().0.into(),
             isa: native_target().2.into(),
             runtime: None,
+            interfaces: Vec::new(),
         },
     }
 }

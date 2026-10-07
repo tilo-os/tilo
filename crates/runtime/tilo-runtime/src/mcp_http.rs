@@ -149,6 +149,7 @@ pub struct Endpoint<H> {
     open_files: Arc<crate::mcp::OpenFiles>,
     /// Where sessions read the content actions produced.
     media: std::sync::OnceLock<Arc<dyn crate::MediaReader>>,
+    session_factory: std::sync::OnceLock<crate::mcp::SessionFactory<H>>,
 }
 
 /// The only body `POST /watch` accepts.
@@ -209,6 +210,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             sessions: Mutex::new(HashMap::new()),
             open_files: Arc::default(),
             media: std::sync::OnceLock::new(),
+            session_factory: std::sync::OnceLock::new(),
         })
     }
 
@@ -218,6 +220,16 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         if let Some(media) = media {
             let _ = self.media.set(media);
         }
+    }
+
+    /// Install the exact host-owned session factory before serving requests.
+    ///
+    /// # Errors
+    /// Rejects replacing an already installed session factory.
+    pub fn serve_sessions(&self, factory: crate::mcp::SessionFactory<H>) -> io::Result<()> {
+        self.session_factory
+            .set(factory)
+            .map_err(|_| io::Error::other("MCP session factory already set"))
     }
 
     /// Number of live sessions.
@@ -343,7 +355,12 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         let (id, server, created) = match (session_id(headers), initialize) {
             (None, true) => match self.create(&request) {
                 Some((id, server)) => (id, server, true),
-                None => return plain(StatusCode::SERVICE_UNAVAILABLE, "too many MCP sessions"),
+                None => {
+                    return plain(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "MCP session admission or capacity unavailable",
+                    );
+                }
             },
             (Some(id), _) => match self.find(&id) {
                 Some(server) => (id, server, false),
@@ -370,7 +387,14 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         initialize: &Value,
     ) -> Option<(String, Arc<tokio::sync::Mutex<McpServer<H>>>)> {
         let id = uuid::Uuid::new_v4().to_string();
-        let server = McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
+        let server = match self.session_factory.get() {
+            Some(factory) => factory().ok()?,
+            None => McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone()),
+        };
+        if !server.audience_matches(&self.room, &self.actor) {
+            return None;
+        }
+        let server = server
             .with_agent_run(agent_run_id(&id), client_label(initialize))
             .with_computer(self.computer.clone())
             .with_open_files(Arc::clone(&self.open_files))

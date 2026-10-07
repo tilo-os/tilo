@@ -11,9 +11,9 @@
 # members only; warnings in registry and vendored dependencies are not ours and
 # stay capped.
 #
-# `--all-features` is deliberately not used: it also selects ui/webview-wpe,
-# whose native SDK exists only in the OS image builder. The release-app
-# workflow separately compiles the shipped thin-app feature.
+# `--all-features` is deliberately not used: some features link native SDKs
+# that exist only in the OS image builder. The release-app workflow separately
+# compiles the shipped thin-app feature.
 
 set -uo pipefail
 
@@ -37,7 +37,9 @@ mkdir -p "$root/target/ci" || exit 2
 run_clippy() {
     local source_commit result receipt_name
     source_commit=$(git rev-parse HEAD) || exit 2
-    cargo clippy --locked --all-targets "$@" \
+    # Report independent packages' failures together instead of requiring
+    # another CI iteration for each package left unexamined after an error.
+    cargo clippy --locked --all-targets --keep-going "$@" \
         --message-format=json -- -D warnings >"$messages" 2>"$stderr_log"
     result=$?
     receipt_name=clippy-head-inputs.json
@@ -48,7 +50,7 @@ run_clippy() {
     python3 "$root/tools/ci/compiler_inputs.py" \
         --output "$root/target/ci/$receipt_name" --from-messages "$messages" \
         --cargo-exit-code "$result" --expected-commit "$source_commit" -- \
-        clippy --locked --all-targets "$@" -- -D warnings || true
+        clippy --locked --all-targets --keep-going "$@" -- -D warnings || true
     return "$result"
 }
 

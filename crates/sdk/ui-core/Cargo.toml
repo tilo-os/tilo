@@ -12,12 +12,11 @@ homepage.workspace = true
 description = "The Tilo UI toolkit: retained-mode, CRDT-native widgets."
 
 [package.metadata.cargo-machete]
-# build.rs probes optional system libraries through pkg-config.
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
 # dependency marks `presentation-feedback`, which uses the Metal observer of
 # the patched HAL (vendor/wgpu-hal).
 # getrandom02 only selects the browser entropy backend for transitive crypto.
-ignored = ["pkg-config", "wgpu-hal", "getrandom02"]
+ignored = ["wgpu-hal", "getrandom02"]
 
 [features]
 default = ["native", "broker-transport"]
@@ -59,13 +58,6 @@ dx12-shader-cache = []
 # other app embedding a WebView with built-in blocking) pays for the
 # adblock-rust dependency.
 webview-adblock = ["dep:adblock"]
-# WPE WebKit engine backend for the WebView widget (`webview::wpe`).
-# Links the WPE stack (not packaged by Fedora — build it with
-# os/dev/build-wpe.sh and export PKG_CONFIG_PATH/LD_LIBRARY_PATH to its
-# prefix). Off by default so the workspace builds without the libraries.
-# Pulls `ash` for the DMA-BUF zero-copy import (raw-Vulkan interop with
-# wgpu-hal); its 0.38 matches the version wgpu-hal 29 resolves.
-webview-wpe = ["dep:ash", "dmabuf-import"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
@@ -112,6 +104,7 @@ tilo-host-search = { version = "0.1.0", path = "../../platform/tilo-host-search"
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # Browser processes on one profile meet at one Chromium host (`webview::chromium`).
+tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # The content store a host lends a component (`HostContext::content`), in every
 # build; the unix `native` build adds the launcher's device store below.
@@ -317,11 +310,6 @@ windows = { version = "0.62.2", optional = true, features = [
 ] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
-[build-dependencies]
-# Locates the WPE WebKit stack when the `webview-wpe` feature is on
-# (see build.rs); inert otherwise.
-pkg-config = "0.3"
-
 [dev-dependencies]
 serial_test.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
@@ -356,6 +344,21 @@ name = "it"
 path = "tests/it.rs"
 # The shared harness stands up in-process Cap'n Proto brokers.
 required-features = ["broker-transport"]
+
+[[example]]
+name = "action-presence"
+path = "examples/action_presence.rs"
+required-features = ["native"]
+
+[[example]]
+name = "startup-frame-probe"
+path = "examples/startup_frame_probe.rs"
+required-features = ["native"]
+
+[[example]]
+name = "startup-blit-phase-probe"
+path = "examples/startup_blit_phase_probe.rs"
+required-features = ["native"]
 
 [[test]]
 name = "hosted-platform"
@@ -438,3 +441,8 @@ uuid = { workspace = true, features = ["js"] }
 # compile-time `Send` checks. The browser host must still render on the page's
 # thread instead of spawning `ui-render`.
 wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"] }
+
+[[example]]
+name = "native-displays"
+path = "examples/native-displays.rs"
+required-features = ["native"]

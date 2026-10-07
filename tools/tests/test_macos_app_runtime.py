@@ -104,6 +104,11 @@ class AppRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'package evidence changed'):
             self.prepare()
 
+    def test_unused_package_evidence_cannot_supply_foreign_assets(self):
+        self.profile['packages']['/foreign/libthai/1'] = {'package_root': '/foreign/libthai/1'}
+        with self.assertRaisesRegex(ValueError, 'unused package evidence'):
+            self.prepare()
+
     def test_sdk_entitlements_follow_real_app_not_helpers(self):
         real = 'Contents/MacOS/remote.real'
         helper = 'Contents/MacOS/tilo-runtime-mcp.real'

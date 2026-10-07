@@ -508,6 +508,11 @@ fn install_version(query: &str, version: &str) -> ExitCode {
     };
     match app_cli::installed_version(&app.package_id) {
         Ok(None) => change_app(offer, false, None),
+        Ok(Some(installed))
+            if !tilo_app_package::version::compare(&offer.version, &installed).is_lt() =>
+        {
+            change_app(offer, true, Some(&installed))
+        }
         Ok(Some(installed)) => {
             eprintln!(
                 "app: '{}' {installed} is already installed; use 'app rollback {} --to {version}' or 'app update {}'",

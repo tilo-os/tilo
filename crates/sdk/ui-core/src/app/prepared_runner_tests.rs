@@ -160,7 +160,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
-        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
         values.insert("high_contrast".into(), serde_json::Value::Bool(false));
         settings_store::update_section("appearance", values).expect("write appearance");
     };
@@ -178,7 +178,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
     );
     app.apply_configured_theme();
     app.rebuild_theme();
-    let dark_bg = app.theme.bg_app;
+    let dark_bg = app.theme.tokens.colors.surfaces.content;
     let dark_name = app.theme.name.clone();
 
     write("light");
@@ -189,7 +189,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
         app.reconcile_configured_theme(),
         "an appearance file write must retheme the next tick"
     );
-    let light_bg = app.theme.bg_app;
+    let light_bg = app.theme.tokens.colors.surfaces.content;
     assert_ne!(
         (light_bg, app.theme.name.as_str()),
         (dark_bg, dark_name.as_str()),
@@ -214,7 +214,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
-        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
         values.insert("high_contrast".into(), serde_json::Value::Bool(false));
         settings_store::update_section("appearance", values).expect("write appearance");
         assert_eq!(
@@ -237,7 +237,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
     );
     app.apply_configured_theme();
     app.rebuild_theme();
-    let dark_bg = app.theme.bg_app;
+    let dark_bg = app.theme.tokens.colors.surfaces.content;
     let dark_y = crate::a11y::relative_luminance(dark_bg);
 
     write("light");
@@ -248,7 +248,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
         app.reconcile_configured_theme(),
         "a session-file theme write must retheme the next tick"
     );
-    let light_bg = app.theme.bg_app;
+    let light_bg = app.theme.tokens.colors.surfaces.content;
     let light_y = crate::a11y::relative_luminance(light_bg);
     assert_ne!(
         (light_bg, app.theme.name.as_str()),
@@ -284,7 +284,7 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
-        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
         values.insert("high_contrast".into(), serde_json::Value::Bool(false));
         settings_store::update_section("appearance", values).expect("write appearance");
     };
@@ -363,7 +363,7 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
                 app.set_ui_scale(1.5);
                 app.set_ui_scale(1.5);
                 app.set_high_contrast(true);
-                assert_eq!(app.theme.name, "High Contrast");
+                assert_eq!(app.theme.name, "High contrast");
                 assert_eq!(app.theme.text_scale, 0.75);
                 assert_eq!(app.theme.ui_scale, 1.5);
                 app.set_high_contrast(false);
@@ -433,6 +433,7 @@ fn assert_saved_body(
 
 fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
     let target = crate::bound_dispatch::BoundActionTarget {
+        physical_text: false,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,
@@ -848,7 +849,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             .unwrap();
         let checkout = component.record().clone();
         let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            crate::font_catalog::checkout_root(),
             "de-DE",
         );
         let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
@@ -972,4 +973,115 @@ fn activate_palette_action(app: &mut App, action: &str) {
             .unwrap()
             .activate_bound(&target)
     );
+}
+
+/// The component a window shows asking for another record of its app, as an
+/// app's own Open does: built through the same checked construction as the
+/// first, on the same store.
+fn request_another_record(component: &AppComponent) -> crate::record::RecordId {
+    let reopener = component.reopener();
+    let record = crate::record::RecordId::minted();
+    let (context, target) = reopener
+        .prepare(runner_probe_definition(), record.clone())
+        .unwrap();
+    let replacement = runner_probe_definition()
+        .instantiate(context, target, RestoreInput::None)
+        .unwrap();
+    reopener.replace(replacement, vec!["another".into()]);
+    record
+}
+
+#[test]
+fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
+    // Case `the_native_window_swaps_its_component_and_keeps_the_outgoing_writers_work`.
+    {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 31);
+        let first = component.callback_binding();
+        let wanted = request_another_record(&component);
+        let mut app = App::from_component(component, runner_inputs()).unwrap();
+        edit_bound_record(&mut app, &first);
+        assert!(
+            app.swap_requested_component(),
+            "the window shows another record"
+        );
+        assert!(!app.swap_requested_component(), "once");
+        let shown = app.root_widget.callback_binding().unwrap();
+        assert_eq!(shown.checkout.id, wanted);
+        assert!(
+            !first.lifetime.is_active(),
+            "the outgoing component is closed"
+        );
+        assert_saved_body(&host, &first, "edited");
+        assert_eq!(body(&shown.records, &shown.checkout), "initialized");
+        edit_bound_record(&mut app, &shown);
+        app.close_components();
+    }
+
+    // Case `a_withdrawn_request_leaves_the_window_as_it_is`.
+    {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 33);
+        let first = component.callback_binding();
+        let reopener = component.reopener();
+        let (context, target) = reopener
+            .prepare(runner_probe_definition(), crate::record::RecordId::minted())
+            .unwrap();
+        let replacement = runner_probe_definition()
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let outcome = reopener.replace(replacement, vec![]);
+        let mut app = App::from_component(component, runner_inputs()).unwrap();
+        assert!(outcome.withdraw(), "withdrawn before the host took it");
+        assert!(
+            !app.swap_requested_component(),
+            "the window keeps its record"
+        );
+        assert_eq!(
+            app.root_widget.callback_binding().unwrap().checkout.id,
+            first.checkout.id
+        );
+        assert!(first.lifetime.is_active());
+        assert!(matches!(outcome.get(), Some(Err(_))));
+        assert!(!outcome.withdraw(), "an answered request stays answered");
+        app.close_components();
+    }
+
+    // Case `a_tile_swaps_its_component_on_its_next_sync`.
+    {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 32);
+        let first = component.callback_binding();
+        let wanted = request_another_record(&component);
+        let mut tile = TileHost::from_component(component);
+        let mut state = crate::State::new();
+        // An operation the outgoing component admitted is answered when the
+        // tile swaps, never inherited by the component that takes its place.
+        let pending = tilo_actions::InvocationId::new();
+        let started = crate::widget::ResourceOperation::local(
+            pending,
+            tilo_actions::OperationKind::Effect,
+            "probe.pending",
+            &[],
+        )
+        .start(
+            &mut tile,
+            &mut crate::widget::Edits::lend(&mut state.doc),
+            &state.root,
+        )
+        .unwrap();
+        assert!(matches!(
+            started,
+            Some(crate::widget::ResourceOperationStart::Accepted)
+        ));
+        tile.sync(&state.doc, &state.root);
+        let shown = tile.callback_binding().unwrap();
+        assert_eq!(shown.checkout.id, wanted);
+        assert!(!first.lifetime.is_active());
+        let answer = tile
+            .poll_resource_operation(pending, false, &state.doc, &state.root)
+            .expect("the outgoing component's operation is answered");
+        assert!(answer.is_terminal());
+        crate::component_lifecycle::close_components(&mut tile);
+    }
 }

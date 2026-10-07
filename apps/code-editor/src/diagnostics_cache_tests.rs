@@ -6,7 +6,7 @@ use tilo_automerge::ApplyIncoming;
 fn fixture() -> (CodeApp, AutoCommit, String) {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
+    app.ensure_buffers(&doc);
     let key = app.buffer_key(app.session.active_buffer().unwrap().node);
     replace(&mut doc, &key, "fn main( {\n");
     doc.commit();

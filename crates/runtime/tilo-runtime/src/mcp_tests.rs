@@ -128,7 +128,7 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
     );
     let mut large = row.clone();
     if let Some(descriptor) = large.action.as_mut() {
-        descriptor.params[0].schema = Some(json!({"description": "x".repeat(4096)}));
+        descriptor.params[0].schema = Some(json!({"description": "x".repeat(4096)}).into());
     }
     let browsed = browsed_row_json(&large);
     assert!(browsed["descriptor"]["params"][0].get("schema").is_none());
@@ -187,6 +187,7 @@ fn action_row(
             presentation: None,
         },
         action: Some(tilo_actions::ActionDescriptor {
+            semantic_identity: None,
             address: tilo_actions::ActionAddress::new(resource, action),
             resource_kind: "writer.document".into(),
             resource_label: "Document".into(),
@@ -241,7 +242,7 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
         )],
     );
     if let Some(action) = apply.action.as_mut() {
-        action.params[0].schema = Some(json!({"oneOf": []}));
+        action.params[0].schema = Some(json!({"oneOf": []}).into());
     }
     let other = action_row("doc:2", "save", Vec::new());
     let page = CataloguePage {

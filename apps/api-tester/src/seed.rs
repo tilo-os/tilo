@@ -1,9 +1,9 @@
-//! First-run / screenshot workspace seed.
+//! The sample workspace screenshots show.
 //!
-//! Produces a representative set of collections, environments, a populated
-//! active request, and a short history for a brand-new workspace and the
-//! headless screenshot.
+//! A representative set of collections, environments, a populated active
+//! request, and a short history, built through the workspace's actions.
 
+use crate::actions::{ApiTesterAction, workspace_actions};
 use crate::model::{
     Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
 };
@@ -97,21 +97,21 @@ pub fn environments() -> Vec<Environment> {
     let mut production = Environment::new("Production");
     production.variables = vec![
         KeyValue::new("base_url", "https://api.example.com/v2"),
-        KeyValue::new("token", "prod_sk_9f8c1a2b3d4e5f60"),
+        KeyValue::new("token", "prod_sk_9f8c1a2b3d4e5f60").secret(),
         KeyValue::new("user", "ada"),
     ];
 
     let mut staging = Environment::new("Staging");
     staging.variables = vec![
         KeyValue::new("base_url", "https://staging.example.com/v2"),
-        KeyValue::new("token", "stg_sk_0011223344556677"),
+        KeyValue::new("token", "stg_sk_0011223344556677").secret(),
         KeyValue::new("user", "ada"),
     ];
 
     let mut local = Environment::new("Local");
     local.variables = vec![
         KeyValue::new("base_url", "http://localhost:8080"),
-        KeyValue::new("token", "dev-token"),
+        KeyValue::new("token", "dev-token").secret(),
         KeyValue::new("user", "dev"),
     ];
 
@@ -188,4 +188,38 @@ pub fn history() -> Vec<HistoryEntry> {
             when: "15m ago".into(),
         },
     ]
+}
+
+/// The actions that build the sample workspace.
+pub fn workspace() -> Vec<ApiTesterAction> {
+    // Ids in order, so the sample lists the same way on every run.
+    let mut next = 0u128;
+    let mut id = || {
+        next += 1;
+        uuid::Uuid::from_u128(next)
+    };
+    let mut collections = collections();
+    for collection in &mut collections {
+        collection.id = id();
+        for request in &mut collection.requests {
+            request.id = id();
+        }
+    }
+    let mut environments = environments();
+    for environment in &mut environments {
+        environment.id = id();
+        for variable in &mut environment.variables {
+            variable.id = id().to_string();
+        }
+    }
+    let mut history = history();
+    for entry in &mut history {
+        entry.id = id();
+    }
+    // The builder shows the first saved request, edited.
+    let mut active = active_request();
+    if let Some(first) = collections.first().and_then(|c| c.requests.first()) {
+        active.id = first.id;
+    }
+    workspace_actions(&collections, &environments, &active, &history)
 }

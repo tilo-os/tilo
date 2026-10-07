@@ -45,6 +45,22 @@ use super::state::{ClientState, State};
 /// caret is, in desktop coordinates.
 pub type FieldRequest = ui::ime::ImeWindowState;
 
+/// A native keyboard owner, independent of its caret geometry. Widget ids
+/// identify the current layout node; the palette owns keyboard input even
+/// when the host's ordinary focused node has not changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFieldId {
+    Widget(u64),
+    Palette,
+}
+
+/// Private opaque edit metadata, never surrounding text or a persisted hash.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NativeEditStamp {
+    pub document: ui::bound_dispatch::DocumentEditStamp,
+    pub fingerprint: [u8; 32],
+}
+
 /// Client-side protocol state.
 #[derive(Default)]
 struct ClientSide {
@@ -52,6 +68,8 @@ struct ClientSide {
     seat: Option<(u32, u32)>,
     manager: Option<(u32, u32)>,
     entered: bool,
+    /// Each enter starts a fresh enable cycle, even after a batched leave/enter.
+    reentered: bool,
     pending_preedit: Option<String>,
     pending_commit: Option<String>,
     /// Translated, ready for the chrome.
@@ -75,6 +93,9 @@ pub struct ShellTextInput {
     enabled: Option<FieldRequest>,
     /// The field the compositor wants served, if any.
     wanted: Option<FieldRequest>,
+    native_field: Option<NativeFieldId>,
+    edit_stamp: Option<NativeEditStamp>,
+    edit_stamp_session: Option<super::dictation::SessionId>,
 }
 
 impl ShellTextInput {
@@ -122,6 +143,9 @@ impl ShellTextInput {
             wake,
             enabled: None,
             wanted: None,
+            native_field: None,
+            edit_stamp: None,
+            edit_stamp_session: None,
         })
     }
 
@@ -151,6 +175,37 @@ impl ShellTextInput {
     /// text input to match. Returns what the input method typed since the
     /// last call, as chrome events.
     pub fn sync(&mut self, state: &mut State, field: Option<FieldRequest>) -> Vec<WindowEvent> {
+        self.sync_for_field(state, field, None)
+    }
+
+    /// Serve an explicitly identified native field. Changing owners cancels
+    /// dictation immediately and starts a fresh protocol enable cycle, even
+    /// when both fields have the same purpose and caret rectangle. Events
+    /// already received for the previous owner are discarded.
+    pub fn sync_for_field(
+        &mut self,
+        state: &mut State,
+        field: Option<FieldRequest>,
+        identity: Option<NativeFieldId>,
+    ) -> Vec<WindowEvent> {
+        let identity = identity.filter(|_| field.is_some());
+        let changed = identity != self.native_field;
+        if changed {
+            state.cancel_active_dictation();
+            if self.enabled.is_some()
+                && let Some(text_input) = self.text_input.as_ref()
+            {
+                text_input.disable();
+                text_input.commit();
+                self.enabled = None;
+            }
+            self.state.pending_preedit = None;
+            self.state.pending_commit = None;
+            self.state.events.clear();
+            self.native_field = identity;
+            self.edit_stamp = None;
+            self.edit_stamp_session = None;
+        }
         self.wanted = field;
         self.pump();
         let holds = self.holds_focus(state);
@@ -172,7 +227,43 @@ impl ShellTextInput {
         }
         self.pump();
         self.update_enable();
-        std::mem::take(&mut self.state.events)
+        let events = std::mem::take(&mut self.state.events);
+        if changed { Vec::new() } else { events }
+    }
+
+    /// Call before processing speech replies. A same-field edit/selection or
+    /// changed record owner cancels deferred insertion even with equal caret
+    /// geometry. An unavailable active-field stamp fails closed.
+    pub(crate) fn observe_edit_stamp(&mut self, state: &mut State, stamp: Option<NativeEditStamp>) {
+        let session = state.dictation_target_id();
+        if self.edit_stamp_session != session {
+            self.edit_stamp = None;
+            self.edit_stamp_session = session;
+        }
+        if session.is_some()
+            && (stamp.is_none() || (self.edit_stamp.is_some() && self.edit_stamp != stamp))
+        {
+            state.cancel_active_dictation();
+        }
+        self.edit_stamp = stamp;
+    }
+
+    /// After the compositor flushes a native dictation final, drain its local
+    /// bridge in the same input turn. Reads are nonblocking and bounded; a
+    /// missing complete commit is failure, never a delayed insertion attempt.
+    pub(crate) fn drain_dictation_commit(&mut self) -> Option<Vec<WindowEvent>> {
+        for _ in 0..32 {
+            self.pump();
+            if self
+                .state
+                .events
+                .iter()
+                .any(|event| matches!(event, WindowEvent::Ime(Ime::Commit(_))))
+            {
+                return Some(std::mem::take(&mut self.state.events));
+            }
+        }
+        None
     }
 
     fn update_enable(&mut self) {
@@ -231,7 +322,8 @@ impl ShellTextInput {
             self.surface = Some(compositor.create_surface(&qh, ()));
             self.text_input = Some(manager.get_text_input(&seat, &qh, ()));
         }
-        if !self.state.entered {
+        let reentered = std::mem::take(&mut self.state.reentered);
+        if !self.state.entered || reentered {
             self.enabled = None;
         }
         let _ = self.conn.flush();
@@ -342,7 +434,10 @@ impl wayland_client::Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientS
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwp_text_input_v3::Event::Enter { .. } => state.entered = true,
+            zwp_text_input_v3::Event::Enter { .. } => {
+                state.entered = true;
+                state.reentered = true;
+            }
             zwp_text_input_v3::Event::Leave { .. } => state.entered = false,
             zwp_text_input_v3::Event::PreeditString { text, .. } => {
                 state.pending_preedit = Some(text.unwrap_or_default());

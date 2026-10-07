@@ -26,6 +26,7 @@ pub mod history_log;
 pub mod i18n;
 pub mod navigation;
 pub mod notifications;
+mod shared_tree;
 pub mod surface;
 
 pub use surface::{

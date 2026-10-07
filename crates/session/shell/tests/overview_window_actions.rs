@@ -138,7 +138,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::from(ModifiersState::empty()),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

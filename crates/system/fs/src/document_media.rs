@@ -8,18 +8,17 @@
 //!
 //! Possessing a hash never grants access. A blob is readable through an app's
 //! capability only while this device's index records the app's room as
-//! referencing it, which happens in exactly two ways:
-//!
-//! - an app in that room put the bytes on this device, or
-//! - a collaborator's device, asked for that room and hash over the
-//!   `tilo-fs-media/0` peer protocol, served the bytes because *its* index
-//!   records the same room and the requester is a member of the room.
+//! referencing it, which happens when the bytes were put on this device for
+//! that room: by an app in the room, or by the session for a record of the
+//! room whose content arrived from another of the record's devices. That
+//! exchange is the collaboration broker's — content travels on the record's
+//! route (`tilo_action_broker::record_content`), never between daemons.
 //!
 //! Reachability is per room, not per app, because apps in a room hand content
 //! to one another by hash (a typed action's content resource, a launch). Bytes
 //! that happen to be in the store for another reason (a file, another room)
-//! never satisfy a read: a room that lacks the reference must fetch from a
-//! room member, which proves the content is reachable there.
+//! never satisfy a read: a room that lacks the reference must get the bytes
+//! from a device of the record that references them.
 //!
 //! The index is a family of iroh-blobs tags, `tilo/media/v1/<room>/<hash>`.
 //! A lookup is one exact key read, never a scan, and every reference is also a
@@ -35,10 +34,8 @@
 //! an app be limited to its own record kinds plus explicit grants, and a peer
 //! be served by record rather than by room membership.
 
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -50,26 +47,14 @@ use runtime_fs::blobs::{
 
 use crate::store::ContentStore;
 
-#[cfg(feature = "filesystem")]
-mod peer;
-#[cfg(feature = "filesystem")]
-pub(crate) use peer::accept_media_protocol;
-#[cfg(feature = "filesystem")]
-pub use peer::{PeerMediaFetcher, TILO_FS_MEDIA_ALPN, fetch_from_peer};
-
 const TAG_PREFIX: &str = "tilo/media/v1/";
-/// A failed fetch answers `unavailable` for this long before a read retries.
-const RETRY_AFTER: Duration = Duration::from_secs(30);
-/// Concurrent peer fetches; further reads answer `pending` and ask again.
-const MAX_IN_FLIGHT: usize = 32;
-const MAX_TRACKED_FETCHES: usize = 4096;
 
 fn reference_tag(scope: &BlobScope, hash: Hash) -> String {
     format!("{TAG_PREFIX}{}/{}", scope.room(), hash.to_hex())
 }
 
 /// Does this device's index record `scope`'s room as referencing `hash`?
-pub(crate) async fn references(store: &ContentStore, scope: &BlobScope, hash: Hash) -> bool {
+async fn references(store: &ContentStore, scope: &BlobScope, hash: Hash) -> bool {
     matches!(
         store.store().tags().get(reference_tag(scope, hash)).await,
         Ok(Some(info)) if info.hash == hash && info.format == BlobFormat::Raw
@@ -86,34 +71,15 @@ async fn record_reference(store: &ContentStore, scope: &BlobScope, hash: Hash) -
     Ok(())
 }
 
-/// Fetches a blob that a scope references on some collaborator's device.
-pub trait MediaFetcher: Send + Sync + 'static {
-    /// Verified bytes of `hash`, from any peer that serves it for `scope`.
-    fn fetch(&self, scope: BlobScope, hash: Hash) -> BlobFuture<Option<Bytes>>;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FetchState {
-    InFlight,
-    Failed(Instant),
-}
-
 /// The daemon side of the document-media capability.
 pub struct DocumentMedia {
     store: Arc<ContentStore>,
-    fetcher: Option<Arc<dyn MediaFetcher>>,
-    fetches: Mutex<HashMap<(String, Hash), FetchState>>,
 }
 
 impl DocumentMedia {
-    /// Serve `store`; `fetcher` reaches collaborators, `None` keeps every
-    /// read local.
-    pub fn new(store: Arc<ContentStore>, fetcher: Option<Arc<dyn MediaFetcher>>) -> Arc<Self> {
-        Arc::new(Self {
-            store,
-            fetcher,
-            fetches: Mutex::new(HashMap::new()),
-        })
+    /// Serve `store`.
+    pub fn new(store: Arc<ContentStore>) -> Arc<Self> {
+        Arc::new(Self { store })
     }
 
     /// Store `bytes` for `scope`. The whole payload is always hashed and
@@ -150,9 +116,10 @@ impl DocumentMedia {
         }
     }
 
-    /// Read a range, starting a peer fetch when this scope lacks the content.
+    /// Read a range; content this scope does not reference here is
+    /// unavailable.
     pub async fn read_range(
-        self: &Arc<Self>,
+        &self,
         scope: BlobScope,
         hash: Hash,
         offset: u64,
@@ -170,66 +137,7 @@ impl DocumentMedia {
                 total_len: bytes.len() as u64,
             };
         }
-        self.begin_fetch(scope, hash)
-    }
-
-    fn begin_fetch(self: &Arc<Self>, scope: BlobScope, hash: Hash) -> ReadOutcome {
-        let Some(remote) = self.fetcher.clone() else {
-            return ReadOutcome::Unavailable;
-        };
-        let key = (scope.room().to_owned(), hash);
-        {
-            let mut tracked = self
-                .fetches
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match tracked.get(&key) {
-                Some(FetchState::InFlight) => return ReadOutcome::Pending,
-                Some(FetchState::Failed(at)) if at.elapsed() < RETRY_AFTER => {
-                    return ReadOutcome::Unavailable;
-                }
-                _ => {}
-            }
-            let in_flight = tracked
-                .values()
-                .filter(|state| **state == FetchState::InFlight)
-                .count();
-            if in_flight >= MAX_IN_FLIGHT {
-                return ReadOutcome::Pending;
-            }
-            if tracked.len() >= MAX_TRACKED_FETCHES {
-                tracked.retain(|_, state| match state {
-                    FetchState::InFlight => true,
-                    FetchState::Failed(at) => at.elapsed() < RETRY_AFTER,
-                });
-                if tracked.len() >= MAX_TRACKED_FETCHES {
-                    return ReadOutcome::Pending;
-                }
-            }
-            tracked.insert(key.clone(), FetchState::InFlight);
-        }
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            let stored = match remote.fetch(scope.clone(), hash).await {
-                Some(bytes) => this.record_fetched(&scope, hash, bytes).await.is_ok(),
-                None => false,
-            };
-            let mut tracked = this
-                .fetches
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if stored {
-                tracked.remove(&key);
-            } else {
-                tracked.insert(key, FetchState::Failed(Instant::now()));
-            }
-        });
-        ReadOutcome::Pending
-    }
-
-    async fn record_fetched(&self, scope: &BlobScope, hash: Hash, bytes: Bytes) -> Result<()> {
-        self.store.store_fetched(hash, bytes).await?;
-        record_reference(&self.store, scope, hash).await
+        ReadOutcome::Unavailable
     }
 
     /// Readable through `scope` and resident here.
