@@ -42,8 +42,13 @@ must never receive this private editor state.
 Activating the agent's resource-anchored presence opens a small composer beside
 that anchor. Freeze the anchor while editing and clamp or flip the composer
 inside the viewport. Moving activity must not chase the person's pointer or
-move the field under their caret. Expired presence or lost permission disables
-submission without discarding the draft or stealing focus.
+move the field under their caret. Expired presence retires the marker's
+navigation target, not a conversation the person already started. The open
+composer retains its private draft and stable Agent target; each submission
+still requires fresh action authority and, for Steer, the selected current run.
+Lost permission disables submission without discarding the draft or stealing
+focus. An ended action must not interrupt typing or pretend the Agent is still
+performing that action.
 
 The composer has three explicit intents, with a private draft for each:
 
