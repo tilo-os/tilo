@@ -57,6 +57,25 @@ class Backing(unittest.TestCase):
             self.assertEqual(value["processes"][0]["runtime"][0]["sha256"],
                              hashlib.sha256(resident.read_bytes()).hexdigest())
 
+    def test_executable_replacement_during_runtime_probe_refuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process, resident, _ = self.fixture(root)
+            (process / "comm").write_text("calculator\n")
+            (process / "exe").symlink_to(resident)
+            replacement = root / "new-executable"
+            replacement.write_bytes(b"new public executable")
+            original = probe.hash_backing
+            def changed(path, remaining):
+                result = original(path, remaining)
+                if path.name == "exe":
+                    path.unlink()
+                    path.symlink_to(replacement)
+                return result
+            with patch.object(probe, "hash_backing", side_effect=changed):
+                with self.assertRaisesRegex(RuntimeError, "executable changed"):
+                    probe.probe(SUBJECT_UID, "calculator", root)
+
     def test_inaccessible_backing_never_falls_back_to_available_namespace_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
