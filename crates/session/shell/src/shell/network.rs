@@ -5871,6 +5871,7 @@ impl ShellNetwork {
     /// outbound message via `cmd_tx`. Non-blocking — never stalls the
     /// render loop even on a starved channel.
     pub fn tick(&self) {
+        self.remote_action_replies.expire(std::time::Instant::now());
         // Local room changes go out the tick they land; the periodic pull
         // repairs whatever a peer missed.
         self.push_room_changes();
