@@ -32,7 +32,10 @@ if [[ $package_id == so.tilo.signal-provider ]]; then
   inspection=$("$REGISTRY_CLI" inspect "$tapp")
   provides=$(printf '%s\n' "$inspection" | sed -n 's/^runtime *= *"\(tilo-runtime\/[^" ]*\)".*/\1/p' | head -1)
   service_version=$(printf '%s\n' "$inspection" | sed -n 's/^version *= *"\([^" ]*\)".*/\1/p' | head -1)
-  [[ $provides == tilo-runtime/2026.10.1-signal && -n $service_version ]]
+  [[ $provides =~ ^tilo-runtime/2026\.10\.1-signal\+native\.[0-9a-f]{32}$ && -n $service_version ]] || {
+    printf 'Signal provider runtime must name its exact native build\n' >&2
+    exit 1
+  }
 fi
 [[ -n $provides ]] || { printf '%s names no runtime it provides\n' "$tapp" >&2; exit 1; }
 
