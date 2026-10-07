@@ -11,7 +11,9 @@ use launcher::managed::{ChannelProcessFacts, ManagedRuntimeFacts, VerifiedManage
 use std::time::SystemTime;
 use tilo_user_identity::DeviceCert;
 
+mod observation;
 mod reply;
+pub use observation::AgentMessageExecutionObservation;
 pub use reply::AgentMessageReplyReceipt;
 
 /// Descriptive addressed input. This is neither document access nor process

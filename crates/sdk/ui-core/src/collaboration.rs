@@ -423,6 +423,12 @@ pub enum CollabRequest {
     SubscribeAgentMessages {
         request_id: u64,
     },
+    /// Read-only recovery, never retry an uncertain effect.
+    ObserveAgentMessage {
+        request_id: u64,
+        invocation: String,
+        source_digest: [u8; 32],
+    },
     AcceptAgentMessage {
         request_id: u64,
         invocation: String,
@@ -820,6 +826,10 @@ pub enum CollabEvent {
     TaskRun(runtime_collab::TaskRunEnvelope),
     EnrolledTask(runtime_collab::EnrolledTaskEnvelope),
     AgentMessage(runtime_collab::AgentMessageInput),
+    AgentMessageObservation {
+        request_id: u64,
+        result: Result<runtime_collab::AgentMessageObservation, String>,
+    },
     AgentMessageReply {
         request_id: u64,
         result: Result<(), String>,

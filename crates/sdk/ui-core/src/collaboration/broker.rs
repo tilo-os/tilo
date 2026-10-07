@@ -883,6 +883,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::SubscribeEnrolledTasks { .. } => {}
         CollabRequest::SubscribeAgentMessages { .. } => {}
         CollabRequest::AcceptAgentMessage { invocation, .. }
+        | CollabRequest::ObserveAgentMessage { invocation, .. }
         | CollabRequest::CommitAgentMessageReply { invocation, .. } => {
             meter.string_capacity(invocation)
         }
@@ -1335,6 +1336,17 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             }
         }
         CollabEvent::AgentMessageDisconnected { detail } => meter.string_capacity(detail),
+        CollabEvent::AgentMessageObservation { result, .. } => match result {
+            Ok(runtime_collab::AgentMessageObservation::Prepared { reply, text }) => {
+                meter.string_capacity(reply);
+                meter.string_capacity(text);
+            }
+            Ok(runtime_collab::AgentMessageObservation::Committed { reply }) => {
+                meter.string_capacity(reply)
+            }
+            Ok(_) => {}
+            Err(detail) => meter.string_capacity(detail),
+        },
         CollabEvent::EnrolledTaskReply { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
@@ -6100,6 +6112,19 @@ async fn dispatch_sdk_request(
                 .await
                 .map_err(|error| error.to_string());
             let _ = inbound_tx.send_durable(CollabEvent::AgentMessageReply { request_id, result });
+        }
+        CollabRequest::ObserveAgentMessage {
+            request_id,
+            invocation,
+            source_digest,
+        } => {
+            let result = route
+                .channel
+                .observe_agent_message(&invocation, source_digest)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx
+                .send_durable(CollabEvent::AgentMessageObservation { request_id, result });
         }
         CollabRequest::PrepareAgentMessageReply {
             request_id,

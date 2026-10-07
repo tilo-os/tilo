@@ -6259,6 +6259,7 @@ impl CapnpBrokerState {
             | CollabEvent::EnrolledTaskDisconnected { .. }
             | CollabEvent::AgentMessage(_)
             | CollabEvent::AgentMessageReply { .. }
+            | CollabEvent::AgentMessageObservation { .. }
             | CollabEvent::AgentMessageDisconnected { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
@@ -7303,6 +7304,29 @@ impl blob_stream::Server for BlobStreamServer {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn observe_agent_message(
+        self: Rc<Self>,
+        params: channel_handle::ObserveAgentMessageParams,
+        mut results: channel_handle::ObserveAgentMessageResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let (id, digest) =
+                agent_messages::correlation(p.get_invocation()?, p.get_source_digest()?)?;
+            let observed = self
+                .agent_message_session()?
+                .observe(id, digest)
+                .map_err(capnp::Error::failed)?;
+            observed.validate().map_err(capnp::Error::failed)?;
+            let json = serde_json::to_string(&observed)
+                .map_err(|_| capnp::Error::failed("Message observation encoding failed".into()))?;
+            if json.len() > runtime_collab::AgentMessageInput::MAX_JSON_BYTES {
+                return Err(capnp::Error::failed("Message observation too large".into()));
+            }
+            results.get().set_observation_json(json);
+            Ok(())
+        })
+    }
     fn subscribe_agent_messages(
         self: Rc<Self>,
         _params: channel_handle::SubscribeAgentMessagesParams,

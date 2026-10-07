@@ -67,7 +67,7 @@ pub mod collab_capnp {
 
 mod agent_messages;
 pub mod committed_document;
-pub use agent_messages::AgentMessageInput;
+pub use agent_messages::{AgentMessageInput, AgentMessageObservation};
 pub mod document_contribution;
 #[cfg(feature = "client")]
 pub mod live_activity;

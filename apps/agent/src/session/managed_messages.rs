@@ -22,6 +22,7 @@ use crate::wire::Link;
 
 const MAX_RETAINED_MESSAGES: usize = 128;
 const RPC_RESPONSE_WINDOW: Duration = Duration::from_secs(10);
+const MAX_OBSERVATIONS_PER_PHASE: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PendingPhase {
@@ -51,6 +52,8 @@ struct RetainedMessage {
     stage: RetainedStage,
     request_ids: [u64; 3],
     pending_rpc: Option<PendingRpc>,
+    uncertain: Option<PendingPhase>,
+    observation_attempts: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +61,7 @@ struct PendingRpc {
     request_id: u64,
     phase: PendingPhase,
     deadline: Instant,
+    observing: bool,
 }
 
 /// Session-private custody for delivered Messages and their immutable output.
@@ -206,6 +210,9 @@ impl ManagedMessages {
                 return pending_outcome(&retained.stage);
             }
             retained.request_ids = request_ids;
+            if let Some(phase) = retained.uncertain {
+                return self.observe_current(link, &invocation, phase);
+            }
         } else {
             if self.retained.len() >= MAX_RETAINED_MESSAGES {
                 return ManagedMessageOutcome::Refused;
@@ -217,6 +224,8 @@ impl ManagedMessages {
                     stage: RetainedStage::AwaitingAcceptance,
                     request_ids,
                     pending_rpc: None,
+                    uncertain: None,
+                    observation_attempts: 0,
                 },
             );
         }
@@ -255,7 +264,7 @@ impl ManagedMessages {
         let Some(invocation) = self.retained.iter().find_map(|(invocation, retained)| {
             retained
                 .pending_rpc
-                .filter(|pending| pending.request_id == request_id)
+                .filter(|pending| pending.request_id == request_id && !pending.observing)
                 .map(|_| invocation.clone())
         }) else {
             return ManagedMessageOutcome::Refused;
@@ -266,22 +275,35 @@ impl ManagedMessages {
         let Some(pending) = retained.pending_rpc.take() else {
             return ManagedMessageOutcome::Refused;
         };
-        match result {
-            Ok(()) => {}
-            Err(_) => return ManagedMessageOutcome::Uncertain(pending.phase),
+        if result.is_err() {
+            retained.uncertain = Some(pending.phase);
+            return self.observe_current(link, &invocation, pending.phase);
         }
-        match pending.phase {
+        self.advance_observed(link, &invocation, pending.phase)
+    }
+
+    fn advance_observed(
+        &mut self,
+        link: &mut Link,
+        invocation: &str,
+        phase: PendingPhase,
+    ) -> ManagedMessageOutcome {
+        let Some(retained) = self.retained.get_mut(invocation) else {
+            return ManagedMessageOutcome::Refused;
+        };
+        retained.uncertain = None;
+        match phase {
             PendingPhase::Acceptance => {
                 if let Some((_, reply)) = &retained.input.prepared_reply {
                     retained.stage = RetainedStage::CommitPending(reply.clone());
-                    self.send_current(link, &invocation)
+                    self.send_current(link, invocation)
                 } else {
                     let Some(worker) = &self.worker else {
                         return ManagedMessageOutcome::Disconnected;
                     };
                     if worker
                         .jobs
-                        .send((invocation.clone(), retained.input.text.clone()))
+                        .send((invocation.to_owned(), retained.input.text.clone()))
                         .is_err()
                     {
                         return ManagedMessageOutcome::Disconnected;
@@ -295,28 +317,149 @@ impl ManagedMessages {
                     return ManagedMessageOutcome::Refused;
                 };
                 retained.stage = RetainedStage::CommitPending(reply.clone());
-                self.send_current(link, &invocation)
+                self.send_current(link, invocation)
             }
             PendingPhase::Commit => {
-                self.retained.remove(&invocation);
+                self.retained.remove(invocation);
                 ManagedMessageOutcome::Completed
             }
         }
     }
 
-    /// Stop polling an unanswered RPC after its bounded response window.
-    /// This never retries; only an exact authenticated redelivery can do so.
-    pub(super) fn expire(&mut self, now: Instant) -> Vec<ManagedMessageOutcome> {
-        self.retained
-            .values_mut()
-            .filter_map(|retained| {
-                let pending = retained
+    /// Observe after a lost effect acknowledgement; never resend that effect.
+    /// An unanswered observation remains uncertain with immutable custody held.
+    pub(super) fn expire(&mut self, link: &mut Link, now: Instant) -> Vec<ManagedMessageOutcome> {
+        let expired = self
+            .retained
+            .iter()
+            .filter_map(|(id, retained)| {
+                retained
                     .pending_rpc
-                    .filter(|pending| pending.deadline <= now)?;
-                retained.pending_rpc = None;
-                Some(ManagedMessageOutcome::Uncertain(pending.phase))
+                    .filter(|pending| pending.deadline <= now)
+                    .map(|pending| (id.clone(), pending))
             })
-            .collect()
+            .collect::<Vec<_>>();
+        let mut outcomes = Vec::with_capacity(expired.len());
+        for (id, pending) in expired {
+            let Some(retained) = self.retained.get_mut(&id) else {
+                outcomes.push(ManagedMessageOutcome::Refused);
+                continue;
+            };
+            retained.pending_rpc = None;
+            retained.uncertain = Some(pending.phase);
+            let outcome = if pending.observing
+                && retained.observation_attempts >= MAX_OBSERVATIONS_PER_PHASE
+            {
+                ManagedMessageOutcome::Uncertain(pending.phase)
+            } else {
+                self.observe_current(link, &id, pending.phase)
+            };
+            outcomes.push(outcome);
+        }
+        outcomes
+    }
+
+    fn observe_current(
+        &mut self,
+        link: &mut Link,
+        invocation: &str,
+        phase: PendingPhase,
+    ) -> ManagedMessageOutcome {
+        let Some(retained) = self.retained.get_mut(invocation) else {
+            return ManagedMessageOutcome::Refused;
+        };
+        retained.uncertain = Some(phase);
+        if retained.observation_attempts >= MAX_OBSERVATIONS_PER_PHASE {
+            return ManagedMessageOutcome::Uncertain(phase);
+        }
+        retained.observation_attempts += 1;
+        let [accept, prepare, commit] = retained.request_ids;
+        let request_id = match phase {
+            PendingPhase::Acceptance => accept,
+            PendingPhase::Preparation => prepare,
+            PendingPhase::Commit => commit,
+        };
+        if link
+            .send(&CollabRequest::ObserveAgentMessage {
+                request_id,
+                invocation: retained.input.invocation.clone(),
+                source_digest: retained.input.source_digest,
+            })
+            .is_err()
+        {
+            return ManagedMessageOutcome::Disconnected;
+        }
+        retained.pending_rpc = Some(PendingRpc {
+            request_id,
+            phase,
+            deadline: Instant::now()
+                + RPC_RESPONSE_WINDOW * u32::from(retained.observation_attempts),
+            observing: true,
+        });
+        ManagedMessageOutcome::Uncertain(phase)
+    }
+
+    /// Only actual owner observation can resolve an uncertain acknowledgement.
+    /// Foreign output, obsolete source and transport errors retain uncertainty.
+    pub(super) fn handle_observation(
+        &mut self,
+        link: &mut Link,
+        request_id: u64,
+        result: &Result<runtime_collab::AgentMessageObservation, String>,
+    ) -> ManagedMessageOutcome {
+        use runtime_collab::AgentMessageObservation as Observed;
+        let Some((invocation, pending)) = self.retained.iter().find_map(|(id, retained)| {
+            retained
+                .pending_rpc
+                .filter(|p| p.observing && p.request_id == request_id)
+                .map(|p| (id.clone(), p))
+        }) else {
+            return ManagedMessageOutcome::Refused;
+        };
+        let Some(retained) = self.retained.get_mut(&invocation) else {
+            return ManagedMessageOutcome::Refused;
+        };
+        retained.pending_rpc = None;
+        let Ok(observed) = result else {
+            return ManagedMessageOutcome::Uncertain(pending.phase);
+        };
+        if observed.validate().is_err() {
+            return ManagedMessageOutcome::Uncertain(pending.phase);
+        }
+        if let Observed::Prepared { reply, .. } | Observed::Committed { reply } = observed
+            && reply != &expected_reply(&retained.input)
+        {
+            return ManagedMessageOutcome::Uncertain(pending.phase);
+        }
+        match observed {
+            Observed::Accepted if pending.phase == PendingPhase::Acceptance => {
+                self.advance_observed(link, &invocation, PendingPhase::Acceptance)
+            }
+            Observed::Prepared { reply, text } if pending.phase != PendingPhase::Commit => {
+                let matches_output = match &retained.stage {
+                    RetainedStage::PreparePending(output)
+                    | RetainedStage::CommitPending(output) => output == text,
+                    RetainedStage::AwaitingAcceptance => retained
+                        .input
+                        .prepared_reply
+                        .as_ref()
+                        .is_some_and(|(id, output)| id == reply && output == text),
+                    RetainedStage::Generating => false,
+                };
+                if !matches_output {
+                    return ManagedMessageOutcome::Uncertain(pending.phase);
+                }
+                retained.stage = RetainedStage::CommitPending(text.clone());
+                retained.uncertain = None;
+                self.send_current(link, &invocation)
+            }
+            Observed::Committed { .. } if pending.phase == PendingPhase::Commit => {
+                self.retained.remove(&invocation);
+                ManagedMessageOutcome::Completed
+            }
+            Observed::NeedsAttention => ManagedMessageOutcome::Refused,
+            _ => ManagedMessageOutcome::Uncertain(pending.phase),
+        }
     }
 
     pub(super) fn next_deadline(&self) -> Option<Instant> {
@@ -368,7 +511,9 @@ impl ManagedMessages {
             request_id,
             phase,
             deadline: Instant::now() + RPC_RESPONSE_WINDOW,
+            observing: false,
         });
+        retained.observation_attempts = 0;
         ManagedMessageOutcome::Uncertain(phase)
     }
 
@@ -437,6 +582,8 @@ impl ManagedMessages {
                     stage: RetainedStage::AwaitingAcceptance,
                     request_ids,
                     pending_rpc: None,
+                    uncertain: None,
+                    observation_attempts: 0,
                 },
             );
         }
@@ -596,6 +743,16 @@ fn same_source(retained: &AgentMessageInput, delivered: &AgentMessageInput) -> b
         && retained.text == delivered.text
         && retained.source_digest == delivered.source_digest
         && retained.launch == delivered.launch
+}
+
+fn expected_reply(input: &AgentMessageInput) -> String {
+    collab_types::document_artifact_id(
+        "tilo/native-agent-message-reply/v1",
+        &input.agent,
+        &format!("{}:{}", input.room, input.invocation),
+    )
+    .0
+    .to_string()
 }
 
 fn prepared_conflicts(retained: &RetainedMessage, delivered: &AgentMessageInput) -> bool {
@@ -785,6 +942,8 @@ mod tests {
             stage: RetainedStage::CommitPending("Original reply".into()),
             request_ids: [1, 2, 3],
             pending_rpc: None,
+            uncertain: None,
+            observation_attempts: 0,
         };
         assert!(prepared_conflicts(&retained, &delivered));
         delivered.prepared_reply.as_mut().unwrap().1 = "Original reply".into();
@@ -1152,7 +1311,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_ack_expires_without_retry_until_exact_redelivery() {
+    fn missing_ack_observes_without_effect_retry_or_redelivery() {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let peer = MessagePeer {
             sent: Arc::clone(&sent),
@@ -1176,11 +1335,15 @@ mod tests {
         );
         assert!(messages.next_deadline().is_some());
         assert_eq!(
-            messages.expire(Instant::now() + RPC_RESPONSE_WINDOW),
+            messages.expire(&mut link, Instant::now() + RPC_RESPONSE_WINDOW),
             vec![ManagedMessageOutcome::Uncertain(PendingPhase::Acceptance)]
         );
-        assert!(messages.next_deadline().is_none());
-        assert_eq!(sent.lock().unwrap().len(), 1, "timer must not retry");
+        assert!(messages.next_deadline().is_some());
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            2,
+            "timer observes but never retries an effect"
+        );
         assert_eq!(
             messages.handle(&mut link, delivered, [60, 61, 62]),
             ManagedMessageOutcome::Uncertain(PendingPhase::Acceptance)
@@ -1190,10 +1353,246 @@ mod tests {
             &sent[..],
             [
                 CollabRequest::AcceptAgentMessage { request_id: 50, .. },
-                CollabRequest::AcceptAgentMessage { request_id: 60, .. },
+                CollabRequest::ObserveAgentMessage { request_id: 50, .. },
             ]
         ));
         drop(sent);
+    }
+
+    #[test]
+    fn actual_worker_observes_each_lost_ack_without_second_model_or_effect_retry() {
+        use runtime_collab::AgentMessageObservation as Observed;
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut link = crate::wire::test_link(MessagePeer {
+            sent: Arc::clone(&sent),
+            events: Vec::new(),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut messages = ManagedMessages::with_worker(
+            "22345678-1234-1234-1234-123456789abc",
+            "agent-1",
+            "32345678-1234-1234-1234-123456789abc",
+            WorkerResponder {
+                calls: Arc::clone(&calls),
+                reply: "One immutable output".into(),
+            },
+        );
+        let delivered = input();
+        messages.handle(&mut link, delivered, [70, 71, 72]);
+        messages.expire(&mut link, Instant::now() + RPC_RESPONSE_WINDOW);
+        assert_eq!(
+            messages.handle_reply(&mut link, 70, &Ok(())),
+            ManagedMessageOutcome::Refused,
+            "late effect acknowledgement cannot override pending observation"
+        );
+        assert_eq!(
+            messages.handle_observation(&mut link, 70, &Ok(Observed::Accepted)),
+            ManagedMessageOutcome::PendingModel
+        );
+        (0..100)
+            .find_map(|_| {
+                if messages.poll_ready(&mut link).is_empty() {
+                    std::thread::sleep(Duration::from_millis(1));
+                    None
+                } else {
+                    Some(())
+                }
+            })
+            .expect("actual model worker must finish");
+        messages.expire(&mut link, Instant::now() + RPC_RESPONSE_WINDOW);
+        let reply = expected_reply(&input());
+        assert_eq!(
+            messages.handle_observation(
+                &mut link,
+                71,
+                &Ok(Observed::Prepared {
+                    reply: reply.clone(),
+                    text: "One immutable output".into()
+                })
+            ),
+            ManagedMessageOutcome::Uncertain(PendingPhase::Commit)
+        );
+        messages.expire(&mut link, Instant::now() + RPC_RESPONSE_WINDOW);
+        assert_eq!(
+            messages.handle_observation(&mut link, 72, &Ok(Observed::Committed { reply })),
+            ManagedMessageOutcome::Completed
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(messages.retained.is_empty());
+        let requests = sent.lock().unwrap();
+        assert!(
+            matches!(
+                &requests[..],
+                [
+                    CollabRequest::AcceptAgentMessage { .. },
+                    CollabRequest::ObserveAgentMessage { .. },
+                    CollabRequest::PrepareAgentMessageReply { .. },
+                    CollabRequest::ObserveAgentMessage { .. },
+                    CollabRequest::CommitAgentMessageReply { .. },
+                    CollabRequest::ObserveAgentMessage { .. },
+                ]
+            ),
+            "each effect emitted once; recovery independent of stream redelivery"
+        );
+        drop(requests);
+    }
+
+    #[test]
+    fn unknown_or_conflicting_observation_preserves_immutable_custody() {
+        use runtime_collab::AgentMessageObservation as Observed;
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut link = crate::wire::test_link(MessagePeer {
+            sent: Arc::clone(&sent),
+            events: Vec::new(),
+        });
+        let mut messages = messages();
+        let delivered = input();
+        messages.retained.insert(
+            delivered.invocation.clone(),
+            RetainedMessage {
+                input: delivered.clone(),
+                stage: RetainedStage::PreparePending("Original output".into()),
+                request_ids: [80, 81, 82],
+                pending_rpc: None,
+                uncertain: Some(PendingPhase::Preparation),
+                observation_attempts: 0,
+            },
+        );
+        messages.observe_current(&mut link, &delivered.invocation, PendingPhase::Preparation);
+        assert_eq!(
+            messages.handle_observation(
+                &mut link,
+                81,
+                &Ok(Observed::Prepared {
+                    reply: expected_reply(&input()),
+                    text: "Substituted output".into()
+                })
+            ),
+            ManagedMessageOutcome::Uncertain(PendingPhase::Preparation)
+        );
+        messages.handle(&mut link, delivered, [90, 91, 92]);
+        assert_eq!(
+            messages.handle_observation(&mut link, 91, &Err("Unknown".into())),
+            ManagedMessageOutcome::Uncertain(PendingPhase::Preparation)
+        );
+        assert_eq!(messages.retained.len(), 1);
+        let requests = sent.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|request| matches!(request, CollabRequest::ObserveAgentMessage { .. }))
+        );
+        drop(requests);
+    }
+
+    #[test]
+    fn prepared_observation_after_lost_commit_never_reissues_commit() {
+        use runtime_collab::AgentMessageObservation as Observed;
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut link = crate::wire::test_link(MessagePeer {
+            sent: Arc::clone(&sent),
+            events: Vec::new(),
+        });
+        let mut messages = messages();
+        let delivered = input();
+        messages.retained.insert(
+            delivered.invocation.clone(),
+            RetainedMessage {
+                input: delivered.clone(),
+                stage: RetainedStage::CommitPending("Original output".into()),
+                request_ids: [80, 81, 82],
+                pending_rpc: None,
+                uncertain: Some(PendingPhase::Commit),
+                observation_attempts: 0,
+            },
+        );
+        messages.observe_current(&mut link, &delivered.invocation, PendingPhase::Commit);
+        assert_eq!(
+            messages.handle_observation(
+                &mut link,
+                82,
+                &Ok(Observed::Prepared {
+                    reply: expected_reply(&delivered),
+                    text: "Original output".into()
+                })
+            ),
+            ManagedMessageOutcome::Uncertain(PendingPhase::Commit)
+        );
+        assert_eq!(messages.retained.len(), 1);
+        let requests = sent.lock().unwrap();
+        assert!(
+            matches!(&requests[..], [CollabRequest::ObserveAgentMessage { .. }]),
+            "a delayed Commit may still execute; observation cannot reissue it"
+        );
+        drop(requests);
+    }
+
+    #[test]
+    fn lost_observation_replies_retry_only_reads_with_a_fixed_bound() {
+        use runtime_collab::AgentMessageObservation as Observed;
+        for success in [true, false] {
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let mut link = crate::wire::test_link(MessagePeer {
+                sent: Arc::clone(&sent),
+                events: Vec::new(),
+            });
+            let mut messages = messages();
+            let delivered = input();
+            messages.retained.insert(
+                delivered.invocation.clone(),
+                RetainedMessage {
+                    input: delivered.clone(),
+                    stage: RetainedStage::CommitPending("Original output".into()),
+                    request_ids: [80, 81, 82],
+                    pending_rpc: None,
+                    uncertain: Some(PendingPhase::Commit),
+                    observation_attempts: 0,
+                },
+            );
+            messages.observe_current(&mut link, &delivered.invocation, PendingPhase::Commit);
+            for _ in 0..2 {
+                assert_eq!(
+                    messages.expire(&mut link, Instant::now() + RPC_RESPONSE_WINDOW * 4),
+                    vec![ManagedMessageOutcome::Uncertain(PendingPhase::Commit)]
+                );
+                assert!(messages.next_deadline().is_some());
+            }
+            if success {
+                assert_eq!(
+                    messages.handle_observation(
+                        &mut link,
+                        82,
+                        &Ok(Observed::Committed {
+                            reply: expected_reply(&delivered)
+                        })
+                    ),
+                    ManagedMessageOutcome::Completed
+                );
+                assert!(messages.retained.is_empty());
+            } else {
+                messages.expire(&mut link, Instant::now() + RPC_RESPONSE_WINDOW * 4);
+                assert!(messages.next_deadline().is_none());
+                assert_eq!(
+                    messages.retained.len(),
+                    1,
+                    "exhaustion does not drop uncertain custody"
+                );
+                messages.handle(&mut link, delivered, [90, 91, 92]);
+                assert!(
+                    messages.next_deadline().is_none(),
+                    "redelivery cannot reset the retry budget"
+                );
+            }
+            let requests = sent.lock().unwrap();
+            assert_eq!(requests.len(), usize::from(MAX_OBSERVATIONS_PER_PHASE));
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| matches!(request, CollabRequest::ObserveAgentMessage { .. })),
+                "lost observation replies never retry an effect or invoke the model"
+            );
+            drop(requests);
+        }
     }
 
     #[test]

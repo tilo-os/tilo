@@ -51,6 +51,31 @@ impl Session {
 }
 
 impl NativeAgentMessageSession for Session {
+    fn observe(
+        &self,
+        invocation: uuid::Uuid,
+        digest: [u8; 32],
+    ) -> Result<runtime_collab::AgentMessageObservation, String> {
+        use runtime_collab::AgentMessageObservation as Wire;
+        use tilo_joined_room::AgentMessageExecutionObservation as Owner;
+        Ok(
+            match self
+                .service
+                .observe(invocation, digest, std::time::SystemTime::now())?
+            {
+                Owner::Bound => Wire::Bound,
+                Owner::Accepted => Wire::Accepted,
+                Owner::Prepared { reply, text } => Wire::Prepared {
+                    reply: reply.to_string(),
+                    text,
+                },
+                Owner::Committed { reply } => Wire::Committed {
+                    reply: reply.to_string(),
+                },
+                Owner::NeedsAttention => Wire::NeedsAttention,
+            },
+        )
+    }
     fn pending(&self) -> Result<Vec<uuid::Uuid>, String> {
         self.service
             .pending_invocations(std::time::SystemTime::now())

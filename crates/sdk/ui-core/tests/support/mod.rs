@@ -130,6 +130,7 @@ pub fn pump(relay: &mut MemoryRelay) {
         match req {
             CollabRequest::NativeExecutedContribution { .. }
             | CollabRequest::SubscribeAgentMessages { .. }
+            | CollabRequest::ObserveAgentMessage { .. }
             | CollabRequest::AcceptAgentMessage { .. }
             | CollabRequest::PrepareAgentMessageReply { .. }
             | CollabRequest::CommitAgentMessageReply { .. } => {
@@ -138,15 +139,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                 );
             }
             CollabRequest::Document { mutation, .. } => {
-                let mutation = match mutation {
-                    tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
-                        collab_types::DocumentMutation::Incremental(data)
-                    }
-                    tilo_ui::collaboration::DocumentMutation::Snapshot(data) => {
-                        collab_types::DocumentMutation::Snapshot(data)
-                    }
-                };
-                let event = document_event(&mutation, &from);
+                let event = document_request_event(mutation, &from);
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::Presence { key, payload } => {
@@ -229,6 +222,21 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
         }
     }
+}
+
+fn document_request_event(
+    mutation: tilo_ui::collaboration::DocumentMutation,
+    from: &str,
+) -> CollabEvent {
+    let mutation = match mutation {
+        tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
+            collab_types::DocumentMutation::Incremental(data)
+        }
+        tilo_ui::collaboration::DocumentMutation::Snapshot(data) => {
+            collab_types::DocumentMutation::Snapshot(data)
+        }
+    };
+    document_event(&mutation, from)
 }
 
 fn signed_document_event(envelope: Box<collab_types::SignedOp>, from: &str) -> CollabEvent {

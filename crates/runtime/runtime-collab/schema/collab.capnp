@@ -412,6 +412,8 @@ interface ChannelHandle {
   acceptAgentMessage @59 (invocation :Text, sourceDigest :Data) -> ();
   prepareAgentMessageReply @60 (invocation :Text, sourceDigest :Data, text :Text) -> ();
   commitAgentMessageReply @61 (invocation :Text, sourceDigest :Data) -> ();
+  # Read-only recovery for an exact original on this actual managed process.
+  observeAgentMessage @62 (invocation :Text, sourceDigest :Data) -> (observationJson :Text);
 
 }
 

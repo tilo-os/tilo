@@ -28,6 +28,16 @@ pub trait NativeAgentMessageSession: Send + Sync {
     /// # Errors
     /// Refuses absent prepared output, changed custody or failed publication.
     fn commit_reply(&self, invocation: uuid::Uuid, digest: [u8; 32]) -> Result<(), String>;
+    /// # Errors
+    /// Unknown or foreign original and retired actual execution custody.
+    fn observe(
+        &self,
+        invocation: uuid::Uuid,
+        digest: [u8; 32],
+    ) -> Result<runtime_collab::AgentMessageObservation, String> {
+        let _ = (invocation, digest);
+        Err("Message observation unavailable".into())
+    }
 }
 
 /// Private native installation door. Applications never receive this service

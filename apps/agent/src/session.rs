@@ -741,6 +741,13 @@ impl Session {
                 }
                 Ok(None)
             }
+            CollabEvent::AgentMessageObservation { request_id, result } => {
+                if let Some(messages) = self.managed_messages.as_mut() {
+                    let outcome = messages.handle_observation(&mut self.link, request_id, &result);
+                    tracing::info!(?outcome, "managed Agent Message owner state observed");
+                }
+                Ok(None)
+            }
             CollabEvent::AgentMessageDisconnected { .. } => {
                 tracing::warn!("managed Agent Message delivery disconnected");
                 Ok(None)
@@ -787,7 +794,7 @@ impl Session {
         for outcome in messages.poll_ready(&mut self.link) {
             tracing::info!(?outcome, "managed Agent Message model result observed");
         }
-        for outcome in messages.expire(std::time::Instant::now()) {
+        for outcome in messages.expire(&mut self.link, std::time::Instant::now()) {
             tracing::info!(?outcome, "managed Agent Message acknowledgement unresolved");
         }
     }

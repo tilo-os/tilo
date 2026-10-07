@@ -81,11 +81,7 @@ impl runtime_collab::collab_capnp::agent_message_stream::Server for Stream {
                         "managed Message inbox exceeded its bound".into(),
                     ));
                 }
-                seen.retain(|id| pending.contains(id));
-                for id in pending {
-                    if seen.contains(&id) {
-                        continue;
-                    }
+                for id in unseen_pending(&mut seen, pending) {
                     // Old-launch refusals must not block newer valid input or be retargeted.
                     let Ok(input) = self.session.deliver(id) else {
                         continue;
@@ -111,6 +107,19 @@ impl runtime_collab::collab_capnp::agent_message_stream::Server for Stream {
     }
 }
 
+/// The real stream suppresses repeats while owner hot custody remains pending.
+/// Recovery must use observation rather than assuming another delivery arrives.
+fn unseen_pending(
+    seen: &mut std::collections::HashSet<uuid::Uuid>,
+    pending: Vec<uuid::Uuid>,
+) -> Vec<uuid::Uuid> {
+    seen.retain(|id| pending.contains(id));
+    pending
+        .into_iter()
+        .filter(|id| !seen.contains(id))
+        .collect()
+}
+
 pub(super) fn correlation(
     invocation: capnp::text::Reader<'_>,
     digest: &[u8],
@@ -131,7 +140,29 @@ pub(super) fn correlation(
 
 #[cfg(test)]
 mod tests {
-    use super::correlation;
+    use super::{correlation, unseen_pending};
+
+    #[test]
+    fn delivered_original_stays_suppressed_until_owner_hot_custody_leaves() {
+        let original = uuid::Uuid::from_u128(31);
+        let other = uuid::Uuid::from_u128(32);
+        let mut seen = std::collections::HashSet::new();
+        assert_eq!(unseen_pending(&mut seen, vec![original]), vec![original]);
+        // The actual read implementation marks this before returning its RPC.
+        seen.insert(original);
+        for _lost_stage_ack in 0..3 {
+            assert!(unseen_pending(&mut seen, vec![original]).is_empty());
+        }
+        assert_eq!(
+            unseen_pending(&mut seen, vec![original, other]),
+            vec![other]
+        );
+        assert_eq!(unseen_pending(&mut seen, vec![other]), vec![other]);
+        assert!(
+            seen.is_empty(),
+            "terminal owner removal bounds the remembered set"
+        );
+    }
 
     #[test]
     fn correlation_rejects_noncanonical_or_missing_original_identity() {

@@ -47,7 +47,8 @@ pub use agent_message_admission::{
 };
 #[cfg(target_os = "linux")]
 pub use agent_message_execution::{
-    AgentMessageDelivery, AgentMessageHostService, AgentMessageReplyReceipt,
+    AgentMessageDelivery, AgentMessageExecutionObservation, AgentMessageHostService,
+    AgentMessageReplyReceipt,
 };
 pub use agent_message_publisher::{
     AgentMessagePublisherData, AgentMessagePublisherLease, AgentMessagePublisherRegistration,

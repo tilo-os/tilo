@@ -63,6 +63,42 @@ fn canonical_uuid(value: &str) -> bool {
         && !value.bytes().any(|byte| byte.is_ascii_uppercase())
 }
 
+/// Owner-observed state for one exact source and actual executing launch.
+/// It grants no new effect and carries no Chat history or process authority.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum AgentMessageObservation {
+    Bound,
+    Accepted,
+    Prepared { reply: String, text: String },
+    Committed { reply: String },
+    NeedsAttention,
+}
+
+impl std::fmt::Debug for AgentMessageObservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AgentMessageObservation(..)")
+    }
+}
+
+impl AgentMessageObservation {
+    /// # Errors
+    /// Invalid receipt identity or oversized immutable prepared output.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Prepared { reply, text }
+                if !canonical_uuid(reply) || text.trim().is_empty() || text.len() > 64 * 1024 =>
+            {
+                Err("invalid Message observation".into())
+            }
+            Self::Committed { reply } if !canonical_uuid(reply) => {
+                Err("invalid Message observation".into())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 #[cfg(feature = "client")]
 #[derive(Clone)]
 pub struct AgentMessageStream {
@@ -93,6 +129,33 @@ impl AgentMessageStream {
 
 #[cfg(feature = "client")]
 impl crate::ChannelHandle {
+    /// Read-only exact original recovery, never a retry or signing door.
+    ///
+    /// # Errors
+    /// Unknown custody, unavailable owner, unsupported or malformed response.
+    pub async fn observe_agent_message(
+        &self,
+        invocation: &str,
+        digest: [u8; 32],
+    ) -> Result<AgentMessageObservation, runtime_portal::NotAvailable> {
+        validate_request(invocation, digest)?;
+        let mut request = self.inner.observe_agent_message_request();
+        request.get().set_invocation(invocation);
+        request.get().set_source_digest(&digest);
+        let response = request.send().promise.await?;
+        let reader = response.get()?;
+        let json = reader
+            .get_observation_json()?
+            .to_str()
+            .map_err(|_| capnp::Error::failed("invalid Message observation encoding".into()))?;
+        if json.len() > AgentMessageInput::MAX_JSON_BYTES {
+            return Err(capnp::Error::failed("Message observation too large".into()).into());
+        }
+        let observation: AgentMessageObservation = serde_json::from_str(json)
+            .map_err(|_| capnp::Error::failed("invalid Message observation".into()))?;
+        observation.validate().map_err(capnp::Error::failed)?;
+        Ok(observation)
+    }
     /// Subscribe to only explicitly addressed input for this actual Agent.
     ///
     /// # Errors
@@ -212,6 +275,40 @@ mod tests {
         let decoded: AgentMessageInput = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded, original);
         assert_eq!(format!("{decoded:?}"), "AgentMessageInput(..)");
+    }
+
+    #[test]
+    fn observations_are_bounded_redacted_and_strictly_typed() {
+        let prepared = AgentMessageObservation::Prepared {
+            reply: input().invocation,
+            text: "Private immutable output".into(),
+        };
+        prepared.validate().unwrap();
+        assert_eq!(
+            serde_json::from_str::<AgentMessageObservation>(
+                &serde_json::to_string(&prepared).unwrap()
+            )
+            .unwrap(),
+            prepared
+        );
+        assert_eq!(format!("{prepared:?}"), "AgentMessageObservation(..)");
+        for invalid in [
+            AgentMessageObservation::Prepared {
+                reply: input().invocation,
+                text: "x".repeat(64 * 1024 + 1),
+            },
+            AgentMessageObservation::Committed {
+                reply: "00000000-0000-0000-0000-000000000000".into(),
+            },
+        ] {
+            assert!(invalid.validate().is_err());
+        }
+        assert!(
+            serde_json::from_str::<AgentMessageObservation>(
+                r#"{"Accepted":{"history":["not allowed"]}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

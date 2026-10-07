@@ -280,13 +280,21 @@ fn change_chat(fixture: &Fixture, invocation: uuid::Uuid, change: usize) {
                 );
                 let (_, messages) = doc.get(ROOT, "messages").unwrap().unwrap();
                 let (_, list) = doc.get(&messages, channel).unwrap().unwrap();
-                assert_eq!(doc.length(&list), 1);
+                if change == 3 {
+                    assert_eq!(
+                        doc.length(&list),
+                        2,
+                        "saved reply and original request required"
+                    );
+                } else {
+                    assert_eq!(doc.length(&list), 1);
+                }
                 let (_, row) = doc.get(&list, 0).unwrap().unwrap();
                 assert_eq!(
                     doc.get(&row, "id").unwrap().unwrap().0.as_str(),
                     Some(format!("m_{}", invocation.simple()).as_str())
                 );
-                if change == 0 {
+                if change == 0 || change == 3 {
                     doc.delete(&list, 0).unwrap();
                 } else {
                     let (_, text) = doc.get(&row, "text").unwrap().unwrap();
@@ -468,6 +476,12 @@ fn actual_process_commits_one_attributed_same_parent_reply_and_exact_replay() {
     let (fixture, invocation) = admitted();
     let mut running = launch(&fixture);
     let delivery = running.service.deliver(invocation, fixture.now).unwrap();
+    assert_observation(
+        &running,
+        &delivery,
+        &AgentMessageExecutionObservation::Bound,
+        fixture.now,
+    );
     assert!(
         running
             .service
@@ -480,6 +494,12 @@ fn actual_process_commits_one_attributed_same_parent_reply_and_exact_replay() {
             .is_err()
     );
     running.service.accept(invocation, fixture.now).unwrap();
+    assert_observation(
+        &running,
+        &delivery,
+        &AgentMessageExecutionObservation::Accepted,
+        fixture.now,
+    );
     let reply = running
         .service
         .prepare_reply(
@@ -488,6 +508,15 @@ fn actual_process_commits_one_attributed_same_parent_reply_and_exact_replay() {
             fixture.now,
         )
         .unwrap();
+    assert_observation(
+        &running,
+        &delivery,
+        &AgentMessageExecutionObservation::Prepared {
+            reply,
+            text: "Fixture output; not model evidence".into(),
+        },
+        fixture.now,
+    );
     let wrong_key = ed25519_dalek::SigningKey::from_bytes(&[77; 32]);
     assert!(
         running
@@ -517,12 +546,58 @@ fn actual_process_commits_one_attributed_same_parent_reply_and_exact_replay() {
     assert!(
         running
             .service
+            .observe(invocation, delivery.source_digest, fixture.now)
+            .unwrap()
+            == AgentMessageExecutionObservation::Committed { reply },
+        "lost Commit acknowledgement observes cold history, not hot pending state"
+    );
+    assert!(
+        running
+            .service
+            .observe(invocation, [9; 32], fixture.now)
+            .is_err()
+    );
+    assert!(
+        running
+            .service
             .pending_invocations(fixture.now)
             .unwrap()
             .is_empty()
     );
     assert_committed_reply(&fixture, invocation, &delivery, reply);
     assert_terminal_reply_isolation(&fixture, invocation, &delivery, &receipt, &mut running);
+}
+
+fn assert_observation(
+    running: &Running,
+    delivery: &AgentMessageDelivery,
+    expected: &AgentMessageExecutionObservation,
+    now: SystemTime,
+) {
+    let owner = &running.service.owner;
+    let before = owner
+        .with_current(delivery.room, |view| {
+            Ok((view.generation(), view.peer().durable()?))
+        })
+        .unwrap();
+    assert!(
+        running
+            .service
+            .observe(delivery.invocation, delivery.source_digest, now)
+            .unwrap()
+            == *expected,
+        "lost effect acknowledgements must observe exact durable state"
+    );
+    owner
+        .with_current(delivery.room, |view| {
+            assert_eq!(
+                (view.generation(), view.peer().durable()?),
+                before,
+                "read-only recovery must not accept, bind or publish anything"
+            );
+            Ok(())
+        })
+        .unwrap();
 }
 
 fn assert_committed_reply(
@@ -613,6 +688,15 @@ fn assert_terminal_reply_isolation(
             Ok(())
         })
         .unwrap();
+    change_chat(fixture, invocation, 3);
+    assert_observation(
+        running,
+        delivery,
+        &AgentMessageExecutionObservation::Committed {
+            reply: receipt.reply,
+        },
+        fixture.now,
+    );
     fixture
         .owner
         .commit_workspace_membership_command(
@@ -637,6 +721,13 @@ fn assert_terminal_reply_isolation(
     assert!(
         other
             .service
+            .observe(invocation, delivery.source_digest, fixture.now)
+            .is_err(),
+        "another actual Agent cannot observe the original execution receipt"
+    );
+    assert!(
+        other
+            .service
             .commit_reply(
                 invocation,
                 delivery.source_digest,
@@ -653,6 +744,13 @@ fn assert_terminal_reply_isolation(
         .unwrap();
     running.launcher.shutdown().unwrap();
     let mut replacement = launch(fixture);
+    assert!(
+        replacement
+            .service
+            .observe(invocation, delivery.source_digest, fixture.now)
+            .is_err(),
+        "replacement launch cannot inherit original Message receipt"
+    );
     assert!(
         replacement
             .service
@@ -682,9 +780,22 @@ fn prepared_reply_cannot_publish_after_source_change_or_actual_process_exit() {
             .unwrap();
         if changed_source {
             change_chat(&fixture, invocation, 1);
+            assert!(
+                running
+                    .service
+                    .observe(invocation, delivery.source_digest, fixture.now)
+                    .unwrap()
+                    == AgentMessageExecutionObservation::NeedsAttention
+            );
         } else {
             running.launcher.shutdown().unwrap();
             assert!(running.process.facts().is_err());
+            assert!(
+                running
+                    .service
+                    .observe(invocation, delivery.source_digest, fixture.now)
+                    .is_err()
+            );
         }
         assert!(
             running
