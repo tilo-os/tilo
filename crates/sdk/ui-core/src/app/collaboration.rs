@@ -601,6 +601,9 @@ impl App {
                 });
             }
             self.request_checkout_snapshot();
+            self.report_handoff(
+                &crate::collaboration::handoff::HandoffReport::OwnerSubscribe { version: 1 },
+            );
             self.publish_continuation_metadata();
             self.publish_playback_handoff();
             self.broadcast_doc_delta();

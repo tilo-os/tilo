@@ -10,7 +10,7 @@ match it (see crates/sdk/ui-core/assets/fonts/PROVENANCE.md). Only the script
 the face serves ships, plus the punctuation, digits and marks its runs need,
 so the catalog does not carry a second Latin.
 
-    uv run tools/font-fallback-subsets.py          # rebuild into the checkout
+    uv run tools/font-fallback-subsets.py          # rebuild candidates outside source
     uv run tools/font-fallback-subsets.py --check  # rebuild and compare
 
 The upstream files are fetched from google/fonts at a pinned commit and checked
@@ -19,6 +19,7 @@ deterministic: head.modified keeps the upstream timestamp.
 """
 
 import argparse
+import importlib.util
 import hashlib
 import io
 import sys
@@ -95,11 +96,18 @@ def build(spec):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="fail if the checkout differs")
+    parser.add_argument("--out", type=Path, default=ROOT / "target/font-candidates",
+                        help="write regenerated binary candidates outside source")
     args = parser.parse_args()
+    spec = importlib.util.spec_from_file_location("font_catalog", ROOT / "tools/font-catalog.py")
+    catalog_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(catalog_module)
+    reviewed = catalog_module.prepared_root(CATALOG, "fixtures") if args.check else args.out
+    reviewed.mkdir(parents=True, exist_ok=True)
     stale = []
     for spec in FALLBACKS:
         data = build(spec)
-        target = CATALOG / spec["output"]
+        target = reviewed / spec["output"]
         digest = hashlib.sha256(data).hexdigest()
         print(f"{spec['output']}: {len(data)} bytes, sha256 {digest}")
         if args.check:

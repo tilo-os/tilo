@@ -47,6 +47,7 @@ pub mod channel_live_activity;
 mod channel_settings;
 pub mod handoff;
 mod history;
+pub mod owner_view;
 pub mod participants;
 pub mod record_content;
 #[cfg(feature = "broker-transport")]

@@ -587,6 +587,8 @@ fn native_files_home_consent_refuses_unattested_identity_without_leaving_a_grant
     let resource = ResourceRef::FsPath(format!("{home}/source/report.txt"));
     assert!(!grants.permits(&caller, &resource, Verb::Read));
     assert!(!grants.permits(&caller, &resource, Verb::Write));
+    // Keep the isolated identity/profile active through the final refusal.
+    drop(fixture);
 }
 
 #[test]
@@ -669,6 +671,8 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
     );
     assert!(!grants.permits(&caller, &resource, Verb::Read));
     assert!(!grants.permits(&caller, &resource, Verb::Write));
+    // Keep the isolated identity/profile active through the final refusal.
+    drop(fixture);
 }
 
 #[test]
@@ -732,4 +736,6 @@ fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
     let grants = GrantStoreHandle::new(tree);
     assert!(!grants.permits(&caller, &resource, Verb::Read));
     assert!(!grants.permits(&caller, &resource, Verb::Write));
+    // Keep the isolated identity/profile active through the final refusal.
+    drop(fixture.home);
 }

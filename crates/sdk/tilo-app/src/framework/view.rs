@@ -790,16 +790,18 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         handle: impl FnMut(E, &mut EffectCx<R>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
         let status: StatusSource = Rc::default();
+        // Captures and History still describe the controls they draw. Only
+        // execution needs a live environment; publication is inert metadata.
+        let source = Rc::clone(&status);
+        self.effects.publish::<E>(self.alive.clone(), move || {
+            let now = source
+                .borrow()
+                .as_ref()
+                .map(|status| status())
+                .unwrap_or_default();
+            super::effect::published_specs::<E>(&now)
+        });
         if self.effects.env().is_some() {
-            let source = Rc::clone(&status);
-            self.effects.publish::<E>(self.alive.clone(), move || {
-                let now = source
-                    .borrow()
-                    .as_ref()
-                    .map(|status| status())
-                    .unwrap_or_default();
-                super::effect::published_specs::<E>(&now)
-            });
             self.effects.handle(self.alive.clone(), handle);
         }
         EffectsHandle { status }

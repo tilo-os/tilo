@@ -144,6 +144,10 @@ impl ResourceApp for SettingsShell {
 impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     fn present(&mut self, _state: &Rc<()>) {}
 
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        self.displays().model().borrow_mut().take_host_intent()
+    }
+
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
         let accounts = cx.person::<accounts::person::PersonAccounts>();
         self.attach_host(PaneCx::attached(&cx), accounts);
