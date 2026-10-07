@@ -25,10 +25,6 @@ pub enum ClientError {
     Rpc(RpcError),
 }
 
-// At most four small daemon replies can accumulate while requests are sent.
-// Keep this fixed and bounded for SSH stdio, including subprocess pipes.
-const UPLOAD_WINDOW_CHUNKS: usize = 4;
-
 pub struct Client<R, W> {
     reader: R,
     writer: W,
@@ -71,11 +67,6 @@ impl<R: BufRead, W: Write> Client<R, W> {
     /// # Errors
     /// Transport failures, malformed responses and daemon-reported errors.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, ClientError> {
-        let id = self.send(params)?;
-        self.receive::<C>(id)
-    }
-
-    fn send<C: Call>(&mut self, params: C) -> Result<u64, ClientError> {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         let envelope = RequestEnvelope {
@@ -88,10 +79,7 @@ impl<R: BufRead, W: Write> Client<R, W> {
         line.push(b'\n');
         self.writer.write_all(&line)?;
         self.writer.flush()?;
-        Ok(id)
-    }
 
-    fn receive<C: Call>(&mut self, id: u64) -> Result<C::Output, ClientError> {
         let mut response = String::new();
         if self.reader.read_line(&mut response)? == 0 {
             return Err(ClientError::Closed);
@@ -115,79 +103,44 @@ impl<R: BufRead, W: Write> Client<R, W> {
         }
     }
 
-    /// Stream `bytes` to the daemon in bounded windows of ordinary chunks.
-    /// Every response is checked before returning an upload id for import.
+    /// Stream `bytes` to the daemon in chunks and return the upload id for
+    /// [`crate::LayerSource::Upload`].
     ///
     /// # Errors
-    /// Read failures, transport errors, malformed acknowledgments and RPC errors.
-    pub fn upload(&mut self, bytes: impl Read) -> Result<String, ClientError> {
-        self.upload_window(bytes, UPLOAD_WINDOW_CHUNKS)
-    }
-
-    fn upload_window(
-        &mut self,
-        mut bytes: impl Read,
-        window: usize,
-    ) -> Result<String, ClientError> {
+    /// Read failures on `bytes`, call failures, and incorrect byte acknowledgments.
+    pub fn upload(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
         let upload = self.call(LayerUploadBegin {})?.upload;
         let mut buffer = vec![0_u8; UPLOAD_CHUNK_BYTES];
         let mut sent = 0_u64;
-        let mut done = false;
-        while !done {
-            let mut pending = Vec::with_capacity(window);
-            let mut failure = None;
-            for _ in 0..window {
-                let mut filled = 0;
-                while filled < buffer.len() {
-                    let Some(rest) = buffer.get_mut(filled..) else {
-                        break;
-                    };
-                    match bytes.read(rest) {
-                        Ok(0) => break,
-                        Ok(n) => filled = filled.saturating_add(n),
-                        Err(error) => {
-                            failure = Some(ClientError::Io(error));
-                            break;
-                        }
-                    }
-                }
-                if failure.is_some() {
+        loop {
+            let mut filled = 0;
+            while filled < buffer.len() {
+                let Some(rest) = buffer.get_mut(filled..) else {
+                    break;
+                };
+                let n = bytes.read(rest)?;
+                if n == 0 {
                     break;
                 }
-                done = filled < buffer.len();
-                if filled == 0 {
-                    break;
-                }
-                sent = sent.saturating_add(filled as u64);
-                let id = self.send(LayerUploadChunk {
-                    upload: upload.clone(),
-                    data: STANDARD.encode(buffer.get(..filled).unwrap_or_default()),
-                })?;
-                pending.push((id, sent));
-                if done {
-                    break;
-                }
+                filled = filled.saturating_add(n);
             }
-            // Drain all submitted calls even after a source/RPC failure so a
-            // later ordinary call cannot consume a leftover acknowledgment.
-            for (id, expected) in pending {
-                match self.receive::<LayerUploadChunk>(id) {
-                    Ok(reply) if reply.received == expected => {}
-                    Ok(reply) => {
-                        failure.get_or_insert_with(|| {
-                            ClientError::Protocol(format!(
-                                "upload acknowledgment: expected {expected} bytes, got {}",
-                                reply.received
-                            ))
-                        });
-                    }
-                    Err(error) => {
-                        failure.get_or_insert(error);
-                    }
-                }
+            if filled == 0 {
+                break;
             }
-            if let Some(error) = failure {
-                return Err(error);
+            let data = STANDARD.encode(buffer.get(..filled).unwrap_or_default());
+            sent = sent.saturating_add(filled as u64);
+            let reply = self.call(LayerUploadChunk {
+                upload: upload.clone(),
+                data,
+            })?;
+            if reply.received != sent {
+                return Err(ClientError::Protocol(format!(
+                    "upload acknowledgment: expected {sent} bytes, got {}",
+                    reply.received
+                )));
+            }
+            if filled < buffer.len() {
+                break;
             }
         }
         Ok(upload)
