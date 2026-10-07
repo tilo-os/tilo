@@ -26,18 +26,19 @@ SPEC.loader.exec_module(PROOF)
 class PresentedEditorTargetTests(unittest.TestCase):
     def test_native_delivery_diagnostic_is_bounded_closed_and_content_free(self):
         with tempfile.TemporaryDirectory() as directory:
-            profile = pathlib.Path(directory)
-            log = profile / "launcher-debug-output.log"
+            output = pathlib.Path(directory)
+            log = output / "shell.log"
             private = "private prompt and model output must not escape"
             log.write_text(
                 private + "\n"
-                + "DEBUG tilo_agent_delivery: native-delivery:sign:in_flight\n"
+                + "[app so.tilo.chat stdout] DEBUG tilo_agent_delivery: "
+                + "native-delivery:sign:in_flight\n"
                 + "WARN unrelated raw error details\n"
-                + "\x1b[2m2026-10-06T12:00:00Z\x1b[0m "
+                + "[app so.tilo.chat stderr] \x1b[2m2026-10-06T12:00:00Z\x1b[0m "
                 + "\x1b[34mDEBUG\x1b[0m \x1b[35mtilo_agent_delivery\x1b[0m: "
                 + "native-delivery:sign:definitive_refusal\x1b[0m\n"
             )
-            result = PROOF.native_delivery_diagnostic(profile)
+            result = PROOF.native_delivery_diagnostic(output)
             self.assertEqual(result, {
                 "log_count": 1,
                 "marker_count": 2,
@@ -52,14 +53,18 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
     def test_native_delivery_diagnostic_preserves_ambiguity(self):
         with tempfile.TemporaryDirectory() as directory:
-            profile = pathlib.Path(directory)
-            log = profile / "launcher-debug-output.log"
+            output = pathlib.Path(directory)
+            log = output / "shell.log"
             log.write_text(
-                "DEBUG tilo_agent_delivery: native-delivery:owner_send:in_flight\n"
-                "private tilo_agent_delivery: native-delivery:owner_send:saved\n"
-                "native-delivery:owner_send:not_a_closed_outcome\n"
+                "[app so.tilo.chat stdout] DEBUG tilo_agent_delivery: "
+                "native-delivery:owner_send:in_flight\n"
+                "[app so.tilo.agent stdout] DEBUG tilo_agent_delivery: "
+                "native-delivery:owner_send:saved\n"
+                "[app so.tilo.chat stderr] private tilo_agent_delivery: "
+                "native-delivery:owner_send:saved\n"
+                "[app so.tilo.chat stdout] native-delivery:owner_send:saved\n"
             )
-            self.assertEqual(PROOF.native_delivery_diagnostic(profile), {
+            self.assertEqual(PROOF.native_delivery_diagnostic(output), {
                 "log_count": 1,
                 "marker_count": 1,
                 "markers": [{"stage": "owner_send", "outcome": "in_flight"}],
@@ -67,7 +72,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "outcome": "in_flight",
             })
             log.unlink()
-            self.assertEqual(PROOF.native_delivery_diagnostic(profile), {
+            self.assertEqual(PROOF.native_delivery_diagnostic(output), {
                 "log_count": 0,
                 "marker_count": 0,
                 "markers": [],

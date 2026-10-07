@@ -1817,13 +1817,13 @@ NATIVE_DELIVERY_OUTCOMES = {
 }
 
 
-def native_delivery_diagnostic(profile):
-    """Return only the closed native-delivery state from one bounded log tail."""
-    logs = list(profile.rglob("launcher-debug-output.log"))
-    if len(logs) != 1:
-        return {"log_count": len(logs), "marker_count": 0,
+def native_delivery_diagnostic(output):
+    """Return only closed native-delivery state relayed from ordinary Chat."""
+    log = output / "shell.log"
+    if not log.is_file():
+        return {"log_count": 0, "marker_count": 0,
                 "markers": [], "stage": None, "outcome": "unobserved"}
-    with logs[0].open("rb") as stream:
+    with log.open("rb") as stream:
         stream.seek(0, os.SEEK_END)
         length = stream.tell()
         stream.seek(max(0, length - 256 * 1024))
@@ -1831,7 +1831,7 @@ def native_delivery_diagnostic(profile):
     observed = []
     ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
     marker = re.compile(
-        r"^\s*"
+        r"^\[app so\.tilo\.chat (?:stdout|stderr)\]\s+"
         r"(?:\d{4}-\d\d-\d\dT\S+\s+)?DEBUG\s+tilo_agent_delivery:\s+"
         r"native-delivery:([a-z_]+):([a-z_]+)\s*$"
     )
@@ -1856,7 +1856,7 @@ def finalize_fixture(profile, output, processes, logs, provider, runtime_owner):
     """Save the closed classifier, then always tear down test-owned state."""
     try:
         try:
-            diagnostic = native_delivery_diagnostic(profile)
+            diagnostic = native_delivery_diagnostic(output)
             (output / "native-message-delivery-final.json").write_text(
                 json.dumps(diagnostic, indent=2) + "\n"
             )
