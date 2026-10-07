@@ -52,7 +52,15 @@ each browser must report more than five decoded remote levels above RMS 0.015.
 Mute stops only local capture. Leave closes tracks, audio contexts and workers,
 and rejoin requires fresh Unmute. Removing one workspace member stops that
 person's capture while the other participant continues. The receipt and actual
-Chat frames are saved under `target/mounted-resource-voice/`. The SDK web lane
+Chat frames are saved under `target/mounted-resource-voice/`. Each run also
+writes a `progress.json` receipt with a unique run id and elapsed checkpoints.
+The revocation receipt distinguishes waiting for the owner's acknowledgement,
+its committed generation and duration, stopping capture, closing audio resources,
+and the surviving person's capture and Leave. The unchanged 130-second global
+deadline writes `failure.json` before closing browsers; a successful `journey.json`
+and a failure receipt must be matched by run id. CI keeps mounted artifacts under
+`app-sdk-mounted-resource-<attempt>` so a later attempt cannot overwrite the
+failed attempt's evidence. The SDK web lane
 runs this journey as an unprivileged user with Chromium's sandbox enabled and
 an owned descendant supervisor; missing prerequisites fail.
 
@@ -72,6 +80,17 @@ channel through the normal steward crash-recovery path, under the existing
 current-caller read guard. Missing groups are refused without initialization;
 wrong vaults/devices and corrupt state are refused. No membership is added by
 this recovery, and native plaintext replay still requires the exact governor.
+
+The encrypted fixture also uses the writer's actual person id in the shared
+Chat record and checks the compiled public message read retains it separately
+from the viewing person. Its `identity-boundary.json` saves only public fixture
+person labels and semantics. Previously an unbound creator's fallback name was
+persisted as `You`, and another reader saw that word as the message author.
+Unknown creators now receive a neutral, short identity label. Legacy saved
+`You` names remain untouched and are displayed with a short identity tag in
+message headers, mentions and public person resources; the current reader still
+sees `You` for their own messages. This does not establish Contacts lookup or
+verify a person's chosen display name from the content of a message.
 
 This qualifies local governed certified-peer resource navigation and actual
 browser disconnect/retry. It does not qualify a full browser-profile restart

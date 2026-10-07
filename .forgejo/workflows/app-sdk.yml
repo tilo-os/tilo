@@ -280,6 +280,9 @@ jobs:
       image: ${{ needs.builder.outputs.image }}
     env:
       CDP_PORT: "9333"
+      # Three isolated browsers fit the existing 6-CPU/22-GiB job budget.
+      # Set this back to "2" to roll back without changing any probe.
+      TILO_WEB_SMOKE_SHARDS: "3"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -348,7 +351,7 @@ jobs:
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
-          name: app-sdk-mounted-resource
+          name: app-sdk-mounted-resource-${{ github.run_attempt }}
           path: |
             target/mounted-resource
             target/mounted-resource-recovery

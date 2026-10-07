@@ -2487,6 +2487,9 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(destination.join(sdk_path).join("Cargo.toml").is_file());
         assert!(destination.join("src/main.rs").is_file());
         assert!(destination.join("tests/app.rs").is_file());
+        let agent_guide =
+            std::fs::read_to_string(destination.join("AGENTS.md")).expect("agent guide");
+        assert_eq!(agent_guide, APP_AGENT_GUIDE);
         assert!(destination.join("tests/headless-actions.json").is_file());
         let catalog =
             std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
@@ -3205,7 +3208,8 @@ fn creation_inputs_are_validated_and_printed_safely() {
         let outcome = create_app(req).expect("preview app");
         assert!(outcome.dry_run);
         assert!(!destination.exists());
-        assert_eq!(outcome.files.len(), 13);
+        assert_eq!(outcome.files.len(), 14);
+        assert!(outcome.files.contains(&PathBuf::from("AGENTS.md")));
     }
 
     // Phase: an_app_outside_every_repository_becomes_one.
