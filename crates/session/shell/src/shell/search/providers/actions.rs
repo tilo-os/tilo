@@ -12,13 +12,15 @@ use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use settings_store::display_mode::DisplayLayoutMode;
 use settings_store::hardware::ShortcutAction;
-use std::rc::Rc;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
-use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
+use crate::shell::search::action_api::{
+    ActionArgs, ActionError, ActionHierarchy, ActionParam, ParamType,
+};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 mod native_identity;
@@ -2478,6 +2480,9 @@ pub struct ActionsProvider {
     ranker: ListIndex,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     provider_catalog: Option<crate::shell::search::SearchProviderCatalogHandle>,
+    /// Semantic routes derived while surveying the current workspace, not by
+    /// making consumers decode opaque action addresses.
+    governance_hierarchies: RefCell<BTreeMap<String, ActionHierarchy>>,
 }
 
 impl ActionsProvider {
@@ -2490,6 +2495,7 @@ impl ActionsProvider {
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
             ranker: ListIndex::default(),
+            governance_hierarchies: RefCell::default(),
         }
     }
 
@@ -2503,6 +2509,7 @@ impl ActionsProvider {
             provider_catalog: Some(provider_catalog),
             qs_actions,
             ranker: ListIndex::default(),
+            governance_hierarchies: RefCell::default(),
         }
     }
 
@@ -2554,6 +2561,9 @@ impl SearchProvider for ActionsProvider {
     fn available_in_active_app_scope(&self) -> bool {
         true
     }
+    fn action_hierarchy(&self, id: &str) -> Option<ActionHierarchy> {
+        self.governance_hierarchies.borrow().get(id).cloned()
+    }
     /// An address is looked up in the whole table. The shell offers more
     /// actions than one palette page shows, so the first page of an empty
     /// query would leave the later ones unreachable by id.
@@ -2565,6 +2575,7 @@ impl SearchProvider for ActionsProvider {
         reason = "the catalog lists every shell action with its contract in one table-like pass"
     )]
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        self.governance_hierarchies.borrow_mut().clear();
         const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
             (
                 QS_BRIGHTNESS_ID,
@@ -3083,10 +3094,15 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
+                (
+                    workspace.room.to_string(),
+                    tilo_desktop::workspace_settings::permission_profile_resource(
+                        workspace, &actor,
+                    ),
+                )
             })
         };
-        if let Some(resource) = profile_resource {
+        if let Some((room, resource)) = profile_resource {
             let mut surfaces = vec![(resource.id.as_str().to_string(), resource.actions)];
             surfaces.extend(
                 resource
@@ -3108,6 +3124,17 @@ impl SearchProvider for ActionsProvider {
                     let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
+                    self.governance_hierarchies.borrow_mut().insert(
+                        format!("{resource_id}#{}", action.id),
+                        ActionHierarchy {
+                            application: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                            room: room.clone(),
+                            record: String::new(),
+                            resource: resource_id.clone(),
+                            semantic_identity: None,
+                            operation: action.id.clone(),
+                        },
+                    );
                     out.push(SearchResult {
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Document,
@@ -3292,10 +3319,15 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
+                (
+                    workspace.room.to_string(),
+                    tilo_desktop::workspace_settings::permission_profile_resource(
+                        workspace, &actor,
+                    ),
+                )
             })
         };
-        if let Some(resource) = profile_resource {
+        if let Some((room, resource)) = profile_resource {
             let mut surfaces = vec![(resource.id.as_str().to_string(), resource.actions)];
             surfaces.extend(
                 resource
@@ -3317,6 +3349,17 @@ impl SearchProvider for ActionsProvider {
                     let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
+                    self.governance_hierarchies.borrow_mut().insert(
+                        format!("{resource_id}#{}", action.id),
+                        ActionHierarchy {
+                            application: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                            room: room.clone(),
+                            record: String::new(),
+                            resource: resource_id.clone(),
+                            semantic_identity: None,
+                            operation: action.id.clone(),
+                        },
+                    );
                     out.push(SearchResult {
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Document,
@@ -5452,6 +5495,41 @@ mod tests {
                 "provider failure reaches the UI adapter"
             );
         }
+    }
+
+    #[test]
+    fn governance_actions_publish_only_current_surveyed_semantic_routes() {
+        let chrome = chrome_with_room();
+        let provider = ActionsProvider::new();
+        let save = action_results(&provider, &chrome)
+            .into_iter()
+            .find(|result| result.id.ends_with("#profile.save"))
+            .expect("the current workspace publishes its governance action");
+        let hierarchy = provider
+            .action_hierarchy(&save.id)
+            .expect("a published governance action exposes its semantic route");
+        let room = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .room
+            .to_string();
+        assert_eq!(hierarchy.application, "tilo.workspace");
+        assert_eq!(hierarchy.room, room);
+        assert_eq!(hierarchy.resource, format!("workspace.permissions:{room}"));
+        assert_eq!(hierarchy.operation, "profile.save");
+        assert!(provider.action_hierarchy("unpublished-address").is_none());
+        // Metadata describes the current survey, not an old workspace or an
+        // authorization cache. A later survey must retire the old address.
+        let no_workspace = chrome_rc();
+        assert!(
+            !action_results(&provider, &no_workspace)
+                .iter()
+                .any(|result| result.id == save.id)
+        );
+        assert!(provider.action_hierarchy(&save.id).is_none());
     }
 
     #[test]
