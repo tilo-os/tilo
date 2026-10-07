@@ -11516,6 +11516,7 @@ pub fn run() {
             let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
+            frame_builder.set_workspace_clip_supported(backend.supports_workspace_clip());
             frame_builder.set_session_locked(session.is_locked());
             let (scene_width, scene_height) = frame_builder.scene_size();
             foreign::store().begin_presentation_frame(Rect::new(
