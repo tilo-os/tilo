@@ -717,6 +717,69 @@ struct SpatialInputState {
 }
 
 impl SpatialInputState {
+    /// Restore only shared-plane origin from the existing owner checkpoint.
+    /// Dimensions always come from live native output geometry.
+    fn placed_local_rect(
+        &mut self,
+        current: Option<DisplayRect>,
+        previous: Option<&DisplayPlacement>,
+    ) -> Option<DisplayRect> {
+        let current = current?;
+        let origin = self
+            .placement_override
+            .or_else(|| previous.map(|display| display.rect));
+        let rect = origin.map_or(current, |origin| DisplayRect {
+            x: origin.x,
+            y: origin.y,
+            ..current
+        });
+        self.placement_override = Some(rect);
+        Some(rect)
+    }
+
+    fn accept_display_move(
+        &mut self,
+        fabric: &DeviceFabric,
+        target: &crate::shell::personal_continuity::DeviceId,
+        expected: &FabricStamp,
+        rect: DisplayRect,
+    ) -> bool {
+        let Some(display) = fabric
+            .snapshots()
+            .get(target)
+            .and_then(|snapshot| snapshot.display.as_ref())
+        else {
+            return false;
+        };
+        if !display.accepts_move(expected, rect)
+            || !fabric.display_destination_clear(target, rect)
+            || self
+                .placement_override
+                .is_some_and(|pending| pending != display.rect)
+        {
+            return false;
+        }
+        self.placement_override = Some(rect);
+        true
+    }
+
+    fn apply_checked_display_move(
+        &mut self,
+        fabric: &DeviceFabric,
+        target: &crate::shell::personal_continuity::DeviceId,
+        action: &PersonalFabricAction,
+    ) {
+        if let PersonalFabricAction::SetDisplayPlacementChecked {
+            expected,
+            rect,
+            expires_unix_ms,
+        } = action
+            && unix_now_ms() <= *expires_unix_ms
+        {
+            self.accept_display_move(fabric, target, expected, *rect);
+        }
+    }
+
     fn queue_outbound(&mut self, input: OutboundSpatialInput) -> Result<(), String> {
         if matches!(input.event, FabricInputEvent::PointerMotion { .. })
             && let Some(last) = self.outbound.back_mut()
@@ -1447,10 +1510,13 @@ impl DeviceFabricRuntime {
             device: device.clone(),
         };
         let mut local = local;
-        if let Ok(spatial) = spatial_input_state().lock()
-            && let Some(rect) = spatial.placement_override
-        {
-            local.display = Some(rect);
+        if let Ok(mut spatial) = spatial_input_state().lock() {
+            local.display = spatial.placed_local_rect(
+                local.display,
+                previous
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.display.as_ref()),
+            );
         }
         let mut candidate = build_local_snapshot(
             &device,
@@ -1471,17 +1537,10 @@ impl DeviceFabricRuntime {
                 .map(|snapshot| snapshot.presence.wake_routes.as_slice())
                 .unwrap_or_default(),
         );
-        let neutral_stamp = FabricStamp {
-            counter: 0,
-            device: device.clone(),
-        };
-        stamp_snapshot(&mut candidate, &neutral_stamp, 0);
-        let fingerprint = postcard::to_allocvec(&(
-            &candidate,
-            candidate.display.as_ref().map(|display| &display.outputs),
-        ))
-        .ok()
-        .map(|bytes| *blake3::hash(&bytes).as_bytes());
+        // Connectors are populated after build_local_snapshot; preserve their
+        // exact layout stamp only once the complete observation is available.
+        preserve_unchanged_stamps(&mut candidate, previous.as_ref());
+        let fingerprint = local_snapshot_fingerprint(&candidate);
         publish_device_displays(network, policy);
         let heartbeat_due = self
             .last_publish
@@ -1845,7 +1904,7 @@ impl DeviceFabricRuntime {
                 PersonalFabricAction::WindowViews { views, decode } => {
                     window_views::record(envelope.source, views, &decode);
                 }
-                action => handle_spatial_action(envelope.source, &envelope.target, action),
+                action => handle_spatial_action(network, envelope.source, &envelope.target, action),
             }
         }
     }
@@ -3338,6 +3397,7 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
 }
 
 fn handle_spatial_action(
+    network: &ShellNetwork,
     source: crate::shell::personal_continuity::DeviceId,
     target: &crate::shell::personal_continuity::DeviceId,
     action: PersonalFabricAction,
@@ -3346,6 +3406,9 @@ fn handle_spatial_action(
         return;
     };
     match action {
+        action @ PersonalFabricAction::SetDisplayPlacementChecked { .. } => {
+            spatial.apply_checked_display_move(&network.device_fabric(), target, &action);
+        }
         PersonalFabricAction::SetDisplayPlacement { rect } => {
             spatial.placement_override = Some(rect);
         }
@@ -6086,6 +6149,95 @@ pub fn place_device(
         .map(|_| ())
 }
 
+/// Request a translation over an exact certified connector observation.
+/// This does not issue or renew an input lease.
+/// # Errors
+/// Rejects offline, local, stale, overlapping or invalid display observations.
+pub fn move_device_display(
+    network: &ShellNetwork,
+    request: &settings_store::device_displays::DeviceDisplayMove,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let (local, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
+    let fabric = network.device_fabric();
+    let (target, expected, rect) = checked_display_move(&fabric, &local, request)
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-layout-changed"))?;
+    network
+        .send_personal_fabric_action(
+            &target,
+            PersonalFabricAction::SetDisplayPlacementChecked {
+                expected,
+                rect,
+                expires_unix_ms: unix_now_ms()
+                    .saturating_add(crate::shell::device_fabric::MAX_DISPLAY_MOVE_AGE_MS),
+            },
+        )
+        .map(|_| ())
+}
+
+fn checked_display_move(
+    fabric: &DeviceFabric,
+    local: &crate::shell::personal_continuity::DeviceId,
+    request: &settings_store::device_displays::DeviceDisplayMove,
+) -> Result<
+    (
+        crate::shell::personal_continuity::DeviceId,
+        crate::shell::device_fabric::FabricStamp,
+        DisplayRect,
+    ),
+    crate::shell::device_fabric::FabricError,
+> {
+    use crate::shell::device_fabric::FabricError;
+    let target = crate::shell::personal_continuity::DeviceId::new(request.screen.device.clone())
+        .map_err(|_| FabricError::InvalidIdentifier)?;
+    let snapshot = fabric
+        .snapshots()
+        .get(&target)
+        .ok_or(FabricError::UnknownDevice)?;
+    if target == *local || !snapshot.presence.online || !snapshot.presence.capabilities.display {
+        return Err(FabricError::InvalidDisplayPlacement);
+    }
+    if !observed_device_displays(fabric, Some(local)).contains(&request.screen) {
+        return Err(FabricError::ConflictingRevision);
+    }
+    let display = snapshot
+        .display
+        .as_ref()
+        .ok_or(FabricError::InvalidDisplayPlacement)?;
+    let rect = DisplayRect {
+        x: display
+            .rect
+            .x
+            .checked_add(
+                request
+                    .x
+                    .checked_sub(request.screen.x)
+                    .ok_or(FabricError::InvalidDisplayPlacement)?,
+            )
+            .ok_or(FabricError::InvalidDisplayPlacement)?,
+        y: display
+            .rect
+            .y
+            .checked_add(
+                request
+                    .y
+                    .checked_sub(request.screen.y)
+                    .ok_or(FabricError::InvalidDisplayPlacement)?,
+            )
+            .ok_or(FabricError::InvalidDisplayPlacement)?,
+        ..display.rect
+    };
+    if !display.accepts_move(&display.stamp, rect) {
+        return Err(FabricError::InvalidDisplayPlacement);
+    }
+    if !fabric.display_destination_clear(&target, rect) {
+        return Err(FabricError::InvalidDisplayPlacement);
+    }
+    Ok((target, display.stamp.clone(), rect))
+}
+
 /// Compatibility helper for callers that use the original right-edge action.
 ///
 /// # Errors
@@ -6363,6 +6515,7 @@ pub fn observed_device_displays(
                         width: output.rect.width,
                         height: output.rect.height,
                         scale_milli: output.scale_milli,
+                        revision: display.stamp.counter,
                     })
                 })
             })
@@ -6499,6 +6652,21 @@ fn policy_capabilities(
         app_continuation: policy.permits(ContinuityCapability::AppContinuations),
         audio_group: policy.permits(ContinuityCapability::Media) && local.audio_output,
     }
+}
+
+fn local_snapshot_fingerprint(snapshot: &DeviceFabricSnapshot) -> Option<[u8; 32]> {
+    let mut comparable = snapshot.clone();
+    let neutral = FabricStamp {
+        counter: 0,
+        device: snapshot.owner.clone(),
+    };
+    stamp_snapshot(&mut comparable, &neutral, 0);
+    postcard::to_allocvec(&(
+        &comparable,
+        comparable.display.as_ref().map(|display| &display.outputs),
+    ))
+    .ok()
+    .map(|bytes| *blake3::hash(&bytes).as_bytes())
 }
 
 fn preserve_unchanged_stamps(
@@ -7148,6 +7316,218 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    fn drag_snapshot(device: DeviceId, x: i32) -> DeviceFabricSnapshot {
+        let mut snapshot = provenance_snapshot(device.clone(), "Laptop", 7, None);
+        snapshot.presence.capabilities.display = true;
+        snapshot.display = Some(DisplayPlacement {
+            device: device.clone(),
+            rect: DisplayRect {
+                x,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+            scale_milli: 1250,
+            stamp: FabricStamp { counter: 7, device },
+            outputs: vec![crate::shell::device_fabric::DisplayConnectorPlacement {
+                connector: "eDP-1".into(),
+                label: "Panel".into(),
+                rect: DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                },
+                scale_milli: 1250,
+            }],
+        });
+        snapshot
+    }
+
+    fn drag_pair() -> (
+        DeviceFabric,
+        DeviceId,
+        DeviceId,
+        settings_store::device_displays::DeviceDisplayMove,
+    ) {
+        let local = DeviceId::new("local-drag").unwrap();
+        let peer = DeviceId::new("peer-drag").unwrap();
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(drag_snapshot(local.clone(), 0)).unwrap();
+        fabric.upsert(drag_snapshot(peer.clone(), 1280)).unwrap();
+        let screen = observed_device_displays(&fabric, Some(&local))
+            .into_iter()
+            .find(|screen| !screen.local)
+            .unwrap();
+        let request = settings_store::device_displays::DeviceDisplayMove {
+            screen,
+            x: 0,
+            y: 720,
+        };
+        (fabric, local, peer, request)
+    }
+
+    #[test]
+    fn display_drag_expired_pump_cannot_apply_a_delayed_gesture() {
+        let (fabric, local, peer, request) = drag_pair();
+        let (_, expected, rect) = checked_display_move(&fabric, &local, &request).unwrap();
+        let mut input = SpatialInputState::default();
+        input.apply_checked_display_move(
+            &fabric,
+            &peer,
+            &PersonalFabricAction::SetDisplayPlacementChecked {
+                expected,
+                rect,
+                expires_unix_ms: 0,
+            },
+        );
+        assert!(input.placement_override.is_none());
+        assert!(input.issued.is_empty() && input.received.is_empty());
+    }
+
+    #[test]
+    fn display_drag_validates_exact_revision_geometry_and_online_owner() {
+        let (mut fabric, local, peer, request) = drag_pair();
+        let (target, expected, rect) = checked_display_move(&fabric, &local, &request).unwrap();
+        assert_eq!(target, peer);
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (0, 720, 1280, 720)
+        );
+        let owner = fabric
+            .snapshots()
+            .get(&peer)
+            .unwrap()
+            .display
+            .as_ref()
+            .unwrap();
+        let mut input = SpatialInputState::default();
+        assert!(input.accept_display_move(&fabric, &peer, &expected, rect));
+        assert_eq!(input.placement_override, Some(rect));
+        assert!(
+            !input.accept_display_move(
+                &fabric,
+                &peer,
+                &expected,
+                DisplayRect {
+                    x: -1280,
+                    y: 0,
+                    ..rect
+                }
+            ),
+            "another concurrent drag over that old revision cannot replace an unpublished move"
+        );
+        assert!(
+            input.issued.is_empty() && input.received.is_empty() && input.inbound.is_empty(),
+            "arranging screens grants no input access"
+        );
+
+        let mut resize = rect;
+        resize.width += 1;
+        assert!(
+            !owner.accepts_move(&expected, resize),
+            "placement is not a remote mode change"
+        );
+        let mut forged = expected.clone();
+        forged.device = local.clone();
+        assert!(!owner.accepts_move(&forged, rect));
+        let mut stale = request.clone();
+        stale.screen.revision -= 1;
+        assert!(checked_display_move(&fabric, &local, &stale).is_err());
+        let mut collision = request.clone();
+        collision.y = 0;
+        assert!(checked_display_move(&fabric, &local, &collision).is_err());
+        let mut detached = request.clone();
+        detached.y = 2000;
+        assert!(
+            checked_display_move(&fabric, &local, &detached).is_err(),
+            "absolute moves must leave a real screen edge to cross"
+        );
+        let mut overflow = request.clone();
+        overflow.x = i32::MAX;
+        assert!(checked_display_move(&fabric, &local, &overflow).is_err());
+        let mut changed = drag_snapshot(peer.clone(), 1280);
+        changed.presence.online = false;
+        changed.presence.stamp.counter += 1;
+        fabric.upsert(changed).unwrap();
+        assert!(checked_display_move(&fabric, &local, &request).is_err());
+        assert_eq!(
+            request.screen.scale_milli, 1250,
+            "native logical coordinates preserve scale observation"
+        );
+    }
+
+    #[test]
+    fn display_drag_publication_preserves_stamps_and_restores_live_extents() {
+        let (fabric, local, peer, request) = drag_pair();
+        let (_, expected, rect) = checked_display_move(&fabric, &local, &request).unwrap();
+        let before = fabric.snapshots().get(&peer).unwrap().clone();
+        let fingerprint = local_snapshot_fingerprint(&before).unwrap();
+        assert_eq!(
+            before.display.as_ref().unwrap().stamp.counter,
+            7,
+            "fingerprinting never erases the authored publication stamp"
+        );
+        let mut newer = before.clone();
+        stamp_snapshot(
+            &mut newer,
+            &FabricStamp {
+                counter: 8,
+                device: peer.clone(),
+            },
+            42,
+        );
+        assert_eq!(
+            local_snapshot_fingerprint(&newer),
+            Some(fingerprint),
+            "heartbeat does not change topology identity"
+        );
+        newer.display.as_mut().unwrap().rect = rect;
+        preserve_unchanged_stamps(&mut newer, Some(&before));
+        assert_eq!(newer.display.as_ref().unwrap().stamp.counter, 8);
+        assert_ne!(local_snapshot_fingerprint(&newer), Some(fingerprint));
+        assert!(
+            !newer
+                .display
+                .as_ref()
+                .unwrap()
+                .accepts_move(&expected, rect),
+            "a new owner publication rejects the old drag"
+        );
+        let mut saved = DeviceFabric::default();
+        saved.upsert(newer).unwrap();
+        let checkpoint =
+            DeviceFabric::decode_checkpoint(&saved.encode_checkpoint().unwrap()).unwrap();
+        let previous = checkpoint.snapshots().get(&peer).unwrap().display.as_ref();
+        assert!(
+            !previous
+                .unwrap()
+                .accepts_move(&previous.unwrap().stamp, rect),
+            "a checkpoint is not live connector discovery after restart"
+        );
+
+        let mut restarted = SpatialInputState::default();
+        let changed_mode = DisplayRect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 360,
+        };
+        assert_eq!(
+            restarted.placed_local_rect(Some(changed_mode), previous),
+            Some(DisplayRect {
+                x: rect.x,
+                y: rect.y,
+                ..changed_mode
+            }),
+            "reconnect uses existing checkpoint origin and current DPI/extent"
+        );
+        assert!(
+            restarted.placed_local_rect(None, previous).is_none(),
+            "a stored placement cannot resurrect unplugged screens"
+        );
+    }
 
     #[test]
     fn roaming_settings_travel_through_the_session_records_and_their_copy() {

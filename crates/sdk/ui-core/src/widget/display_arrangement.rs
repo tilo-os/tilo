@@ -58,6 +58,8 @@ fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArrangedDisplay {
     pub connector: String,
+    /// Screens in one device move together without changing its native seat layout.
+    pub movement_group: Option<String>,
     pub label: String,
     /// The number Identify shows on this display.
     pub number: usize,
@@ -203,14 +205,50 @@ impl DisplayArrangement {
 
     /// Where each display is drawn this frame: the live preview for the one
     /// being dragged, its stored placement for the rest.
+    fn moves_together(&self, connector: &str, display: &ArrangedDisplay) -> bool {
+        display.connector == connector
+            || self
+                .displays
+                .iter()
+                .find(|item| item.connector == connector)
+                .is_some_and(|item| {
+                    item.movement_group.is_some() && item.movement_group == display.movement_group
+                })
+    }
+
+    fn moved_placement(
+        &self,
+        connector: &str,
+        destination: Placement,
+        display: &ArrangedDisplay,
+    ) -> Placement {
+        let Some(selected) = self
+            .displays
+            .iter()
+            .find(|item| item.connector == connector)
+        else {
+            return display.placement;
+        };
+        display.placement.at(
+            display
+                .placement
+                .x
+                .saturating_add(destination.x.saturating_sub(selected.placement.x)),
+            display
+                .placement
+                .y
+                .saturating_add(destination.y.saturating_sub(selected.placement.y)),
+        )
+    }
+
     fn drawn(&self) -> Vec<(ArrangedDisplay, bool)> {
         let drag = self.drag.with(Clone::clone);
         self.displays
             .iter()
             .map(|display| match &drag {
-                Some(drag) if drag.active && drag.connector == display.connector => (
+                Some(drag) if drag.active && self.moves_together(&drag.connector, display) => (
                     ArrangedDisplay {
-                        placement: drag.preview,
+                        placement: self.moved_placement(&drag.connector, drag.preview, display),
                         ..display.clone()
                     },
                     true,
@@ -223,9 +261,56 @@ impl DisplayArrangement {
     fn others(&self, connector: &str) -> Vec<Placement> {
         self.displays
             .iter()
-            .filter(|display| display.movable && display.connector != connector)
+            .filter(|display| !self.moves_together(connector, display))
             .map(|display| display.placement)
             .collect()
+    }
+
+    fn group_bounds(&self, connector: &str, destination: Placement) -> Placement {
+        let screens = self
+            .displays
+            .iter()
+            .filter(|display| self.moves_together(connector, display))
+            .map(|display| self.moved_placement(connector, destination, display))
+            .collect::<Vec<_>>();
+        let x = screens
+            .iter()
+            .map(|rect| rect.x)
+            .min()
+            .unwrap_or(destination.x);
+        let y = screens
+            .iter()
+            .map(|rect| rect.y)
+            .min()
+            .unwrap_or(destination.y);
+        let right = screens
+            .iter()
+            .map(|rect| rect.right())
+            .max()
+            .unwrap_or(destination.right());
+        let bottom = screens
+            .iter()
+            .map(|rect| rect.bottom())
+            .max()
+            .unwrap_or(destination.bottom());
+        Placement::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
+    }
+
+    fn align_group(
+        &self,
+        connector: &str,
+        destination: Placement,
+        settled: Placement,
+    ) -> Placement {
+        let bounds = self.group_bounds(connector, destination);
+        destination.at(
+            destination
+                .x
+                .saturating_add(settled.x.saturating_sub(bounds.x)),
+            destination
+                .y
+                .saturating_add(settled.y.saturating_sub(bounds.y)),
+        )
     }
 
     fn press(&self, point: Point) -> bool {
@@ -270,11 +355,12 @@ impl DisplayArrangement {
             round_to_i32(dx - drag.grab.0),
             round_to_i32(dy - drag.grab.1),
         );
-        drag.preview = placement::snap(
-            moved,
+        let snapped = placement::snap(
+            self.group_bounds(&drag.connector, moved),
             &self.others(&drag.connector),
             drag.mapping.snap_threshold(),
         );
+        drag.preview = self.align_group(&drag.connector, moved, snapped);
         self.drag.set(Some(drag));
         true
     }
@@ -287,11 +373,12 @@ impl DisplayArrangement {
         if !drag.active {
             return true;
         }
-        let settled = placement::settle(
-            drag.preview,
+        let bounds = placement::settle(
+            self.group_bounds(&drag.connector, drag.preview),
             &self.others(&drag.connector),
             drag.mapping.snap_threshold(),
         );
+        let settled = self.align_group(&drag.connector, drag.preview, bounds);
         let unchanged = self
             .displays
             .iter()
@@ -304,12 +391,19 @@ impl DisplayArrangement {
         {
             let _ = emitter.emit((settled.x, settled.y));
         }
-        if let Some(display) = self
+        let positions = self
             .displays
-            .iter_mut()
-            .find(|display| display.connector == drag.connector)
-        {
-            display.placement = settled;
+            .iter()
+            .map(|display| {
+                if self.moves_together(&drag.connector, display) {
+                    self.moved_placement(&drag.connector, settled, display)
+                } else {
+                    display.placement
+                }
+            })
+            .collect::<Vec<_>>();
+        for (display, position) in self.displays.iter_mut().zip(positions) {
+            display.placement = position;
         }
         true
     }
@@ -630,6 +724,7 @@ mod tests {
         vec![
             ArrangedDisplay {
                 connector: "eDP-1".into(),
+                movement_group: None,
                 label: "Built-in display".into(),
                 number: 1,
                 placement: Placement::new(0, 0, 1920, 1080),
@@ -638,6 +733,7 @@ mod tests {
             },
             ArrangedDisplay {
                 connector: "HDMI-A-1".into(),
+                movement_group: None,
                 label: "Desk monitor".into(),
                 number: 2,
                 placement: Placement::new(1920, 0, 1920, 1080),
@@ -699,6 +795,66 @@ mod tests {
         let y = invocation.arguments["y"].as_i64().unwrap();
         assert_eq!((x, y), (0, 1080), "snapped flush under the panel");
         assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+    }
+
+    #[test]
+    fn device_screens_preview_and_drop_together_preserving_native_seat_geometry() {
+        let mut canvas = canvas();
+        canvas.displays[0].movable = false;
+        canvas.displays[1].movement_group = Some("peer".into());
+        canvas.displays.push(ArrangedDisplay {
+            connector: "peer/DP-2".into(),
+            movement_group: Some("peer".into()),
+            label: "Second peer screen".into(),
+            number: 3,
+            placement: Placement::new(1920, 1080, 1280, 720),
+            primary: false,
+            movable: true,
+        });
+        let mapping = canvas.mapping();
+        let first = mapping.to_canvas(canvas.displays[1].placement);
+        let panel = mapping.to_canvas(canvas.displays[0].placement);
+        assert!(canvas.press(first.center()));
+        assert!(canvas.drag_to(Point::new(
+            panel.center().x,
+            panel.y1 + first.height() / 2.0 + 4.0
+        )));
+        let drawn = canvas.drawn();
+        assert_eq!(drawn.iter().filter(|(_, dragging)| *dragging).count(), 2);
+        assert_eq!(drawn[2].0.placement.x, drawn[1].0.placement.x);
+        assert_eq!(drawn[2].0.placement.y - drawn[1].0.placement.y, 1080);
+        assert!(canvas.release());
+        assert_eq!(
+            canvas.displays[2].placement.x,
+            canvas.displays[1].placement.x
+        );
+        assert_eq!(
+            canvas.displays[2].placement.y - canvas.displays[1].placement.y,
+            1080
+        );
+        assert_eq!(canvas.displays[2].placement.width, 1280);
+        let invocation = ui::widget::controls::take_control_invocation(&mut canvas).unwrap();
+        assert_eq!(invocation.address.action, "move-display");
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+    }
+
+    #[test]
+    fn immovable_local_screen_still_constrains_peer_drag() {
+        let mut canvas = canvas();
+        canvas.displays[0].movable = false;
+        let mapping = canvas.mapping();
+        let local = mapping.to_canvas(canvas.displays[0].placement);
+        let peer = mapping.to_canvas(canvas.displays[1].placement);
+        assert!(!canvas.press(local.center()));
+        assert!(canvas.press(peer.center()));
+        assert!(canvas.drag_to(local.center()));
+        assert!(canvas.release());
+        assert!(
+            !canvas.displays[0]
+                .placement
+                .overlaps(canvas.displays[1].placement)
+        );
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
     }
 
     #[test]

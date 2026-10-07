@@ -2456,3 +2456,5 @@ dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkrip
 search-action-tab-drag-cancel = Tab-Ziehen abbrechen
 search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
 search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
+
+device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
