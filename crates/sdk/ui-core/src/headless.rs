@@ -7333,6 +7333,21 @@ impl FrameHarness {
             .keys()
             .copied()
             .filter(|&node| {
+                // Hidden layout subtrees are not measured by Taffy. Their
+                // widget flags can remain dirty until shown, so do not let
+                // them request work on every visible edit. Showing them
+                // recomposes the tree and performs the required measurement.
+                let mut ancestor = Some(node);
+                while let Some(current) = ancestor {
+                    if self
+                        .taffy
+                        .style(current)
+                        .is_ok_and(|style| style.display == taffy::Display::None)
+                    {
+                        return false;
+                    }
+                    ancestor = self.taffy.parent(current);
+                }
                 // SAFETY: these maps describe this exclusive runner's current
                 // admitted tree; the callback only reads widget flags.
                 unsafe {

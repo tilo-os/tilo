@@ -173,6 +173,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
+        id: "so.tilo.messages",
+        name: "Messages",
+        category: "Network",
+        platforms: &["linux", "macos", "web"],
+    },
+    CatalogApp {
         id: "so.tilo.monitor",
         name: "System Monitor",
         category: "System",
