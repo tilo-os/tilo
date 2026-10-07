@@ -384,11 +384,13 @@ suites = [
 
 [[group]]
 name = "perf-tools"
-inputs = ["scripts/perf/", "apps/settings/src/categories.rs"]
+inputs = ["scripts/perf/", "apps/settings/src/categories.rs",
+          "scripts/vm-acceptance/app-cohort.py", "scripts/vm-acceptance/acceptance/"]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_notes_latency_test.py",
+  "scripts/perf/fresh_notes_capture_test.py",
   "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
   "scripts/perf/collect_file_explorer_native_test.py",

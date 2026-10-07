@@ -43,7 +43,7 @@ def require_scratch(state, page, count):
         raise RuntimeError("Scratch editor focus, body, caret or adoption is unverified")
 
 
-def require_keyboard_notes(state):
+def require_keyboard_notes(state, surface=None):
     focus = state["chrome"]["seat_focus"]
     keyboard = focus.get("keyboard") or {}
     surfaces = [tab["tile"]["Foreign"]["surface_id"]
@@ -51,9 +51,14 @@ def require_keyboard_notes(state):
                 for strip in workspace["strips"]
                 for group in strip["window_groups"] for tab in group["tabs"]
                 if tab.get("tile", {}).get("Foreign", {}).get("app_id") == "so.tilo.notes"]
-    if (len(surfaces) != 1 or keyboard.get("app_id") != "so.tilo.notes"
-            or keyboard.get("root_surface") != surfaces[0]
-            or focus.get("routed_keyboard_surface") != surfaces[0]):
+    if surface is None:
+        if len(surfaces) != 1:
+            raise RuntimeError("The compositor keyboard is not routed to the unique Notes surface")
+        surface = surfaces[0]
+    if (type(surface) is not int or surface not in surfaces
+            or keyboard.get("app_id") != "so.tilo.notes"
+            or keyboard.get("root_surface") != surface
+            or focus.get("routed_keyboard_surface") != surface):
         raise RuntimeError("The compositor keyboard is not routed to the unique Notes surface")
 
 
@@ -211,7 +216,8 @@ def capture(device, options):
             # Revalidate the actual child route on every key. The first key is
             # a readiness probe: no further input follows an unadopted insertion.
             require_scratch(device.action("inspect-editor", {}), page, index)
-            require_keyboard_notes(device.control(["state-dump"]))
+            require_keyboard_notes(device.control(["state-dump"]),
+                                   getattr(device, "keyboard_surface", None))
             # Renew only between fully adopted/presented key families. The
             # transition runs before kernel injection and is outside latency.
             renew_observation(device, options)
