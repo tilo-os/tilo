@@ -9,11 +9,12 @@ import subprocess
 import tempfile
 import unittest
 
-import yaml
+import textwrap
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = yaml.safe_load((ROOT/'.forgejo/workflows/build-image.yml').read_text())
-PLAN = next(s['run'] for s in WORKFLOW['jobs']['plan']['steps'] if s.get('id') == 'matrix')
+WORKFLOW = (ROOT/'.forgejo/workflows/build-image.yml').read_text()
+MATRIX_STEP = WORKFLOW.split('        id: matrix\n', 1)[1].split('\n      - name:', 1)[0]
+PLAN = textwrap.dedent(MATRIX_STEP.split('        run: |\n', 1)[1])
 spec = importlib.util.spec_from_file_location('board_policy', ROOT/'os/dev/signed-development-board-policy.py')
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
