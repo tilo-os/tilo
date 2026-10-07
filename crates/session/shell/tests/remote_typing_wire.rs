@@ -717,7 +717,7 @@ delegate_noop!(Client: ignore wayland_client::protocol::wl_shm::WlShm);
 delegate_noop!(Client: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
 delegate_noop!(Client: ignore wayland_client::protocol::wl_buffer::WlBuffer);
 
-fn draw_presentation_pixels(id: u64) -> vello::Scene {
+pub(super) fn draw_presentation_pixels(id: u64) -> vello::Scene {
     use ui::widget::Widget;
     let theme = ui::Theme::dark();
     let mut widget =
@@ -746,7 +746,7 @@ fn draw_presentation_pixels(id: u64) -> vello::Scene {
     scene
 }
 
-fn presentation_output() -> smithay::output::Output {
+pub(super) fn presentation_output() -> smithay::output::Output {
     smithay::output::Output::new(
         "fixture-panel".into(),
         smithay::output::PhysicalProperties {

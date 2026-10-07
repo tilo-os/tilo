@@ -131,6 +131,38 @@ pub fn present(
     }
 }
 
+/// Queue feedback without wrapping the driver's ordinary present operation.
+/// The native renderer must be the sole owner of this window's buffer commits.
+pub fn observe_next_buffer(window: &Window, observer: Box<dyn FnOnce(Feedback) + Send>) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::{WaylandPresentation, WindowExtWayland};
+        window.observe_next_buffer(Box::new(move |result| {
+            observer(match result {
+                WaylandPresentation::Presented {
+                    clock_id,
+                    timestamp,
+                    refresh,
+                    sequence,
+                    flags,
+                } => Feedback::Presented {
+                    clock_id,
+                    timestamp,
+                    refresh,
+                    sequence,
+                    flags,
+                },
+                WaylandPresentation::Discarded => Feedback::Discarded,
+            });
+        }))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, observer);
+        false
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod wayland_tests {
     use std::time::Duration;

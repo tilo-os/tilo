@@ -164,6 +164,13 @@ pub trait WindowExtWayland {
         present: impl FnOnce(),
     ) -> bool;
 
+    /// Queue feedback for the next main-surface buffer commit, releasing window
+    /// state before returning. The caller must be the sole buffer presenter and
+    /// must commit its buffer before another caller can present on this surface.
+    /// Unlike `present_with_feedback`, this does not serialize presentations.
+    /// Returns false when the presentation protocol is unavailable.
+    fn observe_next_buffer(&self, observer: WaylandPresentationObserver) -> bool;
+
     /// Returns `xdg_toplevel` of the window or [`None`] if the window is X11 window.
     fn xdg_toplevel(&self) -> Option<NonNull<c_void>>;
 
@@ -219,6 +226,15 @@ impl WindowExtWayland for Window {
             crate::platform_impl::Window::Wayland(window) => {
                 window.present_with_feedback(observer, present)
             }
+        }
+    }
+
+    fn observe_next_buffer(&self, observer: WaylandPresentationObserver) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.observe_next_buffer(observer),
         }
     }
 
@@ -284,8 +300,10 @@ pub trait WindowAttributesExtWayland {
 impl WindowAttributesExtWayland for WindowAttributes {
     #[inline]
     fn with_name(mut self, general: impl Into<String>, instance: impl Into<String>) -> Self {
-        self.platform_specific.name =
-            Some(crate::platform_impl::ApplicationName::new(general.into(), instance.into()));
+        self.platform_specific.name = Some(crate::platform_impl::ApplicationName::new(
+            general.into(),
+            instance.into(),
+        ));
         self
     }
 }

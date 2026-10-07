@@ -1452,10 +1452,12 @@ fn render_one_frame(
             native_present_bounds = bounds;
         };
         if let Some(observer) = presentation {
-            observer.present_wayland(frame_ix, cpu_frame_id, present_native);
-        } else {
-            present_native();
+            // This worker owns every post-creation main-surface buffer commit.
+            // Queue exact feedback, then release window state before the same
+            // direct driver call used by unobserved rendering.
+            observer.observe_next_buffer(frame_ix, cpu_frame_id);
         }
+        present_native();
     });
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-done");

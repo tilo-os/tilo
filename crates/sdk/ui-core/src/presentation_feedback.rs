@@ -57,8 +57,8 @@ impl Observer {
                 "before_host_hi_s": bounds.before.map(|b| b.hi_s),
                 "after_host_lo_s": bounds.after.map(|b| b.lo_s),
                 "after_host_hi_s": bounds.after.map(|b| b.hi_s),
-                // Inside the wrapper, after Wayland's window lock and feedback
-                // request. This includes the native driver's present call;
+                // After request-only feedback admission has released window state.
+                // This brackets the ordinary native driver's present call;
                 // these wall-clock bounds are not GPU timestamps.
                 "native_before_host_lo_s": native.and_then(|b| b.before).map(|b| b.lo_s),
                 "native_before_host_hi_s": native.and_then(|b| b.before).map(|b| b.hi_s),
@@ -117,6 +117,7 @@ impl Observer {
             "tilo-native-render-config",
             serde_json::json!({
                 "worker_id": self.worker_id(),
+                "feedback_admission": if tilo_presentation::supported() { "request-only-sole-presenter" } else { "platform-observer" },
                 "requested_present_mode": format!("{:?}", surface.config.present_mode),
                 "requested_maximum_frame_latency": surface.config.desired_maximum_frame_latency,
                 "width": surface.config.width, "height": surface.config.height,
@@ -176,14 +177,8 @@ impl Observer {
         }
     }
 
-    pub(crate) fn present_wayland(
-        &self,
-        worker_frame_ix: u64,
-        cpu_frame_id: Option<u64>,
-        present: impl FnOnce(),
-    ) {
+    pub(crate) fn observe_next_buffer(&self, worker_frame_ix: u64, cpu_frame_id: Option<u64>) {
         if !tilo_presentation::supported() {
-            present();
             return;
         }
         use tilo_presentation::Feedback;
@@ -192,10 +187,9 @@ impl Observer {
         let observer_session = crate::native_scenario::observer_session_id();
         let Some(window) = self.window.as_ref() else {
             eprintln!("tilo-display-error native window missing for Wayland presentation feedback");
-            present();
             return;
         };
-        let accepted = tilo_presentation::present(
+        let accepted = tilo_presentation::observe_next_buffer(
             window,
             Box::new(move |result| {
                 let row = match result {
@@ -221,7 +215,6 @@ impl Observer {
                 };
                 crate::native_scenario::log::emit_json("tilo-display-frame", row);
             }),
-            present,
         );
         if !accepted {
             eprintln!("tilo-display-error compositor lacks standard Wayland presentation feedback");

@@ -319,6 +319,13 @@ impl Window {
         accepted
     }
 
+    pub fn observe_next_buffer(
+        &self,
+        observer: crate::platform::wayland::WaylandPresentationObserver,
+    ) -> bool {
+        self.window_state.lock().unwrap().observe_next_present(observer)
+    }
+
     #[inline]
     pub fn pre_present_notify(&self) {
         self.window_state.lock().unwrap().request_frame_callback();
