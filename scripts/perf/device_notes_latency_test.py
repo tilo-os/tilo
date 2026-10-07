@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from device_notes_latency import capture, require_scratch
+from device_notes_latency import capture, require_scratch, observed_capture, diagnostic_options
 
 
 class DeviceFixture:
@@ -53,7 +53,7 @@ class DeviceFixture:
                 "editor_route_available": True, "active_line_disabled": False,
                 "editor_read_only": False, "editor_composing": False,
                 "sidebar_renaming": False, "sidebar_menu_open": False,
-                "editor_menu_open": False,
+                "editor_menu_open": False, "sidebar_drawer_open": False,
             }
             if self.inputs:
                 state.update(self.after_input)
@@ -110,7 +110,7 @@ class DeviceCaptureSafety(unittest.TestCase):
             "editor_route_available": True, "active_line_disabled": False,
             "editor_read_only": False, "editor_composing": False,
             "sidebar_renaming": False, "sidebar_menu_open": False,
-            "editor_menu_open": False,
+            "editor_menu_open": False, "sidebar_drawer_open": False,
         }
         for key, value in expected.items():
             for replacement in (None, not value, int(value), "true" if value else "false"):
@@ -146,6 +146,59 @@ class DeviceCaptureSafety(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "active editor route"):
                     self.run_capture(device, directory, samples=3)
                 self.assertEqual(device.inputs, 0)
+
+    def test_live_observation_restores_all_options_after_failed_first_key(self):
+        device = DeviceFixture(after_input={"body_chars": 0})
+        original = dict(presentation=False, gpu_stages=False,
+                        gpu_timestamps=True, gpu_dispatch_timestamps=False)
+        current = dict(original)
+        transitions = []
+        control = device.control
+        def diagnostics(arguments):
+            if arguments[:3] == ["actions", "invoke", "session-diagnostics"]:
+                if arguments[3].startswith("configure"):
+                    current.update(json.loads(arguments[-1]))
+                    transitions.append(dict(current))
+                return {"diagnostics": dict(current)}
+            return control(arguments)
+        device.control = diagnostics
+        with tempfile.TemporaryDirectory() as directory:
+            options = argparse.Namespace(device="test", slot="device", samples=100,
+                                         out=Path(directory), manage_diagnostics=True)
+            with patch("device_notes_latency.time.sleep"):
+                with self.assertRaises(RuntimeError):
+                    observed_capture(device, options)
+            self.assertEqual(device.inputs, 1)
+            self.assertEqual(transitions, [dict(original, gpu_stages=True),
+                             dict(original, presentation=True, gpu_stages=True), original])
+            self.assertEqual(current, original)
+            self.assertTrue((Path(directory) / "diagnostics-restored.json").exists())
+
+    def test_observation_restores_after_cancellation_without_input(self):
+        original = dict(presentation=True, gpu_stages=False,
+                        gpu_timestamps=False, gpu_dispatch_timestamps=False)
+        transitions = []
+        class CancelledDevice:
+            def control(self, arguments):
+                if arguments[0] == "state-dump":
+                    raise KeyboardInterrupt()
+                if arguments[3].startswith("configure"):
+                    transitions.append(json.loads(arguments[-1]))
+                return {"diagnostics": original}
+        with tempfile.TemporaryDirectory() as directory:
+            options = argparse.Namespace(out=Path(directory), manage_diagnostics=True)
+            with self.assertRaises(KeyboardInterrupt):
+                observed_capture(CancelledDevice(), options)
+            self.assertEqual(transitions, [original])
+            self.assertTrue((Path(directory) / "diagnostics-restored.json").exists())
+
+    def test_unverified_diagnostics_never_change_options_or_type(self):
+        for field in ("presentation", "gpu_stages", "gpu_timestamps", "gpu_dispatch_timestamps"):
+            options = dict(presentation=False, gpu_stages=False,
+                           gpu_timestamps=False, gpu_dispatch_timestamps=False)
+            options[field] = 0
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                diagnostic_options({"diagnostics": options})
 
     def test_failed_first_insertion_never_sends_a_second_key(self):
         refusals = [

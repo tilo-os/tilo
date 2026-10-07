@@ -64,37 +64,80 @@ executable stand-alone; the higher-level flow is described below.
 
 ## Physical device Notes latency
 
-Use the ordinary `tilo-vm` device and slot after applying a qualified release
-component with `tilo-vm swap shell --slot device --builder remote`. Update Notes
-through its signed release channel:
+Root/operator prerequisite: the paired userspace delivery must already be verified,
+the owner session unlocked, and one freshly launched Notes worker must have inherited
+presentation diagnostics. Live compositor configuration cannot retrofit an existing
+app observer or GPU timestamp queries. Record the same boot, active owner, exact
+loaded app/SDK hashes and delivery receipt before input. Do not use an existing user
+note as the benchmark target. No reboot is part of this recipe.
+
+Use the maintained host frontend from the qualified cohort. First run a single-key
+readiness guard, then a separate 100-key capture only if that guard succeeds:
 
 ```sh
-TILO_VM=yoga tilo-vm slot exec --slot device --timeout 180 -- app update so.tilo.notes
 python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
-  --samples 100 --out target/yoga-notes-after-update
+  --tool /absolute/path/to/qualified/tilo-vm --manage-diagnostics \
+  --samples 1 --out target/yoga-notes-one-key
+python3 scripts/perf/physical_notes_stages.py \
+  --capture target/yoga-notes-one-key --require-foreign-capture \
+  --out target/yoga-notes-one-key/stages.json
+python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
+  --tool /absolute/path/to/qualified/tilo-vm --manage-diagnostics \
+  --samples 100 --out target/yoga-notes-100
+python3 scripts/perf/physical_notes_stages.py \
+  --capture target/yoga-notes-100 --require-foreign-capture \
+  --out target/yoga-notes-100/stages.json
 ```
 
-Open the updated Notes app through its normal application action before capture.
-The device session must be unlocked, with one Notes window. Enable the greeter's
-normal `configure-session-diagnostics@greeter` presentation flag before sign-in
-for physical input and presentation evidence. For GPU diagnosis also enable
-`gpu_stages`, `gpu_timestamps` and `gpu_dispatch_timestamps`; stage logging alone
-does not enable GPU timestamp queries. See `docs/agent-action-api.md` for the
-semantic configuration and normal sign-in actions.
+Run these sequentially; never proceed after a failed command. Both captures create
+and verify their own new scratch note, invoke ordinary exact-owned Open (which
+closes the narrow drawer), then verify the actual child focus, all page bindings,
+canonical/rendered hashes, caret and unique compositor keyboard route. No generic
+Focus action on an unidentified old editor is used. Each isolated `a` produces a
+unique trusted input/Wayland serial and changed-body frame; uniqueness concerns
+input identities, not 100 different printable characters. Missing fields or a
+first key delivered with an unchanged body fail before any second key.
 
-The capture creates and opens a fresh scratch note. Before every kernel key it
-checks the actual selected/bound page, adopted canonical and rendered hashes,
-caret, editor focus and compositor keyboard routing. Existing notes receive no
-benchmark input. The scratch note remains available for inspection afterward.
+`--manage-diagnostics` saves the original four booleans, enables only existing live
+presentation/CPU phase observation, and renews its bounded quota before each key,
+after the preceding family has passed body and presentation checks. These semantic
+configuration actions do not inject keys or create physical input IDs. They occur
+outside the measured interval. GPU query booleans remain unchanged. The scope
+restores all four options in `finally`, including cancellation and capture errors;
+if restoration itself fails, the run fails and `diagnostics-original.json` supplies
+the exact options for normal owner recovery. Only successful restoration produces
+`diagnostics-restored.json`. The scratch notes remain for inspection; existing
+notes receive no input or cleanup edits.
 
-The output contains private raw logs, the exact input/frame/presentation timeline,
-editor observations, scratch identity and `report.json`. Missing, discarded or
-coalesced exact frames fail the capture; a partial run never produces a passing
-latency summary. A small sample count is useful for diagnosis, but does not
-establish a stable p99. Record the deployed component receipt, Notes release and
-device/image identity with comparative runs. The clock starts at the original
-kernel/libinput event and ends at hardware presentation; it excludes peripheral
-scan time and panel pixel response.
+Require exactly 100 adopted, uniquely joined samples before assessing the target:
+**kernel/libinput key → exact changed Notes body KMS presentation p50 <20ms and
+p99 <50ms**. A one-key success is readiness only. `report.json` retains raw latency;
+`stages.json` additionally rejects missing/duplicate physical outcome ownership,
+omitted capture pixels and incomplete exact token/sequence/presenter joins. Do not
+certify a capture whose attribution analysis fails. Unavailable/skipped fine GPU
+samples remain unavailable and do not invalidate the independent CPU/KMS evidence.
+After both analyzers succeed, the measured target can be checked without rounding:
+
+```sh
+python3 - <<'CHECK'
+import json
+from pathlib import Path
+root = Path("target/yoga-notes-100")
+report = json.loads((root / "report.json").read_text())
+stages = json.loads((root / "stages.json").read_text())
+assert report["latency_complete"] is True
+assert len(report["samples"]) == len(stages["frames"]) == 100
+assert report["latency"]["p50_ms"] < 20
+assert report["latency"]["p99_ms"] < 50
+print("100 exact samples meet the measured 20/50ms target")
+CHECK
+```
+
+CPU submit, render, wait and presentation intervals overlap; never add all stage
+columns. Diagnostics overhead remains part of the measured run, and KMS timing
+does not measure panel pixel response. Raw captures and observations are private
+files. Gen58's delivered key with unchanged body is a failed readiness capture,
+not a latency result.
 
 To attribute a Linux capture to client CPU stages, use a runtime that emits
 the native render timing rows, then analyze that same capture:

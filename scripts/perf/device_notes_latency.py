@@ -23,7 +23,7 @@ def require_scratch(state, page, count):
         raise RuntimeError("Notes is not bound to the requested scratch page")
     ready = ("active_line_present", "active_line_focused", "editor_route_available")
     blocked = ("active_line_disabled", "editor_read_only", "editor_composing",
-               "sidebar_renaming", "sidebar_menu_open", "editor_menu_open")
+               "sidebar_renaming", "sidebar_menu_open", "editor_menu_open", "sidebar_drawer_open")
     if (any(state.get(key) is not True for key in ready)
             or any(state.get(key) is not False for key in blocked)):
         raise RuntimeError("Scratch active editor route is unavailable or unverified")
@@ -115,6 +115,51 @@ class Device:
             time.sleep(.1)
 
 
+DIAGNOSTIC_FIELDS = ("presentation", "gpu_stages", "gpu_timestamps",
+                     "gpu_dispatch_timestamps")
+
+
+def diagnostic_options(answer):
+    options = answer.get("diagnostics", {})
+    if any(type(options.get(field)) is not bool for field in DIAGNOSTIC_FIELDS):
+        raise RuntimeError("Session diagnostic state is unavailable or unverified")
+    return {field: options[field] for field in DIAGNOSTIC_FIELDS}
+
+
+def configure_diagnostics(device, options):
+    answer = device.control(["actions", "invoke", "session-diagnostics",
+                             "configure@session-diagnostics", "--args-json",
+                             json.dumps(options)])
+    if diagnostic_options(answer) != options:
+        raise RuntimeError("Session diagnostic configuration was not acknowledged")
+
+
+def observed_capture(device, options):
+    """Manage only the existing live observer; never retrofit GPU query features."""
+    if not getattr(options, "manage_diagnostics", False):
+        return capture(device, options)
+    original = diagnostic_options(device.control([
+        "actions", "invoke", "session-diagnostics",
+        "inspect@session-diagnostics", "--args-json", "{}"]))
+    private_write(options.out / "diagnostics-original.json", json.dumps(original))
+    try:
+        return capture(device, options)
+    finally:
+        # A transport/refusal failure here remains a failed invocation, with
+        # the saved exact original options available for normal owner recovery.
+        configure_diagnostics(device, original)
+        private_write(options.out / "diagnostics-restored.json", json.dumps(original))
+
+
+def renew_observation(device, options):
+    if not getattr(options, "manage_diagnostics", False):
+        return
+    original = json.loads((options.out / "diagnostics-original.json").read_text())
+    enabled = dict(original, presentation=True, gpu_stages=True)
+    configure_diagnostics(device, dict(enabled, presentation=False))
+    configure_diagnostics(device, enabled)
+
+
 def private_write(path, text):
     path.write_text(text)
     path.chmod(0o600)
@@ -159,6 +204,9 @@ def capture(device, options):
             # a readiness probe: no further input follows an unadopted insertion.
             require_scratch(device.action("inspect-editor", {}), page, index)
             require_keyboard_notes(device.control(["state-dump"]))
+            # Renew only between fully adopted/presented key families. The
+            # transition runs before kernel injection and is outside latency.
+            renew_observation(device, options)
             device.run(["input", "--slot", options.slot, "type", "a", "--json"])
             time.sleep(.5)
             state = device.action("inspect-editor", {})
@@ -189,12 +237,14 @@ def main():
     parser.add_argument("--tool", default="tilo-vm")
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--manage-diagnostics", action="store_true",
+                        help="renew bounded live observation between verified keys and restore original options")
     options = parser.parse_args()
     if not 1 <= options.samples <= 1000:
         parser.error("samples must be between 1 and 1000")
     options.out.mkdir(parents=True, exist_ok=False, mode=0o700)
     try:
-        report = capture(Device(options), options)
+        report = observed_capture(Device(options), options)
     except (RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         private_write(options.out / "report.json", json.dumps({
             "latency_complete": False, "error": str(error)}, indent=2))
