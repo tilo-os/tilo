@@ -67,6 +67,7 @@ enum Dim {
 pub struct ScreenDimmer<B: Backlight = SysBacklight> {
     backlight: B,
     dim: Dim,
+    restore_pending: bool,
 }
 
 impl Default for ScreenDimmer<SysBacklight> {
@@ -81,6 +82,7 @@ impl<B: Backlight> ScreenDimmer<B> {
         Self {
             backlight,
             dim: Dim::Off,
+            restore_pending: false,
         }
     }
 
@@ -102,15 +104,37 @@ impl<B: Backlight> ScreenDimmer<B> {
     /// Put the display back to the brightness it had before [`Self::dim`].
     pub fn restore(&mut self) {
         if let Dim::Backlight(saved) = self.dim {
-            self.backlight.set_brightness(saved);
+            if !self.backlight.set_brightness(saved) {
+                self.restore_pending = true;
+                return;
+            }
             BACKLIGHT_HELD.store(false, Ordering::Relaxed);
         }
+        self.restore_pending = false;
         self.dim = Dim::Off;
+    }
+
+    /// Retry one refused restore on actual activity or a wake/unlock edge.
+    /// An ordinary dim is left alone until its Undimmed transition; no timer
+    /// or frame repeatedly writes the backlight while a driver refuses it.
+    pub fn retry_restore(&mut self) {
+        if self.restore_pending {
+            self.restore();
+        }
     }
 
     /// Opacity of the dimming overlay the paint path must draw on top of the scene, if any.
     pub fn overlay_alpha(&self) -> Option<f32> {
         (self.dim == Dim::Overlay).then_some(OVERLAY_ALPHA)
+    }
+}
+
+impl<B: Backlight> Drop for ScreenDimmer<B> {
+    fn drop(&mut self) {
+        // Normal session restart must not make the next compositor inherit a
+        // dimmed level as the person's brightness. Hard termination cannot run
+        // this cleanup; a refused driver write remains a best-effort restore.
+        self.restore();
     }
 }
 
@@ -183,6 +207,51 @@ mod tests {
             2,
             "restoring twice writes once"
         );
+    }
+
+    #[test]
+    fn failed_restore_retains_the_original_level_for_retry() {
+        struct RefusingBacklight {
+            level: std::cell::Cell<f32>,
+            refuse: std::cell::Cell<bool>,
+        }
+        impl Backlight for &RefusingBacklight {
+            fn brightness(&self) -> Option<f32> {
+                Some(self.level.get())
+            }
+            fn set_brightness(&self, fraction: f32) -> bool {
+                if self.refuse.get() {
+                    return false;
+                }
+                self.level.set(fraction);
+                true
+            }
+        }
+        let backlight = RefusingBacklight {
+            level: std::cell::Cell::new(0.8),
+            refuse: std::cell::Cell::new(false),
+        };
+        let mut dimmer = ScreenDimmer::new(&backlight);
+        dimmer.dim();
+        backlight.refuse.set(true);
+        dimmer.restore();
+        assert_eq!(dimmer.dim, Dim::Backlight(0.8));
+        backlight.refuse.set(false);
+        dimmer.retry_restore();
+        assert_eq!(backlight.level.get(), 0.8);
+        assert_eq!(dimmer.dim, Dim::Off);
+    }
+
+    #[test]
+    fn dropping_a_dimmed_session_restores_its_level_without_replacing_explicit_zero() {
+        for level in [0.8, 0.0] {
+            let backlight = FakeBacklight::at(level);
+            {
+                let mut dimmer = ScreenDimmer::new(&backlight);
+                dimmer.dim();
+            }
+            assert_eq!(*backlight.level.borrow(), Some(level));
+        }
     }
 
     #[test]

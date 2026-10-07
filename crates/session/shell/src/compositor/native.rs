@@ -5352,10 +5352,12 @@ fn apply_session_transition(
             if let Some(p) = pipe {
                 p.set_dpms(true);
             }
+            dimmer.retry_restore();
         }
+        SessionTransition::Unlocked => dimmer.retry_restore(),
         // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
         // gated by the inhibitor registry + issued through the power service, never here.
-        SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
+        SessionTransition::Locked | SessionTransition::Suspend => {}
     }
 }
 
@@ -9256,6 +9258,7 @@ pub fn run() {
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
                     // Any input is activity — reset the idle timer and wake the display if it was blanked.
+                    screen_dimmer.retry_restore();
                     for t in session.note_activity(Instant::now()) {
                         apply_session_transition(
                             t,
@@ -9669,6 +9672,7 @@ pub fn run() {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
+                        screen_dimmer.retry_restore();
                         for t in session.note_activity(Instant::now()) {
                             apply_session_transition(
                                 t,
@@ -9827,6 +9831,7 @@ pub fn run() {
             session.is_locked(),
         ) {
             session_changed = true;
+            screen_dimmer.retry_restore();
             for t in session.note_activity(Instant::now()) {
                 apply_session_transition(
                     t,
@@ -12176,6 +12181,7 @@ pub fn run() {
             // An agent at work is the person's activity on a hosted machine:
             // without this it locks under its agents after the idle timeout.
             if injected && conn.agent {
+                screen_dimmer.retry_restore();
                 for t in session.note_activity(Instant::now()) {
                     apply_session_transition(
                         t,
