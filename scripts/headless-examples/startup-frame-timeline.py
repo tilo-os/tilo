@@ -72,9 +72,15 @@ class ProductionSeed:
             replacements = {}
             for entry in manifest["files"]:
                 driver = pathlib.Path(entry["path"]).parts[0]
-                replacements[driver] = ("0" if driver[0] != "0" else "1") * len(driver)
-            for old, new in replacements.items():
-                (self.active / old).rename(self.active / new)
+                replacements[driver] = f"{(int(driver[0], 16) + 1) % 16:x}" + driver[1:]
+            if len(set(replacements.values())) != len(replacements):
+                raise RuntimeError("wrong-driver fixture namespaces collided")
+            # Stage every namespace first: an invalidated name may coincide
+            # with another original namespace, but must never merge archives.
+            for index, old in enumerate(replacements):
+                (self.active / old).rename(self.active / f"invalidated-{index}")
+            for index, new in enumerate(replacements.values()):
+                (self.active / f"invalidated-{index}").rename(self.active / new)
             for entry in manifest["files"]:
                 parts = pathlib.Path(entry["path"]).parts
                 entry["path"] = str(pathlib.Path(replacements[parts[0]], *parts[1:]))
