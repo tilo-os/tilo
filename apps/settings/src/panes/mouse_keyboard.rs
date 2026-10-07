@@ -738,6 +738,12 @@ impl InputSections {
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum InputEffect {
+    /// Read configured input sources and the mounted Add language selector.
+    #[effect(returns, idempotent, device_only, permission = "read")]
+    InspectInputSources {
+        query: Option<String>,
+        page: Option<u32>,
+    },
     /// Turn the touchpad on or off on this device.
     #[effect(idempotent)]
     SetTouchpadEnabled { on: bool },
@@ -1130,7 +1136,10 @@ fn apply(
                 dial_for_id(&action).ok_or_else(|| format!("`{action}` is not a dial choice"))?;
             tablet_entry(input, &device)?.set_dial_action(dial, mode, action);
         }
-        E::SetSpellChecking { .. } | E::SetAutoCorrect { .. } | E::SetSpellingLanguage { .. } => {}
+        E::InspectInputSources { .. }
+        | E::SetSpellChecking { .. }
+        | E::SetAutoCorrect { .. }
+        | E::SetSpellingLanguage { .. } => {}
     }
     Ok(())
 }
@@ -1149,6 +1158,10 @@ pub(crate) fn answer(
     effect: InputEffect,
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if let InputEffect::InspectInputSources { query, page } = &effect {
+        return inspect_input_sources(app, query.as_deref(), page.unwrap_or(0))
+            .map(Effected::value);
+    }
     let host = app.host();
     match effect {
         InputEffect::SetSpellChecking { on } => {
@@ -1176,6 +1189,66 @@ pub(crate) fn answer(
         .set(&input)
         .map(|()| Effected::done())
         .map_err(|error| format!("the input settings could not be saved: {error}"))
+}
+
+fn input_picker_snapshot(widget: &dyn Widget) -> Option<serde_json::Value> {
+    if widget.test_id() == Some("input.source.add_picker") {
+        let dropdown = widget.as_any()?.downcast_ref::<Dropdown>()?;
+        let accessible = dropdown.accessibility();
+        return Some(serde_json::json!({
+            "selected": dropdown.selected(), "open": dropdown.is_open(),
+            "filter": dropdown.filter_query(),
+            "value": accessible.as_ref().and_then(|node| node.value.as_ref()),
+            "name": accessible.as_ref().and_then(|node| node.name.as_ref()),
+        }));
+    }
+    let mut result = None;
+    widget.for_each_child(&mut |child| {
+        if result.is_none() {
+            result = input_picker_snapshot(child);
+        }
+    });
+    result
+}
+
+/// Read the same bounded catalogue and shared selector the normal pane uses.
+fn inspect_input_sources(
+    app: &SettingsApp,
+    query: Option<&str>,
+    page: u32,
+) -> Result<serde_json::Value, String> {
+    let query = query.unwrap_or("");
+    if query.len() > 128 {
+        return Err("Input source query exceeds 128 bytes".into());
+    }
+    let query = query.to_lowercase();
+    let prefs = app.host().settings::<InputPrefs>().get();
+    let area = app.input();
+    let matches: Vec<_> = area
+        .catalog()
+        .iter()
+        .filter(|entry| {
+            entry.id.to_lowercase().contains(&query) || entry.label.to_lowercase().contains(&query)
+        })
+        .collect();
+    let total = matches.len();
+    let pages = total.div_ceil(32).max(1);
+    let page = usize::try_from(page).map_err(|_| "Input source page is out of range")?;
+    if page >= pages {
+        return Err("Input source page is out of range".into());
+    }
+    let sources: Vec<_> = matches.into_iter().skip(page * 32).take(32).map(|entry| {
+        let configured = prefs.keyboard_layouts.contains(&entry.id);
+        serde_json::json!({"id": entry.id, "label": entry.label, "configured": configured,
+            "can_add": !configured && crate::input_sources::has_room_for(&prefs.keyboard_layouts, &entry.id)})
+    }).collect();
+    let add_picker = (app.selected() == crate::categories::Category::MouseKeyboard)
+        .then(|| input_picker_snapshot(app))
+        .flatten();
+    Ok(serde_json::json!({"active_source": prefs.keyboard_layout,
+        "configured_sources": prefs.keyboard_layouts, "page": page, "pages": pages,
+        "total": total, "sources": sources, "catalogue_live": area.live,
+        "catalogue_error": area.catalog_error, "add_picker": add_picker}))
 }
 
 /// How often the attached-device snapshot is read again, so plugging a
@@ -2277,7 +2350,7 @@ mod tests {
         node.children.iter().find_map(spelling_language_value)
     }
 
-    fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
+    pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
         let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
         app.call_on(&address.resource, &address.action, serde_json::json!({}))
             .unwrap();
@@ -2838,5 +2911,126 @@ mod tests {
             parse_dial_action_id(&dial_action_id(PadDial::Ring(2), 3)),
             Some(("ring", 2, 3))
         );
+    }
+}
+
+#[cfg(test)]
+mod input_inspection_tests {
+    use super::*;
+    use crate::resource::SettingsShell;
+    use ui::prelude::TestApp;
+
+    #[test]
+    fn installed_input_sources_have_a_bounded_device_read_without_mutating_preferences() {
+        let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        let action = app.actions().unwrap().into_iter()
+            .find(|action| action.address.action.ends_with("inspect-input-sources"))
+            .expect("the installed catalogue and active source must be readable through Settings' normal door");
+        assert_eq!(
+            action.contract.permission,
+            ui::tilo_actions::PermissionRequirement::Read
+        );
+        assert!(
+            action
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
+        );
+        let before = app.settings::<InputPrefs>().get();
+        let value = app
+            .call_on(
+                &action.address.resource,
+                &action.address.action,
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["active_source"], before.keyboard_layout);
+        assert_eq!(
+            value["configured_sources"],
+            serde_json::json!(before.keyboard_layouts)
+        );
+        assert_eq!(value["page"], 0);
+        assert!(value["sources"].as_array().unwrap().len() <= 32);
+        assert!(value["total"].as_u64().unwrap() > 0);
+        assert!(
+            value["add_picker"].is_null(),
+            "an off-page selector must not pretend to be mounted"
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        let refusal = app.call_by(
+            ui::tilo_actions::ActionInvoker {
+                actor: "unrelated-collaborator".into(),
+                participant: None,
+            },
+            &action.address.resource,
+            &action.address.action,
+            serde_json::json!({}),
+        );
+        assert!(
+            matches!(refusal, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only")
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+    }
+    #[test]
+    fn input_inspection_tracks_the_actual_unselected_open_shared_picker() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        super::tests::show_add_source(&mut app, (900, 700));
+        let address = app
+            .actions()
+            .unwrap()
+            .into_iter()
+            .find(|action| action.address.action.ends_with("inspect-input-sources"))
+            .unwrap()
+            .address;
+        let before = app.settings::<InputPrefs>().get();
+        let closed = app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed["add_picker"]["selected"], "");
+        assert_eq!(closed["add_picker"]["open"], false);
+        assert!(closed["add_picker"]["value"].is_null());
+        app.harness()
+            .click_named("input.source.add_picker")
+            .unwrap();
+        app.harness().type_text("French");
+        let open = app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(open["add_picker"]["selected"], "");
+        assert_eq!(open["add_picker"]["open"], true);
+        assert_eq!(open["add_picker"]["filter"], "French");
+        assert_eq!(open["add_picker"]["value"], "French");
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        let filtered = app
+            .call_on(
+                &address.resource,
+                &address.action,
+                serde_json::json!({"query":"French"}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["sources"][0]["id"], "fr");
+        assert!(
+            app.call_on(
+                &address.resource,
+                &address.action,
+                serde_json::json!({"page":1})
+            )
+            .is_err()
+        );
+        assert!(
+            app.call_on(
+                &address.resource,
+                &address.action,
+                serde_json::json!({"query":"x".repeat(129)})
+            )
+            .is_err()
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
     }
 }
