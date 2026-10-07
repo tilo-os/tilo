@@ -29,6 +29,16 @@ class DiscoverySafety(unittest.TestCase):
                             ("--record", RECORD), ("--semantic-family", FAMILY)):
             self.assertEqual(calls[0][calls[0].index(flag)+1], value)
 
+    def test_native_appended_unbound_diagnostics_are_not_app_candidates(self):
+        value = reply()
+        value["actions"] += [dict(provider="session-diagnostics", id="configure@session-diagnostics"),
+                              dict(provider="session-diagnostics", id="inspect@session-diagnostics")]
+        value["count"] = 3
+        self.assertEqual(discover(lambda arguments: value, APP, BOUND, FAMILY), reply()["actions"])
+        value["actions"] = value["actions"][1:]
+        value["count"] = 2
+        self.assertEqual(discover(lambda arguments: value, APP, BOUND, FAMILY), [])
+
     def test_scoped_empty_is_not_retried_with_broader_scope(self):
         calls = []
         value = reply(); value.update(actions=[], count=0)

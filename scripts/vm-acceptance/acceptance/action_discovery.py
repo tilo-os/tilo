@@ -55,7 +55,18 @@ def discover(control, application, bound=None, family=None):
     if scope is None:
         return [row for row in rows if row.get("provider") == "app-actions"
                 and row.get("application") == application]
+    app_rows = []
     for row in rows:
+        # Native control appends unbound session diagnostics after the scoped
+        # provider catalogue. Those rows never become app action candidates.
+        if row.get("provider") != "app-actions":
+            require(row.get("provider") == "session-diagnostics"
+                    and row.get("id") in ("configure@session-diagnostics", "inspect@session-diagnostics")
+                    and all(row.get(key) is None for key in
+                            ("application", "room", "record", "resource", "semantic_identity", "operation")),
+                    "foreign row in scoped action discovery")
+            continue
+        app_rows.append(row)
         require(row.get("provider") == "app-actions"
                 and tuple(row.get(k) for k in ("application", "room", "record")) == tuple(bound[:3]),
                 "foreign row in scoped action discovery")
@@ -63,4 +74,4 @@ def discover(control, application, bound=None, family=None):
         require(row.get("semantic_identity") is None or identity is not None,
                 "malformed action semantic identity")
         require(identity is None or identity[0] == family, "foreign action semantic family")
-    return rows
+    return app_rows
