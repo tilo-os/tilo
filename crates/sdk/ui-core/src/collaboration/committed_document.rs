@@ -502,6 +502,13 @@ pub(super) async fn read_capture_using(
         assembly.revision,
     ))
 }
+// A parked owner must observe both publication readiness and its withdrawal.
+fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
+    if ready.swap(value, Ordering::AcqRel) != value {
+        inbound.state.notify_events();
+    }
+}
+
 /// Resolve mode before the route can produce any document. Initial history is
 /// queued without waiting for the UI owner (which awaits PrimaryReady itself).
 #[allow(
@@ -574,7 +581,7 @@ pub(super) async fn install(
             }
             let refresh = inbound.state.document_reads.refresh_requested(&key);
             if refresh {
-                ready.store(false, Ordering::Release);
+                set_read_ready(&inbound, &ready, false);
             }
             let result = tokio::time::timeout(
                 Duration::from_secs(2),
@@ -585,10 +592,10 @@ pub(super) async fn install(
             .await;
             match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
-                    ready.store(true, Ordering::Release)
+                    set_read_ready(&inbound, &ready, true)
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
-                    ready.store(false, Ordering::Release);
+                    set_read_ready(&inbound, &ready, false);
                     match read_capture(&channel, reply).await {
                         Ok((read, next)) => {
                             current = Some(read);
@@ -601,17 +608,17 @@ pub(super) async fn install(
                     }
                 }
                 Ok(Ok(Reply::Unavailable)) => {
-                    ready.store(false, Ordering::Release);
+                    set_read_ready(&inbound, &ready, false);
                     revision = None;
                 }
                 _ => {
-                    ready.store(false, Ordering::Release);
+                    set_read_ready(&inbound, &ready, false);
                     break;
                 }
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        ready.store(false, Ordering::Release);
+        set_read_ready(&inbound, &ready, false);
         if inbound.state.document_reads.current(&key, &ready) {
             inbound.state.document_reads.discard_stage(&key);
         }

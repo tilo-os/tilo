@@ -2677,6 +2677,17 @@ impl CollaborationManager {
         tests::native_initial_fixture_gated(app, room, history, Some(gate))
     }
 
+    /// Socket-backed committed-read fixture; the probe observes real recheck requests.
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_initial_parked_fixture_for_test(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+        gate: tokio::sync::oneshot::Receiver<()>,
+    ) -> (Self, Box<dyn Fn() -> usize>) {
+        tests::native_initial_parked_fixture(app, room, history, gate)
+    }
+
     fn for_route_from(
         source: SdkConnectSource,
         app_id: String,
@@ -9083,6 +9094,45 @@ mod tests {
         (
             CollaborationManager::from_sdk_fd_for_test(fd, app, room),
             Box::new(move || captures.lock().unwrap().joined.len()),
+        )
+    }
+
+    pub(super) fn native_initial_parked_fixture(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+        gate: tokio::sync::oneshot::Receiver<()>,
+    ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                committed_history_fixture: Some(history),
+                committed_recheck_gate: Some(gate),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        (
+            CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+            Box::new(move || {
+                captures
+                    .lock()
+                    .unwrap()
+                    .committed_reads
+                    .iter()
+                    .filter(|request| {
+                        matches!(
+                            request,
+                            runtime_collab::committed_document::Request::Open {
+                                known_revision: Some(_)
+                            }
+                        )
+                    })
+                    .count()
+            }),
         )
     }
 
