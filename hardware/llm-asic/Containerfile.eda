@@ -1,0 +1,18 @@
+# Architecture-specific Fedora 43 base observed during the initial experiment.
+# Build once, record the resulting OCI digest, and run that immutable image.
+FROM registry.fedoraproject.org/fedora@sha256:c5733672b59ff84eb0e9402ec2d0d13166dc512017a980d6b3d9baaa48e61b89
+
+# Exact top-level RPM versions observed in the initial EDA environment.
+# Transitive RPMs and repository availability can still change: this recipe
+# alone is not a bit-reproducible toolchain. The built image identity is the pin.
+RUN dnf -y install \
+      verilator-5.046-3.fc43 \
+      yosys-0.63-1.20260304git3bc26ff.fc43 \
+      gcc-c++-15.3.1-1.fc43 \
+      gcc-15.3.1-1.fc43 \
+      make-4.4.1-11.fc43 \
+      python3-3.14.7-1.fc43 \
+    && dnf clean all
+
+WORKDIR /src
+ENTRYPOINT ["python3"]
