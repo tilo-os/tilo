@@ -963,7 +963,10 @@ impl ActionFixture {
     }
     fn broker() -> Self {
         let mut fixture = Self::with_same_record(true);
-        fixture.app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+        // This fixture captures broker submission and injects admitted delivery;
+        // it does not exercise authenticated native document history.
+        fixture.app.collaboration.manager =
+            super::semantic_tree_app_tests::admitted_delivery_manager();
         fixture.app.actions.bound_broker_route_for_test =
             Some(crate::collaboration::PrimaryRouteWitness {
                 route: fixture.bindings[0].broker_route().unwrap(),

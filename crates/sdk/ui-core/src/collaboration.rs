@@ -1636,6 +1636,17 @@ impl CollaborationManager {
         let _ = self.try_send_to_route(route, req);
     }
 
+    /// Whether the actual route's original document history has been applied.
+    /// This is the same transport gate used before document publication.
+    pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
+        let channel = route.map(RouteSpec::channel_id);
+        !self.awaiting_primary
+            && match &self.backend {
+                Backend::Transport(transport) => transport.document_publishable(channel.as_deref()),
+                Backend::Disabled(_) => false,
+            }
+    }
+
     /// Test-only: whether `route` has resolved its document mode, so a
     /// document mutation on it would be admitted rather than refused.
     #[cfg(test)]

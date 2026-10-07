@@ -2638,6 +2638,28 @@ impl CollaborationManager {
         tests::native_initial_fixture(app, room, history)
     }
 
+    /// Socket-backed ordering fixture on an actual acknowledged named route.
+    /// This fixture does not establish native caller authority.
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_initial_named_fixture_for_test(
+        route: RouteSpec,
+        history: Vec<u8>,
+    ) -> Self {
+        let (mut manager, _) =
+            tests::native_initial_fixture(&route.app_id, route.cluster_id, history);
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
+            record: route.record,
+            record_kind: None,
+            handle: None,
+        }));
+        manager
+            .await_primary_route()
+            .expect("actual named route acknowledgement");
+        manager
+    }
+
     /// A connected route whose document reads are not Required, as a
     /// standalone runtime admits it.
     #[cfg(all(test, unix))]
@@ -2933,6 +2955,24 @@ impl CollaborationManager {
     #[cfg(all(test, unix))]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
+    }
+
+    /// Retire the actual socket-backed capture generation, as a rejoin does.
+    #[cfg(all(test, unix))]
+    pub(crate) fn retire_document_capture_for_test(&self, route: &RouteSpec) {
+        let Backend::Transport(transport) = &self.backend else {
+            panic!("a broker transport");
+        };
+        let transport = transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .expect("a broker transport");
+        drop(
+            transport
+                .state
+                .document_reads
+                .close_for_test(&route.channel_id()),
+        );
     }
 
     /// Block until the broker worker has finished every command submitted so
