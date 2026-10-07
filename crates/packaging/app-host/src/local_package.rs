@@ -20,6 +20,87 @@ pub struct LocalReview {
     pub user_managed: bool,
 }
 
+/// Structurally checked application metadata, without a trust grant or install.
+#[derive(Clone, Debug)]
+pub struct CatalogueArchive {
+    meta: tilo_app_package::PackageMeta,
+}
+
+/// Why immutable handed bytes cannot be reviewed as an application.
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+pub enum ArchiveReviewError {
+    #[error("The application archive is invalid")]
+    Invalid,
+    #[error("Only application archives can be reviewed here")]
+    NotApplication,
+}
+
+/// Read immutable archive bytes through the canonical package decoder.
+///
+/// # Errors
+/// Refuses malformed, oversized or non-application archives. A structurally
+/// checked archive still requires an independently authenticated catalogue offer.
+pub fn review_archive(bytes: &[u8]) -> Result<CatalogueArchive, ArchiveReviewError> {
+    if bytes.is_empty() || bytes.len() > MAX_LOCAL_BYTES {
+        return Err(ArchiveReviewError::Invalid);
+    }
+    let tapp = tilo_app_package::tapp::read(bytes, &mut DiscardBlobs)
+        .map_err(|_| ArchiveReviewError::Invalid)?;
+    if tapp.meta.manifest.package.kind != Kind::App {
+        return Err(ArchiveReviewError::NotApplication);
+    }
+    Ok(CatalogueArchive { meta: tapp.meta })
+}
+
+impl CatalogueArchive {
+    /// The structurally checked application identity.
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.meta.manifest.package.id
+    }
+
+    /// Verify every independently supplied identity and the publisher signature.
+    /// Full and thin forms share a root; the offer's size describes its canonical
+    /// download and is deliberately independent of the handed representation.
+    #[must_use]
+    pub fn accepts_offer(&self, expected: &crate::install::InstallExpectation) -> bool {
+        let package = &self.meta.manifest.package;
+        expected.size_bytes > 0
+            && expected.size_bytes <= tilo_app_package::MAX_APP_TAPP_BYTES
+            && expected.package_root == self.meta.id
+            && expected.app_id == package.id
+            && expected.version == package.version
+            && matches!(
+                tilo_app_package::verify(&self.meta, &[expected.publisher]),
+                Verification::Trusted { .. }
+            )
+    }
+}
+
+/// Retain the host-reviewed identity for the ordinary install operation.
+///
+/// # Errors
+/// Refuses malformed host review identities; it grants no publisher trust.
+pub fn local_expectation(
+    review: &LocalReview,
+    size_bytes: u64,
+) -> Result<crate::install::InstallExpectation, String> {
+    let package_root = format!("tapp:{}", review.root)
+        .parse()
+        .map_err(|_| "The reviewed application root is invalid")?;
+    let publisher = hex::decode(&review.publisher)
+        .map_err(|_| "The reviewed publisher is invalid")?
+        .try_into()
+        .map_err(|_| "The reviewed publisher is invalid")?;
+    Ok(crate::install::InstallExpectation {
+        package_root,
+        publisher,
+        app_id: review.manifest.package.id.clone(),
+        version: review.manifest.package.version.clone(),
+        size_bytes,
+    })
+}
+
 /// Verify a local archive against existing host trust, without installing it.
 ///
 /// # Errors
