@@ -3654,7 +3654,7 @@
     "action": "undo",
     "resource_kind": "canvas.artwork",
     "label": "Undo",
-    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with to, all after a version.",
+    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
     "operation": "Document",
     "params": [
       {
@@ -3669,6 +3669,13 @@
         "ty": "text",
         "required": false,
         "description": "An agent run id from history",
+        "nullable": true
+      },
+      {
+        "name": "by",
+        "ty": "text",
+        "required": false,
+        "description": "Exact author id from history, for steps outside a run",
         "nullable": true
       },
       {

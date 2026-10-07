@@ -1148,9 +1148,18 @@ fn enforce_bundle_policy(
     opts: &RunOptions,
     system_bundle: bool,
 ) -> Result<(), RunError> {
+    let trusted =
+        load_trusted_publisher_list().map_err(|error| RunError::RuntimeBundleSignature {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
     let require_publisher = match opts.require_runtime_publisher.clone() {
         Some(explicit) => Some(explicit),
-        None => trusted_publisher_pin_from_file(),
+        None => trusted
+            .as_ref()
+            .filter(|keys| keys.len() == 1)
+            .and_then(|keys| keys.first())
+            .cloned(),
     };
     let verify_opts = runtime_bundle::VerifyOptions {
         require_publisher,
@@ -1175,7 +1184,7 @@ fn enforce_bundle_policy(
         Ok(manifest) => {
             // Multi-publisher trust list: `require_publisher` above was `None`
             // (only one key can be pinned there), so check by hand here.
-            if let Some(list) = load_trusted_publisher_list()
+            if let Some(list) = &trusted
                 && !list.is_empty()
             {
                 let ok = manifest
@@ -1345,31 +1354,14 @@ mod system_bundle_tree_policy_tests {
 
 /// A single-entry trust list is the pin handed to
 /// `verify_bundle_with`; multi-entry lists are checked after it returns.
-fn trusted_publisher_pin_from_file() -> Option<String> {
-    let list = load_trusted_publisher_list()?;
-    if list.len() == 1 {
-        list.into_iter().next()
-    } else {
-        None
-    }
-}
-
-/// Read the trusted-publisher list from disk, ignoring blank/`#` lines.
-/// `None` when neither the (developer-build) env override nor the default
-/// file exists.
-pub(crate) fn load_trusted_publisher_list() -> Option<Vec<String>> {
+/// Read operator policy and canonical immutable component publisher pins.
+/// A present invalid component pin fails closed, including when another key
+/// would otherwise validate the bundle.
+pub(crate) fn load_trusted_publisher_list() -> std::io::Result<Option<Vec<String>>> {
     let path = trusted_publishers_path_from(crate::dev_env::dev_override(
         crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
     ));
-    let bytes = std::fs::read(&path).ok()?;
-    let text = String::from_utf8(bytes).ok()?;
-    let list: Vec<String> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(std::string::ToString::to_string)
-        .collect();
-    Some(list)
+    runtime_bundle::component_pins::load_with_components(&path)
 }
 
 /// The image's runtime trusted-publisher list.
@@ -3086,14 +3078,22 @@ pub(crate) fn run_with_context(
         },
         &egress,
         net_gate.as_ref(),
-        native_owner.map(|observer| (observer, None)).or_else(|| {
-            enrolled.map(|(services, observer)| (observer, debug_output_log(services.data_home())))
-        }),
+        native_owner
+            .map(|observer| {
+                (
+                    observer,
+                    opts.data_home.as_deref().and_then(debug_output_log),
+                )
+            })
+            .or_else(|| {
+                enrolled
+                    .map(|(services, observer)| (observer, debug_output_log(services.data_home())))
+            }),
     )
 }
 
 /// Debug-only, off by default: when the launching host sets
-/// `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed (enrolled) child's stdout and
+/// `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed child's stdout and
 /// stderr go to a bounded log file in its data home instead of `/dev/null`.
 /// This changes no sandbox, policy or custody decision; it only keeps the
 /// diagnostic output a supervised app would otherwise lose.

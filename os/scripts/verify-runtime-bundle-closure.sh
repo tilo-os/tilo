@@ -3,8 +3,9 @@
 #
 # The launcher runs a thin app with LD_LIBRARY_PATH set to the bundle's lib/
 # and nothing else, so every shared object the bundle carries, and every thin
-# app given, must resolve all of its NEEDED entries from there or from the
-# system loader path. build-thin-apps.sh checks the apps against the build's
+# app given, must resolve all of its NEEDED entries from that signed directory.
+# A build host's system libraries must never hide an incomplete bundle.
+# build-thin-apps.sh checks the apps against the build's
 # own target dir, which always has libstd; an image whose bundle lacked it
 # still shipped, and no thin app could start.
 set -euo pipefail
@@ -28,13 +29,17 @@ objects+=("$@")
 broken=0
 for object in "${objects[@]}"; do
   [ -f "$object" ] || fail "$object does not exist"
-  if ! report=$(env -u LD_PRELOAD LD_LIBRARY_PATH="$lib" ldd "$object" 2>&1); then
-    printf '%s\n%s\n' "$object: ldd failed" "$report" >&2
+  if ! report=$(readelf -dW "$object" 2>&1); then
+    printf '%s\n%s\n' "$object: readelf failed" "$report" >&2
     broken=1
-  elif grep -F 'not found' <<<"$report" >&2; then
-    printf '%s: unresolved with only %s on LD_LIBRARY_PATH\n' "$object" "$lib" >&2
-    broken=1
+    continue
   fi
+  while IFS= read -r needed; do
+    if [ ! -f "$lib/$needed" ]; then
+      printf '%s: signed runtime is missing %s\n' "$object" "$needed" >&2
+      broken=1
+    fi
+  done < <(sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p' <<<"$report")
 done
 [ "$broken" -eq 0 ] || fail "the runtime bundle does not satisfy what it or its thin apps link against"
 printf 'verify-runtime-bundle-closure: %d objects resolve against %s\n' "${#objects[@]}" "$lib"

@@ -8,6 +8,8 @@ use std::fs::File;
 use std::io::Read as _;
 use std::path::Path;
 
+pub const DEVELOPER_SIGNATURE_DOMAIN: &str = "tilo.local-model.developer-offline.v1";
+
 pub const CATALOG_SIGNATURE_DOMAIN: &str = "tilo.local-model.catalog.v1";
 pub const IMAGE_CATALOG: &str = "/usr/share/tilo/system-extensions/local-model-catalog.json";
 pub const IMAGE_KEYS: &str = "/usr/share/tilo/system-extensions/local-model-keys.json";
@@ -42,8 +44,16 @@ impl VerifiedCatalog {
     /// # Errors
     /// Rejects unreadable, oversized, untrusted, malformed or unsigned input.
     pub fn load(path: &Path, keys: &Path) -> Result<Self, String> {
-        load_catalog(path, keys).map(Self)
+        load_catalog(path, keys, CATALOG_SIGNATURE_DOMAIN).map(Self)
     }
+    /// Verify an explicitly selected offline developer catalogue. Normal image
+    /// consumers reject this separate signature domain even with the same key.
+    /// # Errors
+    /// Rejects unsigned, mismatched-domain or malformed receipt metadata.
+    pub fn load_developer_offline(path: &Path, keys: &Path) -> Result<Self, String> {
+        load_catalog(path, keys, DEVELOPER_SIGNATURE_DOMAIN).map(Self)
+    }
+
     pub fn payload(&self) -> &CatalogPayload {
         &self.0
     }
@@ -69,13 +79,24 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
 /// # Errors
 /// Returns a serialization error for an unencodable payload.
 pub fn catalog_signing_bytes(payload: &CatalogPayload) -> Result<Vec<u8>, String> {
-    let mut bytes = CATALOG_SIGNATURE_DOMAIN.as_bytes().to_vec();
+    signing_bytes_for_domain(payload, CATALOG_SIGNATURE_DOMAIN)
+}
+
+/// Signing bytes for the explicit developer channel.
+/// # Errors
+/// Returns serialization errors.
+pub fn developer_signing_bytes(payload: &CatalogPayload) -> Result<Vec<u8>, String> {
+    signing_bytes_for_domain(payload, DEVELOPER_SIGNATURE_DOMAIN)
+}
+
+fn signing_bytes_for_domain(payload: &CatalogPayload, domain: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = domain.as_bytes().to_vec();
     bytes.push(0);
     bytes.extend(serde_json::to_vec(payload).map_err(|error| error.to_string())?);
     Ok(bytes)
 }
 
-fn load_catalog(path: &Path, keys: &Path) -> Result<CatalogPayload, String> {
+fn load_catalog(path: &Path, keys: &Path, domain: &str) -> Result<CatalogPayload, String> {
     let signed: SignedCatalog = read_json(path)?;
     if signed.schema != 1 {
         return Err("unsupported signed catalog envelope schema".into());
@@ -98,19 +119,32 @@ fn load_catalog(path: &Path, keys: &Path) -> Result<CatalogPayload, String> {
     .map_err(|_| "invalid catalog public key")?;
     let signature =
         Signature::from_slice(&signed.signature).map_err(|_| "invalid catalog signature")?;
-    if signed.signature_domain != CATALOG_SIGNATURE_DOMAIN {
+    if signed.signature_domain != domain {
         return Err("unexpected catalog signature domain".into());
     }
-    let payload = catalog_signing_bytes(&signed.payload)?;
+    let payload = signing_bytes_for_domain(&signed.payload, domain)?;
     key.verify(&payload, &signature)
         .map_err(|_| "catalog signature verification failed")?;
     for runtime in &signed.payload.runtimes {
         runtime.validate().map_err(|error| error.to_string())?;
+        validate_pin(&runtime.release.artifact, domain)?;
     }
     for model in &signed.payload.models {
+        validate_pin(&model.artifact, domain)?;
         model
             .validate_shape()
             .map_err(|error| format!("{}: {error}", model.id))?;
     }
     Ok(signed.payload)
+}
+
+fn validate_pin(
+    pin: &agent_provider_config::local::PinnedArtifact,
+    domain: &str,
+) -> Result<(), String> {
+    if domain == DEVELOPER_SIGNATURE_DOMAIN && !pin.url.starts_with("https://") {
+        crate::developer::validate_offline_pin(pin).map_err(|error| error.to_string())
+    } else {
+        pin.validate().map_err(|error| error.to_string())
+    }
 }
