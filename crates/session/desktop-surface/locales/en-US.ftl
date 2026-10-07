@@ -955,6 +955,14 @@ activity-catch-up-needs-review = Needs your review · { $count ->
     }
 activity-catch-up-waiting-detail = { $task } · { $who }
 
+notification-alarm-snoozed = Snoozed for 5 minutes. Dismiss this entry to cancel the pending snooze.
+notification-alarm-dismiss = Dismiss
+notification-alarm-snooze = Snooze for 5 minutes
+notification-alarm-action-failed = Could not change this alarm
+notification-alarm-action-title = { $action }: { $title }
+notification-alarm-action-subtitle = For this alarm occurrence
+notification-alarm-action-retry = Keep this notification and try again.
+
 activity-task-review-unavailable = Authenticated task controls are unavailable. Existing work history remains readable.
 activity-task-review-history = Review action history
 activity-task-steer = Change instructions

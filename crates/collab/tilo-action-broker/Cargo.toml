@@ -20,6 +20,8 @@ path = "tests/enrolled_transport.rs"
 required-features = ["enrolled-task-test"]
 
 [dependencies]
+# Kernel-authenticated custody of the executing native service peer.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Saves the launchable action catalogue across restarts.

@@ -43,6 +43,8 @@ dev-overrides = ["package-store/dev-overrides"]
 managed-tree-test = []
 
 [dependencies]
+# Kernel-authenticated custody of the executing native service peer.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 blake3.workspace = true
 tempfile.workspace = true

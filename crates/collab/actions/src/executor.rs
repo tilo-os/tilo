@@ -63,7 +63,7 @@ fn envelope_for(
     encoded: EncodedAction,
     actor: Option<&[u8]>,
     context: Option<ActionContext>,
-) -> ActionEnvelope {
+) -> Result<ActionEnvelope, ActionError> {
     let base = doc.get_heads();
     // The action declares what it is; a context may only say a content
     // action is nobody's step this time (a record's first-run seed).
@@ -81,19 +81,43 @@ fn envelope_for(
         }
         context
     });
-    let context = match context {
+    let mut context = match context {
         Some(context) if change.is_content() => Some(context),
         Some(context) => Some(context.with_change(change)),
         None => (!change.is_content()).then(|| ActionContext::default().with_change(change)),
+    };
+    // Caller-supplied descriptive context cannot choose executable history.
+    // Compute it from the actual decoded action at its canonical before state.
+    let compensation = action
+        .inverse_encoded(doc)
+        .map(|undo| crate::context::ActionCompensation {
+            undo,
+            redo: encoded.clone(),
+        });
+    if let Some(compensation) = &compensation
+        && serde_json::to_vec(compensation)
+            .map_err(ActionError::Encode)?
+            .len()
+            > 128 * 1024
+    {
+        return Err(ActionError::Refused(
+            "document compensation exceeds the history budget".into(),
+        ));
     }
-    .map(|mut context| {
-        // This identity belongs to the actual fresh executor envelope, not
-        // an ambient/caller context. Include synthesized non-content context;
-        // leave truly absent content context absent. Replay never enters here.
+    if let Some(context) = context.as_mut() {
+        context.compensation = compensation;
+    } else if compensation.is_some() {
+        context = Some(ActionContext {
+            compensation,
+            ..ActionContext::for_action("", "", &encoded)
+        });
+    }
+    // Fresh executor correlation is written after compensation may synthesize
+    // semantic context. Replay preserves both fields from the original change.
+    if let Some(context) = context.as_mut() {
         context.executed_action = Some(id);
-        context
-    });
-    ActionEnvelope {
+    }
+    Ok(ActionEnvelope {
         id,
         action: encoded,
         base_heads: base.iter().map(|h| h.0).collect(),
@@ -101,7 +125,7 @@ fn envelope_for(
         locus: action.locus(),
         actor: actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec),
         context,
-    }
+    })
 }
 
 /// Apply `action` to `doc` under the envelope's pinned actor id +
@@ -228,7 +252,7 @@ pub fn apply_local_by(
     encoded: EncodedAction,
     actor: Option<&[u8]>,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor, None);
+    let env = envelope_for(doc, action, encoded, actor, None)?;
     apply_under_envelope(doc, action, &env)?;
     Ok(env)
 }
@@ -247,7 +271,7 @@ pub fn apply_local_with_context(
     actor: Option<&[u8]>,
     context: ActionContext,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor, Some(context));
+    let env = envelope_for(doc, action, encoded, actor, Some(context))?;
     apply_under_envelope(doc, action, &env)?;
     Ok(env)
 }
@@ -269,6 +293,7 @@ pub fn replay(
     let action = registry.decode(&env.action)?;
     let base_heads = env.base_change_hashes();
     if doc.get_heads() == base_heads {
+        validate_compensation(doc, action.as_ref(), env)?;
         return apply_under_envelope(doc, action.as_ref(), env);
     }
 
@@ -281,8 +306,80 @@ pub fn replay(
     // `fork_at` fails closed when the dependencies have not arrived yet; the
     // transport can retry once it has the missing base changes.
     let mut replay_base = doc.fork_at(&base_heads)?;
+    validate_compensation(&replay_base, action.as_ref(), env)?;
     apply_under_envelope(&mut replay_base, action.as_ref(), env)?;
     doc.merge_incoming(&mut replay_base)?;
+    Ok(())
+}
+
+/// Decode a recorded inverse only after reproducing its original change.
+/// Descriptive CRDT metadata alone cannot install executable history.
+///
+/// # Errors
+/// Refuses missing changes, forged inverses, and changes that their recorded
+/// action cannot reproduce at the original dependency heads.
+pub fn verified_compensation(
+    doc: &mut Doc,
+    hash: automerge::ChangeHash,
+    registry: &ActionRegistry,
+) -> Result<Option<Box<dyn Action>>, ActionError> {
+    let change = doc
+        .get_change_meta_by_hash(&hash)
+        .ok_or_else(|| ActionError::Refused("history change is unavailable".into()))?
+        .into_owned();
+    let context = change
+        .message
+        .as_deref()
+        .and_then(ActionContext::from_change_message);
+    let Some(compensation) = context
+        .as_ref()
+        .and_then(|context| context.compensation.as_ref())
+    else {
+        return Ok(None);
+    };
+    let inverse = compensation.undo.clone();
+    let env = ActionEnvelope {
+        id: ActionId::new(),
+        action: compensation.redo.clone(),
+        base_heads: change.deps.iter().map(|head| head.0).collect(),
+        timestamp: change.timestamp,
+        locus: ExecutionLocus::ClientLocal,
+        actor: Some(change.actor.to_bytes().to_vec()),
+        context,
+    };
+    let mut original = doc.fork_at(&change.deps)?;
+    replay(&mut original, &env, registry)?;
+    if original.get_heads() != [hash] {
+        return Err(ActionError::Refused(
+            "recorded history action does not reproduce its change".into(),
+        ));
+    }
+    registry.decode(&inverse).map(Some)
+}
+
+fn validate_compensation(
+    doc: &Doc,
+    action: &dyn Action,
+    env: &ActionEnvelope,
+) -> Result<(), ActionError> {
+    let Some(compensation) = env
+        .context
+        .as_ref()
+        .and_then(|context| context.compensation.as_ref())
+    else {
+        return Ok(());
+    };
+    if compensation.redo != env.action
+        || action.inverse_encoded(doc).as_ref() != Some(&compensation.undo)
+        || serde_json::to_vec(compensation)
+            .map_err(ActionError::Encode)?
+            .len()
+            > 128 * 1024
+    {
+        return Err(ActionError::Refused(
+            "recorded compensation differs from the action's canonical before state".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -415,13 +512,13 @@ fn dispatch_by_maybe_context(
     let context = context.map(|context| context.with_inferred_app(&encoded.type_id));
     match action.locus() {
         ExecutionLocus::ClientLocal => {
-            let env = envelope_for(doc, action, encoded, actor, context);
+            let env = envelope_for(doc, action, encoded, actor, context)?;
             apply_under_envelope(doc, action, &env)?;
             transport.replicate(&env);
             Ok(Dispatched::AppliedLocal(env))
         }
         ExecutionLocus::ServerPreferred => {
-            let env = envelope_for(doc, action, encoded, actor, context);
+            let env = envelope_for(doc, action, encoded, actor, context)?;
             match transport.submit_to_host(&env) {
                 HostDecision::AcceptedByHost => Ok(Dispatched::SubmittedToHost(env)),
                 HostDecision::Unavailable => Err(ActionError::Refused(

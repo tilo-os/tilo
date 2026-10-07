@@ -2451,15 +2451,22 @@ fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut tilo_doc::DocMut)) {
 /// The saved form of [`build_large_body`], checked in because building it one
 /// operation at a time costs seconds of automerge work in every test process
 /// that needs it, while loading it is immediate.
-const LARGE_BODY: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/large-body.automerge"
-));
+static LARGE_BODY: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/large-body.automerge.hex"
+    ))
+    .split_ascii_whitespace()
+    .map(|byte| {
+        u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+    })
+    .collect()
+});
 
 /// A document whose body holds `VIEWPORT_BLOCK_WINDOW * 4` paragraphs reading
 /// `Paragraph 0` to `Paragraph 767`, enough for the viewport window to move.
 fn large_body() -> ui::State {
-    ui::State::load(LARGE_BODY).expect(
+    ui::State::load(LARGE_BODY.as_slice()).expect(
         "the large-body fixture loads; regenerate it with UPDATE_WP_LARGE_BODY=1 \
          cargo test -p word-processor --lib large_body_fixture",
     )
@@ -2484,9 +2491,25 @@ fn build_large_body() -> ui::State {
 fn large_body_fixture_holds_the_paragraphs_its_tests_expect() {
     if std::env::var_os("UPDATE_WP_LARGE_BODY").is_some() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/large-body.automerge");
+            .join("tests/fixtures/large-body.automerge.hex");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, build_large_body().doc.save()).unwrap();
+        std::fs::write(
+            &path,
+            build_large_body()
+                .doc
+                .save()
+                .chunks(16)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        + "\n"
+                })
+                .collect::<String>(),
+        )
+        .unwrap();
         eprintln!("updated {}", path.display());
         return;
     }

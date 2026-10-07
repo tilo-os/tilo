@@ -5,6 +5,8 @@
 //! bounded, path-free continuation projection over the collaboration socket.
 //! The network layer can read this registry while capturing a shell layout.
 
+mod owner_views;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -181,6 +183,7 @@ pub struct ResolvedContinuation {
 /// broker verifies that property before calling [`Self::report`].
 #[derive(Clone, Debug, Default)]
 pub struct ContinuationRegistry {
+    owner_views: owner_views::OwnerViews,
     reports: BTreeMap<(RoomId, String, AppInstanceId), AppContinuationReport>,
     tab_instances: BTreeMap<AppInstanceId, AppInstanceId>,
     /// Cold-start offers from another device.  Keeping these separate from
@@ -191,6 +194,128 @@ pub struct ContinuationRegistry {
 }
 
 impl ContinuationRegistry {
+    pub(crate) fn owner_view_key(
+        &self,
+        room: RoomId,
+        app: &crate::shell::personal_continuity::AppInstanceState,
+    ) -> Option<(RoomId, String, AppInstanceId)> {
+        let LaunchIntent::App { app_id } = &app.launch else {
+            return None;
+        };
+        if semantic_schema_for_app(app_id) != Some(ContinuitySemanticSchema::TextPositionV1) {
+            return None;
+        }
+        let instance = app.record_instance.unwrap_or(app.id);
+        let key = (room, app_id.clone(), instance);
+        if self.tab_instances.get(&app.id) != Some(&instance) || !self.reports.contains_key(&key) {
+            return None;
+        }
+        let resume = app.resume.as_ref()?;
+        validate_app_metadata(app_id, resume.schema_version(), resume.bytes()).then_some(key)
+    }
+
+    pub(crate) fn offer_owner_view(
+        &mut self,
+        room: RoomId,
+        app: &crate::shell::personal_continuity::AppInstanceState,
+        route: Option<crate::shell::network::AuthenticatedPersonalRoute>,
+    ) {
+        let Some(key) = self.owner_view_key(room, app) else {
+            return;
+        };
+        if let Some(resume) = app.resume.as_ref() {
+            self.owner_views
+                .offer(key, app.stamp.clone(), resume, route);
+        }
+    }
+
+    pub(crate) fn refresh_owner_view(&mut self, room: RoomId, app: &str, instance: AppInstanceId) {
+        self.owner_views.refresh(room, app, instance);
+    }
+
+    pub(crate) fn retain_owner_view_candidates(
+        &mut self,
+        keys: &std::collections::BTreeSet<(RoomId, String, AppInstanceId)>,
+    ) {
+        self.owner_views.retain_candidates(keys);
+    }
+
+    pub(crate) fn stop_owner_views_unless(
+        &mut self,
+        allowed: impl Fn(&crate::shell::network::AuthenticatedPersonalRoute) -> bool,
+    ) {
+        self.owner_views.stop_unless(allowed);
+    }
+
+    pub(crate) fn drain_owner_views(
+        &mut self,
+    ) -> Vec<(
+        ui::collaboration::owner_view::OwnerView,
+        Option<crate::shell::network::AuthenticatedPersonalRoute>,
+    )> {
+        self.owner_views.drain()
+    }
+
+    pub(crate) fn acknowledge_owner_claims(
+        &mut self,
+        revision: u64,
+        snapshot: &crate::shell::personal_continuity::DeviceContinuationSnapshot,
+    ) {
+        self.owner_views.acknowledge(revision, snapshot);
+    }
+
+    pub(crate) fn owner_claim_revision(&self) -> u64 {
+        self.owner_views.revision
+    }
+
+    pub(crate) fn owner_claimed(
+        &self,
+        room: RoomId,
+        app: &crate::shell::personal_continuity::AppInstanceState,
+    ) -> bool {
+        let LaunchIntent::App { app_id } = &app.launch else {
+            return false;
+        };
+        self.owner_views.claims.contains_key(&(
+            room,
+            app_id.clone(),
+            app.record_instance.unwrap_or(app.id),
+        ))
+    }
+
+    pub(crate) fn claim_owner_view(
+        &mut self,
+        room: RoomId,
+        app: String,
+        instance: AppInstanceId,
+        token: u64,
+        metadata: ui::collaboration::ContinuationMetadata,
+    ) -> Result<(), String> {
+        if semantic_schema_for_app(&app) != Some(ContinuitySemanticSchema::TextPositionV1) {
+            return Err("this app has no supported live owner view".into());
+        }
+        if !self.tab_instances.values().any(|bound| *bound == instance) {
+            return Err("owner takeover has no live local binding".into());
+        }
+        let key = (room, app.clone(), instance);
+        if !self.reports.contains_key(&key) {
+            return Err("owner takeover has no acknowledged app report".into());
+        }
+        if !self.owner_views.can_claim(&key, token)? {
+            return Ok(());
+        }
+        self.report(
+            room,
+            app.clone(),
+            instance,
+            metadata.schema_version,
+            metadata.bytes,
+        )
+        .map_err(|error| error.to_string())?;
+        self.owner_views.claim((room, app, instance), token);
+        Ok(())
+    }
+
     /// # Errors
     ///
     /// Returns an error when the app identifier or resume metadata is not
@@ -346,6 +471,15 @@ impl ContinuationRegistry {
     /// Remove every process-local association owned by a closed tab.
     pub fn forget_local_tab(&mut self, tab: AppInstanceId) {
         if let Some(instance) = self.tab_instances.remove(&tab) {
+            let owned: Vec<_> = self
+                .reports
+                .keys()
+                .filter(|(_, _, id)| *id == instance)
+                .cloned()
+                .collect();
+            for (room, app, instance) in owned {
+                self.owner_views.forget(room, &app, instance);
+            }
             self.reports
                 .retain(|(_, _, candidate), _| *candidate != instance);
         }
@@ -415,6 +549,7 @@ impl ContinuationRegistry {
     pub fn clear_remote(&mut self) {
         self.remote_resumes.clear();
         self.remote_records.clear();
+        self.owner_views.stop_unless(|_| false);
     }
 
     pub fn record_instance_for_tab(
@@ -523,6 +658,100 @@ pub fn global_registry() -> Arc<Mutex<ContinuationRegistry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_takeover_reserves_bounded_acknowledgement_capacity() {
+        use crate::shell::personal_continuity::{
+            AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceId, TabPlacement,
+            WorkspaceContinuation,
+        };
+        let room = RoomId::new();
+        let device = DeviceId::new("owner-capacity").unwrap();
+        let metadata =
+            ui::app::compose_structural_continuation_metadata(ui::view::View::default(), None)
+                .unwrap();
+        let mut registry = ContinuationRegistry::default();
+        let mut apps = Vec::new();
+        for id in 1..=130 {
+            let instance = AppInstanceId(id);
+            registry.bind_tab(instance, instance);
+            registry
+                .report(
+                    room,
+                    "so.tilo.code-editor",
+                    instance,
+                    metadata.schema_version,
+                    metadata.bytes.clone(),
+                )
+                .unwrap();
+            apps.push(AppInstanceState::new(
+                instance,
+                TabPlacement {
+                    strip: 0,
+                    group: u32::try_from(id).unwrap(),
+                    tab: 0,
+                },
+                LaunchIntent::App {
+                    app_id: "so.tilo.code-editor".into(),
+                },
+                registry.resume_for(room, "so.tilo.code-editor", instance),
+                ContinuityStamp {
+                    counter: 1,
+                    device: device.clone(),
+                },
+            ));
+        }
+        for app in &apps[..128] {
+            registry.offer_owner_view(room, app, None);
+        }
+        assert_eq!(registry.drain_owner_views().len(), 128);
+        let original = registry.resume_for(room, "so.tilo.code-editor", AppInstanceId(129));
+        assert!(
+            registry
+                .claim_owner_view(
+                    room,
+                    "so.tilo.code-editor".into(),
+                    AppInstanceId(129),
+                    2,
+                    metadata.clone()
+                )
+                .is_err()
+        );
+        assert_eq!(registry.owner_claim_revision(), 0);
+        assert_eq!(
+            registry.resume_for(room, "so.tilo.code-editor", AppInstanceId(129)),
+            original
+        );
+        registry.forget_local_tab(AppInstanceId(1));
+        registry
+            .claim_owner_view(
+                room,
+                "so.tilo.code-editor".into(),
+                AppInstanceId(129),
+                2,
+                metadata,
+            )
+            .unwrap();
+        // A different offered app cannot steal the pending claim's last slot.
+        registry.offer_owner_view(room, &apps[129], None);
+        assert!(registry.drain_owner_views().is_empty());
+        let snapshot = DeviceContinuationSnapshot::new(
+            device,
+            1,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![apps[128].clone()],
+            }],
+        )
+        .unwrap();
+        registry.acknowledge_owner_claims(registry.owner_claim_revision(), &snapshot);
+        let views = registry.drain_owner_views();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].0.instance, 129);
+        assert!(views[0].0.local_claim);
+        assert!(!registry.owner_claimed(room, &apps[128]));
+    }
 
     #[test]
     fn native_text_metadata_is_bounded_path_free_and_structurally_checked() {

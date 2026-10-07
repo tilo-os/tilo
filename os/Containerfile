@@ -74,7 +74,7 @@ ARG ENV_RUNTIME_REF=scratch
 # boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
 # The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
-ARG CHROMIUM_RUNTIME_VERSION=2026.10.2-chromium
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.3-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
@@ -1080,7 +1080,9 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
-COPY os/usr/lib/systemd/user/tilo-ush.service /tilo-components/usr/lib/systemd/user/
+COPY os/usr/lib/systemd/user/tilo-ush.service \
+    os/usr/lib/systemd/user/tilo-app-host.service \
+    /tilo-components/usr/lib/systemd/user/
 COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share/licenses/tilo-speech-worker/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
@@ -1962,7 +1964,6 @@ COPY \
     os/usr/lib/systemd/user/tilo-models.socket \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
-    os/usr/lib/systemd/user/tilo-app-host.service \
     os/usr/lib/systemd/user/tilo-app-host.socket \
     /usr/lib/systemd/user/
 COPY \
@@ -2076,7 +2077,14 @@ COPY \
     os/usr/lib/systemd/system/tilo-device-key-init.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
+    os/usr/lib/systemd/system/tilo-firstboot-user.service \
+    os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
+    os/usr/lib/systemd/system/tilo-session-recovery.service \
     /usr/lib/systemd/system/
+# User provisioning is needed on the installed OS as well as live media.
+# disk-image.sh seeds these native units; custom installers additionally stage
+# their own /etc handoff so they can install older independently signed targets.
+COPY os/etc/greetd/config.toml /usr/share/tilo/greetd-config.toml
 # A measured installer UKI must not try to persist its transient TPM identity
 # to the read-only live ESP. These conditions stop both systemd setup phases
 # only while the sealed command line carries tilo.install.
@@ -2106,6 +2114,10 @@ COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
+    os/usr/libexec/tilo-firstboot-user \
+    os/usr/libexec/tilo-firstboot-autologin-cleanup \
+    os/usr/libexec/tilo-session-recovery \
+    os/usr/libexec/tilo-cage-session \
     /usr/libexec/
 # The graphical-session user target. (`systemctl --global enable` further down
 # resolves each unit file at build time, so a unit that was never copied in
@@ -2125,7 +2137,6 @@ COPY --from=remote-capture-files / /
 
 # greetd display manager config
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
-COPY --chmod=0755 os/usr/libexec/tilo-cage-session /usr/libexec/tilo-cage-session
 COPY --from=virtio-gallivm-cpu /virtio-gallivm-cpu.so /usr/lib/tilo/virtio-gallivm-cpu.so
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
