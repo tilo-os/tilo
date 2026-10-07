@@ -39,7 +39,11 @@ for the combined Follow and voice journey.
 
 The independent branch also passed 26 focused shell media tests, 13 Chat local
 voice-control tests, 33 GStreamer voice tests, and the required shell integration
-compilation. Script linting and staged repository checks passed.
+compilation. Script linting and staged repository checks passed. The exact Vulkan presentation
+regression also passed with the current main capture-ordering fix, preserving
+both commit and pixel-sequence guards. The old test failed twice in the held
+Chat CI run and passed once at the untouched base; no deterministic base failure
+was reproduced.
 
 ## Limits
 
