@@ -1433,6 +1433,7 @@ impl DeviceFabricRuntime {
         self.last_sample = Some(now);
         crate::shell::mpris::refresh_handoff_reports();
         let Some((device, label)) = network.local_device_fabric_identity() else {
+            publish_device_displays(network, policy);
             return;
         };
         if !self.settings_origin_initialized {
@@ -1461,6 +1462,9 @@ impl DeviceFabricRuntime {
             &tentative_stamp,
             policy,
         );
+        if let Some(display) = candidate.display.as_mut() {
+            display.outputs = native_display_connectors();
+        }
         candidate.presence.wake_routes = crate::shell::device_wake::local_routes(
             previous
                 .as_ref()
@@ -1472,9 +1476,13 @@ impl DeviceFabricRuntime {
             device: device.clone(),
         };
         stamp_snapshot(&mut candidate, &neutral_stamp, 0);
-        let fingerprint = postcard::to_allocvec(&candidate)
-            .ok()
-            .map(|bytes| *blake3::hash(&bytes).as_bytes());
+        let fingerprint = postcard::to_allocvec(&(
+            &candidate,
+            candidate.display.as_ref().map(|display| &display.outputs),
+        ))
+        .ok()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes());
+        publish_device_displays(network, policy);
         let heartbeat_due = self
             .last_publish
             .is_none_or(|published| now.duration_since(published) >= PRESENCE_HEARTBEAT);
@@ -3356,16 +3364,13 @@ fn handle_spatial_action(
                 .retain(|input| input.target != source || input.lease_nonce != nonce);
         }
         PersonalFabricAction::Input { lease_nonce, event } => {
-            let accepted = spatial.issued.get(&lease_nonce).is_some_and(|lease| {
-                lease.binds(&source, target)
-                    && lease.validate_at(unix_now_ms()).is_ok()
-                    && match event {
-                        FabricInputEvent::PointerMotion { .. }
-                        | FabricInputEvent::PointerButton { .. }
-                        | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
-                        FabricInputEvent::Key { .. } => lease.allow_keyboard,
-                    }
-            });
+            let accepted = crate::shell::device_fabric::permits_spatial_input(
+                spatial.issued.get(&lease_nonce),
+                &source,
+                target,
+                (lease_nonce, event),
+                unix_now_ms(),
+            );
             if accepted {
                 spatial.inbound.push_back((source, event));
             }
@@ -5730,6 +5735,11 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
     };
 
     DeviceFabricView {
+        displays: if policy.permits(ContinuityCapability::DisplayInput) {
+            observed_device_displays(&fabric, local_id.as_ref())
+        } else {
+            Vec::new()
+        },
         bluetooth_authorizations,
         bluetooth_handoffs: bluetooth_handoff_status_views(&fabric),
         gamepad_authorizations,
@@ -6286,6 +6296,102 @@ pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::D
     )
 }
 
+fn native_display_connectors() -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
+    use crate::shell::device_fabric::DisplayConnectorPlacement;
+    let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() else {
+        return Vec::new();
+    };
+    snapshot
+        .layout
+        .iter()
+        .filter_map(|placement| {
+            let output = snapshot
+                .outputs
+                .iter()
+                .find(|output| output.descriptor.connector == placement.connector)?;
+            if !output.scale.is_finite() || !(0.5..=4.0).contains(&output.scale) {
+                return None;
+            }
+            let scale_milli = format!("{:.0}", output.scale * 1000.0)
+                .parse::<u16>()
+                .ok()?;
+            Some(DisplayConnectorPlacement {
+                connector: placement.connector.clone(),
+                label: output.descriptor.label().to_owned(),
+                rect: DisplayRect {
+                    x: placement.x,
+                    y: placement.y,
+                    width: placement.width,
+                    height: placement.height,
+                },
+                scale_milli,
+            })
+        })
+        .take(32)
+        .collect()
+}
+
+/// The same certified observations feed Settings and the shell host view.
+pub fn observed_device_displays(
+    fabric: &DeviceFabric,
+    local: Option<&crate::shell::personal_continuity::DeviceId>,
+) -> Vec<settings_store::device_displays::DeviceDisplay> {
+    fabric
+        .snapshots()
+        .values()
+        .flat_map(|snapshot| {
+            snapshot.display.iter().flat_map(move |display| {
+                display.outputs.iter().filter_map(move |output| {
+                    output.rect.logical_placement()?;
+                    let x = display.rect.x.checked_add(output.rect.x)?;
+                    let y = display.rect.y.checked_add(output.rect.y)?;
+                    DisplayRect {
+                        x,
+                        y,
+                        ..output.rect
+                    }
+                    .logical_placement()?;
+                    Some(settings_store::device_displays::DeviceDisplay {
+                        device: snapshot.owner.as_str().to_owned(),
+                        device_label: snapshot.presence.label.clone(),
+                        connector: output.connector.clone(),
+                        label: output.label.clone(),
+                        online: snapshot.presence.online,
+                        local: local == Some(&snapshot.owner),
+                        x,
+                        y,
+                        width: output.rect.width,
+                        height: output.rect.height,
+                        scale_milli: output.scale_milli,
+                    })
+                })
+            })
+        })
+        .collect()
+}
+
+fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    let Ok((publisher_pid, publisher_start_ticks)) = settings_store::hardware::publisher_identity()
+    else {
+        return;
+    };
+    let local = network
+        .local_device_fabric_identity()
+        .map(|(device, _)| device);
+    let snapshot = settings_store::device_displays::DeviceDisplaySnapshot {
+        publisher_pid,
+        publisher_start_ticks,
+        displays: if local.is_some() && policy.permits(ContinuityCapability::DisplayInput) {
+            observed_device_displays(&network.device_fabric(), local.as_ref())
+        } else {
+            Vec::new()
+        },
+    };
+    if let Err(error) = snapshot.save() {
+        tracing::debug!(%error, "could not publish device display observations");
+    }
+}
+
 fn build_local_snapshot(
     device: &crate::shell::personal_continuity::DeviceId,
     label: String,
@@ -6335,6 +6441,7 @@ fn build_local_snapshot(
     };
     let display = if policy.permits(ContinuityCapability::DisplayInput) {
         local.display.map(|rect| DisplayPlacement {
+            outputs: Vec::new(),
             device: device.clone(),
             rect,
             scale_milli: 1000,

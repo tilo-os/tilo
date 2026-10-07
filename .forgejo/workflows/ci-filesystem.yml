@@ -84,10 +84,10 @@ on:
       - ".forgejo/workflows/ci-filesystem.yml"
       - ".forgejo/workflows/resolve-builder.yml"
   pull_request:
-    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # Stacked PRs (a PR whose base is another task branch) get the
     # same gate; affected-package selection diffs against that base, so each
     # layer tests its own change.
-    branches: ["main", "pr/sdk-*"]
+    branches: ["main", "pr/sdk-*", "codex/**"]
     paths:
       - ".cargo/**"
       - "crates/collab/**"

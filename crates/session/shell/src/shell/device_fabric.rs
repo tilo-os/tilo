@@ -1517,6 +1517,21 @@ pub struct DisplayRect {
 }
 
 impl DisplayRect {
+    /// Logical geometry shared with the Displays arrangement control.
+    /// Malformed or overflowing screen bounds are never crossing targets.
+    pub fn logical_placement(self) -> Option<settings_store::display_placement::Placement> {
+        let width = i32::try_from(self.width).ok()?;
+        let height = i32::try_from(self.height).ok()?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        self.x.checked_add(width)?;
+        self.y.checked_add(height)?;
+        Some(settings_store::display_placement::Placement::new(
+            self.x, self.y, width, height,
+        ))
+    }
+
     fn contains_x(&self, x: i32) -> bool {
         x >= self.x && x < self.x.saturating_add_unsigned(self.width)
     }
@@ -1554,15 +1569,53 @@ impl DisplayEdge {
     }
 }
 
+/// A physical connector in its owner's logical seat coordinate space.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayConnectorPlacement {
+    pub connector: String,
+    pub label: String,
+    pub rect: DisplayRect,
+    pub scale_milli: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplayPlacement {
     pub device: DeviceId,
+    /// Ephemeral extension received separately; preserve the schema-6 checkpoint.
+    #[serde(skip)]
+    pub outputs: Vec<DisplayConnectorPlacement>,
     pub rect: DisplayRect,
     pub scale_milli: u16,
     pub stamp: FabricStamp,
 }
 
 impl DisplayPlacement {
+    /// Shared plane rectangle paired with the owner's seat rectangle.
+    fn screens(&self) -> Vec<(DisplayRect, DisplayRect)> {
+        if self.outputs.is_empty() {
+            return vec![(
+                self.rect,
+                DisplayRect {
+                    x: 0,
+                    y: 0,
+                    ..self.rect
+                },
+            )];
+        }
+        self.outputs
+            .iter()
+            .filter_map(|output| {
+                let global = DisplayRect {
+                    x: self.rect.x.checked_add(output.rect.x)?,
+                    y: self.rect.y.checked_add(output.rect.y)?,
+                    ..output.rect
+                };
+                global.logical_placement()?;
+                Some((global, output.rect))
+            })
+            .collect()
+    }
+
     fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if &self.device != owner
             || &self.stamp.device != owner
@@ -1571,6 +1624,22 @@ impl DisplayPlacement {
             || !(500..=4000).contains(&self.scale_milli)
         {
             return Err(FabricError::InvalidDisplayPlacement);
+        }
+        if self.outputs.len() > 32 {
+            return Err(FabricError::InvalidDisplayPlacement);
+        }
+        unique(self.outputs.iter().map(|output| output.connector.as_str()))?;
+        for output in &self.outputs {
+            if output.connector.is_empty()
+                || output.connector.len() > 256
+                || output.connector.chars().any(char::is_control)
+                || output.label.len() > 256
+                || output.label.chars().any(char::is_control)
+                || output.rect.logical_placement().is_none()
+                || !(500..=4000).contains(&output.scale_milli)
+            {
+                return Err(FabricError::InvalidDisplayPlacement);
+            }
         }
         Ok(())
     }
@@ -1660,6 +1729,30 @@ impl InputLease {
         }
         Ok(())
     }
+}
+
+/// The existing target-issued spatial-input gate, shared by the runtime and
+/// native transport fixtures. Same-user identity is never a substitute for a
+/// currently retained lease with the exact controller, target and nonce.
+pub fn permits_spatial_input(
+    lease: Option<&InputLease>,
+    controller: &DeviceId,
+    target: &DeviceId,
+    input: ([u8; 16], FabricInputEvent),
+    now_unix_ms: u64,
+) -> bool {
+    let (nonce, event) = input;
+    lease.is_some_and(|lease| {
+        lease.nonce == nonce
+            && lease.binds(controller, target)
+            && lease.validate_at(now_unix_ms).is_ok()
+            && match event {
+                FabricInputEvent::PointerMotion { .. }
+                | FabricInputEvent::PointerButton { .. }
+                | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
+                FabricInputEvent::Key { .. } => lease.allow_keyboard,
+            }
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1821,6 +1914,14 @@ impl DeviceFabric {
         if !self.snapshots.contains_key(&snapshot.owner) && self.snapshots.len() >= MAX_DEVICES {
             return Err(FabricError::TooManyDevices);
         }
+        let mut snapshot = snapshot;
+        if let Some(current) = self.snapshots.get(&snapshot.owner)
+            && let (Some(incoming), Some(previous)) = (&mut snapshot.display, &current.display)
+            && incoming.stamp == previous.stamp
+            && incoming.outputs.is_empty()
+        {
+            incoming.outputs.clone_from(&previous.outputs);
+        }
         match self.snapshots.get(&snapshot.owner) {
             Some(current)
                 if !snapshot
@@ -1841,6 +1942,37 @@ impl DeviceFabric {
                 Ok(true)
             }
         }
+    }
+
+    /// Apply owner-authored connector observations for the exact display revision.
+    /// They are an optional transport extension and confer no input authority.
+    /// # Errors
+    /// Rejects unknown owners, stale revisions, invalid bounds or conflicting observations.
+    pub fn observe_display_connectors(
+        &mut self,
+        owner: &DeviceId,
+        stamp: &FabricStamp,
+        outputs: Vec<DisplayConnectorPlacement>,
+    ) -> Result<bool, FabricError> {
+        let current = self
+            .snapshots
+            .get_mut(owner)
+            .and_then(|snapshot| snapshot.display.as_mut())
+            .ok_or(FabricError::InvalidDisplayPlacement)?;
+        if &stamp.device != owner || stamp != &current.stamp {
+            return Err(FabricError::ForeignAuthorship);
+        }
+        let mut candidate = current.clone();
+        candidate.outputs = outputs;
+        candidate.validate(owner)?;
+        if candidate == *current {
+            return Ok(false);
+        }
+        if !current.outputs.is_empty() {
+            return Err(FabricError::ConflictingRevision);
+        }
+        *current = candidate;
+        Ok(true)
     }
 
     /// Forget everything a device published, e.g. once it left the fleet.
@@ -1902,69 +2034,92 @@ impl DeviceFabric {
         local_x: i32,
         local_y: i32,
     ) -> Option<EdgeTransition> {
-        let source = self.snapshots.get(from)?.display.as_ref()?;
-        let max_local_x = i32::try_from(source.rect.width)
-            .unwrap_or(i32::MAX)
-            .saturating_sub(1);
-        let max_local_y = i32::try_from(source.rect.height)
-            .unwrap_or(i32::MAX)
-            .saturating_sub(1);
-        let global_x = source.rect.x.saturating_add(local_x.clamp(0, max_local_x));
-        let global_y = source.rect.y.saturating_add(local_y.clamp(0, max_local_y));
-        let source_left = source.rect.x;
-        let source_right = source.rect.x.saturating_add_unsigned(source.rect.width);
-        let source_top = source.rect.y;
-        let source_bottom = source.rect.y.saturating_add_unsigned(source.rect.height);
-        let target = self
-            .snapshots
+        let snapshot = self.snapshots.get(from)?;
+        if !snapshot.presence.online {
+            return None;
+        }
+        let display = snapshot.display.as_ref()?;
+        display.rect.logical_placement()?;
+        let screens = display.screens();
+        let (left, top, right, bottom) = seat_bounds(&screens)?;
+        let x = local_x.clamp(left, right.checked_sub(1)?);
+        let y = local_y.clamp(top, bottom.checked_sub(1)?);
+        let (source, seat) = screens
+            .into_iter()
+            .find(|(_, seat)| seat.contains_x(x) && seat.contains_y(y))?;
+        let source_placement = source.logical_placement()?;
+        let global_x = source.x.checked_add(x.checked_sub(seat.x)?)?;
+        let global_y = source.y.checked_add(y.checked_sub(seat.y)?)?;
+        self.snapshots
             .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .filter(|snapshot| {
-                let caps = snapshot.presence.capabilities;
-                caps.display && caps.pointer && snapshot.owner != *from
+            .filter(|peer| {
+                peer.owner != *from
+                    && peer.presence.online
+                    && peer.presence.capabilities.display
+                    && peer.presence.capabilities.pointer
             })
-            .filter_map(|snapshot| snapshot.display.as_ref())
-            .filter(|display| match edge {
+            .filter_map(|peer| Some((&peer.owner, peer.display.as_ref()?)))
+            .flat_map(|(device, display)| {
+                display
+                    .screens()
+                    .into_iter()
+                    .map(move |(rect, seat)| (device, rect, seat))
+            })
+            .filter(|(_, target, _)| {
+                target
+                    .logical_placement()
+                    .is_some_and(|rect| rect.touches(source_placement))
+            })
+            .filter(|(_, target, _)| match edge {
                 DisplayEdge::Left => {
-                    display.rect.x.saturating_add_unsigned(display.rect.width) == source_left
-                        && display.rect.contains_y(global_y)
+                    target.x.saturating_add_unsigned(target.width) == source.x
+                        && target.contains_y(global_y)
                 }
                 DisplayEdge::Right => {
-                    display.rect.x == source_right && display.rect.contains_y(global_y)
+                    target.x == source.x.saturating_add_unsigned(source.width)
+                        && target.contains_y(global_y)
                 }
                 DisplayEdge::Top => {
-                    display.rect.y.saturating_add_unsigned(display.rect.height) == source_top
-                        && display.rect.contains_x(global_x)
+                    target.y.saturating_add_unsigned(target.height) == source.y
+                        && target.contains_x(global_x)
                 }
                 DisplayEdge::Bottom => {
-                    display.rect.y == source_bottom && display.rect.contains_x(global_x)
+                    target.y == source.y.saturating_add_unsigned(source.height)
+                        && target.contains_x(global_x)
                 }
             })
-            .min_by_key(|display| display.device.clone())?;
-        let target_x = match edge {
-            DisplayEdge::Left => i32::try_from(target.rect.width)
-                .unwrap_or(i32::MAX)
-                .saturating_sub(1),
-            DisplayEdge::Right => 0,
-            DisplayEdge::Top | DisplayEdge::Bottom => global_x.saturating_sub(target.rect.x),
-        };
-        let target_y = match edge {
-            DisplayEdge::Top => i32::try_from(target.rect.height)
-                .unwrap_or(i32::MAX)
-                .saturating_sub(1),
-            DisplayEdge::Bottom => 0,
-            DisplayEdge::Left | DisplayEdge::Right => global_y.saturating_sub(target.rect.y),
-        };
-        Some(EdgeTransition {
-            from: from.clone(),
-            to: target.device.clone(),
-            target_x,
-            target_y,
-        })
+            .min_by_key(|(device, target, _)| ((*device).clone(), target.x, target.y))
+            .map(|(device, target, seat)| EdgeTransition {
+                from: from.clone(),
+                to: device.clone(),
+                target_x: seat.x.saturating_add(match edge {
+                    DisplayEdge::Left => i32::try_from(target.width)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(1),
+                    DisplayEdge::Right => 0,
+                    DisplayEdge::Top | DisplayEdge::Bottom => global_x.saturating_sub(target.x),
+                }),
+                target_y: seat.y.saturating_add(match edge {
+                    DisplayEdge::Top => i32::try_from(target.height)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(1),
+                    DisplayEdge::Bottom => 0,
+                    DisplayEdge::Left | DisplayEdge::Right => global_y.saturating_sub(target.y),
+                }),
+            })
     }
 
     pub fn cross_right_edge(&self, from: &DeviceId, local_y: i32) -> Option<EdgeTransition> {
-        self.cross_edge(from, DisplayEdge::Right, 0, local_y)
+        let right = self
+            .snapshots
+            .get(from)?
+            .display
+            .as_ref()?
+            .screens()
+            .iter()
+            .filter_map(|(_, seat)| seat.x.checked_add(i32::try_from(seat.width).ok()?))
+            .max()?;
+        self.cross_edge(from, DisplayEdge::Right, right.checked_sub(1)?, local_y)
     }
 
     /// Resolve each roaming key to its newest authenticated authored record.
@@ -2151,6 +2306,20 @@ pub(crate) fn valid_nearby_file_name(value: &str) -> bool {
         && !value
             .chars()
             .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+}
+
+fn seat_bounds(screens: &[(DisplayRect, DisplayRect)]) -> Option<(i32, i32, i32, i32)> {
+    let left = screens.iter().map(|(_, seat)| seat.x).min()?;
+    let top = screens.iter().map(|(_, seat)| seat.y).min()?;
+    let right = screens
+        .iter()
+        .filter_map(|(_, seat)| seat.x.checked_add(i32::try_from(seat.width).ok()?))
+        .max()?;
+    let bottom = screens
+        .iter()
+        .filter_map(|(_, seat)| seat.y.checked_add(i32::try_from(seat.height).ok()?))
+        .max()?;
+    Some((left, top, right, bottom))
 }
 
 fn valid_display_rect(rect: &DisplayRect) -> bool {
@@ -2362,6 +2531,7 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: Some(DisplayPlacement {
+                outputs: Vec::new(),
                 device: owner,
                 rect: DisplayRect {
                     x,
@@ -2375,6 +2545,130 @@ mod tests {
             unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
+    }
+
+    #[test]
+    fn connector_extension_keeps_schema_six_display_bytes() {
+        let peer = DeviceId::new("peer").unwrap();
+        let display = DisplayPlacement {
+            device: peer.clone(),
+            rect: DisplayRect {
+                x: 960,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+            scale_milli: 1000,
+            stamp: FabricStamp {
+                counter: 1,
+                device: peer,
+            },
+            outputs: vec![DisplayConnectorPlacement {
+                connector: "DP-1".into(),
+                label: "Panel".into(),
+                rect: DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                },
+                scale_milli: 1250,
+            }],
+        };
+        // Fixed schema-6 Postcard bytes: owner, aggregate rect, scale, stamp.
+        let previous = hex::decode("0470656572800f00800ad005e807010470656572").unwrap();
+        assert_eq!(FABRIC_SCHEMA_VERSION, 6);
+        assert_eq!(postcard::to_allocvec(&display).unwrap(), previous);
+        let decoded: DisplayPlacement = postcard::from_bytes(&previous).unwrap();
+        assert!(
+            decoded.outputs.is_empty(),
+            "legacy peers retain their aggregate-screen behavior"
+        );
+        assert_eq!(decoded.rect, display.rect);
+    }
+
+    #[test]
+    fn connector_observations_require_the_exact_owner_display_revision() {
+        let caps = FabricCapabilities {
+            display: true,
+            pointer: true,
+            ..Default::default()
+        };
+        let mut local = snapshot("peer", 2, 960, caps);
+        let display = local.display.as_mut().unwrap();
+        let owner = display.device.clone();
+        let stamp = display.stamp.clone();
+        let outputs = vec![DisplayConnectorPlacement {
+            connector: "DP-1".into(),
+            label: "Panel".into(),
+            rect: DisplayRect {
+                x: 0,
+                y: 0,
+                width: 960,
+                height: 540,
+            },
+            scale_milli: 1250,
+        }];
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(local.clone()).unwrap();
+        let mut stale = stamp.clone();
+        stale.counter -= 1;
+        assert!(
+            fabric
+                .observe_display_connectors(&owner, &stale, outputs.clone())
+                .is_err()
+        );
+        assert!(
+            fabric
+                .observe_display_connectors(
+                    &DeviceId::new("other").unwrap(),
+                    &stamp,
+                    outputs.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            fabric
+                .observe_display_connectors(&owner, &stamp, outputs.clone())
+                .unwrap()
+        );
+        assert!(
+            !fabric
+                .observe_display_connectors(&owner, &stamp, outputs.clone())
+                .unwrap()
+        );
+        let mut conflict = outputs;
+        conflict[0].rect.x = 50;
+        assert!(
+            fabric
+                .observe_display_connectors(&owner, &stamp, conflict)
+                .is_err()
+        );
+        assert!(
+            !fabric.upsert(local.clone()).unwrap(),
+            "duplicate schema-6 checkpoints retain the optional observation"
+        );
+        local.presence.stamp.counter += 1;
+        fabric.upsert(local).unwrap();
+        assert_eq!(
+            fabric
+                .snapshots()
+                .get(&owner)
+                .unwrap()
+                .display
+                .as_ref()
+                .unwrap()
+                .outputs
+                .len(),
+            1
+        );
+        fabric.remove_device(&owner);
+        assert!(
+            fabric
+                .observe_display_connectors(&owner, &stamp, Vec::new())
+                .is_err(),
+            "revoked or forgotten peers cannot retain observations"
+        );
     }
 
     #[test]

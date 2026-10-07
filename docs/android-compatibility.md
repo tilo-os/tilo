@@ -1,12 +1,15 @@
 # Android applications on Tilo: execution and remaining gaps
 
-Status at 2026-10-06, reconciled with the merged redesign on published main `fc91d3bb7852`. **An unchanged Android APK executes
+Status at 2026-10-07; native ARM64 qualification used published main `e40be46f15fe`. **An unchanged Android APK executes
 through Tilo's production compositor and launcher.** Arity 1.1 rendered
 `123+456 = 579`, saved its state on tab close, restored it on relaunch, and
 rendered `234+567 = 801` with separate state in a second workspace. This is
 x86-64 execution on the existing remote Fedora builder with a headless Tilo
-compositor and software graphics. It is not emulator evidence, real-device
-qualification, ARM64 qualification, or general Android application support.
+compositor and software graphics. Native ARM64 ART additionally passes the owned
+service, foreground, notification-denial, sticky-recovery, permission and document fixtures,
+including actual FUSE cold restoration and foreground descriptor interruption,
+described below. These are headless runtime journeys, not real-device
+qualification or general Android application support.
 [Android](android.md) describes the opposite direction: building Tilo apps for Android.
 
 ## Reference and runtime
@@ -310,9 +313,29 @@ authored fixture input asserts its name. The original Unicode/existing-sibling
 journey remains separate. The accepted cold APK SHA-256 is
 `90965424611eb98666fcc06dfc01f1ea7f3b11221f71f41cdce0b5cf1a0be8a2`,
 with signer `05331ce2f12843658fcea5d4d69c214647abee538bfe8c8dc1cc02417153ff0a`.
-Reports and PNGs stay outside tracked source. This is real FUSE/ART execution on
-one remote x86-64 host with software graphics, not qualification of a signed OS
-image, multiple physical machines, native Btrfs projection, ARM64 or physical GPU.
+Reports and PNGs stay outside tracked source. The unchanged ordinary APK and cold
+fixture also passed on the existing native ARM64 builder on 2026-10-07. Both
+ordinary journeys retained Unicode/existing-sibling assertions; the cold journey
+required initial and safely evicted backend absence, two actual APK restorations,
+exact output bytes and denied former metadata/read/write authority with the source
+resident. The app's private URI bytes remained unchanged through cold and revoked
+relaunches. This proves real FUSE/ART on each remote host with software graphics,
+not a signed OS image, multiple physical machines, native Btrfs projection or
+physical GPU.
+
+The native FUSE binary and production inspection helper were built remotely from
+main `f152ce3010`, with SHA-256 identities
+`7d14870afe49281c44b75f3540d3b767673276d895f1d58671c56c2c585d7cdf` and
+`ddba6614b80eee9cab51667aba97a74ccf26193750f232c1054af0dbde1dac18`.
+The shell/launcher and runtime are the pinned native inputs below. A separate
+`run_foreground_journey.py --cold-hydration` run starts with an absent recipient
+manifest/chunk, requires projected state before the actual worker read and local
+state before any harness read, then checks accepted revocation interrupting open
+descriptors. The notice disappears, writes stop, former metadata/read/write access
+fails on relaunch, private visits remain ordered and stopped-store inspection
+verifies the exact source bytes. All owned FUSE mounts and processes stop. This
+does not establish withdrawal of an independent filesystem share or persisted
+Android URI grants.
 
 ## Started-service lifecycle
 
@@ -383,9 +406,9 @@ Run `tools/android/run_foreground_journey.py --help`; generated JSON, logs, APKs
 and screenshots belong under `target/` or outside source.
 
 This qualifies a scoped worker in the existing APK process, with software graphics
-on remote x86_64. It does not establish foreground media/typed service support,
+on remote x86_64 and native ARM64. It does not establish foreground media/typed service support,
 sticky process recovery, service survival after activity closure, signed OS image
-admission, ARM64 or physical-device success.
+admission or physical-device success.
 
 ## Foreground sticky process recovery
 
@@ -408,7 +431,7 @@ recovered service must pass the existing foreground/notification admission.
 Normal exit or termination, normal service stop and empty/malformed journals do
 not restart. Journal state is never persisted across explicit launches.
 
-The real ART journey on remote x86_64 passed with the identical signed APK:
+The real ART journey on remote x86_64 and native ARM64 passed with the identical signed APK:
 new process, null Intent, unchanged Activity visit count, resumed scoped work,
 presented recovery surface and persistent foreground notice. During a second
 process-loss backoff, accepted grant withdrawal killed the original sandbox;
@@ -423,7 +446,8 @@ This qualifies foreground START_STICKY recovery after signal process loss in the
 existing authority scope. It adds no independent background privileges. Intent
 redelivery, ordinary background services, recovery after closing the activity or
 compositor, modern typed/media services, signed OS admission and real devices
-remain unqualified. Software graphics and x86_64 execution do not establish ARM64.
+remain unqualified. Native ARM64 software graphics do not establish physical GPU
+or input acceptance.
 
 ## ARM64 qualification path
 
@@ -440,10 +464,40 @@ The current entrypoint was cross-linked statically against signed ARM64 musl and
 GCC compiler builtins, and the current JNI bridge was cross-linked against signed
 ARM64 GTK/GLib headers and libraries with generic signed OpenJDK JNI headers.
 Both actual ELF machine IDs are AArch64. The same architecture-independent DEX
-framework and unchanged signed foreground APK pass ARM64 receipt/signature
-admission; `execution_accepted` remains false. Cross-build and staging are not
-ART runtime success. Package scripts were disabled, so a native acquisition must
-also qualify generated schema/cache inputs before device use.
+framework and unchanged signed APKs pass ARM64 receipt/signature admission.
+The admission reports retain `runtime_accepted=false`; separate native journeys
+establish actual ART execution. Cross-build and staging alone do not establish
+execution. The retained root has also now rendered the fixture surfaces natively
+with its staged schema/cache inputs; arbitrary acquisitions still need execution
+qualification before device use.
+
+On 2026-10-07, the existing native ARM64 builder reported `aarch64` and
+kernel `6.18.54-talos`. Production shell and launcher built from main
+`e40be46f15fea4b2fe323c431d8ccf1389714310` ran all five unchanged signed fixture
+journeys with software Vulkan graphics. Every journey required fully enforced
+Landlock and no-new-privileges. They confirmed service request IDs and main-looper
+destruction, ordered Activity lifecycle and room-private state, persistent
+foreground notification ownership, notification-capability denial, interruption
+of an open-descriptor worker after accepted withdrawal, denied relaunch access,
+null-Intent sticky recovery without recreating the original Activity, revocation
+during recovery backoff, denied Android permissions and authenticated chooser
+cancellation. All owned compositors and buses stopped.
+
+The native runtime receipt is
+`27a17c231e2b490e93e2eb9e64423d52620926556b234e56816619c0696c5291`;
+shell and launcher SHA-256 identities are respectively
+`9cbbc20e95cab37675a0bdb9b212cc0040a28f62a1d3fdf76a20a9641092282c` and
+`b886c90fab8afe7b0a2963a5305e12c37b26b52c5c95485382b1e688dcc4787e`.
+Reports, original frames, reproducible commands and runtime inputs remain in a
+private qualification bundle outside Git. No host package installation, binfmt
+registration, new persistent access grant, device takeover or reboot was needed.
+
+Native execution exposed a helper-cleanup race: `/proc/<pid>/environ` can become
+unreadable during exit before the captured pidfd is ready. Cleanup waits at most
+one second for proof of that exact exit before treating the process as gone. An
+unreadable helper that stays live still fails; six real-process/pidfd regression
+tests cover ownership, preservation and exit
+races, with injected environment-read errors for privilege-independent coverage.
 
 `build_arm64_entry.sh` and `mediation/build_arm64_bridge.py` provide the remote
 cross-build commands for a signed development sysroot (musl-dev, gcc, gtk4.0-dev
@@ -451,12 +505,19 @@ and glib-dev). The existing `stage_alpine_runtime.py`, `stage_runtime.py` and
 `qualify_apk.py` validate ARM64 ELF IDs and complete separate receipts. Preserve
 the full upstream GPL source and package provenance, and retain an accepted
 native ARM64 Tilo image from the existing
-`Build / OS dev (aarch64)` pipeline. The execution drivers default to the observed Linux host architecture and accept
+`Build / OS dev (aarch64)` pipeline for physical acceptance. The execution drivers default to the observed Linux host architecture and accept
 `--architecture aarch64`; a mismatching execution host fails before launching.
-On a native remote ARM64 session, run the same
+To reproduce on a native remote ARM64 session, run the same
 unchanged signed APK journeys through the production launcher/compositor with
 mandatory confinement, frames, file/permission denials, notification ownership,
 lifecycle and sticky recovery. A loader or emulator probe alone is insufficient.
+When transporting private fixture inputs across builders, extract with
+`--no-same-owner` inside the receiving user's private directory; preserve modes
+and revalidate all runtime and APK hashes before launching. The harness expects
+this worktree's binaries at `target/debug/{shell,tilo-launcher}`. If an existing
+native builder uses another artifact subdirectory, select its verified AArch64
+binaries through links within this same owned worktree; never share another
+worktree's target or set `CARGO_TARGET_DIR`.
 Yoga/Pi image installation, kernel/security changes, reboots and physical
 GPU/input acceptance are coordinated through the parent task; none are performed
 by this Android task.
@@ -465,8 +526,8 @@ by this Android task.
 
 | Area | Confirmed | Remaining acceptance |
 | --- | --- | --- |
-| Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation | Real GPU/DRM, resize/rotation, ARM64, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
-| Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source; accepted withdrawal interrupts an old sandbox holding open descriptors | Android content providers, Android sharing intents, persisted URI authority, native projection and legacy external storage mapping |
+| Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation; native ARM64 fixture surfaces | Real GPU/DRM, resize/rotation, ARM64 calculation/input, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
+| Files/state | App-private history and separate room state; x86-64 and native ARM64 document metadata/read/save, Unicode names and editor modes, FUSE cold read, safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source; native ARM64 private URI/visit preservation and withdrawal interrupting open descriptors after a cold FUSE read | Android content providers, Android sharing intents, persisted URI authority, independent filesystem-share withdrawal, native projection and legacy external storage mapping |
 | Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability; ongoing notice persistence, owner cleanup and unrelated-sender denial | Full Android notification tags, actions, resource mapping and independent background persistence |
 | Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
 | Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks; started-service request IDs and stale/current self-stop with main-looper destruction; scoped foreground worker stop and revocation interruption; bounded null-Intent sticky recovery and revocation during backoff; owned compositor teardown | Workspace stop, compositor loss, bound/typed/media services, broader recovery, updates and migration |

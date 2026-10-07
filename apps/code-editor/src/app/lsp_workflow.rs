@@ -21,7 +21,7 @@ impl CodeApp {
     pub(super) fn language_id(lang: crate::model::Language) -> &'static str {
         use crate::model::Language::{
             C, Cpp, Css, Go, Html, JavaScript, Json, Markdown, PlainText, Python, Rust, Shell,
-            Toml, TypeScript, Yaml,
+            SystemVerilog, Toml, TypeScript, Verilog, Yaml,
         };
         match lang {
             Rust => "rust",
@@ -29,6 +29,8 @@ impl CodeApp {
             TypeScript => "typescript",
             JavaScript => "javascript",
             Go => "go",
+            Verilog => "verilog",
+            SystemVerilog => "systemverilog",
             C => "c",
             Cpp => "cpp",
             Toml => "toml",
