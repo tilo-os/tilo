@@ -1433,6 +1433,44 @@ impl ContinuationServices for NativeContinuations {
         instance: u64,
         message: Vec<u8>,
     ) -> Result<(), String> {
+        if matches!(
+            ui::collaboration::handoff::HandoffReport::decode(&message),
+            Some(ui::collaboration::handoff::HandoffReport::OwnerSubscribe { .. })
+        ) {
+            super::personal_continuity_registry::global_registry()
+                .lock()
+                .map_err(|_| "continuation registry unavailable".to_owned())?
+                .refresh_owner_view(
+                    room,
+                    &app,
+                    super::personal_continuity::AppInstanceId(instance),
+                );
+            return Ok(());
+        }
+        if let Some(ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+            token,
+            schema,
+            metadata,
+        }) = ui::collaboration::handoff::HandoffReport::decode(&message)
+        {
+            use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
+            if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations) {
+                return Err("app continuation permission is disabled".into());
+            }
+            return super::personal_continuity_registry::global_registry()
+                .lock()
+                .map_err(|_| "continuation registry unavailable".to_owned())?
+                .claim_owner_view(
+                    room,
+                    app,
+                    super::personal_continuity::AppInstanceId(instance),
+                    token,
+                    ui::collaboration::ContinuationMetadata {
+                        schema_version: schema,
+                        bytes: metadata,
+                    },
+                );
+        }
         super::window_transfer::report_handoff(room, app, instance, &message)
     }
 }

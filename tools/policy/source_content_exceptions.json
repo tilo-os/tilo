@@ -535,21 +535,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf",
-    "oid": "a441693965d6043514cf5f481c0427dd056dc660",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf",
-    "oid": "fe8c95fa8c87b6c94ec807a1524b32714025e9d9",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf",
-    "oid": "e63215236791c26a837bab6116c9100488adaaca",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/platform/tilo-pdf/tests/fixtures/arabic.pdf",
     "oid": "09aeb80f0e04f7efbfc338e81b341f66e9730ceb",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
@@ -590,11 +575,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/runtime/ush/tests/fixtures/seccomp/ush.x86_64.bpf",
-    "oid": "a4c8030427b0b2f85c88592c6d5e676229bdd879",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf",
     "oid": "e920290a4e9db814ff3300ba42f324b0032afd56",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
@@ -610,29 +590,9 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/session/shell/tests/snapshots/e2e/e2e-maximized-tile-controls.png",
-    "oid": "c24cce8ad434a0913543d8707de442b301ab250b",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
     "oid": "7a7696681bad4f83fd92680fe7699ea263549022",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/shell/tests/snapshots/e2e/e2e-tab-drag-reorder-settled.png",
-    "oid": "d1c327807e82da9a206fba8f83abf6700fb17424",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/shell/tests/snapshots/wheel_disc/three-spokes.png",
-    "oid": "8ac03e6fd56f0bf9ca6504014a5586486c21f265",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/session/tilo-ntfs-helper/vendor/ntfs-3g-source.tar.gz",
-    "oid": "8b17d7077ec62c7aff339e71c7595b291d2652e8",
-    "reason": "Pinned upstream source archive required by the NTFS helper build."
   },
   {
     "path": "crates/system/app-state/tests/data/automerge-0.8/changes.automerge",
