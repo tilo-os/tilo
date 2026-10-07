@@ -2,6 +2,8 @@
 # Contract-test the RPM system-store staging boundary without compiling 47 apps.
 set -euo pipefail
 
+export TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$(printf 'ab%.0s' {1..32})
+
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d)
 cleanup() { rm -rf -- "$work"; }
@@ -82,6 +84,20 @@ printf '%s\n' "$publisher" > "$env_runtime/publisher.hex"
 stage=$work/stage
 TILO_ENV_RUNTIME_DIR=$env_runtime \
     "$repo_root/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$stage"
+
+trust=$stage/usr/share/tilo/trust/tilo-main-registry-owner.pub
+grep -Fxq "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" "$trust"
+test "$(stat -c %a "$trust")" = 644
+for owner in '' invalid "$(printf '0%.0s' {1..64})"; do
+    if TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$owner \
+        "$repo_root/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/no-owner" \
+        >"$work/no-owner.log" 2>&1; then
+        echo "staging accepted a missing or invalid official registry owner" >&2
+        exit 1
+    fi
+    grep -Fq 'must be a non-placeholder 32-byte hex key' "$work/no-owner.log"
+    test ! -e "$work/no-owner"
+done
 
 registry=$stage/usr/share/tilo-apps/registry.toml
 grep -Fqx 'id = "so.tilo.settings"' "$registry"
