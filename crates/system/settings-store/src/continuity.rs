@@ -149,6 +149,7 @@ policies! {
         "tilo.agent_providers.hosted",
     ],
     DeviceLocal => [
+        "tilo.input.keyboard_model",
         "tilo.audio.output_device",
         "tilo.audio.input_device",
         "tilo.display.auto_brightness",
@@ -211,6 +212,10 @@ policies! {
         "tilo.security.local_credential.pin",
     ],
     Derived => [
+        "tilo.input.keyboard_inspected_key",
+        "tilo.input.keyboard_preview",
+        "tilo.input.keyboard_preview_extra_levels",
+        "tilo.input.keyboard_preview_level",
         "tilo.version",
         "tilo.updates.last_checked",
         "tilo.continuity.audit",

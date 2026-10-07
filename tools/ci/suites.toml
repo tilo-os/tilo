@@ -598,8 +598,8 @@ readers = [
 
 [[cargo]]
 package = "tilo-vm"
-inputs = ["apps/*/tilo-app.toml"]
-readers = ["crates/dev/tilo-vm/src/build.rs"]
+inputs = ["apps/*/tilo-app.toml", "os/dev/assemble-app-runtime.py", "os/dev/test-assemble-app-runtime.py"]
+readers = ["crates/dev/tilo-vm/src/build.rs", "crates/dev/tilo-vm/src/builderlayer_cache.rs"]
 
 [[cargo]]
 package = "tilo-vm-protocol"

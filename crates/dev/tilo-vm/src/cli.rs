@@ -246,20 +246,30 @@ pub enum Command {
         /// Extra cargo features, comma separated.
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
+        /// Verified source snapshot inventory for this builder admission.
         #[arg(long)]
         source_inventory: Option<PathBuf>,
     },
     /// Build the canonical matched cohort in one remote admission.
-    #[command(hide = true)]
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm userspace-pack --source-inventory .tilo-vm-inputs.json"
+    )]
     UserspacePack {
+        /// Verified source snapshot inventory for this builder admission.
         #[arg(long)]
         source_inventory: PathBuf,
     },
     /// Package one app on the architecture-configured remote builder.
-    #[command(hide = true)]
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm app-pack --app so.tilo.notes --source-inventory .tilo-vm-inputs.json"
+    )]
     AppPack {
+        /// Installed application package id to build and package.
         #[arg(long)]
         app: String,
+        /// Verified source snapshot inventory for this builder admission.
         #[arg(long)]
         source_inventory: PathBuf,
     },

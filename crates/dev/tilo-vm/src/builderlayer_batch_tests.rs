@@ -39,9 +39,15 @@ struct Fixture {
 impl Fixture {
     fn new() -> FixtureResult<Self> {
         let root = tempfile::tempdir()?;
-        for dir in ["os/scripts", "os/dev", "target"] {
+        for dir in ["os/scripts", "os/dev", "target/release"] {
             std::fs::create_dir_all(root.path().join(dir))?;
         }
+        // Exercise production ELF provenance using this real native executable.
+        // The fixture package is synthetic and never claims to be a usable SDK.
+        std::fs::copy(
+            std::env::current_exe()?,
+            root.path().join("target/release/libruntime_dylib.so"),
+        )?;
         let mut manifest = String::new();
         for name in USERSPACE_COMPONENTS {
             writeln!(
@@ -55,10 +61,20 @@ impl Fixture {
             )?;
         }
         std::fs::write(root.path().join("os/components.toml"), manifest)?;
-        let installer = r"import pathlib,sys
+        let installer = r"import hashlib,pathlib,shutil,sys
 args=sys.argv
+material=pathlib.Path('target/fixture-built-material').read_bytes()
+if '--input-key' in args:
+ digest=args[args.index('--source-digest')+1]
+ sdk=pathlib.Path('target/release/libruntime_dylib.so').read_bytes()
+ print(hashlib.sha256(material+hashlib.sha256(sdk).digest()+digest.encode()).hexdigest())
+ sys.exit(0)
 p=pathlib.Path(args[args.index('--dest')+1]); p.mkdir(parents=True)
-(p/'binary').write_bytes(b'fixture built material')
+(p/'binary').write_bytes(material)
+if sys.argv[0].endswith('assemble-app-runtime.py'):
+ lib=p/'usr/lib/tilo-runtime/fixture/lib/libruntime_dylib.so'
+ lib.parent.mkdir(parents=True)
+ shutil.copyfile('target/release/libruntime_dylib.so',lib)
 ";
         for path in [
             "os/scripts/install-components.py",
@@ -77,6 +93,8 @@ elif os.environ.get('TILO_COHORT_MUTATE') == '1':
  with (root/'fixture-cargo').open('a') as f: f.write('\n# source changed during build\n')
 elif os.environ.get('TILO_COHORT_FAIL') in sys.argv[1:]:
  sys.exit(9)
+else:
+ (root/'target/fixture-built-material').write_bytes(b'fixture built material')
 ";
         let path = root.path().join("fixture-cargo");
         std::fs::write(&path, cargo)?;
