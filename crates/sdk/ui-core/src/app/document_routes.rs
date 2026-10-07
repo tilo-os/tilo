@@ -6,6 +6,17 @@
 use super::*;
 use crate::collaboration::RouteSpec;
 
+pub(super) enum TerminalDocumentQueue {
+    Queued,
+    Busy,
+    Refused,
+}
+
+enum DocumentQueueError {
+    Busy,
+    Refused(&'static str),
+}
+
 /// The user-visible status a transport outcome implies for a route: `Some`
 /// replaces the current one (clearing it on success), `None` leaves it (a
 /// transient refusal is retried silently).
@@ -190,7 +201,7 @@ impl App {
         }
     }
 
-    fn restore_primary_publication_obligations(&mut self) {
+    pub(super) fn restore_primary_publication_obligations(&mut self) {
         self.state.advance_outbound(Vec::new());
         self.actions.bound_record_sync = None;
         for owner in &mut self.document_routes.owners {
@@ -229,6 +240,14 @@ impl App {
             return Err(refusal);
         }
         #[cfg(test)]
+        if self
+            .document_routes
+            .busy_after_for_test
+            .is_some_and(|limit| self.document_routes.sent.len() >= limit)
+        {
+            return Err(crate::collaboration::CollabSendError::Busy);
+        }
+        #[cfg(test)]
         let observation = (route.clone(), request.clone());
         self.collaboration
             .manager
@@ -247,12 +266,12 @@ impl App {
 
     /// Enqueue all changed live owned records. Success is queue admission, not
     /// durability: the SDK still awaits each document RPC before a terminal.
-    fn queue_owned_documents(&mut self) -> Result<(), &'static str> {
+    fn queue_owned_documents(&mut self) -> Result<(), DocumentQueueError> {
         self.refresh_document_routes();
         self.queue_owned_documents_after_refresh()
     }
 
-    fn queue_owned_documents_after_refresh(&mut self) -> Result<(), &'static str> {
+    fn queue_owned_documents_after_refresh(&mut self) -> Result<(), DocumentQueueError> {
         fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
             for owner in root.history_owner().into_iter().chain(root.record_owners()) {
                 if !owners.iter().any(|known| known.same_owner(&owner)) {
@@ -275,9 +294,12 @@ impl App {
             return Ok(());
         }
         if self.document_routes.witness.is_none() {
-            return Err("the admitted document route is unavailable");
+            return Err(DocumentQueueError::Refused(
+                "the admitted document route is unavailable",
+            ));
         }
         let mut blocked = None;
+        let mut busy = false;
         if current.iter().any(|owner| {
             !self.document_routes.owners.iter().any(|entry| {
                 entry
@@ -334,8 +356,24 @@ impl App {
         for (route, request, heads) in sends {
             let result = self.send_owned_document(route.clone(), request);
             let failure = outbound_failure(&result);
-            if result.is_err() {
-                blocked.get_or_insert("the document command could not enter the transport queue");
+            if let Err(error) = &result {
+                match error {
+                    crate::collaboration::CollabSendError::Busy => {
+                        tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_enqueue_busy:disabled")
+                    }
+                    crate::collaboration::CollabSendError::Unavailable => {
+                        tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_enqueue_unavailable:disabled")
+                    }
+                    crate::collaboration::CollabSendError::TooLarge { .. } => {
+                        tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_enqueue_too_large:disabled")
+                    }
+                }
+                if matches!(error, crate::collaboration::CollabSendError::Busy) {
+                    busy = true;
+                } else {
+                    blocked
+                        .get_or_insert("the document command could not enter the transport queue");
+                }
             }
             let Some(entry) = self
                 .document_routes
@@ -358,18 +396,25 @@ impl App {
                 self.layout.layout_dirty = true;
             }
         }
-        blocked.map_or(Ok(()), Err)
+        if let Some(reason) = blocked {
+            Err(DocumentQueueError::Refused(reason))
+        } else if busy {
+            Err(DocumentQueueError::Busy)
+        } else {
+            Ok(())
+        }
     }
 
     /// A local mutation may already exist. Suppress its terminal and retire the
     /// transport; broker disconnect/recovery retains admitted uncertainty.
-    pub(super) fn queue_documents_before_terminal(&mut self) -> bool {
+    pub(super) fn queue_documents_before_terminal(&mut self) -> TerminalDocumentQueue {
         if self.action_publication_failure.is_some() {
-            return false;
+            return TerminalDocumentQueue::Refused;
         }
         match self.queue_owned_documents() {
-            Ok(()) => true,
-            Err(reason) => {
+            Ok(()) => TerminalDocumentQueue::Queued,
+            Err(DocumentQueueError::Busy) => TerminalDocumentQueue::Busy,
+            Err(DocumentQueueError::Refused(reason)) => {
                 tracing::error!(
                     reason,
                     "document publication blocked before action terminal"
@@ -382,8 +427,10 @@ impl App {
                     room.advance_outbound(Vec::new());
                 }
                 self.collaboration.manager.stop_after_publication_failure();
+                self.actions.pending_terminals =
+                    super::terminal_barrier::PendingTerminals::default();
                 self.layout.layout_dirty = true;
-                false
+                TerminalDocumentQueue::Refused
             }
         }
     }

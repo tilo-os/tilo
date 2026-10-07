@@ -166,6 +166,7 @@ pub(super) struct ActionRuntime {
     /// Background operations admitted by the retained widget tree.
     pub(super) directed_invocations:
         std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
+    pub(super) pending_terminals: super::terminal_barrier::PendingTerminals,
     /// The invoker of each delivered invocation still running, for the
     /// edits its effect submits.
     pub(super) acting_for: std::collections::HashMap<
@@ -232,6 +233,7 @@ impl ActionRuntime {
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
+            pending_terminals: super::terminal_barrier::PendingTerminals::default(),
             acting_for: std::collections::HashMap::new(),
             follow_ups: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),

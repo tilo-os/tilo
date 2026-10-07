@@ -1695,6 +1695,11 @@ impl App {
         if self.action_publication_failure.is_some() {
             return;
         }
+        if self.actions.pending_terminals.contains(invocation) {
+            // The handler already completed. A redelivery cannot execute it
+            // again while its original terminal waits for queue room.
+            return;
+        }
         let address = tilo_actions::ActionAddress::new(resource, action);
         // The broker performed admission and one-use confirmation checks.
         // Required host workers separately recheck the original caller at
@@ -1756,6 +1761,7 @@ impl App {
                 refused: None,
                 outstanding: std::collections::HashSet::new(),
                 deferred: None,
+                terminal_guard: None,
             },
         );
         let invoker_scope = crate::invocation_scope::InvokerScope::enter(invoker);
@@ -1799,6 +1805,9 @@ impl App {
             Err(error) => (Err(error), None, None),
         };
         let result = self.finish_native_message_capture(native_capture, result);
+        let terminal_guard = authorization
+            .as_ref()
+            .map(crate::invocation_scope::ResourceInvocationScope::terminal_publication_guard);
         drop(invoker_scope);
         let continuation = if matches!(result, Ok(crate::widget::ResourceOperationStart::Accepted))
         {
@@ -1849,6 +1858,7 @@ impl App {
             // once they all are, or one is refused.
             Some(mut continuation) if !continuation.outstanding.is_empty() => {
                 continuation.deferred = Some((id, update));
+                continuation.terminal_guard = terminal_guard;
                 self.actions.acting_for.insert(invocation, continuation);
                 return;
             }
@@ -1857,12 +1867,7 @@ impl App {
         };
         // A terminal must follow the document commands it covers: queue every
         // changed owned record first, or retire the transport as uncertain.
-        if update.is_terminal() && !self.queue_documents_before_terminal() {
-            return;
-        }
-        self.collaboration
-            .manager
-            .send(CollabRequest::UpdateInvocation { id, update });
+        self.forward_invocation_update(id, update, terminal_guard);
     }
 
     /// What the invoker of `address` was admitted for: the action's own
@@ -3533,21 +3538,15 @@ impl App {
         if !continuation.outstanding.is_empty() || continuation.deferred.is_none() {
             return true;
         }
-        let Some(continuation) = self.actions.acting_for.remove(&running) else {
+        let Some(mut continuation) = self.actions.acting_for.remove(&running) else {
             return true;
         };
-        let Some((wire_id, update)) = continuation.deferred.clone() else {
+        let Some((wire_id, update)) = continuation.deferred.take() else {
             return true;
         };
+        let guard = continuation.terminal_guard.clone();
         let update = continuation.settle(update);
-        if self.queue_documents_before_terminal() {
-            self.collaboration
-                .manager
-                .send(CollabRequest::UpdateInvocation {
-                    id: wire_id,
-                    update,
-                });
-        }
+        self.forward_invocation_update(wire_id, update, guard);
         true
     }
 
@@ -3619,7 +3618,8 @@ impl App {
         // A broker disconnect cannot leave an admitted launcher action
         // Accepted forever. Draining the bounded table also makes late or
         // duplicate receipts inert because their request ids are gone.
-        let mut changed = self.fail_pending_application_launches_on_disconnect();
+        let mut changed = self.flush_pending_terminals();
+        changed |= self.fail_pending_application_launches_on_disconnect();
         let invocations = self
             .actions
             .directed_invocations
@@ -3685,6 +3685,7 @@ impl App {
                     },
                 };
             }
+            let terminal_guard = update.is_terminal().then(|| pending.authorization.as_ref().map(crate::invocation_scope::ResourceInvocationScope::terminal_publication_guard)).flatten();
             if update.is_terminal() {
                 // What the effect's completion submitted is applied for its
                 // invoker before its caller learns it finished.
@@ -3696,6 +3697,7 @@ impl App {
                         }
                         // It answers once the host admitted its edits.
                         continuation.deferred = Some((pending.wire_id, update));
+                        continuation.terminal_guard = terminal_guard;
                         self.actions.bound_invocations.remove(&invocation);
                         self.actions.directed_invocations.remove(&invocation);
                         changed = true;
@@ -3704,26 +3706,23 @@ impl App {
                     update = continuation.settle(update);
                 }
             }
-            if update.is_terminal() && !self.queue_documents_before_terminal() {
-                // Keep admitted lifecycle state; do not poll the completed
-                // operation again or fabricate a no-effect refusal.
-                changed = true;
-                break;
-            }
             if update.is_terminal() {
                 if let Some(scope) = &pending.authorization {
                     scope.cancel();
                 }
+            }
+            let terminal = update.is_terminal();
+            if !self.forward_invocation_update(pending.wire_id, update, terminal_guard) {
+                // Definite publication refusal retains the original retired
+                // scope for uncertainty. Global fail-closed prevents re-polling.
+                changed = true;
+                break;
+            }
+            if terminal {
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
                 self.actions.acting_for.remove(&invocation);
             }
-            self.collaboration
-                .manager
-                .send(CollabRequest::UpdateInvocation {
-                    id: pending.wire_id,
-                    update,
-                });
             changed = true;
         }
         // An invocation that ended however it ended runs for nobody, once

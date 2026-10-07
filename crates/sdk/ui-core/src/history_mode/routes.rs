@@ -202,6 +202,8 @@ pub(crate) struct OwnerDocumentRoutes {
     /// routes; `None` accepts every change.
     #[cfg(test)]
     pub(crate) refuse_for_test: Option<crate::collaboration::CollabSendError>,
+    #[cfg(test)]
+    pub(crate) busy_after_for_test: Option<usize>,
 }
 impl OwnerDocumentRoutes {
     pub(crate) fn retired_route(&self, route: &RouteSpec) -> bool {

@@ -170,6 +170,7 @@ struct CounterCard {
     /// submits an edit.
     bump_after_ping: bool,
     follow_ups: Vec<crate::widget::controls::AttributedControlInvocation>,
+    publication_record: Option<crate::widget::TileHost>,
 }
 
 fn counter_resource(destructive: bool) -> Resource {
@@ -263,6 +264,7 @@ impl CounterCard {
             resource_result: None,
             bump_after_ping: false,
             follow_ups: vec![],
+            publication_record: None,
         }
     }
 
@@ -293,6 +295,7 @@ impl CounterCard {
             resource_result: None,
             bump_after_ping: false,
             follow_ups: vec![],
+            publication_record: None,
         }
     }
 
@@ -353,6 +356,14 @@ impl Widget for CounterCard {
         dyn crate::search::capability::SearchSource,
         dyn crate::widget::controls::ActionControls
     );
+
+    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+        self.publication_record
+            .as_ref()
+            .and_then(Widget::history_owner)
+            .into_iter()
+            .collect()
+    }
 
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         let (s, p) = crate::doc::document_ref(s, p);

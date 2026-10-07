@@ -112,6 +112,7 @@ pub(crate) struct Continuation {
     /// The effect's answer, held until those edits are admitted or refused:
     /// the wire id to send it under, and the answer.
     pub(crate) deferred: Option<(u64, tilo_actions::InvocationUpdate)>,
+    pub(crate) terminal_guard: Option<TerminalPublicationGuard>,
 }
 
 impl Continuation {
@@ -430,7 +431,40 @@ pub struct ResourceInvocationScope {
     locus_basis: Rc<RefCell<InvocationLocusState>>,
 }
 
+/// Private observation/publication guard. The shared effect scope remains
+/// retired; this cannot loan a record, enter an effect or revive execution.
+/// The callback shares the original host admission for the bounded terminal
+/// lifetime; dropping this guard releases that handle without changing custody.
+#[derive(Clone)]
+pub(crate) struct TerminalPublicationGuard {
+    owner: HistoryOwner,
+    check: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+}
+impl std::fmt::Debug for TerminalPublicationGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TerminalPublicationGuard(..)")
+    }
+}
+impl TerminalPublicationGuard {
+    pub(crate) fn check(&self) -> Result<(), String> {
+        self.owner
+            .check_invocation_lifetime()
+            .and_then(|()| (self.check)())
+    }
+    pub(crate) fn retained_bytes(&self) -> usize {
+        // Only shared owner/check handles: no request, prompt, declaration,
+        // provenance or executable scope is cloned into this private guard.
+        std::mem::size_of::<Self>()
+    }
+}
+
 impl ResourceInvocationScope {
+    pub(crate) fn terminal_publication_guard(&self) -> TerminalPublicationGuard {
+        TerminalPublicationGuard {
+            owner: self.owner.clone(),
+            check: self.lease.check.clone(),
+        }
+    }
     pub(crate) fn for_owner(
         owner: HistoryOwner,
         lease: PublishedInvocationLease,

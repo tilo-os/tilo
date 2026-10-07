@@ -319,6 +319,282 @@ fn owned_count(store: &crate::record::RecordStore, checkout: &crate::RecordCheck
     store.read(&checkout.id, counter_in_doc).unwrap()
 }
 
+struct BusyTerminalCapture(std::rc::Rc<RefCell<Vec<CollabRequest>>>);
+impl crate::collaboration::PeerTransport for BusyTerminalCapture {
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        self.0.borrow_mut().push(request);
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        vec![]
+    }
+    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        Ok(())
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+    fn send_to_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        request: CollabRequest,
+    ) -> Result<(), String> {
+        self.send(request)
+    }
+}
+
+#[test]
+fn published_terminal_busy_retains_original_without_reexecuting_owned_handler() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    for action in ["bump", "async-bump"] {
+        let (mut app, store, checkout, _temp) =
+            owned_counter(CounterCard::with_async_post_bump_reset());
+        let request = remote_request(8992, action);
+        let sent = std::rc::Rc::new(RefCell::new(vec![]));
+        app.collaboration.manager =
+            CollaborationManager::with_peer_transport(BusyTerminalCapture(sent.clone()));
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+            epoch: uuid::Uuid::new_v4(),
+        });
+        app.publish_owned_documents();
+        app.require_published_invocation_authorizer();
+        app.install_published_invocation_authorizer(original_remote_authorizer(
+            request.clone(),
+            original_remote_grant(Arc::new(AtomicU64::new(99))),
+        ))
+        .unwrap();
+        app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+        deliver_remote(&mut app, &request);
+        app.refresh_focus_order();
+        app.poll_directed_invocations();
+        deliver_remote(&mut app, &request);
+        let mut duplicate = request.clone();
+        duplicate.wire_id += 1;
+        deliver_remote(&mut app, &duplicate);
+        assert_eq!(owned_count(&store, &checkout), 1);
+        assert_eq!(
+            app.action_publication_failure, None,
+            "Busy is not a permanent publication refusal"
+        );
+        assert!(!sent.borrow().iter().any(|request| matches!(request,
+            CollabRequest::UpdateInvocation {update, ..} if update.is_terminal())));
+        app.layout.layout_dirty = false;
+        assert!(!app.poll_directed_invocations());
+        assert!(
+            !app.layout.layout_dirty,
+            "unchanged Busy causes no repaint loop"
+        );
+        assert_eq!(
+            owned_count(&store, &checkout),
+            1,
+            "completed handler is never polled/executed again"
+        );
+        app.document_routes.refuse_for_test = None;
+        app.poll_directed_invocations();
+        assert_eq!(
+            app.action_publication_failure, None,
+            "{action}: queue retry must remain healthy"
+        );
+        let sent = sent.borrow();
+        let last_document = sent
+            .iter()
+            .rposition(|event| matches!(event, CollabRequest::Document { .. }))
+            .unwrap();
+        let terminal = sent.iter().position(|event| matches!(event, CollabRequest::UpdateInvocation {update, ..} if update.is_terminal())).unwrap();
+        assert!(
+            last_document < terminal,
+            "unsent document prefix precedes original terminal"
+        );
+        assert_eq!(
+            sent.iter()
+                .filter(|event| matches!(event,
+            CollabRequest::UpdateInvocation {id, update} if *id == request.wire_id
+                && update.invocation() == request.invocation && update.is_terminal()))
+                .count(),
+            1
+        );
+        assert_eq!(owned_count(&store, &checkout), 1);
+    }
+}
+
+#[test]
+fn published_terminal_busy_refuses_replaced_epoch_and_definite_queue_failure() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    for (refusal, missing_primary) in [
+        (None, false),
+        (None, true),
+        (
+            Some(crate::collaboration::CollabSendError::Unavailable),
+            false,
+        ),
+        (
+            Some(crate::collaboration::CollabSendError::TooLarge { actual: 2, max: 1 }),
+            false,
+        ),
+        (Some(crate::collaboration::CollabSendError::Busy), false),
+    ] {
+        let (mut app, store, checkout, _temp) =
+            owned_counter(CounterCard::with_async_post_bump_reset());
+        let request = remote_request(8993, "bump");
+        let sent = std::rc::Rc::new(RefCell::new(vec![]));
+        app.collaboration.manager =
+            CollaborationManager::with_peer_transport(BusyTerminalCapture(sent.clone()));
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+            epoch: uuid::Uuid::new_v4(),
+        });
+        app.publish_owned_documents();
+        app.require_published_invocation_authorizer();
+        app.install_published_invocation_authorizer(original_remote_authorizer(
+            request.clone(),
+            original_remote_grant(Arc::new(AtomicU64::new(99))),
+        ))
+        .unwrap();
+        app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+        deliver_remote(&mut app, &request);
+        app.document_routes.refuse_for_test = refusal.clone();
+        if missing_primary {
+            app.actions.bound_broker_route_for_test = None;
+        } else if refusal.is_none() {
+            app.actions
+                .bound_broker_route_for_test
+                .as_mut()
+                .unwrap()
+                .epoch = uuid::Uuid::new_v4();
+        }
+        if matches!(refusal, Some(crate::collaboration::CollabSendError::Busy)) {
+            app.root_widget = Box::new(crate::widget::Column::new());
+            app.document_routes.refuse_for_test = None;
+        }
+        app.poll_directed_invocations();
+        assert!(app.action_publication_failure.is_some());
+        assert!(!sent.borrow().iter().any(|event| matches!(event, CollabRequest::UpdateInvocation {update, ..} if update.is_terminal())));
+        assert_eq!(owned_count(&store, &checkout), 1);
+    }
+}
+
+#[test]
+fn published_terminal_busy_refuses_expired_original_caller() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let time = Arc::new(AtomicU64::new(99));
+    let (mut app, store, checkout, _temp) = owned_counter(CounterCard::new());
+    let request = remote_request(8994, "bump");
+    let sent = Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(BusyTerminalCapture(sent.clone()));
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.publish_owned_documents();
+    app.require_published_invocation_authorizer();
+    app.install_published_invocation_authorizer(original_remote_authorizer(
+        request.clone(),
+        original_remote_grant(time.clone()),
+    ))
+    .unwrap();
+    app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+    deliver_remote(&mut app, &request);
+    assert_eq!(owned_count(&store, &checkout), 1);
+    assert!(app.actions.pending_terminals.contains(request.invocation));
+    time.store(100, Ordering::Release);
+    app.document_routes.refuse_for_test = None;
+    app.poll_directed_invocations();
+    assert!(app.action_publication_failure.is_some());
+    assert!(!sent.borrow().iter().any(|event| matches!(event, CollabRequest::UpdateInvocation {update, ..} if update.is_terminal())));
+    assert_eq!(owned_count(&store, &checkout), 1);
+}
+
+#[test]
+fn published_terminal_busy_retains_deferred_follow_up_original_once() {
+    let mut card = CounterCard::new();
+    card.bump_after_ping = true;
+    let (_old_app, store, checkout, _temp) = owned_counter(CounterCard::new());
+    // Existing ordinary outer effect continuation, beside a real live owned
+    // record whose publication must also precede that effect's terminal.
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::Notice {
+        title: "Owned record".into(),
+        detail: "Publication obligation".into(),
+    });
+    tile.bind_record(store, checkout);
+    card.publication_record = Some(tile);
+    let mut app = App::new(State::new(), Box::new(card));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    let request = remote_request(8995, "ping");
+    let sent = Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(BusyTerminalCapture(sent.clone()));
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.publish_owned_documents();
+    deliver_remote(&mut app, &request);
+    assert_eq!(
+        sent.borrow().iter().find_map(|event| match event {
+            CollabRequest::UpdateInvocation {
+                update: tilo_actions::InvocationUpdate::Failed { error, .. },
+                ..
+            } => Some(error.code.clone()),
+            _ => None,
+        }),
+        None,
+        "actual effect must be admitted before continuation observation"
+    );
+    let follow_up = sent
+        .borrow()
+        .iter()
+        .find_map(|event| match event {
+            CollabRequest::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+            } => Some(invoke.clone()),
+            _ => None,
+        })
+        .expect("real effect submits its continuation through the broker");
+    let request_id = *app.actions.follow_ups.keys().next().unwrap();
+    app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+    // The initial owned snapshot remains an actual publication obligation.
+    app.document_routes.owners[0].needs_snapshot = true;
+    assert!(app.settle_follow_up(
+        request_id,
+        &Ok((
+            follow_up.invocation,
+            tilo_actions::InvocationUpdate::Accepted {
+                invocation: follow_up.invocation
+            }
+        ))
+    ));
+    assert!(app.actions.acting_for.is_empty());
+    assert!(app.actions.pending_terminals.contains(request.invocation));
+    assert!(!sent.borrow().iter().any(|event| matches!(event, CollabRequest::UpdateInvocation {update, ..} if update.is_terminal())));
+    app.document_routes.refuse_for_test = None;
+    app.poll_directed_invocations();
+    app.poll_directed_invocations();
+    assert_eq!(app.action_publication_failure, None);
+    assert_eq!(sent.borrow().iter().filter(|event| matches!(event, CollabRequest::UpdateInvocation {id, update} if *id == request.wire_id && update.invocation() == request.invocation && update.is_terminal())).count(), 1);
+    assert_eq!(
+        sent.borrow()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(_)
+                }
+            ))
+            .count(),
+        1
+    );
+}
+
 #[test]
 fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_progress() {
     use crate::permissions::{Actor, CapOverride, Scope, Subject};

@@ -1715,7 +1715,14 @@ impl CollaborationManager {
         route: RouteSpec,
         req: CollabRequest,
     ) -> Result<(), CollabSendError> {
+        let document = matches!(
+            &req,
+            CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
+        );
         if self.missing_required_document_custody(&req) {
+            if document {
+                tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_custody:disabled");
+            }
             return Err(CollabSendError::Unavailable);
         }
         if matches!(req, CollabRequest::Hello { .. }) {
@@ -1723,6 +1730,9 @@ impl CollaborationManager {
             return Err(CollabSendError::Unavailable);
         }
         if self.awaiting_primary {
+            if document {
+                tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_primary:disabled");
+            }
             return Err(CollabSendError::Unavailable);
         }
         if let CollabRequest::NativeMediaCommand {
@@ -1748,12 +1758,17 @@ impl CollaborationManager {
             Backend::Disabled(_) => false,
         };
         if unpublishable {
+            tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_route:disabled");
             // Join first; the route's original history must be applied
             // before any local mutation is published on it.
             let _ = self.submit(TransportCommand::Join(route));
             return Err(CollabSendError::Unavailable);
         }
-        Ok(self.submit(TransportCommand::ToRoute(route, req))?)
+        let result = self.submit(TransportCommand::ToRoute(route, req));
+        if document && matches!(result, Err(TransportError::Closed)) {
+            tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_transport:disabled");
+        }
+        Ok(result?)
     }
 
     pub(crate) fn document_publication_failed(&self) -> bool {

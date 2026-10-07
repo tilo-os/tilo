@@ -782,6 +782,30 @@ struct RoutedOwners {
     _owners: crate::record::RecordOwners,
     _temp: tempfile::TempDir,
 }
+
+#[test]
+fn terminal_document_busy_preserves_accepted_prefix_without_resending_it() {
+    let mut fixture = RoutedOwners::new();
+    fixture.app.document_routes.busy_after_for_test = Some(1);
+    assert!(matches!(
+        fixture.app.queue_documents_before_terminal(),
+        super::document_routes::TerminalDocumentQueue::Busy
+    ));
+    assert_eq!(fixture.app.document_routes.sent.len(), 1);
+    let first = fixture.app.document_routes.sent[0].0.clone();
+    fixture.app.document_routes.busy_after_for_test = None;
+    assert!(matches!(
+        fixture.app.queue_documents_before_terminal(),
+        super::document_routes::TerminalDocumentQueue::Queued
+    ));
+    assert_eq!(fixture.app.document_routes.sent.len(), 2);
+    assert_ne!(first, fixture.app.document_routes.sent[1].0);
+    assert!(matches!(
+        fixture.app.queue_documents_before_terminal(),
+        super::document_routes::TerminalDocumentQueue::Queued
+    ));
+    assert_eq!(fixture.app.document_routes.sent.len(), 2);
+}
 impl RoutedOwners {
     fn new() -> Self {
         use crate::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};

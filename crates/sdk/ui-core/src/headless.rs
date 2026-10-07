@@ -5616,6 +5616,7 @@ impl FrameHarness {
         let delivered = invoker.map(|invoker| {
             let context = tilo_actions::ActionContext::default().with_invoker(invoker.clone());
             crate::invocation_scope::Continuation {
+                terminal_guard: None,
                 admitted: self.admitted_requirement(address, arguments),
                 invoker,
                 context: Some(context),

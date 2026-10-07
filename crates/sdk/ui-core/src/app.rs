@@ -61,6 +61,7 @@ mod published_invocations;
 mod retirement_assembly;
 #[cfg(test)]
 mod retirement_lifecycle_tests;
+mod terminal_barrier;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
 mod runtime;

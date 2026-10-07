@@ -150,6 +150,24 @@ class PresentedEditorTargetTests(unittest.TestCase):
             })
             self.assertNotIn(private, json.dumps(result))
 
+    def test_native_delivery_enqueue_classification_is_closed(self):
+        stages = ["document_enqueue_busy", "document_enqueue_unavailable",
+                  "document_enqueue_too_large", "document_custody", "document_primary",
+                  "document_route", "document_transport"]
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            private = "private prompt output receipt and error"
+            (output / "shell.log").write_text("\n".join(
+                "[app so.tilo.chat stderr] DEBUG tilo_agent_delivery: "
+                f"native-delivery:{stage}:disabled" for stage in stages
+            ) + "\n[app so.tilo.chat stderr] DEBUG tilo_agent_delivery: "
+                f"native-delivery:{private}:disabled\n{private}\n")
+            result = PROOF.native_delivery_diagnostic(output)
+            self.assertEqual(result["marker_count"], len(stages))
+            self.assertEqual([entry["stage"] for entry in result["markers"]], stages)
+            self.assertTrue(all(entry["outcome"] == "disabled" for entry in result["markers"]))
+            self.assertNotIn(private, json.dumps(result))
+
     def test_native_delivery_diagnostic_preserves_ambiguity(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory)
