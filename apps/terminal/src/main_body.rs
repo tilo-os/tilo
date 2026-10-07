@@ -1,3 +1,4 @@
+use runtime_portal::service_socket as peer;
 use ui::ColorCompat;
 use ui::widget::{AppModel, ModelPath};
 use ui::{
@@ -76,32 +77,6 @@ pub(crate) fn classify_pty_read(
         }
         Err(_) => PtyReadDisposition::Closed,
     }
-}
-
-/// Whether the peer still holds a hosted session's lifetime socket open. The
-/// probe peeks without blocking and without changing the descriptor's flags,
-/// which it shares with the widget's own handle.
-#[cfg(unix)]
-pub(crate) fn lifetime_socket_open(socket: &std::os::unix::net::UnixStream) -> bool {
-    use std::os::fd::AsRawFd as _;
-    let mut byte = 0u8;
-    // SAFETY: `byte` is valid writable storage for the one byte requested and
-    // the descriptor stays open for the duration of the call.
-    let received = unsafe {
-        libc::recv(
-            socket.as_raw_fd(),
-            (&raw mut byte).cast::<libc::c_void>(),
-            1,
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    if received >= 0 {
-        return received > 0;
-    }
-    matches!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::EAGAIN | libc::EINTR)
-    )
 }
 
 /// What the session banner says once the shell has exited.
@@ -6797,7 +6772,7 @@ impl TerminalWidget {
             .as_ref()
             .and_then(|socket| socket.try_clone().ok());
         #[cfg(unix)]
-        let session_open = move || reader_lifetime.as_ref().is_some_and(lifetime_socket_open);
+        let session_open = move || reader_lifetime.as_ref().is_some_and(peer::peer_is_open);
         #[cfg(not(unix))]
         let session_open = || false;
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));

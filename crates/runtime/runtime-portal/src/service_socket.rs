@@ -6,6 +6,33 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Whether the peer still holds a hosted session's lifetime socket open. The
+/// probe peeks without blocking and without changing the descriptor's flags,
+/// which it shares with the widget's own handle.
+#[cfg(unix)]
+#[must_use]
+pub fn peer_is_open(socket: &std::os::unix::net::UnixStream) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut byte = 0u8;
+    // SAFETY: `byte` is valid writable storage for the one byte requested and
+    // the descriptor stays open for the duration of the call.
+    let received = unsafe {
+        libc::recv(
+            socket.as_raw_fd(),
+            (&raw mut byte).cast::<libc::c_void>(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if received >= 0 {
+        return received > 0;
+    }
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EAGAIN | libc::EINTR)
+    )
+}
+
 /// An owned session lease. Reader clones cannot prolong the guest after its
 /// owner replaces or drops this lease.
 #[cfg(unix)]
@@ -181,6 +208,27 @@ impl InheritedServiceSocket {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn session_probe_peeks_without_consuming_or_changing_shared_flags() {
+        use std::os::fd::AsRawFd as _;
+        let (mut peer, mut reader) = UnixStream::pair().unwrap();
+        // SAFETY: the reader descriptor remains owned throughout this test.
+        let flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) };
+        assert!(peer_is_open(&reader));
+        peer.write_all(b"x").unwrap();
+        assert!(peer_is_open(&reader));
+        let mut byte = [0];
+        reader.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [b'x']);
+        // SAFETY: the same live reader descriptor is queried without mutation.
+        assert_eq!(
+            unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) },
+            flags
+        );
+        peer.shutdown(std::net::Shutdown::Both).unwrap();
+        assert!(!peer_is_open(&reader));
+    }
 
     #[test]
     fn replacing_the_owned_lease_ends_it_even_while_a_reader_clone_exists() {

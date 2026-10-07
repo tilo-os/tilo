@@ -250,7 +250,7 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
 fn hosted_service_sockets_are_probed_and_never_fall_back() {
     // Case `lifetime_socket_probe_sees_the_supervisor_close_its_end`.
     {
-        use crate::inner::lifetime_socket_open;
+        use runtime_portal::service_socket::peer_is_open as lifetime_socket_open;
 
         let (terminal_end, supervisor_end) =
             std::os::unix::net::UnixStream::pair().expect("socket pair");
@@ -314,27 +314,35 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
 
     // Case `hosted_services_discover_and_use_a_healthy_ush_socket`.
     {
-        use std::io::{BufRead, BufReader};
+        use std::io::{BufRead, BufReader, Write};
         use std::os::fd::AsRawFd;
 
         let runtime = tempfile::tempdir().unwrap();
         let listener = private_ush_listener(runtime.path());
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().unwrap())
-                .read_line(&mut request)
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut hello = String::new();
+            reader.read_line(&mut hello).unwrap();
+            let hello: serde_json::Value = serde_json::from_str(&hello).unwrap();
+            assert_eq!(hello["op"], "hello");
+            assert_eq!(hello["protocol"], 2);
+            stream
+                .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
                 .unwrap();
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
             assert!(request.contains("\"op\":\"open-session\""), "{request}");
             assert!(
                 request.contains("\"target\":{\"kind\":\"environment\"}"),
                 "{request}"
             );
             let (master, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
-            runtime_portal::fd_transport::send_with_fd(
+            let (lease, _lease_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+            runtime_portal::fd_transport::send_with_fds(
                 stream.as_raw_fd(),
-                b"{\"result\":\"session\",\"session\":\"test\",\"environment\":\"default\"}\n",
-                master.as_raw_fd(),
+                b"{\"result\":\"session\",\"protocol\":2,\"session\":\"test\",\"environment\":\"default\"}\n",
+                &[master.as_raw_fd(), lease.as_raw_fd()],
             )
             .unwrap();
         });

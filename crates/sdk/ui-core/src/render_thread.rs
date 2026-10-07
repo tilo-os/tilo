@@ -33,6 +33,9 @@ use std::sync::{
 };
 use std::thread::JoinHandle;
 
+#[path = "native_gpu_trace.rs"]
+mod native_gpu_trace;
+
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
 
@@ -413,7 +416,7 @@ pub(crate) fn spawn_render_thread_for_window(
             let mut gpu_trace = presentation
                 .as_ref()
                 .and_then(crate::presentation_feedback::Observer::worker_id)
-                .and_then(crate::native_gpu_trace::Observer::from_environment);
+                .and_then(native_gpu_trace::Observer::from_environment);
             let native_timing = presentation.as_ref().filter(|_| timing::enabled());
             if let Some(observer) = native_timing {
                 observer.log_native_config(&surface);
@@ -436,7 +439,7 @@ pub(crate) fn spawn_render_thread_for_window(
             loop {
                 let gpu_poll = gpu_trace
                     .as_ref()
-                    .is_some_and(crate::native_gpu_trace::Observer::poll_pending);
+                    .is_some_and(native_gpu_trace::Observer::poll_pending);
                 let wait = match (bump_recovery.wait(), gpu_poll) {
                     (Some(wait), true) => Some(wait.min(std::time::Duration::from_millis(5))),
                     (None, true) => Some(std::time::Duration::from_millis(5)),
