@@ -1,0 +1,36 @@
+name: Dev / package auth probe
+# Manual, read-only reproduction. No image build, publication or secret output.
+on:
+  workflow_dispatch:
+
+jobs:
+  direct:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    enable-openid-connect: true
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/ci/package_auth_probe.py
+          sparse-checkout-cone-mode: false
+      - name: Probe direct package and broker authentication
+        env:
+          PROBE_KIND: direct
+          PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          JOB_TOKEN: ${{ github.token }}
+          COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
+        run: python3 tools/ci/package_auth_probe.py
+  inherited:
+    uses: ./.forgejo/workflows/ci-package-auth-reusable.yml
+    with:
+      probe_kind: inherited
+    secrets: inherit
+  explicit:
+    uses: ./.forgejo/workflows/ci-package-auth-reusable.yml
+    with:
+      probe_kind: explicit
+    secrets:
+      REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
