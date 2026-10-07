@@ -68,6 +68,7 @@ pub mod hardware;
 pub mod keyboard_shortcuts;
 pub mod magnifier;
 pub mod notification_policy;
+pub mod personal_dictionary;
 pub mod roaming_provenance;
 mod session;
 mod source;
