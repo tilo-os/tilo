@@ -1574,7 +1574,9 @@ impl ChromeState {
         match id {
             tilo_desktop::activity::HISTORY_COMPARE
             | tilo_desktop::activity::HISTORY_UNDO
-            | tilo_desktop::activity::HISTORY_RESTORE => {}
+            | tilo_desktop::activity::HISTORY_RESTORE
+            | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
+            | tilo_desktop::activity::ACTIVITY_TASKS => {}
             _ => return Err("Unknown history action".into()),
         }
         self.open_room_activity(None);

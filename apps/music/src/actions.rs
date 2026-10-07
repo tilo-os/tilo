@@ -73,6 +73,7 @@ pub const OPEN_PLAYLIST_TRACK_LIMIT: usize = 32;
 /// turning an arbitrary string into local routing authority.
 pub const NAVIGATION_VIEWS: &[(&str, &str)] = &[
     ("home", "Home"),
+    ("recommendations", "Recommendations"),
     ("songs", "Songs"),
     ("albums", "Albums"),
     ("artists", "Artists"),
@@ -456,13 +457,33 @@ pub(crate) fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
 /// deterministically from a shared base state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicAction {
+    SetRecommendationInput {
+        input: crate::recommendations::Input,
+        enabled: bool,
+    },
+    SetRecommendationDismissed {
+        track: String,
+        dismissed: bool,
+    },
+    SetRecommendationArtist {
+        artist: String,
+        preferred: bool,
+    },
     /// Create a new empty playlist. `id` is minted at authoring time and carried
     /// here so replay reproduces the byte-identical row; `apply` never mints one.
-    CreatePlaylist { id: String, name: String },
+    CreatePlaylist {
+        id: String,
+        name: String,
+    },
     /// Rename a playlist.
-    RenamePlaylist { id: String, name: String },
+    RenamePlaylist {
+        id: String,
+        name: String,
+    },
     /// Delete a playlist by id.
-    DeletePlaylist { id: String },
+    DeletePlaylist {
+        id: String,
+    },
     /// Set a stable playlist membership to an absolute state and sparse rank.
     SetPlaylistMembership {
         playlist: String,
@@ -480,13 +501,25 @@ pub enum MusicAction {
     /// The *pick* (the native file portal) is app-side, non-deterministic work;
     /// it is normalized into an HTTPS URL or bounded PNG data URL before this
     /// deterministic, replayable action is written to the shared document.
-    SetPlaylistCover { playlist: String, cover: String },
+    SetPlaylistCover {
+        playlist: String,
+        cover: String,
+    },
     /// Set a track's membership in "Liked Songs" to an explicit value.
-    SetLiked { track: String, liked: bool },
+    SetLiked {
+        track: String,
+        liked: bool,
+    },
     /// Set an album's saved-to-library membership to an explicit value.
-    SetSavedAlbum { album: String, saved: bool },
+    SetSavedAlbum {
+        album: String,
+        saved: bool,
+    },
     /// Set whether the user follows an artist to an explicit value.
-    SetFollowedArtist { artist: String, followed: bool },
+    SetFollowedArtist {
+        artist: String,
+        followed: bool,
+    },
     /// Add a catalogue track, with its album and artist, to the library: a
     /// streamed track once it is played, so it stays playable, likeable and
     /// listable on every device. Idempotent: an artist, album or track
@@ -495,10 +528,57 @@ pub enum MusicAction {
     ImportTrack(Box<crate::model::CatalogueTrack>),
 }
 
+fn recommendation_history(action: &MusicAction) -> Option<tilo_actions::ActionContext> {
+    let (label, id, kind) = match action {
+        MusicAction::SetRecommendationInput { .. } => (
+            ui::i18n!("music-recommendations-change-inputs"),
+            "library",
+            "music.recommendation-preferences",
+        ),
+        MusicAction::SetRecommendationDismissed { track, dismissed } => (
+            ui::i18n!(if *dismissed {
+                "music-recommendations-dismiss"
+            } else {
+                "music-recommendations-restore"
+            }),
+            track.as_str(),
+            "music.recommendation",
+        ),
+        MusicAction::SetRecommendationArtist { artist, preferred } => (
+            ui::i18n!(if *preferred {
+                "music-recommendations-prefer"
+            } else {
+                "music-recommendations-unprefer"
+            }),
+            artist.as_str(),
+            "music.recommendation-artist",
+        ),
+        _ => return None,
+    };
+    let mut context = tilo_actions::ActionContext::for_action("so.tilo.music", "Music", action);
+    context.action_label = label;
+    context.resource = Some(tilo_actions::ActionResource {
+        id: format!("{kind}:{id}"),
+        kind: kind.to_owned(),
+        label: if id == "library" {
+            ui::i18n!("music-recommendations-title")
+        } else {
+            id.to_owned()
+        },
+    });
+    Some(context)
+}
+
 /// Durable, browseable history metadata for a library mutation.
 pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
     let mut context = tilo_actions::ActionContext::for_action("so.tilo.music", "Music", action);
+    if let Some(context) = recommendation_history(action) {
+        return context;
+    }
     let (label, id, kind, resource_label): (&str, &str, &str, &str) = match action {
+        MusicAction::SetRecommendationInput { .. }
+        | MusicAction::SetRecommendationDismissed { .. }
+        | MusicAction::SetRecommendationArtist { .. } => return context,
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
         MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
@@ -580,6 +660,23 @@ impl Action for MusicAction {
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            MusicAction::SetRecommendationInput { .. } => {
+                crate::recommendations::write(doc, self).map_err(ActionError::Refused)?;
+            }
+            MusicAction::SetRecommendationDismissed { track, dismissed } => {
+                require(
+                    !track.is_empty() && (!dismissed || mdoc::has_track(doc, track)),
+                    "recommendation track is no longer in the library",
+                )?;
+                crate::recommendations::write(doc, self).map_err(ActionError::Refused)?;
+            }
+            MusicAction::SetRecommendationArtist { artist, preferred } => {
+                require(
+                    !artist.is_empty() && (!preferred || mdoc::has_artist(doc, artist)),
+                    "recommendation artist is no longer in the library",
+                )?;
+                crate::recommendations::write(doc, self).map_err(ActionError::Refused)?;
+            }
             MusicAction::CreatePlaylist { id, name } => {
                 // An empty id is never produced by our own builder; no-op rather
                 // than fabricate one (which would break replay determinism).
@@ -1251,7 +1348,7 @@ pub(crate) fn live_device_resources(ctx: &MusicResourceCtx) -> Vec<Resource> {
     clippy::expect_used,
     reason = "action is always a MusicAction, which encodes losslessly (see encode()'s own allow)"
 )]
-fn immediate_spec(id: &str, label: &str, action: &MusicAction) -> ActionSpec {
+pub(crate) fn immediate_spec(id: &str, label: &str, action: &MusicAction) -> ActionSpec {
     ActionSpec::immediate(id, label, MUSIC_ACTION_TYPE, action)
         .expect("encode music action")
         .requiring(PermissionRequirement::Write)

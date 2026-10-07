@@ -13,6 +13,21 @@ SPEC.loader.exec_module(contract)
 
 
 class SourceContentTests(unittest.TestCase):
+    def test_every_ascii_control_has_the_same_content_classification(self):
+        for byte in range(32):
+            with self.subTest(byte=byte):
+                data = b"before" + bytes([byte]) + b"after"
+                if byte == 13:
+                    expected = ["non-LF line endings"]
+                elif byte in (9, 10, 11, 12):
+                    expected = []
+                else:
+                    expected = ["non-text content"]
+                self.assertEqual(contract.content_issues(data), expected)
+        self.assertEqual(contract.content_issues(b"before\x7fafter"), [])
+        self.assertEqual(contract.content_issues("é\ttext\n".encode()), [])
+        self.assertEqual(contract.content_issues(b"bad\r\xff"), ["non-text content"])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
