@@ -1356,3 +1356,63 @@ All three stayed below the unchanged 1 GiB address-space limit (peak
 Compact source/model/log receipts and scored results are committed in
 `dictation-quality-probes.json`; raw public probe logs remain in the task evidence
 worktree. No microphone or private dictionary contents entered these probes.
+
+## Fixed backend comparison suite
+
+`tools/release/speech_evaluation.py` freezes the same public inputs for alternative
+local engines. On the owned remote builder, `prepare-public target/<corpus>` stages
+exactly eleven members per language from the pinned FLEURS archives, without
+fetching a model. `freeze target/<corpus>/manifest.json target/<suite>` verifies
+source/converted-audio/transcription receipts and produces deterministic PCM16
+fixtures. Previously exposed indices 0–7 remain development data; reserved
+indices 8–10 form the holdout. Identical source audio, converted audio or normalized
+same-language references across the boundary fail before suite publication.
+An operator exposure ledger is still necessary: reserved means this tool did not
+decode it, not that no person or upstream model has ever seen FLEURS. Model
+training overlap is unknown. Never adjust configuration after observing holdout
+results and continue calling those results holdout.
+
+The fixed suite contains 21 development and 32 holdout conditions: six-language
+read speech, deterministic 20/10 dB white-noise stress, and English→German and
+French→Spanish assembled transitions. Development-only German vocabulary hints
+are predeclared `Hongkong`, `Kowloon`, and unspoken `TiLo`; holdout vocabulary is
+never mined from reference text. Neither noise nor concatenation is natural
+conversation evidence. Four numeric self-correction text fixtures are explicitly
+marked **without audio**. Real noisy speech, natural code-switching, spoken numeric
+repairs, unseen spoken names and physical older-device qualification remain
+required missing coverage. No synthetic cleanup fixture can satisfy those gates.
+
+Each backend adapter must emit one JSON result per selected split case with exact
+suite and PCM digests, engine/source/model/license/adapter/configuration receipts,
+hardware/thread profile, raw final text, cumulative draft text/sample counts and
+source-start wall times, stop-to-final duration, observed RSS/address-space peaks,
+serial child CPU time and total wall time. No confidence field is required or used.
+`score <suite.json> <results.json> --split development|holdout` rejects missing or
+duplicate conditions, failed workers, altered suites/inputs, mixed configurations,
+unobserved resource metrics and nonmonotonic timelines. Existing production-worker
+logs can be converted with `import-stream <suite.json> <log> <engine.json>
+<results.json> --split ...`; the conversion requires a complete selected split and
+preserves failures rather than dropping them. The production probe needs a
+receipt-checked model entry alongside suite cases; its existing ephemeral witness
+and private namespace remain mandatory. Alternative-engine adapters must preserve
+that hardware-free namespace and the unchanged 1 GiB experiment cap.
+
+Scores remain WER per language, with no-space CER for Mandarin. Numbers, accents
+and Simplified/Traditional differences remain errors. Results group by language
+and condition, never a misleading cross-language average. First visible partial
+is distinct from the earliest exact nonempty prefix that survives every subsequent
+draft and the final. The latter also reports its unit count and the first stable
+prefix of at least three words (six Mandarin characters). Stability is retrospective,
+not a production confidence guarantee. Revisions include a changed final, so a
+stable-looking last draft cannot hide a correction at Finish. A final-only engine
+cannot claim streaming qualification from an empty timeline. Finalization includes
+cached finals honestly; cold load, actual capture/field acknowledgement and physical
+hardware remain separate measurements.
+
+The first actual remote corpus freeze produced 53 conditions, suite SHA-256
+`9995db50a190bcd818373886e06c404c9d9009cbb85a76cf166dd65daf8ef8fd`.
+No reserved holdout clip was decoded. Audio and references stay in the owned remote
+`target/speech-evaluation-corpus-v1` and `target/speech-evaluation-suite-v1`; no audio
+or model weights are committed or installed. Offline regressions independently
+exercise stable/final revision accounting, language-specific scoring, source
+leakage, deterministic noise, stale/missing/failed comparisons and receipt checks.
