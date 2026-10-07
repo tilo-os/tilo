@@ -397,9 +397,13 @@ impl TestGovernor {
         origin: TransportOrigin,
         message: NeighbourMsg,
     ) -> Result<(), String> {
-        self.peer
-            .receive_from(origin, message, SystemTime::now())
-            .map(|_| ())
+        let id = tracing::enabled!(tracing::Level::DEBUG)
+            .then(|| postcard::to_stdvec(&message).ok())
+            .flatten()
+            .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+        let outcome = self.peer.receive_from(origin, message, SystemTime::now())?;
+        tracing::debug!(?id, ?outcome, "native fixture governor admission");
+        Ok(())
     }
 
     /// Answer one join request from the authenticated endpoint `remote`.
