@@ -591,3 +591,58 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
         );
     }
 }
+
+#[cfg(feature = "native")]
+#[test]
+fn broker_trace_actual_authorized_receiver_keeps_uuid_and_refuses_unauthorized_delivery() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    for admitted in [false, true] {
+        let request = remote_request(9011 + u64::from(admitted), "bump");
+        let (mut app, store, checkout, _temp) = owned_counter(CounterCard::new());
+        // A Settings-shaped observer fixture exercises the production broker
+        // receiver. Actual Settings composition/draw is covered by its mounted
+        // native_observer_tests; this counter is not a Settings rendering proof.
+        app.set_native_input_probe(|| {
+            serde_json::json!({
+                "app":"so.tilo.settings", "private":"not published",
+            })
+        });
+        app.actions.broker_input_trace = Some(crate::broker_input_trace::Trace::default());
+        app.require_published_invocation_authorizer();
+        if admitted {
+            app.install_published_invocation_authorizer(original_remote_authorizer(
+                request.clone(),
+                original_remote_grant(Arc::new(AtomicU64::new(99))),
+            ))
+            .unwrap();
+        }
+        deliver_remote(&mut app, &request);
+        assert_eq!(owned_count(&store, &checkout), i64::from(admitted));
+        let snapshot = app.native_input_snapshot();
+        let frame = app
+            .actions
+            .broker_input_trace
+            .as_mut()
+            .unwrap()
+            .drawn(Some(71), snapshot);
+        if admitted {
+            let frame = frame.unwrap();
+            assert_eq!(
+                frame["invocations"],
+                serde_json::json!([request.invocation])
+            );
+            assert_eq!(frame["cpu_frame_id"], 71);
+            assert!(!frame.to_string().contains("not published"));
+            assert_eq!(
+                owned_count(&store, &checkout),
+                1,
+                "reading the frame witness cannot mutate the record"
+            );
+        } else {
+            assert!(
+                frame.is_none(),
+                "refusal cannot be attributed as a drawn handler effect"
+            );
+        }
+    }
+}

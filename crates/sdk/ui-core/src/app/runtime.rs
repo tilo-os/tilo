@@ -176,6 +176,8 @@ pub(super) struct ActionRuntime {
     /// Dirty tracking for the hosted worker pump (no window event loop).
     pub(super) hosted: super::model_lifecycle::HostedPumpState,
     pub(super) history_previews: super::history_actions::HistoryPreviews,
+    #[cfg(feature = "native")]
+    pub(super) broker_input_trace: Option<crate::broker_input_trace::Trace>,
 }
 
 /// Which answer from the session action host a request is waiting for.
@@ -226,6 +228,8 @@ impl ActionRuntime {
             next_broker_request_id: Some(0),
             hosted: super::model_lifecycle::HostedPumpState::default(),
             history_previews: super::history_actions::HistoryPreviews::default(),
+            #[cfg(feature = "native")]
+            broker_input_trace: None,
         }
     }
 }

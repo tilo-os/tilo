@@ -1825,6 +1825,16 @@ impl App {
             }
             self.published_invocation_scope(&address, lease)
         });
+        #[cfg(feature = "native")]
+        let input_trace = if authorization.is_ok() && self.actions.broker_input_trace.is_some() {
+            let snapshot = self.native_input_snapshot();
+            self.actions
+                .broker_input_trace
+                .as_mut()
+                .and_then(|trace| trace.begin(invocation, snapshot))
+        } else {
+            None
+        };
         let (result, authorization) = match authorization {
             Ok(authorization) => (
                 self.invoke_resource_action(
@@ -1840,6 +1850,14 @@ impl App {
             ),
             Err(error) => (Err(error), None),
         };
+        #[cfg(feature = "native")]
+        if let Some(row) = input_trace {
+            let snapshot = self.native_input_snapshot();
+            if let Some(trace) = self.actions.broker_input_trace.as_mut() {
+                let row = trace.effect(row, snapshot, result.is_ok());
+                crate::native_scenario::log::emit_json("tilo-broker-input", row);
+            }
+        }
         drop(invoker_scope);
         let continuation = if matches!(result, Ok(crate::widget::ResourceOperationStart::Accepted))
         {

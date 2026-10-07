@@ -3975,6 +3975,7 @@ impl FrameBuilder {
         root_obj: &ObjId,
         focus: &mut Option<NodeId>,
     ) -> bool {
+        let _input_trace = crate::shell::search::activation_trace::Scope::controlled();
         self.reconcile_native_focus(focus);
 
         let Some(child) = self.host_node() else {

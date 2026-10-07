@@ -9554,6 +9554,10 @@ pub fn run() {
                                 wev,
                             );
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
+                            let _input_trace =
+                                crate::shell::search::activation_trace::Scope::native(
+                                    state.physical_key_input_time_ns,
+                                );
                             chrome_handled = frame_builder.dispatch_event(
                                 wev,
                                 &test_control_ctx.modifiers,

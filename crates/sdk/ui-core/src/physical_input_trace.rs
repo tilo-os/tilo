@@ -111,7 +111,7 @@ impl Trace {
 
 // Existing app snapshots may contain names, search text or document paths.
 // Only explicit content-free app evidence can enter the physical-input trace.
-fn safe_snapshot(snapshot: Option<Value>) -> Value {
+pub(crate) fn safe_snapshot(snapshot: Option<Value>) -> Value {
     let Some(snapshot) = snapshot else {
         return Value::Null;
     };

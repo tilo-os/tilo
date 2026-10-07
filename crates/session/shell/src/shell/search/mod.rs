@@ -10,6 +10,7 @@
 //! resources from the focused app ahead of equally relevant global results.
 
 pub mod action_api;
+pub(crate) mod activation_trace;
 pub mod files_index;
 pub mod providers;
 pub mod visibility;

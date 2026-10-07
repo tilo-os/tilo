@@ -505,6 +505,8 @@ pub use widget::ParticipantPresence;
 
 pub mod application;
 pub mod application_view;
+#[cfg(feature = "native")]
+mod broker_input_trace;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_worker;
 pub mod invocation_scope;

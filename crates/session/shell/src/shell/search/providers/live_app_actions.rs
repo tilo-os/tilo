@@ -354,6 +354,7 @@ struct AuxiliaryResume {
 /// retained from a closed app names the host's launchable provider, and the
 /// host launches the app before delivering it.
 struct LocalStart {
+    application: String,
     action_sessions: ActionSessionSource,
     provider: String,
     room: String,
@@ -400,9 +401,11 @@ impl LocalStart {
             Ok(session) => session,
             Err(error) => return Pending::ready(Err(ActionHostError::Refused { reason: error })),
         };
+        let invocation = tilo_actions::InvocationId::new();
+        super::super::activation_trace::submitted(&self.application, invocation);
         session.invoke_job(InvokeRequest {
             on_behalf_of: None,
-            invocation: tilo_actions::InvocationId::new(),
+            invocation,
             target: RemoteActionTarget {
                 provider: self.provider.clone(),
                 address: self.address.clone(),
@@ -498,6 +501,7 @@ impl LiveAppActionsProvider {
         expected_person: String,
     ) -> LocalStart {
         LocalStart {
+            application: surface.app_id.clone(),
             action_sessions: self.action_sessions.clone(),
             provider: if surface.live {
                 surface.peer_id.to_string()
@@ -1592,6 +1596,7 @@ impl LiveAppActionsProvider {
         let actor = actor.to_string();
         let invalidations = Rc::clone(&self.directory_invalidations);
         let cache_key = (peer_id, actor.clone(), needle.to_string(), cursor.to_vec());
+        let application = root.app_id.clone();
         let typed = !descriptor.params.is_empty();
         let resource = address.resource.clone();
         let action = address.action.clone();
@@ -1633,12 +1638,14 @@ impl LiveAppActionsProvider {
                 // The same non-blocking door, confirmation check and
                 // idempotent ledger every other caller uses; the owner
                 // re-resolves the row at `revision` before anything starts.
+                let invocation = tilo_actions::InvocationId::new();
+                super::super::activation_trace::submitted(&application, invocation);
                 let admission = action_sessions
                     .open(&cluster_id, Some(&actor))
                     .map_err(ActionError::Refused)?
                     .invoke_job(InvokeRequest {
                         on_behalf_of: None,
-                        invocation: tilo_actions::InvocationId::new(),
+                        invocation,
                         target: RemoteActionTarget {
                             provider: peer_id.to_string(),
                             address: address.clone(),

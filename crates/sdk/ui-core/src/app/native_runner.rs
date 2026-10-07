@@ -2355,6 +2355,20 @@ impl AppHandler {
                 crate::native_scenario::log::emit_json("tilo-physical-frame", row);
             }
 
+            if app
+                .actions
+                .broker_input_trace
+                .as_ref()
+                .is_some_and(crate::broker_input_trace::Trace::has_pending)
+            {
+                let snapshot = app.native_input_snapshot();
+                if let Some(trace) = app.actions.broker_input_trace.as_mut()
+                    && let Some(row) = trace.drawn(cpu_frame_id, snapshot)
+                {
+                    crate::native_scenario::log::emit_json("tilo-broker-frame", row);
+                }
+            }
+
             let req = RenderRequest::Frame {
                 cpu_frame_id,
                 scene,
@@ -3881,6 +3895,9 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
+        self.actions.broker_input_trace =
+            (std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref() == Some("1"))
+                .then(crate::broker_input_trace::Trace::default);
         self.prepare_native_presentation(crate::host_chrome::HostChrome::current(
             self.input.platform,
         ));
