@@ -76,6 +76,11 @@ messages-setup-linked = Device linked. Messaging resumes after its connection an
 messages-setup-selected = { $service } · { $account }
 
 messages-first-signal = Link a Signal account
-messages-first-self-review = Verify that this is your Signal identity: { $identity }
+messages-first-self-review = Verify the selected service identity: { $identity }
 messages-first-confirm = Confirm identity and request access
 messages-first-permission-review = Review this account’s access request in Passwords. Messages starts only after you approve it.
+
+messages-first-sms = Choose an SMS SIM
+messages-select-sim = Use this SIM
+messages-no-sims = No available SIMs were found on this device.
+messages-select-sim-name = Use { $sim }
