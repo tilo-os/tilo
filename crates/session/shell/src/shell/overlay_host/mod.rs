@@ -4621,10 +4621,11 @@ impl ShellOverlayHost {
             })
     }
 
-    fn drain_app_host_intents(&mut self) {
-        self.host_shell_allows.retain_mut(|pending| !pending.poll());
+    fn collect_app_host_intents(
+        &mut self,
+    ) -> Vec<(crate::shell::state::TabId, ui::widget::AppHostIntent)> {
         let mut intents = Vec::new();
-        for &row_ptr in self.group_row_ptrs.values() {
+        for &mut row_ptr in self.group_row_ptrs.values_mut() {
             // SAFETY: `group_row_ptrs` points into `self.content`; `&mut self`
             // makes this walk exclusive, matching the other row accessors.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
@@ -4640,6 +4641,12 @@ impl ShellOverlayHost {
                 }
             }
         }
+        intents
+    }
+
+    fn drain_app_host_intents(&mut self) {
+        self.host_shell_allows.retain_mut(|pending| !pending.poll());
+        let intents = self.collect_app_host_intents();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
