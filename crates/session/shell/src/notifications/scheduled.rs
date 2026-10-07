@@ -12,7 +12,14 @@ const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;
 
 pub(super) type AlarmStateWire = (String, (u8, u8, u8, i64), Vec<i64>, Vec<i64>, String);
 
-pub(super) type ScheduleArgs = (String, String, String, String, i64, Vec<(u8, u8, u8, i64)>);
+pub(super) type ScheduleArgs = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Vec<(u8, u8, u8, i64, String)>,
+);
 
 /// The exact server-owned room key is separate from the local display id:
 /// launcher identities carry room UUIDs, never caller-supplied workspace ids.
@@ -113,9 +120,9 @@ impl ScheduleStore {
 
     pub fn schedule(&mut self, caller: &Owner, args: ScheduleArgs) -> Result<(), String> {
         let (tag, title, body, activation, at_ms, calendar) = args;
-        let calendar = match calendar.as_slice() {
-            [] => None,
-            [(hour, minute, weekdays, enabled_at_ms)] => {
+        let (calendar, last_rung) = match calendar.as_slice() {
+            [] => (None, None),
+            [(hour, minute, weekdays, enabled_at_ms, last_rung)] => {
                 let c = Calendar {
                     hour: *hour,
                     minute: *minute,
@@ -125,7 +132,15 @@ impl ScheduleStore {
                 if !c.alarm().valid() {
                     return Err("invalid alarm time or weekdays".into());
                 }
-                Some(c)
+                let last_rung = if last_rung.is_empty() {
+                    None
+                } else {
+                    Some(
+                        NaiveDate::parse_from_str(last_rung, "%Y-%m-%d")
+                            .map_err(|_| "invalid delivered alarm date".to_owned())?,
+                    )
+                };
+                (Some(c), last_rung)
             }
             _ => return Err("expected at most one calendar alarm".into()),
         };
@@ -152,7 +167,7 @@ impl ScheduleStore {
             original_at_ms: at_ms,
             next_at_ms: Some(at_ms),
             calendar,
-            last_rung: None,
+            last_rung,
             last_at_ms: None,
         };
         let mut entries = self.entries.clone();
@@ -358,8 +373,33 @@ mod tests {
             "Wake up".into(),
             "tilo-clocks:alarms".into(),
             due.timestamp_millis(),
-            vec![(12, 0, repeat, 1)],
+            vec![(12, 0, repeat, 1, String::new())],
         )
+    }
+
+    #[test]
+    fn initial_handoff_preserves_the_apps_already_delivered_local_date() {
+        let now = at("2026-04-14T11:00:00+00:00");
+        let tomorrow = ui::notify::CalendarAlarm {
+            hour: 12,
+            minute: 0,
+            weekdays: 0,
+        }
+        .next_in(Some(now.date_naive()), &now)
+        .expect("next unconsumed occurrence");
+        let caller = owner(1, "so.tilo.clocks");
+        let mut store = ScheduleStore::open(None).expect("memory store");
+        let mut args = alarm_args("reopened", tomorrow, 0);
+        args.5.first_mut().expect("calendar").4 = now.date_naive().to_string();
+        store.schedule(&caller, args).expect("handoff");
+        store
+            .deliver_due(&NotificationBridge::new(), &now, None)
+            .expect("service tick");
+        assert_eq!(
+            store.pending(&caller),
+            vec![("reopened".into(), tomorrow.timestamp_millis())],
+            "host recomputation must not move an already-consumed date back into the schedule"
+        );
     }
 
     #[test]

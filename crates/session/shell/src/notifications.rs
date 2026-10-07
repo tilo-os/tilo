@@ -1368,7 +1368,7 @@ const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.No
     <arg name="body" type="s" direction="in"/>
     <arg name="activation" type="s" direction="in"/>
     <arg name="at_ms" type="x" direction="in"/>
-    <arg name="calendar" type="a(yyyx)" direction="in"/>
+    <arg name="calendar" type="a(yyyxs)" direction="in"/>
   </method>
   <method name="XTiloScheduledNotifications">
     <arg type="a(sx)" direction="out"/>
@@ -2387,7 +2387,13 @@ mod tests {
             "Wake up".into(),
             "tilo-clocks:alarms".into(),
             at,
-            vec![calendar],
+            vec![(
+                calendar.0,
+                calendar.1,
+                calendar.2,
+                calendar.3,
+                String::new(),
+            )],
         );
         proxy
             .call_method("XTiloScheduleNotification", &args)

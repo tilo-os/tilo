@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 mod calendar;
 mod caps;
-pub use calendar::CalendarAlarm;
+pub use calendar::{AlarmSchedule, CalendarAlarm};
 pub mod conformance;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -235,13 +235,11 @@ pub trait Notifier: Send + Sync {
         &self,
         notification: &Notification,
         at: SystemTime,
-        alarm: CalendarAlarm,
-        enabled_at_ms: i64,
+        schedule: AlarmSchedule,
     ) -> Result<(), NotifyError> {
-        if !alarm.valid() {
+        if !schedule.alarm.valid() {
             return Err(NotifyError::Invalid("invalid alarm time or weekdays"));
         }
-        let _ = enabled_at_ms;
         self.schedule(notification, at)
     }
 

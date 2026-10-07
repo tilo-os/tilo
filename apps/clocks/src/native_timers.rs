@@ -17,8 +17,13 @@ pub(crate) trait Scheduler {
     fn pending(&self) -> Result<Vec<Scheduled>, String>;
     fn cancel(&self, id: &str) -> Result<(), String>;
     fn schedule(&self, id: &str, label: &str, end: SystemTime) -> Result<(), String>;
-    fn schedule_alarm(&self, id: &str, alarm: &crate::Alarm, end: SystemTime)
-    -> Result<(), String>;
+    fn schedule_alarm(
+        &self,
+        id: &str,
+        alarm: &crate::Alarm,
+        end: SystemTime,
+        last_rung: Option<chrono::NaiveDate>,
+    ) -> Result<(), String>;
 }
 
 impl Scheduler for dyn Notifier {
@@ -27,18 +32,22 @@ impl Scheduler for dyn Notifier {
         id: &str,
         alarm: &crate::Alarm,
         end: SystemTime,
+        last_rung: Option<chrono::NaiveDate>,
     ) -> Result<(), String> {
         let notification = Notification::new(id, "Alarm", &alarm.label).with_activation(ALARMS_URI);
         Notifier::schedule_alarm(
             self,
             &notification,
             end,
-            ui::notify::CalendarAlarm {
-                hour: alarm.hour,
-                minute: alarm.minute,
-                weekdays: alarm.repeat,
+            ui::notify::AlarmSchedule {
+                alarm: ui::notify::CalendarAlarm {
+                    hour: alarm.hour,
+                    minute: alarm.minute,
+                    weekdays: alarm.repeat,
+                },
+                enabled_at_ms: alarm.enabled_at_ms,
+                last_rung,
             },
-            alarm.enabled_at_ms,
         )
         .map_err(|error| error.to_string())
     }
@@ -234,7 +243,11 @@ fn reconcile_alarms(
         let Some(at) = DateTime::<Utc>::from_timestamp_millis(deadline) else {
             continue;
         };
-        match host.schedule_alarm(&alarm_id(id.as_str()), alarm, system_time(at)) {
+        let last_rung = delivery
+            .alarms
+            .get(id.as_str())
+            .and_then(|armed| armed.last_rung);
+        match host.schedule_alarm(&alarm_id(id.as_str()), alarm, system_time(at), last_rung) {
             Ok(()) => {
                 delivery
                     .native_alarms_scheduled
@@ -267,6 +280,7 @@ mod tests {
     struct TestScheduler {
         pending: RefCell<BTreeMap<String, SystemTime>>,
         fail_cancel: Cell<bool>,
+        alarm_last_rung: RefCell<BTreeMap<String, Option<chrono::NaiveDate>>>,
     }
     impl Scheduler for TestScheduler {
         fn pending(&self) -> Result<Vec<Scheduled>, String> {
@@ -292,7 +306,11 @@ mod tests {
             id: &str,
             _: &crate::Alarm,
             end: SystemTime,
+            last_rung: Option<chrono::NaiveDate>,
         ) -> Result<(), String> {
+            self.alarm_last_rung
+                .borrow_mut()
+                .insert(id.to_owned(), last_rung);
             self.pending.borrow_mut().insert(id.to_owned(), end);
             Ok(())
         }
@@ -411,6 +429,47 @@ mod tests {
         assert!(host.pending().unwrap().is_empty());
         assert!(stored.borrow().native_alarm_owners.is_empty());
         assert!(stored.borrow().native_alarms_scheduled.is_empty());
+    }
+
+    #[test]
+    fn reenabled_alarm_hands_off_the_previously_delivered_date() {
+        let now = chrono::Local::now();
+        let id = Id::from_raw("rearmed-alarm");
+        let mut clocks = Clocks::default();
+        clocks.alarms.push(
+            id.clone(),
+            crate::Alarm {
+                label: "Wake up".into(),
+                hour: 12,
+                minute: 0,
+                repeat: 0,
+                enabled: true,
+                enabled_at_ms: now.timestamp_millis(),
+            },
+        );
+        let mut delivery = Delivery::default();
+        delivery.alarms.insert(
+            id.as_str().to_owned(),
+            crate::schedule::ArmedAlarm {
+                last_rung: Some(now.date_naive()),
+                ..Default::default()
+            },
+        );
+        crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+        let host = TestScheduler::default();
+        reconcile(
+            &clocks,
+            &mut delivery,
+            &host,
+            now.with_timezone(&Utc),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            host.alarm_last_rung.borrow().get(&alarm_id(id.as_str())),
+            Some(&Some(now.date_naive())),
+            "the host must exclude the app's consumed local date"
+        );
     }
 
     #[test]
