@@ -537,11 +537,11 @@ def physical_chord(socket, key, **modifiers):
         set_physical_modifiers(socket)
 
 
-def require_chat_keyboard_focus_after_click(socket, output):
+def require_chat_keyboard_focus_after_click(socket, output, *, detached=False):
     """Refuse key injection unless the exact painted Chat surface owns the seat."""
-    frame = presented_primary_frame(
-        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
-    )
+    frames = call(socket, {"op": "foreign_frames"})
+    frame = (presented_floating_frame(frames, "so.tilo.chat") if detached
+             else presented_primary_frame(frames, "so.tilo.chat"))
     if frame is None:
         reason = "presented_chat_missing"
         focused = False
@@ -556,7 +556,8 @@ def require_chat_keyboard_focus_after_click(socket, output):
             "path": str(output / "managed-task-keyboard-focus-refused.png"),
         }))
         (output / "managed-task-keyboard-focus-refused.json").write_text(json.dumps({
-            "phase": "after_physical_chat_click",
+            "phase": "after_physical_detached_chat_click" if detached
+            else "after_physical_chat_click",
             "presented_chat": frame is not None,
             "keyboard_focused": False,
             "reason": reason,
@@ -663,6 +664,22 @@ def activate_agent_conversation_control(access, label):
     return {"accessibility_action": label, "accepted": True}
 
 
+def focus_agent_conversation_control(access, path, label):
+    """Focus one published control; a later physical key remains the activator."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    focused = client.call(
+        path, "org.a11y.atspi.Component.GrabFocus", check=False
+    )
+    if focused.strip() != "(true,)":
+        raise RuntimeError(f"the actual {label} control refused keyboard focus")
+    actions = client.call(
+        path, "org.a11y.atspi.Action.GetActions", check=False
+    )
+    if "'click'" not in actions:
+        raise RuntimeError(f"the actual {label} control has no activation action")
+    return {"keyboard_focus": label, "accepted": True}
+
+
 def presented_primary_frame(response, app_id):
     """A retained buffer or another presentation is not the launched window."""
     rows = [row for row in foreign_frames(response)
@@ -756,12 +773,6 @@ def native_float_return(socket, room, record, output, size, process):
     if selected["selection"] != [len(draft) - 5, len(draft)]:
         raise RuntimeError("physical Shift+ArrowLeft did not select the expected editor range")
     require_ok(call(socket, {"op": "key", "key": "ArrowRight"}))
-    require_ok(call(socket, {"op": "type", "text": "!"}))
-    wait_for("physical edit before undo",
-             lambda: private_editor_value_matches(access, draft + "!"), process)
-    physical_chord(socket, "z", ctrl=True)
-    wait_for("physical Ctrl+Z to restore the private draft",
-             lambda: private_editor_value_matches(access, draft), process)
 
     # The desktop emoji picker is the production input-method route:
     # Super+. → query → Enter commits through zwp_input_method_v2/text_input_v3.
@@ -782,6 +793,16 @@ def native_float_return(socket, room, record, output, size, process):
         raise RuntimeError("the IME result could not be selected through physical input")
     if before["accessibility_focused"] is not True:
         raise RuntimeError("the actual local editor lost accessibility focus before Float")
+
+    # Leave one real edit in the TextInput undo stack. It is intentionally not
+    # undone until after the native surface handoff.
+    require_ok(call(socket, {"op": "key", "key": "ArrowRight"}))
+    undo_base = draft
+    require_ok(call(socket, {"op": "type", "text": "!"}))
+    draft += "!"
+    wait_for("physical edit retained for detached undo",
+             lambda: private_editor_value_matches(access, draft), process)
+    before = private_editor_observation(access, draft)
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"before-float-{size}.png")}))
     # Editing publishes fresh AccessKit transactions. Resolve the current
     # drag handle beside the same editor instead of using a retained node.
@@ -818,10 +839,21 @@ def native_float_return(socket, room, record, output, size, process):
     if detached != before:
         raise RuntimeError("Float changed private editor content, caret, selection or keyboard focus")
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"after-float-{size}.png")}))
+    float_geometry = presented_content_geometry(frame)
+    physically_click_editor(socket, access, float_geometry)
+    require_chat_keyboard_focus_after_click(socket, output, detached=True)
+    physical_chord(socket, "z", ctrl=True)
+    draft = undo_base
+    wait_for("pre-detach undo history in the detached editor",
+             lambda: private_editor_value_matches(access, draft), process)
+    require_ok(call(socket, {"op": "type", "text": "?"}))
+    draft += "?"
+    wait_for("detached edit retained for attached undo",
+             lambda: private_editor_value_matches(access, draft), process)
+    before_return_editor = private_editor_observation(access, draft)
     before_return = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
     if before_return is None:
         raise RuntimeError("Chat's primary presentation disappeared before Return")
-    float_geometry = presented_content_geometry(frame)
     return_x, return_y = component_global_center(
         access, access["control"], float_geometry, "Return conversation control"
     )
@@ -836,13 +868,54 @@ def native_float_return(socket, room, record, output, size, process):
     primary = wait_for("Chat's primary window to repaint after Return", repainted_primary, process)
     access = wait_for("returned Tide editor", lambda: agent_conversation_accessibility("Tide"), process)
     attached = private_editor_observation(access, draft)
-    if attached != before:
+    if attached != before_return_editor:
         raise RuntimeError("Return changed private editor content, caret, selection or keyboard focus")
+    physically_click_editor(socket, access, presented_content_geometry(primary))
+    require_chat_keyboard_focus_after_click(socket, output)
+    physical_chord(socket, "z", ctrl=True)
+    draft = undo_base
+    wait_for("detached undo history in the returned editor",
+             lambda: private_editor_value_matches(access, draft), process)
+    attached = private_editor_observation(access, draft)
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"after-return-{size}.png")}))
+
+    # Pointer drag/Return above prove same-editor focus continuity. Separately,
+    # focus the already-published controls and let physical Enter activate the
+    # same production handoff paths; AT never invokes either action here.
+    access = wait_for("keyboard Float control", lambda: agent_conversation_accessibility("Tide"), process)
+    focus_agent_conversation_control(access, access["drag"], "Float")
+    require_ok(call(socket, {"op": "key", "key": "Enter"}))
+    keyboard_frame = wait_for(
+        "keyboard-activated Tide Float",
+        lambda: fresh_floating_presentation(
+            presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"),
+            frame,
+        ),
+        process,
+    )
+    keyboard_access = wait_for(
+        "keyboard-activated detached Tide editor",
+        lambda: agent_conversation_accessibility("Tide", detached=True), process,
+    )
+    require_chat_keyboard_focus_after_click(socket, output, detached=True)
+    keyboard_detached = private_editor_observation(keyboard_access, draft)
+    focus_agent_conversation_control(keyboard_access, keyboard_access["control"], "Return")
+    require_ok(call(socket, {"op": "key", "key": "Enter"}))
+    wait_for("keyboard-activated detached Chat withdrawal", lambda: not floating_surface_presenting(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat",
+        keyboard_frame["floating_id"]), process)
+    keyboard_return = wait_for(
+        "keyboard-activated returned Tide editor",
+        lambda: agent_conversation_accessibility("Tide"), process,
+    )
+    keyboard_attached = private_editor_observation(keyboard_return, draft)
+    if keyboard_attached != keyboard_detached:
+        raise RuntimeError("keyboard Float/Return changed private editor state")
     (output / "float-return.json").write_text(json.dumps({
         "physical_typing": True, "physical_selection": True, "physical_undo": True,
+        "undo_history_crossed_float": True, "undo_history_crossed_return": True,
         "input_method_commit": True, "pointer_drag_detach": True,
-        "pointer_return": True,
+        "pointer_return": True, "keyboard_float": True, "keyboard_return": True,
         "native_floating_id": frame["floating_id"],
         "native_surface_id": native_surface_id(frame),
         "frame_seq": frame["frame_seq"],
@@ -1932,8 +2005,10 @@ def pending_draft_revision(state):
     return pending["draft_revision"]
 
 
-def physical_send_release_revision(output, byte_offset):
-    """Use the real Send release's synchronous snapshot, not a later raced frame."""
+def physical_send_activation_revision(output, byte_offset, expected_kind):
+    """Use the real Send activation snapshot, not a later raced frame."""
+    if expected_kind not in {"pointer_released", "key_pressed"}:
+        raise RuntimeError("physical Send activation kind is invalid")
     log = output / "shell.log"
     if not log.exists():
         return None
@@ -1949,10 +2024,10 @@ def physical_send_release_revision(output, byte_offset):
             row = json.loads(line.split(marker, 1)[1])
         except json.JSONDecodeError:
             continue
-        if isinstance(row, dict) and row.get("kind") == "pointer_released":
+        if isinstance(row, dict) and row.get("kind") == expected_kind:
             releases.append(row)
     if len(releases) > 1:
-        raise RuntimeError("physical Send release observation is ambiguous")
+        raise RuntimeError("physical Send activation observation is ambiguous")
     if not releases:
         return None
     row = releases[0]
@@ -1960,7 +2035,7 @@ def physical_send_release_revision(output, byte_offset):
     if not isinstance(before, dict) or before.get("app") != "so.tilo.chat" \
             or before.get("agent_message_submission") is not None \
             or not isinstance(after, dict) or after.get("app") != "so.tilo.chat":
-        raise RuntimeError("physical Send release does not bind a new Chat submission")
+        raise RuntimeError("physical Send activation does not bind a new Chat submission")
     value = pending_draft_revision(after)
     return {"revision": value} if value is not None else None
 
@@ -2031,15 +2106,16 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
     frame = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
     if frame is None:
         raise RuntimeError("physical Send's presentation disappeared")
-    x, y = component_global_center(access, buttons[0], presented_content_geometry(frame), "Send message")
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"before-physical-send-{size}.png")}))
     log = output / "shell.log"
     if not log.is_file() or chat_input_observer_enabled(output) is not True:
         raise RuntimeError("physical Send's actual Chat input observer is unavailable")
     send_log_offset = log.stat().st_size
-    require_ok(call(socket, {"op": "click_at", "x": x, "y": y}))
-    revision = wait_for("actual Send-release private draft revision", lambda: physical_send_release_revision(
-        output, send_log_offset), process)["revision"]
+    focus_agent_conversation_control(access, buttons[0], "Send message")
+    require_ok(call(socket, {"op": "key", "key": "Enter"}))
+    revision = wait_for("actual keyboard Send private draft revision", lambda:
+                        physical_send_activation_revision(
+                            output, send_log_offset, "key_pressed"), process)["revision"]
 
     def sample():
         current = agent_conversation_accessibility("Tide")
@@ -2077,7 +2153,8 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
         raise RuntimeError("physical Send changed the empty acknowledged private draft")
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"physical-send-replied-{size}.png")}))
     provider.release_through(3)
-    evidence = {"physical_send": True, "same_managed_process": True,
+    evidence = {"physical_send": True, "keyboard_send": True,
+                "same_managed_process": True,
                 "original_invocation": original["invocation"], "request_row": original["request_row"],
                 "captured_draft_revision": revision, "exact_draft_cleared": True,
                 "reply_actor": reply["typed_actor"], "reply_parent": reply["parent"],

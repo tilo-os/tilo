@@ -24,6 +24,30 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_agent_control_keyboard_focus_never_invokes_the_accessibility_action(self):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def call(self, path, interface, *args, **kwargs):
+                self.calls.append((path, interface, args, kwargs))
+                if interface.endswith("GrabFocus"):
+                    return "(true,)"
+                if interface.endswith("GetActions"):
+                    return "([('click', '', '')],)"
+                raise AssertionError(interface)
+
+        client = Client()
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client):
+            self.assertEqual(PROOF.focus_agent_conversation_control(
+                {"bus": "bus"}, "/control", "Float"
+            ), {"keyboard_focus": "Float", "accepted": True})
+        self.assertEqual(
+            [call[1] for call in client.calls],
+            ["org.a11y.atspi.Component.GrabFocus", "org.a11y.atspi.Action.GetActions"],
+        )
+
     def test_physical_selection_observes_delivery_without_replaying_keys(self):
         before = {"selection": None, "caret": 9, "draft_matches": True,
                   "accessibility_focused": True}
@@ -383,19 +407,42 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 stream.write('[app so.tilo.chat stderr] tilo-physical-frame ' + json.dumps({
                     "state": {"app": "so.tilo.chat", "agent_message_submission": None}}) + "\n")
                 stream.write('[app so.tilo.store stderr] tilo-physical-input ' + json.dumps(release) + "\n")
-            self.assertEqual(PROOF.physical_send_release_revision(output, offset), {"revision": 7})
+            self.assertEqual(PROOF.physical_send_activation_revision(
+                output, offset, "pointer_released"), {"revision": 7})
             with log.open("a") as stream:
                 stream.write('[app so.tilo.chat stderr] tilo-physical-input ' + json.dumps(release) + "\n")
             with self.assertRaises(RuntimeError):
-                PROOF.physical_send_release_revision(output, offset)
+                PROOF.physical_send_activation_revision(output, offset, "pointer_released")
+
+    def test_keyboard_send_activation_retains_exact_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            log = output / "shell.log"
+            offset = 0
+            activation = {
+                "kind": "key_pressed",
+                "before": {"app": "so.tilo.chat", "agent_message_submission": None},
+                "after": {"app": "so.tilo.chat", "agent_message_submission": {
+                    "draft_revision": 11, "current_revision": 11, "draft_empty": False,
+                }},
+            }
+            log.write_text(
+                "[app so.tilo.chat stderr] tilo-physical-input "
+                + json.dumps(activation) + "\n"
+            )
+            self.assertEqual(PROOF.physical_send_activation_revision(
+                output, offset, "key_pressed"), {"revision": 11})
+            with self.assertRaises(RuntimeError):
+                PROOF.physical_send_activation_revision(output, offset, "ime_commit")
 
     def test_supplement_uses_actual_seat_send_after_unchanged_journeys(self):
         source = inspect.getsource(PROOF.physical_send_after_stop)
-        for forbidden in ("SetText", "AddSelection", "DoAction", "GrabFocus", "invoke(socket, message"):
+        for forbidden in ("SetText", "AddSelection", "DoAction", "invoke(socket, message"):
             self.assertNotIn(forbidden, source)
-        for required in ('"op": "type"', '"op": "click_at"', "component_global_center",
+        for required in ('"op": "type"', '"op": "key"', "focus_agent_conversation_control",
                          "canonical_physical_message", "owned_agent_identity", "release_exact(4)",
-                         '"waiting_for_reply"', '"committed"', "overflow_count() != 0"):
+                         '"waiting_for_reply"', '"committed"', "overflow_count() != 0",
+                         'physical_send_activation_revision(\n                            output, send_log_offset, "key_pressed")'):
             self.assertIn(required, source)
         bootstrap = inspect.getsource(PROOF.bootstrap)
         self.assertLess(bootstrap.index("managed_task_and_message_lifecycle("),
@@ -730,7 +777,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
     def test_float_return_uses_only_physical_editor_and_surface_input(self):
         source = inspect.getsource(PROOF.native_float_return)
-        for forbidden in ("SetText", "AddSelection", "DoAction", "GrabFocus"):
+        for forbidden in ("SetText", "AddSelection", "DoAction"):
             self.assertNotIn(forbidden, source)
         for required in (
             '"op": "type"',
@@ -738,8 +785,16 @@ class PresentedEditorTargetTests(unittest.TestCase):
             '"op": "drag"',
             '"op": "click_at"',
             "physical_chord",
+            "focus_agent_conversation_control",
+            "undo_history_crossed_float",
+            "undo_history_crossed_return",
         ):
             self.assertIn(required, source)
+        self.assertLess(source.index("pointer_drag_detach"), source.index("keyboard_float"))
+        self.assertLess(source.index("pre-detach undo history in the detached editor"),
+                        source.index("detached edit retained for attached undo"))
+        self.assertLess(source.index("detached edit retained for attached undo"),
+                        source.index("detached undo history in the returned editor"))
 
     def test_presented_content_geometry_accepts_only_authoritative_finite_fields(self):
         expected = {
