@@ -4,7 +4,7 @@ use super::{Arc, NativeMessagingIdentity, SendError};
 use crate::portal::{PortalCaller, PromptOutcome, PromptQueueHandle};
 use launcher::owned_service::ServiceCancellation;
 
-const SIGNAL_HOSTS: &[&str] = &[
+const HOSTS: &[&str] = &[
     "chat.signal.org",
     "cdn.signal.org",
     "cdn2.signal.org",
@@ -13,13 +13,6 @@ const SIGNAL_HOSTS: &[&str] = &[
     "cdsi.signal.org",
     "svr2.signal.org",
 ];
-fn hosts(original: &NativeMessagingIdentity) -> Result<&'static [&'static str], SendError> {
-    match original.owner.service {
-        tilo_messaging_protocol::Service::Signal => Ok(SIGNAL_HOSTS),
-        tilo_messaging_protocol::Service::Whatsapp => Ok(&["web.whatsapp.com"]),
-        _ => Err(SendError::InvalidRequest),
-    }
-}
 #[derive(Clone)]
 pub(super) struct Policy {
     pub cancellation: ServiceCancellation,
@@ -40,11 +33,7 @@ impl Consent {
     pub(super) fn hosts(&self) -> std::io::Result<Vec<String>> {
         self.check()
             .map_err(|_| std::io::ErrorKind::PermissionDenied)?;
-        Ok(hosts(&self.original)
-            .map_err(|_| std::io::ErrorKind::PermissionDenied)?
-            .iter()
-            .map(|host| (*host).into())
-            .collect())
+        Ok(HOSTS.iter().map(|host| (*host).into()).collect())
     }
 }
 struct Pending {
@@ -65,7 +54,6 @@ pub(super) fn request(
         cancellation: policy.cancellation.clone(),
     });
     consent.check()?;
-    let hosts = hosts(&consent.original)?;
     let queue = policy.prompts.clone().ok_or(SendError::Unavailable)?;
     let pending = Pending {
         queue,
@@ -77,7 +65,7 @@ pub(super) fn request(
             "so.tilo.messages",
         ),
         crate::shell::state::Capability::Network {
-            hosts: Some(hosts.iter().map(|host| (*host).into()).collect()),
+            hosts: Some(HOSTS.iter().map(|host| (*host).into()).collect()),
             scope: crate::shell::state::GRANT_ONCE,
         },
         pending.key.clone(),
