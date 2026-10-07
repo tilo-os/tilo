@@ -69,6 +69,101 @@ def process_program(pid, proc_root=pathlib.Path("/proc")):
     return pathlib.Path(os.fsdecode(argv0)).name
 
 
+def process_rows(proc_root=pathlib.Path("/proc")):
+    """Read only ancestry, process group and kernel start time."""
+    rows = {}
+    try:
+        entries = proc_root.iterdir()
+    except OSError:
+        return rows
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            rows[int(entry.name)] = {
+                "parent": int(fields[1]),
+                "group": int(fields[2]),
+                "started": fields[19],
+            }
+        except (OSError, IndexError, ValueError):
+            continue
+    return rows
+
+
+def process_descendants(rows, root):
+    children = {}
+    for process, row in rows.items():
+        children.setdefault(row["parent"], []).append(process)
+    owned = set()
+    pending = list(children.get(root, ()))
+    while pending:
+        process = pending.pop()
+        if process in owned:
+            continue
+        owned.add(process)
+        pending.extend(children.get(process, ()))
+    return owned
+
+
+def process_executable(pid, proc_root=pathlib.Path("/proc")):
+    try:
+        return (proc_root / str(pid) / "exe").resolve(strict=True)
+    except OSError:
+        return None
+
+
+def owned_fcitx_identity(shell_pid, proc_root=pathlib.Path("/proc")):
+    """Require the compositor-owned composer and its exact isolated group."""
+    rows = process_rows(proc_root)
+    matches = []
+    for pid in process_descendants(rows, shell_pid):
+        row = rows[pid]
+        if process_executable(pid, proc_root) != pathlib.Path("/usr/bin/fcitx5"):
+            continue
+        if row["group"] != pid:
+            raise RuntimeError("the compositor-owned input method has no isolated process group")
+        matches.append({"pid": pid, "group": row["group"], "started": row["started"]})
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def same_fcitx_process(identity, proc_root=pathlib.Path("/proc")):
+    if not isinstance(identity, dict):
+        return False
+    pid = identity.get("pid")
+    if type(pid) is not int or pid <= 0:
+        return False
+    row = process_rows(proc_root).get(pid)
+    return bool(
+        row is not None
+        and row["group"] == identity.get("group") == pid
+        and row["started"] == identity.get("started")
+        and process_executable(pid, proc_root) == pathlib.Path("/usr/bin/fcitx5")
+    )
+
+
+def cleanup_owned_fcitx(identity, proc_root=pathlib.Path("/proc")):
+    """Reap only the exact composer group recorded under this Shell."""
+    if not same_fcitx_process(identity, proc_root):
+        return
+    try:
+        os.killpg(identity["group"], signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if not same_fcitx_process(identity, proc_root):
+            return
+        time.sleep(0.05)
+    if same_fcitx_process(identity, proc_root):
+        try:
+            os.killpg(identity["group"], signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def foreign_frames(response):
     """Require the existing control operation's complete frame observation."""
     frames = response.get("answer", {}).get("frames")
@@ -936,6 +1031,211 @@ def native_float_return(socket, room, record, output, size, process):
     }
 
 
+def drag_agent_conversation(socket, access, primary, size):
+    """Drag the existing shared handle through the compositor's real seat."""
+    geometry = presented_content_geometry(primary)
+    drag_x, drag_y = component_global_center(access, access["drag"], geometry, "drag handle")
+    desktop_width, desktop_height = (int(value) for value in size.split("x", 1))
+    placement = geometry["placement"]
+    drag_to_x = (max(8.0, placement["x"] - 96.0) if placement["x"] >= 140
+                 else min(desktop_width - 8.0, placement["x"] + placement["w"] + 96.0))
+    drag_to_y = min(desktop_height - 8.0, max(8.0, drag_y + 48.0))
+    require_ok(call(socket, {
+        "op": "drag", "x_from": drag_x, "y_from": drag_y,
+        "x_to": drag_to_x, "y_to": drag_to_y, "steps": 16,
+    }))
+
+
+def native_ime_float_return(socket, output, size, process, fcitx_identity):
+    """Hold a genuine Rime preedit across Float and Return, then commit it."""
+    committed_before = "u"
+    committed_after = "u你好"
+    access = wait_for(
+        "attached Tide editor for Rime handoff",
+        lambda: agent_conversation_accessibility("Tide"), process,
+    )
+    chat_process = access["process"]
+    primary = wait_for(
+        "Chat's presented primary frame for Rime handoff",
+        lambda: presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"),
+        process,
+    )
+    physically_click_editor(socket, access, presented_content_geometry(primary))
+    require_chat_keyboard_focus_after_click(socket, output)
+    wait_for("Chat's active production text input", lambda: chat_text_input_active(socket), process)
+    if not same_fcitx_process(fcitx_identity):
+        raise RuntimeError("the compositor-owned Rime process changed before composition")
+
+    # The compositor-generated Fcitx profile uses bare Shift as Rime's Latin
+    # toggle. Commit one edit first, then reactivate Rime so its undo entry
+    # predates both presentation handoffs.
+    require_ok(call(socket, {"op": "key", "key": "Shift"}))
+    require_ok(call(socket, {"op": "type", "text": committed_before}))
+    wait_for(
+        "the pre-detach committed edit",
+        lambda: private_editor_value_matches(access, committed_before), process,
+    )
+    require_ok(call(socket, {"op": "key", "key": "Shift"}))
+    before_preedit = presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+    )
+    if before_preedit is None:
+        raise RuntimeError("Chat disappeared before genuine Rime preedit")
+    require_ok(call(socket, {"op": "type", "text": "nihao"}))
+
+    def attached_preedit_frame():
+        frame = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+        if frame is None or frame["frame_seq"] <= before_preedit["frame_seq"]:
+            return None
+        if not private_editor_value_matches(access, committed_before):
+            raise RuntimeError("Rime committed before the Float handoff")
+        return frame if chat_text_input_active(socket) else None
+
+    preedit_primary = wait_for(
+        "genuine Rime preedit in the attached Chat frame", attached_preedit_frame, process
+    )
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-preedit-attached-{size}.png"
+    )}))
+
+    access = wait_for(
+        "current attached Tide editor and drag handle during Rime preedit",
+        lambda: agent_conversation_accessibility("Tide"), process,
+    )
+    if not private_editor_value_matches(access, committed_before):
+        raise RuntimeError("resolving the Float handle committed the Rime preedit")
+    drag_agent_conversation(socket, access, preedit_primary, size)
+    frame = wait_for(
+        "Rime composition's detached native pixels",
+        lambda: presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"),
+        process,
+    )
+    detached_access = wait_for(
+        "detached Tide editor during Rime preedit",
+        lambda: agent_conversation_accessibility("Tide", detached=True), process,
+    )
+    if detached_access["process"] != chat_process or frame["keyboard_focused"] is not True:
+        raise RuntimeError("Float replaced Chat or failed to transfer its keyboard seat")
+    if not private_editor_value_matches(detached_access, committed_before) \
+            or not chat_text_input_active(socket):
+        raise RuntimeError("Float committed or deactivated the live Rime preedit")
+    if not same_fcitx_process(fcitx_identity):
+        raise RuntimeError("Float replaced the compositor-owned Rime process")
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-preedit-detached-{size}.png"
+    )}))
+
+    float_geometry = presented_content_geometry(frame)
+    before_return = presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+    )
+    if before_return is None:
+        raise RuntimeError("Chat's primary presentation disappeared before Rime Return")
+    return_x, return_y = component_global_center(
+        detached_access, detached_access["control"], float_geometry,
+        "Return conversation control",
+    )
+    require_ok(call(socket, {"op": "click_at", "x": return_x, "y": return_y}))
+    wait_for(
+        "Rime Float withdrawal",
+        lambda: not floating_surface_presenting(
+            call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]
+        ),
+        process,
+    )
+
+    def returned_preedit_frame():
+        current = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+        return (current if current is not None
+                and current["frame_seq"] > before_return["frame_seq"] else None)
+
+    returned = wait_for("Rime preedit's returned primary frame", returned_preedit_frame, process)
+    returned_access = wait_for(
+        "returned Tide editor during Rime preedit",
+        lambda: agent_conversation_accessibility("Tide"), process,
+    )
+    if returned_access["process"] != chat_process or returned["keyboard_focused"] is not True:
+        raise RuntimeError("Return replaced Chat or failed to transfer its keyboard seat")
+    if not private_editor_value_matches(returned_access, committed_before) \
+            or not chat_text_input_active(socket):
+        raise RuntimeError("Return committed or deactivated the live Rime preedit")
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-preedit-returned-{size}.png"
+    )}))
+
+    require_ok(call(socket, {"op": "key", "key": "Space"}))
+    wait_for(
+        "Rime's exact post-Return commit",
+        lambda: private_editor_value_matches(returned_access, committed_after), process,
+    )
+    physical_chord(socket, "z", ctrl=True)
+    wait_for(
+        "Rime commit undo after Return",
+        lambda: private_editor_value_matches(returned_access, committed_before), process,
+    )
+    physical_chord(socket, "z", ctrl=True)
+    wait_for(
+        "pre-detach edit undo after both handoffs",
+        lambda: private_editor_value_matches(returned_access, ""), process,
+    )
+
+    # The same published controls must also support physical keyboard
+    # activation. This is a second handoff after composition has settled.
+    focus_agent_conversation_control(returned_access, returned_access["drag"], "Float")
+    require_ok(call(socket, {"op": "key", "key": "Enter"}))
+    keyboard_frame = wait_for(
+        "keyboard-activated Rime proof Float",
+        lambda: fresh_floating_presentation(
+            presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"),
+            frame,
+        ),
+        process,
+    )
+    keyboard_access = wait_for(
+        "keyboard-activated Rime proof editor",
+        lambda: agent_conversation_accessibility("Tide", detached=True), process,
+    )
+    if not private_editor_value_matches(keyboard_access, ""):
+        raise RuntimeError("keyboard Float changed the editor after Rime undo")
+    focus_agent_conversation_control(keyboard_access, keyboard_access["control"], "Return")
+    require_ok(call(socket, {"op": "key", "key": "Enter"}))
+    wait_for(
+        "keyboard Rime proof Float withdrawal",
+        lambda: not floating_surface_presenting(
+            call(socket, {"op": "foreign_frames"}), "so.tilo.chat",
+            keyboard_frame["floating_id"],
+        ),
+        process,
+    )
+    final_access = wait_for(
+        "keyboard-returned Rime proof editor",
+        lambda: agent_conversation_accessibility("Tide"), process,
+    )
+    if not private_editor_value_matches(final_access, ""):
+        raise RuntimeError("keyboard Return changed the editor after Rime undo")
+    (output / "native-ime-float-return.json").write_text(json.dumps({
+        "owned_fcitx_processes": 1,
+        "same_fcitx_process": same_fcitx_process(fcitx_identity),
+        "attached_preedit_frame": True,
+        "detached_preedit_frame": True,
+        "returned_preedit_frame": True,
+        "committed_value_unchanged_before_float": True,
+        "committed_value_unchanged_after_float": True,
+        "committed_value_unchanged_after_return": True,
+        "exact_rime_commit": True,
+        "ime_commit_undo": True,
+        "pre_detach_undo": True,
+        "pointer_float": True,
+        "pointer_return": True,
+        "keyboard_float": True,
+        "keyboard_return": True,
+        "returned_primary_frame_seq": returned["frame_seq"],
+        "private_content_recorded": False,
+        "test_owned_preedit_rendered": True,
+    }, indent=2) + "\n")
+    return True
+
+
 def marker_operation_from_request(request, agent):
     """Select one operation from the Agent's trusted live-catalogue prefix."""
     if not isinstance(agent, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", agent):
@@ -1480,6 +1780,45 @@ def chrome_state(socket):
     if not isinstance(chrome, dict):
         raise RuntimeError("production chrome state observation is absent")
     return chrome
+
+
+def configure_rime_input(profile):
+    """Merge the real Rime layout into this disposable session profile."""
+    path = profile / "config/tilo/settings.json"
+    if path.exists():
+        settings = json.loads(path.read_text())
+        if not isinstance(settings, dict):
+            raise RuntimeError("scratch settings are malformed")
+    else:
+        settings = {"version": 1}
+    current = settings.get("input")
+    if current is None:
+        current = {}
+    if not isinstance(current, dict):
+        raise RuntimeError("scratch input settings are malformed")
+    settings["input"] = {
+        **current,
+        "keyboard_layout": "ime/rime",
+        "keyboard_layouts": ["us", "ime/rime"],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2) + "\n")
+
+
+def chat_text_input_active(socket):
+    """Require the seat's keyboard and active text input on actual Chat."""
+    seat = chrome_state(socket).get("seat_focus")
+    if not isinstance(seat, dict) or type(seat.get("text_input_active")) is not bool:
+        raise RuntimeError("the compositor seat text-input state is unobservable")
+    keyboard = seat.get("keyboard")
+    text_input = seat.get("text_input")
+    if not isinstance(keyboard, dict) or not isinstance(text_input, dict):
+        return False
+    return bool(
+        seat["text_input_active"]
+        and keyboard.get("app_id") == "so.tilo.chat"
+        and text_input.get("app_id") == "so.tilo.chat"
+    )
 
 
 def require_action(socket, action_id, query=""):
@@ -2625,7 +2964,8 @@ def native_delivery_diagnostic(output):
             "log_truncated": log_truncated}
 
 
-def finalize_fixture(profile, output, processes, logs, provider, runtime_owner):
+def finalize_fixture(
+        profile, output, processes, logs, provider, runtime_owner, owned_fcitx=None):
     """Save the closed classifier, then always tear down test-owned state."""
     try:
         try:
@@ -2636,6 +2976,11 @@ def finalize_fixture(profile, output, processes, logs, provider, runtime_owner):
         except OSError:
             raise RuntimeError("native delivery diagnostic unavailable") from None
     finally:
+        if owned_fcitx is None:
+            shells = [process for process in processes
+                      if process.poll() is None and process_program(process.pid) == "shell"]
+            if len(shells) == 1:
+                owned_fcitx = owned_fcitx_identity(shells[0].pid)
         for process in reversed(processes):
             # Each test-owned process gets its own session. Confined launcher
             # descendants inherit this group; terminate the whole owned group,
@@ -2649,6 +2994,7 @@ def finalize_fixture(profile, output, processes, logs, provider, runtime_owner):
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=8)
+        cleanup_owned_fcitx(owned_fcitx)
         for log in logs:
             log.close()
         if provider is not None:
@@ -3055,7 +3401,8 @@ def enroll_native(socket, invitation, shell, binaries, env):
 
 
 def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
-              launch_path="applications", task_only=False, marker_only=False):
+              launch_path="applications", task_only=False, marker_only=False,
+              ime_only=False):
     if launch_path not in ("applications", "store") or (launch_path == "store" and not native):
         raise RuntimeError("Store launch proof requires the native signed workspace")
     env, profile = scratch_session_env()
@@ -3068,6 +3415,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
     physical_send_evidence = None
     revocation_evidence = None
     marker_evidence = None
+    owned_fcitx = None
     try:
         # Keep Unix socket paths short enough for the production private IME
         # displays. This is still an exclusively owned mode-0700 directory,
@@ -3086,6 +3434,8 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
         env.pop("TILO_APPS_SYSTEM_DIR", None)
         enable_isolated_accessibility(output, env, processes, logs)
         start_isolated_secret_service(output, env, processes, logs)
+        if ime_only:
+            configure_rime_input(profile)
         require_locked_cargo_metadata(env, profile)
         install_packages(binaries, profile, env, include_store=launch_path == "store")
         installed = subprocess.check_output([str(binaries / "tilo-install"), "list"], env=env, text=True)
@@ -3349,6 +3699,28 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                 and presented["frame_seq"] > before_open["frame_seq"] else None), shell)
             require_ok(call(socket, {"op": "snapshot", "path": str(
                 output / f"agent-conversation-open-{size}.png")}))
+            if ime_only:
+                owned_fcitx = wait_for(
+                    "one compositor-owned Fcitx/Rime process",
+                    lambda: owned_fcitx_identity(shell.pid), shell,
+                )
+                proven = native_ime_float_return(
+                    socket, output, size, shell, owned_fcitx
+                )
+                (output / "bootstrap.json").write_text(json.dumps({
+                    "stage": "native-ime",
+                    "native_join_acknowledged": True,
+                    "chat_surface_id": frame["surface_id"],
+                    "viewport": size,
+                    "launch_path": launch_path,
+                    "chat_frame_seq": frame["frame_seq"],
+                    "agent_invite": invited,
+                    "native_ime_handoff_proven": proven,
+                    "full_lifecycle_proven": False,
+                }, indent=2) + "\n")
+                if proven:
+                    print("PASS genuine Rime preedit survived Chat Float and Return")
+                return proven
             if marker_only:
                 marker_evidence = managed_agent_marker_stage(
                     socket, enrollment["room"], provider, output, shell, size
@@ -3469,7 +3841,9 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             print("NOT PROVEN: the managed Agent start capability has no semantic action door")
         return lifecycle_proven
     finally:
-        finalize_fixture(profile, output, processes, logs, provider, runtime_owner)
+        finalize_fixture(
+            profile, output, processes, logs, provider, runtime_owner, owned_fcitx
+        )
 
 
 def evidence_directory(stage, size):
@@ -3482,7 +3856,12 @@ def evidence_directory(stage, size):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binaries", type=pathlib.Path, required=True)
-    parser.add_argument("--stage", choices=["bootstrap", "native-bootstrap", "native-marker", "managed-task", "lifecycle"], default="lifecycle")
+    parser.add_argument(
+        "--stage",
+        choices=["bootstrap", "native-bootstrap", "native-marker", "managed-task",
+                 "native-ime", "lifecycle"],
+        default="lifecycle",
+    )
     parser.add_argument("--size", choices=["1600x900", "800x600"], default="1600x900")
     parser.add_argument("--launch-path", choices=["applications", "store"], default="applications")
     args = parser.parse_args()
@@ -3503,8 +3882,9 @@ def main():
         launch_path=args.launch_path,
         task_only=args.stage == "managed-task",
         marker_only=args.stage == "native-marker",
+        ime_only=args.stage == "native-ime",
     )
-    if args.stage in {"native-marker", "managed-task", "lifecycle"} and not proven:
+    if args.stage in {"native-marker", "managed-task", "native-ime", "lifecycle"} and not proven:
         raise RuntimeError(
             "the requested native managed-Agent proof stage did not complete"
         )

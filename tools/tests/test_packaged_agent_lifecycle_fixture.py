@@ -798,6 +798,106 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertGreaterEqual(source.count("before = wait_for_private_selection("), 2)
         self.assertIn("before_return_editor = wait_for_private_selection(", source)
 
+    def test_native_ime_stage_uses_real_rime_and_preserves_each_handoff_boundary(self):
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        for forbidden in ("Ime::Preedit", "TrustedInputMethod", "SetText", "AddSelection"):
+            self.assertNotIn(forbidden, source)
+        for required in (
+                '"text": "nihao"', '"key": "Space"', 'committed_after = "u你好"',
+                "same_fcitx_process", "chat_text_input_active",
+                "ime-preedit-attached-", "ime-preedit-detached-",
+                "ime-preedit-returned-", "drag_agent_conversation",
+                "fresh_floating_presentation", "pre-detach edit undo after both handoffs",
+                'focus_agent_conversation_control(returned_access, returned_access["drag"]',
+                'focus_agent_conversation_control(keyboard_access, keyboard_access["control"]'):
+            self.assertIn(required, source)
+        self.assertLess(source.index("committed_value_unchanged_before_float"),
+                        source.index("committed_value_unchanged_after_float"))
+        self.assertLess(source.index("committed_value_unchanged_after_float"),
+                        source.index("committed_value_unchanged_after_return"))
+
+    def test_rime_settings_merge_preserves_existing_scratch_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            path = profile / "config/tilo/settings.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({
+                "version": 1,
+                "appearance": {"theme": "high-contrast"},
+                "input": {"repeat_delay": 270},
+            }))
+            PROOF.configure_rime_input(profile)
+            settings = json.loads(path.read_text())
+        self.assertEqual(settings["appearance"], {"theme": "high-contrast"})
+        self.assertEqual(settings["input"], {
+            "repeat_delay": 270,
+            "keyboard_layout": "ime/rime",
+            "keyboard_layouts": ["us", "ime/rime"],
+        })
+
+    def test_chat_text_input_requires_exact_keyboard_and_active_text_input(self):
+        focused = {"seat_focus": {
+            "keyboard": {"app_id": "so.tilo.chat"},
+            "text_input": {"app_id": "so.tilo.chat"},
+            "text_input_active": True,
+        }}
+        with patch.object(PROOF, "chrome_state", return_value=focused):
+            self.assertTrue(PROOF.chat_text_input_active("socket"))
+        for changed in (
+                {"text_input_active": False},
+                {"keyboard": {"app_id": "so.tilo.store"}},
+                {"text_input": {"app_id": "so.tilo.store"}}):
+            state = {"seat_focus": {**focused["seat_focus"], **changed}}
+            with self.subTest(changed=changed), \
+                    patch.object(PROOF, "chrome_state", return_value=state):
+                self.assertFalse(PROOF.chat_text_input_active("socket"))
+
+    def test_owned_fcitx_observer_and_cleanup_are_exact(self):
+        def process(root, pid, parent, group, started, program, executable):
+            directory = root / str(pid)
+            directory.mkdir()
+            fields = ["S", str(parent), str(group), *("0" for _ in range(16)), str(started)]
+            (directory / "stat").write_text(f"{pid} ({program}) " + " ".join(fields))
+            (directory / "cmdline").write_bytes(f"{executable}\0".encode())
+            (directory / "exe").symlink_to(executable)
+
+        with tempfile.TemporaryDirectory() as directory:
+            proc = pathlib.Path(directory)
+            process(proc, 100, 1, 100, 10, "shell", "/usr/bin/shell")
+            process(proc, 200, 100, 200, 20, "fcitx5", "/usr/bin/fcitx5")
+            process(proc, 201, 100, 201, 21, "fcitx5", "/usr/bin/not-fcitx")
+            process(proc, 202, 999, 202, 22, "fcitx5", "/usr/bin/fcitx5")
+            executables = {
+                200: pathlib.Path("/usr/bin/fcitx5"),
+                201: pathlib.Path("/usr/bin/not-fcitx"),
+                202: pathlib.Path("/usr/bin/fcitx5"),
+            }
+            with patch.object(
+                    PROOF, "process_executable",
+                    side_effect=lambda pid, _root=proc: executables.get(pid)):
+                identity = PROOF.owned_fcitx_identity(100, proc)
+                self.assertEqual(identity, {"pid": 200, "group": 200, "started": "20"})
+                self.assertTrue(PROOF.same_fcitx_process(identity, proc))
+                self.assertFalse(PROOF.same_fcitx_process(
+                    {**identity, "started": "foreign"}, proc
+                ))
+
+        with patch.object(PROOF, "same_fcitx_process", side_effect=[True, False]), \
+                patch.object(PROOF.os, "killpg") as killpg:
+            PROOF.cleanup_owned_fcitx(identity)
+        killpg.assert_called_once_with(200, PROOF.signal.SIGTERM)
+
+    def test_native_ime_stage_is_explicit_and_configured_before_shell_launch(self):
+        bootstrap = inspect.getsource(PROOF.bootstrap)
+        self.assertLess(bootstrap.index("configure_rime_input(profile)"),
+                        bootstrap.index("subprocess.Popen(shell_args"))
+        self.assertIn('"stage": "native-ime"', bootstrap)
+        self.assertIn("owned_fcitx_identity(shell.pid)", bootstrap)
+        self.assertIn("native_ime_float_return(", bootstrap)
+        main = inspect.getsource(PROOF.main)
+        self.assertIn('"native-ime"', main)
+        self.assertIn('ime_only=args.stage == "native-ime"', main)
+
     def test_presented_content_geometry_accepts_only_authoritative_finite_fields(self):
         expected = {
             "rect": {"x": 700.0, "y": 100.0, "w": 600.0, "h": 500.0},
