@@ -7,6 +7,9 @@ use cosmic_text::{FontSystem, fontdb};
 use tilo_font_catalog::MANIFEST;
 use tilo_font_catalog::{Asset, Face, Manifest, Scope};
 
+/// The verified catalog materialized for this source build.
+pub use tilo_font_catalog::checkout_root;
+
 #[cfg(all(target_os = "android", feature = "native"))]
 mod android;
 mod faces;
@@ -52,7 +55,7 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
 /// Where a native process looks for the product catalog, in order: a
 /// `fonts/` directory next to the executable (an installed app bundle), the
 /// catalog the Tilo image installs (absent on other systems), then this
-/// source tree's `assets/fonts`, so a binary run from a checkout sets text in
+/// build's verified artifact catalog, so a binary run from a checkout sets text in
 /// the faces the product ships.
 #[cfg_attr(
     test,
@@ -65,7 +68,7 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
         .into_iter()
         .collect();
     roots.push(PathBuf::from("/usr/share/fonts/tilo"));
-    roots.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"));
+    roots.push(checkout_root());
     roots
 }
 
@@ -206,17 +209,14 @@ pub fn shipped_families() -> Vec<String> {
 
 #[cfg(any(test, all(feature = "native", feature = "test-support")))]
 pub(crate) fn fixture_catalog() -> FontCatalog {
-    FontCatalog::controlled_fixture(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
-        "en-US",
-    )
+    FontCatalog::controlled_fixture(checkout_root(), "en-US")
 }
 
 #[cfg(test)]
 pub(crate) fn fixture_font_system() -> FontSystem {
     fixture_catalog()
         .load()
-        .expect("checked-in canonical font fixture")
+        .expect("prepared canonical font fixture")
 }
 
 /// The product catalog at `root` with no host fonts behind it: what a test
@@ -229,11 +229,11 @@ pub(crate) fn catalog_font_system(root: &Path) -> Result<FontSystem, FontCatalog
 #[cfg(any(test, all(feature = "native", feature = "test-support")))]
 #[allow(
     clippy::expect_used,
-    reason = "test support only: the checked-in fixture fonts always load, and a test cannot run without them"
+    reason = "test support only: the prepared fixture fonts always load, and a test cannot run without them"
 )]
 pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
     crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
-        .expect("checked-in canonical renderer fixture")
+        .expect("prepared canonical renderer fixture")
 }
 
 impl FontCatalog {

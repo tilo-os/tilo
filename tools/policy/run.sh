@@ -16,6 +16,8 @@ run() {
   fi
 }
 
+run 'Source blobs are text and LF or explicitly pinned assets' \
+  python3 tools/policy/check_source_content.py
 run 'Workspace membership' ./scripts/check-workspace-complete.sh
 run 'Repository layout' python3 tools/policy/check_repository_layout.py
 run 'Integration tests are compiled by a test target' \
@@ -33,11 +35,12 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-app-cli .forgejo/workflows/app-sdk.yml
 run 'Developer docs pages and links' python3 tools/docs/developer_docs.py check
 run 'Repository policy unit tests' \
-  python3 -m unittest discover -s tools/tests -p 'test_*.py'
+  python3 -m unittest discover -s tools/tests -p 'test_*.py' --durations 20
 run 'Compiler-cache helper tests' bash tools/tests/ci_sccache.sh
 run 'Cargo shim tests' bash tools/tests/cargo_shim.sh
 run 'CI receipt tests' bash tools/tests/test_ci_receipt.sh
 run 'Builder candidate workflow tests' python3 os/tests/test_builder_candidate_workflow.py
+run 'Signed development board dispatch and policy tests' python3 os/tests/test_signed_development_board.py
 run 'Every test suite outside Cargo is gated or explained' python3 tools/ci/suites.py check
 run 'Codex hook manifest' bash -c 'python3 -m json.tool .codex/hooks.json >/dev/null'
 run 'Codex CI watcher tests' python3 -m unittest discover -s .codex/hooks -p 'test_*.py'

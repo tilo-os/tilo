@@ -326,3 +326,145 @@ async fn legacy_window_write_respects_current_owner_capability_restrictions() {
     drop(rooms);
     crate::daemon::Relay::shutdown(relay).await;
 }
+
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay remains live through the policy assertions and its consuming shutdown"
+)]
+async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Private app authoring").await.unwrap();
+    let request = GrantAppAuthorshipRequest {
+        request_id: [71; 32],
+        app: "so.tilo.chat".into(),
+    };
+    let result = rooms
+        .grant_app_authorship(&created.room, &cert, request.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        rooms
+            .grant_app_authorship(&created.room, &cert, request.clone())
+            .await
+            .unwrap(),
+        result,
+    );
+    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    assert_canonical_chat_preparation(rooms, &created.room, &cert, &catalogue).await;
+    let state = rooms.room(&created.room).await.unwrap();
+    {
+        let room = state.lock().await;
+        let (_, caps, _) = room
+            .peer()
+            .permissions(cert.device_public_key, SystemTime::now())
+            .unwrap();
+        let grant = caps
+            .iter()
+            .find(|cap| cap.id == "app-author:so.tilo.chat")
+            .unwrap();
+        assert_eq!(
+            grant.subject,
+            collab_types::caps::Subject::app("so.tilo.chat")
+        );
+        assert_eq!(grant.verb, collab_types::caps::Verb::Write);
+        assert_eq!(grant.scope, collab_types::caps::Scope::Workspace);
+    }
+    let mut conflict = request.clone();
+    conflict.app = "so.tilo.ebook".into();
+    assert!(
+        rooms
+            .grant_app_authorship(&created.room, &cert, conflict)
+            .await
+            .is_err()
+    );
+    let other_root = SigningKey::from_bytes(&[73; 32]);
+    let other_key = SigningKey::from_bytes(&[74; 32]);
+    let mut stranger = cert.clone();
+    stranger.user_public_key = other_root.verifying_key().to_bytes();
+    stranger.device_public_key = other_key.verifying_key().to_bytes();
+    sign_device_cert(&mut stranger, &other_root).unwrap();
+    assert!(
+        rooms
+            .grant_app_authorship(&created.room, &stranger, request.clone())
+            .await
+            .is_err()
+    );
+    let mut changed_certificate = cert.clone();
+    changed_certificate.device_label = "different signed certificate".into();
+    sign_device_cert(&mut changed_certificate, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    // Exact retries must not accept a different current certificate simply
+    // because its key and request identifier were previously successful.
+    assert!(
+        rooms
+            .grant_app_authorship(&created.room, &changed_certificate, request)
+            .await
+            .is_err()
+    );
+    assert!(
+        rooms
+            .prepare_application(
+                &created.room,
+                &changed_certificate,
+                &catalogue,
+                "so.tilo.chat"
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        rooms
+            .prepare_application(&created.room, &stranger, &catalogue, "so.tilo.chat")
+            .await
+            .is_err()
+    );
+    relay.shutdown().await;
+}
+
+#[cfg(feature = "agents")]
+async fn assert_canonical_chat_preparation(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    catalogue: &tilo_agent_participant::AppCatalogue,
+) {
+    assert!(
+        rooms
+            .prepare_application(room, cert, catalogue, "so.tilo.chat")
+            .await
+            .unwrap()
+    );
+    let prepared = {
+        let current = rooms.room(room).await.unwrap();
+        current
+            .lock()
+            .await
+            .peer()
+            .document("so.tilo.chat", "")
+            .expect("canonical Chat record exists")
+    };
+    assert!(!prepared.is_empty());
+    assert!(
+        !rooms
+            .prepare_application(room, cert, catalogue, "so.tilo.chat")
+            .await
+            .unwrap()
+    );
+    {
+        let current = rooms.room(room).await.unwrap();
+        assert_eq!(
+            current
+                .lock()
+                .await
+                .peer()
+                .document("so.tilo.chat", "")
+                .unwrap(),
+            prepared,
+            "preparing again must preserve the actual original document"
+        );
+    }
+}

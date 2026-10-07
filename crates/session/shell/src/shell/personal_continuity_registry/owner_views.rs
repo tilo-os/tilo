@@ -135,7 +135,9 @@ impl OwnerViews {
         {
             return Ok(false);
         }
-        if !self.claim_tokens.contains_key(key) && self.claim_tokens.len() >= 128 {
+        if (!self.claim_tokens.contains_key(key) && self.claim_tokens.len() >= 128)
+            || (!self.generations.contains_key(key) && self.generations.len() >= 128)
+        {
             return Err("owner takeover queue is full".into());
         }
         Ok(true)
@@ -149,6 +151,8 @@ impl OwnerViews {
         {
             return;
         }
+        // Reserve the acknowledgement slot before another offered view can take it.
+        self.generations.entry(key.clone()).or_default();
         self.claim_tokens.insert(key.clone(), token);
         self.revision = self.revision.saturating_add(1);
         self.claims.insert(key, self.revision);

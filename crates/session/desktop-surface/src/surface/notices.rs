@@ -18,7 +18,6 @@ use ui::time::Instant;
 use ui::vello::Scene;
 use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
-use ui::winit::keyboard::{Key, NamedKey};
 
 use crate::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, HistoryActivation, Notification,
@@ -513,6 +512,10 @@ impl NotificationLayer {
 
     /// Route `event`; returns whether the layer consumed it.
     pub fn route(&mut self, event: &WindowEvent, scale: f64) -> bool {
+        self.route_with_shift(event, scale, false)
+    }
+
+    fn route_with_shift(&mut self, event: &WindowEvent, scale: f64, backwards: bool) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Some(Point::new(position.x / scale, position.y / scale));
             if self.center.is_some() {
@@ -566,12 +569,7 @@ impl NotificationLayer {
                 let (Some(center), Some(layout)) = (self.center.as_mut(), layout) else {
                     return false;
                 };
-                if event.logical_key == Key::Named(NamedKey::Escape) {
-                    self.center = None;
-                    self.dirty = true;
-                    return true;
-                }
-                let outcome = center.key(host, &layout, &event.logical_key);
+                let outcome = center.key_with_shift(host, &layout, &event.logical_key, backwards);
                 self.apply(outcome)
             }
             _ => false,
@@ -658,9 +656,32 @@ impl Widget for NotificationLayer {
         self.dirty = false;
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if !*ctx.handled && self.route(event, ctx.scale_factor) {
+        if !*ctx.handled
+            && let Some(center) = self.center.as_mut()
+        {
+            self.dirty |= center.reader_event(event, ctx);
+        }
+        if !*ctx.handled
+            && self.route_with_shift(event, ctx.scale_factor, ctx.modifiers.state().shift_key())
+        {
             *ctx.handled = true;
         }
+    }
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        self.center.as_ref()?.reading_scroll()
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        let result = self
+            .center
+            .as_mut()
+            .map_or(ui::widget::PrimaryScrollResult::Unsupported, |center| {
+                center.apply_reading_scroll(action)
+            });
+        self.dirty |= matches!(result, ui::widget::PrimaryScrollResult::Changed(_));
+        result
     }
     /// The live region announcing banners, holding the centre's dialog
     /// while it is open. Absent while there is nothing to announce or show.
@@ -935,5 +956,57 @@ mod tests {
         assert!(notifications.withdraw(retained));
         assert!(!notifications.withdraw(retained));
         assert_eq!(notifications.counts(), (0, 0));
+    }
+    fn reader_key_event(key: ui::winit::keyboard::NamedKey) -> WindowEvent {
+        use ui::winit::event::{KeyEvent, RawKeyEvent};
+        use ui::winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
+        let logical = Key::Named(key);
+        WindowEvent::KeyboardInput {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            event: KeyEvent::synthetic(
+                RawKeyEvent {
+                    physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+                    state: ElementState::Pressed,
+                },
+                logical.clone(),
+                None,
+                KeyLocation::Standard,
+                false,
+                None,
+                logical,
+            ),
+            is_synthetic: true,
+        }
+    }
+
+    #[test]
+    fn portable_notification_reader_returns_to_history_before_closing() {
+        use ui::winit::keyboard::NamedKey;
+        let (mut layer, notifications) = layer_with(1);
+        let id = notifications.log().active()[0].id;
+        notifications.host().dismiss(id);
+        notifications.take_outcomes();
+        layer.set_center_open(true);
+        assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
+        assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
+        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+        assert!(layer.center.as_ref().unwrap().is_reading());
+        assert!(layer.route(&reader_key_event(NamedKey::Delete), 1.0));
+        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+        assert_eq!(notifications.log().history().len(), 1);
+        assert!(notifications.take_outcomes().is_empty());
+        assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
+        assert!(layer.center_open());
+        assert!(!layer.center.as_ref().unwrap().is_reading());
+        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+        assert!(layer.center.as_ref().unwrap().is_reading());
+        let back = layer.layout().unwrap().back();
+        assert!(press(&mut layer, back.center()));
+        assert!(layer.center_open());
+        assert!(!layer.center.as_ref().unwrap().is_reading());
+        assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
+        assert!(!layer.center_open());
+        assert!(notifications.take_outcomes().is_empty());
+        assert!(layer.open_app.is_none());
     }
 }

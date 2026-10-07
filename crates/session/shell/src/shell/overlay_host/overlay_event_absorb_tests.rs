@@ -2779,3 +2779,180 @@ fn shortcut_guide_tab_stops_only_land_on_painted_bindings() {
         "Tab walks the painted bindings in painted order"
     );
 }
+
+#[test]
+fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
+    let (width, height) = (960.0, 540.0);
+    let mut h = build_harness_sized(width, height);
+    open_notification_history(&mut h, 18, width, height);
+    let id = h.chrome.borrow_mut().push_notification_full(
+        tilo_desktop::notifications::Notification::new(
+            "Recovery instructions",
+            "Your document is safe. Reopen Search and try the application again.\n".repeat(30),
+        ),
+    );
+    h.chrome.borrow_mut().dismiss_notification(id);
+    settle(&mut h, width, height);
+    let original = h.chrome.borrow().notification_history().len();
+    let live_before: Vec<_> = h
+        .chrome
+        .borrow()
+        .notifications()
+        .iter()
+        .map(|n| n.id)
+        .collect();
+    for key in [NamedKey::ArrowDown, NamedKey::ArrowRight, NamedKey::Enter] {
+        assert!(pump(&mut h, &key_pressed(Key::Named(key))));
+    }
+    assert!(h.host.notification_center.is_reading());
+    settle(&mut h, width, height);
+    let region = h
+        .host
+        .primary_vertical_scroll()
+        .expect("reader exposes accessible scrolling");
+    assert!(region.metrics.max_scroll() > 0.0);
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+    let at_end = h.host.primary_vertical_scroll().unwrap();
+    assert_eq!(at_end.metrics.offset, at_end.metrics.max_scroll());
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::PageUp))));
+    assert!(h.host.primary_vertical_scroll().unwrap().metrics.offset < at_end.metrics.offset);
+    for key in [NamedKey::Enter, NamedKey::Delete] {
+        assert!(pump(&mut h, &key_pressed(Key::Named(key))));
+        assert!(h.host.notification_center.is_reading());
+        assert_eq!(h.chrome.borrow().notification_history().len(), original);
+    }
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(!h.host.notification_center.is_reading());
+    assert!(matches!(
+        h.chrome.borrow().quick_settings.current_level(),
+        crate::shell::quick_settings::QsLevel::Notifications
+    ));
+    settle(&mut h, width, height);
+    let read = h
+        .host
+        .quick_settings_semantic_rects()
+        .into_iter()
+        .find(|(name, _)| name == "quick_settings_notification_read[0]")
+        .expect("read button remains after returning")
+        .1;
+    assert!(pump(
+        &mut h,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: PhysicalPosition::new(read.center().x, read.center().y),
+        }
+    ));
+    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(h.host.notification_center.is_reading());
+    settle(&mut h, width, height);
+    let back = h.host.qs_notification_back_rect();
+    assert!(pump(
+        &mut h,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: PhysicalPosition::new(back.center().x, back.center().y),
+        }
+    ));
+    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(!h.host.notification_center.is_reading());
+    assert_eq!(h.chrome.borrow().notification_history().len(), original);
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(matches!(
+        h.chrome.borrow().quick_settings.current_level(),
+        crate::shell::quick_settings::QsLevel::Root
+    ));
+    assert_eq!(
+        h.chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .map(|n| n.id)
+            .collect::<Vec<_>>(),
+        live_before,
+        "covered banners never receive history presses"
+    );
+    assert!(
+        h.log.borrow().is_empty(),
+        "reader input cannot reach application content"
+    );
+}
+
+#[test]
+fn notification_reader_native_capture_and_resize_keep_the_last_line_reachable() {
+    let out = std::env::var_os("TILO_NOTIFICATION_READER_SHOTS").map_or_else(
+        || std::path::PathBuf::from("target/notification-reader-native"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    let variants = vec![
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high-contrast", Theme::high_contrast()),
+        ("large-text", Theme::dark().with_text_scale(2.0)),
+        (
+            "ui-text",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+        ),
+    ];
+    for (name, theme) in variants {
+        let (width, height) = (960_u32, 540_u32);
+        let mut h = build_harness_sized(f64::from(width), f64::from(height));
+        open_notification_history(&mut h, 18, f64::from(width), f64::from(height));
+        let id = h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Complete recovery instructions",
+                format!(
+                    "{}\nRecovery complete: your document is safe.",
+                    "Your document is safe. Reopen Search and try the app again.\n".repeat(24)
+                ),
+            ),
+        );
+        h.chrome.borrow_mut().dismiss_notification(id);
+        settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+        for key in [NamedKey::Tab, NamedKey::Tab, NamedKey::Enter] {
+            assert!(pump(&mut h, &key_pressed(Key::Named(key))));
+        }
+        assert!(h.host.notification_center.is_reading());
+        settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+        let mut renderer = offscreen::OffscreenRenderer::new(width, height);
+        for state in ["reading-start", "reading-end", "back-focused", "resized"] {
+            match state {
+                "reading-end" => {
+                    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+                }
+                "back-focused" => {
+                    assert!(h.host.focus_synthetic_accessibility(&[0, 0, 0]));
+                }
+                "resized" => {
+                    settle_with_theme(&mut h, 800.0, 480.0, &theme);
+                    assert!(h.host.focus_synthetic_accessibility(&[0, 0, 1]));
+                    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+                }
+                _ => {}
+            }
+            let scene = paint_scene(&mut h, &theme);
+            let region = h
+                .host
+                .primary_vertical_scroll()
+                .expect("complete reader scroll surface");
+            assert!(region.metrics.offset <= region.metrics.max_scroll());
+            if state == "reading-end" || state == "resized" {
+                assert_eq!(region.metrics.offset, region.metrics.max_scroll());
+            }
+            let path = out.join(format!("{name}-{state}.png"));
+            if state == "resized" {
+                offscreen::OffscreenRenderer::new(800, 480).render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.base,
+                    &path,
+                );
+            } else {
+                renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &path);
+            }
+        }
+        assert_eq!(
+            h.chrome.borrow().notification_history().last().unwrap().id,
+            id
+        );
+    }
+}

@@ -475,6 +475,40 @@ async fn resume_keeps_the_session_and_revocation_ends_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_collection_preserves_an_in_flight_namespace() {
+    let f = fixture();
+    let namespace = path(A);
+    let reservation = f.live.relay.0.slot(&namespace, true).unwrap();
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_some(),
+        "maintenance must not withdraw a namespace while its owner is being attached"
+    );
+    drop(reservation);
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_none(),
+        "an abandoned namespace remains collectable"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_collection_rechecks_current_client_ownership() {
+    let f = fixture();
+    let (_id, _stream) = open(&f, b"grant-a", 44).await;
+    let namespace = path(A);
+    // Commit a maintenance candidate collected before this client attached.
+    f.live.relay.0.remove_slot(&namespace, None);
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_some(),
+        "a stale idle candidate must not withdraw a currently authorized client"
+    );
+    let (_subscriber, mut stream) = open(&f, b"grant-b", 45).await;
+    let member = stream.until(FRAME_MEMBER).await;
+    assert_eq!((&member[..32], member[32]), (&bytes32(A)[..], 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fallback_to_fallback_presence_is_under_ten_milliseconds() {
     let f = fixture();
     let (a, _a_stream) = open(&f, b"grant-a", 6).await;

@@ -1,6 +1,6 @@
 # Desktop shared-component adoption
 
-Inspected base: c3a50df (2026-10-06); incoming main d534036e / #3025 inspected for HIG changes and overlap. This inventory tracks targeted increments;
+Inspected base: c3a50df (2026-10-06); design-standard merge #3025 and subsequent main 18c4f1e4 inspected for HIG changes and overlap. This inventory tracks targeted increments;
 an entry is not verified merely because source inspection found a shared painter.
 
 ## Ownership after the split
@@ -19,23 +19,26 @@ solid surfaces and reduced-motion behavior; no new desktop visual language.
 
 | Surface | Current observation | Next verification |
 | --- | --- | --- |
-| Notification center | First increment replaces hand-painted action controls with ButtonFace; aligns accessible action focus/bounds and prevents stale Clear all focus after pointer group activation | [Before/after captures](evidence/notification-center/README.md), Clear/Undo, interrupted Undo, resize/focus, light/dark and enlarged text; production overlay journey exercised |
+| Notification center | #3039 landed: shared buttons, measured geometry, stable Clear/Undo focus. #3067 landed: shared Read control and wrapped ScrollRegion reading page, nested Back/Esc, accessible scrolling and covered-banner pointer precedence | [First increment captures](evidence/notification-center/README.md); [full-text reader evidence](evidence/notification-reader/README.md); reading, scrolling, cancellation, repeated actions, privacy, removal and resize |
 | Notification banners | Portable NotificationStack owns geometry and native host supplies effects | Dismiss hit target, error/quiet/locked states and large text; review active banners behind the history center (native capture evidence) |
-| Launcher / search | Shared desktop search already wraps toolkit CommandPalette; native providers and host effects remain shell-owned | Empty/loading/error states, keyboard ranking and repeated launch, narrowed search, Esc |
-| Overview | Native shell overview has custom workspace/window composition; its synthetic child paths and keyboard creation need correction | Workspace/group selection, pointer/keyboard parity, narrow layout, cancellation |
+| Launcher / search | Toolkit CommandPalette. Private live pointer open/type/Esc/reopen and the current default held Super+Space global-search journey pass on exact merged-main 499f0740 with semantic input/state and actual-pixel assertions. The stale Super+K worked example is corrected; legacy user bindings remain unchanged | Empty/loading/error states, ranking, narrowed search and repeated app launch remain; VM/device coverage is blocked on this runner |
+| Overview | #3057 and #3076 landed: shared creation/focus controls, compact scrolling, stable tab identity and interrupted activation. Exact #3076 merged-main checks passed 26 focused cases, seven native journeys and shell test compilation | Mixed-window preview and live device/workspace transitions remain; framing repair #3100 is integrated |
 | Window chrome | DesktopSurface composes toolkit GroupRow/StripView/WindowGroup | Inactive/focused tabs, close/menu states, resizing and shared header controls |
-| Menus / dialogs | Session power flyout now uses ListRowFace for action type, glyphs, elision, selection and focus; measured action labels widen its responsive layout. Tab menu remains shell-owned; workspace lens already uses ButtonFace and SegmentedFace | [Power flyout captures](evidence/power-menu/README.md), keyboard/pointer/a11y parity, Esc, reopen and scaled resize verified; tab-menu focus return and long labels remain |
+| Menus / dialogs | #3110 and #3205 landed: shared ListRowFace/TooltipHost and ContextMenu current-output placement. Exact #3205 merged-main passes three output/capture cases, keyboard, pointer open/dismiss, action parity and shell test compilation; all six capture variants match inspected originals | Additional dialog/long-label/error states and VM hotplug/input coverage remain |
 | Status / quick settings | Top bar already uses some ButtonFace controls; portable drill-in uses shared back face | Status indicators, paging, focus/hover, offline states; no real device effects during evidence capture |
 | Workspace controls | Shared desktop model and portable workspace settings own intent/state | Inline edit cancellation, resize/focus, repeated rename and workspace switching |
-| Window switcher | Portable recency/preview surface owns Alt+Tab geometry | Alt release, Esc, interrupted windows, withheld previews, large text |
+| Window switcher | #3159 landed normally at 6476c63a, conflict repaired: stable live identities, selected-close cancellation, moved-address refresh and stale-pointer guard. Fresh 11 desktop/seven native cases, compile and Clippy pass; six inspected variants | Exact merged-main 11 desktop/seven native cases and shell test compilation passed; live multi-workspace/preview/device coverage remains |
 
 ## Concurrency boundaries
 
-Inspected Forgejo changed-file lists for Messages #2881, Dictation #2974 and
-Files #3009. #2881 has no shell paths. #2974 modifies ui-core text-input and
-presentation integration. #3009 modifies shell broker_services/file_clipboard,
-nearby_transfer and shared clipboard/broker/undo-adjacent paths. This increment
-touches none of those paths.
+Complete paginated changed-file lists for Messages #2881 and Dictation #2974
+both include shell/overlay_host/mod.rs. Messages adds its update pump; Dictation
+changes layer geometry, fixtures and setup routing. Those hunks do not overlap
+overview selection, notification-reader routes or power Session-intent handling.
+Neither PR changes the desktop switcher file or its native integration module.
+Displays #3095 has no file overlap with these increments. Files #3009 owns
+broker_services/file_clipboard, nearby_transfer, clipboard/broker and undo-adjacent
+paths; none are edited here. No account sends or microphone/device effects.
 
 ## Evidence and completion gates
 
@@ -60,11 +63,56 @@ the status-rooted Panel material, quiet idle rows, animation and session policy.
 Before/after fixtures cover dark/light/high contrast, 200% text, combined 150% UI
 and 130% text, and a narrow output. Full action names take precedence over
 secondary copy when height is constrained; complete details remain accessible.
-A follow-up must verify a visible keyboard/pointer route to complete notification
-recovery text: screen-reader descriptions and ellipsis alone do not finish that
-UX. Review adaptive detail/wrapping with existing components, and power secondary
-copy at narrow/high-scale sizes. These items remain open.
+The current full-text increment adds a visible keyboard/pointer route to complete
+notification recovery text using ButtonFace and ScrollRegion. History keeps compact
+previews; reading wraps the complete title/body and exposes native accessible
+scrolling. Reading performs no default action or agent handoff. Back/Esc restores
+history selection, and a second Esc leaves history. Hidden previews remain hidden.
+The native journey found and fixes a covered-banner pointer interception; actual
+history presses now match the foreground paint order. Review power secondary copy
+at narrow/high-scale sizes remains open.
 
 Capture delivery: all 24 representative and matrix PNGs are saved to native ChatGPT
 Library image files. Small evidence manifests retain their identities, dimensions,
 source revisions and checksums; the current source tree contains no capture PNGs.
+
+## Protected landing and merged-main postchecks
+
+- #3039 merged normally as 1b1fa48ac5d016f6fb410dffa3cd3924f8651bb5.
+- #3057 merged normally as 18c4f1e472fffb39e7334c1160f6e6d5d27efba4.
+- At the latter merged-main commit: all 22 overview cases, six power-menu cases,
+  eight notification-center cases and cargo check --locked -p shell --tests passed.
+  Actual overview/power render fixtures passed with WGPU_BACKEND=vulkan and only
+  the Mesa CPU ICD selected; no DRM access was retried.
+- Full-text reader integration and its independent exact-head CI/main postchecks
+  are a separate gate; the broad remaining-surface inventory stays open.
+
+## Current verification (2026-10-07)
+
+- #3067 merged normally at ae67fc35d70b479b9a24a8c3a1426e289cbc6a12. Exact merged-main checks passed: 12 center cases, one portable reader case, two native reader cases, four notification integration cases and shell tests compile.
+- #3076 rebased onto integrated control framing repair #3100. Fresh focused validation and exact-head CI are required; no authentication/policy code is part of this UI increment.
+- #3110 merged normally at 1161ca6aed22a58cb2904d8aa8ce784fabd3ee33. Shared TooltipHost reveals full power descriptions; wrapped measurement/paint, cancellation, inert presses, semantic actions and scaled resize passed branch validation. Exact merged-main postchecks remain required.
+- All new screenshot evidence stays outside Git, in Library and PR attachments, with text manifests only. Full desktop/VM journeys and the remaining rows above remain open.
+
+Power-description increment: verified source 2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9 uses shared TooltipHost and wrapped Caption painting. Nine power-menu cases, six tooltip cases, shell test compilation and all-target UI/shell Clippy passed. [Inspected before/after evidence](evidence/power-menu-details/README.md) covers six theme/scale/viewport variants. New capture PNGs remain outside Git. Displays #3095 changed-file inspection found no overlap with power or overview paths.
+
+## Overview stable selection follow-up
+
+Overview binds the shared focus ring and accessibility key to stable tab IDs. A surviving preview keeps focus when another closes; a vanished selection restores the current workspace and consumes one interrupted activation. [Original inspected evidence](evidence/overview-window-identity/README.md) is preserved with its original source revision and Library identities. Normal landing and exact merged-main verification are complete: 26 focused cases, seven native journeys and shell test compilation passed at ad449de1.
+## Window switcher live candidate follow-up
+
+Alt+Tab now reconciles the open candidate snapshot with live tab identities, preserves the intended selection, refreshes moved addresses and cancels a vanished armed window. Geometry changes consume old-position presses until paint. [Before/after evidence](evidence/window-switcher-live/README.md) covers themes, text/UI scales and a narrow output. Branch validation passed 11 desktop cases, seven native integration cases, shell tests compile and desktop/shell Clippy; normal landing and exact merged-main verification are complete at 6476c63a: 11 desktop cases, seven native journeys and shell test compilation passed.
+
+## Tab menu current-output follow-up
+
+Open tab menus now use the shared ContextMenu.constrain_to API on the current output before drawing. Both baseline production regressions fail; all three focused cases and the keyboard/cancel/reopen/split journey pass. [Inspected evidence](evidence/tab-menu-current-output/README.md) covers six themes/scales/output sizes and original Library IDs. The initial headless example used legacy Super+K on a fresh profile; its strict failure state/pixels are retained. Current default Super+Space and the corrected example pass; the example correction is a separate increment. Live VM/device coverage and remaining launcher/search/chrome/status/workspace states remain open. Issue3133 notification-service and Files3009 transfer/broker/undo ownership boundaries remain intact.
+
+## Landed verification checkpoint
+
+Overview #3076 merged normally at ad449de191107ccf9f9c88037052604f4228206b; exact merged-main checks passed 26 overview cases, seven native journeys and shell test compilation. Power descriptions #3110 merged at 1161ca6aed22a58cb2904d8aa8ce784fabd3ee33 with exact merged-main nine power cases, six shared-tooltip cases, one native Quick Settings journey and shell test compilation passing. Alt+Tab #3159 landed normally at 6476c63a8e0dc6ef03a2bcb7bd58c1e44ff6b18a from conflict-repaired head 38e6d15fb04d2c28ba00db2cf6a426088fd27dbf: fresh 11 desktop and seven native cases, shell test compilation and all-target desktop/shell Clippy passed; exact merged-main postchecks passed 11 desktop cases, seven native journeys and shell test compilation. The separate live named Open an app → global palette → typing → Esc → reopen/type/cancel journey passed in a private CPU headless session with inspected state/pixel evidence. The original Super+K probe used a legacy binding on a fresh profile. The current default Super+Space passes strict modifier-mask and held-key journeys; no desktop preference or policy change is required.
+
+VM verification was attempted on the runner through tilo-vm: the configured dev VM refuses SSH at 127.0.0.1:2222, and doctor reports “cannot open /dev/kvm for reading and writing.” No VM/device, credentials or trust configuration was changed; no VM pass is claimed.
+
+## Final verified checkpoint
+
+Tab menus #3205 landed normally at 499f0740d44bca4af2da986839489ed230d4877c from fully green head 8f628b5154a0ae5b1de044e97bbba266e9bac2cd. Exact merged-main verification passed all six focused cases, shell test compilation and byte-identical comparisons of all six inspected render variants. A freshly rebuilt compositor at that exact main commit passed the corrected held Super+Space example and a repeated pointer open/type/Esc journey, with private profiles/sockets cleaned up. [Default-search example evidence](evidence/headless-default-search/README.md) records retained assertions, actual pixels and original Library provenance. The remaining rows above and VM/device blocker remain open.

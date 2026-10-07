@@ -14,6 +14,7 @@ mod history;
 mod log;
 mod model;
 mod persistence;
+mod reader;
 mod stack;
 
 pub use center::{CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, RowControl};
@@ -22,6 +23,8 @@ pub use history::{
     history_rows, relative_time, source_label,
 };
 pub use log::{CLEAR_UNDO_WINDOW, NotificationLog};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub use model::ScheduledNotificationTarget;
 pub use model::{
     ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS, Notification,
     NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS, RemoteNotificationRoute,

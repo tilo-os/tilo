@@ -649,11 +649,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix="tilo-proof-fonts-") as scratch:
         fonts = pathlib.Path(scratch) / "catalog"
         subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"),
-                        "stage", str(REPO / "crates/sdk/ui-core/assets/fonts"),
+                        "prepare", str(REPO / "crates/sdk/ui-core/assets/fonts"),
                         str(fonts), "--scope", "os"], check=True)
         manifest = (fonts / "manifest.toml").read_bytes()
         (output / "font-namespace.json").write_text(json.dumps({
-            "installer": "tools/font-catalog.py stage --scope os",
+            "installer": "tools/font-catalog.py prepare --scope os",
             "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
             "mount": "/usr/share/fonts/tilo", "read_only": True,
             "host_files_modified": False,

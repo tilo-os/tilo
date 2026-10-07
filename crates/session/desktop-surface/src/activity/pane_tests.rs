@@ -451,6 +451,28 @@ mod tests {
     }
 
     #[test]
+    fn closing_unpainted_catch_up_keeps_unseen_work_pending() {
+        let (mut tree, workspace, _) = peers_busy_room();
+        let mut pane = native_pane();
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        let unread = pane.glance_signal(workspace.raw()).1;
+        assert!(unread > 0);
+        let other = tree
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id != workspace)
+            .unwrap()
+            .id;
+        assert_eq!(pane.glance_signal(other.raw()), (None, 0, 0));
+        assert!(pane.digest_for_workspace(other.raw()).briefs.is_empty());
+        pane.begin_view(workspace.raw());
+        pane.finish_view(workspace.raw());
+        pane.refresh(&mut tree);
+        assert_eq!(pane.glance_signal(workspace.raw()).1, unread);
+    }
+
+    #[test]
     fn catch_up_is_default_and_closing_advances_only_private_frontier() {
         let (mut tree, workspace, _) = peers_busy_room();
         let before = tree.doc.get_heads();
@@ -463,6 +485,7 @@ mod tests {
         assert!(unread_before > 0);
         pane.begin_view(workspace.raw());
         assert!(!pane.digest().briefs.is_empty());
+        paint(&mut pane);
         pane.finish_view(workspace.raw());
         let (_, unread_after, _) = pane.glance_signal(workspace.raw());
         assert_eq!(unread_after, 0);
@@ -471,6 +494,197 @@ mod tests {
             before,
             "reading history is not a room edit"
         );
+    }
+
+    #[test]
+    fn offscreen_catch_up_cards_do_not_become_seen() {
+        let (mut tree, workspace, _) = peers_busy_room();
+        let mut pane = native_pane();
+        pane.layout_window(Rect::new(1600.0, 0.0, 2400.0, 900.0));
+        pane.set_review_clip(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.begin_view(workspace.raw());
+        pane.refresh(&mut tree);
+        let unread = pane.glance_signal(workspace.raw()).1;
+        assert!(unread > 0);
+        paint(&mut pane);
+        assert!(
+            !pane.brief_rects.is_empty(),
+            "the tile must contain summaries"
+        );
+        pane.finish_view(workspace.raw());
+        pane.refresh(&mut tree);
+        assert_eq!(pane.glance_signal(workspace.raw()).1, unread);
+    }
+
+    #[test]
+    fn refreshed_catch_up_preserves_focus_and_does_not_acknowledge_late_work() {
+        let (mut tree, workspace, user) = peers_busy_room();
+        let mut pane = native_pane();
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.begin_view(workspace.raw());
+        pane.refresh(&mut tree);
+        paint(&mut pane);
+        let index = pane.brief_rects.first().unwrap().0;
+        let anchor = pane.digest.briefs[index].entry_ids[0];
+        pane.keyboard_focus = Some(ActivityFocus::Brief(index));
+        pane.expanded_brief = Some(index);
+        let reader = tree.doc.get_actor().clone();
+        tree.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
+        tree.grant_in_workspace(
+            workspace,
+            &user,
+            CapOverride::grant(
+                Subject::app("files"),
+                Scope::FsPath("/home/quinten/new-result".into()),
+                Verb::Read,
+            ),
+        )
+        .unwrap();
+        tree.seed_doc_from_cache();
+        tree.doc.set_actor(reader);
+        pane.refresh(&mut tree);
+        let Some(ActivityFocus::Brief(focused)) = pane.keyboard_focus else {
+            panic!("the reviewed session must retain focus");
+        };
+        assert!(pane.digest.briefs[focused].entry_ids.contains(&anchor));
+        assert_eq!(pane.expanded_brief, Some(focused));
+        pane.finish_view(workspace.raw());
+        pane.refresh(&mut tree);
+        assert!(
+            pane.glance_signal(workspace.raw()).1 > 0,
+            "late unpainted work remains unread"
+        );
+    }
+
+    #[test]
+    fn acknowledging_new_record_work_does_not_resurrect_the_arrival_baseline() {
+        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        let workspace = tree.active.raw();
+        pane.load_frontiers();
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        assert_eq!(pane.glance_signal(workspace).1, 0);
+        pane.set_view(ActivityView::CatchUp);
+        pane.begin_view(workspace);
+        records.with(&record, |doc| {
+            doc.put(automerge::ROOT, "review", "Check the conclusion")
+                .unwrap();
+            let context = ui::tilo_actions::ActionContext::for_resource(
+                "Revise conclusion",
+                record.as_str(),
+                "document",
+                "Campaign brief",
+            );
+            doc.commit_with(
+                CommitOptions::default()
+                    .with_time(24)
+                    .with_message(context.change_message().unwrap()),
+            );
+        });
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        assert_eq!(pane.glance_signal(workspace).1, 1);
+        paint(&mut pane);
+        pane.apply_selection_history_action(ACTIVITY_ACKNOWLEDGE, &mut tree, Some(&records));
+        assert_eq!(pane.glance_signal(workspace).1, 0);
+        assert!(
+            pane.digest.briefs.is_empty(),
+            "old causal heads remain the baseline"
+        );
+        pane.begin_view(workspace);
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        assert_eq!(pane.glance_signal(workspace).1, 0);
+        assert!(pane.digest.briefs.is_empty());
+    }
+
+    #[test]
+    fn catch_up_persists_only_the_painted_page_and_keeps_waiting_tasks() {
+        let (mut tree, workspace, _) = peers_busy_room();
+        let records = RecordStore::in_memory();
+        let room_id = tree.active_workspace().expect("room").room;
+        let room = room_id.to_string();
+        for n in 0..12 {
+            let id = RecordId::for_file(format!("result-{n}.note"));
+            let kind = ui::RecordKind::new("note");
+            assert!(records.open_record(&ui::RecordCheckout::new(id.clone(), kind.clone())));
+            records.with(&id, |doc| {
+                ui::record::init(doc, &id, &kind, &room);
+                doc.commit();
+                doc.set_actor(ActorId::from(b"ada-device".as_slice()));
+                doc.put(automerge::ROOT, "body", format!("Result {n}"))
+                    .unwrap();
+                let context = ui::tilo_actions::ActionContext::for_resource(
+                    "Write result",
+                    id.as_str(),
+                    "note",
+                    format!("Result {n}"),
+                );
+                doc.commit_with(
+                    CommitOptions::default().with_message(context.change_message().unwrap()),
+                );
+            });
+            tree.desktop
+                .room_records_held
+                .entry(room_id)
+                .or_default()
+                .insert(id.to_string(), kind.to_string());
+        }
+        let task = tree
+            .create_workspace_task(
+                workspace,
+                "Review draft",
+                "local",
+                None,
+                WorkspaceTaskRoute::Manual,
+                None,
+            )
+            .unwrap();
+        assert!(tree.set_workspace_task_status(
+            workspace,
+            &task,
+            WorkspaceTaskStatus::Waiting,
+            "local"
+        ));
+        let host = Rc::new(crate::activity::testing::TestHost::default());
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host.clone());
+        pane.layout(Rect::new(0.0, 0.0, 800.0, 580.0));
+        pane.begin_view(workspace.raw());
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        pane.persistent_frontiers = true;
+        let before = pane.glance_signal(workspace.raw()).1;
+        assert!(before >= 12);
+        paint(&mut pane);
+        let shown = pane.viewed_changes.get(&workspace.raw()).unwrap().len();
+        assert!(
+            shown > 0 && shown < before,
+            "fixture must have a hidden page"
+        );
+        let heads = tree.doc.get_heads();
+        assert!(
+            pane.apply_selection_history_action(ACTIVITY_ACKNOWLEDGE, &mut tree, Some(&records))
+                .handled
+        );
+        assert_eq!(
+            tree.doc.get_heads(),
+            heads,
+            "review is private viewer state"
+        );
+        assert_eq!(
+            tree.active_workspace().unwrap().tasks[0].status,
+            WorkspaceTaskStatus::Waiting
+        );
+        let mut next = RoomActivityPane::new();
+        next.set_host(host);
+        next.load_frontiers();
+        next.refresh(&mut tree);
+        next.refresh_records(&mut tree, &records);
+        assert_eq!(next.glance_signal(workspace.raw()).1, before - shown);
+        next.apply_selection_history_action(ACTIVITY_TASKS, &mut tree, Some(&records));
+        assert_eq!(next.view(), ActivityView::Tasks);
+        assert_eq!(next.tasks[0].status, WorkspaceTaskStatus::Waiting);
     }
 
     #[test]
@@ -510,6 +724,10 @@ mod tests {
         pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
+
+        // Departure follows an actually reviewed page, not an indexed head.
+        paint(&mut pane);
+        pane.finish_view(home.raw());
 
         pane.observe_workspace(elsewhere.raw());
         tree.desktop.active = elsewhere;
@@ -995,6 +1213,7 @@ mod tests {
             context: Some(context),
         });
         pane.apply_deep_link(ActivityDeepLink {
+            task_id: None,
             author: None,
             group_id: None,
             entry_id: Some(*id.as_bytes()),
@@ -3071,5 +3290,219 @@ mod resume_card_tests {
             .handle_catchup_click(Point::new(40.0, 30.0), &mut tree)
             .expect("resume card handles its click");
         assert_eq!(outcome.open_target, pane.resume_target);
+    }
+}
+
+#[cfg(test)]
+mod task_review_tests {
+    use super::*;
+    use crate::activity::testing::TestTree as WorkspaceTree;
+    struct ReviewHost {
+        snapshot: RefCell<crate::activity::TaskReviewSnapshot>,
+        submitted: RefCell<Vec<crate::activity::TaskReviewRequest>>,
+    }
+    impl ActivityHost for ReviewHost {
+        fn local_user(&self) -> String {
+            "local".into()
+        }
+        fn task_review_required(&self, _room: &str) -> bool {
+            true
+        }
+        fn task_review_snapshot(
+            &self,
+            room: &str,
+        ) -> Option<Result<std::sync::Arc<crate::activity::TaskReviewSnapshot>, String>> {
+            let snapshot = self.snapshot.borrow();
+            Some(if snapshot.room == room {
+                Ok(std::sync::Arc::new(snapshot.clone()))
+            } else {
+                Err("room unavailable".into())
+            })
+        }
+        fn submit_task_review(
+            &self,
+            request: crate::activity::TaskReviewRequest,
+        ) -> Result<(), String> {
+            self.submitted.borrow_mut().push(request);
+            Ok(())
+        }
+    }
+    fn review_fixture() -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
+        use tilo_desktop_model::{WorkspaceTaskActiveRun, WorkspaceTaskControl};
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let active = tree.active;
+        let id = tree
+            .create_workspace_task(
+                active,
+                "Review release notes",
+                "local",
+                Some("scribe".into()),
+                WorkspaceTaskRoute::Model,
+                None,
+            )
+            .unwrap();
+        let task = tree.active_workspace().unwrap().tasks[0].clone();
+        let room = tree.active_workspace().unwrap().room.to_string();
+        let host = Rc::new(ReviewHost {
+            snapshot: RefCell::new(crate::activity::TaskReviewSnapshot {
+                room,
+                generation: 7,
+                sampled_at_secs: 100,
+                actor: "local".into(),
+                writable: true,
+                tasks: vec![task],
+                controls: std::collections::BTreeMap::from([(
+                    id.clone(),
+                    WorkspaceTaskControl {
+                        run_epoch: 3,
+                        active_run: Some(WorkspaceTaskActiveRun {
+                            agent_id: "scribe".into(),
+                            epoch: 3,
+                            started_at: 100,
+                            applied_direction_revision: 0,
+                        }),
+                        ..Default::default()
+                    },
+                )]),
+            }),
+            submitted: RefCell::default(),
+        });
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host.clone());
+        pane.refresh(&mut tree);
+        pane.set_view(ActivityView::Tasks);
+        pane.selected_task = Some(id);
+        (tree, pane, host)
+    }
+    #[test]
+    fn review_retry_is_offered_for_waiting_tasks_only() {
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        for status in [
+            WorkspaceTaskStatus::Waiting,
+            WorkspaceTaskStatus::Done,
+            WorkspaceTaskStatus::Cancelled,
+        ] {
+            {
+                let mut snapshot = host.snapshot.borrow_mut();
+                snapshot.tasks[0].status = status;
+                snapshot.controls.get_mut(&id).unwrap().active_run = None;
+            }
+            pane.refresh(&mut tree);
+            let actions = pane.task_actions_for(&pane.tasks[0]);
+            assert_eq!(
+                actions.contains(&TaskAction::RetryRun),
+                status == WorkspaceTaskStatus::Waiting
+            );
+            assert!(!actions.contains(&TaskAction::Steer));
+            if status.is_finished() {
+                assert!(!actions.contains(&TaskAction::CancelRun));
+            }
+        }
+    }
+    #[test]
+    fn steering_draft_keeps_observed_run_and_revision_after_refresh() {
+        use crate::activity::TaskReviewCommand;
+        let (mut tree, mut pane, host) = review_fixture();
+        pane.apply_task_action(TaskAction::Steer, &mut tree);
+        pane.direction
+            .as_mut()
+            .unwrap()
+            .input
+            .set_text("Keep compatibility examples");
+        let id = pane.selected_task.clone().unwrap();
+        host.snapshot
+            .borrow_mut()
+            .controls
+            .get_mut(&id)
+            .unwrap()
+            .run_epoch = 4;
+        pane.refresh(&mut tree);
+        pane.apply_task_action(TaskAction::SendDirection, &mut tree);
+        assert!(
+            matches!(&host.submitted.borrow()[0].command,TaskReviewCommand::Steer {run_epoch:3,after_revision:0,text,..} if text=="Keep compatibility examples")
+        );
+        assert!(
+            pane.direction.is_some(),
+            "queued admission must retain the draft until a durable receipt"
+        );
+    }
+    #[test]
+    fn switching_workspace_clears_steering_draft_and_keeps_new_room_private() {
+        let (mut tree, mut pane, host) = review_fixture();
+        pane.apply_task_action(TaskAction::Steer, &mut tree);
+        pane.direction
+            .as_mut()
+            .unwrap()
+            .input
+            .set_text("Private project direction");
+        tree.append_empty_workspace("Personal");
+        tree.active = tree.workspaces.last().unwrap().id;
+        pane.refresh(&mut tree);
+        assert!(pane.direction.is_none());
+        assert!(pane.tasks.is_empty());
+        assert!(host.submitted.borrow().is_empty());
+    }
+    #[test]
+    fn native_review_form_and_controls_fit_large_text_and_have_keyboard_targets() {
+        let (_tree, mut pane, _host) = review_fixture();
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_text_scale(2.0);
+            pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            pane.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert!(
+                pane.task_action_rects
+                    .iter()
+                    .any(|(action, _)| *action == TaskAction::Steer)
+            );
+            pane.apply_review_action(TaskAction::Steer);
+            pane.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert!(pane.focus_order().contains(&ActivityFocus::DirectionField));
+            for (_, rect) in &pane.task_action_rects {
+                assert_eq!(rect.intersect(pane.sheet), *rect);
+            }
+            assert!(
+                pane.task_action_rects
+                    .iter()
+                    .any(|(action, _)| *action == TaskAction::SendDirection)
+            );
+            assert!(
+                pane.accessibility_snapshot()
+                    .children
+                    .iter()
+                    .any(|node| node.role == ui::a11y::Role::TextInput)
+            );
+            pane.direction = None;
+        }
+    }
+    #[test]
+    fn deleting_the_focused_task_does_not_retarget_its_controls() {
+        let (mut tree, mut pane, host) = review_fixture();
+        let task_id = pane.selected_task.clone().unwrap();
+        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::CancelRun));
+        host.snapshot.borrow_mut().tasks.clear();
+        pane.refresh(&mut tree);
+        assert_eq!(pane.requested_review_task, Some(task_id));
+        assert_eq!(pane.selected_task, None);
+        assert_eq!(
+            pane.keyboard_focus,
+            Some(ActivityFocus::View(ActivityView::Tasks))
+        );
+        pane.apply_task_action(TaskAction::CancelRun, &mut tree);
+        assert!(host.submitted.borrow().is_empty());
     }
 }

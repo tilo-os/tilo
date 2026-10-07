@@ -104,6 +104,7 @@ public final class ForegroundActivity extends Activity {
                 return START_NOT_STICKY;
             }
             record("foreground=returned;start=" + id);
+            record("service-start;intent=" + (intent == null ? "null" : "present") + ";id=" + id);
             new Thread(new Runnable() {
                 @Override public void run() {
                     try {

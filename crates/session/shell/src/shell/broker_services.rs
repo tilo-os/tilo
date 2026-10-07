@@ -48,6 +48,9 @@ impl NativeOwnerCommitService {
             network,
         }
     }
+    pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
+        self.owner.clone()
+    }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
@@ -81,6 +84,12 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
                     return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
                         .await;
                 }
+            }
+            if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+            ) {
+                return owner.commit_workspace_task_command(request, std::time::SystemTime::now());
             }
             if matches!(
                 request.operation,
@@ -150,36 +159,54 @@ async fn record_receipt_elsewhere(
     request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
     redacted: &[u8],
 ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-    use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
-    let bound = serde_json::to_string(&BoundCommand {
-        source: CommandSource {
-            room: room.to_string(),
-            heads: Vec::new(),
-        },
-        command: DesktopCommand::RecordEffectReceipt {
-            receipt_json: String::from_utf8(redacted.to_vec())
-                .map_err(|_| "effect receipt is not JSON text")?,
-        },
+    let tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { invocation, .. } =
+        &request.operation
+    else {
+        return Err("missing effect receipt operation".into());
+    };
+    let expected = tilo_peer_state::StatePeer::validate_workspace_effect_receipt_encoding(
+        *invocation,
+        redacted,
+    )?;
+    network
+        .record_governed_effect_receipt(room, *invocation, redacted.to_vec())
+        .await?;
+    // A transport acknowledgement is not our commit barrier: wait until the
+    // governor's signed receipt is in this device's actual admitted room.
+    tokio::time::timeout(GOVERNED_OPEN_TIMEOUT, async {
+        loop {
+            network.check_native_custody(owner, room)?;
+            let receipt = owner.with_current(room, |view| {
+                let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
+                    view.peer()
+                        .admitted_room()
+                        .ok_or("effect room unavailable")?,
+                );
+                if let Some(actual) = effects
+                    .iter()
+                    .find(|effect| effect.invocation == expected.invocation)
+                {
+                    if actual != &expected {
+                        return Err(
+                            "admitted terminal receipt differs from this broker's outcome".into(),
+                        );
+                    }
+                    return Ok(Some(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+                        binding: request.binding()?,
+                        generation: view.generation(),
+                        aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
+                    }));
+                }
+                Ok(None)
+            })?;
+            if let Some(receipt) = receipt {
+                return Ok(receipt);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
     })
-    .map_err(|error| error.to_string())?;
-    let answer = network.invoke_governor(
-        room,
-        tilo_desktop_model::commands::APP_ID,
-        tilo_desktop_model::commands::RESOURCE,
-        tilo_desktop_model::commands::ACTION,
-        Some(serde_json::json!({ "command": bound })),
-    );
-    tokio::time::timeout(GOVERNED_OPEN_TIMEOUT, answer)
-        .await
-        .map_err(|_| "the workspace host did not record the receipt in time; outcome unknown")?
-        .ok_or("the workspace host stopped before recording the receipt; outcome unknown")??;
-    owner.with_current(room, |view| {
-        Ok(tilo_peer_state::owner_commit::OwnerCommitReceipt {
-            binding: request.binding()?,
-            generation: view.generation(),
-            aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
-        })
-    })
+    .await
+    .map_err(|_| "signed effect receipt did not reach the native owner in time; outcome unknown")?
 }
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
