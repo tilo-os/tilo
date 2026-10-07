@@ -44,7 +44,7 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 mod broker;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
-mod channel_settings;
+pub(crate) mod channel_settings;
 pub mod handoff;
 mod history;
 pub mod owner_view;
