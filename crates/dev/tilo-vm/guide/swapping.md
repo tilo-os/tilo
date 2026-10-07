@@ -256,3 +256,16 @@ Set `CARGO` to your Cargo drop-in when using a remote builder. The host path
 packages and uploads its received binary
 and this worktree's mandatory startup companion. The slot restarts through its
 normal PAM unit; no OS image rebuild, account reset or lock override is needed.
+
+### Repeating a host-built component swap
+
+After assembly, `--builder host` computes the same content identity as the
+layer importer and asks the target for its existing layers. If it already
+holds the identical component, the command skips packing and uploading it.
+The receipt records `digest`, `layer_lookup`, `upload = "skipped"` and
+`layer_reused`. Existing layer provenance is retained, as on a duplicate import.
+Changes to file bytes, executable bits or link targets require an upload;
+timestamps alone do not. This is whole-layer reuse, not a binary delta, so a
+wrapper-only change still uploads its newly assembled layer. Imported content
+must match the local digest before it can proceed to swap. A cache hit uses
+the existing RPC protocol and works with older compatible daemons.
