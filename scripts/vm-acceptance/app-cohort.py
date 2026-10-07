@@ -7,6 +7,7 @@ Run only after the deployment owner hands off the matched cohort.
 import argparse
 import json
 import re
+import shlex
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -90,18 +91,6 @@ def windows(state, app):
 
 
 # Public package/process metadata only; no argv, environment or document content.
-MAPPED = r'''
-import hashlib,json,os,pathlib,sys
-rows=[]
-for p in pathlib.Path('/proc').iterdir():
- if not p.name.isdigit(): continue
- try:
-  if p.stat().st_uid!=os.getuid() or (p/'comm').read_text().strip()!=sys.argv[1]: continue
-  paths=sorted({l.split()[-1] for l in (p/'maps').read_text().splitlines() if '/run/tilo-runtime/' in l})
-  rows.append({'pid':int(p.name),'runtime':[{'path':f,'sha256':hashlib.sha256((p/'root'/f.lstrip('/')).read_bytes()).hexdigest()} for f in paths]})
- except (FileNotFoundError,ProcessLookupError): continue
-print(json.dumps({'uid':os.getuid(),'processes':rows}))
-'''
 BASELINE = r'''
 import json,os,pathlib,subprocess,tomllib
 apps=subprocess.run(['flatpak','list','--app','--columns=application,installation'],capture_output=True,text=True,check=True).stdout.splitlines()
@@ -135,7 +124,10 @@ def cohort(vm, args, out):
 
 
 def mapped(vm, comm, installed, uid, out):
-    value = first_json(vm.run("slot", "exec", "--", "python3", "-c", MAPPED, comm))
+    source = Path(__file__).with_name("acceptance").joinpath("runtime_backing.py").read_text()
+    value = first_json(vm.root_exec("python3 -c " + shlex.quote(source) + " " + shlex.quote(comm) + " " + str(uid)))
+    require(value.get("method") == "proc-map-files-fd" and value.get("reader_uid") == 0,
+            "exact read-only mapped backing observation unavailable")
     require(value["uid"] == uid and value["processes"], "native worker unobservable")
     for process in value["processes"]:
         rows = process["runtime"]
