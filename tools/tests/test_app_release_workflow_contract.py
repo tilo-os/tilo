@@ -26,7 +26,8 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         with self.subTest(phase='each job checks out only the exact event commit'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             checkouts = source.split('uses: actions/checkout@')[1:]
-            self.assertEqual(len(checkouts), 7)
+            # Signal adds one compilation and one publication checkout.
+            self.assertEqual(len(checkouts), 9)
             for checkout in checkouts:
                 block = checkout.split('\n      - ', 1)[0]
                 self.assertIn('fetch-depth: 1', block)

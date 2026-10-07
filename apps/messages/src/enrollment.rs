@@ -1,0 +1,289 @@
+//! First-account presentation is local and private, never shared app state.
+use crate::{CATALOG, Messages, MessagesEffect};
+use std::sync::Arc;
+use tilo_messaging::{
+    EnrollmentClient, EnrollmentPhase, EnrollmentReview, Pairing, ServiceAccount,
+};
+use ui::{
+    LocalState,
+    framework::{Actions, EffectAnswer, EffectCx, Effected},
+    widget::{Button, Column, QrWidget, Text},
+};
+#[derive(Clone, Default)]
+struct Projection {
+    pairing: Option<Arc<Pairing>>,
+    review: Option<EnrollmentReview>,
+    account: Option<ServiceAccount>,
+    pending: bool,
+    proposal: Option<String>,
+}
+#[derive(Clone)]
+pub(crate) struct EnrollmentView {
+    client: Option<EnrollmentClient>,
+    state: LocalState<Projection>,
+    epoch: LocalState<u64>,
+}
+impl EnrollmentView {
+    pub(crate) fn new(client: Option<EnrollmentClient>, principal: Option<&str>) -> Self {
+        Self {
+            client: client.filter(|client| principal == Some(client.principal())),
+            state: LocalState::new(Projection::default()),
+            epoch: LocalState::new(0),
+        }
+    }
+    pub(crate) fn phase(&self) -> EnrollmentPhase {
+        self.state.with(|state| {
+            state
+                .account
+                .as_ref()
+                .zip(self.client.as_ref())
+                .map_or(EnrollmentPhase::Empty, |(account, client)| {
+                    client.phase(account)
+                })
+        })
+    }
+    pub(crate) fn key(&self) -> (EnrollmentPhase, bool, u64) {
+        (
+            self.phase(),
+            self.state.with(|state| state.pending),
+            self.epoch.get(),
+        )
+    }
+    pub(crate) fn wake(&self) -> Option<ui::time::Instant> {
+        self.state
+            .with(|state| state.account.is_some())
+            .then_some(())?;
+        matches!(
+            self.phase(),
+            EnrollmentPhase::Linking | EnrollmentPhase::AwaitingPermission
+        )
+        .then(|| ui::time::now().checked_add(ui::time::Duration::from_millis(250)))
+        .flatten()
+    }
+    pub(crate) fn close(&self) {
+        self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+        if self.phase() != EnrollmentPhase::Ready
+            && let Some(client) = &self.client
+            && let Some(account) = self.state.with(|state| state.account.clone())
+        {
+            client.cancel(&account);
+        }
+        self.state.set(Projection::default());
+    }
+    pub(crate) fn handles(effect: &MessagesEffect) -> bool {
+        matches!(
+            effect,
+            MessagesEffect::BeginFirstEnrollment { .. }
+                | MessagesEffect::CompleteFirstEnrollment { .. }
+                | MessagesEffect::ReviewFirstEnrollment { .. }
+        )
+    }
+    pub(crate) fn effect(
+        &self,
+        effect: MessagesEffect,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        let client = self
+            .client
+            .clone()
+            .ok_or_else(|| CATALOG.t("messages-setup-unavailable"))?;
+        match effect {
+            MessagesEffect::BeginFirstEnrollment { service } => self.begin(client, service, cx),
+            MessagesEffect::CompleteFirstEnrollment {
+                service,
+                account,
+                attempt,
+            } => self.finish(client, ServiceAccount::new(service, account), attempt, cx),
+            MessagesEffect::ReviewFirstEnrollment {
+                service,
+                account,
+                display_name,
+            } => self.review(
+                client,
+                ServiceAccount::new(service, account),
+                display_name,
+                cx,
+            ),
+            _ => Err(CATALOG.t("messages-setup-unavailable")),
+        }
+    }
+    fn begin(
+        &self,
+        client: EnrollmentClient,
+        service: String,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        if self
+            .state
+            .with(|state| state.pending || state.account.is_some())
+        {
+            return Err(CATALOG.t("messages-setup-active"));
+        }
+        self.state.update(|state| state.pending = true);
+        self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+        let admitted = self.epoch.get();
+        let epoch = self.epoch.clone();
+        let projection = self.state.clone();
+        let invalidated = client.clone();
+        Ok(cx.spawn(move |_| async move { client.begin(service).await }, move |(), result, _| {
+            if epoch.get() != admitted {
+                if let Ok(private) = result { invalidated.cancel(&private.account); }
+                return Err(CATALOG.t("messages-setup-interrupted"));
+            }
+            projection.update(|state| state.pending = false);
+            let private = result.map_err(|_| CATALOG.t("messages-setup-unavailable"))?;
+            let value = serde_json::json!({"state":"linking", "service":private.account.service,"account":private.account.account,"attempt":private.attempt,"generation":private.generation});
+            projection.update(|state| { state.account = Some(private.account.clone()); state.pairing = Some(Arc::new(private)); });
+            Ok(Effected::value(value))
+        }))
+    }
+    fn finish(
+        &self,
+        client: EnrollmentClient,
+        account: ServiceAccount,
+        attempt: String,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        if !self.state.with(|state| {
+            !state.pending
+                && state
+                    .pairing
+                    .as_ref()
+                    .is_some_and(|private| private.account == account && private.attempt == attempt)
+        }) {
+            return Err(CATALOG.t("messages-setup-active"));
+        }
+        self.state.update(|state| state.pending = true);
+        let admitted = self.epoch.get();
+        let epoch = self.epoch.clone();
+        let projection = self.state.clone();
+        let invalidated = client.clone();
+        let original = account.clone();
+        Ok(cx.spawn(move |_| async move { client.finish(account, attempt).await }, move |(), result, _| {
+            if epoch.get() != admitted { invalidated.cancel(&original); return Err(CATALOG.t("messages-setup-interrupted")); }
+            projection.update(|state| { state.pending = false; state.pairing = None; });
+            let review = result.map_err(|_| CATALOG.t("messages-setup-interrupted"))?;
+            projection.update(|state| state.review = Some(review));
+            Ok(Effected::value(serde_json::json!({"state":"review","service":original.service,"account":original.account})))
+        }))
+    }
+    fn review(
+        &self,
+        client: EnrollmentClient,
+        account: ServiceAccount,
+        display_name: String,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        if !self.state.with(|state| {
+            !state.pending
+                && state
+                    .review
+                    .as_ref()
+                    .is_some_and(|review| review.account == account)
+                && state.proposal.is_none()
+        }) {
+            return Err(CATALOG.t("messages-setup-active"));
+        }
+        self.state.update(|state| state.pending = true);
+        let admitted = self.epoch.get();
+        let epoch = self.epoch.clone();
+        let projection = self.state.clone();
+        let invalidated = client.clone();
+        let original = account.clone();
+        Ok(cx.spawn(
+            move |_| async move { client.review(account, display_name).await },
+            move |(), result, _| {
+                if epoch.get() != admitted {
+                    invalidated.cancel(&original);
+                    return Err(CATALOG.t("messages-setup-interrupted"));
+                }
+                projection.update(|state| state.pending = false);
+                let proposal = result.map_err(|_| CATALOG.t("messages-setup-interrupted"))?;
+                projection.update(|state| state.proposal = Some(proposal.clone()));
+                Ok(Effected::value(
+                    serde_json::json!({"state":"awaiting_permission","proposal":proposal}),
+                ))
+            },
+        ))
+    }
+    pub(crate) fn panel(&self, mut content: Column, actions: &Actions<Messages>) -> Column {
+        let state = self.state.get();
+        let phase = self.phase();
+        if let Some(private) = &state.pairing
+            && phase == EnrollmentPhase::Linking
+        {
+            content = content.push(Box::new(Text::new(&CATALOG.t("messages-setup-scan"))));
+            content = content.push(Box::new(
+                QrWidget::new(private.qr_bytes().to_vec())
+                    .with_id("messages.first-account-code")
+                    .with_alt(CATALOG.t("messages-setup-code"))
+                    .with_secret(),
+            ));
+            return content.push(Box::new(
+                actions.bind_effect_invocation(
+                    Button::new("messages.first-account-finish", "messages-finish-link")
+                        .with_enabled(!state.pending),
+                    &MessagesEffect::CompleteFirstEnrollment {
+                        service: private.account.service.clone(),
+                        account: private.account.account.clone(),
+                        attempt: private.attempt.clone(),
+                    },
+                ),
+            ));
+        }
+        if phase == EnrollmentPhase::Ready {
+            return content.push(Box::new(Text::new(&CATALOG.t("messages-setup-linked"))));
+        }
+        if let Some(review) = &state.review {
+            content = content.push(Box::new(Text::new(
+                &CATALOG.t_args(
+                    "messages-first-self-review",
+                    &[(
+                        "identity",
+                        ui::i18n::ArgValue::Text(
+                            review
+                                .number
+                                .clone()
+                                .unwrap_or_else(|| review.scope.clone()),
+                        ),
+                    )],
+                ),
+            )));
+            if state.proposal.is_some() {
+                return content.push(Box::new(Text::new(&CATALOG.t(
+                    if phase == EnrollmentPhase::Interrupted {
+                        "messages-setup-interrupted"
+                    } else {
+                        "messages-first-permission-review"
+                    },
+                ))));
+            }
+            return content.push(Box::new(
+                actions.bind_effect_invocation(
+                    Button::new("messages.first-account-review", "messages-first-confirm")
+                        .with_enabled(!state.pending && phase == EnrollmentPhase::Review),
+                    &MessagesEffect::ReviewFirstEnrollment {
+                        service: review.account.service.clone(),
+                        account: review.account.account.clone(),
+                        display_name: CATALOG.t("messages-signal"),
+                    },
+                ),
+            ));
+        }
+        if phase == EnrollmentPhase::Interrupted {
+            return content.push(Box::new(Text::new(
+                &CATALOG.t("messages-setup-interrupted"),
+            )));
+        }
+        content.push(Box::new(
+            actions.bind_effect_invocation(
+                Button::new("messages.first-account-start", "messages-first-signal").with_enabled(
+                    self.client.is_some() && !state.pending && state.account.is_none(),
+                ),
+                &MessagesEffect::BeginFirstEnrollment {
+                    service: "signal".into(),
+                },
+            ),
+        ))
+    }
+}
