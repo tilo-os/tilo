@@ -84,7 +84,12 @@ fn unsupported_cache_stays_unknown_and_is_never_displayed_as_zero() {
 
 #[test]
 fn captures_use_the_production_surface_and_never_seed_live_records() {
-    for scenario in ["empty", "storage-report", "checkpoint-verification"] {
+    for scenario in [
+        "empty",
+        "storage-report",
+        "checkpoint-verification",
+        "research-mapping",
+    ] {
         let mut app = TestApp::<ChipDesignShell>::capture(Some(scenario)).unwrap();
         assert_eq!(
             app.state().reports.len(),
@@ -92,7 +97,10 @@ fn captures_use_the_production_surface_and_never_seed_live_records() {
         );
         assert_eq!(
             app.state().verifications.len(),
-            usize::from(scenario == "checkpoint-verification")
+            usize::from(matches!(
+                scenario,
+                "checkpoint-verification" | "research-mapping"
+            ))
         );
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "{scenario}: {audit:#?}");
@@ -483,4 +491,247 @@ fn existing_storage_only_documents_import_receipts_without_schema_migration() {
     let state = ChipProject::read(&doc).unwrap();
     assert_eq!(state.reports.len(), 1);
     assert_eq!(state.verifications.len(), 2);
+}
+
+#[test]
+fn actual_research_mapping_receipt_is_visible_through_the_semantic_resource() {
+    let raw = include_str!("../fixtures/research-mapping.json");
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    app.invoke(IMPORT_VERIFICATION.with(raw.to_owned()))
+        .unwrap();
+    let id = crate::VerificationRecord::import(raw).unwrap().0;
+    let child = crate::resource::verification_resource_id(&id);
+    app.call_on(&child, "inspect", serde_json::json!({}))
+        .unwrap();
+    let content = app
+        .call("read", serde_json::json!({"item":child}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(content["receipt"]["mapped_cell_count"], 2600);
+    assert_eq!(content["receipt"]["reported_library_area"], 3784.382);
+    assert_eq!(content["receipt"]["manufacturable"], false);
+    assert_eq!(
+        content["receipt"]["checks"]["mapped_netlist_vs_integer_oracle"],
+        "passed"
+    );
+    let audit = app.harness().native_app_audit();
+    assert!(
+        audit.is_certified(),
+        "research mapping semantic surface: {audit:#?}"
+    );
+    assert!(app.undo());
+    assert!(app.state().verifications.is_empty());
+}
+
+#[test]
+fn mapping_claims_refuse_manufacturing_false_area_and_missing_observations() {
+    let original: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/research-mapping.json")).unwrap();
+    let mut cases = Vec::new();
+    for (key, value) in [
+        ("manufacturable", serde_json::json!(true)),
+        ("reported_library_area", serde_json::json!(-1)),
+        ("mapped_cell_count", serde_json::json!(0)),
+        ("abc_delay_target_ps", serde_json::json!(0)),
+    ] {
+        let mut changed = original.clone();
+        changed[key] = value;
+        cases.push(changed);
+    }
+    let mut changed = original.clone();
+    changed["checks"]
+        .as_object_mut()
+        .unwrap()
+        .remove("library_mapping");
+    cases.push(changed);
+    let mut changed = original;
+    changed["input_sha256"]
+        .as_object_mut()
+        .unwrap()
+        .remove("LICENSE");
+    cases.push(changed);
+    let mut changed = receipt("checkpoint_tile_integer_contract", true);
+    changed["reported_library_area"] = serde_json::json!(3784.382);
+    cases.push(changed);
+    for raw in cases {
+        let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+        let action = Invoke::apply(&ProjectAction::ImportVerification {
+            json: raw.to_string(),
+        })
+        .unwrap();
+        assert!(app.invoke(action).is_err());
+        assert!(app.state().verifications.is_empty());
+    }
+}
+
+fn partial_mapping_receipt(stage: &str, cancelled: bool) -> serde_json::Value {
+    let mut raw: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/research-mapping.json")).unwrap();
+    raw["status"] = serde_json::json!(if cancelled { "cancelled" } else { "failed" });
+    raw["failure_stage"] = serde_json::json!(stage);
+    raw["failure"] = serde_json::json!(if cancelled {
+        ""
+    } else {
+        "Reported execution failed"
+    });
+    raw["checks"] = match stage {
+        "input_validation" => serde_json::json!({}),
+        "mapping" => serde_json::json!({"input_validation":"passed"}),
+        _ => serde_json::json!({"input_validation":"passed", "library_mapping":"passed"}),
+    };
+    if stage == "input_validation" {
+        raw.as_object_mut().unwrap().remove("input_sha256");
+    }
+    if stage == "mapped_simulation" {
+        for name in ["mapped-compile.log", "mapped-simulation.log"] {
+            raw["artifact_sha256"].as_object_mut().unwrap().remove(name);
+        }
+    } else {
+        raw["tools"] = serde_json::json!({});
+        raw["artifact_sha256"] = serde_json::json!({});
+        raw.as_object_mut().unwrap().remove("mapped_cell_count");
+        raw.as_object_mut().unwrap().remove("reported_library_area");
+    }
+    raw
+}
+
+#[test]
+fn mapping_partial_failures_and_cancellations_preserve_only_reported_milestones() {
+    for stage in ["input_validation", "mapping", "mapped_simulation"] {
+        for cancelled in [false, true] {
+            let raw = partial_mapping_receipt(stage, cancelled).to_string();
+            let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+            app.invoke(IMPORT_VERIFICATION.with(raw.clone())).unwrap();
+            let id = crate::VerificationRecord::import(&raw).unwrap().0;
+            let child = crate::resource::verification_resource_id(&id);
+            let content = app
+                .call("read", serde_json::json!({"item":child}))
+                .unwrap()
+                .unwrap();
+            assert_eq!(content["receipt"]["failure_stage"], stage);
+            assert_eq!(
+                content["receipt"]["status"],
+                if cancelled { "cancelled" } else { "failed" }
+            );
+            assert!(content["receipt"]["checks"]["mapped_netlist_vs_integer_oracle"].is_null());
+            assert_eq!(
+                content["receipt"]["mapped_cell_count"].is_null(),
+                stage != "mapped_simulation"
+            );
+            assert_eq!(
+                content["receipt"]["reported_library_area"].is_null(),
+                stage != "mapped_simulation"
+            );
+            assert!(app.harness().native_app_audit().is_certified());
+        }
+    }
+}
+
+#[test]
+fn mapping_partial_claims_require_prior_checks_and_observation_identities() {
+    let mut cases = Vec::new();
+    for check in ["passed", "failed"] {
+        let mut raw = partial_mapping_receipt("mapping", false);
+        raw["checks"]["mapped_netlist_vs_integer_oracle"] = serde_json::json!(check);
+        cases.push(raw);
+    }
+    for key in ["tools", "artifact_sha256"] {
+        let mut raw = partial_mapping_receipt("mapped_simulation", true);
+        raw[key] = serde_json::json!({});
+        cases.push(raw);
+    }
+    for name in ["vectors.json", "NangateOpenCellLibrary_typical.lib"] {
+        let mut raw = partial_mapping_receipt("mapping", false);
+        raw["input_sha256"].as_object_mut().unwrap().remove(name);
+        cases.push(raw);
+    }
+    for name in [
+        "mapped.json",
+        "stat.json",
+        "library_cells.v",
+        "library_cells.json",
+        "map.ys",
+        "mapping.log",
+        "yosys-version.log",
+    ] {
+        let mut raw = partial_mapping_receipt("mapped_simulation", false);
+        raw["artifact_sha256"].as_object_mut().unwrap().remove(name);
+        cases.push(raw);
+    }
+    for name in ["mapped-compile.log", "mapped-simulation.log"] {
+        let mut raw: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/research-mapping.json")).unwrap();
+        raw["artifact_sha256"].as_object_mut().unwrap().remove(name);
+        cases.push(raw);
+    }
+    for stage in [
+        serde_json::Value::Null,
+        serde_json::json!("input_validation"),
+        serde_json::json!("mapping"),
+    ] {
+        let mut raw = partial_mapping_receipt("mapped_simulation", false);
+        raw["failure_stage"] = stage;
+        if raw["failure_stage"] == "mapping" {
+            raw["checks"]["mapped_netlist_vs_integer_oracle"] = serde_json::json!("passed");
+        }
+        cases.push(raw);
+    }
+    for name in [
+        "/private/device/stat.json",
+        "../stat.json",
+        "private/../../stat.json",
+        "stat\n.json",
+    ] {
+        let mut raw = partial_mapping_receipt("mapped_simulation", false);
+        raw["artifact_sha256"][name] = serde_json::json!("a".repeat(64));
+        cases.push(raw);
+    }
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    for raw in cases {
+        let action = Invoke::apply(&ProjectAction::ImportVerification {
+            json: raw.to_string(),
+        })
+        .unwrap();
+        assert!(
+            app.invoke(action).is_err(),
+            "unsupported partial claim: {raw}"
+        );
+        assert!(app.state().verifications.is_empty());
+    }
+}
+
+#[test]
+fn mapping_known_device_paths_are_removed_from_collaborative_resource_reads() {
+    let mut raw = partial_mapping_receipt("mapped_simulation", false);
+    raw["input_directory"] = serde_json::json!("/private/device/input");
+    raw["run_directory"] = serde_json::json!("/private/device/run");
+    raw["failure"] = serde_json::json!(
+        "Reported /private/device/input/sample.json failed; see /private/device/run/mapped-compile.log"
+    );
+    let raw = raw.to_string();
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    app.invoke(IMPORT_VERIFICATION.with(raw.clone())).unwrap();
+    let id = crate::VerificationRecord::import(&raw).unwrap().0;
+    let child = crate::resource::verification_resource_id(&id);
+    let content = app
+        .call("read", serde_json::json!({"item":child}))
+        .unwrap()
+        .unwrap();
+    assert!(!content.to_string().contains("/private/device"));
+    assert!(content["receipt"]["input_directory"].is_null());
+    assert!(content["receipt"]["run_directory"].is_null());
+    assert!(
+        content["receipt"]["failure"]
+            .as_str()
+            .unwrap()
+            .contains("<run directory>/mapped-compile.log")
+    );
+    app.read_document(|doc| {
+        use ui::automerge::ReadDoc;
+        let (stored, _) = doc
+            .get(ui::automerge::ROOT, format!("verification:{id}"))
+            .unwrap()
+            .unwrap();
+        assert!(!stored.as_str().unwrap().contains("/private/device"));
+    });
 }

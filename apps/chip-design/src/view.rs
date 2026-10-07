@@ -9,7 +9,7 @@ use ui::widget::{Column, Element, EmptyState, NavShell, Property, PropertyList, 
 
 use crate::model::{AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport, report_id};
 use crate::resource::{ChipProject, ProjectState, import};
-use crate::verification::{CheckStatus, ReceiptStatus, VerificationRecord};
+use crate::verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -123,13 +123,22 @@ impl ResourceApp for ChipDesignShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["empty", "storage-report", "checkpoint-verification"]
+        &[
+            "empty",
+            "storage-report",
+            "checkpoint-verification",
+            "research-mapping",
+        ]
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<ChipProject>> {
         if name == Some("storage-report") {
             let action: ActionRef<ChipProject, String> = ActionRef::new("import-report", &["json"]);
             vec![action.with(include_str!("../fixtures/storage-report.json").to_owned())]
+        } else if name == Some("research-mapping") {
+            let action: ActionRef<ChipProject, String> =
+                ActionRef::new("import-verification", &["json"]);
+            vec![action.with(include_str!("../fixtures/research-mapping.json").to_owned())]
         } else if name == Some("checkpoint-verification") {
             let action: ActionRef<ChipProject, String> =
                 ActionRef::new("import-verification", &["json"]);
@@ -259,6 +268,23 @@ fn check_status(status: &CheckStatus) -> String {
     })
 }
 
+fn mapping_scope(receipt: &VerificationReceipt) -> Vec<Property> {
+    let mut scope = Vec::new();
+    if let Some(count) = receipt.mapped_cell_count {
+        scope.push(property("chip-mapped-cell-count", &count));
+    }
+    if let Some(area) = &receipt.reported_library_area {
+        scope.push(property("chip-library-area", area));
+    }
+    if let Some(target) = receipt.abc_delay_target_ps {
+        scope.push(property("chip-abc-target", &target));
+    }
+    if receipt.manufacturable == Some(false) {
+        scope.push(property("chip-process-scope", &tr("chip-research-only")));
+    }
+    scope
+}
+
 fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyList {
     let receipt = &record.receipt;
     let status = tr(match receipt.status {
@@ -288,6 +314,7 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
     if let Some(size) = receipt.group_size {
         scope.push(property("chip-group-size", &size));
     }
+    scope.extend(mapping_scope(receipt));
     let mut identities = vec![
         property("chip-import-digest", &record.imported_bytes_blake3),
         property("chip-shared-receipt-digest", id),
@@ -307,6 +334,12 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
     }
     if let Some(digest) = &receipt.artifact_validator_sha256 {
         identities.push(property("chip-artifact-validator-digest", digest));
+    }
+    if let Some(digest) = &receipt.mapper_sha256 {
+        identities.push(property("chip-mapper-digest", digest));
+    }
+    if let Some(revision) = &receipt.library_revision {
+        identities.push(property("chip-library-revision", revision));
     }
     if let Some(inputs) = &receipt.input_sha256 {
         identities.extend(

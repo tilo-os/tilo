@@ -70,6 +70,18 @@ pub struct VerificationReceipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default, deserialize_with = "unique_optional_map")]
     pub input_sha256: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapper_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub library_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manufacturable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapped_cell_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_library_area: Option<serde_json::Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abc_delay_target_ps: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,11 +145,22 @@ fn text(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 4096
 }
 
+fn identity_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/'))
+        && value
+            .split('/')
+            .all(|part| !part.is_empty() && !matches!(part, "." | ".."))
+}
+
 fn hashes(values: &BTreeMap<String, String>) -> bool {
     values.len() <= 128
         && values
             .iter()
-            .all(|(name, value)| !name.is_empty() && name.len() <= 512 && digest(value))
+            .all(|(name, value)| identity_name(name) && digest(value))
 }
 
 impl VerificationReceipt {
@@ -183,6 +206,26 @@ impl VerificationReceipt {
                         ],
                     )
                 }
+                "research_library_checkpoint_tile" => {
+                    self.validate_mapping()?;
+                    (
+                        &[
+                            "input_validation",
+                            "library_mapping",
+                            "mapped_netlist_vs_integer_oracle",
+                        ],
+                        &[
+                            "timing_closure",
+                            "physical_layout",
+                            "physical_power",
+                            "manufacturability",
+                            "full_model_area",
+                            "group_rescaling",
+                            "coding_quality",
+                            "offline_checkpoint_payload_authentication",
+                        ],
+                    )
+                }
                 _ => return Err("unsupported hardware evidence class".into()),
             };
         if self
@@ -195,6 +238,10 @@ impl VerificationReceipt {
         {
             return Err("unsupported checks or missing verification exclusions".into());
         }
+        self.validate_terminal(required_checks)
+    }
+
+    fn validate_terminal(&self, required_checks: &[&str]) -> Result<(), String> {
         match self.status {
             ReceiptStatus::Passed => {
                 if self.failure.is_some()
@@ -204,7 +251,13 @@ impl VerificationReceipt {
                     || ["verilator", "yosys"]
                         .iter()
                         .any(|name| !self.tools.contains_key(*name))
-                    || !self.artifact_sha256.contains_key("synthesized.v")
+                    || !self.artifact_sha256.contains_key(
+                        if self.evidence == "research_library_checkpoint_tile" {
+                            "mapped.v"
+                        } else {
+                            "synthesized.v"
+                        },
+                    )
                 {
                     return Err(
                         "passed receipt lacks checks, tools or synthesized artifact identity"
@@ -222,6 +275,16 @@ impl VerificationReceipt {
     fn validate_annotations(&self) -> Result<(), String> {
         if self.schema_version != 1 {
             return Err("unsupported verification receipt schema".into());
+        }
+        if self.evidence != "research_library_checkpoint_tile"
+            && (self.mapper_sha256.is_some()
+                || self.library_revision.is_some()
+                || self.manufacturable.is_some()
+                || self.mapped_cell_count.is_some()
+                || self.reported_library_area.is_some()
+                || self.abc_delay_target_ps.is_some())
+        {
+            return Err("mapping fields cannot annotate a different evidence class".into());
         }
         if !hashes(&self.artifact_sha256)
             || self.excludes.is_empty()
@@ -325,6 +388,151 @@ impl VerificationReceipt {
             .any(|name| !inputs.contains_key(*name))
         {
             return Err("receipt lacks complete integer input identities".into());
+        }
+        Ok(())
+    }
+
+    fn validate_mapping(&self) -> Result<(), String> {
+        if self
+            .mapper_sha256
+            .as_ref()
+            .is_none_or(|value| !digest(value))
+            || self
+                .artifact_validator_sha256
+                .as_ref()
+                .is_none_or(|value| !digest(value))
+            || self.library_revision.as_ref().is_none_or(|value| {
+                value.len() != 40
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+            || self.manufacturable != Some(false)
+            || self.abc_delay_target_ps != Some(1000)
+            || self.synthetic_coefficients.is_some()
+            || self.synthetic_activations.is_some()
+            || self.lanes.is_some()
+            || self.group_size.is_some()
+            || self.input_validation.is_some()
+            || self.sample_manifest_sha256.is_some()
+            || self.verifier_sha256.is_some()
+            || self.failure_stage.as_ref().is_some_and(|value| {
+                !["input_validation", "mapping", "mapped_simulation"].contains(&value.as_str())
+            })
+        {
+            return Err("invalid research mapping identity or scope".into());
+        }
+        self.validate_mapping_values()?;
+        self.validate_mapping_progress()?;
+        if self.checks.get("input_validation") == Some(&CheckStatus::Passed) {
+            let inputs = self
+                .input_sha256
+                .as_ref()
+                .ok_or("mapping lacks validated input identities")?;
+            if !hashes(inputs)
+                || [
+                    "LICENSE",
+                    "README.md",
+                    "NangateOpenCellLibrary_typical.lib",
+                    "sample.json",
+                    "sample.bf16",
+                    "tb.sv",
+                    "vectors.json",
+                    "integer_group_tile.sv",
+                    "fixed_linear_fixture.sv",
+                ]
+                .iter()
+                .any(|name| !inputs.contains_key(*name))
+            {
+                return Err("mapping lacks complete research library and sample identities".into());
+            }
+        } else if !self.checks.is_empty()
+            || self
+                .input_sha256
+                .as_ref()
+                .is_some_and(|value| !hashes(value))
+        {
+            return Err("mapping checks require successful input validation".into());
+        }
+        Ok(())
+    }
+
+    // Detached receipts carry reported metadata and artifact identities. This
+    // importer never reads statistics or authenticates their area/cell totals.
+    fn validate_mapping_values(&self) -> Result<(), String> {
+        let measured = self.checks.get("library_mapping") == Some(&CheckStatus::Passed);
+        if measured != (self.mapped_cell_count.is_some() && self.reported_library_area.is_some())
+            || self.mapped_cell_count == Some(0)
+            || self.reported_library_area.as_ref().is_some_and(|value| {
+                value
+                    .as_f64()
+                    .is_none_or(|number| !number.is_finite() || number <= 0.0)
+            })
+            || self.mapped_cell_count.is_some() != self.reported_library_area.is_some()
+        {
+            return Err("library area requires an observed library mapping".into());
+        }
+        if self.status == ReceiptStatus::Passed && self.failure_stage.is_some() {
+            return Err("passed mapping retains a failure stage".into());
+        }
+        Ok(())
+    }
+
+    fn validate_mapping_progress(&self) -> Result<(), String> {
+        let validated = self.checks.get("input_validation") == Some(&CheckStatus::Passed);
+        let mapped = self.checks.get("library_mapping") == Some(&CheckStatus::Passed);
+        let simulation = self.checks.get("mapped_netlist_vs_integer_oracle");
+        if self.checks.contains_key("library_mapping") && !validated
+            || simulation.is_some() && !mapped
+        {
+            return Err("mapped execution claims require earlier successful checks".into());
+        }
+        if self.checks.contains_key("library_mapping") || simulation.is_some() {
+            self.require_mapping_observation(&[
+                "map.ys",
+                "mapping.log",
+                "verilator-version.log",
+                "yosys-version.log",
+            ])?;
+        }
+        if mapped {
+            self.require_mapping_observation(&[
+                "mapped.v",
+                "mapped.json",
+                "stat.json",
+                "library_cells.v",
+                "library_cells.json",
+            ])?;
+        }
+        if let Some(check) = simulation {
+            self.require_mapping_observation(&["mapped-compile.log"])?;
+            if *check == CheckStatus::Passed {
+                self.require_mapping_observation(&["mapped-simulation.log"])?;
+            }
+        }
+        if self.status != ReceiptStatus::Passed {
+            let valid_stage = match self.failure_stage.as_deref() {
+                Some("input_validation") => self.checks.is_empty(),
+                Some("mapping") => validated && simulation.is_none(),
+                Some("mapped_simulation") => mapped,
+                _ => false,
+            };
+            if !valid_stage {
+                return Err("mapping failure stage contradicts reported progress".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn require_mapping_observation(&self, artifacts: &[&str]) -> Result<(), String> {
+        if ["verilator", "yosys"]
+            .iter()
+            .any(|name| !self.tools.contains_key(*name))
+            || artifacts
+                .iter()
+                .any(|name| !self.artifact_sha256.contains_key(*name))
+        {
+            return Err("mapping milestone lacks reported tool or artifact identities".into());
         }
         Ok(())
     }

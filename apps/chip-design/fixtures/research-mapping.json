@@ -1,0 +1,62 @@
+{
+  "abc_delay_target_ps": 1000,
+  "artifact_sha256": {
+    "library_cells.json": "0b67a93f27dbc566dfe331fcd613a586492c787c337c4829eea466cf2951e150",
+    "library_cells.v": "ee36629d9557ee084600a2f374700e4ddb272301f01782219556e262799b86fb",
+    "map.ys": "a4f7d0eed4e7e7be4f33f910d933a24f2629f13c1b076aafe6ab04d5d434d7cf",
+    "mapped-compile.log": "f83ce8dd72bc86429b5dea92fb9e66ed5bcb2db3120a2c38c4feaa928d437310",
+    "mapped-simulation.log": "f26855e02dd2f5b38ec80de8e1a249c8ad1c607a1003bf296dc3ba2646d1705c",
+    "mapped.json": "e6be3a411636d4027fab8e4504579f7d94a4b6ad409c1288e163d709f3390366",
+    "mapped.v": "73adfa5a7ff83a0bc5f2c51c80a8133a9000d3b3a9cfce4d6d2bab256b5a7404",
+    "mapping.log": "52e3e1fe9657f13f6964eb9867482aa3acc77afcb5d335fe1e7dea6eb552fa98",
+    "stat.json": "1b5d70bd6b3ddfc3a08ef84273fd63739ea4ef2bbc22d5d5d8d437e38194fec6",
+    "verilator-version.log": "2685c296b138bf6c8442b37a13d0e352985705b84dbd6d9cf4388ebcd9671b42",
+    "yosys-version.log": "224fd4f8bc641226fcfb3eb1ed637d53779cc6383a7e2fae4fa37266a1bffe1e"
+  },
+  "artifact_validator_sha256": "1244da2d27e8749d1398804eb6b32921d1908da8680e95640bdb361bc494ca46",
+  "checks": {
+    "input_validation": "passed",
+    "library_mapping": "passed",
+    "mapped_netlist_vs_integer_oracle": "passed"
+  },
+  "declared_toolchain_image": "sha256:da8c943173a98e6a14e9734bcfd2583c64fbf8885228c06f294aab592e1ae403",
+  "evidence": "research_library_checkpoint_tile",
+  "excludes": [
+    "timing_closure",
+    "physical_layout",
+    "physical_power",
+    "manufacturability",
+    "full_model_area",
+    "group_rescaling",
+    "coding_quality",
+    "offline_checkpoint_payload_authentication"
+  ],
+  "input_sha256": {
+    "LICENSE": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+    "NangateOpenCellLibrary_typical.lib": "8d540a4d4cf6d09d27c87ad067857a9c0c2eeb023ab7a56e058cd3113db4e9b1",
+    "README.md": "0e3c8a8cbe5429552764c6531dc454d64f6aa7c1f7128175b5f06070a3de578d",
+    "fixed_linear_fixture.sv": "221cc2a1a8dd257d5c42a8f97fb126d769d13b677a31b5759779fde4bd03472d",
+    "integer_group_tile.sv": "9003fde4687eb30866e539e7250cc05aae76df6a0143d90855b2681de5dd2b2c",
+    "sample.bf16": "e693689b519f229d21363cf92c52be42d0c2de360f79da71ead76cf214a2404a",
+    "sample.json": "ced65fb7b867bae32f20da4b3ef649d566ccd12122b56668b2a880bc4df317a4",
+    "tb.sv": "81f185dad8ee516ce0a2e7b41a90d196204aee602f47cb23cc5e3e339d3c38c2",
+    "vectors.json": "c7a33e86ab78a2a59c2f45c5a7309cb0ad5c2e2aa52ef1ec667068df4b75d0f8"
+  },
+  "library_revision": "e97f852b01dfcaaa1031510d1bc1f4df7bb90139",
+  "manufacturable": false,
+  "mapped_cell_count": 2600,
+  "mapper_sha256": "8c4751147fdd634340716417a330cb6ff4577ff31d3b80925a599fd69aaace1a",
+  "reported_library_area": 3784.382,
+  "schema_version": 1,
+  "status": "passed",
+  "tools": {
+    "verilator": {
+      "executable_sha256": "9722b98811224914cf518c04b809be79bf071a88b99b43dde6960a6eb07eee12",
+      "version": "Verilator 5.046 2026-02-28 rev fedora-5.046"
+    },
+    "yosys": {
+      "executable_sha256": "1f75f6eab588a4af90ac016bb4ff58c5984ab8954519c2f49fe502b90725602a",
+      "version": "Yosys 0.63 (git sha1 3bc26ff4d055adfbba8b424508ab4a36405ffc0b, g++ 15.2.1 -O2 -flto=auto -ffat-lto-objects -fexceptions -fstack-protector-strong -m64 -march=x86-64 -mtune=generic -fasynchronous-unwind-tables -fstack-clash-protection -fcf-protection -mtls-dialect=gnu2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fPIC -O3)"
+    }
+  }
+}
