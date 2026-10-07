@@ -2234,9 +2234,19 @@ mod tests {
             "direct conversations retain the normal resource navigation door"
         );
         assert!(ids(direct).contains(&"open-channel"));
-        for unavailable in ["post", "rename", "archive", "unarchive", "delete"] {
+        for unavailable in [
+            "post",
+            "submit-feedback",
+            "rename",
+            "archive",
+            "unarchive",
+            "delete",
+        ] {
             assert!(!ids(direct).contains(&unavailable), "{unavailable}");
         }
+        let ordinary_channel = find(&published.children, "chat.channel:c_general")
+            .expect("ordinary channels still publish reviewed feedback");
+        assert!(ids(ordinary_channel).contains(&"submit-feedback"));
 
         let ordinary = send_message_action(
             &channel,
