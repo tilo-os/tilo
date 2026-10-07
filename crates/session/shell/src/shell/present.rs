@@ -162,25 +162,31 @@ struct FrameLifecycle {
     phases: Option<FramePhaseTiming>,
 }
 
-fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
-    let FrameLifecycle {
-        queue_wait,
-        render,
-        total,
-        inflight_at_enqueue,
-        input_age_at_enqueue,
-        phases,
-    } = timing;
-    // Keep the first completed presentation observable even when
-    // it is fast and the event loop then parks indefinitely.
-    if phases.is_some()
-        || serial == 1
-        || queue_wait >= SLOW_FRAME_LIFECYCLE
-        || render >= SLOW_FRAME_LIFECYCLE
-        || total >= SLOW_FRAME_LIFECYCLE
-    {
-        eprintln!(
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={}",
+#[derive(Clone, Copy)]
+struct FrameLifecycleRecord {
+    serial: u64,
+    revision: u64,
+    timing: FrameLifecycle,
+}
+
+impl std::fmt::Display for FrameLifecycleRecord {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            serial,
+            revision,
+            timing,
+        } = *self;
+        let FrameLifecycle {
+            queue_wait,
+            render,
+            total,
+            inflight_at_enqueue,
+            input_age_at_enqueue,
+            phases,
+        } = timing;
+        write!(
+            output,
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} cpu_copy_us={} readback_bytes={} output_bytes={}",
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -193,7 +199,74 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
             phases.map_or(0, |value| value.paint.settle_us),
             phases.map_or(0, |value| value.paint.backdrop_us),
             phases.map_or(0, |value| value.kms_retirement_us),
+            phases.map_or(0, |value| value.paint.cpu_copy_swizzle_us),
+            phases.map_or(0, |value| value.paint.readback_bytes),
+            phases.map_or(0, |value| value.paint.cpu_output_bytes),
+        )
+    }
+}
+
+fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
+    // Keep the first completed presentation observable even when
+    // it is fast and the event loop then parks indefinitely.
+    if timing.phases.is_some()
+        || serial == 1
+        || timing.queue_wait >= SLOW_FRAME_LIFECYCLE
+        || timing.render >= SLOW_FRAME_LIFECYCLE
+        || timing.total >= SLOW_FRAME_LIFECYCLE
+    {
+        eprintln!(
+            "{}",
+            FrameLifecycleRecord {
+                serial,
+                revision,
+                timing
+            }
         );
+    }
+}
+
+#[cfg(test)]
+mod phase_record_tests {
+    use super::*;
+
+    #[test]
+    fn same_frame_phase_export_distinguishes_readback_zero_and_missing_samples() {
+        let mut record = FrameLifecycleRecord {
+            serial: 41,
+            revision: 73,
+            timing: FrameLifecycle {
+                queue_wait: Duration::ZERO,
+                render: Duration::ZERO,
+                total: Duration::ZERO,
+                inflight_at_enqueue: 1,
+                input_age_at_enqueue: None,
+                phases: None,
+            },
+        };
+        let absent = record.to_string();
+        assert!(absent.contains("serial=41 "));
+        assert!(absent.contains("revision=73 phase_timing=false"));
+        assert!(absent.ends_with("cpu_copy_us=0 readback_bytes=0 output_bytes=0"));
+        record.timing.phases = Some(FramePhaseTiming {
+            paint: super::super::render::paint::BridgePhaseTiming {
+                cpu_copy_swizzle_us: 17,
+                readback_bytes: 4096,
+                cpu_output_bytes: 2048,
+                ..Default::default()
+            },
+            kms_retirement_us: 19,
+        });
+        let readback = record.to_string();
+        assert!(readback.contains("revision=73 phase_timing=true"));
+        assert!(readback.ends_with(
+            "kms_retirement_us=19 cpu_copy_us=17 readback_bytes=4096 output_bytes=2048"
+        ));
+        record.timing.phases.as_mut().unwrap().paint =
+            super::super::render::paint::BridgePhaseTiming::default();
+        let direct = record.to_string();
+        assert!(direct.contains("phase_timing=true"));
+        assert!(direct.ends_with("cpu_copy_us=0 readback_bytes=0 output_bytes=0"));
     }
 }
 

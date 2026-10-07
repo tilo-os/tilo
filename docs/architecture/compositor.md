@@ -341,3 +341,28 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 - `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
 - `crates/session/shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
 - `crates/session/shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.
+
+### Live compositor phase diagnostics
+
+The authenticated, unlocked device owner can use the existing
+`session-diagnostics` provider's `configure@session-diagnostics` action with
+`gpu_stages: true` to export phase records from the current DRM presenter.
+The presenter captures its `LaunchSession` when the backend transfers it to the
+render thread. Later owner configuration applies to that captured session, not
+an ambient render-thread session or another desktop.
+
+`FRAME-LIFECYCLE` retains its exact revision/serial and separates queue wait,
+render work and actual KMS retirement, including same-frame CPU-copy time,
+readback bytes and CPU output bytes. The bridge's CPU phase samples distinguish
+submission, GPU-completion/readback-map wait, CPU copy and byte counts; absent
+bridge samples remain absent. These are diagnostic costs, not a key-to-present
+measurement. Join trusted physical input, the changed app revision and standard
+presentation feedback before reporting input latency.
+
+The response reports `live_compositor_phase_export` separately from the
+subsequent-launch app diagnostics. The Vello dispatch-stage observer and GPU
+timestamp/dispatch-timestamp options remain startup-only: changing them does not recreate or claim to reconfigure the
+current GPU renderer. Renderer/process identities and matched-current GPU sample
+coverage must still accompany any GPU-stage analysis. Disable `gpu_stages` after
+the bounded capture to return to ordinary aggregate reporting; the legacy
+`TILO_DRM_PHASE_TRACE` startup override continues to take precedence.

@@ -2463,7 +2463,7 @@ display-confirm-answer-failed = Die Antwort zur Anzeige konnte nicht gespeichert
 display-sheet-saving-layout = Anordnung wird gespeichert…
 
 session-diagnostics-title = Zeitdiagnose der Sitzung
-session-diagnostics-configure = Zeitdiagnose für folgende App-Starts konfigurieren
+session-diagnostics-configure = Zeitdiagnose für die Sitzung konfigurieren
 session-diagnostics-inspect = Zeitdiagnose der Sitzung ansehen
 session-diagnostics-presentation = Inhaltsfreie Eingabe- und Präsentationszeiten erfassen
 session-diagnostics-gpu_stages = Zeiten der GPU-Verarbeitungsschritte erfassen
