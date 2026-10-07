@@ -1624,13 +1624,21 @@ fn page_body_child(page: &PageMeta, state: Option<&tilo_document::RichTextState>
     #[cfg(test)]
     let _profile = crate::cpu_profile::Phase::start("page_body_resource");
     let id = page_body_id(page.id);
-    let mut body = ui::tilo_resource::publish_child::<RichText, crate::resource::Notebook>(
-        &id,
-        &page.title,
-        state,
-        page_body_edit(page.id),
-    );
-    stamp_published_dynamic_continuations(&mut body, id.as_bytes());
+    let mut body = {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("page_body_publish");
+        ui::tilo_resource::publish_child::<RichText, crate::resource::Notebook>(
+            &id,
+            &page.title,
+            state,
+            page_body_edit(page.id),
+        )
+    };
+    {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("page_body_continuations");
+        stamp_published_dynamic_continuations(&mut body, id.as_bytes());
+    }
     body
 }
 
