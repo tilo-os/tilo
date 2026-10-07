@@ -631,7 +631,7 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
-        if !self.collaboration.manager.is_connected() {
+        if !self.collaboration.manager.is_connected() || !self.published_action_history_ready() {
             return;
         }
         if self.collaboration.manager.take_action_surface_failed() {
@@ -1664,11 +1664,42 @@ impl App {
             })
     }
 
+    fn published_action_directory_page(
+        &mut self,
+        query: runtime_collab::ActionDirectoryQuery,
+    ) -> runtime_collab::ActionDirectoryPage {
+        if self.published_action_history_ready() {
+            self.action_directory_page(query)
+        } else {
+            runtime_collab::ActionDirectoryPage {
+                revision: String::new(),
+                rows: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: false,
+                stale_cursor: !query.revision.is_empty(),
+                budget_exhausted: true,
+            }
+        }
+    }
+
+    fn published_action_directory_resolution(
+        &mut self,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> runtime_collab::ActionDirectoryResolution {
+        if self.published_action_history_ready() {
+            self.resolve_action_directory(revision, resource, action)
+        } else {
+            runtime_collab::ActionDirectoryResolution::Unavailable
+        }
+    }
+
     fn pump_action_directory_requests(&mut self) {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.action_directory_page(query));
+                    let _ = reply.send(self.published_action_directory_page(query));
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,
@@ -1676,8 +1707,9 @@ impl App {
                     action,
                     reply,
                 } => {
-                    let _ =
-                        reply.send(self.resolve_action_directory(&revision, &resource, &action));
+                    let _ = reply.send(
+                        self.published_action_directory_resolution(&revision, &resource, &action),
+                    );
                 }
             }
         }
@@ -1693,6 +1725,15 @@ impl App {
         ambient_context: Option<&tilo_actions::ActionContext>,
     ) {
         if self.action_publication_failure.is_some() {
+            return;
+        }
+        if !self.published_action_history_ready() {
+            // An already accepted delivery lost its original owner-history
+            // custody. Run no handler; disconnect retains admitted uncertainty.
+            self.action_publication_failure = Some(
+                "Original document history is unavailable; action outcome unknown. Reconnect and reconcile before retrying.".into(),
+            );
+            self.collaboration.manager.stop_after_publication_failure();
             return;
         }
         let address = tilo_actions::ActionAddress::new(resource, action);
@@ -2125,8 +2166,10 @@ impl App {
         // edit intact; the executor still receives the same committed baseline.
         let before = self.state.doc.get_heads();
         let route = self.primary_document_route();
-        let started =
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
+        let started = crate::invocation_scope::with_mounted_document(
+            route.clone(),
+            &mut self.state.doc,
+            |doc| {
                 crate::bound_dispatch::execute_resource_operation(
                     self.root_widget.as_mut(),
                     doc,
@@ -2134,6 +2177,7 @@ impl App {
                     &self.actions.action_registry,
                     self.actions.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: route.clone(),
                         address,
                         resource,
                         spec,
@@ -2147,7 +2191,8 @@ impl App {
                         scope,
                     },
                 )
-            })?;
+            },
+        )?;
         if before != self.state.doc.get_heads() {
             self.state.record_committed_action_authored(
                 before,
@@ -2802,28 +2847,33 @@ impl App {
             })()
         } else {
             let route = self.primary_document_route();
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
-                crate::bound_dispatch::execute_resource_operation(
-                    self.root_widget.as_mut(),
-                    doc,
-                    &self.state.root,
-                    &self.actions.action_registry,
-                    self.actions.action_transport.as_mut(),
-                    crate::bound_dispatch::ResourceOperation {
-                        address,
-                        resource,
-                        spec: resolved,
-                        encoded,
-                        actor,
-                        local_author: &self.collaboration.local_author.0,
-                        broker_admitted,
-                        invocation: operation_invocation,
-                        source_invocation: broker_admitted.then_some(operation_invocation),
-                        ambient: ambient_context,
-                        scope: None,
-                    },
-                )
-            })
+            crate::invocation_scope::with_mounted_document(
+                route.clone(),
+                &mut self.state.doc,
+                |doc| {
+                    crate::bound_dispatch::execute_resource_operation(
+                        self.root_widget.as_mut(),
+                        doc,
+                        &self.state.root,
+                        &self.actions.action_registry,
+                        self.actions.action_transport.as_mut(),
+                        crate::bound_dispatch::ResourceOperation {
+                            target_route: route.clone(),
+                            address,
+                            resource,
+                            spec: resolved,
+                            encoded,
+                            actor,
+                            local_author: &self.collaboration.local_author.0,
+                            broker_admitted,
+                            invocation: operation_invocation,
+                            source_invocation: broker_admitted.then_some(operation_invocation),
+                            ambient: ambient_context,
+                            scope: None,
+                        },
+                    )
+                },
+            )
         };
         let started = match operation_result {
             Ok(started) => started,

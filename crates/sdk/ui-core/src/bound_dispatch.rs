@@ -1824,6 +1824,7 @@ fn execute_document(
 
 /// A resolved, encoded resource operation and the caller it runs for.
 pub(crate) struct ResourceOperation<'a> {
+    pub(crate) target_route: Option<crate::collaboration::RouteSpec>,
     pub(crate) address: &'a tilo_actions::ActionAddress,
     pub(crate) resource: &'a tilo_actions::Resource,
     pub(crate) spec: &'a tilo_actions::ActionSpec,
@@ -1850,6 +1851,7 @@ pub(crate) fn execute_resource_operation(
     operation: ResourceOperation<'_>,
 ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
     let ResourceOperation {
+        target_route,
         address,
         resource,
         spec,
@@ -1975,6 +1977,9 @@ pub(crate) fn execute_resource_operation(
             selected.read(scope, doc).map_err(refused)?,
         )
     } else {
+        let target = target_route.map(|route| {
+            crate::widget::resource_operation::OperationTarget::new(route, address.clone())
+        });
         let op = match scope {
             Some(scope) => crate::widget::ResourceOperation::scoped(
                 scope,
@@ -1989,6 +1994,7 @@ pub(crate) fn execute_resource_operation(
                 &encoded.payload,
             ),
         };
+        let op = op.with_target(target.as_ref());
         widget
             .start_operation(&op, &mut crate::widget::Edits::lend(doc), path)
             .map_err(tilo_actions::DoorError::Failed)?
@@ -2143,6 +2149,7 @@ pub(crate) fn invoke_resource_action(
                             registry,
                             transport,
                             ResourceOperation {
+                                target_route: route.clone(),
                                 address: &target.address.address,
                                 resource,
                                 spec,

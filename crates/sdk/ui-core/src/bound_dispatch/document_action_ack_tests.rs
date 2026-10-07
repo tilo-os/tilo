@@ -132,6 +132,7 @@ fn execute(
         &registry,
         &mut Host,
         ResourceOperation {
+            target_route: None,
             address: &tilo_actions::ActionAddress::new("ack.owner", "write"),
             resource: &resource,
             spec: &spec,
@@ -220,6 +221,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                 &registry,
                 &mut Host,
                 ResourceOperation {
+                    target_route: None,
                     address: &tilo_actions::ActionAddress::new("owner", "run"),
                     resource: &resource,
                     spec: &spec,

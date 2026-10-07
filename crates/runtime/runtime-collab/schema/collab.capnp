@@ -393,6 +393,11 @@ interface ChannelHandle {
   # it hands back. The app is the certified route's.
   liveActivity @55 () -> (activity :LiveActivity);
 
+  # Execute a host-approved check only for this actual target worker's retained
+  # accepted invocation. Request has correlation + check ID, never argv/path/env.
+  # Unsupported brokers refuse; clients must not fall back to raw execution.
+  approvedCheck @56 (request :Data) -> (receipt :Data);
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.

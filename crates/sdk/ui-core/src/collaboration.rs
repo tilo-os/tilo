@@ -41,6 +41,8 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPOR
 pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 
 #[cfg(feature = "broker-transport")]
+pub(crate) mod approved_checks;
+#[cfg(feature = "broker-transport")]
 mod broker;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
@@ -1625,6 +1627,17 @@ impl CollaborationManager {
         let _ = self.try_send_to_route(route, req);
     }
 
+    /// Whether the actual route's original document history has been applied.
+    /// This is the same transport gate used before document publication.
+    pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
+        let channel = route.map(RouteSpec::channel_id);
+        !self.awaiting_primary
+            && match &self.backend {
+                Backend::Transport(transport) => transport.document_publishable(channel.as_deref()),
+                Backend::Disabled(_) => false,
+            }
+    }
+
     /// Test-only: whether `route` has resolved its document mode, so a
     /// document mutation on it would be admitted rather than refused.
     #[cfg(test)]
@@ -1650,6 +1663,10 @@ impl CollaborationManager {
         req: CollabRequest,
     ) -> Result<(), CollabSendError> {
         if self.missing_required_document_custody(&req) {
+            tracing::debug!(
+                cause = "missing_committed_document_custody",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if matches!(req, CollabRequest::Hello { .. }) {
@@ -1657,6 +1674,10 @@ impl CollaborationManager {
             return Err(CollabSendError::Unavailable);
         }
         if self.awaiting_primary {
+            tracing::debug!(
+                cause = "primary_join_pending",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if let CollabRequest::NativeMediaCommand {
@@ -1682,12 +1703,27 @@ impl CollaborationManager {
             Backend::Disabled(_) => false,
         };
         if unpublishable {
+            let required = match &self.backend {
+                Backend::Transport(transport) => {
+                    transport.committed_document_required(&route.channel_id())
+                }
+                Backend::Disabled(_) => false,
+            };
+            tracing::debug!(
+                cause = "original_history_unapplied",
+                required,
+                "document route handoff refused"
+            );
             // Join first; the route's original history must be applied
             // before any local mutation is published on it.
             let _ = self.submit(TransportCommand::Join(route));
             return Err(CollabSendError::Unavailable);
         }
-        Ok(self.submit(TransportCommand::ToRoute(route, req))?)
+        let result = self.submit(TransportCommand::ToRoute(route, req));
+        if let Err(error) = &result {
+            tracing::debug!(%error, cause = "transport_queue_refusal", "document route handoff refused");
+        }
+        Ok(result?)
     }
 
     pub(crate) fn document_publication_failed(&self) -> bool {
