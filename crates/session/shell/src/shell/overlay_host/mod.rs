@@ -11626,9 +11626,13 @@ impl ShellOverlayHost {
     /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
+        (self.palette_visible && self.palette.get_rect().contains(p))
+            || self.cursor_over_other_open_overlay(p)
+    }
+
+    fn cursor_over_other_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         self.dictation_pointer_at((p.x, p.y))
-            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -12282,8 +12286,7 @@ impl ShellOverlayHost {
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let covered = self
             .last_cursor
@@ -12307,14 +12310,14 @@ impl ShellOverlayHost {
             let changed = self.notification_stack.handle_pointer_event(
                 &ChromeNotifications::new(&chrome),
                 event,
-                scale_factor,
+                ctx.scale_factor,
                 &mut banner_handled,
             );
             if changed {
                 chrome.borrow_mut().bump();
             }
             if banner_handled {
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -12331,7 +12334,20 @@ impl ShellOverlayHost {
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
         {
-            *handled = true;
+            // The palette owns hover before this guard isolates the app below.
+            // Another covering overlay keeps its existing input priority.
+            if self.palette_visible
+                && self.palette.get_rect().contains(p)
+                && !self.cursor_over_other_open_overlay(p)
+            {
+                let palette_child = ctx
+                    .taffy
+                    .children(ctx.node_id)
+                    .ok()
+                    .and_then(|children| children.get(1).copied());
+                self.route_palette_event(event, ctx, palette_child);
+            }
+            *ctx.handled = true;
             return true;
         }
         false
@@ -18806,7 +18822,10 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        if self.route_absorbable_pointer_and_toast_click(event, ctx.scale_factor, ctx.handled) {
+        if self.route_absorbable_pointer_and_toast_click(
+            event,
+            &mut ctx.reborrow(ctx.path, ctx.node_id),
+        ) {
             return;
         }
         if self.route_permission_prompt_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
