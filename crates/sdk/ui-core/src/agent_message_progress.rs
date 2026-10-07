@@ -95,6 +95,41 @@ impl AgentMessageProgressReader {
             .is_some_and(|entry| entry.unavailable)
     }
 
+    /// The next bounded observation wake, not an animation request. A view
+    /// calls `refresh` at this deadline; suspended or terminal originals need
+    /// no timer and resume only through explicit user demand.
+    pub fn next_wake_deadline(&self) -> Option<Instant> {
+        self.room?;
+        self.visible
+            .values()
+            .filter(|entry| {
+                !entry.suspended
+                    && !entry.progress.as_ref().is_some_and(|progress| {
+                        matches!(
+                            progress.phase,
+                            AgentMessagePublicPhase::Committed { .. }
+                                | AgentMessagePublicPhase::NeedsAttention(_)
+                        )
+                    })
+            })
+            .filter_map(|entry| {
+                if let Some((_, sent)) = entry.pending {
+                    return sent.checked_add(READ_TIMEOUT);
+                }
+                let next = entry
+                    .last_request
+                    .and_then(|sent| sent.checked_add(READ_INTERVAL))
+                    .unwrap_or_else(crate::time::now);
+                Some(
+                    entry
+                        .first_request
+                        .and_then(|first| first.checked_add(OBSERVATION_WINDOW))
+                        .map_or(next, |end| next.min(end)),
+                )
+            })
+            .min()
+    }
+
     /// Demand reads at most once per two seconds per selected original. An
     /// unavailable result does not erase the last truthful milestone. Terminal
     /// milestones, absence and unknown reads stop automatic demand. Quiet
@@ -230,6 +265,45 @@ mod tests {
             request_id: id,
             result: Ok(Some(AgentMessagePublicProgress { phase, generation })),
         });
+    }
+
+    #[test]
+    fn observation_deadlines_stop_when_demand_is_suspended_or_terminal() {
+        let mut reader = AgentMessageProgressReader::default();
+        assert!(reader.next_wake_deadline().is_none());
+        let parent = original(61);
+        reader
+            .set_visible(uuid::Uuid::from_u128(60), std::slice::from_ref(&parent))
+            .unwrap();
+        let now = crate::time::now();
+        reader.refresh_at(now);
+        let id = request(&mut reader);
+        assert_eq!(reader.next_wake_deadline(), Some(now + READ_TIMEOUT));
+        respond(&mut reader, id, AgentMessagePublicPhase::WaitingForReply, 1);
+        assert_eq!(reader.next_wake_deadline(), Some(now + READ_INTERVAL));
+        reader.refresh_at(now + READ_INTERVAL);
+        let id = request(&mut reader);
+        respond(
+            &mut reader,
+            id,
+            AgentMessagePublicPhase::Committed {
+                reply_row: original(62).1,
+            },
+            2,
+        );
+        assert!(reader.next_wake_deadline().is_none());
+
+        reader.cancel();
+        reader
+            .set_visible(uuid::Uuid::from_u128(60), std::slice::from_ref(&parent))
+            .unwrap();
+        reader.refresh_at(now);
+        request(&mut reader);
+        reader.refresh_at(now + READ_TIMEOUT);
+        assert!(reader.unavailable(parent.0));
+        assert!(reader.next_wake_deadline().is_none());
+        reader.cancel();
+        assert!(reader.next_wake_deadline().is_none());
     }
 
     #[test]
