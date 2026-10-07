@@ -665,7 +665,7 @@ impl DestinationNames {
             return self.original.clone();
         }
         let mut name = self.stem.clone();
-        name.push(format!(" ({suffix})"));
+        name.push(format!(" {suffix}"));
         if let Some(extension) = &self.extension {
             name.push(".");
             name.push(extension);
