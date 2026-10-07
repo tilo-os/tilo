@@ -279,7 +279,7 @@ fn read_frame(peer: &mut UnixStream, stage: &str) -> Qualification<serde_json::V
     peer.read_exact(&mut bytes)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     if value.get("stage").and_then(serde_json::Value::as_str) != Some(stage) {
-        return Err("actual fixture stage changed".into());
+        return Err(format!("actual fixture stage changed (expected {stage}): {value}").into());
     }
     Ok(value)
 }
@@ -344,6 +344,41 @@ fn queued(
 #[test]
 fn signed_kernel_recipient_accepts_and_reports_through_actual_capnp_and_native_owner() {
     actual_enrolled_transport(true).unwrap();
+}
+
+#[test]
+fn signed_descriptor_empty_join_rejects_wrong_bindings_and_replay_before_native_acceptance() {
+    let mut fixture = running_fixture_join(true, false).unwrap();
+    fixture.accept_and_progress().unwrap();
+    fixture.finish().unwrap();
+    fixture.stop().unwrap();
+}
+
+#[test]
+fn current_native_authority_revocation_refuses_empty_descriptor_join() {
+    let mut fixture = running_fixture_join(true, true).unwrap();
+    read_frame(&mut fixture.model_peer, "ready-to-join").unwrap();
+    fixture.remove_membership().unwrap();
+    fixture.model_peer.write_all(b"J").unwrap();
+    let refused = read_frame(&mut fixture.model_peer, "join-refused").unwrap();
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("enrolled Agent membership revoked")
+                || error.contains("enrolled process custody retired")),
+        "only current authority revocation or its resulting custody retirement explains this refusal: {refused}"
+    );
+    let snapshot = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)
+        .unwrap();
+    let (_, control) = task_view(&snapshot, &fixture.task).unwrap();
+    assert_eq!(control.run_epoch, 0);
+    assert!(control.active_run.is_none());
+    assert!(control.execution.is_none());
+    fixture.model_peer.write_all(b"E").unwrap();
+    fixture.stop().unwrap();
 }
 
 #[test]
@@ -465,6 +500,26 @@ fn certified_person_channel_cannot_subscribe_to_managed_task_custody() {
 }
 
 fn running_fixture() -> Qualification<RunningFixture> {
+    running_fixture_join(false, false)
+}
+
+fn foreign_join_identity(room: &str) -> Qualification<Vec<u8>> {
+    let person_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
+    let certificate =
+        tilo_joined_room::testing::certificate(&person_key, &device, "Other genuine device");
+    Ok(runtime_collab::CertifiedJoinIdentity {
+        workspace_id: room.into(),
+        device_certificate: serde_json::to_vec(&certificate)?,
+        proof: device
+            .sign(&runtime_identity::collaboration_join_signing_bytes(room))
+            .to_bytes()
+            .to_vec(),
+    }
+    .encode()?)
+}
+
+fn running_fixture_join(empty: bool, gate_join: bool) -> Qualification<RunningFixture> {
     let root = tempfile::tempdir()?;
     let (native, key, certificate) = native::installed(root.path())?;
     let task = queued(&native, &key, &certificate)?;
@@ -533,6 +588,9 @@ fn running_fixture() -> Qualification<RunningFixture> {
     let presentation = serde_json::to_vec(&serde_json::json!({
         "channel": tilo_action_broker::route::CrdtRoute::app("so.tilo.agent", native.room.to_string()).channel_key(),
         "presentation": presentation,
+        "empty_descriptor_probe": empty,
+        "gate_join": gate_join,
+        "foreign_presentation": if empty { foreign_join_identity(&native.room.to_string())? } else { Vec::new() },
     }))?;
     identity_peer.write_all(&u32::try_from(presentation.len())?.to_le_bytes())?;
     identity_peer.write_all(&presentation)?;
@@ -649,7 +707,7 @@ impl RunningFixture {
         self.wait_retired()?;
         Ok(())
     }
-    fn revoke(&self) -> Qualification<()> {
+    fn remove_membership(&self) -> Qualification<()> {
         let request = OwnerCommitRequest {
             room: self.native.room.to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
@@ -670,6 +728,10 @@ impl RunningFixture {
                 SystemTime::now(),
             )?
             .validate_for(&request)?;
+        Ok(())
+    }
+    fn revoke(&self) -> Qualification<()> {
+        self.remove_membership()?;
         self.wait_retired()?;
         require(
             self.process.facts().is_ok(),

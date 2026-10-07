@@ -6633,19 +6633,26 @@ impl collab_service::Server for CapnpCollabService {
                 .to_owned();
             let identity = reader.get_identity()?;
             let route = CrdtRoute::from_channel_key(&channel_id);
-            let mut verified_identity = verify_join_identity_with_host_scope(
-                &route,
-                identity,
-                state.membership.as_ref(),
-                state
-                    .trusted_devices
-                    .as_ref()
-                    .map(|devices| devices.as_slice()),
-                state.certificate_authority.get().map(Arc::as_ref),
-                self.worker
-                    .as_ref()
-                    .and_then(|worker| worker.host_scope.as_ref()),
-            )
+            let descriptor_scope = self.worker.as_ref().and_then(|worker| worker.managed_scope);
+            let mut verified_identity = if identity.is_empty()
+                && let Some(scope) = descriptor_scope
+            {
+                enrolled_tasks::descriptor_identity(&state, scope, peer_id, &route)
+            } else {
+                verify_join_identity_with_host_scope(
+                    &route,
+                    identity,
+                    state.membership.as_ref(),
+                    state
+                        .trusted_devices
+                        .as_ref()
+                        .map(|devices| devices.as_slice()),
+                    state.certificate_authority.get().map(Arc::as_ref),
+                    self.worker
+                        .as_ref()
+                        .and_then(|worker| worker.host_scope.as_ref()),
+                )
+            }
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;

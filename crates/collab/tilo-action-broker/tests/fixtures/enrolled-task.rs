@@ -33,7 +33,7 @@ fn gate(stream: &mut UnixStream, expected: u8) -> Result<()> {
 fn exercise(
     identity: serde_json::Value,
     context: serde_json::Value,
-    mut model: UnixStream,
+    model: UnixStream,
 ) -> capnp::capability::Promise<(), Box<dyn std::error::Error>> {
     capnp::capability::Promise::from_future(async move {
         let agent = context
@@ -44,15 +44,13 @@ fn exercise(
             .get("channel")
             .and_then(serde_json::Value::as_str)
             .ok_or("channel absent")?;
-        let presentation: Vec<u8> = serde_json::from_value(
-            identity
-                .get("presentation")
-                .ok_or("presentation absent")?
-                .clone(),
-        )?;
-        let channel = runtime_collab::try_connect()?
-            .join_channel_as_kind(channel_key, &presentation, agent, "agent", "")
-            .await?;
+        let (channel, mut model) = fixture_channel(
+            identity.clone(),
+            channel_key.to_owned(),
+            agent.to_owned(),
+            model,
+        )
+        .await?;
         let stream = channel.subscribe_enrolled_tasks().await?;
         let envelope = stream.read().await?;
         // A one-task stream must remain open during work, not immediately report retirement.
@@ -106,6 +104,106 @@ fn exercise(
             &serde_json::json!({"stage":"accepted", "acceptance":accepted}),
         )?;
         reports(channel, accepted, model).await
+    })
+}
+
+fn fixture_channel(
+    identity: serde_json::Value,
+    channel_key: String,
+    agent: String,
+    mut model: UnixStream,
+) -> capnp::capability::Promise<
+    (runtime_collab::ChannelHandle, UnixStream),
+    Box<dyn std::error::Error>,
+> {
+    capnp::capability::Promise::from_future(async move {
+        let presentation: Vec<u8> = serde_json::from_value(
+            identity
+                .get("presentation")
+                .ok_or("presentation absent")?
+                .clone(),
+        )?;
+        let client = runtime_collab::try_connect()?;
+        let channel = if identity
+            .get("empty_descriptor_probe")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            if identity
+                .get("gate_join")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                frame(&mut model, &serde_json::json!({"stage":"ready-to-join"}))?;
+                gate(&mut model, b'J')?;
+            }
+            let foreign: Vec<u8> = serde_json::from_value(
+                identity
+                    .get("foreign_presentation")
+                    .ok_or("foreign presentation absent")?
+                    .clone(),
+            )?;
+            match empty_descriptor_join(client, channel_key, agent, foreign).await {
+                Ok(channel) => channel,
+                Err(error) => {
+                    frame(
+                        &mut model,
+                        &serde_json::json!({"stage":"join-refused", "error":error.to_string()}),
+                    )?;
+                    gate(&mut model, b'E')?;
+                    return Err(error);
+                }
+            }
+        } else {
+            client
+                .join_channel_as_kind(&channel_key, &presentation, &agent, "agent", "")
+                .await?
+        };
+        Ok((channel, model))
+    })
+}
+
+fn empty_descriptor_join(
+    client: runtime_collab::CollabClient,
+    channel: String,
+    agent: String,
+    foreign: Vec<u8>,
+) -> capnp::capability::Promise<runtime_collab::ChannelHandle, Box<dyn std::error::Error>> {
+    capnp::capability::Promise::from_future(async move {
+        if client
+            .join_channel_as_kind(&channel, &foreign, &agent, "agent", "")
+            .await
+            .is_ok()
+        {
+            return Err(
+                "another genuine certified device borrowed managed descriptor custody".into(),
+            );
+        }
+        // Real transport adversarial requests must leave the legitimate admission unconsumed.
+        for (route, handle, kind) in [
+            (format!("{channel}/wrong-record"), agent.as_str(), "agent"),
+            (channel.clone(), "wrong-agent", "agent"),
+            (channel.clone(), agent.as_str(), "person"),
+        ] {
+            if client
+                .join_channel_as_kind(&route, &[], handle, kind, "")
+                .await
+                .is_ok()
+            {
+                return Err("altered descriptor join accepted".into());
+            }
+        }
+        let admitted = client
+            .join_channel_as_kind(&channel, &[], &agent, "agent", "")
+            .await?;
+        if client
+            .join_channel_as_kind(&channel, &[], &agent, "agent", "")
+            .await
+            .is_ok()
+        {
+            return Err("consumed descriptor channel join replay accepted".into());
+        }
+        Ok(admitted)
     })
 }
 
