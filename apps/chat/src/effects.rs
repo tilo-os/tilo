@@ -287,6 +287,7 @@ impl ChatApp {
         Ok(Effected::value(serde_json::json!({
             "channel": self.native_voice.channel,
             "reported": self.native_voice.snapshot,
+            "clientIssue": self.native_voice.client_issue,
             "refreshRequested": true,
         })))
     }

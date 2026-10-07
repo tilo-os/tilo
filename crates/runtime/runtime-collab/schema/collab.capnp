@@ -276,7 +276,7 @@ interface ChannelHandle {
   # Read the current owner-confirmed control frontier for one exact leased
   # run. This is the direction/cancellation carrier; JSON is closed and
   # versioned independently from Cap'n Proto evolution.
-  taskRunControl @56 (runId :UInt64, lease :Text) -> (controlJson :Text);
+  taskRunControl @58 (runId :UInt64, lease :Text) -> (controlJson :Text);
 
   # Record a terminal effect started by this application's own local UI.
   # The broker re-resolves resource/action against the connection's current
@@ -399,24 +399,33 @@ interface ChannelHandle {
   # it hands back. The app is the certified route's.
   liveActivity @55 () -> (activity :LiveActivity);
 
+  # Local Files only. Original invocation custody is revalidated when present;
+  # offers never delegate it and cannot be redeemed outside this workspace.
+  localFileClipboard @56 (commandJson :Data, onBehalfOf :Data) -> (replyJson :Data);
+
+  # Device-local output-only PCM and controls. Caller/app/workspace/record are
+  # derived from the launcher-attested channel. No host socket or capture API
+  # is returned. The closed command is bounded to 32 KiB and 20 ms stereo PCM.
+  audioOutputCommand @57 (command :Data) -> (reply :Data);
+
   # Native addressed contributions use the existing complete signed-document
   # door, not incomplete native document frames. The opaque source token came
   # from this actual stable invocation stream; no caller/room/Agent authority
   # can be asserted here. Upload and aggregate budgets are checked before
   # allocating, and a reference binds the actual signed-op bytes at send@0.
-  openDocumentContribution @57 (sourceToken :Data, totalBytes :UInt64)
+  openDocumentContribution @59 (sourceToken :Data, totalBytes :UInt64)
       -> (writer :DocumentContributionWriter, reference :Data);
 
   # Actual managed Agent private input, with no fallback to Chat access.
-  subscribeAgentMessages @58 () -> (stream :AgentMessageStream);
-  acceptAgentMessage @59 (invocation :Text, sourceDigest :Data) -> ();
-  prepareAgentMessageReply @60 (invocation :Text, sourceDigest :Data, text :Text) -> ();
-  commitAgentMessageReply @61 (invocation :Text, sourceDigest :Data) -> ();
+  subscribeAgentMessages @60 () -> (stream :AgentMessageStream);
+  acceptAgentMessage @61 (invocation :Text, sourceDigest :Data) -> ();
+  prepareAgentMessageReply @62 (invocation :Text, sourceDigest :Data, text :Text) -> ();
+  commitAgentMessageReply @63 (invocation :Text, sourceDigest :Data) -> ();
   # Read-only recovery for an exact original on this actual managed process.
-  observeAgentMessage @62 (invocation :Text, sourceDigest :Data) -> (observationJson :Text);
+  observeAgentMessage @64 (invocation :Text, sourceDigest :Data) -> (observationJson :Text);
   # Public phase only, under current exact canonical Chat document Read.
   # No room parameter, private input/output or execution proof is returned.
-  readAgentMessageProgress @63 (invocation :Text, requestRow :Text) -> (progressJson :Text);
+  readAgentMessageProgress @65 (invocation :Text, requestRow :Text) -> (progressJson :Text);
 
 }
 

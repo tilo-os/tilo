@@ -44,7 +44,7 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 mod broker;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
-mod channel_settings;
+pub(crate) mod channel_settings;
 pub mod handoff;
 mod history;
 pub mod owner_view;
@@ -112,6 +112,7 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use runtime_collab::file_clipboard;
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
     CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,
@@ -208,6 +209,11 @@ impl From<TransportError> for CollabSendError {
 
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
+    LocalFileClipboard {
+        request_id: u64,
+        command: runtime_collab::file_clipboard::Command,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+    },
     Hello {
         app_id: String,
         cluster_id: Uuid,
@@ -689,6 +695,10 @@ impl ChannelAccessState {
 
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
+    LocalFileClipboardResult {
+        request_id: u64,
+        result: Result<runtime_collab::file_clipboard::Reply, String>,
+    },
     /// Original committed history from this SDK channel, applied by its document owner.
     CommittedDocument {
         route: RouteSpec,
@@ -1702,6 +1712,20 @@ impl CollaborationManager {
         let _ = self.try_send_to_route(route, req);
     }
 
+    /// Whether the actual route's original document history has been applied.
+    /// This is the same transport gate used before document publication.
+    pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
+        let channel = route.map(RouteSpec::channel_id);
+        !self.awaiting_primary
+            && match &self.backend {
+                Backend::Transport(transport) => {
+                    transport.document_route_state(channel.as_deref())
+                        == transport::DocumentRouteState::Ready
+                }
+                Backend::Disabled(_) => false,
+            }
+    }
+
     /// Test-only: whether `route` has resolved its document mode, so a
     /// document mutation on it would be admitted rather than refused.
     #[cfg(test)]
@@ -1770,8 +1794,16 @@ impl CollaborationManager {
             }
             Backend::Disabled(_) => transport::DocumentRouteState::Ready,
         });
+        let known_pending_document = matches!(
+            &req,
+            CollabRequest::Document {
+                authorization: Some(_),
+                ..
+            }
+        ) && matches!(&self.backend, Backend::Transport(transport)
+                if transport.committed_document_required(&route.channel_id()));
         match document_state {
-            Some(transport::DocumentRouteState::Applying) => {
+            Some(transport::DocumentRouteState::Applying) if !known_pending_document => {
                 tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_route_applying:in_flight");
                 return Err(CollabSendError::NotReady);
             }
@@ -1783,8 +1815,13 @@ impl CollaborationManager {
                 let _ = self.submit(TransportCommand::Join(route));
                 return Err(CollabSendError::Unavailable);
             }
-            None | Some(transport::DocumentRouteState::Ready) => {}
+            None
+            | Some(transport::DocumentRouteState::Ready)
+            | Some(transport::DocumentRouteState::Applying) => {}
         }
+        // A known committed document route may be refreshing. Its required
+        // original custody was checked above; the bounded worker still waits
+        // for this exact route before applying certification/commit policy.
         let result = self.submit(TransportCommand::ToRoute(route, req));
         if document && matches!(result, Err(TransportError::Closed)) {
             tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_transport:disabled");

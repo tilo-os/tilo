@@ -714,6 +714,26 @@ mod managed_service_tests {
     }
 
     #[test]
+    fn signal_source_manifest_is_admitted_as_a_headless_managed_service() {
+        let manifest: MinimalManifest =
+            toml::from_str(include_str!("../signal-provider.toml")).unwrap();
+        let options = RunOptions {
+            app_id: Some("so.tilo.signal-provider".into()),
+            mode: LaunchMode::Service {
+                passthrough_argv: vec![],
+            },
+            no_services: true,
+            identity: IdentitySource::None,
+            ..RunOptions::default()
+        };
+        assert_eq!(
+            manifest.entrypoint.cli_bin(),
+            Some("bin/tilo-signal-provider")
+        );
+        validate_launch_mode(&manifest, &options).unwrap();
+    }
+
+    #[test]
     fn managed_service_launches_are_confined_to_headless_service_packages() {
         // Phase `managed_service_requires_service_kind_and_headless_entrypoint`.
         {
@@ -2996,6 +3016,16 @@ pub(crate) fn run_with_context(
     )?;
     let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    if enrolled.is_none()
+        && binds
+            .iter()
+            .any(|bind| bind.name == crate::services::COLLAB_SERVICE)
+    {
+        splice_cli_setenv(
+            &mut argv,
+            Some((runtime_portal::process_binding::ENV.into(), "1".into())),
+        )?;
+    }
     if let Some((services, _)) = enrolled.as_ref() {
         splice_cli_setenv(
             &mut argv,
@@ -3612,6 +3642,15 @@ fn run_with_capture_spawn<T>(
         &capabilities,
     )?;
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    if binds
+        .iter()
+        .any(|bind| bind.name == crate::services::COLLAB_SERVICE)
+    {
+        splice_cli_setenv(
+            &mut argv,
+            Some((runtime_portal::process_binding::ENV.into(), "1".into())),
+        )?;
+    }
     let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;

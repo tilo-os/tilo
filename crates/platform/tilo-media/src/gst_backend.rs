@@ -232,6 +232,9 @@ pub struct GstState {
     bus: gst::Bus,
     acceptance: FrameAcceptance,
     observed: Arc<Mutex<Observed>>,
+    governed_output: Option<Arc<crate::audio_output::gst::Bridge>>,
+    draining_output: bool,
+    output_error_reported: bool,
 
     latest: Option<Frame>,
     /// [`VideoFrame`] view of `latest`, materialized on demand and cached so
@@ -307,8 +310,14 @@ impl GstState {
         // per-source without disturbing the pipeline.
         // An engine that never plays sound decodes no audio stream and opens
         // no audio device.
+        let mut governed_output = None;
         if !audio_output {
             playbin.set_property_from_str("flags", "video+text+deinterlace+soft-colorbalance");
+        } else if crate::audio_output::is_governed() {
+            let (audio_bin, output) =
+                crate::audio_output::gst::sink_bin("tilo_asink", "tilo_gain").ok()?;
+            playbin.set_property("audio-sink", &audio_bin);
+            governed_output = Some(output);
         } else if let Ok(audio_bin) = gst::parse::bin_from_description(
             "audioconvert ! audioresample ! volume name=tilo_gain ! autoaudiosink name=tilo_asink",
             true,
@@ -354,6 +363,9 @@ impl GstState {
             bus,
             acceptance,
             observed,
+            governed_output,
+            draining_output: false,
+            output_error_reported: false,
             latest: None,
             latest_rgba: None,
             playing: false,
@@ -395,6 +407,10 @@ impl GstState {
 
     pub fn open(&mut self, source: &Source, volume: f32) {
         let _ = self.playbin.set_state(gst::State::Null);
+        if let Some(output) = &self.governed_output {
+            output.reset();
+            output.pause(true);
+        }
         self.latest = None;
         self.latest_rgba = None;
         self.playing = false;
@@ -403,6 +419,8 @@ impl GstState {
         self.last_buffering = None;
         self.buffering = 100;
         self.pending.clear();
+        self.draining_output = false;
+        self.output_error_reported = false;
         self.seek_in_flight = false;
         self.seek_target_ms = None;
         self.deferred_seek = None;
@@ -481,6 +499,9 @@ impl GstState {
             gst::State::Paused
         };
         let _ = self.playbin.set_state(state);
+        if let Some(output) = &self.governed_output {
+            output.pause(!playing);
+        }
         if playing {
             // Once running, the pipeline clock owns the playhead; a stale seek
             // target would pin the reported position.
@@ -656,6 +677,9 @@ impl GstState {
     }
 
     fn issue_seek(&mut self, ms: u64, mode: SeekMode) -> bool {
+        if let Some(output) = &self.governed_output {
+            output.flush();
+        }
         let pos = gst::ClockTime::from_mseconds(ms);
         match self.playbin.seek_simple(mode.flags(), pos) {
             Ok(()) => {
@@ -893,8 +917,7 @@ impl GstState {
                     self.seek_in_flight = self.deferred_seek.is_some();
                 }
                 MessageView::Eos(_) => {
-                    self.playing = false;
-                    events.push(MediaEvent::Ended);
+                    self.draining_output = true;
                 }
                 MessageView::Error(e) => {
                     self.playing = false;
@@ -908,6 +931,27 @@ impl GstState {
             }
         }
 
+        if !self.output_error_reported
+            && let Some(error) = self
+                .governed_output
+                .as_ref()
+                .and_then(|output| output.error())
+        {
+            self.output_error_reported = true;
+            self.draining_output = false;
+            self.playing = false;
+            events.push(MediaEvent::Error(error));
+        }
+        if self.draining_output
+            && self
+                .governed_output
+                .as_ref()
+                .is_none_or(|output| output.drained())
+        {
+            self.draining_output = false;
+            self.playing = false;
+            events.push(MediaEvent::Ended);
+        }
         self.drain_samples();
         self.apply_deferred_seek();
 
@@ -960,6 +1004,9 @@ fn chapters_from_toc(toc: &gst::Toc) -> Vec<MediaChapter> {
 
 impl Drop for GstState {
     fn drop(&mut self) {
+        if let Some(output) = &self.governed_output {
+            output.close();
+        }
         let _ = self.playbin.set_state(gst::State::Null);
     }
 }

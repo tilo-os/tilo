@@ -186,6 +186,8 @@ impl crate::collaboration::participants::Participants for TwoViews {
 fn app() -> (App, Rc<RefCell<Probe>>) {
     let probe = Rc::new(RefCell::new(Probe::default()));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(TwoViews(probe.clone())));
+    // Deliveries below are host-set fixture inputs on the legacy peer seam.
+    app.collaboration.manager = super::semantic_tree_app_tests::admitted_delivery_manager();
     app.action_registry_mut().register::<Mark>(MARK_TYPE);
     app.init_layout();
     (app, probe)

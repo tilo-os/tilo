@@ -262,6 +262,7 @@ fn a_broker_delivered_restore_runs_and_is_attributed_to_the_invoker() {
         json!({"entry": v1, "reviewed_live_heads": listing["live_heads"]})
     );
     let changes = app.state.doc.get_changes(&[]).len();
+    app.collaboration.manager = super::semantic_tree_app_tests::admitted_delivery_manager();
     app.apply_collab_event_for_test(CollabEvent::Invocation {
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
         id: 7,

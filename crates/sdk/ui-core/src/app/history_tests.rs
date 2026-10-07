@@ -8184,3 +8184,6 @@ fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
         "open History still lists its changes"
     );
 }
+
+#[cfg(unix)]
+include!("initial_history_action_tests.rs");

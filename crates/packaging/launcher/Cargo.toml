@@ -44,6 +44,8 @@ managed-tree-test = ["dep:ed25519-dalek"]
 
 [dependencies]
 ed25519-dalek = { workspace = true, optional = true }
+# Kernel-authenticated custody of the executing native service peer.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 blake3.workspace = true
 tempfile.workspace = true

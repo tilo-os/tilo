@@ -17,6 +17,9 @@ profiles=$(mktemp -d "$RUNNER_TEMP/smoke-browsers.XXXXXX")
 browsers=()
 workers=()
 cleanup() {
+  # Let the bounded browser supervisors finish after repeated close requests;
+  # do not interrupt child waits or replace the completed probes' status.
+  trap '' INT TERM
   # Only processes created by this invocation; other job services stay up.
   for pid in "${workers[@]}" "${browsers[@]}"; do
     kill "$pid" 2>/dev/null || true

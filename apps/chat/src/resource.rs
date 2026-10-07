@@ -464,13 +464,13 @@ impl ResourceApp for ChatShell {
             return Vec::new();
         }
         let creator = LocalIdentity::for_participant(cx.me());
-        let action = if let Some(workspace) = cx.host().and_then(|host| host.creation_workspace()) {
+        let action = if let Some((workspace, name)) = cx.creation_workspace() {
             ChatAction::SeedWorkspace {
-                workspace: workspace.id.clone(),
-                workspace_name: if workspace.name.trim().is_empty() {
-                    workspace.id.clone()
+                workspace: workspace.to_owned(),
+                workspace_name: if name.trim().is_empty() {
+                    workspace.to_owned()
                 } else {
-                    workspace.name.clone()
+                    name.to_owned()
                 },
                 creator_name: creator.name,
                 creator_initials: creator.initials,

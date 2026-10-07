@@ -14,6 +14,19 @@ SPEC.loader.exec_module(contract)
 
 
 class AppResourceActionContractTests(unittest.TestCase):
+    def test_code_runs_preserve_delimiters_lifetimes_and_unicode(self):
+        cases = [
+            ("let ratio = α / β;\n", "let ratio = α / β;\n"),
+            ("fn f<'a>(x: &'a str) {}", "fn f<'a>(x: &'a str) {}"),
+            ("a// hidden\nb", "a         \nb"),
+            ("a/* hidden */b", "a          b"),
+            ('a"hidden\\\"text"b', "a              b"),
+            ("a'/' + '\"'b", "a    +    b"),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(contract.rust_code_only(source), expected)
+
     def fixture(
         self,
         source: str,

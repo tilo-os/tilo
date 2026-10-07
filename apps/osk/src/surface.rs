@@ -49,6 +49,8 @@ pub struct OskSurface {
     /// What the keyboard learned from this person, and the revision of it
     /// the keyboard was last presented.
     learned: Option<(PersonRecord<Learned>, u64)>,
+    vocabulary: Option<ui::personal_dictionary::Snapshot>,
+    vocabulary_identity: (Option<[u8; 32]>, u64),
     /// Focus changes the input method reports, while the keyboard serves the
     /// session through one.
     focus: Option<service::FocusChanges>,
@@ -71,6 +73,8 @@ impl OskSurface {
             keyboard: keyboard.with_surface_height(),
             preferences: None,
             learned: None,
+            vocabulary: None,
+            vocabulary_identity: (None, 0),
             focus: None,
         }
     }
@@ -215,6 +219,20 @@ impl Decorator for OskSurface {
         self.submit_edits();
         self.present_preferences();
         self.present_learned();
+        let identity = (
+            ui::local_identity::bound().map(|identity| identity.group_public_key),
+            ui::local_identity::generation(),
+        );
+        if identity != self.vocabulary_identity {
+            self.vocabulary_identity = identity;
+            self.keyboard
+                .set_personal_vocabulary(Some(ui::personal_dictionary::reader()));
+        }
+        let vocabulary = ui::personal_dictionary::snapshot().ok();
+        if vocabulary != self.vocabulary {
+            self.vocabulary = vocabulary;
+            self.keyboard.refresh_personal_vocabulary();
+        }
     }
 }
 
@@ -222,6 +240,10 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
     fn present(&mut self, _state: &Rc<()>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Osk>) {
+        if cx.mode().is_live() {
+            self.keyboard
+                .set_personal_vocabulary(Some(ui::personal_dictionary::reader()));
+        }
         if let Some(purpose) = cx.launch_option(PURPOSE_OPTION).and_then(purpose_from_str) {
             self.keyboard.set_purpose(purpose);
         }

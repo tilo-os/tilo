@@ -2467,6 +2467,7 @@ pub mod binding;
 pub mod capability;
 pub mod controls;
 pub mod decorator;
+pub mod document_effects;
 pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 

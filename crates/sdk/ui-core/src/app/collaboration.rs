@@ -544,7 +544,8 @@ impl App {
             // it will not produce a new connection-state transition.
             // Query/resolve remain bounded reads; this refresh runs even with
             // no directory requests or inbound events, and skips stable idle.
-            self.publish_action_surface();
+            // The same pump already reconciled custody for its document drain.
+            self.publish_action_surface_after_refresh();
         }
         (any, directory)
     }
@@ -840,6 +841,7 @@ impl App {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }
     }

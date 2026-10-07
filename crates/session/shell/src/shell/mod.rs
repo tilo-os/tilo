@@ -25,6 +25,7 @@ pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
 pub mod app_tabs;
+pub(crate) mod audio_output;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;

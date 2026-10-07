@@ -201,6 +201,14 @@ impl CertifiedActionSession {
         self.host.query(&self.caller, query)
     }
 
+    #[cfg(test)]
+    pub(crate) fn cancel(
+        &self,
+        invocation: &tilo_actions::InvocationId,
+    ) -> Result<(), ActionHostError> {
+        self.host.cancel(&self.caller, invocation)
+    }
+
     pub(crate) fn invoke_job(
         &self,
         request: InvokeRequest,

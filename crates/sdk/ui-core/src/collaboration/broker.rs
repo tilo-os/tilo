@@ -29,6 +29,8 @@ use super::{
 // Worker-owned Cloud facilities: committed-document reads, the paged
 // directory client, managed sender attempts and the native media lane all
 // share this worker's queues, byte budgets and route handles.
+#[path = "audio_output.rs"]
+mod audio_output;
 #[path = "committed_document.rs"]
 pub(super) mod committed_document;
 #[path = "directory_client.rs"]
@@ -791,6 +793,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             }
         }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
             meter.bytes(bytes);
@@ -1409,6 +1412,10 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.bytes(bytes);
         }
         CollabEvent::RealtimeCommandResult { result, .. } => match result {
+            Ok(reply) => serialized_bytes(reply, &mut meter),
+            Err(error) => meter.string_capacity(error),
+        },
+        CollabEvent::LocalFileClipboardResult { result, .. } => match result {
             Ok(reply) => serialized_bytes(reply, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -2696,6 +2703,12 @@ impl CollaborationManager {
 
     #[cfg(feature = "native")]
     pub(crate) fn for_native_launch(kind: &crate::record::RecordKind) -> Result<Self, String> {
+        if crate::host::environment()
+            .identity
+            .collab_service_configured
+        {
+            media::audio_output::require_governed();
+        }
         if runtime_portal::service_fd("collab").is_none() {
             if crate::host::environment()
                 .identity
@@ -2741,6 +2754,28 @@ impl CollaborationManager {
         history: Vec<u8>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
         tests::native_initial_fixture(app, room, history)
+    }
+
+    /// Socket-backed ordering fixture on an actual acknowledged named route.
+    /// This fixture does not establish native caller authority.
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_initial_named_fixture_for_test(
+        route: RouteSpec,
+        history: Vec<u8>,
+    ) -> Self {
+        let (mut manager, _) =
+            tests::native_initial_fixture(&route.app_id, route.cluster_id, history);
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
+            record: route.record,
+            record_kind: None,
+            handle: None,
+        }));
+        manager
+            .await_primary_route()
+            .expect("actual named route acknowledgement");
+        manager
     }
 
     /// A connected route whose document reads are not Required, as a
@@ -3039,6 +3074,24 @@ impl CollaborationManager {
     #[cfg(all(test, unix))]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
+    }
+
+    /// Retire the actual socket-backed capture generation, as a rejoin does.
+    #[cfg(all(test, unix))]
+    pub(crate) fn retire_document_capture_for_test(&self, route: &RouteSpec) {
+        let Backend::Transport(transport) = &self.backend else {
+            panic!("a broker transport");
+        };
+        let transport = transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .expect("a broker transport");
+        drop(
+            transport
+                .state
+                .document_reads
+                .close_for_test(&route.channel_id()),
+        );
     }
 
     /// Block until the broker worker has finished every command submitted so
@@ -3917,6 +3970,14 @@ async fn ensure_sdk_route(
     }
 
     media_routes.insert(channel_id.clone(), channel.clone());
+    if spec.record.is_none()
+        && participant_kind == "person"
+        && crate::host::environment()
+            .identity
+            .collab_service_configured
+    {
+        audio_output::install(channel.clone());
+    }
     routes.insert(
         channel_id,
         SdkRoute {
@@ -4307,6 +4368,7 @@ struct SettingsLink {
 impl Drop for SettingsLink {
     fn drop(&mut self) {
         self.follower.abort();
+        self.settings.disconnected();
     }
 }
 
@@ -4375,6 +4437,7 @@ async fn link_settings(
                     Ok(view) => view,
                     Err(error) => {
                         tracing::warn!(%error, "settings: following the shell's settings stopped");
+                        settings.disconnected();
                         break;
                     }
                 };
@@ -5891,6 +5954,19 @@ async fn dispatch_sdk_request(
                 .map_err(|error| error.to_string());
             let _ = inbound_tx
                 .send_durable(CollabEvent::NearbyTransferCommandResult { request_id, result });
+        }
+        CollabRequest::LocalFileClipboard {
+            request_id,
+            command,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .local_file_clipboard_command(&command, on_behalf_of.map(|id| *id.0.as_bytes()))
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx
+                .send_durable(CollabEvent::LocalFileClipboardResult { request_id, result });
         }
         CollabRequest::OpenWorkspaceControl {
             session_id,
@@ -8797,7 +8873,35 @@ mod tests {
             handle: None,
         }));
         manager.await_primary_route().unwrap();
-        assert!(manager.send(CollabRequest::document_incremental(b"refused".to_vec())));
+        let route = manager.primary_route().unwrap().route.clone();
+        let route_key = route.channel_id();
+        let ready = broker_state(&manager)
+            .document_reads
+            .close_for_test(&route_key);
+        assert_eq!(
+            manager.try_send_to_route(
+                route.clone(),
+                CollabRequest::document_incremental(b"refused".to_vec())
+            ),
+            Err(crate::collaboration::CollabSendError::NotReady),
+            "unqualified document work cannot be retained while committed history is applying"
+        );
+        assert!(captures.lock().unwrap().signed_ops.is_empty());
+        assert!(
+            broker_state(&manager)
+                .document_reads
+                .ready(&route_key, &ready),
+            "the exact committed-read generation must make the production readiness transition"
+        );
+        assert!(
+            manager
+                .try_send_to_route(
+                    route,
+                    CollabRequest::document_incremental(b"refused".to_vec())
+                )
+                .is_ok(),
+            "the certified document may be submitted only after its exact history is ready"
+        );
         // Signing may fail before the marker enqueue; either path must carry the cause.
         let error = match manager.begin_document_publication_barrier() {
             Ok(receipt) => receipt
@@ -8909,9 +9013,8 @@ mod tests {
         tilo_test_env::recv("the gated document RPC", &observed);
         assert!(manager.send(CollabRequest::document_incremental(b"must replay".to_vec())));
         let state = broker_state(&manager);
-        let ready = state
-            .document_reads
-            .close_for_test(&manager.primary_route().unwrap().route.channel_id());
+        let route_key = manager.primary_route().unwrap().route.channel_id();
+        let ready = state.document_reads.close_for_test(&route_key);
         let receipt = manager.begin_document_publication_barrier().unwrap();
         release.send(Ok(())).unwrap();
         tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
@@ -8929,7 +9032,10 @@ mod tests {
         );
         assert!(!manager.is_connected());
         assert!(manager.document_publication_failed());
-        ready.store(true, Ordering::Release);
+        assert!(
+            !state.document_reads.ready(&route_key, &ready),
+            "a terminal committed-read gate cannot be reopened"
+        );
         assert!(!manager.send(CollabRequest::document_incremental(b"late reopen".to_vec())));
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 1);
         tilo_test_env::wait_until(

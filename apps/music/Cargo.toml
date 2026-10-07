@@ -28,7 +28,7 @@ default = ["audio", "live", "spotify-native"]
 spotify-native = ["audio", "live", "tilo-spotify/native"]
 # Desktop audio output. Media controls and the host file chooser for playlist
 # covers come with `ui`.
-audio = ["dep:gstreamer", "dep:tokio"]
+audio = ["dep:gstreamer", "dep:tokio", "media/voice"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.

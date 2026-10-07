@@ -40,6 +40,10 @@ pub struct ActionContext {
     /// this field from their retained admission before applying an action.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_invocation: Option<InvocationId>,
+    /// Replayable document compensation computed by the canonical action
+    /// executor. This describes a change; it carries no caller authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compensation: Option<ActionCompensation>,
     /// Exact executor action that produced this change. This is inert
     /// correlation, never caller authority: fresh semantic envelopes replace
     /// it with their own identity. Legacy replay preserves its absence.
@@ -52,6 +56,12 @@ pub struct ActionContext {
     /// history bytes are unchanged.
     #[serde(skip_serializing_if = "ChangeKind::is_content")]
     pub change: ChangeKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionCompensation {
+    pub undo: crate::EncodedAction,
+    pub redo: crate::EncodedAction,
 }
 
 /// What a change is to the people sharing a document. Every kind is durable,
