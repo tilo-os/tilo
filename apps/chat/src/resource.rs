@@ -34,6 +34,7 @@ use ui::tilo_resource::Effect as _;
 /// participant; a view compares the authors it records with its own `me`.
 #[derive(Clone, Debug, Default)]
 pub struct ChatState {
+    pub feedback: Vec<crate::feedback::Report>,
     pub workspaces: Vec<Workspace>,
     pub channels: Vec<Channel>,
     pub categories: Vec<Category>,
@@ -125,6 +126,8 @@ impl Resource for Chat {
             .filter(|key| !ChatDoc::draft_text(doc, key).is_empty())
             .collect();
         Ok(ChatState {
+            feedback: crate::feedback::reports(doc)
+                .map_err(|error| ModelError::invalid(error.to_string()))?,
             workspaces,
             channels,
             categories,
@@ -141,6 +144,17 @@ impl Resource for Chat {
         Ok(())
     }
 
+    fn permission(action: &ChatAction) -> tilo_actions::PermissionRequirement {
+        match action {
+            ChatAction::Feedback(action) => action.permission(),
+            _ => tilo_actions::PermissionRequirement::Write,
+        }
+    }
+
+    fn least_permission() -> tilo_actions::PermissionRequirement {
+        tilo_actions::PermissionRequirement::Comment
+    }
+
     fn declarations() -> Vec<ActionDecl<Self>> {
         // Creating channels and categories is offered on each workspace.
         Vec::new()
@@ -148,6 +162,7 @@ impl Resource for Chat {
 
     fn children(state: &ChatState) -> Vec<PublishedResource> {
         let mut children = actions::publish_children(state);
+        children.extend(state.feedback.iter().map(crate::feedback::publish));
         // Each composer draft is a rich-text child, edited as one.
         children.extend(state.draft_keys.iter().map(|key| {
             let owned = key.clone();
@@ -184,7 +199,12 @@ impl Resource for Chat {
     }
 
     fn child(state: &ChatState, id: &str) -> Option<PublishedResource> {
-        actions::resolve_child(state, id)
+        state
+            .feedback
+            .iter()
+            .find(|report| format!("chat.feedback:{}", report.submission.id) == id)
+            .map(crate::feedback::publish)
+            .or_else(|| actions::resolve_child(state, id))
     }
 
     fn search(state: &ChatState) -> Vec<SearchEntry> {

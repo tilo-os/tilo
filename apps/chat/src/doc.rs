@@ -2269,10 +2269,23 @@ impl ChatDoc {
             })
             .collect();
         let mut out = Vec::new();
+        let mut feedback_ids = std::collections::BTreeSet::new();
         for m in rows {
+            let id = read_str(doc, &m, "id").unwrap_or_default();
+            // Two replicas may file the same durable retry before either sees
+            // the other's row. Its immutable report identity is one message.
+            if let Some(report_id) = id.strip_prefix("m_feedback_")
+                && crate::feedback::report(doc, report_id)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                && !feedback_ids.insert(id.clone())
+            {
+                continue;
+            }
             let parent = read_str(doc, &m, "parent").unwrap_or_default();
             out.push(Message {
-                id: read_str(doc, &m, "id").unwrap_or_default(),
+                id,
                 channel: channel.to_string(),
                 author: read_str(doc, &m, "author").unwrap_or_default(),
                 ts: read_i64_coerced(doc, &m, "ts").unwrap_or(0),

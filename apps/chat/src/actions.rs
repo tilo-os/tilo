@@ -82,6 +82,8 @@ pub type AgentMessagePayload = tilo_actions::agent_message::AgentMessagePayload<
 /// rather than an error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ChatAction {
+    /// Reviewed feedback, filed through the same attributed Chat document.
+    Feedback(crate::feedback::FeedbackAction),
     /// Post a message into `channel`. The `id` and `ts` are minted once at
     /// authoring time and carried here, so replay is byte-identical. A chat
     /// message is discrete (not a co-edited flowing document), so a whole-message
@@ -312,6 +314,10 @@ pub const MAX_AGENT_AUTHOR_NAME_BYTES: usize = 80;
 pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
     let mut context = tilo_actions::ActionContext::for_action("so.tilo.chat", "Chat", action);
     let (label, channel, resource_id, kind) = match action {
+        ChatAction::Feedback(feedback) => {
+            let (id, channel) = feedback.locus();
+            ("File feedback", channel, id, "chat.feedback")
+        }
         ChatAction::SendMessage { channel, id, .. } => {
             ("Send message", channel, id, "chat.message")
         }
@@ -567,6 +573,9 @@ fn apply_agent_request(
 
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        if let Self::Feedback(action) = self {
+            return crate::feedback::apply(action, doc);
+        }
         if let ChatAction::PostAgentMessage {
             workspace,
             agent,
@@ -1276,6 +1285,7 @@ fn publish_channel(
         );
         if ch.conversation_with.is_none() {
             channel = channel.with_action(share_resource_spec(&ch.id));
+            channel = channel.with_action(crate::feedback::submit_spec(&ch.id));
             channel = channel.with_action(ActionSpec::prompted(
                 "post",
                 "Post message",

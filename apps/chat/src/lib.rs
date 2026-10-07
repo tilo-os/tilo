@@ -61,6 +61,7 @@ pub mod doc;
 pub mod effects;
 pub mod events;
 mod external;
+pub mod feedback;
 pub mod geometry;
 pub mod i18n;
 pub mod identity;
