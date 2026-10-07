@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from device_notes_latency import capture, require_scratch, observed_capture, diagnostic_options
+from device_notes_latency import capture, require_scratch, observed_capture, diagnostic_options, Device
 
 
 class DeviceFixture:
@@ -78,6 +78,38 @@ class DeviceCaptureSafety(unittest.TestCase):
                                      out=Path(directory))
         with patch("device_notes_latency.time.sleep"):
             return capture(device, options)
+
+    def test_unbound_generic_device_refuses_before_discovery_or_mutation(self):
+        device = Device(argparse.Namespace(device="test"))
+        with patch.object(device, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "Explicit owned Notes"):
+                device.action("new-page", {"value": "scratch"})
+            run.assert_not_called()
+
+    def test_exact_room_record_selects_its_read_and_ignores_foreign_match(self):
+        device = Device(argparse.Namespace(device="test", slot="device", notes_room="owned-room",
+                                          notes_record="owned-record"))
+        calls = []
+        def run(arguments):
+            calls.append(arguments)
+            if "list" in arguments:
+                return json.dumps({"actions": [
+                    dict(application="so.tilo.notes", room="foreign-room",
+                         record="owned-record", operation="read", provider="app-actions", id="foreign"),
+                    dict(application="so.tilo.notes", room="owned-room",
+                         record="old-user-record", operation="read", provider="app-actions", id="old"),
+                    dict(application="so.tilo.notes", room="owned-room",
+                         record="owned-record", operation="read", provider="app-actions", id="owned") ]})
+            if "invoke" in arguments:
+                return json.dumps({"receipt": {"broker_invocation_id": 17}})
+            return json.dumps({"receipt": {"update": {"state": "succeeded",
+                                                      "output": {"value": {"text": ""}}}}})
+        device.run = run
+        self.assertEqual(device.control(["read", "so.tilo.notes", "notes.page:new"]), {"text": ""})
+        invoke = next(args for args in calls if "invoke" in args)
+        self.assertEqual(invoke[5:7], ["app-actions", "owned"])
+        self.assertEqual(json.loads(invoke[-1]), {"item": "notes.page:new"})
+        self.assertFalse(any("old" in args or "foreign" in args for args in calls))
 
     def test_wrong_compositor_keyboard_route_never_types(self):
         device = DeviceFixture(wrong_focus=True)

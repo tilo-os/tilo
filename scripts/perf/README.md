@@ -71,29 +71,57 @@ app observer or GPU timestamp queries. Record the same boot, active owner, exact
 loaded app/SDK hashes and delivery receipt before input. Do not use an existing user
 note as the benchmark target. No reboot is part of this recipe.
 
-Use the maintained host frontend from the qualified cohort. First run a single-key
-readiness guard, then a separate 100-key capture only if that guard succeeds:
+On Yoga use the existing authenticated `OwnerVm` adapter and a freshly created,
+explicitly pinned scratch **window record**. The default `tilo-vm control` agent
+endpoint is not an owner endpoint; never relabel it or select a user Notes record
+by application alone. The operator's existing private `scratch-capture.py`
+`PinnedOwnerDevice` validates the exact app/room/record, tab, surface and host local
+record before/after actions and uses the canonical owner socket. Preserve that
+adapter and its protected-record checks. The maintained runner is reusable with
+it directly (importing the private helper performs no actions):
 
 ```sh
-python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
-  --tool /absolute/path/to/qualified/tilo-vm --manage-diagnostics \
-  --samples 1 --out target/yoga-notes-one-key
+# OWNER_CAPTURE is the existing audited private scratch-capture.py; TOOL is
+# the matching qualified maintained frontend. No credentials are arguments.
+# PERF_DIR is the absolute scripts/perf directory of this qualified source.
+python3 - "$OWNER_CAPTURE" "$PERF_DIR" "$TOOL" target/yoga-notes-one-key 1 <<'CAPTURE'
+import argparse, json, runpy, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from device_notes_latency import observed_capture, private_write
+helper = runpy.run_path(sys.argv[1])
+out = Path(sys.argv[4]); out.mkdir(mode=0o700, parents=True, exist_ok=False)
+options = argparse.Namespace(device="yoga", slot="device", tool=sys.argv[3],
+                             out=out, samples=int(sys.argv[5]), manage_diagnostics=True)
+vm = helper["OwnerVm"](options.tool, "yoga", "device", out / "commands.log")
+vm.unlock()  # existing approved private owner conversation, no bypass
+owned = helper["PinnedOwnerDevice"](options, vm, out)
+owned.pin(owned.control(["actions", "list", "so.tilo.notes", "--json"])["actions"])
+owned.focus_on_scratch_read = True
+owned.reset_on_input = False  # observed_capture alone owns quota renewal/restoration
+report = observed_capture(owned, options)
+private_write(out / "report.json", json.dumps(report, indent=2))
+CAPTURE
 python3 scripts/perf/physical_notes_stages.py \
   --capture target/yoga-notes-one-key --require-foreign-capture \
   --out target/yoga-notes-one-key/stages.json
-python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
-  --tool /absolute/path/to/qualified/tilo-vm --manage-diagnostics \
-  --samples 100 --out target/yoga-notes-100
-python3 scripts/perf/physical_notes_stages.py \
-  --capture target/yoga-notes-100 --require-foreign-capture \
-  --out target/yoga-notes-100/stages.json
 ```
+
+Only after both commands pass, repeat the exact owner-adapter command with
+`target/yoga-notes-100 100`, then analyze that directory with
+`physical_notes_stages.py --require-foreign-capture`. The pinned adapter must
+still target the newly owned Scratch window, never an existing user record.
+For other authorized endpoints, the standalone runner now requires explicit
+`--notes-room` and `--notes-record` and invokes the exact record's declared Read;
+it refuses application-only selection. Those selectors do not confer owner
+permission, and transport refusal must remain a failure.
 
 Run these sequentially; never proceed after a failed command. Both captures create
 and verify their own new scratch note, invoke ordinary exact-owned Open (which
 closes the narrow drawer), then verify the actual child focus, all page bindings,
-canonical/rendered hashes, caret and unique compositor keyboard route. No generic
-Focus action on an unidentified old editor is used. Each isolated `a` produces a
+canonical/rendered hashes, caret and unique compositor keyboard route. Only after the new title/body and closed-drawer editor state pass does the owner
+adapter invoke the exact declared tab focus; no generic Focus action on an
+unidentified old editor is used. Each isolated `a` produces a
 unique trusted input/Wayland serial and changed-body frame; uniqueness concerns
 input identities, not 100 different printable characters. Missing fields or a
 first key delivered with an unchanged body fail before any second key.

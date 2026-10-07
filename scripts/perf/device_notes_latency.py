@@ -71,6 +71,9 @@ class Device:
         return result.stdout
 
     def control(self, arguments):
+        if arguments[:2] == ["read", "so.tilo.notes"]:
+            payload = {"item": arguments[2]} if len(arguments) == 3 else {}
+            return self.action("read", payload)
         return json.loads(self.run(
             ["control", "--slot", self.options.slot, *arguments]))
 
@@ -79,11 +82,16 @@ class Device:
                          "--timeout", "30", "--", *arguments])
 
     def action(self, operation, payload, resource=None):
+        room = getattr(self.options, "notes_room", None)
+        record = getattr(self.options, "notes_record", None)
+        if not room or not record:
+            raise RuntimeError("Explicit owned Notes room and record are required")
         deadline = time.monotonic() + 15
         while True:
             catalogue = self.control(["actions", "list", "so.tilo.notes", "--json"])
             rows = [row for row in catalogue["actions"]
-                    if row.get("application") == "so.tilo.notes"
+                    if (row.get("application"), row.get("room"), row.get("record"))
+                    == ("so.tilo.notes", room, record)
                     and row.get("operation") == operation
                     and (resource is None or row.get("resource") == resource
                          or str(row.get("resource", "")).endswith(
@@ -235,6 +243,10 @@ def main():
     parser.add_argument("--device", required=True)
     parser.add_argument("--slot", default="device")
     parser.add_argument("--tool", default="tilo-vm")
+    parser.add_argument("--notes-room", required=True,
+                        help="verified room of the newly owned scratch Notes window")
+    parser.add_argument("--notes-record", required=True,
+                        help="verified exact record of that window; never application-only selection")
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--manage-diagnostics", action="store_true",
