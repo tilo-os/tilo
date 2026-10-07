@@ -397,6 +397,12 @@ interface ChannelHandle {
   # offers never delegate it and cannot be redeemed outside this workspace.
   localFileClipboard @56 (commandJson :Data, onBehalfOf :Data) -> (replyJson :Data);
 
+  # Device-local output-only PCM and controls. Caller/app/workspace/record are
+  # derived from the launcher-attested channel. No host socket or capture API
+  # is returned. The closed command is bounded to 32 KiB and 20 ms stereo PCM.
+  audioOutputCommand @57 (command :Data) -> (reply :Data);
+
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.

@@ -25,18 +25,28 @@ fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
     replica.save()
 }
 
-/// Run against an explicitly supplied, compiled desktop. Missing tools fail.
+/// Run against an explicitly supplied, compiled web app bundle. Missing tools fail.
 pub async fn run() {
     use chat::doc::{ChatDoc, NewMessage};
     use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
     use tilo_relay::rooms::{IssueInvitationRequest, RemoveMemberRequest};
     let bundle = std::env::args()
         .nth(1)
-        .expect("compiled desktop bundle path is required");
+        .expect("compiled web bundle path is required");
     assert!(
         Path::new(&bundle)
             .join("pkg/tilo_browser_runtime_bg.wasm")
             .is_file()
+    );
+    let mut options = std::env::args().skip(2);
+    let disconnect_retry = match options.next().as_deref() {
+        None => false,
+        Some("--disconnect-retry") => true,
+        Some(_) => panic!("expected --disconnect-retry as the optional mounted-resource argument"),
+    };
+    assert!(
+        options.next().is_none(),
+        "unexpected mounted-resource argument"
     );
     let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mounted_resource/driver.mjs");
     let mut child = tokio::process::Command::new("node")
@@ -84,7 +94,11 @@ pub async fn run() {
             &host.cert,
             IssueInvitationRequest {
                 request_id: [31; 32],
-                role: MemberRole::Viewer,
+                role: if disconnect_retry {
+                    MemberRole::Editor
+                } else {
+                    MemberRole::Viewer
+                },
                 recipient_user_public_key: Some(bob.verifying_key().to_bytes()),
                 invitee_name: Some("Fixture reader".into()),
                 inviter_name: None,
@@ -202,6 +216,8 @@ pub async fn run() {
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "room": room.room,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
+        "channel": format!("chat.channel:{}", channel.id),
+        "disconnectRetry": disconnect_retry,
         "reference": reference, "shared": format!("chat.message:{}", shared.id),
         "root": reader_identity, "decoy": decoy, "seed": recipient.key.to_bytes(),
         "certificate": {"cert": recipient.cert, "hostCert": host.cert},
@@ -215,7 +231,84 @@ pub async fn run() {
     let result = tokio::time::timeout(Duration::from_secs(150), async {
         while let Some(line) = output.next_line().await.unwrap() {
             let event: serde_json::Value = serde_json::from_str(&line).unwrap();
-            if event["stage"] == "revoke" {
+            if event["stage"] == "browser-offline" {
+                source
+                    .invoke(
+                        &ActionAddress::new(format!("chat.channel:{}", channel.id), "post"),
+                        serde_json::json!({"value": "Native fixture while browser disconnected"})
+                            .as_object()
+                            .unwrap(),
+                        false,
+                    )
+                    .unwrap();
+                native
+                    .peer
+                    .publish(route.clone(), &source.take_mutation().unwrap())
+                    .unwrap();
+                let durable = native.peer.barrier().unwrap();
+                tilo_test_env::within("offline browser fixture's native post is durable", async {
+                    loop {
+                        match durable.try_recv() {
+                            Ok(result) => {
+                                result.unwrap();
+                                break;
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                panic!("native durability barrier closed before acknowledgement");
+                            }
+                        }
+                    }
+                })
+                .await;
+                input
+                    .write_all(b"{\"nativePublished\":true}\n")
+                    .await
+                    .unwrap();
+                println!("MOUNTED_RESOURCE_STAGE={event}");
+            } else if event["stage"] == "browser-recovered" {
+                tilo_test_env::within("native replica receives the queued browser post", async {
+                    loop {
+                        native.pump();
+                        for (_, bytes) in native.documents.get(&route).into_iter().flatten() {
+                            source
+                                .apply(&collab_types::DocumentMutation::Incremental(bytes.clone()))
+                                .unwrap();
+                        }
+                        let messages = source
+                            .read(|doc| ChatDoc::list_messages(doc, &channel.id))
+                            .unwrap();
+                        let queued = messages
+                            .iter()
+                            .filter(|message| {
+                                message.text == "Browser fixture queued during disconnect"
+                            })
+                            .count();
+                        assert!(queued <= 1, "the original browser action never duplicates");
+                        if queued == 1 {
+                            assert_eq!(
+                                messages
+                                    .iter()
+                                    .filter(|message| {
+                                        message.text == "Native fixture while browser disconnected"
+                                    })
+                                    .count(),
+                                1
+                            );
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await;
+                input
+                    .write_all(b"{\"nativeReceivedOnce\":true}\n")
+                    .await
+                    .unwrap();
+                println!("MOUNTED_RESOURCE_STAGE={event}");
+            } else if event["stage"] == "revoke" {
                 rooms
                     .remove_member(
                         &room.room,

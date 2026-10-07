@@ -24,7 +24,7 @@ def manifest(path):
         if not isinstance(row, dict) or set(row) != {"file", "sha256", "bytes", "url"}:
             raise ValueError("invalid test asset fields")
         name, digest, size = row["file"], row["sha256"], row["bytes"]
-        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*\.png", name):
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*\.(?:png|pdf|epub|docx|odt|wav|mp4)", name):
             raise ValueError("invalid test asset filename")
         if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
             raise ValueError("invalid test asset SHA-256")

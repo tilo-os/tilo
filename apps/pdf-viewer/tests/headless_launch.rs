@@ -188,9 +188,7 @@ fn cli_note_survives_other_document_and_restart() {
     assert_default_main_stack();
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
-    let bytes =
-        std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pdf"))
-            .unwrap();
+    let bytes = std::fs::read(std::path::Path::new(env!("OUT_DIR")).join("sample.pdf")).unwrap();
     let a = root.join("alpha document.pdf");
     let b = root.join("beta document.pdf");
     std::fs::write(&a, &bytes).unwrap();

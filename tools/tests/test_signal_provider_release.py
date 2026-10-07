@@ -32,6 +32,13 @@ class SignalProviderRelease(unittest.TestCase):
                 release.mode(self.environment() | change, 'a' * 40)
         self.assertFalse(release.mode({}, 'a' * 40))
 
+    def test_app_kind_is_refused_before_release_provenance_is_admitted(self):
+        with patch.object(release.tomllib, 'loads', return_value={
+            'package': {'runtime': release.RUNTIME, 'kind': 'app'},
+        }):
+            with self.assertRaisesRegex(ValueError, 'headless service kind'):
+                release.provenance(release.release.head())
+
     def compiled(self, root):
         (root / 'bin').mkdir()
         (root / 'bin/tool').write_bytes(b'compiled release tool')
@@ -115,6 +122,7 @@ class SignalProviderRelease(unittest.TestCase):
                      'type = "cli"\n'
                      'splash-segments = []\n'
                      'splash-budget = 100\n')
+        runtime_entrypoint = canonical.replace('bin/tilo-signal-provider', release.RUNTIME_ENTRYPOINT)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             proof = release.provenance(source)
@@ -132,14 +140,15 @@ class SignalProviderRelease(unittest.TestCase):
             def inspected(args, **kwargs):
                 runtime = Path(args[-1]).parent.name == 'runtime-package'
                 declaration = ('id = "so.tilo.runtime.signal"\nkind = "runtime"\nprovides' if runtime
-                               else 'id = "so.tilo.signal-provider"\nkind = "app"\nruntime')
+                               else 'id = "so.tilo.signal-provider"\nkind = "' + declared_kind + '"\nruntime')
                 return ('--- manifest.toml ---\n[package]\n' + declaration
                         + ' = "' + declared_runtime + '"\nversion = "' + version + '"\n'
                         + '[sandbox.net]\nmode = "off"\n'
-                        + ('' if runtime else '[entrypoint]\n' + entrypoint)
+                        + '[entrypoint]\n' + (runtime_entrypoint if runtime else entrypoint)
                         + '--- payload (0 files) ---\n')
 
             declared_runtime = runtime_build
+            declared_kind = 'service'
             for entrypoint in (canonical,
                                canonical.replace('bin/tilo-signal-provider', 'bin/other'),
                                canonical.replace('type = "cli"', 'type = "both"'),
@@ -162,6 +171,20 @@ class SignalProviderRelease(unittest.TestCase):
                         self.assertEqual(call.args[0][1:4], ['verify', '--trusted-key', trusted_key])
 
             entrypoint = canonical
+            for invalid in ('', runtime_entrypoint.replace(release.RUNTIME_ENTRYPOINT, 'lib/other'),
+                            runtime_entrypoint + 'cli-bin = "lib/other"\n'):
+                with self.subTest(runtime_entrypoint=invalid), \
+                        patch.object(release.release, 'head', return_value=source), \
+                        patch.object(release.subprocess, 'run'), \
+                        patch.object(release.subprocess, 'check_output', side_effect=inspected):
+                    saved = runtime_entrypoint
+                    runtime_entrypoint = invalid
+                    try:
+                        with self.assertRaisesRegex(ValueError, 'executable declaration differs'):
+                            release.verify(root, source, '1', trusted_key)
+                    finally:
+                        runtime_entrypoint = saved
+
             for declared_runtime in (release.RUNTIME,
                                      release.RUNTIME + '+native.' + 'b' * 32):
                 with self.subTest(declared_runtime=declared_runtime), \
@@ -170,6 +193,14 @@ class SignalProviderRelease(unittest.TestCase):
                         patch.object(release.subprocess, 'check_output', side_effect=inspected):
                     with self.assertRaisesRegex(ValueError, 'runtime/network declaration differs'):
                         release.verify(root, source, '1', trusted_key)
+
+            declared_runtime = runtime_build
+            declared_kind = 'app'
+            with patch.object(release.release, 'head', return_value=source), \
+                    patch.object(release.subprocess, 'run'), \
+                    patch.object(release.subprocess, 'check_output', side_effect=inspected):
+                with self.assertRaisesRegex(ValueError, 'package declaration differs'):
+                    release.verify(root, source, '1', trusted_key)
 
             proof['runtime_build'] = release.RUNTIME
             (root / 'release.json').write_text(json.dumps(proof))
