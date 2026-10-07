@@ -489,6 +489,19 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
         client.send(relay.node_addr(), command()).await.is_err(),
         "unadmitted device must be refused"
     );
+    assert!(
+        client
+            .send(
+                relay.node_addr(),
+                RoomCommand::ClaimNamespace {
+                    room: room.room.clone(),
+                    salt: 7,
+                }
+            )
+            .await
+            .is_err(),
+        "namespace registration requires actual current admission"
+    );
     let issued = rooms
         .issue(
             &room.room,
@@ -523,6 +536,86 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
         )
         .await
         .unwrap();
+    let mut namespace = None;
+    for salt in 1..=16 {
+        match client
+            .send(
+                relay.node_addr(),
+                RoomCommand::ClaimNamespace {
+                    room: room.room.clone(),
+                    salt,
+                },
+            )
+            .await
+        {
+            Ok(reply @ RoomReply::Governance { .. }) => {
+                namespace = Some((salt, reply));
+                break;
+            }
+            Err(error) => assert!(
+                error
+                    .to_string()
+                    .contains("already belongs to another device"),
+                "only the governor's existing salt can collide: {error}"
+            ),
+            Ok(other) => panic!("namespace response is not durable governance: {other:?}"),
+        }
+    }
+    let (salt, namespace_reply) = namespace.expect("the room has only one pre-existing namespace");
+    assert_eq!(
+        client
+            .send(
+                relay.node_addr(),
+                RoomCommand::ClaimNamespace {
+                    room: room.room.clone(),
+                    salt,
+                }
+            )
+            .await
+            .unwrap(),
+        namespace_reply
+    );
+    assert!(
+        client
+            .send(
+                relay.node_addr(),
+                RoomCommand::ClaimNamespace {
+                    room: room.room.clone(),
+                    salt: 0,
+                }
+            )
+            .await
+            .is_err()
+    );
+    let other_room = rooms.create("Isolated namespace").await.unwrap();
+    assert!(
+        client
+            .send(
+                relay.node_addr(),
+                RoomCommand::ClaimNamespace {
+                    room: other_room.room.clone(),
+                    salt,
+                }
+            )
+            .await
+            .is_err(),
+        "membership in one room does not admit the same claim in another"
+    );
+    let mismatched_namespace =
+        RoomAdminClient::new(device_endpoint(&host).await, member.cert.clone());
+    assert!(
+        mismatched_namespace
+            .send(
+                relay.node_addr(),
+                RoomCommand::ClaimNamespace {
+                    room: room.room.clone(),
+                    salt,
+                }
+            )
+            .await
+            .is_err(),
+        "namespace certificate must equal the authenticated endpoint"
+    );
     let first = client.send(relay.node_addr(), command()).await.unwrap();
     assert!(matches!(first, RoomReply::Governance { .. }));
     assert_eq!(
@@ -612,6 +705,19 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
     assert!(
         client.send(relay.node_addr(), command()).await.is_err(),
         "removal must refuse even a formerly successful retry"
+    );
+    assert!(
+        client
+            .send(
+                relay.node_addr(),
+                RoomCommand::ClaimNamespace {
+                    room: room.room.clone(),
+                    salt,
+                }
+            )
+            .await
+            .is_err(),
+        "removal closes even exact namespace retries"
     );
     relay.shutdown().await;
 }

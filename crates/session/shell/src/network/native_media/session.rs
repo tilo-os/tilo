@@ -89,6 +89,9 @@ impl MediaFactory for Factory {
                 let task = tokio::spawn(async move {
                     let result = maintain(&commands, &controller).await;
                     if !controller.cancelled.load(Ordering::Acquire) {
+                        if result.is_err() {
+                            tracing::warn!("native call carrier maintenance ended");
+                        }
                         controller.ticket.stop();
                         *controller.state.lock() = result
                             .map(|()| CallState::Ended)
@@ -273,6 +276,14 @@ impl StopSlot {
             .map_err(|_| Issue::CaptureFailed)
             .and_then(|value| value.checked_add(1).ok_or(Issue::CaptureFailed))
     }
+    // A nonterminal owner fence retires this startup, but preserves the
+    // explicit unmute intent. A terminal stop never becomes resumable.
+    fn check_startup(&self, startup: u64) -> Result<bool, Issue> {
+        if !self.current.load(Ordering::SeqCst) {
+            return Err(Issue::PermissionDenied);
+        }
+        Ok(self.startup.load(Ordering::SeqCst) == startup)
+    }
     fn pause(&self) {
         let mut generation = self.generation.lock();
         // A timer or prepared FD from the previous start cannot affect a later
@@ -339,6 +350,28 @@ impl Drop for CaptureIntent {
         self.cancel_pending();
     }
 }
+fn installation_fence(
+    intent: &CaptureIntent,
+    ticket: Weak<Ticket>,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    let startup = intent.startup;
+    let slot = Arc::downgrade(&intent.slot);
+    let source = intent.source.clone();
+    let allowed = intent.allowed.clone();
+    Arc::new(move || {
+        let (Some(slot), Some(ticket)) = (slot.upgrade(), ticket.upgrade()) else {
+            return false;
+        };
+        slot.current.load(Ordering::SeqCst)
+            && slot.startup.load(Ordering::SeqCst) == startup
+            && allowed()
+            && source.current()
+            && ticket.live().is_ok()
+            && !ticket.leaving()
+            && ticket.authorized()
+    })
+}
+
 struct Session {
     runtime: Arc<Running>,
     devices: Arc<devices::Devices>,
@@ -349,10 +382,15 @@ struct Session {
     publishers: Vec<voice::PublicationId>,
 }
 impl Session {
-    fn install_prepared_capture(&mut self, client: &Arc<Client>) -> Result<(), Issue> {
+    // False requests guarded recovery from a nonterminal owner fence.
+    fn install_prepared_capture(&mut self, client: &Arc<Client>) -> Result<bool, Issue> {
         let Some(intent) = &mut self.capture else {
-            return Ok(());
+            return Ok(true);
         };
+        if !intent.slot.check_startup(intent.startup)? {
+            intent.cancel_pending();
+            return Ok(false);
+        }
         if let Some(pending) = &mut intent.pending {
             match pending.receive.try_recv() {
                 Ok(Ok(observed)) => {
@@ -362,11 +400,11 @@ impl Session {
                 Ok(Err(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                     return Err(Issue::SourceLost);
                 }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return Ok(()),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return Ok(true),
             }
         }
         let Some(observed) = &intent.prepared else {
-            return Ok(());
+            return Ok(true);
         };
         if !observed.contains(
             intent.source.cookie,
@@ -378,32 +416,23 @@ impl Session {
         }
         let startup = intent.startup;
         let slot = intent.slot.clone();
-        let source = intent.source.clone();
-        let allowed = intent.allowed.clone();
-        let weak_slot = Arc::downgrade(&slot);
-        let ticket = Arc::downgrade(&self.runtime.ticket);
-        let current: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-            let (Some(slot), Some(ticket)) = (weak_slot.upgrade(), ticket.upgrade()) else {
-                return false;
-            };
-            slot.current.load(Ordering::SeqCst)
-                && slot.startup.load(Ordering::SeqCst) == startup
-                && allowed()
-                && source.current()
-                && ticket.live().is_ok()
-                && !ticket.leaving()
-                && ticket.authorized()
-        });
+        let current = installation_fence(intent, Arc::downgrade(&self.runtime.ticket));
         // Fresh owner reads precede the independent slot lock. Owner fences
         // may hold their publication gate while synchronously stopping a slot.
-        client.enable_publication().map_err(|_| {
+        if client.enable_publication().is_err() {
+            if !slot.check_startup(startup)? {
+                return Ok(false);
+            }
             tracing::warn!("native microphone publication authority refused");
-            Issue::PermissionDenied
-        })?;
+            return Err(Issue::PermissionDenied);
+        }
         let mut installing = slot.generation.lock();
         if !current() {
-            tracing::warn!("native microphone capture installation fence closed");
             client.stop_publication();
+            if !slot.check_startup(startup)? {
+                return Ok(false);
+            }
+            tracing::warn!("native microphone capture installation fence closed");
             return Err(Issue::PermissionDenied);
         }
         let (node, serial) = observed.call_capture_node(intent.source.node, intent.source.serial);
@@ -420,7 +449,7 @@ impl Session {
                 // Capacity is checked before any worker takes this socket.
                 // Keep it until the original two-second startup deadline.
                 client.stop_publication();
-                return Ok(());
+                return Ok(true);
             }
             Err(_) => {
                 client.stop_publication();
@@ -435,7 +464,7 @@ impl Session {
         *installing = Some((stop, Arc::downgrade(client)));
         drop(installing);
         intent.prepared = None;
-        Ok(())
+        Ok(true)
     }
     fn retire_decoders(&mut self) {
         for publisher in self.publishers.drain(..) {
@@ -506,7 +535,9 @@ impl MediaSession for Session {
                 return Err(Issue::PermissionDenied);
             }
         }
-        self.install_prepared_capture(&client)?;
+        if !self.install_prepared_capture(&client)? {
+            return Ok(CallState::Reconnecting);
+        }
         if let Some(intent) = &self.capture {
             let installed = intent.slot.generation.lock().is_some();
             if installed {
@@ -726,6 +757,21 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_capture_pause_reconnects_but_terminal_stop_refuses_resume() {
+        let slot = StopSlot::new();
+        let first = slot.begin().unwrap();
+        assert_eq!(slot.check_startup(first), Ok(true));
+        slot.pause();
+        assert_eq!(slot.check_startup(first), Ok(false));
+        slot.expire(first);
+        let resumed = slot.begin().unwrap();
+        assert_eq!(slot.check_startup(resumed), Ok(true));
+        slot.stop();
+        assert_eq!(slot.check_startup(resumed), Err(Issue::PermissionDenied));
+        assert_eq!(slot.begin(), Err(Issue::PermissionDenied));
+    }
 
     #[test]
     fn paused_startup_timeout_cannot_revoke_resumed_intent_but_current_timeout_does() {

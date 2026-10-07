@@ -12,7 +12,6 @@ use crate::shell::state::{RoomId, Strip, TileContent};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
 
 /// How often one room's legacy windows are looked at.
 const CHECK_EVERY: Duration = Duration::from_millis(500);
@@ -176,35 +175,18 @@ impl ShellNetwork {
             }
             state.claimed_at = Some(now);
         }
-        let bound = BoundCommand {
-            source: CommandSource {
-                room: room.to_string(),
-                heads: Vec::new(),
-            },
-            command: DesktopCommand::ClaimNamespace { salt },
-        };
-        let Ok(command) = serde_json::to_string(&bound) else {
-            return;
-        };
-        let answer = self.invoke_governor(
-            room,
-            tilo_desktop_model::commands::APP_ID,
-            tilo_desktop_model::commands::RESOURCE,
-            tilo_desktop_model::commands::ACTION,
-            Some(serde_json::json!({ "command": command })),
-        );
         let Some(runtime) = self.runtime.as_ref() else {
             return;
         };
+        let answer = self.claim_governed_namespace(room, salt);
         runtime.spawn(async move {
             match answer.await {
-                Some(Ok(_)) => {
+                Ok(()) => {
                     tracing::info!(%room, salt, "topology namespace claimed for legacy windows");
                 }
-                Some(Err(error)) => {
+                Err(error) => {
                     tracing::warn!(%room, salt, %error, "topology namespace claim refused");
                 }
-                None => tracing::warn!(%room, salt, "topology namespace claim abandoned"),
             }
         });
     }

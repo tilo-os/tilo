@@ -16,6 +16,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -207,7 +208,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     tree.persist_path = Some(session_dir.join("state.json"));
     let tree = tree.shared();
     let session_cert = Arc::new(Mutex::new(None));
-    let net = {
+    let net = Arc::new({
         let session_cert = Arc::clone(&session_cert);
         ShellNetwork::spawn_with(
             tree.clone(),
@@ -232,7 +233,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             },
         )
         .unwrap()
-    };
+    });
     let (session_key, session_cert) = session_cert.lock().unwrap().clone().unwrap();
     assert!(!session_cert.capabilities.can_act_as_host);
     let _ = net.join_default_workspace();
@@ -290,7 +291,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         let channel = document_channel_id(NOTES, &acme.room, record);
         until("the steward to admit the session", || {
             net.tick();
-            channels.pump(&net, Instant::now(), unix_now());
+            channels.pump(&*net, Instant::now(), unix_now());
             match channels.access(room, channel, Instant::now()) {
                 ChannelAccess::Ready(keys) => Some(keys),
                 ChannelAccess::Waiting => None,
@@ -370,7 +371,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     let mut events = Vec::new();
     let seen = until("the reply to reach the browser", || {
         net.tick();
-        channels.pump(&net, Instant::now(), unix_now());
+        channels.pump(&*net, Instant::now(), unix_now());
         events.extend(ada.drain());
         let index = events.iter().position(|event| {
             matches!(event, PeerEvent::Document(document) if document.route.record == "reply")
@@ -474,6 +475,67 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         inbound.lock().unwrap().is_empty(),
         "spoofed or cross-room presence was admitted"
     );
+
+    assert!(net.current_presence_reader(&acme.room, publisher, NOTES));
+    assert!(!net.current_presence_reader(
+        &acme.room,
+        neighbour_wire::peer_handle(stranger.as_bytes()),
+        NOTES
+    ));
+    assert!(!net.current_presence_reader(&RoomId::new().to_string(), publisher, NOTES));
+
+    // Chrome consumes the admitted route through the production broker
+    // subscription and roster path, even without a legacy identity hello.
+    let broker_dir = dir.path().join("presence-broker");
+    std::fs::create_dir(&broker_dir).unwrap();
+    std::fs::set_permissions(&broker_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let broker = crate::shell::collab_broker::spawn_native(
+        broker_dir.join("broker.sock"),
+        &None,
+        tree.clone(),
+    )
+    .unwrap();
+    let chrome =
+        crate::shell::peer_presence::PeerPresence::attach(&broker, &net, vec![acme.room.clone()]);
+    let arrival = ui::collaboration::CollabEvent::RemotePresenceUpdate {
+        user_id: format!("peer@{publisher}"),
+        key: ui::presence::PresenceKey::Tab {
+            id: "700000000000001".into(),
+        },
+        payload: ui::collaboration::PresencePayload::Arrived,
+    };
+    let source = tilo_action_broker::route::CrdtRoute::app(NOTES, &acme.room);
+    broker
+        .fanout
+        .fanout_presence_to_room(&arrival, u64::MAX, &source);
+    let mut chrome_presence = ui::presence::PresenceCtx::default();
+    assert!(chrome.pump(&mut chrome_presence, &[]));
+    assert!(chrome.refresh_roster(&chrome_presence));
+    assert!(
+        tree.read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .collaborators
+            .iter()
+            .any(|row| row.session == Some(publisher)
+                && !row.invited
+                && row.active_tab == Some(0x0700_0000_0000_0001))
+    );
+    chrome.set_rooms(Vec::new());
+    assert!(chrome.pump(&mut chrome_presence, &[]));
+    assert!(chrome.refresh_roster(&chrome_presence));
+    assert!(
+        tree.read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .collaborators
+            .iter()
+            .all(|row| row.active_tab.is_none())
+    );
+    drop(chrome);
+    drop(broker);
 
     // The relay carried both only as ciphertext.
     assert!(!holds(&relay_state, PLAN.as_bytes()));

@@ -664,6 +664,45 @@ impl Rooms {
         Ok(GovernanceCompletion { generation })
     }
 
+    /// Commit a current admitted writer's own immutable topology namespace.
+    /// No caller-supplied identity, signing key or administration grant is accepted.
+    ///
+    /// # Errors
+    /// Refuses revoked/stale devices, write denial, namespace conflicts/budgets
+    /// and failed durable publication.
+    pub async fn claim_member_namespace(
+        &self,
+        room: &str,
+        caller: &DeviceCert,
+        salt: u16,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = now_ns();
+        tilo_user_identity::verify_device_cert_at(caller, now)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        if self.revocations().is_revoked(&caller.device_public_key) {
+            return Err(CollaborationError::new("device revoked"));
+        }
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let mut candidate = room.peer().clone();
+        let changed = candidate.claim_workspace_namespace(
+            caller,
+            salt,
+            &self.inner.host.key,
+            system_time(now),
+        )?;
+        let collaboration = room.collaboration().clone();
+        let generation = if changed {
+            room.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+                Ok(collaboration)
+            })?
+        } else {
+            room.record.generation
+        };
+        self.settle(&mut room).await?;
+        Ok(GovernanceCompletion { generation })
+    }
+
     async fn administer(
         &self,
         room: &mut GovernedRoom,

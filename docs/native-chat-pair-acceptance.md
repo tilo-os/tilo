@@ -93,6 +93,26 @@ and Alice's tab is absent from Bob's admitted topology. Both boundaries must
 be completed before shell follow can qualify. No roster flag or missing-tab
 assertion is bypassed by this reproducer.
 
+The follow-up routes namespace claims through the authenticated room service
+using the exact signed governor hint and current device certificate. The governor
+derives ownership from that certificate and records the immutable namespace
+under its own custody; it grants no administration. Zero salts, conflicting
+owners, stale admission, viewer writes and exhausted budgets are refused.
+Publication waits for the admitted registry entry, not its RPC acknowledgement.
+The compositor retains tab arrivals by room and authenticated session, preserves
+the source app for current read checks, and removes the location on Left, room
+unsubscribe or loss of admission. Names never identify a location.
+
+The next private run confirmed both governed namespace claims and Alice's
+certified tab arrival in Bob's roster, but Follow timed out before voice. The
+relay had been ignoring authenticated workspace `SyncResp` updates. The
+follow-up now admits those updates through `StatePeer`, restricts them to
+owned contents without changes to governance, and commits and publishes them
+through the governor's durable checkpoint path. Cross-room and cross-namespace
+writes, governance edits and replay after downgrade or removal are tested.
+The reproducer also waits for the remote tab in the admitted workspace and
+observes the Follow action's terminal receipt. This run remains unqualified.
+
 `--voice-proof` runs the same certified desktops, normal packages and private
 audio graphs through voice, Leave, fresh rejoin consent and removal without
 running context follow. Its receipt is explicitly `mode: native-voice-proof`
@@ -111,6 +131,14 @@ report and no issue. `call-status` explicitly returns its preceding snapshot
 while requesting an asynchronous refresh; the reproducer waits for the first
 service reply but refuses a later terminal state. No capture fence diagnosis
 has been established by those later runs.
+
+A source-level race exists when an owner fence pauses an in-flight capture
+startup: the old prepared generation reaches installation after the pause and
+was classified as permission denial. The follow-up retires that prepared work
+and requests reconnect through the existing lease and current-authority checks.
+Terminal stop, expired consent, source loss and denied publication still refuse
+capture. This correction does not establish the cause of the earlier synthetic
+receipt until a new instrumented journey exercises it.
 
 `journey.json` remains `qualified: false` until every step completes: presented
 native Chat on both peers; opt-in context navigation; Stop and explicit follow

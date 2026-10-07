@@ -258,6 +258,29 @@ impl FanoutState {
             capnp.fanout_to_route(event, except, route);
         }
     }
+
+    /// Deliver room presence while preserving its authenticated source app
+    /// for compositor subscribers that recheck current app read authority.
+    /// Typed application subscribers still receive room-wide presence.
+    pub fn fanout_presence_to_room(&self, event: &CollabEvent, except: u64, source: &CrdtRoute) {
+        if self.stopped.load(Ordering::Acquire)
+            || !matches!(event, CollabEvent::RemotePresenceUpdate { .. })
+            || !source.delivers_to(&source.to_cluster_scope())
+        {
+            return;
+        }
+        for sub in self.local_subs() {
+            if self.stopped.load(Ordering::Acquire) {
+                return;
+            }
+            if sub.wants(source) {
+                (sub.sink)(event, source);
+            }
+        }
+        if let Some(capnp) = self.capnp_state() {
+            capnp.fanout_to_route(event, except, &source.to_cluster_scope());
+        }
+    }
 }
 
 /// Owns the typed broker and optional peer-network drain.

@@ -98,6 +98,14 @@ pub enum RoomCommand {
         /// Canonical redacted public receipt; never action arguments or results.
         redacted: Vec<u8>,
     },
+    /// Register a topology namespace to the authenticated current writer.
+    /// Appended to preserve every existing postcard discriminant.
+    ClaimNamespace {
+        /// The exact governed room.
+        room: String,
+        /// The session's nonzero topology namespace; never rebound.
+        salt: u16,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +260,12 @@ impl RoomAdminProtocol {
                 redacted,
             } => rooms
                 .record_member_effect_receipt(&room, device, invocation, &redacted)
+                .await
+                .map(|done| RoomReply::Governance {
+                    generation: done.generation,
+                }),
+            RoomCommand::ClaimNamespace { room, salt } => rooms
+                .claim_member_namespace(&room, device, salt)
                 .await
                 .map(|done| RoomReply::Governance {
                     generation: done.generation,

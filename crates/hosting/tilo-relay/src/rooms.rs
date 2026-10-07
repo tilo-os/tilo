@@ -24,6 +24,7 @@ mod pages;
 mod stewardship;
 #[cfg(test)]
 mod tests;
+mod topology;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
@@ -689,6 +690,9 @@ impl Rooms {
             return Ok(());
         };
         match message {
+            message @ tilo_peer_state::NeighbourMsg::SyncResp { .. } => {
+                return self.absorb_member_topology(room, author, message).await;
+            }
             tilo_peer_state::NeighbourMsg::MlsAccessRequest {
                 room: named,
                 request,

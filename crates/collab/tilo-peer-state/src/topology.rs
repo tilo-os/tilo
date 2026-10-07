@@ -8,7 +8,7 @@ fn json(doc: Option<&AutoCommit>) -> Result<Value, String> {
         .transpose()
         .map(|v| v.unwrap_or(Value::Null))
 }
-fn owners(value: &Value) -> Result<BTreeMap<u16, String>, String> {
+pub(crate) fn owners(value: &Value) -> Result<BTreeMap<u16, String>, String> {
     let Some(value) = value.get("contents_owners_v1") else {
         return Ok(BTreeMap::new());
     };

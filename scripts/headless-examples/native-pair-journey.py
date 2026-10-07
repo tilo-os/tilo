@@ -294,20 +294,44 @@ class Fixture:
             (self.output / "bob-follow-roster.json").write_text(json.dumps({
                 "expected_certified_session": presence_ids[0],
                 "workspaces": [{"room": workspace.get("room"),
-                                "collaborators": workspace.get("collaborators")}
+                                "collaborators": workspace.get("collaborators"),
+                                "tabs": [{"id": tab.get("id"), "title": tab.get("title")}
+                                         for strip in workspace.get("strips", [])
+                                         for group in strip.get("window_groups", [])
+                                         for tab in group.get("tabs", [])]}
                                for workspace in tree.get("workspaces", [])],
                 "presence": response.get("state", {}).get("chrome", {}).get("presence"),
                 "peers": response.get("state", {}).get("peers")}, indent=2))
             return any(row.get("id") == presence_ids[0] and row.get("invited") is False
+                       and row.get("active_tab") is not None
+                       and any(tab.get("id") == row["active_tab"]
+                               for strip in workspace.get("strips", [])
+                               for group in strip.get("window_groups", [])
+                               for tab in group.get("tabs", []))
                        for workspace in tree.get("workspaces", []) if workspace.get("room") == room
                        for row in workspace.get("collaborators", []))
 
-        packaged.wait_for("Alice's certified session is present in Bob's roster", connected, bob[1])
+        packaged.wait_for("Alice's certified session and admitted tab reach Bob", connected, bob[1])
         follow = packaged.require_action(bob[0], "presence.follow")
-        packaged.invoke(bob[0], follow, {"collaborator": presence_ids[0]})
+        receipt = packaged.wait_terminal(bob[0], packaged.invoke(bob[0], follow, {
+            "collaborator": presence_ids[0]}), bob[1],
+            public_failure_path=self.output / "failed-shell-follow.json")
+        (self.output / "shell-follow-terminal.json").write_text(json.dumps(receipt, indent=2))
 
         def following():
             report = self.act(bob, room, "live-context-status")
+            state = call(bob[0], {"op": "state_dump"}).get("state", {})
+            tree = state.get("workspace_tree", {})
+            (self.output / "bob-follow-observation.json").write_text(json.dumps({
+                "report": report,
+                "presence": state.get("chrome", {}).get("presence"),
+                "workspaces": [{"room": workspace.get("room"),
+                    "collaborators": workspace.get("collaborators"),
+                    "tabs": [{"id": tab.get("id"), "title": tab.get("title")}
+                             for strip in workspace.get("strips", [])
+                             for group in strip.get("window_groups", [])
+                             for tab in group.get("tabs", [])]}
+                    for workspace in tree.get("workspaces", [])]}, indent=2))
             expected = first.removeprefix("chat.channel:")
             return report if report.get("following") is True and report.get("channel") == expected else None
 

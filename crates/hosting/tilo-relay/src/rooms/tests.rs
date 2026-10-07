@@ -1,7 +1,7 @@
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-fn governor() -> (SigningKey, DeviceCert) {
+pub(super) fn governor() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[2; 32]);
     let mut cert = DeviceCert {

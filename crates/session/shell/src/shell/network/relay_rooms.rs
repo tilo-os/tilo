@@ -106,6 +106,59 @@ impl ShellNetwork {
             .map_err(|_| "the relay did not answer in time")?
     }
 
+    /// Ask the exact admitted governor to register this device's namespace.
+    /// Subsequent topology publication still waits to observe the signed registry.
+    pub(crate) fn claim_governed_namespace(
+        &self,
+        room: RoomId,
+        salt: u16,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
+        let prepared = (|| {
+            let owner = self.native_owner()?;
+            let identity = self
+                .host_identity
+                .as_ref()
+                .ok_or("native identity unavailable")?;
+            owner.with_current(room, |view| {
+                let (certificate, _) = identity.current_native_material(view.workspace())?;
+                if view.device() != &certificate {
+                    return Err("namespace caller differs from admitted native custody".into());
+                }
+                let (hint, _) =
+                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                        .map_err(|error| error.to_string())?;
+                if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
+                    return Err("namespace host differs from current admitted governor".into());
+                }
+                Ok((hint.endpoint_addr, certificate))
+            })
+        })();
+        let queue = self.cmd_tx.clone();
+        async move {
+            let (relay, certificate) = prepared?;
+            let (reply, answer) = std::sync::mpsc::sync_channel(1);
+            queue
+                .try_send(NetCmd::RoomAdmin {
+                    relay,
+                    certificate,
+                    command: Box::new(RoomCommand::ClaimNamespace {
+                        room: room.to_string(),
+                        salt,
+                    }),
+                    reply,
+                })
+                .map_err(|_| "the network queue is unavailable")?;
+            let response = tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
+                .await
+                .map_err(|_| "namespace reply worker stopped")?
+                .map_err(|_| "namespace governor did not answer in time; outcome unknown")??;
+            match response {
+                RoomReply::Governance { .. } => Ok(()),
+                _ => Err("namespace governor returned an unexpected answer".into()),
+            }
+        }
+    }
+
     /// Send a person's own bounded terminal audit to the exact signed governor.
     /// Room administration retains its independent same-person owner checks.
     pub(crate) async fn record_governed_effect_receipt(

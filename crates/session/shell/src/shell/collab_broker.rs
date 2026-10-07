@@ -494,13 +494,13 @@ impl DrainQueues {
                 labels,
                 announced,
             );
-            let route = CrdtRoute::cluster(entry.cluster_id.clone());
+            let route = CrdtRoute::app(entry.app_id, entry.cluster_id.clone());
             let event = CollabEvent::RemotePresenceUpdate {
                 user_id,
                 key,
                 payload,
             };
-            self.table.fanout_to_route(&event, u64::MAX, &route);
+            self.table.fanout_presence_to_room(&event, u64::MAX, &route);
         }
         true
     }

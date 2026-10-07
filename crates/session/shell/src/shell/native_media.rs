@@ -842,7 +842,14 @@ impl Shared {
         else {
             return false;
         };
-        if !entry.permit.is_current() || (entry.caller.current)().is_err() {
+        let lifecycle_current = entry.permit.is_current();
+        let admission_current = (entry.caller.current)().is_ok();
+        if !lifecycle_current || !admission_current {
+            tracing::warn!(
+                lifecycle_current,
+                admission_current,
+                "native call local authority ended"
+            );
             self.stop_entry(entry);
             calls.entries.remove(key);
             return false;

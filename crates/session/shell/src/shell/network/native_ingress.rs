@@ -272,6 +272,56 @@ impl ShellNetwork {
             })
             .is_ok()
     }
+    /// Recheck retained app presence against its exact room and current reader.
+    pub(crate) fn current_presence_reader(&self, cluster: &str, peer: u64, app: &str) -> bool {
+        let Some(room) = RoomId::parse(cluster) else {
+            return false;
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return false;
+        };
+        let tree = replica.tree.read();
+        if !tree
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.room == room)
+        {
+            return false;
+        }
+        let native = tree.requires_native_owner(room);
+        drop(tree);
+        drop(replica);
+        if !native {
+            // Legacy broker delivery already passed its authenticated route
+            // gate. Its roster is an output of presence, not admission evidence.
+            return true;
+        }
+        let Ok(owner) = self.native_owner() else {
+            return false;
+        };
+        owner
+            .with_current(room, |view| {
+                let certificates = view.peer().certificates();
+                let mut matching = certificates.iter().filter(|certificate| {
+                    iroh::EndpointId::from_bytes(&certificate.device_public_key).is_ok_and(
+                        |device| crate::network::behaviour::peer_liveness_handle(&device) == peer,
+                    )
+                });
+                let certificate = matching.next().ok_or("presence device is not admitted")?;
+                if matching.next().is_some() {
+                    return Err("ambiguous presence session".into());
+                }
+                view.peer().check_document_read(
+                    certificate.device_public_key,
+                    app,
+                    "",
+                    SystemTime::now(),
+                )
+            })
+            .is_ok()
+    }
+
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).
     pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {

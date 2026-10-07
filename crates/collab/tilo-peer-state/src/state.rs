@@ -33,6 +33,7 @@ mod owner_membership;
 mod workspace_effects;
 mod workspace_membership;
 mod workspace_tasks;
+mod workspace_topology;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod media_governance;
 mod native_publication;

@@ -81,6 +81,24 @@ pub fn place_pointer(tiles: &TabTiles, anchor: PointerAnchor) -> Option<(f64, f6
         .map(|(_, rect)| (rect.x0 + anchor.x, rect.y0 + anchor.y))
 }
 
+#[derive(Clone)]
+struct ScopedPresence {
+    room: String,
+    app: String,
+    user: String,
+    key: PresenceKey,
+    payload: PresencePayload,
+}
+
+#[derive(Clone)]
+struct TabArrival {
+    app: String,
+    tab: u64,
+}
+
+type RoomArrivals = HashMap<(String, String), TabArrival>;
+const MAX_ROOM_ARRIVALS: usize = 4096;
+
 /// Bridges the session's collaboration broker and its peers for
 /// pointer presence. Held by the compositor for the life of the session.
 pub struct PeerPresence {
@@ -100,7 +118,9 @@ pub struct PeerPresence {
     /// authenticated typed-presence route rather than the legacy desktop
     /// cursor queue. They are drained into the same render-only
     /// [`PresenceCtx`] projection in [`Self::pump`].
-    typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
+    typed_inbound: Arc<Mutex<Vec<ScopedPresence>>>,
+    /// Authenticated app lifecycle, scoped to its delivery room and session.
+    arrivals: Mutex<RoomArrivals>,
     departures: Arc<crate::shell::network::PeerDepartureHistory>,
     seen_departures: Mutex<HashSet<DepartureKey>>,
     subscription: Arc<RoomSubscription>,
@@ -238,8 +258,7 @@ impl PeerPresence {
         let net_for_subscription = Arc::clone(net);
 
         let sink_cursor = Arc::clone(&cursor);
-        let typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let typed_inbound: Arc<Mutex<Vec<ScopedPresence>>> = Arc::new(Mutex::new(Vec::new()));
         let sink_typed = Arc::clone(&typed_inbound);
         let subscription = broker.subscribe_rooms(
             rooms,
@@ -263,7 +282,13 @@ impl PeerPresence {
                     // route itself, then retained only as roster activity.
                     let authorized = typed_presence_authorized(key, payload, &route.cluster_id);
                     if authorized && let Ok(mut queue) = sink_typed.lock() {
-                        queue.push((user_id.clone(), key.clone(), payload.clone()));
+                        queue.push(ScopedPresence {
+                            room: route.cluster_id.clone(),
+                            app: route.app_id.clone(),
+                            user: user_id.clone(),
+                            key: key.clone(),
+                            payload: payload.clone(),
+                        });
                     }
                     return;
                 }
@@ -314,6 +339,7 @@ impl PeerPresence {
             anchored: Mutex::new(HashMap::new()),
             inbound,
             typed_inbound,
+            arrivals: Mutex::new(HashMap::new()),
             departures,
             seen_departures: Mutex::new(seen_departures),
             subscription,
@@ -426,14 +452,7 @@ impl PeerPresence {
             );
             place_pointers(&anchored, &fresh, presence, tiles, now)
         });
-        let typed = self
-            .typed_inbound
-            .lock()
-            .map(|mut queue| std::mem::take(&mut *queue))
-            .unwrap_or_default();
-        // Attribution is normalized to the authenticated envelope identity
-        // inside the fold; JSON supplied by an app cannot rename its actor.
-        let typed_changed = fold_typed_presence(typed, presence);
+        let typed_changed = self.pump_typed(presence, &mine);
         let departures = self.departures.snapshot();
         let active_keys = departures
             .iter()
@@ -457,6 +476,15 @@ impl PeerPresence {
                 if !seen.insert(key) {
                     continue;
                 }
+                let still_arrived_elsewhere = self.arrivals.lock().is_ok_and(|mut arrivals| {
+                    let user = format!("peer@{}", departure.session_handle);
+                    arrivals.remove(&(departure.route.cluster_id.clone(), user.clone()));
+                    arrivals.keys().any(|(_, peer)| peer == &user)
+                });
+                if still_arrived_elsewhere {
+                    changed = true;
+                    continue;
+                }
                 let active_labels = self.net.active_session_labels(&departure.route.cluster_id);
                 for id in departure_presence_ids(
                     departure.session_handle,
@@ -472,6 +500,103 @@ impl PeerPresence {
         cursor_changed || typed_changed || departure_changed
     }
 
+    fn pump_typed(&self, presence: &mut PresenceCtx, mine: &[String]) -> bool {
+        let typed = self
+            .typed_inbound
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default();
+        // Attribution is normalized to the authenticated envelope identity
+        // inside the fold; JSON supplied by an app cannot rename its actor.
+        self.arrivals.lock().is_ok_and(|mut arrivals| {
+            let mut changed = false;
+            let mut expired = Vec::new();
+            arrivals.retain(|(room, user), entry| {
+                let current = mine.contains(room)
+                    && user
+                        .strip_prefix("peer@")
+                        .and_then(|id| id.parse().ok())
+                        .is_some_and(|peer| {
+                            self.net.current_presence_reader(room, peer, &entry.app)
+                        });
+                if !current {
+                    expired.push((user.clone(), entry.tab));
+                    changed = true;
+                }
+                current
+            });
+            for (user, tab) in expired {
+                if !arrivals
+                    .iter()
+                    .any(|((_, id), entry)| id == &user && entry.tab == tab)
+                {
+                    presence.remove_presence(
+                        &PresenceKey::Tab {
+                            id: format!("{tab:x}"),
+                        },
+                        &ui::permissions::UserId(user),
+                    );
+                }
+            }
+            for update in typed {
+                if !mine.contains(&update.room) {
+                    continue;
+                }
+                let Some(peer) = update
+                    .user
+                    .strip_prefix("peer@")
+                    .and_then(|id| id.parse().ok())
+                else {
+                    continue;
+                };
+                if !self
+                    .net
+                    .current_presence_reader(&update.room, peer, &update.app)
+                {
+                    continue;
+                }
+                if let PresenceKey::Tab { id } = &update.key {
+                    let Ok(tab) = u64::from_str_radix(id, 16) else {
+                        continue;
+                    };
+                    let route = (update.room.clone(), update.user.clone());
+                    match update.payload {
+                        PresencePayload::Arrived => {
+                            if arrivals.contains_key(&route) || arrivals.len() < MAX_ROOM_ARRIVALS {
+                                arrivals.insert(
+                                    route,
+                                    TabArrival {
+                                        app: update.app.clone(),
+                                        tab,
+                                    },
+                                );
+                            } else {
+                                continue;
+                            }
+                        }
+                        PresencePayload::Left
+                            if arrivals.get(&route).is_some_and(|entry| entry.tab == tab) =>
+                        {
+                            arrivals.remove(&route);
+                            changed = true;
+                            if arrivals
+                                .iter()
+                                .any(|((_, user), entry)| user == &update.user && entry.tab == tab)
+                            {
+                                continue;
+                            }
+                        }
+                        PresencePayload::Left => continue,
+                        _ => {}
+                    }
+                }
+                changed |=
+                    fold_typed_presence(vec![(update.user, update.key, update.payload)], presence);
+            }
+            changed
+        })
+    }
+
     /// Write the active workspace's room's people into the tree, where
     /// the roster and top bar read them. Separate from [`Self::pump`]:
     /// answers "did who-is-here change", not "did a peer move" — a peer
@@ -479,6 +604,11 @@ impl PeerPresence {
     /// Returns whether the list changed, a reason to repaint.
     pub fn refresh_roster(&self, presence: &PresenceCtx) -> bool {
         let local = self.net.local_peer_id_hash();
+        let arrivals = self
+            .arrivals
+            .lock()
+            .map(|arrivals| arrivals.clone())
+            .unwrap_or_default();
         // Written only on change — a lock every frame would contend
         // with the network thread. `replica` is locked once to compute
         // `rows` and dropped before re-locking to write it, rather than
@@ -515,24 +645,18 @@ impl PeerPresence {
                         .filter_map(|(user, _)| user.strip_prefix("peer@")?.parse::<u64>().ok()),
                 );
             }
+            arrived.extend(
+                arrivals
+                    .keys()
+                    .filter(|(scope, _)| scope == &room)
+                    .filter_map(|(_, user)| user.strip_prefix("peer@")?.parse::<u64>().ok()),
+            );
             arrived.extend(replica.participants_in(ws.room));
             let mut rows = room_roster(ws, &labels, &arrived, local);
             for row in &mut rows {
-                let presence_id = presence
-                    .names
-                    .iter()
-                    .find_map(|(id, name)| name.eq_ignore_ascii_case(&row.name).then_some(id))
-                    .cloned()
-                    .unwrap_or_else(|| ui::permissions::UserId(row.id.clone()));
-                row.active_tab = presence.here.iter().find_map(|(key, users)| {
-                    let PresenceKey::Tab { id } = key else {
-                        return None;
-                    };
-                    users
-                        .contains(&presence_id)
-                        .then(|| u64::from_str_radix(id, 16).ok())
-                        .flatten()
-                });
+                row.active_tab = arrivals
+                    .get(&(room.clone(), row.id.clone()))
+                    .map(|entry| entry.tab);
             }
             let unchanged = ws.collaborators == rows && tree.desktop.collaborators == rows;
             let active = ws.id;
@@ -1716,6 +1840,96 @@ mod two_sessions {
             NetCmd::Publish { msg, .. } => msg,
             other => panic!("expected a publish, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tab_arrival_stays_in_its_room_and_left_cannot_erase_another_room() {
+        let remote = peer_id(81);
+        let local = peer_id(82);
+        let (mut tree, first) = host_naming(&[(&remote, "Same name")]);
+        let second_ws = tree.append_empty_workspace("Other room");
+        tree.adopt_ownerless_workspaces(&OWNER.to_string());
+        let second = tree.room_of(second_ws).unwrap();
+        assert!(tree.name_peer(second, &OWNER.to_string(), &remote, "Same name"));
+        looking_at_its_room(&mut tree);
+        let tree = tree.shared();
+        let dir = tempfile::tempdir().unwrap();
+        let (net, _cmds) = shell_network_for_test(tree.clone(), handle_of(&local));
+        let net = Arc::new(net);
+        let broker = broker(dir.path(), "arrivals.sock");
+        let relay = PeerPresence::attach(&broker, &net, rooms_of(&tree));
+        let user = format!("peer@{}", handle_of(&remote));
+        let send = |room: RoomId, payload| {
+            broker.fanout.fanout_presence_to_room(
+                &CollabEvent::RemotePresenceUpdate {
+                    user_id: user.clone(),
+                    key: PresenceKey::Tab { id: "7ab".into() },
+                    payload,
+                },
+                u64::MAX,
+                &tilo_action_broker::route::CrdtRoute::app("so.tilo.chat", room.to_string()),
+            );
+        };
+        let mut presence = PresenceCtx::default();
+        send(second, PresencePayload::Arrived);
+        assert!(relay.pump(&mut presence, &DESK_TILES));
+        relay.refresh_roster(&presence);
+        assert!(
+            tree.read()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators
+                .iter()
+                .all(|row| row.active_tab.is_none())
+        );
+        send(first, PresencePayload::Arrived);
+        assert!(relay.pump(&mut presence, &DESK_TILES));
+        assert!(relay.refresh_roster(&presence));
+        assert_eq!(
+            tree.read()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators[0]
+                .active_tab,
+            Some(DESK_TAB)
+        );
+        send(first, PresencePayload::Left);
+        assert!(relay.pump(&mut presence, &DESK_TILES));
+        assert!(relay.refresh_roster(&presence));
+        assert!(
+            tree.read()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators[0]
+                .active_tab
+                .is_none()
+        );
+        tree.write().desktop.active = second_ws;
+        assert!(relay.refresh_roster(&presence));
+        assert_eq!(
+            tree.read()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators[0]
+                .active_tab,
+            Some(DESK_TAB)
+        );
+        relay.set_rooms(vec![first.to_string()]);
+        assert!(relay.pump(&mut presence, &DESK_TILES));
+        assert!(relay.refresh_roster(&presence));
+        assert!(
+            tree.read()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators[0]
+                .active_tab
+                .is_none()
+        );
     }
 
     #[test]

@@ -489,6 +489,31 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         "a later invite for the same device must not overwrite the first receipt"
     );
 
+    assert!(
+        peer.claim_workspace_namespace(&guest_cert, 0x5a01, &other_owner_device, now)
+            .is_err()
+    );
+    assert!(
+        peer.claim_workspace_namespace(&guest_cert, 0, &authority_key, now)
+            .is_err()
+    );
+    assert!(
+        peer.claim_workspace_namespace(&guest_cert, 0x5a01, &authority_key, now)
+            .unwrap()
+    );
+    let namespace_value =
+        serde_json::to_value(automerge::AutoSerde::from(peer.admitted_room().unwrap())).unwrap();
+    assert_eq!(
+        crate::topology::owners(&namespace_value)
+            .unwrap()
+            .get(&0x5a01),
+        Some(&hex::encode(guest_cert.device_public_key))
+    );
+    assert!(
+        peer.claim_workspace_namespace(&peer.authority().clone(), 0x5a01, &authority_key, now)
+            .is_err()
+    );
+
     let mut restored = StatePeer::restore(
         &peer.durable().unwrap(),
         peer.room(),
@@ -506,6 +531,11 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         !restored
             .admit_invited_member(&second_redemption, &authority_key, now)
+            .unwrap()
+    );
+    assert!(
+        !restored
+            .claim_workspace_namespace(&guest_cert, 0x5a01, &authority_key, now)
             .unwrap()
     );
     let replay_key = SigningKey::from_bytes(&[54; 32]);
@@ -597,6 +627,37 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .0,
         collab_types::Role::Owner
     );
+    let topology = {
+        let mut doc = restored.admitted_room().unwrap().clone();
+        let heads = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(
+            guest_cert.device_public_key.to_vec(),
+        ));
+        let contents = doc
+            .put_object(ROOT, "contents", automerge::ObjType::Map)
+            .unwrap();
+        let strip = doc
+            .put_object(contents, "5a01000000000001", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(strip, "name", "Independent member context")
+            .unwrap();
+        doc.commit();
+        NeighbourMsg::SyncResp {
+            room: restored.room().into(),
+            changes: doc
+                .get_changes(&heads)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+        }
+    };
+    restored
+        .receive_from(
+            crate::TransportOrigin::RetainedRelayDelta(guest_cert.device_public_key),
+            topology.clone(),
+            now,
+        )
+        .unwrap();
     assert!(
         restored
             .set_member_role(
@@ -613,6 +674,27 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .unwrap()
             .0,
         collab_types::Role::Viewer
+    );
+    assert!(
+        restored
+            .claim_workspace_namespace(&guest_cert, 0x5a01, &authority_key, now)
+            .is_err(),
+        "downgrading to viewer closes even idempotent claims"
+    );
+    assert!(
+        restored
+            .claim_workspace_namespace(&guest_cert, 0x5a02, &authority_key, now)
+            .is_err()
+    );
+    assert!(
+        restored
+            .receive_from(
+                crate::TransportOrigin::RetainedRelayDelta(guest_cert.device_public_key),
+                topology.clone(),
+                now
+            )
+            .is_err(),
+        "viewer cannot replay retained topology"
     );
     restored
         .membership_challenge(
@@ -633,6 +715,22 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .permissions(guest_cert.device_public_key, now)
             .is_err()
+    );
+    assert!(
+        restored
+            .claim_workspace_namespace(&guest_cert, 0x5a01, &authority_key, now)
+            .is_err(),
+        "removal closes retained namespace replay"
+    );
+    assert!(
+        restored
+            .receive_from(
+                crate::TransportOrigin::RetainedRelayDelta(guest_cert.device_public_key),
+                topology,
+                now
+            )
+            .is_err(),
+        "removed member cannot replay retained topology"
     );
     assert_eq!(
         restored
