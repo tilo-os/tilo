@@ -198,7 +198,8 @@ impl<C: Widget> Popover<C> {
         self
     }
 
-    /// Keep a panel that fits the viewport entirely on screen, even when
+    /// Keep a panel that fits the viewport entirely on screen, with the
+    /// shared theme edge margin, even when
     /// neither side of its anchor has room. The caller must still size its
     /// content to the viewport; this never shrinks or clips that content.
     #[must_use]
@@ -343,6 +344,13 @@ impl<C: Widget> Popover<C> {
     /// keeps), else anywhere.
     fn room(&self, theme: &Theme) -> Rect {
         self.viewport
+            .map(|viewport| {
+                if self.confine_to_viewport {
+                    floating_surface::panel_room(viewport, theme)
+                } else {
+                    viewport
+                }
+            })
             .or_else(|| {
                 self.presented
                     .map(|window| floating_surface::panel_room(window, theme))

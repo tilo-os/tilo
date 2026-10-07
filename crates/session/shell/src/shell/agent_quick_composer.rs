@@ -1,17 +1,17 @@
 //! Marker-anchored, private Agent Message / Queue / Steer composer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tilo_actions::remote::Caller;
 use ui::agent_message_action::{
     AgentMessageOffer, AgentMessageOfferPoll, AgentMessagePoll, AgentMessageSubmission,
 };
 use ui::agent_task_frontier::{
-    AgentDirectionState, AgentQueueState, AgentTaskChoice, AgentTaskFrontiers,
+    AgentDirectionState, AgentQueueState, AgentTaskChoice, AgentTaskFrontier, AgentTaskFrontiers,
 };
 use ui::widget::{
-    Button, ButtonRole, Column, Container, Popover, PopoverSide, Row, Segment, Text, TextInput,
-    ToggleGroup, Widget,
+    Button, ButtonRole, Column, Container, Dropdown, Popover, PopoverSide, Row, Segment, Text,
+    TextInput, ToggleGroup, When, Widget,
 };
 use ui::{LocalState, Theme};
 use vello::kurbo::Rect;
@@ -43,6 +43,54 @@ struct ComposerControls<'a> {
     conversation_requested: &'a LocalState<bool>,
     task_center_requested: &'a LocalState<bool>,
     close_requested: &'a LocalState<bool>,
+    task_options: &'a LocalState<Vec<(String, String)>>,
+    task_selected: &'a LocalState<String>,
+    task_visible: &'a LocalState<bool>,
+}
+
+/// A presentation choice, never an execution capability. Revision fences a
+/// stale painted option as well as a replacement launch of the same task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TaskChoice {
+    task_id: String,
+    run_epoch: u64,
+    revision: u64,
+}
+
+impl TaskChoice {
+    fn from_frontier(frontier: &AgentTaskFrontier) -> Self {
+        Self {
+            task_id: frontier.task_id.clone(),
+            run_epoch: frontier.run_epoch,
+            revision: frontier.after_revision,
+        }
+    }
+
+    fn value(&self) -> String {
+        format!("{}:{}:{}", self.task_id, self.run_epoch, self.revision)
+    }
+}
+
+fn task_option_label(frontier: &AgentTaskFrontier) -> String {
+    use ui::agent_task_frontier::WorkspaceTaskExecutionPhase as Phase;
+    let phase = frontier
+        .execution
+        .as_ref()
+        .map_or(
+            "agent-quick-task-phase-unknown",
+            |execution| match execution.phase {
+                Phase::Accepted => "agent-quick-task-phase-accepted",
+                Phase::Planning => "agent-quick-task-phase-planning",
+                Phase::Executing => "agent-quick-task-phase-executing",
+            },
+        );
+    t_args(
+        "agent-quick-task-option",
+        &[
+            ("task", frontier.title.clone().into()),
+            ("phase", t(phase).into()),
+        ],
+    )
 }
 
 struct PendingMessage {
@@ -488,6 +536,13 @@ pub(crate) struct AgentQuickComposer {
     close_requested: LocalState<bool>,
     actions: Option<ui::remote_actions::RemoteActions>,
     tasks: Option<AgentTaskFrontiers>,
+    task_options: LocalState<Vec<(String, String)>>,
+    task_selected: LocalState<String>,
+    task_selected_observed: u64,
+    task_visible: LocalState<bool>,
+    displayed_tasks: Vec<TaskChoice>,
+    chosen_tasks: HashMap<DraftKey, TaskChoice>,
+    reconfirm_tasks: HashSet<DraftKey>,
     pending_message: Option<PendingMessage>,
     pending_message_offer: Option<PendingMessageOffer>,
     message_offer: Option<AgentMessageOffer>,
@@ -509,6 +564,9 @@ impl Default for AgentQuickComposer {
         let conversation_requested = LocalState::new(false);
         let task_center_requested = LocalState::new(false);
         let close_requested = LocalState::new(false);
+        let task_options = LocalState::new(Vec::new());
+        let task_selected = LocalState::new(String::new());
+        let task_visible = LocalState::new(false);
 
         let popover = quick_composer_popover(&ComposerControls {
             intent: &intent,
@@ -520,6 +578,9 @@ impl Default for AgentQuickComposer {
             conversation_requested: &conversation_requested,
             task_center_requested: &task_center_requested,
             close_requested: &close_requested,
+            task_options: &task_options,
+            task_selected: &task_selected,
+            task_visible: &task_visible,
         });
         Self {
             popover,
@@ -541,6 +602,13 @@ impl Default for AgentQuickComposer {
             close_requested,
             actions: None,
             tasks: None,
+            task_options,
+            task_selected,
+            task_selected_observed: 0,
+            task_visible,
+            displayed_tasks: Vec::new(),
+            chosen_tasks: HashMap::new(),
+            reconfirm_tasks: HashSet::new(),
             pending_message: None,
             pending_message_offer: None,
             message_offer: None,
@@ -558,6 +626,13 @@ fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container>
     let conversation_signal = controls.conversation_requested.clone();
     let task_center_signal = controls.task_center_requested.clone();
     let close_signal = controls.close_requested.clone();
+    let picker = Dropdown::from_state(Vec::new(), controls.task_selected)
+        .value_options_from(controls.task_options)
+        .with_id("agent-quick-task")
+        .with_resolved_accessible_name(t("agent-quick-task-label"))
+        .caption(t("agent-quick-task-label"))
+        .with_placeholder(&t("agent-quick-task-placeholder"))
+        .fill();
     let mode = ToggleGroup::from_state(
         vec![
             (
@@ -615,6 +690,11 @@ fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container>
             Text::from_state(controls.status, Clone::clone).dimmed(),
         ))
         .push(Box::new(mode))
+        .push(Box::new(When::from_state(
+            controls.task_visible,
+            |visible| *visible,
+            Box::new(picker),
+        )))
         .push(Box::new(editor))
         .push(Box::new(actions));
     let content = Container::new()
@@ -693,6 +773,10 @@ impl AgentQuickComposer {
             return;
         }
         self.park_pending_session();
+        // A user event from the old presentation cannot choose a task in
+        // another room/Agent even if the new snapshot reuses its task id.
+        self.task_selected_observed = self.task_selected.revision();
+        self.displayed_tasks.clear();
         self.room = room;
         self.agent = agent;
         self.agent_label = agent_label;
@@ -846,6 +930,7 @@ impl AgentQuickComposer {
         if let Some(tasks) = self.tasks.as_mut() {
             tasks.observe(&self.room, &self.agent);
         }
+        self.refresh_task_picker();
         if self.send_requested.get() {
             self.send_requested.set(false);
             self.submit();
@@ -865,6 +950,7 @@ impl AgentQuickComposer {
     }
 
     fn switch_intent(&mut self, selected: ComposerIntent) {
+        self.task_selected_observed = self.task_selected.revision();
         self.save_draft();
         let shared_actions = self.actions.clone();
         self.park_pending_session();
@@ -895,6 +981,114 @@ impl AgentQuickComposer {
         if selected == ComposerIntent::Message && self.pending_message.is_none() {
             self.start_message_offer_refresh();
         }
+    }
+
+    fn refresh_task_picker(&mut self) {
+        let key = self.draft_key();
+        let available = self
+            .tasks
+            .as_ref()
+            .map_or_else(Vec::new, AgentTaskFrontiers::available_tasks);
+        self.apply_task_pick(&key, &available);
+        self.restore_task_choice(&key, &available);
+        self.project_task_picker(&key, &available);
+    }
+
+    fn apply_task_pick(&mut self, key: &DraftKey, available: &[AgentTaskFrontier]) {
+        if self.task_selected.revision() != self.task_selected_observed {
+            let requested = self.task_selected.get();
+            self.task_selected_observed = self.task_selected.revision();
+            let picked = self
+                .displayed_tasks
+                .iter()
+                .find(|choice| choice.value() == requested);
+            if self.shown_intent == ComposerIntent::Steer
+                && self.pending_work.is_none()
+                && let Some(picked) = picked
+                && let Some(frontier) = available
+                    .iter()
+                    .find(|frontier| TaskChoice::from_frontier(frontier) == *picked)
+                && let Some(tasks) = self.tasks.as_mut()
+                && tasks
+                    .select_frontier_for(&self.room, &self.agent, frontier)
+                    .is_ok()
+            {
+                self.chosen_tasks.insert(key.clone(), picked.clone());
+                self.reconfirm_tasks.remove(key);
+            }
+        }
+    }
+
+    fn restore_task_choice(&mut self, key: &DraftKey, available: &[AgentTaskFrontier]) {
+        if let Some(chosen) = self.chosen_tasks.get(key) {
+            if let Some(frontier) = available.iter().find(|frontier| {
+                frontier.task_id == chosen.task_id && frontier.run_epoch == chosen.run_epoch
+            }) {
+                if let Some(tasks) = self.tasks.as_mut()
+                    && self.pending_work.is_none()
+                    && matches!(
+                        tasks.choice(),
+                        AgentTaskChoice::Choose(_) | AgentTaskChoice::None
+                    )
+                {
+                    let _selected = tasks.select_frontier_for(&self.room, &self.agent, frontier);
+                }
+            } else if !available.is_empty() {
+                self.chosen_tasks.remove(key);
+                self.reconfirm_tasks.insert(key.clone());
+            }
+        }
+        if self.shown_intent == ComposerIntent::Steer
+            && !self.chosen_tasks.contains_key(key)
+            && !self.reconfirm_tasks.contains(key)
+            && let Some(AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task)) =
+                self.tasks.as_ref().map(AgentTaskFrontiers::choice)
+        {
+            self.chosen_tasks
+                .insert(key.clone(), TaskChoice::from_frontier(&task));
+        }
+    }
+
+    fn project_task_picker(&mut self, key: &DraftKey, available: &[AgentTaskFrontier]) {
+        let visible = self.shown_intent == ComposerIntent::Steer
+            && self.pending_work.is_none()
+            && !available.is_empty()
+            && (available.len() > 1
+                || self.reconfirm_tasks.contains(key)
+                || self
+                    .tasks
+                    .as_ref()
+                    .is_some_and(AgentTaskFrontiers::needs_frontier_confirmation));
+        if self.task_visible.get() != visible {
+            self.task_visible.set(visible);
+        }
+        self.displayed_tasks = available.iter().map(TaskChoice::from_frontier).collect();
+        let options = available
+            .iter()
+            .zip(&self.displayed_tasks)
+            .map(|(frontier, choice)| (choice.value(), task_option_label(frontier)))
+            .collect();
+        if self.task_options.get() != options {
+            self.task_options.set(options);
+        }
+        let selected = if self.reconfirm_tasks.contains(key) {
+            String::new()
+        } else {
+            self.tasks
+                .as_ref()
+                .map(AgentTaskFrontiers::choice)
+                .and_then(|choice| match choice {
+                    AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => {
+                        Some(TaskChoice::from_frontier(&task).value())
+                    }
+                    AgentTaskChoice::None | AgentTaskChoice::Choose(_) => None,
+                })
+                .unwrap_or_default()
+        };
+        if self.task_selected.get() != selected {
+            self.task_selected.set(selected);
+        }
+        self.task_selected_observed = self.task_selected.revision();
     }
 
     fn poll_retained_sessions(&mut self) {
@@ -953,10 +1147,11 @@ impl AgentQuickComposer {
                 }
             }
             ComposerIntent::Steer => {
-                if self
-                    .tasks
-                    .as_mut()
-                    .is_some_and(|tasks| tasks.steer(&text).is_ok())
+                if !self.reconfirm_tasks.contains(&self.draft_key())
+                    && self
+                        .tasks
+                        .as_mut()
+                        .is_some_and(|tasks| tasks.steer(&text).is_ok())
                 {
                     self.pending_work = Some(PendingWork {
                         intent: ComposerIntent::Steer,
@@ -1131,6 +1326,11 @@ impl AgentQuickComposer {
                 receipt,
             ),
             ComposerIntent::Queue => queue_status(tasks, receipt),
+            ComposerIntent::Steer
+                if receipt.is_none() && self.reconfirm_tasks.contains(&receipt_key) =>
+            {
+                t("agent-quick-task-changed")
+            }
             ComposerIntent::Steer => direction_status(tasks, receipt),
         };
         if self.status.get() != value {
@@ -1148,7 +1348,8 @@ impl AgentQuickComposer {
                 .is_some_and(AgentTaskFrontiers::can_queue),
             self.tasks
                 .as_ref()
-                .is_some_and(AgentTaskFrontiers::can_steer),
+                .is_some_and(AgentTaskFrontiers::can_steer)
+                && !self.reconfirm_tasks.contains(&self.draft_key()),
         );
         let enabled = has_text && available;
         if self.send_enabled.get() != enabled {
@@ -1262,6 +1463,9 @@ fn clear_retained_draft(
 }
 
 impl Widget for AgentQuickComposer {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         self.popover.sync(state, path);
     }
@@ -1438,6 +1642,13 @@ mod tests {
             .any(|child| perform_accessible_descendant_action(child, target, action, edits))
     }
 
+    fn editor_state(widget: &mut dyn Widget) -> Option<String> {
+        if widget.test_id() == Some("agent-quick-editor") {
+            return ui::undo::get_state(widget);
+        }
+        widget.children_mut().into_iter().find_map(editor_state)
+    }
+
     struct CompletedTaskHost {
         applied_revision: Arc<AtomicU64>,
     }
@@ -1562,6 +1773,395 @@ mod tests {
 
     fn task_composer(applied_revision: u64) -> AgentQuickComposer {
         task_composer_with_applied(applied_revision).0
+    }
+
+    struct ChoiceTaskHost {
+        tasks: std::sync::Mutex<Vec<serde_json::Value>>,
+        requests: std::sync::Mutex<Vec<InvokeRequest>>,
+    }
+
+    impl ActionHost for ChoiceTaskHost {
+        fn query(
+            &self,
+            caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            CompletedTaskHost {
+                applied_revision: Arc::new(AtomicU64::new(4)),
+            }
+            .query(caller, query)
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            self.requests.lock().unwrap().push(request.clone());
+            let tasks = self.tasks.lock().unwrap().clone();
+            let value = match request.target.address.action.as_str() {
+                "read-current-tasks" => serde_json::json!({
+                    "generation": 1, "complete": true, "total": tasks.len(), "tasks": tasks,
+                    "pending_complete": true, "pending_total": 0, "pending": []
+                }),
+                "direct" => {
+                    let id = request
+                        .target
+                        .address
+                        .resource
+                        .strip_prefix("desktop:task:")
+                        .unwrap();
+                    serde_json::json!({"result": {"direction_added": {"task_id": id, "revision": 5}}})
+                }
+                "read-task" => {
+                    let id = request
+                        .target
+                        .address
+                        .resource
+                        .strip_prefix("desktop:task:")
+                        .unwrap();
+                    let mut task = tasks
+                        .iter()
+                        .find(|task| task["task_id"] == id)
+                        .unwrap()
+                        .clone();
+                    task["generation"] = serde_json::json!(1);
+                    task
+                }
+                _ => panic!("unexpected task action"),
+            };
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+            }))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+        fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
+            Err(ActionHostError::NotCancellable {
+                reason: "immediate fixture action".into(),
+            })
+        }
+    }
+
+    fn choice_task(id: &str, title: &str, epoch: u64) -> serde_json::Value {
+        serde_json::json!({
+            "task_id": id, "title": title, "assigned_agent": "scribe",
+            "status": "in_progress", "run_epoch": epoch, "active_agent": "scribe",
+            "after_revision": 4, "applied_revision": 4, "route": "model", "cancellation_requested": false,
+            "execution": {"run_epoch": epoch, "sequence": 1, "phase": "planning", "updated_at": 12}
+        })
+    }
+
+    fn choice_composer() -> (AgentQuickComposer, Arc<ChoiceTaskHost>) {
+        let host = Arc::new(ChoiceTaskHost {
+            tasks: std::sync::Mutex::new(vec![
+                choice_task("task-a", "Release notes", 7),
+                choice_task("task-b", "Review changes", 11),
+            ]),
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let actions = ui::remote_actions::RemoteActions::with_host(
+            host.clone(),
+            Caller::local_app("so.tilo.chat").in_room("room-a"),
+        );
+        let mut tasks = AgentTaskFrontiers::with_actions(actions.clone());
+        tasks.observe("room-a", "scribe");
+        let mut composer = AgentQuickComposer {
+            room: "room-a".into(),
+            agent: "scribe".into(),
+            actions: Some(actions),
+            tasks: Some(tasks),
+            shown_intent: ComposerIntent::Steer,
+            ..AgentQuickComposer::default()
+        };
+        composer.intent.set(ComposerIntent::Steer);
+        composer.set_draft("Keep the compatibility notes");
+        composer
+            .popover
+            .set_anchor(Rect::new(100.0, 140.0, 120.0, 160.0));
+        composer
+            .popover
+            .set_viewport(Rect::new(0.0, 0.0, 900.0, 700.0));
+        composer.popover.set_open(true);
+        composer.tick();
+        (composer, host)
+    }
+
+    #[test]
+    fn task_picker_keyboard_selects_exact_current_run_and_preserves_editor() {
+        let (composer, host) = choice_composer();
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(composer), (900, 700));
+        assert!(
+            !frame
+                .widget_mut::<AgentQuickComposer>()
+                .unwrap()
+                .send_enabled
+                .get()
+        );
+        frame.click_named("agent-quick-editor").unwrap();
+        frame.key("End");
+        frame.set_modifiers(&["shift".to_owned()]);
+        frame.key("ArrowLeft");
+        frame.set_modifiers(&[]);
+        let selected = editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap());
+        assert!(
+            selected.is_some(),
+            "the mounted editor exposes caret/selection state"
+        );
+        frame.click_named("agent-quick-task").unwrap();
+        frame.key("ArrowDown");
+        frame.key("Enter");
+        let composer = frame.widget_mut::<AgentQuickComposer>().unwrap();
+        assert!(
+            matches!(composer.tasks.as_ref().unwrap().choice(), AgentTaskChoice::Selected(task) if task.task_id == "task-b" && task.run_epoch == 11)
+        );
+        assert_eq!(composer.draft(), "Keep the compatibility notes");
+        assert_eq!(
+            editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap()),
+            selected
+        );
+        frame.click_named("agent-quick-send").unwrap();
+        let directs: Vec<_> = host
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.target.address.action == "direct")
+            .cloned()
+            .collect();
+        assert_eq!(directs.len(), 1);
+        assert_eq!(directs[0].target.address.resource, "desktop:task:task-b");
+        let InvokeArgument::Json(argument) = &directs[0].argument else {
+            panic!("typed direction")
+        };
+        assert_eq!(argument["run_epoch"], 11);
+        assert_eq!(argument["after_revision"], 4);
+    }
+
+    #[test]
+    fn task_picker_public_set_value_uses_the_shared_control_without_submitting_work() {
+        let (composer, host) = choice_composer();
+        let value = composer.displayed_tasks[1].value();
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(composer), (900, 700));
+        let resources = frame.resources();
+        let picker = resources
+            .iter()
+            .find(|resource| {
+                resource.label == t("agent-quick-task-label")
+                    && resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "set-value")
+            })
+            .expect("published shared task picker");
+        frame
+            .invoke_action(
+                &ActionAddress::new(picker.id.0.clone(), "set-value"),
+                &serde_json::Map::from_iter([("value".into(), serde_json::json!(value))]),
+                false,
+                None,
+            )
+            .unwrap();
+        frame.with_widget_mut::<AgentQuickComposer, _>(|composer| {
+            composer.tick();
+            assert!(matches!(composer.tasks.as_ref().unwrap().choice(), AgentTaskChoice::Selected(task) if task.task_id == "task-b" && task.run_epoch == 11));
+            assert_eq!(composer.draft(), "Keep the compatibility notes");
+        }).unwrap();
+        assert!(
+            !host
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.target.address.action == "direct")
+        );
+    }
+
+    #[test]
+    fn task_picker_accessibility_refuses_stale_displayed_run_and_preserves_intent_draft() {
+        let (mut composer, host) = choice_composer();
+        let old_value = composer.displayed_tasks[1].value();
+        layout_panel(
+            &mut composer,
+            Rect::new(100.0, 140.0, 120.0, 160.0),
+            Rect::new(0.0, 0.0, 900.0, 700.0),
+            &Theme::dark(),
+        );
+        let mut doc = automerge::AutoCommit::new();
+        composer.sync(&doc, &automerge::ROOT);
+        assert!(perform_accessible_descendant_action(
+            &mut composer,
+            "agent-quick-task",
+            &ui::a11y::Action::SetValue(old_value.clone()),
+            &mut ui::widget::Edits::lend(&mut doc)
+        ));
+        composer.tick();
+        assert_eq!(
+            composer
+                .tasks
+                .as_ref()
+                .unwrap()
+                .context_task()
+                .unwrap()
+                .task_id,
+            "task-b"
+        );
+        composer.switch_intent(ComposerIntent::Queue);
+        composer.set_draft("Separate queue draft");
+        composer.switch_intent(ComposerIntent::Steer);
+        composer.tick();
+        assert_eq!(composer.draft(), "Keep the compatibility notes");
+        assert_eq!(
+            composer
+                .tasks
+                .as_ref()
+                .unwrap()
+                .context_task()
+                .unwrap()
+                .run_epoch,
+            11
+        );
+        {
+            let mut tasks = host.tasks.lock().unwrap();
+            tasks[1]["after_revision"] = serde_json::json!(6);
+            tasks[1]["execution"]["phase"] = serde_json::json!("executing");
+        }
+        composer.tasks.as_mut().unwrap().refresh();
+        composer.tick();
+        assert!(
+            composer.send_enabled.get(),
+            "same-run progress retains the explicit task choice"
+        );
+        *host.tasks.lock().unwrap() = vec![choice_task("task-b", "Review changes", 12)];
+        composer.tasks.as_mut().unwrap().refresh();
+        composer.tick();
+        assert!(!composer.send_enabled.get());
+        assert!(composer.task_selected.get().is_empty());
+        assert!(composer.task_visible.get());
+        composer.task_selected.set(old_value);
+        composer.tick();
+        composer.submit();
+        assert!(
+            !host
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.target.address.action == "direct")
+        );
+        assert_eq!(composer.draft(), "Keep the compatibility notes");
+        composer.sync(&doc, &automerge::ROOT);
+        let replacement = composer.displayed_tasks[0].value();
+        assert!(perform_accessible_descendant_action(
+            &mut composer,
+            "agent-quick-task",
+            &ui::a11y::Action::SetValue(replacement),
+            &mut ui::widget::Edits::lend(&mut doc)
+        ));
+        composer.tick();
+        assert!(composer.send_enabled.get());
+        composer.submit();
+        let directs: Vec<_> = host
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.target.address.action == "direct")
+            .cloned()
+            .collect();
+        assert_eq!(directs.len(), 1);
+        let InvokeArgument::Json(argument) = &directs[0].argument else {
+            panic!("typed direction")
+        };
+        assert_eq!(argument["run_epoch"], 12);
+    }
+
+    #[test]
+    fn task_picker_render_component_matrix() {
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/agent-task-choice-renders");
+        std::fs::create_dir_all(&out).unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            for (size, viewport) in [("normal", (1600, 900)), ("compact", (560, 560))] {
+                let (mut composer, host) = choice_composer();
+                composer
+                    .title
+                    .set(t_args("agent-quick-title", &[("agent", "Scribe".into())]));
+                composer
+                    .popover
+                    .set_anchor(Rect::new(80.0, 90.0, 100.0, 110.0));
+                composer.popover.set_viewport(Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(viewport.0),
+                    f64::from(viewport.1),
+                ));
+                let mut frame = ui::headless::FrameHarness::new_with_theme(
+                    ui::State::new(),
+                    Box::new(composer),
+                    viewport,
+                    theme.clone(),
+                );
+                frame.click_named("agent-quick-editor").unwrap();
+                frame.key("End");
+                frame.set_modifiers(&["shift".to_owned()]);
+                frame.key("ArrowLeft");
+                frame.set_modifiers(&[]);
+                frame.render_png(&out.join(format!("{name}-{size}-choose.png")));
+                let selection = editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap());
+                assert!(
+                    selection.is_some(),
+                    "the mounted editor exposes caret/selection state"
+                );
+                frame.click_named("agent-quick-task").unwrap();
+                frame.render_png(&out.join(format!("{name}-{size}-open.png")));
+                frame.key("ArrowDown");
+                frame.key("Enter");
+                frame
+                    .with_widget_mut::<AgentQuickComposer, _>(|composer| {
+                        composer
+                            .tasks
+                            .as_mut()
+                            .unwrap()
+                            .select_for("room-a", "scribe", "task-b")
+                            .unwrap();
+                        composer.tick();
+                    })
+                    .unwrap();
+                frame.render_png(&out.join(format!("{name}-{size}-selected.png")));
+                host.tasks.lock().unwrap()[1] = choice_task("task-b", "Review changes", 12);
+                frame
+                    .with_widget_mut::<AgentQuickComposer, _>(|composer| {
+                        let tasks = composer.tasks.as_mut().unwrap();
+                        tasks.set_observation_active(false);
+                        tasks.set_observation_active(true);
+                        tasks.observe("room-a", "scribe");
+                        composer.tick();
+                        assert!(!composer.send_enabled.get());
+                        assert_eq!(composer.draft(), "Keep the compatibility notes");
+                    })
+                    .unwrap();
+                assert_eq!(
+                    editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap()),
+                    selection
+                );
+                frame.render_png(&out.join(format!("{name}-{size}-stale.png")));
+            }
+        }
     }
 
     fn task_composer_with_applied(applied_revision: u64) -> (AgentQuickComposer, Arc<AtomicU64>) {

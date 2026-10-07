@@ -129,6 +129,8 @@ pub struct Dropdown {
     /// The legacy constructor uses equal value/label pairs.
     values: Vec<String>,
     options: Vec<String>,
+    /// Asynchronous presentation choices, observed without recreating the control.
+    value_options: Option<(crate::LocalState<Vec<(String, String)>>, u64)>,
     /// The keys that do what an option does, by its value, shown at the
     /// row's end so a menu teaches its shortcuts.
     shortcuts: Vec<(String, String)>,
@@ -293,6 +295,7 @@ impl Dropdown {
             accessible_name: None,
             values: options.clone(),
             options,
+            value_options: None,
             shortcuts: Vec::new(),
             binding: Some(crate::doc_source::text_key(value_path)),
             on_change: None,
@@ -378,6 +381,42 @@ impl Dropdown {
             binding: Some(binding),
             ..Self::new(options, "")
         }
+    }
+
+    /// Bind machine values and presentation labels to local state. Updating
+    /// choices preserves the control and selected model value, emits no user
+    /// action, and closes an open list whose identities changed so an armed
+    /// index cannot silently select a replacement option.
+    #[must_use]
+    pub fn value_options_from(mut self, state: &crate::LocalState<Vec<(String, String)>>) -> Self {
+        let (options, revision) = state.with(|options| (options.clone(), state.revision()));
+        self.set_value_options(options);
+        self.value_options = Some((state.clone(), revision));
+        self
+    }
+
+    fn observe_value_options(&mut self) -> bool {
+        let Some((state, observed)) = self.value_options.as_mut() else {
+            return false;
+        };
+        if state.revision() == *observed {
+            return false;
+        }
+        let (options, revision) = state.with(|options| (options.clone(), state.revision()));
+        *observed = revision;
+        let changed = options
+            .iter()
+            .map(|(value, _)| value)
+            .ne(self.values.iter())
+            || options
+                .iter()
+                .map(|(_, label)| label)
+                .ne(self.options.iter());
+        if changed {
+            self.close();
+            self.set_value_options(options);
+        }
+        changed
     }
 
     /// Observe selections produced by user interaction.
@@ -1231,6 +1270,7 @@ impl Widget for Dropdown {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.observe_value_options();
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(selected) = binding.pull(state, root)
         {
@@ -1242,6 +1282,10 @@ impl Widget for Dropdown {
             self.highlight = self.selected_pos(&filtered);
             self.ensure_visible(self.highlight, filtered.len());
         }
+    }
+
+    fn update(&mut self, _state: &AppModel, _root: &ModelPath) -> bool {
+        self.observe_value_options()
     }
 
     fn build_layout(
@@ -1836,6 +1880,19 @@ impl Widget for Dropdown {
             }
             _ => false,
         }
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
+    ) -> bool {
+        self.action.is_none()
+            && self.on_change.is_none()
+            && target == self.test_id().unwrap_or("dropdown")
+            && self.perform_action(action, state, root)
     }
 
     // An open selector is a foreground query/list, so navigation containers
@@ -2446,6 +2503,92 @@ mod tests {
             &root
         ));
         assert_eq!(state.get(), "second");
+    }
+
+    #[test]
+    fn dropdown_bound_options_preserve_control_and_do_not_select_replacements() {
+        let selected = crate::LocalState::new(String::new());
+        let options = crate::LocalState::new(vec![
+            ("first".into(), "Same label".into()),
+            ("second".into(), "Same label".into()),
+        ]);
+        let changes = crate::LocalState::new(Vec::<String>::new());
+        let changed = changes.clone();
+        let mut frame = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                Dropdown::from_state(Vec::new(), &selected)
+                    .value_options_from(&options)
+                    .with_id("bound-choice")
+                    .on_change(move |value| changed.update(|values| values.push(value.to_owned()))),
+            ),
+            (420, 260),
+        );
+        frame.click_named("bound-choice").unwrap();
+        frame.key("ArrowDown");
+        frame.key("Enter");
+        assert_eq!(selected.get(), "second");
+        assert_eq!(changes.get(), vec!["second"]);
+        frame.click_named("bound-choice").unwrap();
+        options.set(vec![("replacement".into(), "Same label".into())]);
+        frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                dropdown.observe_value_options();
+                assert!(!dropdown.is_open());
+                assert_eq!(dropdown.selected(), "second");
+            })
+            .unwrap();
+        assert_eq!(selected.get(), "second");
+        assert_eq!(changes.get(), vec!["second"]);
+    }
+
+    #[test]
+    fn dropdown_bound_options_public_set_value_keeps_exact_machine_value() {
+        let selected = crate::LocalState::new(String::new());
+        let options = crate::LocalState::new(vec![
+            ("first".into(), "Same label".into()),
+            ("second".into(), "Same label".into()),
+        ]);
+        let mut frame = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                Dropdown::from_state(Vec::new(), &selected)
+                    .value_options_from(&options)
+                    .with_id("bound-choice"),
+            ),
+            (420, 260),
+        );
+        let resources = frame.resources();
+        let picker = resources
+            .iter()
+            .find(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "set-value")
+            })
+            .unwrap();
+        let address = tilo_actions::ActionAddress::new(picker.id.0.clone(), "set-value");
+        frame
+            .invoke_action(
+                &address,
+                &serde_json::Map::from_iter([("value".into(), serde_json::json!("second"))]),
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(selected.get(), "second");
+        assert!(
+            frame
+                .invoke_action(
+                    &address,
+                    &serde_json::Map::from_iter([("value".into(), serde_json::json!("foreign"))]),
+                    false,
+                    None
+                )
+                .is_err()
+        );
+        assert_eq!(selected.get(), "second");
     }
 
     #[test]

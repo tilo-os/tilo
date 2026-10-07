@@ -305,6 +305,9 @@ fn viewport_confinement_is_opt_in_and_preserves_the_complete_body() {
         confined.place(&mut tr, &theme);
         let panel = confined.rect();
         let body = confined.content().get_rect();
+        let safe_room = floating_surface::panel_room(viewport, &theme);
+        assert!(panel.x0 >= safe_room.x0 && panel.x1 <= safe_room.x1);
+        assert!(panel.y0 >= safe_room.y0 && panel.y1 <= safe_room.y1);
         assert!(panel.x0 >= viewport.x0 && panel.x1 <= viewport.x1);
         assert!(panel.y0 >= viewport.y0 && panel.y1 <= viewport.y1);
         assert!(body.x0 >= panel.x0 && body.x1 <= panel.x1);

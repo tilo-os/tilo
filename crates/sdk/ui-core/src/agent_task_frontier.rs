@@ -613,6 +613,28 @@ impl AgentTaskFrontiers {
         self.select(task_id)
     }
 
+    /// Confirm the exact run/revision the person was offered, never a newer
+    /// run occupying the same task id after an asynchronous refresh.
+    pub fn select_frontier_for(
+        &mut self,
+        workspace: &str,
+        agent: &str,
+        displayed: &AgentTaskFrontier,
+    ) -> Result<(), String> {
+        self.poll();
+        if self.workspace != workspace
+            || self.agent != agent
+            || !self.available_tasks().iter().any(|current| {
+                current.task_id == displayed.task_id
+                    && current.run_epoch == displayed.run_epoch
+                    && current.after_revision == displayed.after_revision
+            })
+        {
+            return Err("refresh the current task before selecting it".into());
+        }
+        self.select(&displayed.task_id)
+    }
+
     pub fn steer(&mut self, text: &str) -> Result<InvocationId, String> {
         self.poll();
         if text.trim().is_empty() {
