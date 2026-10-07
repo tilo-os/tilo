@@ -46,6 +46,7 @@ pub fn reader() -> Arc<dyn Vocabulary> {
 
 /// # Errors
 /// No authenticated current channel, revoked identity or unavailable host.
+#[cfg(feature = "broker-transport")]
 pub fn snapshot() -> io::Result<Snapshot> {
     crate::collaboration::channel_settings::installed()
         .ok_or_else(|| {
@@ -62,6 +63,7 @@ pub fn snapshot() -> io::Result<Snapshot> {
 ///
 /// # Errors
 /// A stale/revoked/unavailable channel or an invalid edit.
+#[cfg(feature = "broker-transport")]
 pub fn edit(revision: u64, edit: Edit) -> io::Result<()> {
     crate::collaboration::channel_settings::installed()
         .ok_or_else(|| {
@@ -71,6 +73,26 @@ pub fn edit(revision: u64, edit: Edit) -> io::Result<()> {
             )
         })?
         .dictionary_edit(revision, edit)
+}
+
+/// # Errors
+/// Builds without an authenticated host transport have no personal vocabulary.
+#[cfg(not(feature = "broker-transport"))]
+pub fn snapshot() -> io::Result<Snapshot> {
+    Err(io::Error::new(
+        io::ErrorKind::NotConnected,
+        "personal dictionary requires an authenticated host transport",
+    ))
+}
+
+/// # Errors
+/// Builds without an authenticated host transport cannot submit personal edits.
+#[cfg(not(feature = "broker-transport"))]
+pub fn edit(_: u64, _: Edit) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::NotConnected,
+        "personal dictionary requires an authenticated host transport",
+    ))
 }
 
 #[cfg(test)]
@@ -116,7 +138,7 @@ mod tests {
 
 /// Production settings-channel client paired with a real host source for
 /// headless app tests. It supplies no storage or identity of its own.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
 pub struct TestHost {
     source: Arc<dyn settings_store::SettingsSource>,
     app: String,
@@ -126,7 +148,7 @@ pub struct TestHost {
     previous: Option<Arc<crate::collaboration::channel_settings::ChannelSettings>>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
 impl TestHost {
     /// Attach an authenticated client to the host's existing dictionary.
     ///
@@ -209,7 +231,7 @@ impl TestHost {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
 impl Drop for TestHost {
     fn drop(&mut self) {
         self.channel.disconnected();
