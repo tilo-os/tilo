@@ -2493,6 +2493,7 @@ agent-quick-shots-draft = Review changes and flag open decisions.
 agent-marker-a11y-name = Agent action: { $agent }
 agent-marker-a11y-description = { $action } on { $resource }
 
+device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
 search-action-activity-acknowledge = Acknowledge viewed activity
 search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
 search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment

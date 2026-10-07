@@ -93,12 +93,22 @@ pub struct HostShellAllow {
     pub answer: Option<bool>,
 }
 
+/// Admission result for a topology request, not acknowledgement of peer application.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DeviceDisplayMoveReply {
+    pub result: Option<Result<(), String>>,
+}
+
 /// A typed, device-local request from app content to shell chrome. Keeping
 /// this on the common app contract lets both in-process tiles and future IPC
 /// adapters use one destination without an app reaching into compositor
 /// state or pretending a status toast completed the navigation.
 #[derive(Debug, Clone)]
 pub enum AppHostIntent {
+    MoveDeviceDisplay {
+        request: settings_store::device_displays::DeviceDisplayMove,
+        reply: Weak<RefCell<DeviceDisplayMoveReply>>,
+    },
     ShowWorkspaceActivity {
         resource_id: String,
         version_id: Option<[u8; 16]>,
@@ -140,6 +150,16 @@ pub enum AppHostIntent {
 impl PartialEq for AppHostIntent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (
+                Self::MoveDeviceDisplay {
+                    request: left,
+                    reply: left_reply,
+                },
+                Self::MoveDeviceDisplay {
+                    request: right,
+                    reply: right_reply,
+                },
+            ) => left == right && Weak::ptr_eq(left_reply, right_reply),
             (
                 Self::ShowWorkspaceActivity {
                     resource_id: left_resource,

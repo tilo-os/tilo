@@ -1552,6 +1552,9 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::Appearance { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
+                | crate::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
+                    ..
+                }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
                 }

@@ -2495,6 +2495,7 @@ agent-quick-shots-draft = Prüfe Änderungen und markiere offene Entscheidungen.
 agent-marker-a11y-name = Agentenaktion: { $agent }
 agent-marker-a11y-description = { $action } für { $resource }
 
+device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
 search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
 search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
 search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung

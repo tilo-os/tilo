@@ -1946,3 +1946,12 @@ display-device-screen = { $device } · { $screen } · { $status }
 display-device-online = Online
 display-device-offline = Offline
 display-devices-observed = Observed screen positions. Input access is granted separately.
+
+display-devices-arrange = Drag an online device screen beside yours. Screens on one device move together. Moving screens does not allow input.
+display-device-move-requested = Placement requested. The peer layout updates when it confirms its new position.
+display-device-move-pending = Sending display placement…
+display-device-move-unavailable = That screen is offline or its arrangement cannot be changed here.
+
+display-device-move-confirmed = The device confirmed its new display position.
+display-device-move-changed = The device layout changed before this position was confirmed. Try again.
+display-device-move-unconfirmed = The device did not confirm this position. Refresh and try again.

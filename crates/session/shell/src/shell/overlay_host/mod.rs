@@ -4564,6 +4564,53 @@ impl ShellOverlayHost {
         self.host_shell_allows.push(pending);
     }
 
+    /// Settings may request topology through the same admitted app-host channel.
+    /// Same identity and topology observations never mint an input lease.
+    /// # Errors
+    /// Rejects non-Settings callers, locked or non-owner sessions, and unavailable peers.
+    pub fn request_device_display_move(
+        &self,
+        app_id: &str,
+        request: settings_store::device_displays::DeviceDisplayMove,
+    ) -> Result<(), String> {
+        let admitted = app_id == "so.tilo.settings"
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                let state = chrome.borrow();
+                !state.session_locked() && is_active_workspace_owner(&state)
+            });
+        if !admitted {
+            return Err(t("device-fabric-error-layout-changed"));
+        }
+        let bridge = self
+            .device_fabric_bridge
+            .as_ref()
+            .ok_or_else(|| t("device-fabric-error-no-identity"))?;
+        bridge(DeviceFabricUiAction::MoveDisplay(request)).map(|_| ())
+    }
+
+    fn active_tab_app_id(
+        chrome: &crate::shell::chrome_state::Chrome,
+        source_tab: crate::shell::state::TabId,
+    ) -> Option<String> {
+        let state = chrome.borrow();
+        state
+            .tree()
+            .desktop
+            .active_workspace()
+            .and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .any(|tab| tab.id == source_tab)
+                            .then(|| state.tab_app_id(strip.id, group.id, source_tab))
+                            .flatten()
+                    })
+                })
+            })
+    }
+
     fn drain_app_host_intents(&mut self) {
         self.host_shell_allows.retain_mut(|pending| !pending.poll());
         let mut intents = Vec::new();
@@ -4588,6 +4635,16 @@ impl ShellOverlayHost {
         };
         for (source_tab, intent) in intents {
             match intent {
+                ui::widget::AppHostIntent::MoveDeviceDisplay { request, reply } => {
+                    let Some(reply) = reply.upgrade() else {
+                        continue;
+                    };
+                    let app_id = Self::active_tab_app_id(&chrome, source_tab);
+                    reply.borrow_mut().result = Some(self.request_device_display_move(
+                        app_id.as_deref().unwrap_or_default(),
+                        request,
+                    ));
+                }
                 ui::widget::AppHostIntent::ShowWorkspaceActivity {
                     resource_id,
                     version_id,
