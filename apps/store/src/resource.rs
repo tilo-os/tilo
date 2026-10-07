@@ -500,7 +500,10 @@ const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
 pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
     "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
+    &[
+        ("en-US", include_str!("../locales/en-US.ftl")),
+        ("de-DE", include_str!("../locales/de-DE.ftl")),
+    ],
     "store-remotes-title",
 )
 .with_system_locale();
@@ -1110,7 +1113,9 @@ mod tests {
             assert!(params.get_reference().unwrap().is_empty());
             self.installs
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            results.get().set_status("Installed for this account.");
+            results.get().set_status(
+                "Installing runtime/org.example.Runtime…\nInstalling app/org.example.Editor…",
+            );
             std::future::ready(Ok(()))
         }
 
@@ -1676,7 +1681,7 @@ mod tests {
         assert_eq!(
             app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
                 .unwrap(),
-            "Installed for this account."
+            ui::i18n!("store-app-installed")
         );
         app.with_surface::<StoreApp, _>(|surface| {
             let item = surface
