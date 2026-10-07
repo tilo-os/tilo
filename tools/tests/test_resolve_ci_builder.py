@@ -10,6 +10,7 @@ import subprocess
 import sys
 import socket
 import ssl
+import tomllib
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
@@ -73,10 +74,14 @@ class BuilderResolutionTests(unittest.TestCase):
 
     def test_identical_builder_lookups_share_one_workflow(self) -> None:
         shared = (ROOT / '.forgejo/workflows/resolve-builder.yml').read_text()
+        pins = tomllib.loads((ROOT / 'tools/ci/images.toml').read_text())
+        registry = pins['registry']
+        control = (f"{registry['host']}/{registry['namespace']}/ci-control@"
+                   f"{pins['pins']['ci-control']}")
         self.assertIn('workflow_call:', shared)
         self.assertIn('run: python3 tools/ci/resolve_builder.py', shared)
         self.assertIn(
-            'image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5',
+            f'image: {control}',
             shared,
         )
         self.assertNotIn('credentials:', shared)
