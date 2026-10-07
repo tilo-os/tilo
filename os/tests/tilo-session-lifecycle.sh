@@ -367,14 +367,16 @@ cmp "$tmp/expected" "$log"
 # Session termination is forwarded to the compositor and cleanup still stops
 # the lifecycle target.
 : >"$log"
-rm -f "$log.verify-count"
+rm -f "$log.verify-count" "$log.holding"
 XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD=1 \
   "$test_wrapper" --backend drm &
 session_pid=$!
 for _ in $(seq 1 100); do
-  grep -Fq 'desktop --backend drm' "$log" 2>/dev/null && break
+  [ -s "$log.holding" ] && break
   sleep 0.02
 done
+# The desktop log precedes the TERM handler; the holding marker follows it.
+[ -s "$log.holding" ]
 grep -Fq 'desktop --backend drm' "$log"
 kill -TERM "$session_pid"
 wait "$session_pid" || [ "$?" = 143 ]
