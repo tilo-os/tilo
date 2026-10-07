@@ -587,6 +587,9 @@ globalThis.__tiloPage ||= (() => {
     return false;
   }
   function textSnapshot(element, allowNative = false) {
+    const composition = globalThis.__tiloTextComposition;
+    if (!composition || typeof composition.active !== 'function' || composition.active())
+      throw failure('text_input_composition', 'Composition state is active or unavailable');
     if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element || composing)
       throw failure('text_input_changed', 'The original text field is no longer available');
     const textSecurity = getComputedStyle(element).webkitTextSecurity;

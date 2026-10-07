@@ -243,6 +243,42 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     site_clear_=new tilo::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
     document_scripts_=new tilo::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
+    // Register before releasing navigation. A late private context must not
+    // infer idle composition from the absence of an event it could not observe.
+    composition_scripts_=new tilo::DocumentScripts(browser,[this] { ScheduleNavigation(); },
+        [this] { StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
+        "tilo-private-text-input");
+    composition_scripts_->Attach();
+    composition_scripts_->Configure(R"JS(globalThis.__tiloTextComposition = (() => {
+      let trusted = false, synthetic = false, unknown = false;
+      let root = null;
+      // An initial about:blank iframe can retain its Window when it navigates.
+      // Observe the native load on that Window, then bind its current Document.
+      // A late context or a document.open-removed listener remains unknown.
+      const observer = new MutationObserver(records => {
+        for (const record of records) {
+          for (const node of record.removedNodes) if (node === root) unknown = true;
+        }
+        if (root !== document.documentElement) unknown = true;
+        if (unknown) { root = null; observer.disconnect(); }
+      });
+      const loaded = event => {
+        if (!event.isTrusted || unknown || !['http:', 'https:'].includes(location.protocol)) return;
+        root = document.documentElement;
+        if (!root) return;
+        observer.observe(document, {childList: true});
+        removeEventListener('DOMContentLoaded', loaded);
+      };
+      addEventListener('DOMContentLoaded', loaded);
+      addEventListener('compositionstart', event => {
+        if (event.isTrusted) trusted = true; else synthetic = true;
+      }, true);
+      addEventListener('compositionend', event => {
+        // Page-generated end events cannot clear actual native composition.
+        if (event.isTrusted) trusted = false; else synthetic = false;
+      }, true);
+      return Object.freeze({active: () => unknown || !root || root !== document.documentElement || trusted || synthetic});
+    })())JS");
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
         [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);});
@@ -277,6 +313,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     startup_diagnostics_=nullptr;
     if(document_scripts_)document_scripts_->Detach();
     document_scripts_=nullptr;
+    if(composition_scripts_)composition_scripts_->Detach();
+    composition_scripts_=nullptr;
     browser_=nullptr;
     download_owners.Destroy(id_);
     Event("closed");clients.erase(id_);PublishDownloadRuntime();
@@ -489,7 +527,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void FlushNavigation() {
     TraceGeometry("navigation-flush",id_);
-    if(!browser_ || closing || !document_scripts_ || document_scripts_->Busy() || !bootstrap_settled_ || navigation_busy_ || pending_navigation_.empty()) return;
+    if(!browser_ || closing || !document_scripts_ || document_scripts_->Busy() || !composition_scripts_ || composition_scripts_->Busy() || !bootstrap_settled_ || navigation_busy_ || pending_navigation_.empty()) return;
     auto command=pending_navigation_.front();pending_navigation_.erase(pending_navigation_.begin());
     navigation_dispatched_=true;navigation_started_=false;navigation_busy_=true;navigation_urls_.clear();navigation_error_.reset();
     const bool scoped=command->GetString("op")=="scoped_navigation";
@@ -1018,7 +1056,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::PaintSnapshot> paint_snapshot_;
   CefRefPtr<tilo::Capabilities> capabilities_;
   CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
-  CefRefPtr<tilo::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
+  CefRefPtr<tilo::DocumentScripts> document_scripts_,composition_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   CefRefPtr<tilo::SiteClear> site_clear_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;

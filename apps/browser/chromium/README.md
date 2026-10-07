@@ -217,6 +217,25 @@ focus/content/selection, cancellation, navigation and protected-field rejection:
 python3 apps/browser/chromium/tests/guarded_text_input.py target/chromium/tilo-chromium-host
 ```
 
+Composition observation is registered in the private text-input world at
+new-document creation, before queued navigation is released. Missing or active
+state refuses admission, including preedit before the first private Prepare.
+Synthetic end events cannot clear a trusted native start. The actual Blink
+composition probes additionally use a test-only inspector in a private network
+and PID namespace, with an empty hardware device tree. Production opens no
+inspector port. On Linux, after building the host:
+
+```sh
+bwrap --unshare-all --die-with-parent --new-session \
+  --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 \
+  --ro-bind /etc /etc --proc /proc --dev /dev --tmpfs /tmp \
+  --ro-bind "$PWD" /work --chdir /work --clearenv \
+  --setenv LANG C.UTF-8 --setenv HOME /tmp \
+  --setenv TILO_TEST_PRIVATE_NAMESPACE 1 \
+  -- /usr/bin/python3 apps/browser/chromium/tests/native_composition.py \
+  target/chromium/tilo-chromium-host -v
+```
+
 The SDK now exposes a private deferred receipt to the compositor's native field
 bridge. A queued final waits for any outstanding check of its original lease;
 focus loss and canceled receipts prevent unadmitted insertion. The compositor
