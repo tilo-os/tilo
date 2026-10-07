@@ -79,6 +79,19 @@ pub enum TransportError {
     TooLarge { actual: usize, max: usize },
 }
 
+/// Whether a document route may accept a local mutation this turn.
+///
+/// `Applying` is deliberately narrower than "a join was requested": the
+/// transport may report it only after the remote owner selected committed
+/// history for this exact route generation and while that history is being
+/// assembled or applied locally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentRouteState {
+    Ready,
+    Applying,
+    Unavailable,
+}
+
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -203,9 +216,9 @@ pub trait CollabTransport: Send {
     /// Whether committed-document custody allows publishing a document
     /// mutation on `channel` (the primary route when `None` is not yet
     /// acknowledged). Transports without committed reads always allow it.
-    fn document_publishable(&self, channel: Option<&str>) -> bool {
+    fn document_route_state(&self, channel: Option<&str>) -> DocumentRouteState {
         let _ = channel;
-        true
+        DocumentRouteState::Ready
     }
 
     /// Hand one native media command for `channel` to the transport's media

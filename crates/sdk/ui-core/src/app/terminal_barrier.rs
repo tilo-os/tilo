@@ -152,7 +152,8 @@ impl App {
             match self.queue_documents_before_terminal() {
                 super::document_routes::TerminalDocumentQueue::Queued => {}
                 super::document_routes::TerminalDocumentQueue::Refused => return false,
-                super::document_routes::TerminalDocumentQueue::Busy => {
+                super::document_routes::TerminalDocumentQueue::Busy
+                | super::document_routes::TerminalDocumentQueue::NotReady => {
                     let Some(route) = self.bound_broker_route().cloned() else {
                         self.refuse_terminal_retention();
                         return false;

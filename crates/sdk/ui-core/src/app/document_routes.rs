@@ -9,11 +9,13 @@ use crate::collaboration::RouteSpec;
 pub(super) enum TerminalDocumentQueue {
     Queued,
     Busy,
+    NotReady,
     Refused,
 }
 
 enum DocumentQueueError {
     Busy,
+    NotReady,
     Refused(&'static str),
 }
 
@@ -300,6 +302,7 @@ impl App {
         }
         let mut blocked = None;
         let mut busy = false;
+        let mut not_ready = false;
         if current.iter().any(|owner| {
             !self.document_routes.owners.iter().any(|entry| {
                 entry
@@ -361,6 +364,9 @@ impl App {
                     crate::collaboration::CollabSendError::Busy => {
                         tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_enqueue_busy:disabled")
                     }
+                    crate::collaboration::CollabSendError::NotReady => {
+                        tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_enqueue_not_ready:in_flight")
+                    }
                     crate::collaboration::CollabSendError::Unavailable => {
                         tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_enqueue_unavailable:disabled")
                     }
@@ -370,6 +376,8 @@ impl App {
                 }
                 if matches!(error, crate::collaboration::CollabSendError::Busy) {
                     busy = true;
+                } else if matches!(error, crate::collaboration::CollabSendError::NotReady) {
+                    not_ready = true;
                 } else {
                     blocked
                         .get_or_insert("the document command could not enter the transport queue");
@@ -398,6 +406,8 @@ impl App {
         }
         if let Some(reason) = blocked {
             Err(DocumentQueueError::Refused(reason))
+        } else if not_ready {
+            Err(DocumentQueueError::NotReady)
         } else if busy {
             Err(DocumentQueueError::Busy)
         } else {
@@ -414,6 +424,7 @@ impl App {
         match self.queue_owned_documents() {
             Ok(()) => TerminalDocumentQueue::Queued,
             Err(DocumentQueueError::Busy) => TerminalDocumentQueue::Busy,
+            Err(DocumentQueueError::NotReady) => TerminalDocumentQueue::NotReady,
             Err(DocumentQueueError::Refused(reason)) => {
                 tracing::error!(
                     reason,

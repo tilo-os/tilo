@@ -23,8 +23,8 @@ use uuid::Uuid;
 
 mod transport;
 pub use transport::{
-    CollabTransport, DocumentPublicationError, DocumentPublicationReceipt, TransportCommand,
-    TransportError, TransportStatus,
+    CollabTransport, DocumentPublicationError, DocumentPublicationReceipt, DocumentRouteState,
+    TransportCommand, TransportError, TransportStatus,
 };
 
 /// How an app's error begins when it could not join its collaboration route
@@ -178,6 +178,11 @@ pub enum CollabSendError {
     /// No live transport; collaboration is disabled or has failed.
     #[error("collaboration is unavailable")]
     Unavailable,
+    /// The exact current committed-history route is healthy, but its original
+    /// history has not yet been applied locally. Retry only after the
+    /// transport's readiness wake; no application work needs to run again.
+    #[error("committed history is still being applied")]
+    NotReady,
     /// Document traffic already queued fills the transport budget. Retry
     /// once earlier changes have been sent.
     #[error("collaboration transport is busy; the change will be retried")]
@@ -1541,19 +1546,24 @@ impl CollaborationManager {
             .accepted
             .as_ref()
             .map(|witness| witness.route.channel_id());
-        let unpublishable = matches!(
+        let document_state = matches!(
             req,
             CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
-        ) && match &self.backend {
+        )
+        .then(|| match &self.backend {
             Backend::Transport(transport) => {
-                !transport.document_publishable(primary_channel.as_deref())
+                transport.document_route_state(primary_channel.as_deref())
             }
-            Backend::Disabled(_) => false,
-        };
-        if unpublishable {
-            // Committed-document custody: nothing is published on a route
-            // whose original history has not been applied locally.
-            return Err(CollabSendError::Unavailable);
+            Backend::Disabled(_) => transport::DocumentRouteState::Ready,
+        });
+        match document_state {
+            Some(transport::DocumentRouteState::Applying) => {
+                return Err(CollabSendError::NotReady);
+            }
+            Some(transport::DocumentRouteState::Unavailable) => {
+                return Err(CollabSendError::Unavailable);
+            }
+            None | Some(transport::DocumentRouteState::Ready) => {}
         }
         let CollabRequest::Hello {
             app_id,
@@ -1697,7 +1707,8 @@ impl CollaborationManager {
     pub(crate) fn document_route_publishable_for_test(&self, route: &RouteSpec) -> bool {
         match &self.backend {
             Backend::Transport(transport) => {
-                transport.document_publishable(Some(&route.channel_id()))
+                transport.document_route_state(Some(&route.channel_id()))
+                    == transport::DocumentRouteState::Ready
             }
             Backend::Disabled(_) => false,
         }
@@ -1748,21 +1759,30 @@ impl CollaborationManager {
                 .then_some(())
                 .ok_or(CollabSendError::Unavailable);
         }
-        let unpublishable = matches!(
+        let document_state = matches!(
             req,
             CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
-        ) && match &self.backend {
+        )
+        .then(|| match &self.backend {
             Backend::Transport(transport) => {
-                !transport.document_publishable(Some(&route.channel_id()))
+                transport.document_route_state(Some(&route.channel_id()))
             }
-            Backend::Disabled(_) => false,
-        };
-        if unpublishable {
-            tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_route:disabled");
-            // Join first; the route's original history must be applied
-            // before any local mutation is published on it.
-            let _ = self.submit(TransportCommand::Join(route));
-            return Err(CollabSendError::Unavailable);
+            Backend::Disabled(_) => transport::DocumentRouteState::Ready,
+        });
+        match document_state {
+            Some(transport::DocumentRouteState::Applying) => {
+                tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_route_applying:in_flight");
+                return Err(CollabSendError::NotReady);
+            }
+            Some(transport::DocumentRouteState::Unavailable) => {
+                tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_route:disabled");
+                // An unknown route may still be joined for later UI/history
+                // use. That request is not proof that this mutation is safe
+                // to retain or publish.
+                let _ = self.submit(TransportCommand::Join(route));
+                return Err(CollabSendError::Unavailable);
+            }
+            None | Some(transport::DocumentRouteState::Ready) => {}
         }
         let result = self.submit(TransportCommand::ToRoute(route, req));
         if document && matches!(result, Err(TransportError::Closed)) {

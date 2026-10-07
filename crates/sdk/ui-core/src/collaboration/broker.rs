@@ -427,8 +427,14 @@ impl CollabTransport for BrokerTransport {
             .with_disconnect_cause(move || state.publication_result().err()))
     }
 
-    fn document_publishable(&self, channel: Option<&str>) -> bool {
-        channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
+    fn document_route_state(&self, channel: Option<&str>) -> super::transport::DocumentRouteState {
+        if !self.state.is_healthy() {
+            return super::transport::DocumentRouteState::Unavailable;
+        }
+        channel.map_or(
+            super::transport::DocumentRouteState::Unavailable,
+            |channel| self.state.document_reads.state(channel),
+        )
     }
 
     fn take_action_surface_failed(&mut self) -> bool {
@@ -6766,6 +6772,7 @@ mod tests {
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
         committed_documentless_fixture: bool,
+        committed_unavailable_fixture: bool,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         op_stream_subscriptions: usize,
@@ -7238,6 +7245,8 @@ mod tests {
                 captures.committed_reads.push(request.clone());
                 let reply = if captures.committed_documentless_fixture {
                     Reply::Documentless
+                } else if captures.committed_unavailable_fixture {
+                    Reply::Unavailable
                 } else {
                     match captures.committed_history_fixture.as_ref() {
                         None => Reply::Legacy,
@@ -8817,7 +8826,7 @@ mod tests {
             "accepted publication must hold the barrier while hydration is pending"
         );
         assert!(state.command_bytes.0.load(Ordering::Acquire) >= b"retained original".len());
-        ready.store(true, Ordering::Release);
+        assert!(state.document_reads.ready(&key, &ready));
         assert_eq!(receipt.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         let captured = captures.lock().unwrap().signed_ops.clone();
         assert_eq!(captured.len(), 2);
@@ -11705,8 +11714,10 @@ mod tests {
             .unwrap();
         original.doc.commit();
         let heads = original.doc.get_heads();
+        let (release_recheck, recheck_gate) = tokio::sync::oneshot::channel();
         let captures = Captures {
             committed_history_fixture: Some(original.doc.save()),
+            committed_recheck_gate: Some(recheck_gate),
             ..Captures::default()
         };
         let broker = FakeBroker {
@@ -11717,17 +11728,34 @@ mod tests {
             scrollback_response: None,
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
-        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.test", cluster);
+        let (wake_scope, wakes) = wake_channel();
+        let mut manager = {
+            let _entry = wake_scope.enter();
+            CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.test", cluster)
+        };
         assert!(manager.has_native_committed_primary());
-        assert!(!manager.send(CollabRequest::document_snapshot(
-            b"default before hydration".to_vec()
-        )));
+        assert_eq!(
+            manager.try_send(CollabRequest::document_snapshot(
+                b"default before hydration".to_vec()
+            )),
+            Err(crate::collaboration::CollabSendError::NotReady),
+            "the actual Cap'n Proto committed route reports only its verified apply delay"
+        );
         let mut initial = None;
         tilo_test_env::wait_until("the native record to hydrate", || {
             initial = manager.prepare_native_record(&want);
             initial.is_some()
         });
         let read = initial.unwrap();
+        let record_route = RouteSpec::record("so.tilo.test", cluster, want.id.as_str());
+        assert_eq!(
+            manager.try_send_to_route(
+                record_route.clone(),
+                CollabRequest::document_snapshot(b"local before record history".to_vec()),
+            ),
+            Err(crate::collaboration::CollabSendError::NotReady),
+            "an exact joined secondary route distinguishes applying history from refusal"
+        );
         let mut set = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
         let mut state = crate::state::State::new();
         assert!(
@@ -11737,8 +11765,18 @@ mod tests {
             .unwrap()
         );
         assert_eq!(state.doc.get_heads(), heads);
+        let _ = manager.poll();
+        while wakes.try_recv().is_ok() {}
         read.applied();
         manager.switch_native_record(&want).unwrap();
+        assert_eq!(
+            manager.try_send_to_route(
+                record_route.clone(),
+                CollabRequest::document_snapshot(b"local during owner recheck".to_vec()),
+            ),
+            Err(crate::collaboration::CollabSendError::NotReady),
+            "an applied capture stays closed while the owner recheck RPC is pending"
+        );
         assert_eq!(
             captures.lock().unwrap().joined.len(),
             2,
@@ -11753,17 +11791,55 @@ mod tests {
             captures.lock().unwrap().signed_ops.is_empty(),
             "no default was signed or sent"
         );
-        tilo_test_env::wait_until("the primary route to become publishable", || {
-            broker_state(&manager).document_reads.publishable(
-                &manager
-                    .primary_route
-                    .accepted
-                    .as_ref()
-                    .unwrap()
-                    .route
-                    .channel_id(),
-            )
+        let channel = manager
+            .primary_route
+            .accepted
+            .as_ref()
+            .unwrap()
+            .route
+            .channel_id();
+        release_recheck.send(()).unwrap();
+        tilo_test_env::wait_until("the gated history recheck to open publication", || {
+            broker_state(&manager).document_reads.publishable(&channel)
         });
+        assert!(
+            wakes.try_recv().is_ok(),
+            "applied committed history must wake the owner without a polling timer"
+        );
+        assert!(
+            manager
+                .try_send_to_route(
+                    record_route,
+                    CollabRequest::document_snapshot(b"local after committed history".to_vec())
+                )
+                .is_ok(),
+            "the same generation opens only after the owner applied its history"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejected_committed_history_is_not_a_retryable_route_warmup() {
+        let cluster = Uuid::new_v4();
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                committed_unavailable_fixture: true,
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _captures, _thread) = stand_up_fake_broker(broker);
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.test", cluster);
+        assert_eq!(
+            manager.try_send(CollabRequest::document_snapshot(
+                b"must stay local".to_vec()
+            )),
+            Err(crate::collaboration::CollabSendError::Unavailable),
+            "an owner refusal is fatal rather than a healthy apply delay"
+        );
     }
 
     /// A native window that shows another record in its component's place

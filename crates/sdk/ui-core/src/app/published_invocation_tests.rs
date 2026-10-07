@@ -349,7 +349,15 @@ impl crate::collaboration::PeerTransport for BusyTerminalCapture {
 #[test]
 fn published_terminal_busy_retains_original_without_reexecuting_owned_handler() {
     use std::sync::{Arc, atomic::AtomicU64};
-    for action in ["bump", "async-bump"] {
+    for (action, refusal) in [
+        ("bump", crate::collaboration::CollabSendError::Busy),
+        ("async-bump", crate::collaboration::CollabSendError::Busy),
+        ("bump", crate::collaboration::CollabSendError::NotReady),
+        (
+            "async-bump",
+            crate::collaboration::CollabSendError::NotReady,
+        ),
+    ] {
         let (mut app, store, checkout, _temp) =
             owned_counter(CounterCard::with_async_post_bump_reset());
         let request = remote_request(8992, action);
@@ -367,7 +375,7 @@ fn published_terminal_busy_retains_original_without_reexecuting_owned_handler() 
             original_remote_grant(Arc::new(AtomicU64::new(99))),
         ))
         .unwrap();
-        app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+        app.document_routes.refuse_for_test = Some(refusal);
         deliver_remote(&mut app, &request);
         app.refresh_focus_order();
         app.poll_directed_invocations();
@@ -378,7 +386,7 @@ fn published_terminal_busy_retains_original_without_reexecuting_owned_handler() 
         assert_eq!(owned_count(&store, &checkout), 1);
         assert_eq!(
             app.action_publication_failure, None,
-            "Busy is not a permanent publication refusal"
+            "a transient queue outcome is not a permanent publication refusal"
         );
         assert!(!sent.borrow().iter().any(|request| matches!(request,
             CollabRequest::UpdateInvocation {update, ..} if update.is_terminal())));
@@ -386,7 +394,7 @@ fn published_terminal_busy_retains_original_without_reexecuting_owned_handler() 
         assert!(!app.poll_directed_invocations());
         assert!(
             !app.layout.layout_dirty,
-            "unchanged Busy causes no repaint loop"
+            "an unchanged transient outcome causes no repaint loop"
         );
         assert_eq!(
             owned_count(&store, &checkout),
@@ -436,6 +444,7 @@ fn published_terminal_busy_refuses_replaced_epoch_and_definite_queue_failure() {
             false,
         ),
         (Some(crate::collaboration::CollabSendError::Busy), false),
+        (Some(crate::collaboration::CollabSendError::NotReady), false),
     ] {
         let (mut app, store, checkout, _temp) =
             owned_counter(CounterCard::with_async_post_bump_reset());
@@ -466,7 +475,13 @@ fn published_terminal_busy_refuses_replaced_epoch_and_definite_queue_failure() {
                 .unwrap()
                 .epoch = uuid::Uuid::new_v4();
         }
-        if matches!(refusal, Some(crate::collaboration::CollabSendError::Busy)) {
+        if matches!(
+            refusal,
+            Some(
+                crate::collaboration::CollabSendError::Busy
+                    | crate::collaboration::CollabSendError::NotReady
+            )
+        ) {
             app.root_widget = Box::new(crate::widget::Column::new());
             app.document_routes.refuse_for_test = None;
         }
@@ -500,7 +515,7 @@ fn published_terminal_busy_refuses_expired_original_caller() {
         original_remote_grant(time.clone()),
     ))
     .unwrap();
-    app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+    app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::NotReady);
     deliver_remote(&mut app, &request);
     assert_eq!(owned_count(&store, &checkout), 1);
     assert!(app.actions.pending_terminals.contains(request.invocation));
@@ -561,7 +576,7 @@ fn published_terminal_busy_retains_deferred_follow_up_original_once() {
         })
         .expect("real effect submits its continuation through the broker");
     let request_id = *app.actions.follow_ups.keys().next().unwrap();
-    app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+    app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::NotReady);
     // The initial owned snapshot remains an actual publication obligation.
     app.document_routes.owners[0].needs_snapshot = true;
     assert!(app.settle_follow_up(

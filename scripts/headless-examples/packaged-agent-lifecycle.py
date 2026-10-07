@@ -2478,7 +2478,8 @@ NATIVE_DELIVERY_STAGES = {
     "broker_worker_registry", "broker_worker_missing", "source_output", "source_decode",
     "source_stage", "prepare", "sign", "upload_open", "upload_write", "owner_send",
     "document_custody", "document_primary", "document_route", "document_transport",
-    "document_enqueue_busy", "document_enqueue_unavailable", "document_enqueue_too_large",
+    "document_enqueue_busy", "document_enqueue_not_ready", "document_enqueue_unavailable",
+    "document_enqueue_too_large",
 }
 NATIVE_DELIVERY_OUTCOMES = {
     "enabled", "disabled", "in_flight", "complete", "definitive_refusal", "uncertain",

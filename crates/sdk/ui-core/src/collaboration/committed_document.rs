@@ -3,8 +3,14 @@ use super::{
     Arc, AtomicBool, ByteBudget, ByteReservation, CollabEvent, Duration, InboundBridge, Ordering,
     RouteSpec,
 };
+use crate::collaboration::transport::DocumentRouteState;
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicU8;
+
+const APPLYING: u8 = 0;
+const READY: u8 = 1;
+const UNAVAILABLE: u8 = 2;
 #[derive(Clone, Default)]
 pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
@@ -15,7 +21,10 @@ pub(super) struct Reads(
 enum Gate {
     Joining,
     Legacy,
-    Required(Arc<AtomicBool>),
+    Required {
+        ready: Arc<AtomicBool>,
+        state: Arc<AtomicU8>,
+    },
 }
 impl Reads {
     #[cfg(test)]
@@ -35,20 +44,31 @@ impl Reads {
         self.stage_for_test(key, read);
     }
     pub(super) fn publishable(&self, key: &str) -> bool {
+        self.state(key) == DocumentRouteState::Ready
+    }
+    pub(super) fn state(&self, key: &str) -> DocumentRouteState {
         self.0
             .lock()
             .ok()
             .and_then(|rows| rows.get(key).cloned())
-            .is_some_and(|gate| match gate {
-                Gate::Joining => false,
-                Gate::Legacy => true,
-                Gate::Required(ready) => ready.load(Ordering::Acquire),
+            .map_or(DocumentRouteState::Unavailable, |gate| match gate {
+                Gate::Joining => DocumentRouteState::Unavailable,
+                Gate::Legacy => DocumentRouteState::Ready,
+                Gate::Required { state, .. } => {
+                    if state.load(Ordering::Acquire) == READY {
+                        DocumentRouteState::Ready
+                    } else if state.load(Ordering::Acquire) == APPLYING {
+                        DocumentRouteState::Applying
+                    } else {
+                        DocumentRouteState::Unavailable
+                    }
+                }
             })
     }
     pub(super) fn required(&self, key: &str) -> bool {
         self.0
             .lock()
-            .is_ok_and(|rows| matches!(rows.get(key), Some(Gate::Required(_))))
+            .is_ok_and(|rows| matches!(rows.get(key), Some(Gate::Required { .. })))
     }
     pub(super) fn joining(&self, key: &str) -> bool {
         let Ok(mut rows) = self.0.lock() else {
@@ -64,12 +84,26 @@ impl Reads {
         if let Some(read) = self.1.lock().ok().and_then(|rows| rows.get(key).cloned()) {
             return Some(read);
         }
-        if self.publishable(key) && self.required(key) {
-            if let Ok(mut refresh) = self.2.lock() {
-                refresh.insert(key.into());
-            }
-        }
+        self.request_refresh(key);
         None
+    }
+
+    fn request_refresh(&self, key: &str) {
+        let Ok(rows) = self.0.lock() else {
+            return;
+        };
+        let Some(Gate::Required { ready, state }) = rows.get(key) else {
+            return;
+        };
+        if state.load(Ordering::Acquire) != READY {
+            return;
+        }
+        let Ok(mut refresh) = self.2.lock() else {
+            return;
+        };
+        refresh.insert(key.into());
+        state.store(APPLYING, Ordering::Release);
+        ready.store(false, Ordering::Release);
     }
     fn stage(
         &self,
@@ -78,7 +112,8 @@ impl Reads {
         read: CommittedDocument,
     ) -> Result<(), String> {
         let gates = self.0.lock().map_err(|_| "document reads poisoned")?;
-        if !matches!(gates.get(key),Some(Gate::Required(current)) if Arc::ptr_eq(current,ready)) {
+        if !matches!(gates.get(key),Some(Gate::Required { ready: current, .. }) if Arc::ptr_eq(current,ready))
+        {
             return Err("committed route replaced".into());
         }
         let mut rows = self
@@ -101,7 +136,7 @@ impl Reads {
         }
     }
     fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
-        self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required(current)) if Arc::ptr_eq(current,ready)))
+        self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required { ready: current, .. }) if Arc::ptr_eq(current,ready)))
     }
     fn discard_stage(&self, key: &str) {
         if let Ok(mut rows) = self.1.lock()
@@ -125,7 +160,7 @@ impl Reads {
     }
     fn pending(&self, key: &str) -> Result<Arc<AtomicBool>, String> {
         let mut rows = self.0.lock().map_err(|_| "document reads poisoned")?;
-        if let Some(Gate::Required(old)) = rows.get(key) {
+        if let Some(Gate::Required { ready: old, .. }) = rows.get(key) {
             old.store(false, Ordering::Release);
         }
         self.discard_stage(key);
@@ -133,8 +168,75 @@ impl Reads {
             return Err("committed document route capacity".into());
         }
         let ready = Arc::new(AtomicBool::new(false));
-        rows.insert(key.into(), Gate::Required(ready.clone()));
+        rows.insert(
+            key.into(),
+            Gate::Required {
+                ready: ready.clone(),
+                state: Arc::new(AtomicU8::new(APPLYING)),
+            },
+        );
         Ok(ready)
+    }
+
+    fn set_state(&self, key: &str, ready: &Arc<AtomicBool>, state: u8) -> bool {
+        let Ok(rows) = self.0.lock() else {
+            return false;
+        };
+        let Some(Gate::Required {
+            ready: current,
+            state: current_state,
+        }) = rows.get(key)
+        else {
+            return false;
+        };
+        if !Arc::ptr_eq(current, ready) {
+            return false;
+        }
+        current_state.store(state, Ordering::Release);
+        ready.store(state == READY, Ordering::Release);
+        true
+    }
+
+    pub(super) fn unavailable(&self, key: &str, ready: &Arc<AtomicBool>) {
+        let _ = self.set_state(key, ready, UNAVAILABLE);
+    }
+
+    pub(super) fn applying(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
+        let Ok(rows) = self.0.lock() else {
+            return false;
+        };
+        let Some(Gate::Required {
+            ready: current,
+            state,
+        }) = rows.get(key)
+        else {
+            return false;
+        };
+        if !Arc::ptr_eq(current, ready) || state.load(Ordering::Acquire) == UNAVAILABLE {
+            return false;
+        }
+        state.store(APPLYING, Ordering::Release);
+        current.store(false, Ordering::Release);
+        true
+    }
+
+    pub(super) fn ready(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
+        let Ok(rows) = self.0.lock() else {
+            return false;
+        };
+        let Some(Gate::Required {
+            ready: current,
+            state,
+        }) = rows.get(key)
+        else {
+            return false;
+        };
+        if !Arc::ptr_eq(current, ready) || state.load(Ordering::Acquire) != APPLYING {
+            return false;
+        }
+        state.store(READY, Ordering::Release);
+        current.store(true, Ordering::Release);
+        true
     }
 }
 /// A disposable capture from the actual admitted SDK channel. It cannot be
@@ -321,16 +423,41 @@ mod tests {
     fn committed_document_publication_waits_for_owner_and_old_ack_cannot_reopen() {
         let reads = Reads::default();
         assert!(!reads.publishable("route"));
+        assert_eq!(reads.state("route"), DocumentRouteState::Unavailable);
         let old = reads.pending("route").unwrap();
+        assert_eq!(reads.state("route"), DocumentRouteState::Applying);
         let current = reads.pending("route").unwrap();
         old.store(true, Ordering::Release);
         assert!(!reads.publishable("route"));
-        current.store(true, Ordering::Release);
+        assert!(reads.ready("route", &current));
         assert!(reads.publishable("route"));
+        assert!(reads.initial("route").is_none());
+        assert_eq!(
+            reads.state("route"),
+            DocumentRouteState::Applying,
+            "a current committed-history recheck closes publication immediately"
+        );
+        assert!(reads.ready("route", &current));
         reads.pending("route").unwrap();
         assert!(!reads.publishable("route"));
+        assert_eq!(reads.state("route"), DocumentRouteState::Applying);
         reads.legacy("legacy").unwrap();
         assert!(reads.publishable("legacy"));
+    }
+
+    #[test]
+    fn rejected_committed_history_is_unavailable_not_applying() {
+        let reads = Reads::default();
+        let generation = reads.pending("route").unwrap();
+        reads.unavailable("route", &generation);
+        assert_eq!(reads.state("route"), DocumentRouteState::Unavailable);
+        assert!(!reads.publishable("route"));
+        assert!(!reads.applying("route", &generation));
+        reads.pending("route").unwrap();
+        assert!(
+            !reads.ready("route", &generation),
+            "a replaced generation cannot reopen the route"
+        );
     }
     #[test]
     fn committed_document_replacing_route_discards_staged_capture() {
@@ -550,12 +677,24 @@ pub(super) async fn install(
     }
     let ready = inbound.state.document_reads.pending(&key)?;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
-            Ok((read, revision)) => (Some(read), Some(revision)),
-            Err(_) => (None, None),
-        },
-        Reply::Unavailable => (None, None),
-        _ => return Err("invalid initial committed read mode".into()),
+        Reply::Chunk { .. } | Reply::Created { .. } => {
+            if let Ok((read, revision)) = read_capture(channel, first).await {
+                (Some(read), Some(revision))
+            } else {
+                inbound.state.document_reads.unavailable(&key, &ready);
+                inbound.state.notify_events();
+                return Ok(true);
+            }
+        }
+        Reply::Unavailable => {
+            inbound.state.document_reads.unavailable(&key, &ready);
+            inbound.state.notify_events();
+            return Ok(true);
+        }
+        _ => {
+            inbound.state.document_reads.unavailable(&key, &ready);
+            return Err("invalid initial committed read mode".into());
+        }
     };
     let channel = channel.clone();
     let spec = spec.clone();
@@ -597,8 +736,8 @@ pub(super) async fn install(
                 inbound.state.document_reads.clear_stage(&key, &merged);
             }
             let refresh = inbound.state.document_reads.refresh_requested(&key);
-            if refresh {
-                ready.store(false, Ordering::Release);
+            if refresh && !inbound.state.document_reads.applying(&key, &ready) {
+                break;
             }
             let result = tokio::time::timeout(
                 Duration::from_secs(2),
@@ -609,10 +748,14 @@ pub(super) async fn install(
             .await;
             match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
-                    ready.store(true, Ordering::Release)
+                    if inbound.state.document_reads.ready(&key, &ready) {
+                        inbound.state.notify_events();
+                    }
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
-                    ready.store(false, Ordering::Release);
+                    if !inbound.state.document_reads.applying(&key, &ready) {
+                        break;
+                    }
                     match read_capture(&channel, reply).await {
                         Ok((read, next)) => {
                             current = Some(read);
@@ -624,18 +767,15 @@ pub(super) async fn install(
                         }
                     }
                 }
-                Ok(Ok(Reply::Unavailable)) => {
-                    ready.store(false, Ordering::Release);
-                    revision = None;
-                }
                 _ => {
-                    ready.store(false, Ordering::Release);
+                    inbound.state.document_reads.unavailable(&key, &ready);
+                    inbound.state.notify_events();
                     break;
                 }
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        ready.store(false, Ordering::Release);
+        inbound.state.document_reads.unavailable(&key, &ready);
         if inbound.state.document_reads.current(&key, &ready) {
             inbound.state.document_reads.discard_stage(&key);
         }
