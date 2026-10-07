@@ -1484,8 +1484,9 @@ it is not a proposed stable application ABI. No confidence/stability output from
 the engine is used as an admission gate. Actual native streaming startup under
 the hard cap refused a **903046144-byte (861.21 MiB) CPU buffer** and exited with
 an observed runtime error before a transcript. Accuracy, first partial, stop-final
-and dictionary boosting are therefore unmeasured for this candidate. Increasing
-the cap was not attempted. The existing production worker admits only Whisper
+and dictionary boosting were unmeasured at this stage. The subsequent separately
+authorized 2 GiB characterization is recorded below; the production cap stays
+unchanged. The existing production worker admits only Whisper
 GGML artifacts up to 256 MiB; the 742 MB GGUF candidate also requires a separate
 reviewed backend/admission design. The GGUF ran only in the experimental native namespace; no production
 admission limit changed.
@@ -1610,3 +1611,111 @@ buffer when needed. Metadata arenas reserve 64 MiB per default backend context;
 the pinned public recognizer configuration does not expose that budget. Further
 native allocation work is required; neither higher-budget failure rules out an
 optimized future runtime. No known-over-2-GiB model was attempted.
+
+### Streaming allocation diagnosis and bounded prototypes
+
+The follow-up glibc allocator trace identified the original NeMo failure. The
+pinned scheduler allocates **1323844080 bytes** of largely untouched metadata
+for its internal graph capacity of 65536. Immediately before the 903046144-byte
+model-container request, virtual space was 1546816 KiB and resident space only
+48184 KiB. Existing virtual mappings plus that request total 2486985728 bytes,
+above the observed 2147483648-byte `RLIMIT_AS`; `posix_memalign` returned
+`ENOMEM`. The remote cgroup's `memory.max` was `max`, with about 8 GB current
+usage and 167 GB available host memory. This failure is address-space exhaustion,
+not a measured resident-memory ceiling or duplicate mapped weight file.
+`ggml-backend.cpp` reserves scheduler split metadata in proportion to graph
+capacity and maximum split inputs. The `65536` constant is internal to
+`Session`; the pinned public recognizer has no graph-capacity option.
+
+`characterize_nemo_scheduler.py` records a **review-only internal prototype**
+with graph capacity 8192. It preserves near-capacity warnings/errors, single
+stream execution and all resource guards; original source, binaries and build
+intermediates are restored and hash receipts retained. Scheduler metadata
+requests fall to 165480912 bytes each for two sessions. Observed graph sizes
+were 2733 encoder nodes, 193 positional projection nodes, 63 RNNT nodes and
+8 joint nodes. Fitting these exposed graphs does not qualify other utterances
+or batching. This is an upstream optimization experiment, not a supported
+configuration change or production backend.
+
+The language-checked native fixture now rejects an unrecognized selected tag
+before stream creation. The pinned language resolver otherwise silently falls
+back to `auto`. Its alias list is not evidence of trained language coverage.
+On the six exposed clips, two-CPU streaming produced EN 21.05%, DE 5.56%,
+FR 0%, ES 6.90%, AR 6.67% WER and Mandarin 8.70% CER. Every observed draft
+was a prefix of later drafts and final text, with zero non-prefix revisions.
+First text ranged from 1.174 to 4.859 s; the retrospective stable prefix of
+at least three words/six Mandarin characters ranged from 1.817 to 5.333 s.
+These clocks begin at capture, include lazy streaming weight initialization,
+and exclude the separately reported metadata constructor time. No causal
+confidence gate is inferred from retrospective stability. English remains
+worse than Base's matched 5.26% WER under the unchanged strict normalization.
+One-CPU French also produced 0% WER, first text 2.992 s, stable prefix 3.620 s
+and stop-final 289.636 ms. Default sixteen-slot peak RSS was approximately
+942 MiB and virtual space approximately 1.50 GiB: **outside production limits**.
+
+The supported `batching.state_arena_slots=1` setting was measured separately,
+even with batching disabled. Original capacity 65536 still failed under 2 GiB,
+this time refusing a 726098944-byte container. With the internal 8192 prototype,
+the supported single-stream setting reduced model containers from
+31.96 + 861.21 MiB to 31.63 + 692.46 MiB, a measured 169.08 MiB reduction.
+French retained 0% WER, first text 2.933 s, stable prefix 3.571 s and
+stop-final 152.491 ms; peak RSS 790520 KiB and virtual space 1394548 KiB.
+It still does not fit the production 1 GiB address-space cap or 256 MiB
+artifact admission limit. No default or cap changed.
+
+Native pool telemetry observed encoder scheduler buffers growing from
+0.45 to 12.66 MiB (12.33 MiB with one state slot), and decoder pools from
+0.04 to 0.11 MiB. Graph metadata of 0.13–0.31 MiB and named graph device
+arenas of 0–0.01 MiB are separate counters, not total compute/cache memory.
+The cache-aware encoder's indexed K/V/convolution arenas and RNNT state reside
+inside `model_tensor_container`; `make_state` leases an arena slot rather than
+allocating a separate `SessionState`. Consequently the review's
+`SessionState` diagnostic was not reached and is not a zero-byte measurement.
+The observed sixteen-to-one capacity delta includes persistent state and
+alignment. A complete tensor-by-tensor weight/state split remains unmeasured;
+neither GGUF file size nor the graph's sum of tensor sizes is total live RAM.
+
+Headroom checks stopped the first matrix at 11.7% memory pressure; only the
+five missing cases resumed after pressure fell below 5%. Allocator and both
+original-scheduler failures remain recorded. No reserved holdout, physical
+microphone, dictionary boosting, natural noise, natural code-switching or ARM
+acceptance was attempted in these comparisons.
+
+### Smaller English-only streaming comparison
+
+The official [sherpa-onnx model documentation](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/zipformer-transducer-models.html)
+identifies the English 20M streaming Zipformer. The original
+[training weights](https://huggingface.co/desh2608/icefall-asr-librispeech-pruned-transducer-stateless7-streaming-small)
+and [ONNX export](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/tree/d42f2d9f7ca24806fb667456a18a9f1b60f70d16)
+declare Apache-2.0. Export revision is
+`d42f2d9f7ca24806fb667456a18a9f1b60f70d16`; INT8 encoder/joiner plus decoder
+total 45197026 bytes. This model supports **English only**; it cannot cover
+the multilingual goal and is not an identified user bookmark.
+
+The remote Python adapter uses exact public `sherpa-onnx`/`sherpa-onnx-core`
+1.13.8 wheels and NumPy 2.4.2, with hashes in
+`stage_zipformer_review.py`. Apache and permissive NumPy distribution notices
+are retained in the isolated directory, with no global package install.
+The hardware-free namespace has no microphone or network, cleared environment,
+CPU provider, one/two CPU affinity, one OpenBLAS thread, 1 GiB `RLIMIT_AS` and
+960 MiB headroom guard. Every extracted runtime file is checked against the
+pinned wheel. Input chunks follow the actual 160 ms source clock; finish uses
+the pinned API's documented 0.5 s zero padding, explicitly reported separately
+from captured audio and included in stop-final work.
+
+Clean English WER was **36.84%** on both one and two CPUs; synthetic 20/10 dB
+white noise yielded **42.11/73.68%**. No number, accent or reference-aware
+normalization was added. Peak RSS was 135576–135980 KiB, virtual space
+445616–470724 KiB. Clean first text was 2.086/2.092 s, retrospective stable
+three-word prefix 3.046/3.045 s on one/two CPUs; stop-final 11.932/23.154 ms.
+Reported model construction is separate from the source clock. Streaming
+memory/latency are promising, but these exposed accuracy results reject
+promotion. No multilingual coverage or natural-environment claim is made.
+
+`dictation-streaming-characterization.json` contains fifteen no-transcript
+receipts: original failures, six-language prototype, one-CPU French, pool
+telemetry, supported one-slot comparison and four English/noise cases.
+No audio, raw transcript, weight artifact or installed model is committed.
+The full goal remains blocked on safe renderer cancellation, recognition
+quality/production resource fitness, broader unseen speech and physical-device
+journeys. All release holds remain in place.
