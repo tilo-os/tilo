@@ -16962,6 +16962,7 @@ name = "tilo-notify"
 version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
+ "chrono",
  "js-sys",
  "objc2 0.6.3",
  "objc2-foundation 0.3.2",

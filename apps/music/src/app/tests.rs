@@ -3045,7 +3045,28 @@ fn live_play_and_resolve_stream(app: &mut MusicApp, doc: &mut AutoCommit, first:
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let url = loaded_url.expect("app resolved + loaded a rangeable audio URL");
+    let uri_metadata = app
+        .audio
+        .current_uri()
+        .and_then(|uri| url::Url::parse(uri).ok())
+        .map(|uri| {
+            (
+                uri.scheme().to_owned(),
+                uri.host_str().map(str::to_owned),
+                uri.query_pairs()
+                    .map(|(key, _)| key.into_owned())
+                    .collect::<Vec<_>>(),
+            )
+        });
+    assert!(
+        loaded_url.is_some(),
+        "app resolved + loaded a rangeable audio URL; current={:?}, source={:?}, uri_metadata={uri_metadata:?}, request={:?}, error={:?}",
+        app.pb.current,
+        app.lib.track(first).map(|t| &t.yt_id),
+        app.active_resolve_request,
+        app.playback_error
+    );
+    let url = loaded_url.unwrap();
     assert!(
         is_streamable(&url),
         "resolved a rangeable, itag-bearing audio URL"
