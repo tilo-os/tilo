@@ -646,9 +646,9 @@ impl Session {
             std::sync::Arc::new(crate::transform::GatewayModel),
             self.cfg.content.clone(),
         );
-        // The transforms are published under the agent's own route; a
-        // connection announcing another app may not publish for it.
-        if self.cfg.app_id == tilo_automation::AGENT_APP_ID {
+        // Only ordinary recipients publish application resources. Enrolled
+        // recipients retain their task-bound connection and own no app document.
+        if self.enrolled_custody.is_none() && self.cfg.app_id == tilo_automation::AGENT_APP_ID {
             self.link.send(&crate::transform::publication())?;
             tracing::info!(
                 resource = crate::transform::RESOURCE_ID,
@@ -4695,6 +4695,141 @@ mod tests {
                 "{}",
                 observed.instruction
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod task_startup_tests {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    struct StartupPeer {
+        sent: Rc<RefCell<Vec<CollabRequest>>>,
+        pending: Vec<CollabEvent>,
+    }
+    impl ui::collaboration::PeerTransport for StartupPeer {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            if let CollabRequest::SubscribeEnrolledTasks { request_id } = &request {
+                self.pending.push(CollabEvent::EnrolledTaskReply {
+                    request_id: *request_id,
+                    result: Ok(()),
+                });
+            }
+            self.pending.push(CollabEvent::EnrolledTaskDisconnected {
+                detail: "startup fixture complete".into(),
+            });
+            self.sent.borrow_mut().push(request);
+            Ok(())
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            std::mem::take(&mut self.pending)
+        }
+    }
+
+    /// Drives the actual session startup, not broker admission. The typed
+    /// recipient object selects the local mode; it grants no fixture authority.
+    #[test]
+    fn task_recipient_startup_subscribes_without_publishing_ordinary_resources() {
+        for custody in [
+            None,
+            Some(
+                runtime_collab::EnrolledRecipientCustody::new(
+                    "agent-1",
+                    "launch-1",
+                    "epoch-1",
+                    "channel-1",
+                )
+                .unwrap(),
+            ),
+        ] {
+            let enrolled = custody.is_some();
+            let sent = Rc::new(RefCell::new(Vec::new()));
+            let link = crate::wire::test_link(StartupPeer {
+                sent: sent.clone(),
+                pending: Vec::new(),
+            });
+            let mut session = startup_session(link, custody);
+            let error = session.run_task_runs().unwrap_err();
+            assert_eq!(error.to_string(), "startup fixture complete");
+            let observed = sent.borrow();
+            assert_eq!(observed.len(), 1);
+            if enrolled {
+                assert!(matches!(
+                    observed[0],
+                    CollabRequest::SubscribeEnrolledTasks { request_id: 1 }
+                ));
+            } else {
+                let CollabRequest::PublishActions { app_id, actions } = &observed[0] else {
+                    panic!("ordinary task recipient must publish its transform resources");
+                };
+                assert_eq!(app_id, tilo_automation::AGENT_APP_ID);
+                assert!(!actions.is_empty());
+                assert!(
+                    actions
+                        .iter()
+                        .all(|action| action.resource == crate::transform::RESOURCE_ID)
+                );
+            }
+        }
+    }
+
+    fn startup_session(
+        link: Link,
+        enrolled_custody: Option<runtime_collab::EnrolledRecipientCustody>,
+    ) -> Session {
+        Session {
+            cfg: Config {
+                agent_id: "agent-1".into(),
+                endpoint: None,
+                endpoint_identity: None,
+                app_id: "so.tilo.agent".into(),
+                cluster: Uuid::from_u128(1),
+                record: None,
+                name: "agent-1".into(),
+                pace: Duration::ZERO,
+                once: false,
+                model: false,
+                model_timeout: Duration::ZERO,
+                await_document: Duration::ZERO,
+                settle: Duration::ZERO,
+                permissions: PermissionContext::from_capabilities(
+                    ui::permissions::Actor::agent("agent-1"),
+                    vec![],
+                ),
+                content: tilo_content::ContentStore::memory(),
+            },
+            link,
+            editor: None,
+            peers: BTreeMap::new(),
+            handled: HashSet::new(),
+            watching: HashMap::new(),
+            dispatched_this_turn: HashSet::new(),
+            chooser: Chooser::new(false, Duration::ZERO),
+            enrolled_custody,
+            enrolled_active: None,
+            enrolled_sequence: 0,
+            task_deadline: None,
+            asked_at: ui::time::now(),
+            last_route: None,
+            broker_catalogue: tilo_actions::remote::CataloguePage::default(),
+            catalogue_fetched: None,
+            broker_surfaces: Vec::new(),
+            next_broker_request: 1,
+            active_run: None,
+            chat_run: None,
+            chat_pending: false,
+            chat_catalogue_received: false,
+            last_chat_action: None,
+            chat_sources: HashMap::new(),
+            live: crate::live::LivePublisher::default(),
+            broker_revision: 0,
+            catalogue_cache: None,
+            turn: None,
+            memory: agent_loop::Memory::default(),
         }
     }
 }
