@@ -4455,6 +4455,7 @@ impl ChatApp {
                         | Hit::ToggleRightFlap
                         | Hit::Attach
                         | Hit::Send
+                        | Hit::AgentDragHandle
                         | Hit::ComposerEmoji(_)
                         | Hit::AddReaction { .. }
                 )
@@ -5575,6 +5576,16 @@ impl Widget for ChatApp {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        use winit::window::CursorIcon;
+
+        if self.call.placement.is_dragging() || self.agent_conversation_drag.is_some() {
+            return Some(CursorIcon::Grabbing);
+        }
+        if self.hits.iter().rev().any(|(rect, hit)| {
+            rect.contains(point) && matches!(hit, Hit::AgentDragHandle | Hit::CallDragHandle)
+        }) {
+            return Some(CursorIcon::Grab);
+        }
         self.left_flap
             .resize_cursor(point)
             .or_else(|| self.right_flap.resize_cursor(point))

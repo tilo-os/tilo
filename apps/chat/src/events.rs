@@ -914,7 +914,7 @@ impl ChatApp {
                     self.left_flap.close();
                 }
             }
-            Hit::AgentWindow => {
+            Hit::AgentWindow | Hit::AgentDragHandle => {
                 if self.conversation_surface {
                     self.conversation_return_requested = true;
                 } else if let Some(agent) = self.direct_agent.clone() {
@@ -3822,6 +3822,14 @@ mod tests {
             .iter()
             .find_map(|(rect, hit)| matches!(hit, Hit::AgentDragHandle).then_some(rect.center()))
             .expect("the direct conversation exposes the shared drag grip");
+        assert_eq!(
+            Widget::cursor_shape(&app, handle),
+            Some(winit::window::CursorIcon::Grab),
+        );
+        assert_eq!(
+            app.hover_tooltip_target(handle).map(|(_, label)| label),
+            Some(crate::i18n::t("chat-agent-drag")),
+        );
         feed(&mut app, &mut doc, &cursor(handle.x, handle.y));
         feed(
             &mut app,
@@ -3829,6 +3837,10 @@ mod tests {
             &mouse(ElementState::Pressed, MouseButton::Left),
         );
         assert!(Widget::wants_pointer_capture(&app));
+        assert_eq!(
+            Widget::cursor_shape(&app, handle),
+            Some(winit::window::CursorIcon::Grabbing),
+        );
         let outside = Point::new(app.rect.x1 + 40.0, handle.y + 18.0);
         feed(&mut app, &mut doc, &cursor(outside.x, outside.y));
         assert!(app.direct_agent.is_none(), "the primary source is cleared");
@@ -3852,6 +3864,92 @@ mod tests {
             &mouse(ElementState::Released, MouseButton::Left),
         );
         assert!(!Widget::wants_pointer_capture(&app));
+    }
+
+    #[test]
+    fn agent_drag_accessibility_activation_uses_the_float_handoff() {
+        use ui::Widget;
+
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        render_frame(&mut app, 800.0, 600.0);
+
+        let drag = Widget::accessibility(&app)
+            .expect("Chat accessibility tree")
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Drag conversation"))
+            .expect("the shared grip has its localized accessible name");
+        assert_eq!(drag.role, ui::a11y::Role::Button);
+        let target = drag
+            .action_target
+            .expect("the grip has one semantic target");
+        let index = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::AgentDragHandle))
+            .expect("the accessible grip is in the keyboard ring");
+        assert!(Widget::focus_synthetic_accessibility(&mut app, &[index]));
+        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app).is_none(),
+            "accessibility focus alone never floats the conversation"
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(
+            app.direct_agent.is_none(),
+            "Float leaves the attached route"
+        );
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app).is_some(),
+            "AT activation crosses the existing shared Float handoff"
+        );
+    }
+
+    #[test]
+    fn agent_drag_keyboard_enter_uses_the_float_handoff() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        render_frame(&mut app, 800.0, 600.0);
+        app.keyboard_target = Some(
+            app.semantic_hits()
+                .iter()
+                .position(|(_, hit, ..)| matches!(hit, Hit::AgentDragHandle))
+                .expect("the grip is in the keyboard ring"),
+        );
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        assert!(
+            app.direct_agent.is_none(),
+            "Enter leaves the attached route"
+        );
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app).is_some(),
+            "keyboard activation crosses the existing shared Float handoff"
+        );
     }
 
     #[test]
@@ -6405,6 +6503,10 @@ mod tests {
                 .expect("the attached live call exposes its drag handle");
             let pointer_origin = handle.center();
             let surface_origin = app.call_video_rect();
+            assert_eq!(
+                Widget::cursor_shape(&app, pointer_origin),
+                Some(winit::window::CursorIcon::Grab),
+            );
             feed(
                 &mut app,
                 &mut doc,
@@ -6416,6 +6518,10 @@ mod tests {
                 &mouse(ElementState::Pressed, MouseButton::Left),
             );
             assert!(Widget::wants_pointer_capture(&app));
+            assert_eq!(
+                Widget::cursor_shape(&app, pointer_origin),
+                Some(winit::window::CursorIcon::Grabbing),
+            );
 
             let outside = Point::new(1300.0, pointer_origin.y + 40.0);
             feed(&mut app, &mut doc, &cursor(outside.x, outside.y));
