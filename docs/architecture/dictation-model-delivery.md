@@ -96,3 +96,50 @@ exception for the candidate.
 The remaining blocking decisions are an approved production backend/format and
 artifact-size policy, an immutable descriptor-loading design, and physical/full
 OS acceptance. They are not solved by increasing the existing Whisper cap.
+
+
+## Production descriptor loading implementation
+
+The worker now obtains an immutable, receipt-checked sealed descriptor from the
+same signed catalogue and acceptance checks. `speech_model_file` streams the
+exact source through a32KiBzeroized buffer into a private sealed memfd; all
+write/grow/shrink/seal mutations are locked out before native parsing. The
+Whisper adapter uses C++ descriptor callbacks after full Landlock/seccomp
+confinement, never reopening a model path or allocating a whole-model Rust input
+buffer. The descriptor is dropped before decoder arenas are prepared. The byte
+API remains only for compatibility/qualification.256MiBadmission and1GiBRLIMIT_AS
+remain enforced; the742090464-byte candidate is explicitly rejected by a test.
+
+Actual production pipe proof: the pinned public base-model English clip passes
+Ready/drafts/final and rawWER5.26% under the verified1.25GiBtransient scope.
+The worker peaks at870792KiBvirtual/354664KiBRSS; aggregate scope peak617578496B
+and zero high/max/OOM events. This is pressured-builder development evidence,
+not physical latency or native Nemotron acceptance. Original readiness and
+observation failures are preserved in `dictation-sealed-loading.json`; the
+pinned parser's exact-EOF probes are handled without accepting truncated fields.
+
+No automatic review has denied native backend implementation. Choosing and
+implementing that backend is within the dictation request. The actual remaining
+policy constraint is the existing instruction to preserve resource limits: a
+distinct742MBartifact allowance would be a change to the current256MiBconsumer
+boundary. Catalogue signing, installation, release holds and deployment also
+remain unchanged. Do not call an ordinary backend design choice an approval gate.
+
+For the large candidate, a full anonymous sealed copy would add707.71MiBof
+physical pages while the decoder loads roughly774MiB, which cannot be assumed
+to fit the verified1.25GiBcgroup. The next implementation should establish
+immutability on the existing cached object and read its descriptor directly,
+then measure actual memory. [Linuxfs-verity](https://docs.kernel.org/filesystems/fsverity.html)
+provides immutable verified reads for supported filesystems; its Merkle digest
+is distinct from the signed rawSHA-256, so retain the raw receipt check after
+immutability is established. Filesystem support must be observed, not assumed;
+no fs-verity operation or file-size exception is enabled by this increment.
+
+Pinned NeMo source already has `gguf_init_from_file_ptr` and callback APIs. Its
+`GGUFLoader` currently opens the path separately for metadata and tensor reads,
+and reopens it after releasing resources. A native descriptor adapter must
+replace all those opens, own its duplicated descriptor, and fail if weights
+are requested after its immutable input has been released. Merely passing a
+`/proc/self/fd` path would still reopen through the filesystem and is insufficient.
+The separate native worker must avoid linking conflicting ggml generations into
+one process; no dynamic engine code is loaded from model bytes.

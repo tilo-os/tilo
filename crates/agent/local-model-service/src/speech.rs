@@ -10,13 +10,14 @@ use std::path::Path;
 use std::ptr::NonNull;
 
 use agent_provider_config::local::ModelArtifactFormat;
-use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::catalog::VerifiedCatalog;
 use crate::{InProcessCapability, installed_in_process_model};
 
+mod model;
 mod recognition;
+pub use model::SealedSpeechModel;
 pub mod worker;
 pub use recognition::SpeechRecognition;
 
@@ -31,10 +32,10 @@ const MAX_MODEL_BYTES: u64 = 256 * 1024 * 1024;
 /// bytes the decoder receives, avoiding a path-replacement gap.
 /// # Errors
 /// Rejects missing, unsigned, unaccepted, changed, oversized or unsafe objects.
-pub fn speech_model_bytes(
+pub fn speech_model_file(
     root: &Path,
     catalog: &VerifiedCatalog,
-) -> Result<(String, String, Zeroizing<Vec<u8>>), SpeechError> {
+) -> Result<SealedSpeechModel, SpeechError> {
     let metadata = fs::symlink_metadata(root).map_err(|_| SpeechError::ModelUnavailable)?;
     // SAFETY: geteuid is argument-free and cannot fail.
     let uid = unsafe { libc::geteuid() };
@@ -74,7 +75,7 @@ pub fn speech_model_bytes(
     if release.artifact.size_bytes > MAX_MODEL_BYTES {
         return Err(SpeechError::ModelUnavailable);
     }
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&installed.path)
@@ -83,27 +84,33 @@ pub fn speech_model_bytes(
     if !metadata.is_file() || metadata.len() != release.artifact.size_bytes {
         return Err(SpeechError::ModelReceipt);
     }
+    model::seal_verified(
+        file,
+        release.artifact.size_bytes,
+        &release.artifact.sha256,
+        installed.id,
+        installed.revision,
+    )
+}
+
+/// Compatibility bytes for existing qualification callers. Production loads
+/// the immutable descriptor directly, without a whole-model input allocation.
+/// # Errors
+/// Rejects the same catalogue, licence and object failures as `speech_model_file`.
+pub fn speech_model_bytes(
+    root: &Path,
+    catalog: &VerifiedCatalog,
+) -> Result<(String, String, Zeroizing<Vec<u8>>), SpeechError> {
+    let model = speech_model_file(root, catalog)?;
     let mut bytes = Zeroizing::new(Vec::new());
-    // A signed, bounded receipt gives the exact allocation size. Geometric
-    // read_to_end growth can double a large model buffer and exhaust the
-    // worker's address-space budget before the native loader is ready.
     bytes
-        .try_reserve_exact(
-            usize::try_from(release.artifact.size_bytes)
-                .map_err(|_| SpeechError::ModelReceipt)?
-                .saturating_add(1),
-        )
+        .try_reserve_exact(usize::try_from(model.size()).map_err(|_| SpeechError::ModelReceipt)?)
         .map_err(|_| SpeechError::ModelUnavailable)?;
-    (&mut file)
-        .take(release.artifact.size_bytes.saturating_add(1))
+    model
+        .file()
         .read_to_end(&mut bytes)
         .map_err(|_| SpeechError::ModelReceipt)?;
-    if u64::try_from(bytes.len()).ok() != Some(release.artifact.size_bytes)
-        || hex::encode(Sha256::digest(&*bytes)) != release.artifact.sha256
-    {
-        return Err(SpeechError::ModelReceipt);
-    }
-    Ok((installed.id, installed.revision, bytes))
+    Ok((model.id().to_owned(), model.revision().to_owned(), bytes))
 }
 
 /// Apply the system parser sandbox before loading untrusted native weights.
@@ -126,6 +133,7 @@ pub fn confine_worker() -> Result<(), SpeechError> {
 }
 
 unsafe extern "C" {
+    fn tilo_speech_load_fd(fd: i32, length: usize) -> *mut c_void;
     fn tilo_speech_load(bytes: *mut u8, length: usize) -> *mut c_void;
     fn tilo_speech_ready(context: *mut c_void) -> bool;
     fn tilo_speech_threads(context: *mut c_void, threads: i32) -> bool;
@@ -188,6 +196,30 @@ impl SpeechEngine {
             Err(SpeechError::Protocol)
         }
     }
+    /// Parse the verified immutable descriptor after worker confinement.
+    /// No native file path or Rust callback crosses this boundary.
+    /// # Errors
+    /// Rejects invalid headers, a changed seal or failed native loading.
+    pub fn load_file(model: &SealedSpeechModel) -> Result<Self, SpeechError> {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::FileExt as _;
+        model.check_seals()?;
+        let mut magic = [0_u8; 4];
+        if model.size() < 64
+            || model.file().read_exact_at(&mut magic, 0).is_err()
+            || &magic != b"lmgg"
+        {
+            return Err(SpeechError::ModelReceipt);
+        }
+        let length = usize::try_from(model.size()).map_err(|_| SpeechError::ModelReceipt)?;
+        // SAFETY: the sealed descriptor remains live during synchronous C++
+        // reads; native code retains neither descriptor nor callback userdata.
+        let pointer = unsafe { tilo_speech_load_fd(model.file().as_raw_fd(), length) };
+        NonNull::new(pointer)
+            .map(Self)
+            .ok_or(SpeechError::Recognition)
+    }
+
     /// Load already receipt-checked model bytes synchronously in the worker.
     /// # Errors
     /// Rejects invalid headers, oversized models or failed native loading.
