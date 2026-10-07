@@ -1445,3 +1445,84 @@ fn assert_open_tag_view(
     );
     assert_eq!(revision(f, checkout), history);
 }
+
+#[test]
+fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
+    let before = f
+        .records
+        .read(&checkout.id, |doc| {
+            serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap()
+        })
+        .unwrap();
+    let bodies = f
+        .records
+        .read(&checkout.id, |doc| {
+            [f.root, f.child, f.empty].map(|page| NotesDoc::page_stored_blocks(doc, page))
+        })
+        .unwrap();
+    let mut a = driver(&f, 11, &checkout);
+    invoke(
+        &mut a,
+        11,
+        actions::page_resource_id(f.child),
+        "outdent",
+        None,
+    );
+    assert_eq!(revision(&f, &checkout), 1);
+    f.records
+        .read(&checkout.id, |doc| {
+            assert_eq!(
+                NotesDoc::list_pages(doc)
+                    .iter()
+                    .find(|page| page.id == f.child)
+                    .unwrap()
+                    .parent,
+                None
+            );
+            assert_eq!(
+                [f.root, f.child, f.empty].map(|page| NotesDoc::page_stored_blocks(doc, page)),
+                bodies
+            );
+        })
+        .unwrap();
+    f.records
+        .with_history(&checkout.id, |doc, history| {
+            history.undo_in(doc, &f.author, 11, None, None).unwrap();
+            assert_eq!(
+                serde_json::to_value(automerge::AutoSerde::from(&*doc)).unwrap(),
+                before
+            );
+            assert!(history.next_undo_in(&f.author, 11).is_none());
+        })
+        .unwrap();
+    a.relayout();
+    *f.authority.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
+        ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), &f.author.0),
+        vec![],
+    )
+    .at_unix_time(100);
+    assert!(
+        a.invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: 11,
+                address: tilo_actions::ActionAddress::new(
+                    actions::page_resource_id(f.child),
+                    "outdent"
+                ),
+            },
+            &serde_json::Map::new()
+        )
+        .is_err()
+    );
+    assert_eq!(
+        f.records
+            .read(&checkout.id, |doc| {
+                serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap()
+            })
+            .unwrap(),
+        before
+    );
+    close_driver(&mut a);
+}
