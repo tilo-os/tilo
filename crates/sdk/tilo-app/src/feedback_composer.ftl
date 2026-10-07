@@ -21,3 +21,4 @@ feedback-issue-too-long = Please shorten your description.
 feedback-busy = Feedback is busy. Try again.
 feedback-capture-unavailable = This app cannot provide a private screenshot. Uncheck the screenshot option and review again.
 feedback-capture-changed = The app changed during capture. Review again to capture its current state.
+feedback-reviewed-text = { $value }

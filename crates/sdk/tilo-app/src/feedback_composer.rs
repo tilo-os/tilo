@@ -185,7 +185,9 @@ impl ResourceApp for FeedbackComposer {
         let fields_view = cx.switch(&fields, |part, fields| {
             let mut controls = Column::new();
             for field in fields {
-                controls = controls.push(Box::new(Text::new(&field.value)));
+                controls = controls.push(Box::new(
+                    Text::new("feedback-reviewed-text").with_arg("value", field.value.clone()),
+                ));
                 controls = controls.push(Box::new(part.effect_button(
                     "feedback-hide-context",
                     &FeedbackEffect::Redact {
@@ -196,6 +198,13 @@ impl ResourceApp for FeedbackComposer {
                 )));
             }
             Box::new(controls)
+        });
+        let preview = cx.switch(&shown, |_, shown| {
+            Box::new(
+                Text::new("feedback-reviewed-text")
+                    .with_arg("value", shown.clone())
+                    .with_id("feedback-preview"),
+            )
         });
         let picture = cx.switch(&pixels, |_, png| {
             png.as_ref()
@@ -224,8 +233,8 @@ impl ResourceApp for FeedbackComposer {
                 ),
                 Text::new("feedback-privacy"),
                 cx.effect_button("feedback-review", &FeedbackEffect::Review),
-                Text::from_state(&shown, Clone::clone).with_id("feedback-preview"),
             ]
+            .push(preview)
             .push(fields_view)
             .push(picture)
             .push(Box::new(crate::column![
@@ -371,7 +380,13 @@ mod tests {
     struct Host(Rc<RefCell<Transport>>);
     impl FeedbackHost for Host {
         fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
-            Ok(Vec::new())
+            Ok(vec![ReviewText {
+                node: "focused.public.label".into(),
+                sensitivity: crate::feedback::DeclaredSensitivity::Public,
+                kind: None,
+                origin: crate::feedback::TextOrigin::Semantic,
+                text: "feedback-privacy".into(),
+            }])
         }
         fn capture(&mut self) -> Result<MaskedScreenshot, Error> {
             Err(Error::CaptureProtected)
@@ -491,6 +506,55 @@ mod tests {
             Some(DeliveryState::Sent {
                 report: "chat.message:m_feedback_test".into()
             })
+        );
+        assert_literal_second_review(&mut frame, &transport);
+    }
+
+    fn find(node: &crate::headless::InspectionNode) -> Option<&crate::headless::InspectionNode> {
+        if node.test_id.as_deref() == Some("feedback-preview") {
+            Some(node)
+        } else {
+            node.children.iter().find_map(find)
+        }
+    }
+    fn contains_literal_context(node: &crate::headless::InspectionNode) -> bool {
+        node.semantics
+            .as_ref()
+            .and_then(|node| node.name.as_deref())
+            == Some("feedback-privacy")
+            || node.children.iter().any(contains_literal_context)
+    }
+    fn assert_literal_second_review(frame: &mut FrameHarness, transport: &Rc<RefCell<Transport>>) {
+        transport.borrow_mut().receipt = None;
+        call(frame, "describe", &json!({"issue": "feedback-title"})).expect("second issue");
+        call(frame, "context", &json!({"include": true})).expect("explicit context opt-in");
+        call(frame, "review", &json!({})).expect("new review after durable receipt");
+        frame.relayout();
+        let inspection = frame.inspection();
+        let preview = find(&inspection.root).expect("displayed approved preview");
+        assert_eq!(
+            preview
+                .semantics
+                .as_ref()
+                .and_then(|node| node.name.as_deref()),
+            Some("feedback-title"),
+            "user text matching a Fluent key must remain literal"
+        );
+        assert!(contains_literal_context(&inspection.root));
+        call(frame, "submit", &json!({})).expect("second approved submission");
+        let sent = transport.borrow();
+        let first = sent.submissions.first().expect("first report");
+        let second = sent.submissions.last().expect("second report");
+        assert_ne!(first.id, second.id);
+        assert_eq!(second.feedback.text, "feedback-title");
+        assert_eq!(
+            second
+                .feedback
+                .context
+                .first()
+                .expect("approved context")
+                .value,
+            "feedback-privacy"
         );
     }
 }

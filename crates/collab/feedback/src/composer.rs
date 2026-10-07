@@ -93,7 +93,10 @@ impl Composer {
     pub fn review(&mut self, text: &str, consent: Consent) -> Result<(), Error> {
         self.reviewed = None;
         if self.active.is_some() {
-            return Err(Error::Conflict);
+            if !matches!(self.state()?, Some(DeliveryState::Sent { .. })) {
+                return Err(Error::Conflict);
+            }
+            self.active = None;
         }
         if text.trim().is_empty() || text.len() > 8_000 {
             return Err(Error::Invalid("feedback"));
@@ -351,12 +354,32 @@ mod tests {
         });
         restored.pump().unwrap();
         assert_eq!(restored.state().unwrap(), Some(DeliveryState::Saving));
+        assert!(matches!(
+            restored.review("Another issue", Consent::default()),
+            Err(Error::Conflict)
+        ));
         commit(&store);
         assert_eq!(
             restored.state().unwrap(),
             Some(DeliveryState::Sent {
                 report: "chat.message:m_feedback_42".into()
             })
+        );
+        calls.borrow_mut().receipt = None;
+        restored
+            .review("Another issue", Consent::default())
+            .unwrap();
+        let next_id = "1123456789abcdef0123456789abcdef".to_owned();
+        restored
+            .submit(next_id.clone(), "Another issue", Consent::default())
+            .unwrap();
+        assert_eq!(restored.state().unwrap(), Some(DeliveryState::Saving));
+        commit(&store);
+        restored.pump().unwrap();
+        assert_eq!(calls.borrow().sent.last().unwrap().id, next_id);
+        assert_eq!(
+            calls.borrow().sent.last().unwrap().feedback.text,
+            "Another issue"
         );
     }
 
