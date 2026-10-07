@@ -69,14 +69,14 @@ publishing, changing access policy or connecting personal resources/accounts.
 
 ## Focused verification
 
-Run on the existing builder:
+Run with the configured cargo drop-in:
 
 ```sh
-rcargo test --locked -p tilo-feedback-review --lib
-rcargo test --locked -p tilo-feedback --lib
-rcargo test --locked -p chat --lib feedback::tests
-rcargo --no-fetch clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
-rcargo --no-fetch check --locked -p shell --tests
+cargo test --locked -p tilo-feedback-review --lib
+cargo test --locked -p tilo-feedback --lib
+cargo test --locked -p chat --lib feedback::tests
+cargo clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
+cargo check --locked -p shell --tests
 ```
 
 Before enabling the journey, exercise the mounted native and browser production
