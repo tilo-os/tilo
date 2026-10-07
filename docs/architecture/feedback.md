@@ -46,6 +46,10 @@ requires Write and records attributed status changes, duplicate targets or an
 address of an existing task. A task reference grants no access and creates no
 external task automatically.
 Opening a report reveals its exact message rather than just its channel.
+System search indexes the reviewed report text with its typed `chat.feedback`
+anchor and the same reveal action, so the result exposes the report’s existing
+receipt and permission-checked triage actions. Retried reports have one report
+entry; private drafts and captured context are not added to this index.
 `read-feedback-receipt` uses Chat's registered semantic reader over the canonical
 record at the SDK's stamped committed heads. The request binds to the published
 report resource and accepts no caller-selected heads, destination or source.

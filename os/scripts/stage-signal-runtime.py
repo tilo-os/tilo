@@ -34,11 +34,11 @@ def verified_asset(directory, asset):
     return path
 
 
-def unpack(archive, root, destination):
+def unpack(archive, root, destination, max_files=MAX_FILES, max_bytes=MAX_BYTES):
     with tarfile.open(archive) as contents:
         members = contents.getmembers()
-        require(len(members) <= MAX_FILES, "runtime archive has too many entries")
-        require(sum(member.size for member in members) <= MAX_BYTES,
+        require(len(members) <= max_files, "runtime archive has too many entries")
+        require(sum(member.size for member in members) <= max_bytes,
                 "runtime archive exceeds size bound")
         for member in members:
             path = Path(member.name)

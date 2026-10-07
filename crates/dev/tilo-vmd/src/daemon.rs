@@ -1355,6 +1355,37 @@ impl Daemon {
         from: &Generation,
         to: &Generation,
     ) -> Result<ApplyResult, DaemonError> {
+        // Boot changes have a separate boot-confirmation lifecycle. Runtime
+        // transitions recover once, without recursively retrying a broken build.
+        let (policy, _) = apply::policy(record, from, to)?;
+        match self.activate_generation(record, from, to) {
+            Ok(result) => Ok(result),
+            Err(error) if policy != Policy::Reboot => {
+                let recovery = match self.activate_generation(record, to, from) {
+                    Ok(_) => format!("restored generation {}", from.number),
+                    Err(recovery) => format!(
+                        "recovery to generation {} also failed: {recovery}; inspect logs --slot {} and retry rollback --slot {} --to {}",
+                        from.number, record.name, record.name, from.number
+                    ),
+                };
+                Err(DaemonError::Apply {
+                    step: format!(
+                        "activate generation {} in slot '{}'",
+                        to.number, record.name
+                    ),
+                    detail: format!("{error}; {recovery}"),
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn activate_generation(
+        &mut self,
+        record: &mut SlotRecord,
+        from: &Generation,
+        to: &Generation,
+    ) -> Result<ApplyResult, DaemonError> {
         let (policy, restarts) = apply::policy(record, from, to)?;
         let layers = self.system_layers(record, self.layer_paths(to)?)?;
         self.slots.mark_pending(&record.name, to.number)?;
@@ -1371,10 +1402,10 @@ impl Daemon {
         let mut warnings = Vec::new();
         match policy {
             Policy::VmRefresh => {
-                self.slots.set_current(record, to.number)?;
                 actions.extend(self.restart_all_sessions(&restarts.user_units)?);
                 let sessions = self.sessions()?;
                 self.verify_parity(sessions)?;
+                self.slots.set_current(record, to.number)?;
             }
             Policy::Reboot => {
                 // The kernel's modules are merged now; its boot entry is next.
@@ -1406,8 +1437,8 @@ impl Daemon {
                 self.slots.set_current(record, to.number)?;
             }
             Policy::SessionRestart => {
-                self.slots.set_current(record, to.number)?;
                 self.verify_parity(record.session())?;
+                self.slots.set_current(record, to.number)?;
             }
             Policy::NoRestart => self.slots.set_current(record, to.number)?,
         }
@@ -1681,6 +1712,87 @@ impl Daemon {
 mod tests {
     use super::*;
     use crate::apply::session_unit;
+
+    #[test]
+    fn failed_swap_restores_generation_and_reports_failed_recovery() {
+        for (slot, recovery) in [
+            (DEVICE_SLOT, Ok(())),
+            (DEVICE_SLOT, Err("old desktop also failed".to_owned())),
+            ("review", Ok(())),
+            ("review", Err("old desktop also failed".to_owned())),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut apply = RecordingApply::with_login("owner");
+            apply.mirror = Some(mirror.clone());
+            if slot != DEVICE_SLOT {
+                apply.readiness_replies.push_back(Ok(()));
+            }
+            apply.readiness_replies.extend([
+                Ok(()),
+                Err("new desktop failed".to_owned()),
+                recovery.clone(),
+            ]);
+            let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+            if slot != DEVICE_SLOT {
+                daemon
+                    .create(slot, SlotKind::Headless, Owner::default(), &[], false)
+                    .unwrap();
+            }
+            // Start with a real prior generation, then exercise the production
+            // swap path: preparation, activation, readiness and recovery.
+            let hash = "ab".repeat(32);
+            fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
+            let info = Some(ComponentInfo::new(Scope::Session, vec![]));
+            assert_eq!(
+                daemon
+                    .swap(slot, "shell", &hash, info.clone())
+                    .unwrap()
+                    .generation,
+                1
+            );
+            mirror.lock().unwrap().clear();
+            let next = "cd".repeat(32);
+            fs::create_dir_all(root.path().join("layers").join(&next).join("usr/bin")).unwrap();
+            let error = daemon.swap(slot, "shell", &next, info).unwrap_err();
+            let detail = error.to_string();
+            assert!(detail.contains("new desktop failed"), "{detail}");
+            let record = daemon.load_slot(slot).unwrap();
+            assert_eq!(
+                record.current, 1,
+                "a failed candidate never becomes current"
+            );
+            if slot == DEVICE_SLOT {
+                assert_eq!(record.device.as_ref().unwrap().account, "owner");
+            } else {
+                assert_eq!(record.kind, SlotKind::Headless);
+            }
+            let calls = mirror.lock().unwrap().clone();
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c.starts_with("wait_session_ready "))
+                    .count(),
+                2
+            );
+            assert!(
+                !calls
+                    .iter()
+                    .any(|c| c.contains("reset_desktop") || c.contains("remove_user"))
+            );
+            if recovery.is_ok() {
+                assert!(detail.contains("restored generation 1"), "{detail}");
+                assert_eq!(daemon.slots.pending(slot), None);
+            } else {
+                assert!(
+                    detail.contains("recovery to generation 1 also failed"),
+                    "{detail}"
+                );
+                assert!(detail.contains("old desktop also failed"), "{detail}");
+                assert_eq!(daemon.slots.pending(slot), Some(1));
+            }
+        }
+    }
 
     #[test]
     fn cohort_rollback_refuses_before_changing_layers_but_keeps_unrelated_rollback() {

@@ -768,3 +768,49 @@ fn the_device_slot_is_the_machines_own_session() {
         }));
     }
 }
+
+#[test]
+fn upload_windows_import_the_same_verified_layer() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    daemon.client.hello("upload-window-test").unwrap();
+    // Cross a full window and leave a short final chunk.
+    let data = vec![83_u8; tilo_vm_protocol::UPLOAD_CHUNK_BYTES * 5 + 17];
+    let bytes = tarball("usr/bin/shell", &data);
+    let hash = import(&mut daemon.client, "shell", &bytes);
+    let installed =
+        std::fs::read(root.path().join("layers").join(&hash).join("usr/bin/shell")).unwrap();
+    assert_eq!(
+        sha2::Sha256::digest(&installed),
+        sha2::Sha256::digest(&data)
+    );
+    assert_eq!(installed.len(), data.len());
+    let again = import(&mut daemon.client, "shell", &bytes);
+    assert_eq!(
+        again, hash,
+        "transport windows do not change layer identity"
+    );
+    let layers = daemon.client.call(LayerList {}).unwrap();
+    assert_eq!(
+        layers.len(),
+        1,
+        "the existing content cache reuses the layer"
+    );
+    assert_eq!(layers[0].hash, hash);
+    assert_eq!(layers[0].provenance.component, "shell");
+
+    let invalid = tarball("etc/unapproved", b"bad layer");
+    let upload = daemon.client.upload(invalid.as_slice()).unwrap();
+    assert!(
+        daemon
+            .client
+            .call(LayerImport {
+                source: LayerSource::Upload(upload),
+                provenance: Box::new(Provenance::local("shell")),
+            })
+            .is_err()
+    );
+    let retained = daemon.client.call(LayerList {}).unwrap();
+    assert_eq!(retained.len(), 1, "rejected imports cannot publish a layer");
+    assert_eq!(retained[0].hash, hash);
+}
