@@ -2769,7 +2769,13 @@ impl State {
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm(_) => CaptureOutcome::Queued,
+                        ForeignCommitCapture::Shm(generation) => {
+                            if store().note_shm_committed(surface_id, generation) {
+                                CaptureOutcome::Queued
+                            } else {
+                                CaptureOutcome::Failed("SHM commit generation is not queued".into())
+                            }
+                        }
                         ForeignCommitCapture::NoBuffer
                         | ForeignCommitCapture::Failed
                         | ForeignCommitCapture::Removed => {
