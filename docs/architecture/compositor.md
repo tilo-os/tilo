@@ -149,13 +149,22 @@ remaining phase there — 16.8% of wall time under a client committing at
 hand-off. It is also where the pacing tail comes from: on a nested run
 at 92.5% on-cadence, the off-cadence spans carry a median 4.1 ms of
 client dispatch against 2.5 ms for the on-cadence ones, and the worst
-gaps (77 ms, 57 ms, 45 ms) are 23-25 ms of client dispatch each. The
-cause is per-commit buffer capture (`foreign::ForeignFrameStore::capture_commit`
-copies an SHM buffer, or reads back a dma-buf) running inline on the
-logic thread, so a client that commits faster than the compositor
-presents makes the compositor late. Moving capture off the logic thread,
-or coalescing commits so only the newest buffer per surface is imported
-per frame, is the follow-up — and the frame trace already measures it.
+gaps (77 ms, 57 ms, 45 ms) are 23-25 ms of client dispatch each. Those historical dispatch measurements do not identify current DMA capture as
+an input-thread wait. Current pre-commit admission queues a latest-only capture
+job with a Smithay transaction barrier; `tilo-foreign-capture` imports, waits on
+the producer fence, and completes the compositor-owned GPU copy outside dispatch
+and outside the frame-store lock. Completion wakes the input loop to apply that
+exact blocked commit. A real protocol regression holds an actual descriptor
+unsignalled while unrelated `wl_display.sync` finishes, then verifies failed
+invalid-storage import settles without invented pixels and detach releases the
+buffer. Required copy/lifetime waits remain intact.
+
+Capture and the presenter can still use the same GPU device/queue. Exact
+capture timing identifies producer-fence, encoder-finish, queue-submit and
+copy-completion intervals; presenter timing identifies its own queue and KMS
+waits. A slow capture record alone does not establish an input-loop stall or
+identify driver queue contention. Those need exact concurrent dispatch/queue
+measurements, without adding overlapping CPU/GPU intervals.
 
 **What is verified, and what isn't.** The loop demonstrably holds the
 cadence it is configured for — including non-60 rates, via the

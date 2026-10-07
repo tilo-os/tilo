@@ -22,7 +22,7 @@ use std::sync::mpsc;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_registry, wl_surface};
+use wayland_client::protocol::{wl_buffer, wl_callback, wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_v1,
@@ -42,6 +42,8 @@ const BUFFER_LEN: u32 = STRIDE * HEIGHT.unsigned_abs();
 struct Client {
     globals: Vec<(u32, String, u32)>,
     configured: bool,
+    roundtrip_done: bool,
+    buffer_released: bool,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -97,7 +99,31 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
 
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
+impl Dispatch<wl_callback::WlCallback, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        _: wl_callback::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.roundtrip_done = true;
+    }
+}
+
+impl Dispatch<wl_buffer::WlBuffer, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _: &wl_buffer::WlBuffer,
+        _: wl_buffer::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.buffer_released = true;
+    }
+}
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
 delegate_noop!(Client: ignore zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1);
@@ -184,10 +210,82 @@ fn linear_argb_memfd() -> OwnedFd {
     OwnedFd::from(file)
 }
 
+fn configure_delayed_fence_gpu(h: &mut Harness) {
+    let mut context = ui::gpu::RenderContext::new();
+    let device = pollster::block_on(context.device(None)).expect("actual capture GPU adapter");
+    let handle = &context.devices[device];
+    shell::shell::gpu_frames::publish_present_device(&handle.device, &handle.queue);
+    if h.state.dmabuf_global.is_none() {
+        use smithay::backend::allocator::{Format, Fourcc, Modifier};
+        h.state.dmabuf_global = Some(h.state.dmabuf_state.create_global::<State>(
+            &h.display.handle(),
+            vec![Format {
+                code: Fourcc::Argb8888,
+                modifier: Modifier::Linear,
+            }],
+        ));
+    }
+}
+
+fn finish_delayed_capture(
+    h: &mut Harness,
+    surface: &wl_surface::WlSurface,
+    mut producer: UnixStream,
+    qh: &QueueHandle<Client>,
+) {
+    use std::io::Write;
+    // The real pollable descriptor is intentionally not signalled yet. It
+    // follows protocol admission and the production pre-commit/worker path;
+    // it is not asserted to be valid GPU pixel storage.
+    let root = h.state.xdg_shell_state.toplevel_surfaces()[0].wl_surface();
+    let id = shell::compositor::state::surface_id(root);
+    let client_index = u32::try_from(id >> 32).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    assert!(shell::compositor::foreign::store().capturing_for_client(client_index));
+    assert!(!h.client.buffer_released);
+    h.conn.display().sync(qh, ());
+    h.pump();
+    assert!(
+        h.client.roundtrip_done,
+        "unrelated real Wayland dispatch must finish while the capture fence is blocked"
+    );
+    assert!(shell::compositor::foreign::store().capturing_for_client(client_index));
+    producer.write_all(&[1]).unwrap();
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(5))
+        .unwrap();
+    while shell::compositor::foreign::store().capturing_for_client(client_index) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the real capture result must settle after fence readiness"
+        );
+        h.state.pump_foreign_capture_barriers(&h.display.handle());
+        h.pump();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    // Invalid GPU storage must never invent captured pixels or a physical
+    // presentation. Its failed import still settles the exact commit.
+    assert!(
+        shell::compositor::foreign::store()
+            .presentation_pixels(id)
+            .is_none()
+    );
+    surface.attach(None, 0, 0);
+    surface.commit();
+    h.pump();
+    assert!(
+        h.client.buffer_released,
+        "the buffer lease must be released after actual settled detach"
+    );
+}
+
 /// `true` once the dmabuf commit has been dispatched, `false` when this
 /// machine advertises no dmabuf global.
-fn commit_first_dmabuf() -> bool {
+fn commit_first_dmabuf(delayed_fence: bool) -> bool {
     let mut h = Harness::new();
+    if delayed_fence {
+        configure_delayed_fence_gpu(&mut h);
+    }
     let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
     h.pump();
     let Some(dmabuf) = h.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>("zwp_linux_dmabuf_v1", 4)
@@ -221,7 +319,12 @@ fn commit_first_dmabuf() -> bool {
         "the toplevel was never configured, so the dmabuf commit below would be a protocol error rather than the path under test"
     );
 
-    let memfd = linear_argb_memfd();
+    let delayed = delayed_fence.then(|| UnixStream::pair().unwrap());
+    let memfd = if let Some((read, _)) = delayed.as_ref() {
+        read.as_fd().try_clone_to_owned().unwrap()
+    } else {
+        linear_argb_memfd()
+    };
     let params = dmabuf.create_params(&qh, ());
     params.add(memfd.as_fd(), 0, 0, STRIDE, 0, 0);
     let buffer = params.create_immed(
@@ -238,7 +341,11 @@ fn commit_first_dmabuf() -> bool {
     // Dispatching this commit runs the capture pre-commit hook.
     h.pump();
 
-    std::mem::forget((surface, xdg_surface, toplevel, buffer, params, wm_base));
+    if let Some((_, producer)) = delayed {
+        finish_delayed_capture(&mut h, &surface, producer, &qh);
+    } else {
+        std::mem::forget((surface, xdg_surface, toplevel, buffer, params, wm_base));
+    }
     true
 }
 
@@ -246,7 +353,7 @@ fn commit_first_dmabuf() -> bool {
 fn the_first_dmabuf_commit_returns_to_the_compositor_loop() {
     let (done, finished) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = done.send(commit_first_dmabuf());
+        let _ = done.send(commit_first_dmabuf(false));
     });
     match finished.recv_timeout(tilo_test_env::hang_bound()) {
         Ok(true) => {}
@@ -258,4 +365,12 @@ fn the_first_dmabuf_commit_returns_to_the_compositor_loop() {
             panic!("the compositor thread panicked while committing a dmabuf")
         }
     }
+}
+
+#[test]
+fn delayed_real_producer_fence_keeps_the_compositor_dispatch_responsive() {
+    assert!(
+        commit_first_dmabuf(true),
+        "the native fixture must expose its configured dma-buf path"
+    );
 }
