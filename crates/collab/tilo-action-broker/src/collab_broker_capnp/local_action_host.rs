@@ -238,5 +238,27 @@ fn certified_provider(provider: &str) -> bool {
     }
     provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
+        || tilo_actions::remote::canonical_workspace_provider_room(provider).is_some()
         || super::launchable::is_launchable_provider(provider)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::certified_provider;
+
+    #[test]
+    fn certified_provider_accepts_only_canonical_workspace_service_ids() {
+        let room = uuid::Uuid::new_v4().to_string();
+        assert!(certified_provider(
+            &tilo_actions::remote::workspace_provider(&room)
+        ));
+        for malformed in [
+            "workspace:",
+            "workspace:not-a-room",
+            "workspace:00000000-0000-0000-0000-000000000000",
+            "workspace:00000000-0000-0000-0000-000000000001:extra",
+        ] {
+            assert!(!certified_provider(malformed), "accepted {malformed}");
+        }
+    }
 }

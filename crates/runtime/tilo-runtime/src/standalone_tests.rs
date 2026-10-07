@@ -15,6 +15,22 @@ use tilo_action_broker::services::{
 use tilo_desktop_model::{RoomId, WorkspaceTaskStatus};
 use tilo_identity_host::broker::WorkspaceMembership;
 
+#[test]
+fn runtime_certified_provider_accepts_only_canonical_workspace_service_ids() {
+    let room = uuid::Uuid::new_v4().to_string();
+    assert!(certified_provider(
+        &tilo_actions::remote::workspace_provider(&room)
+    ));
+    for malformed in [
+        "workspace:",
+        "workspace:not-a-room",
+        "workspace:00000000-0000-0000-0000-000000000000",
+        "workspace:00000000-0000-0000-0000-000000000001:extra",
+    ] {
+        assert!(!certified_provider(malformed), "accepted {malformed}");
+    }
+}
+
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
 const PROCESS_TEST: &str =

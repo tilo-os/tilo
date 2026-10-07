@@ -389,6 +389,7 @@ impl RuntimeActionHost {
 fn certified_provider(provider: &str) -> bool {
     provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
+        || tilo_actions::remote::canonical_workspace_provider_room(provider).is_some()
         || provider.starts_with("launch:")
 }
 

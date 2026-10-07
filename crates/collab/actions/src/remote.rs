@@ -393,6 +393,17 @@ pub fn workspace_provider_room(provider: &str) -> Option<&str> {
         .and_then(|rest| rest.strip_prefix(':'))
 }
 
+/// The non-nil workspace UUID named by a canonical workspace provider token.
+///
+/// Use this stricter form at certified transport boundaries. The structural
+/// parser above remains useful while decoding rows that will be validated by
+/// their owning workspace policy later.
+#[must_use]
+pub fn canonical_workspace_provider_room(provider: &str) -> Option<&str> {
+    workspace_provider_room(provider)
+        .filter(|room| uuid::Uuid::parse_str(room).is_ok_and(|parsed| !parsed.is_nil()))
+}
+
 /// The target that opens `app_id` into workspace `room`. An invocation may
 /// carry the content hash of bytes to open read-only as its text argument.
 #[must_use]
@@ -1755,6 +1766,23 @@ mod tests {
         typed_arguments_use_the_local_invocation_slot();
         a_remote_device_is_the_person_its_root_names();
         a_refusal_answers_every_request_and_nothing_else();
+        canonical_workspace_provider_tokens_require_a_non_nil_room();
+    }
+
+    fn canonical_workspace_provider_tokens_require_a_non_nil_room() {
+        let room = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            canonical_workspace_provider_room(&workspace_provider(&room)),
+            Some(room.as_str())
+        );
+        for malformed in [
+            "workspace:",
+            "workspace:not-a-room",
+            "workspace:00000000-0000-0000-0000-000000000000",
+            "workspace:00000000-0000-0000-0000-000000000001:extra",
+        ] {
+            assert_eq!(canonical_workspace_provider_room(malformed), None);
+        }
     }
 
     fn serve_answers_requests_and_ignores_responses() {

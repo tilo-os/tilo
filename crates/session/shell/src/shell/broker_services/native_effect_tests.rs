@@ -17,6 +17,177 @@ pub(super) struct NativeFixture {
     pub(super) path: std::path::PathBuf,
 }
 
+fn ready_remote<T>(mut pending: tilo_actions::remote::Pending<T>) -> T {
+    use tilo_actions::remote::PendingPoll;
+
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    loop {
+        match pending.poll_ready() {
+            PendingPoll::Ready(result) => return result,
+            PendingPoll::Abandoned => panic!("certified governance request was abandoned"),
+            PendingPoll::Waiting => {
+                assert!(
+                    Instant::now() < deadline,
+                    "certified governance request timed out"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+fn wait_for_invocation(actions: &collab_broker::AppActionBroker, job: u64) {
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    loop {
+        match actions.status(job) {
+            Some(InvocationUpdate::Succeeded { .. }) => return,
+            Some(InvocationUpdate::Failed { error, .. }) => {
+                panic!("certified governance action failed: {error:?}")
+            }
+            _ => {
+                assert!(
+                    Instant::now() < deadline,
+                    "governance action did not settle"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+fn assert_governance_adversaries(
+    actions: &collab_broker::AppActionBroker,
+    session: &crate::shell::certified_action_session::DesktopActionSession,
+    room: &str,
+    provider: &str,
+    revision: &str,
+) {
+    use tilo_actions::remote::{
+        CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+
+    let nonowner = ActionSessionSource::fixture(actions.clone())
+        .open(room, Some("not-an-administrator"))
+        .expect("the local policy fixture retains the distinct Person caller");
+    let denied = ready_remote(nonowner.query(CatalogueQuery {
+        provider: Some(provider.into()),
+        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+        ..CatalogueQuery::default()
+    }))
+    .expect("the service hides rather than errors for a denied Person");
+    assert!(denied.rows.is_empty());
+    let request = |provider: String, revision: Option<String>| InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider,
+            address: tilo_actions::ActionAddress::new("workspace", "profile.save"),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: Some(Confirmation::Confirmed),
+        revision,
+        on_behalf_of: None,
+    };
+    assert!(
+        ready_remote(nonowner.invoke_job(request(provider.into(), Some(revision.into())))).is_err(),
+        "a distinct non-owner cannot invoke a hidden Admin action"
+    );
+    drop(nonowner);
+    let foreign = tilo_actions::remote::workspace_provider(&uuid::Uuid::new_v4().to_string());
+    let foreign_page = ready_remote(session.query(CatalogueQuery {
+        provider: Some(foreign.clone()),
+        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+        ..CatalogueQuery::default()
+    }))
+    .expect("a valid foreign provider is classified before exact-room policy");
+    assert!(foreign_page.rows.is_empty());
+    assert!(
+        ready_remote(session.invoke_job(request(foreign, None))).is_err(),
+        "owner authority cannot be rebound to a foreign workspace provider"
+    );
+    assert!(
+        ready_remote(session.query(CatalogueQuery {
+            provider: Some("workspace:not-a-room".into()),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn certified_owner_queries_and_invokes_native_workspace_governance() {
+    use tilo_actions::remote::{
+        CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+
+    let fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let room = fixture.room.to_string();
+    let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    let session = ActionSessionSource::new(actions.clone())
+        .open(&room, Some(&person))
+        .expect("the certified current owner opens its exact action session");
+    let provider = tilo_actions::remote::workspace_provider(&room);
+    let page = ready_remote(session.query(CatalogueQuery {
+        provider: Some(provider.clone()),
+        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+        ..CatalogueQuery::default()
+    }))
+    .expect("the certified workspace service catalogue is available");
+    let descriptor = page
+        .rows
+        .iter()
+        .find_map(|row| {
+            row.action
+                .as_ref()
+                .filter(|action| {
+                    row.provider == provider
+                        && row.app_id == crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID
+                        && action.address.action == "profile.save"
+                })
+                .cloned()
+        })
+        .expect("the certified owner sees profile.save on the broker-minted provider");
+
+    let invocation = tilo_actions::InvocationId::new();
+    let (job, receipt) = ready_remote(session.invoke_job(InvokeRequest {
+        invocation,
+        target: RemoteActionTarget {
+            provider: provider.clone(),
+            address: descriptor.address,
+        },
+        argument: InvokeArgument::Json(
+            serde_json::json!({
+                "name": "Certified owner profile",
+                "description": "Production certified workspace service proof",
+                "rules": [{
+                    "scope": {"Action": {"app": "so.tilo.chat", "action": "open-agent-conversation"}},
+                    "effect": "Grant",
+                    "verb": "Write"
+                }]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+        context: None,
+        confirmation: Some(Confirmation::Confirmed),
+        revision: Some(page.revision.clone()),
+        on_behalf_of: None,
+    }))
+    .expect("the certified owner invokes the retained governance descriptor");
+    assert_eq!(receipt.invocation, invocation);
+    wait_for_invocation(&actions, job);
+
+    assert_governance_adversaries(&actions, &session, &room, &provider, &page.revision);
+    drop(session);
+    drop(actions);
+    drop(fixture);
+}
+
 #[test]
 fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app() {
     use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
