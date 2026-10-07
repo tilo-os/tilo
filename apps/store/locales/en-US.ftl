@@ -81,3 +81,7 @@ store-runtime-offer-ambiguous = More than one repository offers this runtime. Ch
 store-runtime-unavailable = No enabled repository offers the required runtime for this device.
 
 store-runtime-already-installed = This exact signed runtime package is already on this device. Open the app again to use it.
+
+store-search-empty = No apps found
+store-search-empty-help = Try a different search or category.
+store-search-clear = Clear filters

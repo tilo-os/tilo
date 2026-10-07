@@ -13,3 +13,7 @@ store-runtime-offer-ambiguous = Mehrere Quellen bieten diese Laufzeit an. Wähle
 store-runtime-unavailable = Keine aktivierte Quelle bietet die benötigte Laufzeit für dieses Gerät an.
 
 store-runtime-already-installed = Dieses genaue signierte Laufzeitpaket ist bereits auf diesem Gerät. Öffne die App erneut, um es zu verwenden.
+
+store-search-empty = Keine Apps gefunden
+store-search-empty-help = Versuche einen anderen Suchbegriff oder eine andere Kategorie.
+store-search-clear = Filter zurücksetzen

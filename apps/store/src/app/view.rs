@@ -279,10 +279,12 @@ impl StoreApp {
     /// The catalogue has nothing to show: loading, offline, empty, or every
     /// app filtered out. One sentence and at most one recovery action.
     fn empty_catalogue(&self) -> Element {
-        if !self.items.is_empty() {
-            let mut empty = EmptyState::new("No apps found")
-                .with_message("Try a different search or category.")
-                .with_action("Clear filters")
+        if !self.items.is_empty()
+            || (self.filters_active() && !self.worker_busy && self.operation_error.is_none())
+        {
+            let mut empty = EmptyState::new(ui::i18n!("store-search-empty"))
+                .with_message(ui::i18n!("store-search-empty-help"))
+                .with_action(ui::i18n!("store-search-clear"))
                 .with_action_id("store.empty.clear");
             if let Some(binding) = bindings::effect(&StoreEffect::ClearFilters) {
                 empty = empty.on_action(binding);
