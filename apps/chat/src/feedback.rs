@@ -348,9 +348,18 @@ pub fn receipt_from_record(
     let status = store
         .save_status(record)
         .map_err(|error| refused(error.to_string()))?;
+    let (package, room) = store.package_and_home();
+    if package != crate::definition().app_id || room != actual_destination.room {
+        return Err(refused("feedback canonical store mismatch"));
+    }
     store
         .read(record, |doc| {
-            if ui::record::room_scope(doc).as_deref() != Some(actual_destination.room.as_str()) {
+            let scope = ui::record::room_scope(doc);
+            if scope
+                .as_deref()
+                .is_some_and(|room| room != actual_destination.room)
+                || (!record.is_package_primary() && scope.is_none())
+            {
                 return Err(refused("feedback canonical room mismatch"));
             }
             durable_receipt(doc, id, actual_destination, &status)
@@ -700,6 +709,49 @@ mod tests {
                 &submission.destination
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp() {
+        use ui::record::{RecordCheckout, RecordKind, RecordOwners};
+        let (_, submission) = seeded();
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = RecordOwners::new(temp.path().join("profile"));
+        let store = owners
+            .open(crate::definition().app_id, &submission.destination.room)
+            .unwrap();
+        let primary = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+        store
+            .reserve_record(&primary)
+            .unwrap()
+            .initialize(|doc| {
+                ChatDoc::seed_if_empty(doc);
+                apply_as(doc, "visitor:one", &action(&submission))
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store.try_flush().unwrap();
+        assert!(
+            store
+                .read(&primary.id, |doc| ui::record::room_scope(doc).is_none())
+                .unwrap()
+        );
+        assert!(
+            receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
+                .is_ok()
+        );
+        let mut elsewhere = submission.destination.clone();
+        elsewhere.room = "another-room".into();
+        assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
+        store
+            .with(&primary.id, |doc| {
+                doc.put(ROOT, "later", "unsaved").unwrap();
+            })
+            .unwrap();
+        assert!(
+            receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
+                .is_err()
         );
     }
 
