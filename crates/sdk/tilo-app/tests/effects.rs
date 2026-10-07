@@ -259,6 +259,76 @@ fn a_button_bound_to_an_effect_runs_it() {
 }
 
 #[test]
+fn captures_publish_view_effects_and_availability_without_running_handlers() {
+    let mut live = TestApp::<MailApp>::new().unwrap();
+    let mut capture = TestApp::<MailApp>::capture(None).unwrap();
+    let live_surface = live.agent_surface();
+    let captured_surface = capture.agent_surface();
+    for id in ["count", "fetch", "connect", "stall", "note", "show-sent"] {
+        let live_spec = effect(&live_surface, id).unwrap();
+        let captured_spec = effect(&captured_surface, id).unwrap();
+        assert_eq!(
+            captured_spec, live_spec,
+            "capture lost effect metadata for {id}"
+        );
+    }
+    assert_eq!(
+        effect(&captured_surface, "connect").unwrap()["label"],
+        "Connect (offline)"
+    );
+    let audit = capture.harness().native_app_audit();
+    assert!(audit.is_certified(), "{:?}", audit.issues);
+
+    // Both effect and view handlers stay inert, even through the real door.
+    assert!(capture.effect(&MailEffect::Count).is_err());
+    assert!(
+        capture
+            .effect(&MailEffect::Fetch {
+                from: "capture".into()
+            })
+            .is_err()
+    );
+    assert!(capture.effect(&MailEffect::ShowSent).is_err());
+    capture.settle();
+    assert_eq!(capture.state(), Mailbox::default());
+    assert!(capture.effect_progress().is_empty());
+    assert!(
+        capture
+            .harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Showing inbox"),
+        "the inert view handler must not change local presentation"
+    );
+}
+
+#[test]
+fn history_renders_effect_controls_without_replaying_outside_consequences() {
+    DELIVERED.with(|delivered| delivered.borrow_mut().clear());
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    app.invoke(Mailbox::FETCHED.with("historical".into()))
+        .unwrap();
+    let version = app.versions().last().unwrap().hash;
+    app.invoke(Mailbox::SEND.with("delivered once".into()))
+        .unwrap();
+    app.settle();
+    let past = app.past_version(&[version]).unwrap();
+    assert_eq!(past.state().fetched, "historical");
+    let texts = past.texts();
+    assert!(texts.iter().any(|text| text == "Fetch"), "{texts:?}");
+    assert!(
+        texts.iter().any(|text| text == "Showing inbox"),
+        "{texts:?}"
+    );
+    assert_eq!(
+        DELIVERED.with(|delivered| delivered.borrow().clone()),
+        ["delivered once"],
+        "History must not replay an external drain"
+    );
+    assert!(app.state().outbox.is_empty());
+}
+
+#[test]
 fn a_projection_drains_each_queued_entry_once_on_every_change() {
     DELIVERED.with(|delivered| delivered.borrow_mut().clear());
     let mut app = TestApp::<MailApp>::new().unwrap();

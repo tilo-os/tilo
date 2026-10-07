@@ -532,7 +532,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// Ask the person to choose a file with the host's chooser (`request`
     /// is an Open request), then run `then` on the UI thread with its name
     /// and contents, or `None` when they cancelled. Works where files have
-    /// no paths, such as a browser page. The effect must be declared `job`.
+    /// no paths, such as a browser page. Bound reads with
+    /// [`PickRequest::max_contents_bytes`]; an oversized selection fails the
+    /// job before calling `then`. The effect must be declared `job`.
     pub fn choose_file(
         &mut self,
         request: PickRequest,
@@ -551,7 +553,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// [`Self::choose_file`] for a request that lets the person choose
     /// several files ([`PickRequest::open_multiple`]): `then` receives every
-    /// chosen file, none when they cancelled.
+    /// chosen file, none when they cancelled. A request contents limit applies
+    /// to the total bytes across the entire selection.
     pub fn choose_files(
         &mut self,
         request: PickRequest,
