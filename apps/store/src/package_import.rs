@@ -17,6 +17,7 @@ pub struct ImportedPackage {
     pub item: StoreItem,
     pub expected: InstallExpectation,
     pub registry: String,
+    pub local: Option<app_host::local_package::LocalReview>,
 }
 
 /// Review a package without installing or trusting anything it says about itself.
@@ -80,11 +81,81 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
                     reviewed
                 },
                 registry: registry_name.clone(),
+                local: None,
                 bytes: bytes.into(),
             });
         }
     }
     Err(ui::i18n!("store-package-offer-required"))
+}
+
+/// Review an unlisted archive through the launcher-issued host capability.
+///
+/// # Errors
+/// Returns an existing-trust refusal; never supplies a publisher trust key.
+pub fn review_local(
+    bytes: Vec<u8>,
+    host: &app_host::client::BlockingClient,
+) -> Result<ImportedPackage, String> {
+    if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
+        return Err(ui::i18n!("store-package-size-refused"));
+    }
+    let checked = host.review_local(&bytes)?;
+    let package = &checked.manifest.package;
+    let root = format!("tapp:{}", checked.root)
+        .parse::<tilo_app_package::PackageId>()
+        .map_err(|_| ui::i18n!("store-package-invalid"))?;
+    let publisher: [u8; 32] = hex::decode(&checked.publisher)
+        .map_err(|_| ui::i18n!("store-package-invalid"))?
+        .try_into()
+        .map_err(|_| ui::i18n!("store-package-invalid"))?;
+    let item = StoreItem {
+        id: package.id.clone(),
+        name: package.name.clone().unwrap_or_else(|| package.id.clone()),
+        description: ui::i18n!("store-package-local-description"),
+        tagline: String::new(),
+        supported_languages: Vec::new(),
+        categories: Vec::new(),
+        icon_url: None,
+        screenshot_urls: Vec::new(),
+        homepage_url: None,
+        source_url: None,
+        install_ref_path: None,
+        source: StoreSource::Tilo {
+            registry_name: ui::i18n!("store-package-local-source"),
+        },
+        trust: StoreTrust::TrustedAttestor,
+        versions: vec![crate::StoreItemVersion {
+            version: package.version.clone(),
+            released_at_unix: 0,
+            download_url: None,
+            root_hash_hex: Some(checked.root.clone()),
+            size_bytes: bytes.len() as u64,
+        }],
+        publisher_pubkey_hex: Some(checked.publisher.clone()),
+        installed: checked.installed_version.as_ref().map_or(
+            crate::InstalledState::Not,
+            |version| crate::InstalledState::Installed {
+                version: version.clone(),
+                available: package.version.clone(),
+                pinned: checked.pinned,
+                user_managed: checked.user_managed,
+            },
+        ),
+    };
+    Ok(ImportedPackage {
+        expected: InstallExpectation {
+            package_root: root,
+            publisher,
+            app_id: package.id.clone(),
+            version: package.version.clone(),
+            size_bytes: bytes.len() as u64,
+        },
+        item,
+        registry: String::new(),
+        local: Some(checked),
+        bytes: bytes.into(),
+    })
 }
 
 /// The ordinary file/content handoff, resolved only on the package worker.

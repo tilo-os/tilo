@@ -237,7 +237,7 @@ pub enum StoreEffect {
     },
     /// Review a local Tilo package.
     ///
-    /// Opening a package installs nothing. Its identity must match a verified repository offer.
+    /// Opening a package installs nothing. Its identity must match a verified repository offer or an existing trusted local attestation.
     #[effect(job)]
     ImportPackage {
         #[param("Sandbox-readable .tapp path; omit to choose a file")]

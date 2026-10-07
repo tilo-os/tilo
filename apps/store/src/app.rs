@@ -349,6 +349,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
 
 fn review_label(item: &StoreItem) -> String {
     match item.trust {
+        crate::StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
         crate::StoreTrust::PublisherSigned => {
             "Signature verified, no independent review".to_string()
         }

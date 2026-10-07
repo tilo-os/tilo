@@ -594,9 +594,14 @@ fn handle(
         }
         Request::ImportPackage(input) => {
             state.imported_package = None;
-            let reviewed = input
-                .read()
-                .and_then(|bytes| crate::package_import::review(bytes, &state.base_items));
+            let reviewed = input.read().and_then(|bytes| {
+                crate::package_import::review(bytes.clone(), &state.base_items).or_else(
+                    |catalogue_error| {
+                        let host = state.host.as_ref().ok_or(catalogue_error)?;
+                        crate::package_import::review_local(bytes, host)
+                    },
+                )
+            });
             let (status, detail, error) = match reviewed {
                 Ok(package) => {
                     let detail = DetailUpdate::ImportedPackage {
@@ -633,13 +638,19 @@ fn handle(
                 .ok_or_else(|| ui::i18n!("store-package-review-required"))
                 .and_then(|package| {
                     // Recheck immutable handed bytes against the latest independent offers.
-                    let current =
-                        crate::package_import::review(package.bytes.to_vec(), &state.base_items)?;
                     let host = state
                         .host
                         .as_ref()
                         .ok_or_else(|| ui::i18n!("store-package-unavailable"))?;
-                    host.install_offer(&current.registry, &current.expected)?;
+                    if let Some(review) = &package.local {
+                        host.install_local(&package.bytes, review)?;
+                    } else {
+                        let current = crate::package_import::review(
+                            package.bytes.to_vec(),
+                            &state.base_items,
+                        )?;
+                        host.install_offer(&current.registry, &current.expected)?;
+                    }
                     Ok(Finished::status(ui::i18n!("store-package-installed")))
                 });
             if result.is_ok() {
