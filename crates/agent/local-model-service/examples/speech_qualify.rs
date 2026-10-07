@@ -21,6 +21,25 @@ mod qualification {
         size: u64,
         digest: &str,
     ) -> Result<Zeroizing<Vec<u8>>, Box<dyn std::error::Error>> {
+        if let Some(cache) = std::env::var_os("TILO_SPEECH_QUALIFY_FIXTURE_CACHE") {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let path = std::path::Path::new(&cache);
+            if !path.is_absolute() {
+                return Err("qualification cache must be absolute".into());
+            }
+            let mut bytes = Zeroizing::new(Vec::new());
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path.join(digest))?
+                .take(size.saturating_add(1))
+                .read_to_end(&mut bytes)?;
+            if u64::try_from(bytes.len())? != size || hex::encode(Sha256::digest(&*bytes)) != digest
+            {
+                return Err("public qualification cache receipt mismatch".into());
+            }
+            return Ok(bytes);
+        }
         let client = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(180))
             .build()?;
@@ -184,6 +203,7 @@ mod qualification {
         model: &[u8],
         samples: &[i16],
         core: bool,
+        vocabulary: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let Fixture {
             _directory,
@@ -216,7 +236,7 @@ mod qualification {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
             let mut child = OwnedChild(command.spawn()?);
-            worker_stream(&mut child.0, samples, cancel)?;
+            worker_stream(&mut child.0, samples, cancel, vocabulary)?;
         }
         Ok(())
     }
@@ -225,6 +245,7 @@ mod qualification {
         child: &mut Child,
         samples: &[i16],
         cancel: bool,
+        vocabulary: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut input = child.stdin.take().ok_or("worker input")?;
         let mut output = child.stdout.take().ok_or("worker output")?;
@@ -245,9 +266,14 @@ mod qualification {
                 .map_err(|_| "worker reply deadline")
                 .and_then(|message| message.map_err(|_| "worker reply schema"))
         };
+        let configuration = if vocabulary {
+            br#"{"language":"en","vocabulary":["TiLo","Americans"]}"#.as_slice()
+        } else {
+            br#"{"language":"en"}"#.as_slice()
+        };
         FRAME.write(
             &mut input,
-            &request(RequestKind::Configure, 1, br#"{"language":"en"}"#),
+            &request(RequestKind::Configure, 1, configuration),
         )?;
         input.flush()?;
         match next()? {
@@ -280,7 +306,9 @@ mod qualification {
                 SpeechReply::Draft {
                     sequence: reply,
                     text,
-                } if reply == sequence && text.to_lowercase().contains("ask not") => {}
+                } if reply == sequence
+                    && text.to_lowercase().contains("ask not")
+                    && (!vocabulary || !text.to_lowercase().contains("tilo")) => {}
                 _ => return Err("worker draft journey failed".into()),
             }
             sequence = sequence.checked_add(1).ok_or("sequence")?;
@@ -290,7 +318,9 @@ mod qualification {
                 SpeechReply::Done {
                     sequence: reply,
                     text,
-                } if reply == sequence && text.to_lowercase().contains("country") => {}
+                } if reply == sequence
+                    && text.to_lowercase().contains("country")
+                    && (!vocabulary || !text.to_lowercase().contains("tilo")) => {}
                 _ => return Err("worker final journey failed".into()),
             }
             if !child.wait()?.success() {
@@ -324,7 +354,7 @@ mod qualification {
     fn special_mode(arguments: &[String]) -> Result<bool, Box<dyn std::error::Error>> {
         if arguments == ["--help"] {
             println!(
-                "speech_qualify [--worker[-small] | --worker-core[-small] | --hold-fixture REVIEWED_MODEL_FILE]"
+                "speech_qualify [--worker[-small] | --worker-core[-small] | --worker-vocabulary-core | --hold-fixture REVIEWED_MODEL_FILE]"
             );
             return Ok(true);
         }
@@ -378,6 +408,49 @@ mod qualification {
         Ok(false)
     }
 
+    fn qualify_vocabulary(
+        engine: &mut SpeechEngine,
+        samples: &[f32],
+        language: &std::ffi::CString,
+        baseline: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        engine
+            .set_vocabulary(&["TiLo".into(), "Americans".into()])
+            .map_err(|_| "public vocabulary configuration failed")?;
+        let biased = engine
+            .transcribe(samples, language)
+            .map_err(|_| "public vocabulary decode failed")?;
+        if !biased.to_lowercase().contains("ask not") || biased.to_lowercase().contains("tilo") {
+            return Err("public vocabulary hallucinated an unspoken hint".into());
+        }
+        if engine.set_vocabulary(&["<|endoftext|>".into()]).is_ok() {
+            return Err("decoder accepted a special-token hint".into());
+        }
+        let cleared = engine
+            .transcribe(samples, language)
+            .map_err(|_| "cleared vocabulary decode failed")?;
+        if cleared != baseline {
+            return Err("failed vocabulary replacement retained prior bias".into());
+        }
+        Ok(())
+    }
+
+    fn languages(
+        engine: &SpeechEngine,
+    ) -> Result<(std::ffi::CString, std::ffi::CString), Box<dyn std::error::Error>> {
+        let en = engine.language("en").map_err(|_| "English unavailable")?;
+        let auto = engine
+            .language("auto")
+            .map_err(|_| "auto language unavailable")?;
+        if engine.language("yue").is_ok() || engine.language("en-US").is_ok() {
+            return Err("unsupported language accepted".into());
+        }
+        engine
+            .language("fr")
+            .map_err(|_| "multilingual model unavailable")?;
+        Ok((en, auto))
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
         if special_mode(&arguments)? {
@@ -409,11 +482,15 @@ mod qualification {
                 .collect::<Vec<_>>(),
         );
         drop(wave);
-        if arguments == ["--worker"] || arguments == ["--worker-core"] || small {
+        let vocabulary = arguments == ["--worker-vocabulary-core"];
+        if arguments == ["--worker"] || arguments == ["--worker-core"] || small || vocabulary {
             worker_journey(
                 &model,
                 &pcm,
-                arguments == ["--worker-core"] || arguments == ["--worker-core-small"],
+                arguments == ["--worker-core"]
+                    || arguments == ["--worker-core-small"]
+                    || vocabulary,
+                vocabulary,
             )?;
         } else if !arguments.is_empty() {
             return Err("expected no arguments, --worker[-small] or --worker-core[-small]".into());
@@ -425,16 +502,7 @@ mod qualification {
         drop(model);
         engine.prepare().map_err(|_| "decoder allocation failed")?;
         let load_ms = start.elapsed().as_millis();
-        let en = engine.language("en").map_err(|_| "English unavailable")?;
-        let auto = engine
-            .language("auto")
-            .map_err(|_| "auto language unavailable")?;
-        if engine.language("yue").is_ok() || engine.language("en-US").is_ok() {
-            return Err("unsupported language accepted".into());
-        }
-        engine
-            .language("fr")
-            .map_err(|_| "multilingual model unavailable")?;
+        let (en, auto) = languages(&engine)?;
         let prefix = samples.get(..5 * SAMPLE_RATE).ok_or("short fixture")?;
         let start = Instant::now();
         let draft = engine
@@ -453,6 +521,9 @@ mod qualification {
             || !lower.contains("do for")
         {
             return Err("public speech recognition journey failed".into());
+        }
+        if vocabulary {
+            qualify_vocabulary(&mut engine, &samples, &en, &text)?;
         }
         let detected = engine
             .transcribe(&samples, &auto)

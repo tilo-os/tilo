@@ -69,11 +69,13 @@ pub fn serve(
     output: &mut impl Write,
 ) -> Result<(), SpeechError> {
     let (model, revision, mut bytes) = speech_model_bytes(root, verified)?;
-    let frame = FRAME
-        .with_max_len(1033)
-        .read(input)
-        .map_err(|_| SpeechError::Protocol)?
-        .ok_or(SpeechError::WorkerStopped)?;
+    let frame = zeroize::Zeroizing::new(
+        FRAME
+            .with_max_len(super::MAX_CONFIG_BYTES + 9)
+            .read(input)
+            .map_err(|_| SpeechError::Protocol)?
+            .ok_or(SpeechError::WorkerStopped)?,
+    );
     let mut session = SpeechInput::default();
     let (kind, payload) = session.accept(&frame)?;
     if kind != RequestKind::Configure {
@@ -81,6 +83,7 @@ pub fn serve(
     }
     let config: SpeechConfig =
         serde_json::from_slice(payload).map_err(|_| SpeechError::Protocol)?;
+    drop(frame);
     // The exact signed object is now in memory; all files are closed before
     // native parsing. Unsupported confinement fails before Ready and capture.
     let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(2));
@@ -88,8 +91,10 @@ pub fn serve(
     let mut engine = SpeechEngine::load(&mut bytes)?;
     drop(bytes);
     engine.set_threads(threads)?;
+    engine.set_vocabulary(&config.vocabulary)?;
     engine.prepare()?;
     let language = engine.language(&config.language)?;
+    drop(config);
     let mut recognition = SpeechRecognition::default();
     reply(
         output,

@@ -2416,6 +2416,7 @@ dictation-unavailable = Local dictation is unavailable. No text was inserted.
 dictation-model-required = Install an approved local speech model before using dictation.
 dictation-language-unavailable = This speech model does not support the requested language.
 dictation-microphone-unavailable = Microphone access is unavailable. Check your input device.
+dictation-vocabulary-unavailable = Your personal dictionary changed or became unavailable. Dictation stopped; start a new session.
 dictation-audio-interrupted = Microphone audio was interrupted. No text was inserted.
 dictation-live-preview = Draft · { $text }
 dictation-open-settings = Set up
@@ -2474,3 +2475,6 @@ task-review-cancel = Cancel task run
 task-review-retry = Retry task
 task-review-status = Inspect task review availability
 task-review-provider = Task review
+
+dictation-vocabulary-changed = Dictation stopped because your personal dictionary changed. Start a new session to use the updated words.
+dictation-vocabulary-draft-retained = Your personal dictionary changed. Dictation has stopped. You can copy the latest draft; it may be incomplete.

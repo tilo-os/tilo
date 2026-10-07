@@ -8,6 +8,7 @@ pub use cleanup::clean_final;
 pub const SAMPLE_RATE: usize = 16_000;
 pub const MAX_SAMPLES: usize = SAMPLE_RATE * 120;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
+pub const MAX_CONFIG_BYTES: usize = 32 * 1024;
 pub const FRAME: wire_frame::Framing =
     wire_frame::Framing::little_endian(64 * 1024 + 9).reject_empty();
 /// Status contains no audio, transcript, path or model-controlled message.
@@ -47,10 +48,13 @@ pub enum SpeechReply {
     },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub struct SpeechConfig {
     pub language: String,
+    /// Accepted spellings only, never instructions or transcript replacements.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vocabulary: Vec<String>,
 }
 
 /// Requests are ordered on a private byte pipe. Audio frames contain S16LE;

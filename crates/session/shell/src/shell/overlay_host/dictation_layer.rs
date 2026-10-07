@@ -264,6 +264,9 @@ impl DictationSurface {
                     "dictation-transcript-copied"
                 } else {
                     match reason {
+                        crate::compositor::dictation::RecoveryReason::VocabularyChanged => {
+                            "dictation-vocabulary-draft-retained"
+                        }
                         crate::compositor::dictation::RecoveryReason::TooLong => {
                             "dictation-transcript-retained"
                         }
@@ -364,6 +367,8 @@ fn error_key(error: crate::compositor::dictation::runtime::RuntimeError) -> &'st
         E::Worker(S::ModelUnavailable | S::ModelReceipt) => "dictation-model-required",
         E::Worker(S::UnsupportedLanguage) => "dictation-language-unavailable",
         E::MicrophoneUnavailable => "dictation-microphone-unavailable",
+        E::VocabularyUnavailable => "dictation-vocabulary-unavailable",
+        E::VocabularyChanged => "dictation-vocabulary-changed",
         E::AudioDiscontinuity => "dictation-audio-interrupted",
         E::TimedOut => "dictation-timeout",
         _ => "dictation-unavailable",

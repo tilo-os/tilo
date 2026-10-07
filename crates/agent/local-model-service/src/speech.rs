@@ -21,8 +21,8 @@ pub mod worker;
 pub use recognition::SpeechRecognition;
 
 pub use agent_provider_config::speech::{
-    FRAME, MAX_SAMPLES, MAX_TEXT_BYTES, RequestKind, SAMPLE_RATE, SpeechConfig, SpeechError,
-    SpeechReply, request,
+    FRAME, MAX_CONFIG_BYTES, MAX_SAMPLES, MAX_TEXT_BYTES, RequestKind, SAMPLE_RATE, SpeechConfig,
+    SpeechError, SpeechReply, request,
 };
 const MAX_MODEL_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -129,6 +129,7 @@ unsafe extern "C" {
     fn tilo_speech_load(bytes: *mut u8, length: usize) -> *mut c_void;
     fn tilo_speech_ready(context: *mut c_void) -> bool;
     fn tilo_speech_threads(context: *mut c_void, threads: i32) -> bool;
+    fn tilo_speech_vocabulary(context: *mut c_void, text: *const c_char, length: usize) -> bool;
     fn tilo_speech_free(context: *mut c_void);
     fn tilo_speech_accepts(context: *mut c_void, language: *const c_char) -> bool;
     fn tilo_speech_transcribe(
@@ -146,6 +147,47 @@ unsafe extern "C" {
 /// process even while native inference is busy. No Rust callback is installed.
 pub struct SpeechEngine(NonNull<c_void>);
 impl SpeechEngine {
+    /// Configure bounded native vocabulary tokens without rewriting output.
+    /// Set before starting a new recognition session. Failed replacement clears
+    /// the old binding; do not reuse a recognition draft cache across changes.
+    /// # Errors
+    /// Invalid hints, oversized input or native tokenizer failure.
+    pub fn set_vocabulary(&mut self, hints: &[String]) -> Result<(), SpeechError> {
+        // SAFETY: the exclusively owned live context synchronously wipes its
+        // token array; the static NUL string is valid even for empty input.
+        if !unsafe { tilo_speech_vocabulary(self.0.as_ptr(), c"".as_ptr(), 0) } {
+            return Err(SpeechError::Protocol);
+        }
+        if hints.len() > 256 {
+            return Err(SpeechError::Protocol);
+        }
+        let mut text = Zeroizing::new(String::new());
+        for hint in hints {
+            if hint.is_empty()
+                || hint.chars().count() > 128
+                || !hint.chars().any(char::is_alphabetic)
+                || hint.chars().any(|c| c.is_control() || c.is_whitespace())
+                || hint.contains("<|")
+                || hint.contains("|>")
+            {
+                return Err(SpeechError::Protocol);
+            }
+            if text.len().saturating_add(hint.len()).saturating_add(1) > 16 * 1024 {
+                return Err(SpeechError::Protocol);
+            }
+            text.push_str(hint);
+            text.push('\n');
+        }
+        let length = text.len();
+        text.push('\0');
+        // SAFETY: bounded, NUL-terminated UTF-8 remains live for this synchronous
+        // call. The native context stores only its bounded owned token array.
+        if unsafe { tilo_speech_vocabulary(self.0.as_ptr(), text.as_ptr().cast(), length) } {
+            Ok(())
+        } else {
+            Err(SpeechError::Protocol)
+        }
+    }
     /// Load already receipt-checked model bytes synchronously in the worker.
     /// # Errors
     /// Rejects invalid headers, oversized models or failed native loading.
@@ -318,7 +360,7 @@ impl SpeechInput {
                     .map(|pair| f32::from(i16::from_le_bytes(*pair)) / 32768.0),
             );
         } else if (kind != RequestKind::Configure && !payload.is_empty())
-            || (kind == RequestKind::Configure && payload.len() > 1024)
+            || (kind == RequestKind::Configure && payload.len() > MAX_CONFIG_BYTES)
         {
             return Err(SpeechError::Protocol);
         }

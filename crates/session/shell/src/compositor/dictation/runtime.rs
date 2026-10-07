@@ -12,9 +12,11 @@ use std::time::{Duration, Instant};
 use agent_provider_config::speech::{
     FRAME, MAX_TEXT_BYTES, RequestKind, SpeechConfig, SpeechError, SpeechReply, request,
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use super::super::audio_capture::AudioCapture;
+
+pub mod vocabulary;
 
 const START_WINDOW: Duration = Duration::from_secs(15);
 const RECORD_WINDOW: Duration = Duration::from_secs(105);
@@ -31,6 +33,8 @@ const MAX_REPLY: usize = 64 * 1024 + 9;
 pub enum RuntimeError {
     Worker(SpeechError),
     MicrophoneUnavailable,
+    VocabularyUnavailable,
+    VocabularyChanged,
     AudioDiscontinuity,
     TimedOut,
     Protocol,
@@ -68,6 +72,16 @@ impl Runtime {
     /// # Errors
     /// Rejects invalid languages or an unavailable actor thread.
     pub fn start(language: &str) -> Result<Self, RuntimeError> {
+        Self::start_with_vocabulary(language, None)
+    }
+    /// Use only a host-delivered reader for the authenticated local person.
+    /// Binding replacement must cancel the existing compositor session too.
+    /// # Errors
+    /// Invalid language or unavailable actor; reader failures arrive asynchronously.
+    pub fn start_with_vocabulary(
+        language: &str,
+        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+    ) -> Result<Self, RuntimeError> {
         let mut command = Command::new("/usr/bin/tilo-speech-worker");
         command.env_clear();
         // These select the same per-user store as the model manager; trust
@@ -79,9 +93,17 @@ impl Runtime {
                 command.env(key, value);
             }
         }
-        Self::spawn(command, language)
+        Self::spawn_with_vocabulary(command, language, vocabulary)
     }
-    fn spawn(mut command: Command, language: &str) -> Result<Self, RuntimeError> {
+    #[cfg(test)]
+    fn spawn(command: Command, language: &str) -> Result<Self, RuntimeError> {
+        Self::spawn_with_vocabulary(command, language, None)
+    }
+    fn spawn_with_vocabulary(
+        mut command: Command,
+        language: &str,
+        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+    ) -> Result<Self, RuntimeError> {
         if language.is_empty()
             || language.len() > 16
             || !language
@@ -95,10 +117,7 @@ impl Runtime {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         bounded_command::own_process_tree(&mut command);
-        let config = serde_json::to_vec(&SpeechConfig {
-            language: language.into(),
-        })
-        .map_err(|_| RuntimeError::Protocol)?;
+        let language = language.to_owned();
         let (commands, receiver) = sync_channel(2);
         let (sender, events) = sync_channel(8);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -106,7 +125,29 @@ impl Runtime {
         let owner = std::thread::Builder::new()
             .name("tilo-dictation".into())
             .spawn(move || {
-                let result = run(&mut command, &config, &receiver, &sender, &canceled);
+                let result = (|| {
+                    let mut vocabulary = vocabulary
+                        .map(|reader| vocabulary::VocabularyLease::capture(reader, &language))
+                        .transpose()
+                        .map_err(|_| RuntimeError::VocabularyUnavailable)?;
+                    let config = SpeechConfig {
+                        language,
+                        vocabulary: vocabulary
+                            .as_ref()
+                            .map_or_else(Vec::new, |lease| lease.hints().to_vec()),
+                    };
+                    let bytes = serde_json::to_vec(&config).map_err(|_| RuntimeError::Protocol)?;
+                    drop(config);
+                    let mut config = Zeroizing::new(bytes);
+                    run(
+                        &mut command,
+                        &mut config,
+                        &receiver,
+                        &sender,
+                        &canceled,
+                        &mut vocabulary,
+                    )
+                })();
                 if let Err(error) = result {
                     let _ = sender.try_send(RuntimeEvent::Stopped(error));
                 }
@@ -342,10 +383,11 @@ fn event(sender: &SyncSender<RuntimeEvent>, event: RuntimeEvent) -> Result<(), R
 }
 fn run(
     command: &mut Command,
-    config: &[u8],
+    config: &mut Zeroizing<Vec<u8>>,
     controls: &Receiver<Control>,
     events: &SyncSender<RuntimeEvent>,
     cancel: &AtomicBool,
+    vocabulary: &mut Option<vocabulary::VocabularyLease>,
 ) -> Result<(), RuntimeError> {
     let result;
     {
@@ -360,6 +402,7 @@ fn run(
         nonblocking(output.as_raw_fd())?;
         let mut pipe = Pipe::new();
         pipe.enqueue(RequestKind::Configure, config)?;
+        config.zeroize();
         result = pump_io(
             &mut pipe,
             &mut ActorIo {
@@ -368,6 +411,7 @@ fn run(
                 controls,
                 events,
                 cancel,
+                vocabulary,
             },
         );
         // These pipe owners drop before Process kills/reaps. The capture has
@@ -384,6 +428,16 @@ struct ActorIo<'a> {
     controls: &'a Receiver<Control>,
     events: &'a SyncSender<RuntimeEvent>,
     cancel: &'a AtomicBool,
+    vocabulary: &'a mut Option<vocabulary::VocabularyLease>,
+}
+fn check_vocabulary(io: &mut ActorIo<'_>) -> Result<(), RuntimeError> {
+    if let Some(vocabulary) = io.vocabulary.as_mut() {
+        vocabulary.check().map_err(|error| match error {
+            vocabulary::LeaseError::Changed => RuntimeError::VocabularyChanged,
+            vocabulary::LeaseError::Unavailable => RuntimeError::VocabularyUnavailable,
+        })?;
+    }
+    Ok(())
 }
 fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError> {
     let mut microphone: Option<AudioCapture> = None;
@@ -396,9 +450,14 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             .saturating_add(FINISH_WINDOW),
     );
     let mut next_draft = later(DRAFT_INTERVAL);
+    let mut next_vocabulary_check = Instant::now();
     loop {
         if io.cancel.load(Ordering::Acquire) {
             return Err(RuntimeError::Canceled);
+        }
+        if Instant::now() >= next_vocabulary_check {
+            check_vocabulary(io)?;
+            next_vocabulary_check = later(Duration::from_millis(250));
         }
         if Instant::now() >= deadline && microphone.is_some() && !finishing {
             if let Some(capture) = microphone.as_mut() {
@@ -414,6 +473,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
         }
         match io.controls.try_recv() {
             Ok(Control::Capture) if ready && microphone.is_none() && !finishing => {
+                check_vocabulary(io)?;
                 microphone = Some(
                     AudioCapture::start_dictation_if_active(io.cancel)
                         .map_err(|_| RuntimeError::MicrophoneUnavailable)?,
@@ -429,6 +489,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 event(io.events, RuntimeEvent::Listening)?;
             }
             Ok(Control::Finish) if ready && !finishing => {
+                check_vocabulary(io)?;
                 // Drain the complete final chunk before stopping capture.
                 if let Some(capture) = microphone.as_mut() {
                     audio(pipe, capture)?;
@@ -456,6 +517,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
         pipe.flush(io.output)?;
         if let Some(reply) = pipe.read(io.input)? {
             pipe.accept(&reply)?;
+            check_vocabulary(io)?;
             match reply {
                 SpeechReply::Ready { .. } => {
                     ready = true;
@@ -483,6 +545,23 @@ fn audio(pipe: &mut Pipe, capture: &mut AudioCapture) -> Result<(), RuntimeError
         pipe.enqueue(RequestKind::Audio, chunk)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn dictionary_test_peer(
+    reader: Arc<dyn settings_store::personal_dictionary::Vocabulary>,
+    pid: &std::path::Path,
+    completes: bool,
+) -> Runtime {
+    let mode = if completes {
+        "dictionary_repeated"
+    } else {
+        "dictionary_slow"
+    };
+    let peer =
+        Runtime::spawn_with_vocabulary(tests::peer_command(mode, pid), "en", Some(reader)).unwrap();
+    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    peer
 }
 
 #[cfg(test)]
@@ -522,6 +601,7 @@ def reply(value):
     sys.stdout.buffer.flush()
 k, s, b = read()
 assert k == 0 and s == 1 and json.loads(b)['language'] == 'en'
+if sys.argv[1].startswith('dictionary_'): assert json.loads(b)['vocabulary'] == ['TiLo']
 reply(dict(kind='ready', sequence=2 if sys.argv[1] == 'replay' else s, model='fixture', revision='1'))
 if sys.argv[1] == 'backpressure':
     total = 0
@@ -536,9 +616,9 @@ if sys.argv[1] == 'backpressure':
     raise SystemExit(0)
 k, s, b = read()
 assert k == 3 and b == b''
-if sys.argv[1] == 'slow': time.sleep(60)
+if sys.argv[1] in ('slow', 'dictionary_slow'): time.sleep(60)
 if sys.argv[1] == 'delayed': time.sleep(18)
-if sys.argv[1] in ('repeated', 'repair'):
+if sys.argv[1] in ('repeated', 'repair', 'dictionary_repeated'):
     deadline = time.monotonic() + 10
     while not os.path.exists(sys.argv[2] + '.release'):
         assert time.monotonic() < deadline
@@ -546,7 +626,7 @@ if sys.argv[1] in ('repeated', 'repair'):
 reply(dict(kind='done', sequence=s, text='Let me grab two, uh, no, three of these' if sys.argv[1] == 'repair' else 'unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
 ";
 
-    fn peer_command(mode: &str, pid: &std::path::Path) -> Command {
+    pub(super) fn peer_command(mode: &str, pid: &std::path::Path) -> Command {
         let mut command = Command::new("python3");
         command.args(["-c", PEER, mode]);
         command.arg(pid);
@@ -566,6 +646,51 @@ reply(dict(kind='done', sequence=s, text='Let me grab two, uh, no, three of thes
             }
             assert!(Instant::now() < deadline, "actor must report a result");
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn actual_pipe_dictionary_removal_revocation_and_service_drop_reap_busy_worker() {
+        use settings_store::personal_dictionary::{Edit, Service, Word};
+        let directory = tempfile::tempdir().unwrap();
+        for mode in ["remove", "rebind", "drop"] {
+            let service = Service::new(directory.path().join(mode)).unwrap();
+            let reader = service.bind(Some([7; 32])).unwrap();
+            let word = Word::new("TiLo", None).unwrap();
+            let snapshot = service.edit(&reader, 0, Edit::Add(word.clone())).unwrap();
+            let pid = directory.path().join(format!("{mode}.pid"));
+            let mut runtime = Runtime::spawn_with_vocabulary(
+                peer_command("dictionary_slow", &pid),
+                "en",
+                Some(Arc::new(reader.clone())),
+            )
+            .unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+            runtime.finish().unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+            match mode {
+                "remove" => {
+                    service
+                        .edit(&reader, snapshot.revision, Edit::Remove(word))
+                        .unwrap();
+                }
+                "rebind" => {
+                    service.bind(None);
+                    service.bind(Some([7; 32]));
+                }
+                _ => drop(service),
+            }
+            let expected = if mode == "remove" {
+                RuntimeError::VocabularyChanged
+            } else {
+                RuntimeError::VocabularyUnavailable
+            };
+            assert!(matches!(next(&runtime), RuntimeEvent::Stopped(error) if error == expected));
+            reaped(&mut runtime, &pid);
+            assert!(
+                runtime.poll().is_none(),
+                "retired vocabulary cannot deliver late words"
+            );
         }
     }
 

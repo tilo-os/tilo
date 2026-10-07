@@ -2420,6 +2420,7 @@ dictation-unavailable = Lokales Diktat nicht verfügbar. Kein Text wurde eingef�
 dictation-model-required = Vor dem Diktat ein freigegebenes lokales Sprachmodell installieren.
 dictation-language-unavailable = Das Sprachmodell unterstützt die gewählte Sprache nicht.
 dictation-microphone-unavailable = Mikrofon nicht verfügbar. Eingabegerät prüfen.
+dictation-vocabulary-unavailable = Dein persönliches Wörterbuch wurde geändert oder ist nicht verfügbar. Das Diktat wurde beendet; starte ein neues Diktat.
 dictation-audio-interrupted = Mikrofonaufnahme unterbrochen. Kein Text wurde eingefügt.
 dictation-live-preview = Entwurf · { $text }
 dictation-open-settings = Einrichten
@@ -2477,3 +2478,6 @@ task-review-cancel = Aufgabenlauf abbrechen
 task-review-retry = Aufgabe erneut versuchen
 task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
 task-review-provider = Aufgabenprüfung
+
+dictation-vocabulary-changed = Das Diktat wurde beendet, weil sich dein persönliches Wörterbuch geändert hat. Starte ein neues Diktat, um die aktualisierten Wörter zu verwenden.
+dictation-vocabulary-draft-retained = Dein persönliches Wörterbuch hat sich geändert. Das Diktat wurde beendet. Du kannst den letzten Entwurf kopieren; er ist möglicherweise unvollständig.

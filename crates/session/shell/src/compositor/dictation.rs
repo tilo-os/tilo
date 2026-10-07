@@ -22,6 +22,7 @@ use super::state::State;
 use super::text_commit::{DELIVERY_WINDOW, LentInputMethod, Progress};
 
 pub(crate) mod frontend;
+pub(crate) mod host;
 pub mod runtime;
 mod speech;
 pub use speech::{PhononTranscript, SpeechError, SpeechUpdate};
@@ -83,6 +84,7 @@ pub enum DictationError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryReason {
+    VocabularyChanged,
     TooLong,
     Rejected,
     UnknownDelivery,
@@ -184,6 +186,7 @@ pub(crate) struct Dictation {
     native_delivery: Option<NativeDelivery>,
     field_start: Option<FieldStart>,
     recovery: Option<Recovery>,
+    vocabulary: Option<std::sync::Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
 }
 
 impl Dictation {
@@ -197,6 +200,16 @@ impl Dictation {
 }
 
 impl State {
+    /// The authenticated session host supplies the reader, never an app or model.
+    /// Rebinding invalidates queued words and original-field leases before any
+    /// new person's reader can be used. Filesystem work stays on the actor.
+    pub fn set_dictation_vocabulary(
+        &mut self,
+        reader: Option<std::sync::Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+    ) {
+        self.discard_dictation_recovery();
+        self.text_commit.dictation.vocabulary = reader;
+    }
     /// A private live hypothesis for the original local input session only.
     /// It is not workspace state and must not enter diagnostics or history.
     pub(crate) fn dictation_preview(&self, id: SessionId) -> Option<&str> {
@@ -704,6 +717,29 @@ impl State {
         }
     }
 
+    /// An ordinary dictionary edit stops recognition but does not silently
+    /// discard words already shown to this person. Never insert a partial draft.
+    fn retain_dictionary_edit_draft(&mut self, id: SessionId, now: Instant) {
+        let text = self
+            .text_commit
+            .dictation
+            .session
+            .as_mut()
+            .filter(|session| session.id == id)
+            .map(|session| std::mem::take(&mut session.draft));
+        self.cancel_active_dictation();
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            self.text_commit.dictation.recovery = Some(Recovery {
+                reason: RecoveryReason::VocabularyChanged,
+                id,
+                text,
+                deadline: now.checked_add(RECOVERY_WINDOW).unwrap_or(now),
+                copied: false,
+                copy_failed: false,
+            });
+        }
+    }
+
     pub(crate) fn native_dictation_start_required(&mut self, id: SessionId, now: Instant) -> bool {
         self.validate_dictation(id, now).is_ok()
             && self
@@ -835,8 +871,11 @@ impl State {
         if self.text_commit.dictation.recognition.is_some() {
             return Err(DictationError::Busy);
         }
-        let actor =
-            runtime::Runtime::start(language).map_err(|_| DictationError::RecognizerUnavailable)?;
+        let actor = runtime::Runtime::start_with_vocabulary(
+            language,
+            self.text_commit.dictation.vocabulary.clone(),
+        )
+        .map_err(|_| DictationError::RecognizerUnavailable)?;
         self.text_commit.dictation.last_failure = None;
         self.text_commit.dictation.recognition = Some(Recognition {
             id,
@@ -1011,7 +1050,11 @@ impl State {
                     if error != runtime::RuntimeError::Canceled {
                         self.text_commit.dictation.last_failure = Some(error);
                     }
-                    self.cancel_active_dictation();
+                    if error == runtime::RuntimeError::VocabularyChanged {
+                        self.retain_dictionary_edit_draft(recognition.id, now);
+                    } else {
+                        self.cancel_active_dictation();
+                    }
                     recognition.phase = DictationStatus::Stopping;
                     Ok(())
                 }
