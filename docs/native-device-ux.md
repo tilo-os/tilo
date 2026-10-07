@@ -135,15 +135,15 @@ real authenticated connector messages and verifies both peers' geometry.
 
 ## Revision-bound peer dragging verification
 
-Run these through the remote build runner:
+Run these focused checks with plain cargo or any cargo drop-in:
 
 ```sh
-rcargo test --locked -p shell --lib display_drag_
-rcargo test --locked -p shell --lib display_move_requires_settings_owner_and_an_unlocked_session
-rcargo test --locked -p settings --lib peer_drag_
-rcargo test --locked -p tilo-ui --lib widget::display_arrangement::tests
-rcargo test --locked -p tilo-ui --lib display_move_reply_matches_exact_request_and_disconnect_never_replays_it
-rcargo check --locked -p shell -p settings --tests
+cargo test --locked -p shell --lib display_drag_
+cargo test --locked -p shell --lib display_move_requires_settings_owner_and_an_unlocked_session
+cargo test --locked -p settings --lib peer_drag_
+cargo test --locked -p tilo-ui --lib widget::display_arrangement::tests
+cargo test --locked -p tilo-ui --lib display_move_reply_matches_exact_request_and_disconnect_never_replays_it
+cargo check --locked -p shell -p settings --tests
 ```
 
 These synthetic peers and mounted apps exercise source/UI contracts without
