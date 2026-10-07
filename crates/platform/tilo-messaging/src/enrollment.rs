@@ -1,0 +1,121 @@
+//! Unpublished first-account setup. This loan grants no account editing,
+//! credential decision, message route or storage access to an application.
+use crate::{LinkedAccount, Pairing, PairingFuture, SendError, ServiceAccount};
+use std::{future::Future, pin::Pin, sync::Arc};
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EnrollmentPhase {
+    Empty,
+    Linking,
+    Review,
+    AwaitingPermission,
+    Ready,
+    Interrupted,
+}
+/// Ephemeral self-identity review. Neither provider proof nor credentials are
+/// serialized into the app's replicated resource or its action results.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EnrollmentReview {
+    pub account: ServiceAccount,
+    pub generation: u64,
+    pub scope: String,
+    pub number: Option<String>,
+}
+impl std::fmt::Debug for EnrollmentReview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EnrollmentReview(<private>)")
+    }
+}
+pub type EnrollmentReviewFuture =
+    Pin<Box<dyn Future<Output = Result<EnrollmentReview, SendError>> + Send + 'static>>;
+pub type EnrollmentApprovalFuture =
+    Pin<Box<dyn Future<Output = Result<String, SendError>> + Send + 'static>>;
+pub trait EnrollmentHost: Send + Sync {
+    fn begin(&self, service: String) -> PairingFuture;
+    fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture;
+    /// Propose only. The original protected Passwords owner must separately
+    /// decide permission before publication, activation or any message write.
+    fn review(&self, account: ServiceAccount, display_name: String) -> EnrollmentApprovalFuture;
+    fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase;
+    fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount>;
+    fn cancel(&self, account: &ServiceAccount);
+}
+#[derive(Clone)]
+pub struct EnrollmentClient {
+    principal: String,
+    host: Arc<dyn EnrollmentHost>,
+}
+impl EnrollmentClient {
+    pub fn new(principal: String, host: Arc<dyn EnrollmentHost>) -> Self {
+        Self { principal, host }
+    }
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
+    /// # Errors
+    /// Refuses unsupported service selections and malformed private results.
+    pub async fn begin(&self, service: String) -> Result<Pairing, SendError> {
+        if !matches!(service.as_str(), "signal" | "whatsapp" | "sms") {
+            return Err(SendError::InvalidRequest);
+        }
+        let private = self.host.begin(service.clone()).await?;
+        if private.account.service != service
+            || private.account.account.is_empty()
+            || private.generation == 0
+            || private.attempt.is_empty()
+            || private.attempt.len() > 512
+            || private.qr_bytes().is_empty()
+            || private.qr_bytes().len() > 4096
+        {
+            self.host.cancel(&private.account);
+            return Err(SendError::Revoked);
+        }
+        Ok(private)
+    }
+    /// # Errors
+    /// Refuses another unpublished account or malformed self-identity evidence.
+    pub async fn finish(
+        &self,
+        account: ServiceAccount,
+        attempt: String,
+    ) -> Result<EnrollmentReview, SendError> {
+        if attempt.is_empty() || attempt.len() > 512 || attempt.chars().any(char::is_control) {
+            return Err(SendError::InvalidRequest);
+        }
+        let result = self.host.finish(account.clone(), attempt).await?;
+        if result.account != account
+            || result.generation == 0
+            || result.scope.is_empty()
+            || result.scope.len() > 512
+        {
+            self.host.cancel(&account);
+            return Err(SendError::Revoked);
+        }
+        Ok(result)
+    }
+    /// # Errors
+    /// Refuses invalid labels or a retired/changed original review.
+    pub async fn review(
+        &self,
+        account: ServiceAccount,
+        display_name: String,
+    ) -> Result<String, SendError> {
+        if display_name.trim().is_empty()
+            || display_name.len() > 256
+            || display_name.chars().any(char::is_control)
+        {
+            return Err(SendError::InvalidRequest);
+        }
+        self.host.review(account, display_name).await
+    }
+    pub fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
+        self.host.phase(account)
+    }
+    pub fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount> {
+        self.host
+            .linked(account)
+            .filter(|linked| linked.account == *account && linked.generation > 0)
+    }
+    pub fn cancel(&self, account: &ServiceAccount) {
+        self.host.cancel(account);
+    }
+}

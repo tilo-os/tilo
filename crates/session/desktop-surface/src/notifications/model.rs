@@ -75,6 +75,11 @@ pub struct ScheduledNotificationTarget {
     pub room: String,
     pub token: String,
     pub occurrence_ms: i64,
+    #[serde(default)]
+    pub calendar_alarm: bool,
+    /// Viewer-local state; the scheduler validates the immutable occurrence.
+    #[serde(default)]
+    pub snoozed: bool,
     pub uri: String,
 }
 

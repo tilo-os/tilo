@@ -1,0 +1,34 @@
+#!/bin/bash
+# A read-only status screen, never an unauthenticated root shell.
+set -uo pipefail
+
+show_session_recovery() {
+  local command_root="$1"
+  "$command_root/plymouth" quit 2>/dev/null || true
+  "$command_root/chvt" 2 2>/dev/null || true
+  printf '\033[2J\033[H\033[1mTilo could not start the desktop\033[0m\n\n'
+  printf 'Your disk is unlocked. This screen is a recovery status page.\n'
+  if "$command_root/systemctl" is-active --quiet sshd.service; then
+    printf 'Recovery SSH is running. Connect from your other computer using your recovery key.\n'
+  else
+    printf 'Recovery SSH is not running. Local login or returning to Windows is available.\n'
+  fi
+  printf '\nPress Ctrl+Alt+F3 for an authenticated console login.\n'
+  printf 'Use Ctrl+Alt+Delete to restart. For dual boot, choose Windows Boot Manager\n'
+  printf 'in the firmware boot menu if needed.\n\n'
+  "$command_root/systemctl" show tilo-firstboot-user.service greetd.service \
+    --property=Id --property=ActiveState --property=SubState --property=Result \
+    --no-pager 2>/dev/null || true
+  printf '\nRecent startup errors:\n'
+  # Print only known non-secret state messages, never arbitrary service output
+  # (which may include paths, credentials, or application data).
+  "$command_root/journalctl" -b -u tilo-firstboot-user.service -u greetd.service \
+    -n 30 --no-pager -o cat 2>/dev/null \
+    | grep -E '^(tilo-firstboot-user: initial graphical session account is unavailable; refusing to start greetd|tilo-firstboot-user: refusing unsafe credential seed /etc/tilo/install-user.conf|greetd.service: (Main process exited|Failed with result)|tilo-firstboot-user.service: (Main process exited|Failed with result))' \
+    | tail -n 5 || true
+}
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+show_session_recovery /usr/bin

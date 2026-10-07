@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,8 @@ from unittest.mock import patch
 import textwrap
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT/'tools/policy'))
+from check_image_builder_inputs import context_copies, logical_lines
 WORKFLOW = (ROOT/'.forgejo/workflows/build-image.yml').read_text()
 MATRIX_STEP = WORKFLOW.split('        id: matrix\n', 1)[1].split('\n      - name:', 1)[0]
 PLAN = textwrap.dedent(MATRIX_STEP.split('        run: |\n', 1)[1])
@@ -85,6 +88,98 @@ class SignedBoard(unittest.TestCase):
             self.assertIn('app inputs changed', result.stdout)
             self.assertEqual(output.read_text(), 'TILO_PREBUILT_APPS=0\n')
 
+    def test_board_sparse_context_contains_every_actual_copy_input(self):
+        recipe = ROOT/'os/Containerfile.board'
+        patterns = [line.strip() for line in recipe.with_name(recipe.name+'.dockerignore').read_text().splitlines()
+                    if line.strip() and not line.lstrip().startswith('#')]
+        # This deliberately small context uses only the blanket exclusion and
+        # explicit file/directory exceptions, not arbitrary pattern semantics.
+        self.assertEqual([p for p in patterns if not p.startswith('!')], ['*'])
+        allowed = [p[1:].rstrip('/') for p in patterns if p.startswith('!')]
+        self.assertTrue(all(not any(c in p for c in '*?[') for p in allowed))
+        missing = []
+        for copy_input in context_copies(logical_lines(recipe.read_text())):
+            for source in copy_input.sources:
+                self.assertTrue((ROOT/source).exists(), 'Board COPY source is missing: '+source)
+                if not any(source == p or source.startswith(p+'/') for p in allowed):
+                    missing.append(source)
+        self.assertEqual(missing, [], 'Board COPY sources excluded by its sparse Docker context')
+
+    def test_board_input_regression_gates_native_build(self):
+        preflight = WORKFLOW.split('  signing-preflight:\n', 1)[1].split('\n  ensure-rpms:', 1)[0]
+        step = preflight.split('      - name: Validate signed board inputs before native build\n', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn("if: needs.plan.outputs.signed-development-board == 'true'", step)
+        self.assertIn('run: python3 os/tests/test_signed_development_board.py', step)
+        native = WORKFLOW.split('  build-and-push:\n', 1)[1].split('    steps:', 1)[0]
+        self.assertIn('signing-preflight', native)
+
+    def test_sealing_tools_do_not_inherit_device_admission_policy(self):
+        board = (ROOT/'os/Containerfile.board').read_text()
+        production = (ROOT/'os/Containerfile').read_text()
+        self.assertIn('FROM ${BASE_REF} AS uki-tools', production)
+        self.assertIn('FROM ${BASE_REF} AS uki-tools', board)
+        self.assertIn('FROM uki-tools AS cfs-digest', board)
+        self.assertIn('FROM ${BASE_IMAGE} AS board-root', board)
+        self.assertIn('FROM split AS final', board)
+        # Production/installed-device policy remains strict; only the
+        # throwaway construction environment reads its own unsigned layers.
+        original = json.loads((ROOT/'os/etc/containers/policy.json').read_text())
+        self.assertEqual(original['transports']['docker'][policy.REPOSITORY], [{'type': 'reject'}])
+
+    def test_actual_board_build_passes_pinned_tools_to_all_three_phases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root/'calls'
+            auth = root/'empty-test-auth.json'
+            auth.write_text('{}')
+            fake = root/'docker'
+            fake.write_text('#!'+sys.executable+'\n'+textwrap.dedent('''
+                import json, os, pathlib, sys
+                args = sys.argv[1:]
+                with open(os.environ['CALLS'], 'a') as out:
+                    out.write(json.dumps(args)+'\\n')
+                if '--metadata-file' in args:
+                    pathlib.Path(args[args.index('--metadata-file')+1]).write_text(json.dumps({'containerimage.digest':'sha256:'+'a'*64}))
+                if '--target' in args and args[args.index('--target')+1] == 'cfs-digest-out':
+                    dest = next(a.split('dest=',1)[1] for a in args if a.startswith('type=local,dest='))
+                    pathlib.Path(dest).mkdir(parents=True)
+                    (pathlib.Path(dest)/'digest').write_text('b'*128)
+                '''))
+            fake.chmod(0o755)
+            result = subprocess.run(['bash', str(ROOT/'os/dev/build-board-image.sh'),
+                'orangepi-3b-v2-1', 'registry.tilo.so/tilo/tilo-ci@sha256:'+'c'*64,
+                'registry.tilo.so/tilo/tilo-vm:main-fixture-orangepi-3b-v2-1-signed'],
+                cwd=ROOT, capture_output=True, text=True,
+                env={**os.environ, 'PATH':str(root)+os.pathsep+os.environ['PATH'],
+                     'BUILDER_NAME':'fixture', 'RPMS_REF':'fixture', 'BOOTC_HELPER_IMAGE':'fixture',
+                     'TILO_SIGNED_DEVELOPMENT_BOARD':'1', 'REGISTRY_AUTH_FILE':str(auth),
+                     'BASE_REF':'ignored-environment-override', 'CALLS':str(log)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(len(calls), 3)
+            pinned = next(line.split('=',1)[1] for line in (ROOT/'os/base-snapshot.env').read_text().splitlines()
+                          if line.startswith('BASE_REF='))
+            for call in calls:
+                self.assertIn('BASE_REF='+pinned, call)
+                self.assertNotIn('BASE_REF=ignored-environment-override', call)
+
+    def test_split_directory_preparation_is_repeatable_but_rejects_stale_kernel(self):
+        recipe = (ROOT/'os/Containerfile.board').read_text()
+        actual = recipe.split('FROM board-root AS split\nRUN ', 1)[1].split('&& bootc container split-kernel-and-rootfs', 1)[0]
+        actual = actual.strip().removesuffix('\\').rstrip()
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)/'kernel'
+            shell = actual.replace('/kernel', str(output))
+            for _ in range(2):
+                result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(list(output.iterdir()), [])
+            stale = output/'old-kernel'
+            stale.write_bytes(b'preserve unexpected input')
+            result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(stale.read_bytes(), b'preserve unexpected input')
+
     def make_root(self, root):
         for directory in ['usr/lib/tilo', 'usr/share/tilo', 'etc/containers']:
             (root/directory).mkdir(parents=True)
@@ -94,6 +189,44 @@ class SignedBoard(unittest.TestCase):
         original['transports']['docker'][policy.REPOSITORY] = [{'type': 'insecureAcceptAnything'}]
         (root/'etc/containers/policy.json').write_text(json.dumps(original))
         return original
+
+    def test_signed_board_restores_sealed_kernel_before_board_initramfs(self):
+        recipe = (ROOT/'os/Containerfile.board').read_text()
+        maintenance_case = recipe.split('case "$TILO_SIGNED_DEVELOPMENT_BOARD" in', 1)[1].split('esac', 1)[0]
+        actual = maintenance_case.split('1)', 1)[1].split('&& dnf install', 1)[0].strip()
+        # Run the actual sealed-base restoration commands against a private
+        # fixture root. No fake restorer hides the inherited /kernel failure.
+        for layout in ['sealed', 'wrong-kernel', 'empty-kernel', 'extra-kernel']:
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                modules = root/'usr/lib/modules/7.2.8'
+                modules.mkdir(parents=True)
+                boot = root/'boot/EFI/Linux'
+                boot.mkdir(parents=True)
+                inherited = boot/'7.2.8.efi'
+                inherited.write_bytes(b'old generic UKI fixture')
+                split = root/('kernel/7.2.7' if layout == 'wrong-kernel' else 'kernel/7.2.8')
+                split.mkdir(parents=True)
+                original = b'' if layout == 'empty-kernel' else b'exact production kernel'
+                (split/'vmlinuz').write_bytes(original)
+                if layout == 'extra-kernel':
+                    (root/'kernel/7.2.9').mkdir()
+                shell = actual.rstrip().removesuffix('&&').rstrip().removesuffix('\\').rstrip()
+                for path in ['/usr/lib/modules', '/kernel', '/boot/EFI/Linux']:
+                    shell = shell.replace(path, str(root)+path)
+                result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True,
+                                        env={**os.environ, 'TILO_HARDWARE_PROFILE': 'orangepi-3b-v2-1'})
+                if layout != 'sealed':
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual((split/'vmlinuz').read_bytes(), original)
+                    self.assertTrue(inherited.exists())
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((modules/'vmlinuz').read_bytes(), original)
+                self.assertEqual(list(boot.iterdir()), [])
+                self.assertFalse((root/'kernel').exists())
+                (root/'kernel').mkdir()
+                self.assertEqual(list((root/'kernel').iterdir()), [])
 
     def test_maintenance_flavour_changes_only_signed_scope_and_marker(self):
         with tempfile.TemporaryDirectory() as temp:
