@@ -1517,3 +1517,96 @@ Optional faster-whisper CPU INT8 has not been run. Its published eight-thread,
 beam-five memory figure does not establish feasibility or infeasibility under
 this one/two-thread, beam-one cap. Natural speech conditions, the 32 reserved
 holdout conditions and physical microphone/older-device acceptance remain unrun.
+
+### Memory policy and supported low-memory configurations
+
+The 1 GiB cap originates in the candidate's `speech::worker::prepare`, introduced
+by `b2ff613b2e`, as a fixed confinement policy alongside disabled dumps, tracing
+and inherited descriptors. It is `RLIMIT_AS`, a per-process virtual-address-space
+limit, not a measured requirement for a 1 GiB physical device. Shared libraries,
+thread stacks and allocator reservations count against it. The production limit
+remains unchanged; device fitness additionally needs the compositor, OS and other
+apps measured together. Artifact admission's separate 256 MiB bound also remains.
+
+`build_asr_memory_characterization.py` builds private experimental copies against
+the same pinned 1.8.3 archives. It checks the exact original bridge digest, adds
+public-only upstream allocation logging and `/proc` stage measurements, and
+compares supported CPU `flash_attn` initialization. It downloads or installs
+nothing. The default generated probes keep 1 GiB. The explicit
+`--include-2g-characterization` flag generates separately labeled 2 GiB probes;
+these cannot count as production qualification. `run_asr_memory_characterization.py`
+rechecks available memory (minimum 8 GiB) and memory pressure (some.avg10 at most
+5%) before each serial one/two-CPU development case. Missing observations fail.
+The first matrix stopped at 5.45% pressure. After independent source analysis,
+one reassessment found 1.35%; only four missing cases resumed. Both receipts remain.
+
+The measured native allocation breakdown below uses upstream **decimal MB**, not
+MiB or an estimate of resident memory. Compute pools are separate persistent
+allocations; their sum is not an observed peak. KV is self/cross/padding combined.
+
+| Engine/configuration | Native weights MB | KV MB | Conv / encoder / cross / decoder pools MB |
+| --- | ---: | ---: | --- |
+| Base FP16 | 147.37 | 28.31 | 16.28 / 85.88 / 4.66 / 96.37 |
+| Base Q8 | 81.18 | 28.31 | 16.28 / 85.88 / 4.66 / 96.37 |
+| Small Q5, default attention | 189.49 | 80.21 | 22.42 / 128.02 / 6.20 / 97.28 |
+| Small Q8, default attention | 263.87 | 80.21 | 22.42 / 128.02 / 6.20 / 97.28 |
+| Small Q5/Q8, CPU flash attention | 189.49 / 263.87 | 80.21 | 22.42 / 33.85 / 6.20 / 97.28 |
+
+Full-context CPU flash attention saved 94.17 MB of Small encoder workspace.
+Both quantizations completed French under the original 1 GiB limit, with 10%
+WER. Q5 peak RSS was 385884 KiB and virtual space 887600 KiB; Q8 was 531080 KiB
+and 959952 KiB. The earlier non-flash guard failures remain valid for that
+configuration, not a rejection of all Small configurations. Separately labeled
+2 GiB non-flash French characterization completed: Q5 495712 KiB peak RSS,
+1027348 KiB virtual peak; Q8 568204 KiB RSS, 1099984 KiB virtual peak, both 10%
+WER. Q5's virtual peak illustrates that the 960 MiB guard can reject a run that
+would narrowly fit 1 GiB; Q8's observed peak exceeds 1 GiB. No cap was raised in
+the deployed worker and no model/configuration was promoted.
+
+Stage receipts confirm the existing loader briefly retains both verified input
+bytes and copied weights, then releases input before allocating decoder state.
+For Q5 flash, RSS went from 191144 KiB (input) to 385884 KiB (overlap) and
+200252 KiB after input release. The existing bridge frees the old state before
+creating a new independent draft state; old/new KV arenas are not intentionally
+kept together. There is no persistent Whisper streaming encoder cache here:
+cumulative audio is reprocessed per draft. PCM/float/mel storage and allocator
+retention remain additional costs, bounded by the 120-second session limit.
+Quantizing weights does not quantize these KV or compute pools. The supported
+`n_max_text_ctx` field limits prior prompt tokens, not initial KV allocation.
+`audio_ctx` is applied after initial state allocation, so it cannot by itself
+avoid the cold full-size pools. An experimental rounded shorter context was
+actually measured and rejected: French WER rose to 90% offline and paced, despite
+first text at 2.630 s. It is available only as an explicit reproduction flag.
+
+Full-context Q5 flash development finals were English 5.26%, German 0%, French
+10%, Spanish 3.45%, Arabic 40% WER and Mandarin 47.83% CER. These exposed single
+clips are not broad accuracy evidence; Mandarin regressed from Base. French
+paced first text was 7.236 s on two CPUs and 12.183 s on one; meaningful stable
+prefix 17.917/22.791 s, CPU 31.54/20.78 s. This is a plausible **memory** path for
+a 4–8 GiB device, even under the current process cap, but cannot establish the
+required real-time experience or whole-device fitness. Physical hardware,
+production-worker dictionary/focus/privacy journeys and unseen speech remain
+unqualified. Completing the same six-language full-context Q8 comparison matched
+Q5 in five languages but improved Mandarin to 17.39% CER. Q8 offline peak RSS
+ranged 530044–531680 KiB and virtual peaks 958992–962884 KiB. Q8 French first
+text was 6.597/10.825 s on two/one CPUs, meaningful stable prefix 15.821/20.102 s,
+CPU 27.57/18.18 s and final WER 10%. These remain slow, exposed development
+observations, not an older-device or high-accuracy qualification. Detailed receipts
+are `dictation-memory-characterization.json` (23 records, including retained
+Nemotron failure and two rejected shorter-context runs).
+
+Nemotron still failed startup under the separate 2 GiB budget, before accuracy
+or latency measurement. Native memstats observed a 31.96 MiB model container,
+then the same refused 903046144-byte CPU tensor buffer. Peak virtual space was
+1612340 KiB and RSS 87772 KiB before refusal. Those are observed incomplete
+allocations, not total engine memory. Complete weight/cache/decode-workspace
+breakdown remains unavailable because startup failed; the 742090464-byte GGUF
+alone is not its RAM requirement. Pinned `GGUFLoader` reads tensors into a bounded
+largest-tensor scratch buffer and `Session::setup` releases it after loading;
+it does not retain a mapped copy of the entire GGUF. Model tensor storage and
+per-backend metadata arenas allocate before scheduler compute pools, which
+reuse graph liveness. Source also includes a temporary F32-to-F16 conversion
+buffer when needed. Metadata arenas reserve 64 MiB per default backend context;
+the pinned public recognizer configuration does not expose that budget. Further
+native allocation work is required; neither higher-budget failure rules out an
+optimized future runtime. No known-over-2-GiB model was attempted.
