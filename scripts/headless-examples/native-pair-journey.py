@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 
 from _control import call, require_ok
 from reaper import die_with_parent
@@ -62,6 +63,7 @@ class Fixture:
                "XDG_RUNTIME_DIR": str(profile / "run"),
                "TILO_IDENTITY_ROOT": str(profile / "identity"),
                "TILO_IDENTITY_FILE_SECRETS": "1",
+               "TILO_SECRETS_DIR": str(profile / "state/secrets"),
                "CARGO_BUILD_JOBS": "4",
                "TILO_PEER_KEY_PATH": str(profile / "identity/device-private/keypair.bin"),
                "TILO_TEST_CONTROL": str(profile / "run/control.sock"),
@@ -227,6 +229,17 @@ class Fixture:
             raise RuntimeError("complete native action catalogue is unavailable")
         return response["answer"]["actions"]
 
+    @staticmethod
+    def logical_resource(resource):
+        # BoundPublication aliases include a host and component lifetime;
+        # only the UTF-8 domain resource identifies shared CRDT state.
+        prefix, version, host, lifetime, encoded = resource.split(":", 4)
+        if prefix != "tilo-ui-bound" or version != "v1" or len(resource) > 4096:
+            raise RuntimeError("unexpected native resource publication")
+        uuid.UUID(host)
+        uuid.UUID(lifetime)
+        return bytes.fromhex(encoded).decode("utf-8")
+
     def act(self, session, room, operation, args=None, resource=None):
         socket, process = session
         row = self.operation(socket, room, operation, process, resource)
@@ -234,7 +247,7 @@ class Fixture:
                                         public_failure_path=self.output / f"failed-{operation}.json")
         return receipt.get("update", {}).get("output", {}).get("value")
 
-    def context(self, sessions, room, users):
+    def context(self, sessions, room, presence_ids):
         alice, bob = sessions["alice"], sessions["bob"]
         for session in (alice, bob):
             report = self.act(session, room, "live-context-status")
@@ -243,22 +256,55 @@ class Fixture:
         self.act(alice, room, "new-channel", {"value": "Fixture second conversation"})
 
         def text_channels(socket):
-            return sorted({row["resource"] for row in self.catalogue(socket)
-                           if row.get("application") == "so.tilo.chat" and row.get("room") == room
-                           and row.get("operation") == "post"})
+            channels = {}
+            for row in self.catalogue(socket):
+                if (row.get("application") != "so.tilo.chat" or row.get("room") != room
+                        or row.get("operation") != "post"):
+                    continue
+                resource = row["resource"]
+                logical = self.logical_resource(resource)
+                if not logical.startswith("chat.channel:") or logical in channels:
+                    raise RuntimeError("ambiguous native Chat channel identity")
+                channels[logical] = resource
+            return channels
 
         channels = packaged.wait_for("two shared text channels", lambda: (
             channels if len(channels := text_channels(alice[0])) >= 2 else None), alice[1])
-        first, second = channels[:2]
-        packaged.wait_for("native peer sees the same resources", lambda: (
-            set(channels).issubset(text_channels(bob[0]))), bob[1])
-        self.act(alice, room, "open-channel", resource=first)
-        self.act(bob, room, "open-channel", resource=second)
+        first, second = sorted(channels)[:2]
+        self.record("alice-new-channel-committed", channels=sorted(channels))
+        try:
+            packaged.wait_for("native peer sees the same resources", lambda: (
+                set(channels).issubset(text_channels(bob[0]))), bob[1])
+        except Exception:
+            for name, session in sessions.items():
+                (self.output / f"{name}-convergence-actions.json").write_text(json.dumps(
+                    [packaged.public_action_observation(row) for row in self.catalogue(session[0])], indent=2))
+                require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-convergence.png")}))
+            raise
+        self.record("both-native-resource-catalogues-converged", channels=sorted(channels))
+        self.act(alice, room, "open-channel", resource=channels[first])
+        self.act(bob, room, "open-channel", resource=text_channels(bob[0])[second])
         require_ok(call(alice[0], {"op": "pointer_move", "x": 350, "y": 220}))
         require_ok(call(bob[0], {"op": "pointer_move", "x": 640, "y": 300}))
         self.act(alice, room, "share-live-context")
+
+        def connected():
+            response = call(bob[0], {"op": "state_dump"})
+            tree = response.get("state", {}).get("workspace_tree", {})
+            (self.output / "bob-follow-roster.json").write_text(json.dumps({
+                "expected_certified_session": presence_ids[0],
+                "workspaces": [{"room": workspace.get("room"),
+                                "collaborators": workspace.get("collaborators")}
+                               for workspace in tree.get("workspaces", [])],
+                "presence": response.get("state", {}).get("chrome", {}).get("presence"),
+                "peers": response.get("state", {}).get("peers")}, indent=2))
+            return any(row.get("id") == presence_ids[0] and row.get("invited") is False
+                       for workspace in tree.get("workspaces", []) if workspace.get("room") == room
+                       for row in workspace.get("collaborators", []))
+
+        packaged.wait_for("Alice's certified session is present in Bob's roster", connected, bob[1])
         follow = packaged.require_action(bob[0], "presence.follow")
-        packaged.invoke(bob[0], follow, {"collaborator": users[0]})
+        packaged.invoke(bob[0], follow, {"collaborator": presence_ids[0]})
 
         def following():
             report = self.act(bob, room, "live-context-status")
@@ -272,7 +318,7 @@ class Fixture:
         self.act(alice, room, "stop-sharing-live-context")
         packaged.wait_for("Stop withdraws native context", lambda: (
             self.act(bob, room, "live-context-status").get("following") is False), bob[1])
-        self.act(alice, room, "open-channel", resource=second)
+        self.act(alice, room, "open-channel", resource=channels[second])
         time.sleep(0.5)
         report = self.act(bob, room, "live-context-status")
         if report.get("channel") != first.removeprefix("chat.channel:"):
@@ -284,24 +330,52 @@ class Fixture:
         self.record("native-stop-sharing-and-stop-following", report=report)
 
     def voice(self, sessions, room):
+        call_channel = None
         for name, session in sessions.items():
             self.act(session, room, "open-workspace")
-            self.act(session, room, "start-call")
+            if call_channel is None:
+                self.act(session, room, "start-call")
+            else:
+                def shared_call():
+                    rows = [row for row in self.catalogue(session[0])
+                            if row.get("application") == "so.tilo.chat"
+                            and row.get("room") == room and row.get("operation") == "join-call"
+                            and self.logical_resource(row["resource"]) == f"chat.call:{call_channel}"]
+                    if len(rows) > 1:
+                        raise RuntimeError("ambiguous shared native call")
+                    return rows[0] if rows else None
+                row = packaged.wait_for("Alice's actual shared voice channel reaches Bob", shared_call, session[1])
+                self.act(session, room, "join-call", resource=row["resource"])
+
+            observed_call = False
 
             def live():
+                nonlocal observed_call
                 value = self.act(session, room, "call-status")
                 if not isinstance(value, dict) or not isinstance(value.get("reported"), dict):
                     raise RuntimeError("native call state is unobservable")
                 snapshot = value["reported"]
                 if snapshot.get("state") == "ended":
+                    # call-status requests an asynchronous refresh and returns
+                    # the preceding snapshot. Before the first service reply,
+                    # the production default is ended with no channel/issue.
+                    # This is pending, never a successful join; the bounded
+                    # wait still fails if no current live reply arrives.
+                    if not observed_call and value.get("channel") is None and snapshot.get("issue") is None:
+                        return None
                     (self.output / f"{name}-voice-failure.json").write_text(json.dumps(value, indent=2))
                     raise RuntimeError(f"native call failed: {snapshot.get('issue')}")
+                observed_call = True
                 return snapshot if snapshot.get("state") == "live" else None
 
             snapshot = packaged.wait_for("native governed voice connected", live, session[1])
             if snapshot.get("muted") is not True or snapshot.get("capture_active") is not False:
                 raise RuntimeError("joining acquired capture without fresh consent")
-            self.record(f"{name}-native-call-listening-muted", report=snapshot)
+            channel = self.act(session, room, "call-status").get("channel")
+            if not isinstance(channel, str) or not channel or (call_channel is not None and channel != call_channel):
+                raise RuntimeError("native peers joined different voice channels")
+            call_channel = channel
+            self.record(f"{name}-native-call-listening-muted", channel=channel, report=snapshot)
         for name, session in sessions.items():
             self.unmute(name, session, room)
         for name, frequency in (("alice", 1100), ("bob", 700)):
@@ -322,9 +396,19 @@ class Fixture:
 
         def capturing():
             report = self.act(session, room, "call-status")["reported"]
+            (self.output / f"{name}-capture-observation.json").write_text(json.dumps({
+                "reported": report,
+                "pending_grants_count": packaged.chrome_state(socket).get("pending_grants_count"),
+            }, indent=2))
+            if report.get("state") == "ended":
+                raise RuntimeError(f"native capture ended after consent: {report.get('issue')}")
             return report if report.get("capture_active") is True and report.get("muted") is False else None
 
-        report = packaged.wait_for("current-generation native capture", capturing, process)
+        try:
+            report = packaged.wait_for("current-generation native capture", capturing, process)
+        except Exception:
+            require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-capture-failed.png")}))
+            raise
         self.record(f"{name}-explicit-generated-source-consent", report=report)
 
     def measure(self, name, frequency):
@@ -398,7 +482,7 @@ class Fixture:
         self.act(sessions["alice"], room, "leave-call")
         packaged.wait_for("remaining participant leaves", lambda: self.no_audio_streams("alice", sessions["alice"]), sessions["alice"][1])
 
-    def run(self):
+    def run(self, *, voice_only=False):
         environments = {name: self.env(name) for name in ("alice", "bob")}
         publisher = self.root / "alice"
         for name, env in environments.items():
@@ -457,7 +541,8 @@ class Fixture:
             (self.output / f"{name}-actions.json").write_text(json.dumps(
                 [packaged.public_action_observation(row) for row in packaged.actions(socket)], indent=2))
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-chat.png")}))
-        self.context(sessions, bootstrap["room"], bootstrap["users"])
+        if not voice_only:
+            self.context(sessions, bootstrap["room"], bootstrap["presence_ids"])
         self.voice(sessions, bootstrap["room"])
         self.leave_and_revoke(sessions, bootstrap["room"], host)
 
@@ -469,7 +554,10 @@ def main():
     parser.add_argument("--pipewire", type=pathlib.Path, required=True,
                         help="private extracted PipeWire server/config/plugin payload")
     parser.add_argument("--cleanup-proof", action="store_true", help="test exact private daemon cleanup without launching Chat")
+    parser.add_argument("--voice-proof", action="store_true", help="test governed native voice without qualifying follow or the combined pair")
     args = parser.parse_args()
+    if args.cleanup_proof and args.voice_proof:
+        parser.error("choose only one isolated proof mode")
     args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
     fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve())
     qualified, error = False, None
@@ -477,8 +565,8 @@ def main():
         if args.cleanup_proof:
             fixture.cleanup_proof()
         else:
-            fixture.run()
-            qualified = True
+            fixture.run(voice_only=args.voice_proof)
+            qualified = not args.voice_proof
     except Exception as failure:
         error = str(failure)
         raise
@@ -490,7 +578,8 @@ def main():
             qualified = False
             cleanup_error = str(failure)
         (args.out / "journey.json").write_text(json.dumps({
-            "qualified": qualified, "mode": "cleanup-proof" if args.cleanup_proof else "native-pair",
+            "qualified": qualified,
+            "mode": "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
             "error": error, "cleanup_error": cleanup_error, "stages": fixture.stages,
             "real_microphone": False, "video_screen_sharing": False,
         }, indent=2) + "\n")

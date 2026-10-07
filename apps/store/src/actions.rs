@@ -196,18 +196,21 @@ pub fn execute_with_host(
                         return Err("This repository belongs to the device. Ask its administrator to install the app.".into());
                     }
                     host.flatpak_install_remote(name, &item.id, branch)
+                        .map(|_| ui::i18n!("store-app-installed"))
                 } else {
                     host.flatpak(
                         app_host::client::FlatpakAction::Install,
                         &item.id,
                         reference.as_deref(),
                     )
+                    .map(|_| ui::i18n!("store-app-installed"))
                 }
             })
         }
         (ActionKind::FlatpakUpdate, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             host_result(host, |host| {
                 host.flatpak(app_host::client::FlatpakAction::Update, &item.id, None)
+                    .map(|_| ui::i18n!("store-app-updated"))
             })
         }
         (ActionKind::FlatpakOpen, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
@@ -223,6 +226,7 @@ pub fn execute_with_host(
         (ActionKind::FlatpakRemove, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             host_result(host, |host| {
                 host.flatpak(app_host::client::FlatpakAction::Remove, &item.id, None)
+                    .map(|_| ui::i18n!("store-app-removed"))
             })
         }
         (ActionKind::NeedsFlatpakHost, _) => {

@@ -242,6 +242,9 @@ impl ShellLayer for TabMenuLayer {
         }
         // The menu is a floating Panel: this layer is the shell's top layer,
         // so it paints its whole Panel (shadow, material, rows) here.
+        let anchor = Rect::new(self.anchor.x, self.anchor.y, self.anchor.x, self.anchor.y);
+        self.menu
+            .constrain_to(cx.geometry.display_for(Some(anchor)));
         self.menu.draw_overlay(
             cx.scene,
             cx.transform,

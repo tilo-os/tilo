@@ -1644,8 +1644,31 @@ suite names a member that `manage-deps` gave the unconditional line.
 Enable the repo's git hooks once per clone:
 
 ```bash
-git config core.hooksPath .githooks
+python3 tools/dev/install-git-hooks.py
 ```
+
+The tracked hooks do not activate automatically in a fresh clone. The installer
+verifies both hooks, preserves unrelated hook configuration, and uses worktree
+configuration when enabled. Run it in each linked worktree that needs its own
+managed hooks. It refuses an unrelated hooks path or custom default hooks;
+arrange explicit chaining rather than overwriting them.
+
+`commit-msg` requires `type(optional-scope)!: description`. Types are `build`,
+`chore`, `ci`, `docs`, `dev`, `env`, `feat`, `fix`, `perf`, `refactor`, `revert`,
+`style`, and `test`. For example, `fix(shell): preserve window identity` or
+`feat(ui)!: expose resource actions`. Bodies follow a blank line and can include
+`BREAKING CHANGE:` footers. Git's genuine merge, target-bound revert and
+existing-target autosquash messages are accepted; an arbitrary `Merge ...`
+subject on an ordinary commit is rejected. Generated sources use ordinary
+headers such as `chore(codegen): refresh bindings`.
+
+New or modified staged non-text and non-LF blobs are rejected, even when an
+exception entry is added in the same commit. Existing pinned assets are only
+admitted unchanged; deletion is allowed. The staged index is inspected, so
+partial staging and filenames with spaces are handled correctly. Fast quality
+checks all new commits and exact blobs in its comparison range, catching
+`--no-verify` commits and intermediate binary additions later deleted. It fails
+when history cannot be inspected. Existing exceptions remain migration work.
 
 `pre-commit` checks the staged change the way CI's quality job would: rustfmt
 on the staged Rust files, workspace membership
