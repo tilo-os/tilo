@@ -2,7 +2,7 @@
 //! Inactive scopes do not read the clock; nested times are not additive.
 
 use std::cell::RefCell;
-use std::time::Instant;
+use tilo_clock::Instant;
 
 thread_local! {
     static RECORDS: RefCell<Option<Capture>> = const { RefCell::new(None) };
