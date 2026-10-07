@@ -28,10 +28,10 @@ profile.mkdir(parents=True)
 with (root/'launches').open('a') as stream: stream.write(json.dumps(str(profile))+'\\n')
 def stop(*args):
  (root/'closing').touch()
- deadline=time.monotonic()+1.5
- while not (root/'release-browser').exists() and time.monotonic()<deadline: time.sleep(.005)
+ while not (root/'release-browser').exists(): time.sleep(.005)
  if not profile.exists(): (root/'early-removal').touch()
  else: (profile/'shutdown').write_text('flushed')
+ (root/'closed').touch()
  sys.exit(0)
 signal.signal(signal.SIGTERM,stop)
 if os.environ['DETACHED']=='1':
@@ -62,7 +62,7 @@ sys.exit(int(os.environ['PROBE_STATUS']))
             executable.chmod(0o755)
 
     def start(self):
-        for name in ('browser-ready', 'worker-ready', 'closing', 'release-browser', 'release-worker'):
+        for name in ('browser-ready', 'worker-ready', 'closing', 'closed', 'release-browser', 'release-worker'):
             (self.root / name).unlink(missing_ok=True)
         environment = dict(os.environ, CHROME=str(self.root / 'chrome'), RUNNER_TEMP=str(self.root),
                            FIXTURE_ROOT=str(self.root), DETACHED='1' if self.detached else '0',
@@ -108,6 +108,7 @@ sys.exit(int(os.environ['PROBE_STATUS']))
 
 class BrowserCleanupLifecycle(unittest.TestCase):
     def assert_closed(self, fixture):
+        self.assertTrue((fixture.root / 'closed').exists(), 'writer did not acknowledge its close')
         self.assertFalse((fixture.root / 'early-removal').exists(), 'profile removed while its writer lived')
         self.assertEqual(list(fixture.root.glob('smoke-browsers.*')), [], 'cleanup left a profile behind')
 
