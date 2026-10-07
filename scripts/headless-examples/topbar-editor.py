@@ -10,8 +10,9 @@ from tilo_client import TiloClient
 out = pathlib.Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
 runtime = out / "runtime"
-runtime.mkdir(mode=0o700, exist_ok=True)
 socket = runtime / "editor.sock"
+assert len(str(socket).encode()) < 108, "use a shorter private capture directory for the Unix socket"
+runtime.mkdir(mode=0o700, exist_ok=True)
 png_pixels = runpy.run_path("scripts/headless-examples/full-loop.py")["png_pixels"]
 
 
@@ -60,6 +61,8 @@ with spawned as client:
     candidates = list(rows(catalogue))
     assert candidates, catalogue
     action = candidates[0]
+    assert action["title"] == "Edit top bar", action
+    assert action["subtitle"] == "Reorder, add or remove top-bar widgets", action
     provider = action.get("provider") or action.get("provider_id")
     assert provider
     receipt = {"catalogue": action, "steps": []}

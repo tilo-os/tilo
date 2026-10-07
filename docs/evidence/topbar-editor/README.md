@@ -50,3 +50,19 @@ resize and visible open/closed pixels. The isolated real compositor example
 pointer cancellation/removal, keyboard re-add, held submit/Esc/release and cancelled
 reorder, then verifies the process, socket and scratch profile are removed.
 Cargo and software Vulkan rendering run only on the SSH runner.
+
+## Catalogue follow-up
+
+CI run78158 caught an isolated shell catalogue regression: desktop translation
+keys were not registered in ActionsProvider's unit-test host. The action now
+owns dedicated English/German search keys. The existing all-action copy assertion
+is retained and runs both locales, including exact translated editor title and
+subtitle. The real compositor journey checks that same title/subtitle before
+invocation. Fresh v2 captures and their source blobs are indexed separately in
+artifacts.json; the initial rendered candidate6571dd51 and its originals remain
+unchanged.
+
+The locale files overlap Dictation #2974 at file level, with independent hunks:
+these two entries sit beside overview actions, while Dictation adds dictation
+messages near the end. Messages #2881 and Files #3009 have no locale overlap.
+The example now rejects an overlong Unix socket path before spawning a process.

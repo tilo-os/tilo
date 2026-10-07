@@ -260,5 +260,49 @@
       "sha256": "65b33d47c108ad9c8633bd859df87382607c7722146399a0a191b2aa9a877938"
     }
   ],
-  "qualification": "actual production TopBarChrome, native FrameHarness, and isolated real headless compositor; no VM claim"
+  "qualification": "actual production TopBarChrome, native FrameHarness, and isolated real headless compositor; no VM claim",
+  "rendered_candidate": "6571dd510f44f51340518990e1fc76f7623633ae",
+  "catalogue_fix": {
+    "reason": "Shell action catalogue owns its EN/DE Fluent copy; production registry and real compositor resolve title/subtitle. Existing catalogue assertion retained and strengthened across both locales.",
+    "source_blobs": {
+      "crates/session/shell/src/shell/search/providers/actions.rs": "547667132557dd694eceb40ec1f7e4f23a08c050",
+      "crates/session/shell/locales/en-US.ftl": "0e0cfcdcc329ab66d7e785bb43cb92cf5ca21b92",
+      "crates/session/shell/locales/de-DE.ftl": "5b51f987960d3f2dae5c0ecf64ffbd142a3d89a2",
+      "scripts/headless-examples/topbar-editor.py": "203c88fea08a7dc12225ac1e44b9db6e33dbf121"
+    },
+    "captures": [
+      {
+        "stage": "catalogue-fix",
+        "file": "v2/live-add-focus.png",
+        "bytes": 2252029,
+        "width": 1600,
+        "height": 900,
+        "sha256": "c32cc067f42a3d525ca5d8ca1b6fbc27fa2c3172e119a9a9b68cbc94787c5d8c"
+      },
+      {
+        "stage": "catalogue-fix",
+        "file": "v2/live-closed.png",
+        "bytes": 2374642,
+        "width": 1600,
+        "height": 900,
+        "sha256": "57cab76afb2d724fdfefbd65212466df10c600f98441293160e37701fc8a5baa"
+      },
+      {
+        "stage": "catalogue-fix",
+        "file": "v2/live-open.png",
+        "bytes": 2250859,
+        "width": 1600,
+        "height": 900,
+        "sha256": "0e9cc6b70cd94b85f5458452e7d09884d62145f7b4645c77c9b8b0e3b85a6ca3"
+      },
+      {
+        "stage": "catalogue-fix",
+        "file": "v2/live-pressed.png",
+        "bytes": 2250343,
+        "width": 1600,
+        "height": 900,
+        "sha256": "075c608b906af6231928089171589fc9cf662d2f164498061a514decd7fd63c6"
+      }
+    ]
+  }
 }
