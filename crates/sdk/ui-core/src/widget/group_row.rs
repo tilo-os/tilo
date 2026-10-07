@@ -5493,6 +5493,119 @@ mod tests {
     }
 
     #[test]
+    fn pointer_tab_drag_keeps_sibling_pills_at_their_source_positions() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        let row = make_row_with_groups(&[&[1, 2, 3], &[10]]);
+        let (mut row, taffy, root) = relayout_row_owned_with(row, 2000.0, &theme);
+        let before = row.groups[0].tab_rects().to_vec();
+        let grab = Point::new(before[0].x0 + 12.0, before[0].center().y);
+        press_at(&mut row, &taffy, root, grab);
+        let carried = Point::new(grab.x + 40.0, grab.y + 100.0);
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(carried.x, carried.y),
+            },
+        );
+        assert!(
+            !row.group_drag_active(),
+            "a pill press cannot carry its group"
+        );
+        assert!(row.groups[0].drag_in_flight());
+        let visual = row.groups[0]
+            .bar_mut()
+            .drag_visual(&theme)
+            .expect("carried tab");
+        assert_eq!(visual.tab_id, 1);
+        assert_ne!(visual.lifted_handle, before[0]);
+        let (mut row, taffy, root) = relayout_row_owned_with(row, 2000.0, &theme);
+        assert_eq!(
+            &row.groups[0].tab_rects()[1..],
+            &before[1..],
+            "pressed/hover chip animation must not shift the sibling pills during a tab drag",
+        );
+        assert_eq!(row.group_ids(), vec![100, 200]);
+        assert_eq!(row.groups[0].bar_mut().pill_draw_alpha(1), 1.0);
+        assert_eq!(row.groups[0].bar_mut().pill_draw_alpha(2), 1.0);
+        assert!(row.groups[0].bar_mut().pill_draw_alpha(0) < 1.0);
+        assert_eq!(
+            row.groups[0]
+                .bar_mut()
+                .drag_visual(&theme)
+                .unwrap()
+                .lifted_handle
+                .width(),
+            before[0].width(),
+            "the carried handle keeps its actual source width",
+        );
+        assert!(row.cancel_tab_drag());
+        press_at(&mut row, &taffy, root, grab);
+        let (row, _, _) = relayout_row_owned_with(row, 2000.0, &theme);
+        assert!(
+            row.groups[0].tab_rects()[1].x0 > before[1].x0,
+            "ordinary pressed-chip layout resumes after cancellation",
+        );
+    }
+
+    #[test]
+    fn pointer_tab_drag_relayouts_changed_bounds_and_tab_order() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        for resize in [true, false] {
+            let row = make_row_with_groups(&[&[1, 2, 3], &[10]]);
+            let (mut row, taffy, root) = relayout_row_owned_with(row, 2000.0, &theme);
+            let before = row.groups[0].tab_rects().to_vec();
+            let bar_before = row.groups[0].bar_rect();
+            let grab = Point::new(before[0].x0 + 12.0, before[0].center().y);
+            press_at(&mut row, &taffy, root, grab);
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(grab.x + 40.0, grab.y + 100.0),
+                },
+            );
+            assert!(row.groups[0].drag_in_flight());
+            if resize {
+                row.groups[0].set_width_px(bar_before.width() * 0.5);
+            } else {
+                row.groups[0].bar_mut().reorder(0, 2);
+            }
+            let (mut row, _, _) = relayout_row_owned_with(row, 2000.0, &theme);
+            let bar = row.groups[0].bar_rect();
+            if resize {
+                assert!(bar.width() < bar_before.width());
+                assert!(
+                    row.groups[0]
+                        .tab_rects()
+                        .iter()
+                        .all(|pill| pill.x1 <= bar.x1)
+                );
+            } else {
+                assert_eq!(
+                    row.groups[0]
+                        .tabs()
+                        .iter()
+                        .map(|tab| tab.id)
+                        .collect::<Vec<_>>(),
+                    vec![2, 3, 1]
+                );
+                assert!(row.groups[0].tab_rects()[2].x0 > before[0].x0);
+            }
+            assert_eq!(
+                row.groups[0].bar_mut().drag_visual(&theme).unwrap().tab_id,
+                1
+            );
+            assert!(!row.group_drag_active());
+            assert!(row.cancel_tab_drag());
+        }
+    }
+
+    #[test]
     fn bar_drag_reorders_groups_only_from_the_grab_zone() {
         fn bar_grab_point_hits_the_group_grab_zone() {
             let row = make_row_with_groups(&[&[1], &[2]]);

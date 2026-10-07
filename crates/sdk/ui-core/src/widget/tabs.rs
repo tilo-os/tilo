@@ -291,6 +291,9 @@ pub struct TabBar {
     /// When the press crosses the drag threshold. The parent window uses the
     /// same lift progress for the handle and its attached content preview.
     drag_lifted_at: Option<Instant>,
+    /// Identity/order of the source geometry held while carrying a tab. A
+    /// structural change or a resized bar still performs ordinary layout.
+    drag_layout_ids: Vec<u64>,
     last_cursor: Point,
     pub pending_drag: Option<DragPayload>,
     pub pending_reorder: Option<(usize, usize)>,
@@ -457,6 +460,7 @@ impl TabBar {
             press_origin: None,
             drag_offset: None,
             drag_lifted_at: None,
+            drag_layout_ids: Vec::new(),
             last_cursor: Point::ZERO,
             pending_drag: None,
             pending_reorder: None,
@@ -573,6 +577,7 @@ impl TabBar {
         self.pending_drag = None;
         self.drag_offset = None;
         self.drag_lifted_at = None;
+        self.drag_layout_ids.clear();
         self.drop_zone_target = None;
         self.hover_drop_idx = None;
         self.layout_anim_started = None;
@@ -2524,12 +2529,28 @@ impl Widget for TabBar {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
+        let next_rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        // Press/hover reveal grows a pill and translates its neighbours. Once
+        // lifted, only the carried preview follows the pointer: preserve the
+        // source row's painted and hit-test geometry until release. Never hold
+        // stale geometry across a resize or a changed tab identity/order.
+        if self.pending_drag.is_some()
+            && next_rect == self.rect
+            && self.tab_rects.len() == self.tabs.len()
+            && self
+                .drag_layout_ids
+                .iter()
+                .copied()
+                .eq(self.tabs.iter().map(|tab| tab.id))
+        {
+            return;
+        }
+        self.rect = next_rect;
         self.tab_rects.clear();
         self.close_rects.clear();
         self.close_hit_rects.clear();
@@ -3486,6 +3507,7 @@ impl TabBar {
                 .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
             if self.pending_drag.is_none() {
                 self.drag_lifted_at = Some(crate::time::now());
+                self.drag_layout_ids = self.tabs.iter().map(|tab| tab.id).collect();
                 self.pending_drag = Some(DragPayload::Tab {
                     group: group_tag_hash,
                     tab: t.id,
