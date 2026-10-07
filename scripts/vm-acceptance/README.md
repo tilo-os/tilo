@@ -377,9 +377,13 @@ competing same-application chooser cannot be independently attributed, so do
 not use the runner concurrently with human or automated portal requests.
 
 The default performs two reviews only. Add `--install-open` only when the owner
-has authorized the one install and fresh Calculator launch. It installs once,
-checks the installed version and mapped application, and reports update/reuse
-when the app was already installed (including the private 57-app cohort).
+has authorized the one install and Calculator Open. It installs once and replays
+`tilo-install verify`, then requires canonical `inspect` to match the reviewed
+root, publisher, version and runtime. It reports update/reuse when already
+installed (including the private cohort); it never closes an existing window.
+A same-room mapped tab must have its public `local_app_records` association.
+A reused window is accepted only with the same strict resident-SDK proof as a
+new window. Ambiguous windows or a stale resident worker fail acceptance.
 Missing capabilities, runtime incompatibility, publisher refusal, stale jobs or
 unobservable completion fail the run; they are never replaced with CLI install,
 clicks, retries, or trust changes. Review completion alone is not installation.
@@ -399,6 +403,22 @@ verified layer hashes fail acceptance. A successful namespace pathname hash is
 insufficient proof of resident code. The unit fixtures exercise descriptor
 selection, remount differences and failure/race behavior; they do not claim a
 live kernel capability. An addressed live maintenance probe must succeed before
-hardware acceptance. Installation/Open still proves exact installed version and
-mapped window, not that an independently offered Calculator runtime was already
-verified or mapped; normal installer runtime authority stays mandatory.
+hardware acceptance. Calculator Open additionally verifies its installed official
+bundle with `/usr/bin/tilo-runtime-bundle verify --require-signature`, using a
+publisher from the root-owned, non-writable OS runtime trust list, independently
+of the offer. It records the verified inner bundle root and stable SHA inventory,
+then requires every Calculator worker's exact mapped backing to match it. The
+actual `/proc/PID/exe` descriptor must also match the installed executable bytes
+verified by the normal package signature replay, so an older app using the same
+SDK cannot be credited. Missing
+canonical tools, a private-SDK worker still resident after an update, or an
+unobservable public tab association fail; Open's immediate spawn receipt cannot
+substitute for those proofs. The outer offer and inner bundle roots are distinct
+identities. Unit tests validate runner ordering/refusal, not a hardware install
+or cryptographic success on the fixture.
+
+Browser fresh-open attribution uses the new tab's public
+`local_app_records[tab].record_instance` to resolve its page binding. The tab ID
+is not its record instance. Unrelated existing pages publishing late do not
+become candidates, and missing/foreign launch associations fail without another
+Open or navigation of an existing page.
