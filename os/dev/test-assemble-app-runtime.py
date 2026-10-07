@@ -75,6 +75,49 @@ class NativeClosure(unittest.TestCase):
             self.assertIn('signed runtime is missing libc.so.6', result.stderr)
 
 
+class InputFingerprint(unittest.TestCase):
+    def test_complete_native_inputs_bind_source_profile_tools_and_dependency_bytes(self):
+        with tempfile.TemporaryDirectory(prefix='input-key-') as name:
+            root = Path(name)
+            repo, target = root / 'repo', root / 'target'
+            app = repo / 'apps/fixture'
+            app.mkdir(parents=True)
+            (app / 'tilo-app.toml').write_text('[package]\nruntime="tilo-runtime/2026.07"\n[entrypoint]\nbin="bin/fixture"\n')
+            (app / 'Cargo.toml').write_text('[package]\nname="fixture"\n')
+            profile = target / 'thin-app'
+            profile.mkdir(parents=True)
+            native = NativeClosure().make_binaries(profile)
+            native.rename(profile / 'fixture')
+            shutil.copyfile(profile / 'libbridge.so', profile / 'libruntime_dylib.so')
+            tools = target / 'release'
+            tools.mkdir()
+            for tool in ('tilo-runtime-bundle', 'tilo-app-package', 'tilo-install', 'tilo-cli-shim'):
+                shutil.copyfile(profile / 'fixture', tools / tool)
+            args = SimpleNamespace(repo=repo, target_dir=target, profile='thin-app',
+                                   features='', source_digest='a' * 64)
+            first = ASSEMBLER.input_key(args)
+            self.assertEqual(ASSEMBLER.input_key(args), first)
+            args.source_digest = 'b' * 64
+            self.assertNotEqual(ASSEMBLER.input_key(args), first)
+            args.source_digest = 'a' * 64
+            args.features = 'fixture/feature'
+            self.assertNotEqual(ASSEMBLER.input_key(args), first)
+            args.features = ''
+            with (profile / 'libleaf.so').open('ab') as stream:
+                stream.write(b'changed dependency content')
+            self.assertNotEqual(ASSEMBLER.input_key(args), first)
+            (tools / 'tilo-install').unlink()
+            with self.assertRaises(FileNotFoundError):
+                ASSEMBLER.input_key(args)
+            args.source_digest = None
+            with self.assertRaisesRegex(ValueError, 'complete source inventory'):
+                ASSEMBLER.input_key(args)
+            args.source_digest = 'a' * 64
+            with patch.dict(os.environ, {'IDENTITY_JSON': '/private/never-read'}):
+                with self.assertRaisesRegex(ValueError, 'canonical packaging inputs'):
+                    ASSEMBLER.input_key(args)
+
+
 class AssemblyNamespaces(unittest.TestCase):
     def test_builder_temporary_directory_cannot_escape_private_stage(self):
         with tempfile.TemporaryDirectory(prefix='assembly-test-') as directory:

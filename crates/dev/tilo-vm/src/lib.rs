@@ -7,6 +7,8 @@ pub mod appsets;
 pub mod build;
 pub mod builderapp;
 pub mod builderlayer;
+#[cfg(target_os = "linux")]
+mod builderlayer_cache;
 pub mod ci;
 pub mod cicache;
 pub mod cli;

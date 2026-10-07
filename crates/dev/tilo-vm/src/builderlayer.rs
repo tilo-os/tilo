@@ -129,7 +129,7 @@ pub(crate) fn pack_userspace(inventory: &Path) -> Result<(), CliError> {
                 known: manifest.components.keys().cloned().collect(),
             })?;
         let extra = build::dev_features(&metadata, &component.packages);
-        pack_component(&root, component.clone(), &extra, Some(inventory), &metadata)?;
+        pack_component(&root, component, &extra, Some(inventory), &metadata)?;
     }
     Ok(())
 }
@@ -141,6 +141,76 @@ fn cargo_metadata(cargo: &str) -> serde_json::Value {
         .ok()
         .and_then(|o| serde_json::from_slice(&o.stdout).ok())
         .unwrap_or(serde_json::Value::Null)
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_input_key(
+    root: &Path,
+    component: &Component,
+    extra: &[String],
+    target: &str,
+    digest: &str,
+    fingerprint_only: bool,
+) -> Result<String, CliError> {
+    let mut command = Command::new("python3");
+    command.args([
+        "os/dev/assemble-app-runtime.py",
+        "--repo",
+        &root.display().to_string(),
+        "--target-dir",
+        target,
+        "--profile",
+        &component.profile,
+        "--features",
+        &component.build_features(extra).join(","),
+        "--input-key",
+        "--source-digest",
+        digest,
+    ]);
+    if fingerprint_only {
+        command.arg("--fingerprint-only");
+    }
+    let output = command
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(CliError::io("fingerprint compiled cohort"))?;
+    let key = std::str::from_utf8(&output.stdout).ok().map(str::trim);
+    if !output.status.success()
+        || output.stdout.len() > 128
+        || key
+            .is_none_or(|key| key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(CliError::InvalidInput(
+            "cannot bind complete compiled cohort inputs".into(),
+        ));
+    }
+    key.map(str::to_string)
+        .ok_or_else(|| CliError::InvalidInput("missing cohort input fingerprint".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn emit_cached(
+    packed: &Packed,
+    mut artifact: crate::builderlayer_cache::Artifact,
+) -> Result<(), CliError> {
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    let header =
+        serde_json::to_string(packed).map_err(|error| CliError::InvalidInput(error.to_string()))?;
+    writeln!(out, "{BEGIN}{header}").map_err(CliError::io("write cached layer header"))?;
+    let mut lines = Lines::new(&mut out);
+    std::io::copy(&mut artifact.file, &mut lines)
+        .map_err(CliError::io("stream cached component"))?;
+    let (hash, bytes) = lines
+        .finish()
+        .map_err(CliError::io("finish cached component"))?;
+    if (hash.as_str(), bytes) != (artifact.hash.as_str(), artifact.bytes) {
+        return Err(CliError::InvalidInput(
+            "cached component changed during replay".into(),
+        ));
+    }
+    writeln!(out, "{END}{hash} {bytes}").map_err(CliError::io("write cached component receipt"))?;
+    out.flush().map_err(CliError::io("flush cached component"))
 }
 
 /// `tilo-vm layer-pack`, on the builder: build `name` from the worktree in
@@ -180,12 +250,65 @@ pub(crate) fn pack_with_source(
         .with_profile(Some(profile));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let metadata = cargo_metadata(&cargo);
-    pack_component(&root, component, extra, inventory, &metadata)
+    pack_component(&root, &component, extra, inventory, &metadata)
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_cache(
+    root: &Path,
+    component: &Component,
+    extra: &[String],
+    target: &str,
+    inventory: Option<&Path>,
+    digest: Option<&str>,
+) -> Result<Option<(crate::builderlayer_cache::Cache, String, bool)>, CliError> {
+    if component.name != "apps+runtime" {
+        return Ok(None);
+    }
+    let Some(digest) = digest else {
+        return Ok(None);
+    };
+    let key = runtime_input_key(root, component, extra, target, digest, false)?;
+    let bytes = std::fs::read(
+        Path::new(target)
+            .join(component.profile_dir())
+            .join("libruntime_dylib.so"),
+    )
+    .map_err(CliError::io("read compiled SDK identity"))?;
+    let facts = build::elf_facts(&bytes)
+        .ok_or_else(|| CliError::InvalidInput("compiled SDK has no native ELF identity".into()))?;
+    let expected = Packed {
+        component: component.name.clone(),
+        target: facts.target,
+        toolchain: facts.toolchain,
+        source_digest: Some(digest.into()),
+    };
+    let cache = crate::builderlayer_cache::Cache::new(Path::new(target), &key)?;
+    let replayed = if let Some(artifact) = cache.load(&expected)? {
+        if runtime_input_key(root, component, extra, target, digest, true)? != key {
+            return Err(CliError::InvalidInput(
+                "compiled inputs changed before component cache replay".into(),
+            ));
+        }
+        let inventory = inventory.ok_or_else(|| {
+            CliError::InvalidInput("component cache has no source inventory".into())
+        })?;
+        if crate::source_inputs::verify(root, inventory)? != digest {
+            return Err(CliError::InvalidInput(
+                "source changed before component cache replay".into(),
+            ));
+        }
+        emit_cached(&expected, artifact)?;
+        true
+    } else {
+        false
+    };
+    Ok(Some((cache, key, replayed)))
 }
 
 fn pack_component(
     root: &Path,
-    component: Component,
+    component: &Component,
     extra: &[String],
     inventory: Option<&Path>,
     metadata: &serde_json::Value,
@@ -203,6 +326,19 @@ fn pack_component(
         ));
     }
     let target = build::target_dir(metadata);
+    #[cfg(target_os = "linux")]
+    let cache = prepare_cache(
+        root,
+        component,
+        extra,
+        &target,
+        inventory,
+        source_digest.as_deref(),
+    )?;
+    #[cfg(target_os = "linux")]
+    if cache.as_ref().is_some_and(|(_, _, replayed)| *replayed) {
+        return Ok(());
+    }
     let staging_parent = Path::new(&target).join("tilo-vm-layers");
     std::fs::create_dir_all(&staging_parent)
         .map_err(CliError::io(format!("create {}", staging_parent.display())))?;
@@ -246,11 +382,23 @@ fn pack_component(
         build::first_elf(&tree).unwrap_or_default()
     };
     let packed = Packed {
-        component: component.name,
+        component: component.name.clone(),
         target: facts.target,
         toolchain: facts.toolchain,
         source_digest,
     };
+    #[cfg(target_os = "linux")]
+    if let Some((cache, key, _)) = cache {
+        let digest = packed.source_digest.as_deref().ok_or_else(|| {
+            CliError::InvalidInput("component cache has no source inventory".into())
+        })?;
+        if runtime_input_key(root, component, extra, &target, digest, true)? != key {
+            return Err(CliError::InvalidInput(
+                "compiled inputs changed during component assembly".into(),
+            ));
+        }
+        return emit_cached(&packed, cache.save(&packed, &tree)?);
+    }
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
     let header =

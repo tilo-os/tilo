@@ -18336,6 +18336,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-files",
  "tilo-vm-protocol",

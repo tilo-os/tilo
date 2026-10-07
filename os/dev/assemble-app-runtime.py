@@ -6,19 +6,22 @@ build admission. The result is only a staged component; tilo-vmd still owns
 source authority, import, activation and the slot lifecycle.
 """
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
 import platform
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 
 
 def run(argv, *, env=None, capture=False):
     return subprocess.run(argv, check=True, env=env,
-                          stdout=subprocess.PIPE if capture else None,
+                          stdout=subprocess.PIPE if capture else sys.stderr,
                           text=capture)
 
 
@@ -195,11 +198,8 @@ def package_inside(args):
 
 
 
-def assemble(args):
+def prepare(args):
     repo, target = args.repo.resolve(), args.target_dir.resolve()
-    rows = applications(repo)
-    if args.dest is not None and args.dest.exists() and any(args.dest.iterdir()):
-        raise ValueError('component destination must be empty')
     cargo = os.environ.get('CARGO', 'cargo')
     tools_env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='off',
                      CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
@@ -217,6 +217,63 @@ def assemble(args):
     for _, binary, _ in selected_applications(repo, args.app):
         if not (target / profile_directory(args.profile) / binary).is_file():
             raise ValueError('full cohort build did not produce all applications')
+
+
+def file_hash(path):
+    """Bind the bytes actually read, refusing an input changed during hashing."""
+    with path.open('rb') as stream:
+        before = os.fstat(stream.fileno())
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        after = os.fstat(stream.fileno())
+    fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+    if any(getattr(before, field) != getattr(after, field) for field in fields):
+        raise ValueError('a compiled cohort input changed during hashing')
+    return digest
+
+
+def input_key(args):
+    """The caller verifies the full SourceSnapshot before and after assembly."""
+    if not args.source_digest or not re.fullmatch(r'[0-9a-f]{64}', args.source_digest):
+        raise ValueError('cache requires a verified complete source inventory')
+    # Overrides belong to the normal uncached packaging flow; none may silently
+    # change a cached public artifact or import an external signing authority.
+    overrides = ('IDENTITY_JSON', 'TAPP_DIR', 'EXPECTED_PUBKEY', 'STAGE',
+                 'TILO_IMAGE_BUILD', 'SOURCE_DATE_EPOCH', 'TILO_LAUNCHER_PATH',
+                 'MAX_TAPP_BYTES', 'APP_VERSION', 'VERSION_OVERRIDE')
+    if any(os.environ.get(name) for name in overrides):
+        raise ValueError('component cache requires canonical packaging inputs')
+    repo, target = args.repo.resolve(), args.target_dir.resolve()
+    rows = applications(repo)
+    profile = target / profile_directory(args.profile)
+    toolkit = profile / 'libruntime_dylib.so'
+    binaries = [profile / row[1] for row in rows]
+    libdir = Path(run(['rustc', '--print', 'target-libdir'], capture=True).stdout.strip())
+    std = sorted(libdir.glob('libstd-*.so'))
+    if len(std) != 1 or not toolkit.is_file() or any(not binary.is_file() for binary in binaries):
+        raise ValueError('cache requires the complete compiled cohort')
+    closure = native_dependencies([toolkit, *binaries],
+                                 dict(os.environ, LD_LIBRARY_PATH=f'{profile}:{libdir}'))
+    tools = [target / 'release' / name for name in
+             ('tilo-runtime-bundle', 'tilo-app-package', 'tilo-install', 'tilo-cli-shim')]
+    # All source bytes (including scripts/manifests/dirty UI) are bound by the
+    # verified SourceSnapshot; actual native and Rust inputs are bound here too.
+    inputs = list(dict.fromkeys([toolkit, *binaries, std[0], *closure, *tools]))
+    subject = dict(source_digest=args.source_digest, architecture=platform.machine(),
+                   profile=args.profile, features=args.features,
+                   compiler=run(['rustc', '--version', '--verbose'], capture=True).stdout,
+                   tools=dict(python=sys.version,
+                              ldd=run(['ldd', '--version'], capture=True).stdout,
+                              bwrap=run(['bwrap', '--version'], capture=True).stdout),
+                   files={str(path): file_hash(path) for path in sorted(inputs)})
+    encoded = json.dumps(subject, sort_keys=True, separators=(',', ':')).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def assemble(args):
+    repo, target = args.repo.resolve(), args.target_dir.resolve()
+    if args.dest is not None and args.dest.exists() and any(args.dest.iterdir()):
+        raise ValueError('component destination must be empty')
+    prepare(args)
     with tempfile.TemporaryDirectory(prefix='app-runtime-', dir=target) as directory:
         stage = Path(directory)
         run(namespace_command(repo, stage, target, args.profile, app=args.app))
@@ -240,6 +297,9 @@ def main():
     parser.add_argument('--app')
     parser.add_argument('--tapp-out', type=Path)
     parser.add_argument('--dest', type=Path)
+    parser.add_argument('--fingerprint-only', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--input-key', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--source-digest', help=argparse.SUPPRESS)
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--stage', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--packaging', action='store_true', help=argparse.SUPPRESS)
@@ -254,7 +314,11 @@ def main():
         args.features = ','.join(cohort.get('features', []))
     if args.app is not None:
         selected_applications(args.repo, args.app)
-    if args.inside:
+    if args.input_key:
+        if not args.fingerprint_only:
+            prepare(args)
+        print(input_key(args))
+    elif args.inside:
         if args.stage is None:
             parser.error('private assembly needs its owned stage')
         if args.packaging:
