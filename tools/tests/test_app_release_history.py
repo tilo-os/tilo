@@ -11,6 +11,8 @@ import time
 import unittest
 from unittest import mock
 
+from git_fixture import isolated_git_environment
+
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -23,16 +25,6 @@ SPEC = importlib.util.spec_from_file_location(
 history = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(history)
 
-# Repository-local variables reported by `git rev-parse --local-env-vars`.
-# Temporary histories must neither select nor search the CI checkout/cache.
-GIT_REPOSITORY_ENV = (
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY", "GIT_DIR",
-    "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE",
-    "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_PREFIX", "GIT_REPLACE_REF_BASE",
-    "GIT_NO_REPLACE_OBJECTS", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
-)
-
-
 class AppReleaseHistory(unittest.TestCase):
     def setUp(self):
         if not hasattr(self, "operations"):
@@ -43,11 +35,11 @@ class AppReleaseHistory(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         trace = self.root / "git-phases.json"
-        environment = mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": str(trace)})
+        environment = mock.patch.dict(
+            os.environ, isolated_git_environment(GIT_TRACE2_EVENT=str(trace)), clear=True
+        )
         environment.start()
         self.addCleanup(environment.stop)
-        for variable in GIT_REPOSITORY_ENV:
-            os.environ.pop(variable, None)
         self.addCleanup(self.collect_git_phases, trace)
         self.source = self.root / "source"
         self.remote = self.root / "remote.git"
