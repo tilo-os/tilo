@@ -1622,7 +1622,8 @@ fn preferred_rect_at_grip(from: Rect, preferred: Size, grip: Vec2, desktop: Rect
     let inset = 16.0_f64
         .min(((desktop.width() - 1.0) / 2.0).max(0.0))
         .min(((desktop.height() - 1.0) / 2.0).max(0.0));
-    let safe = desktop.inset(inset);
+    // Kurbo adds positive Insets to the outside; a safe margin shrinks it.
+    let safe = desktop.inset(-inset);
     let size = Size::new(
         preferred.width.min(from.width()).min(safe.width()).max(1.0),
         preferred
@@ -2008,6 +2009,65 @@ mod tests {
             oversized.settle_motion.is_none(),
             "a preferred destination never enlarges prepared geometry"
         );
+    }
+
+    #[test]
+    fn preferred_desktop_settle_keeps_complete_surface_inside_actual_output() {
+        for desktop in [
+            Rect::new(0.0, 0.0, 1_600.0, 900.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            Rect::new(-1_600.0, 90.0, 0.0, 990.0),
+            Rect::new(240.0, 110.0, 1_040.0, 710.0),
+            Rect::new(20.0, 30.0, 40.0, 48.0),
+        ] {
+            let margin = 16.0_f64
+                .min(((desktop.width() - 1.0) / 2.0).max(0.0))
+                .min(((desktop.height() - 1.0) / 2.0).max(0.0));
+            for theme in [
+                crate::theme::Theme::light(),
+                crate::theme::Theme::dark(),
+                crate::theme::Theme::high_contrast().with_text_scale(2.0),
+            ] {
+                let preferred = Size::new(
+                    f64::from(theme.tokens.metrics.panel_width_sheet * theme.text_growth()),
+                    f64::from(theme.tokens.metrics.compact_content_height * theme.text_growth()),
+                );
+                for center in [desktop.origin(), Point::new(desktop.x1, desktop.y1)] {
+                    let prepared = Rect::from_center_size(center, desktop.size());
+                    let mut placement = FloatingPlacement::attached(prepared.size());
+                    placement.settle_detached_to_preferred_size(preferred);
+                    placement.detach_to_desktop(prepared);
+                    placement.prepare_desktop_rect_with_offset(prepared, Vec2::new(240.0, 110.0));
+                    let before = placement.rect(prepared, desktop);
+                    placement.confirm_desktop_adoption_within(desktop);
+                    assert_eq!(
+                        placement.rect(prepared, desktop),
+                        before,
+                        "the first sample must preserve the actual live transfer rectangle"
+                    );
+                    let motion = placement
+                        .settle_motion
+                        .as_mut()
+                        .expect("an edge-straddling source needs a compact in-bounds settle");
+                    motion.started.set(Some(instant_ago(
+                        SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
+                    )));
+                    let settled = placement.rect(prepared, desktop);
+                    assert!(settled.x0 >= desktop.x0 + margin, "left edge: {settled:?}");
+                    assert!(settled.y0 >= desktop.y0 + margin, "top edge: {settled:?}");
+                    assert!(settled.x1 <= desktop.x1 - margin, "right edge: {settled:?}");
+                    assert!(
+                        settled.y1 <= desktop.y1 - margin,
+                        "bottom edge: {settled:?}"
+                    );
+                    assert!(settled.width() <= preferred.width);
+                    assert!(settled.height() <= preferred.height);
+                    assert!(settled.width() <= prepared.width());
+                    assert!(settled.height() <= prepared.height());
+                    assert!(settled.width() >= 1.0 && settled.height() >= 1.0);
+                }
+            }
+        }
     }
 
     #[test]
