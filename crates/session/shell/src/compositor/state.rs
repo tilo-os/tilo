@@ -875,17 +875,17 @@ impl State {
     pub(crate) fn floating_owner_for_surface(
         &self,
         surface_id: u64,
-    ) -> Result<FloatingToplevelOwner, &'static str> {
+    ) -> Result<Arc<FloatingToplevelOwner>, &'static str> {
         let client = self
             .surface_handles
             .get(&surface_id)
             .and_then(WlSurface::client)
             .ok_or("floating source has no current Wayland connection")?;
         let (_, room) = authenticated_toplevel_identity(client.get_data::<ClientState>(), None)?;
-        Ok(FloatingToplevelOwner {
+        Ok(Arc::new(FloatingToplevelOwner {
             client: client.id(),
             room,
-        })
+        }))
     }
 
     fn resolve_toplevel_identity(
@@ -901,14 +901,14 @@ impl State {
                 self.pending_floating_toplevels
                     .iter()
                     .find(|pending| pending.token == token)
-                    .map(|pending| (pending.owner.as_ref(), pending.app_id.as_str()))
+                    .map(|pending| (pending.owner.as_deref(), pending.app_id.as_str()))
                     .or_else(|| {
                         self.floating_toplevels
                             .iter()
                             .find(|surface| {
                                 surface.token == token && surface.surface_id == surface_id
                             })
-                            .map(|surface| (surface.owner.as_ref(), surface.app_id.as_str()))
+                            .map(|surface| (surface.owner.as_deref(), surface.app_id.as_str()))
                     })
             });
         authenticated_floating_toplevel_identity(client, announced, owner)
@@ -924,14 +924,14 @@ impl State {
             .pending_floating_toplevels
             .iter()
             .find(|pending| pending.connection == connection && pending.public_id == public_id)
-            .map(|pending| pending.owner.as_ref())
+            .map(|pending| pending.owner.as_deref())
             .or_else(|| {
                 self.floating_toplevels
                     .iter()
                     .find(|surface| {
                         surface.connection == connection && surface.public_id == public_id
                     })
-                    .map(|surface| surface.owner.as_ref())
+                    .map(|surface| surface.owner.as_deref())
             });
         if owner.is_none() || previous.is_some_and(|previous| previous != owner) {
             return Err("floating capability cannot change its source owner");

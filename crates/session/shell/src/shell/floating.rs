@@ -30,7 +30,7 @@ pub struct FloatingTransferSource {
 
 #[derive(Clone, Debug)]
 pub struct PendingFloatingToplevel {
-    pub owner: Option<FloatingToplevelOwner>,
+    pub owner: Option<Arc<FloatingToplevelOwner>>,
     pub token: String,
     pub connection: u64,
     pub public_id: String,
@@ -44,7 +44,7 @@ pub struct PendingFloatingToplevel {
 
 #[derive(Clone, Debug)]
 pub struct FloatingToplevel {
-    pub owner: Option<FloatingToplevelOwner>,
+    pub owner: Option<Arc<FloatingToplevelOwner>>,
     pub surface_id: u64,
     pub token: String,
     pub connection: u64,

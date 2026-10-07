@@ -55,10 +55,10 @@ impl Fixture {
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.state
             .authorize_floating_toplevel(PendingFloatingToplevel {
-                owner: Some(FloatingToplevelOwner {
+                owner: Some(Arc::new(FloatingToplevelOwner {
                     client: self.client.id(),
                     room: Some(self.room),
-                }),
+                })),
                 token: token.clone(),
                 connection: 7,
                 public_id: "conversation".into(),
@@ -170,11 +170,13 @@ fn floating_capability_refuses_other_client_package_room_and_unminted_token() {
             .resolve_toplevel_identity(9, Some(&fixture.client), Some(unminted))
             .is_err()
     );
-    fixture.state.pending_floating_toplevels[0]
-        .owner
-        .as_mut()
-        .unwrap()
-        .room = Some(crate::shell::state::RoomId::new());
+    Arc::make_mut(
+        fixture.state.pending_floating_toplevels[0]
+            .owner
+            .as_mut()
+            .unwrap(),
+    )
+    .room = Some(crate::shell::state::RoomId::new());
     let announced = format!(
         "{}{}",
         ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX,
@@ -186,11 +188,13 @@ fn floating_capability_refuses_other_client_package_room_and_unminted_token() {
             .resolve_toplevel_identity(9, Some(&fixture.client), Some(announced.clone()))
             .is_err()
     );
-    fixture.state.pending_floating_toplevels[0]
-        .owner
-        .as_mut()
-        .unwrap()
-        .room = Some(fixture.room);
+    Arc::make_mut(
+        fixture.state.pending_floating_toplevels[0]
+            .owner
+            .as_mut()
+            .unwrap(),
+    )
+    .room = Some(fixture.room);
     fixture.state.pending_floating_toplevels[0].app_id = "so.tilo.notes".into();
     assert!(
         fixture

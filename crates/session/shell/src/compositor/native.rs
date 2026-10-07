@@ -1632,7 +1632,7 @@ fn pump_floating_surface_service(
                                 .map_err(str::to_string)?;
                             if request.role.uses_app_owned_host() {
                                 state
-                                    .validate_floating_resume_owner(connection, &public_id, owner.as_ref())
+                                    .validate_floating_resume_owner(connection, &public_id, owner.as_deref())
                                     .map_err(str::to_string)?;
                             }
                             let (transfer_frame, transfer_source) = if request.role.uses_app_owned_host() {
