@@ -8714,6 +8714,12 @@ pub fn run() {
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_messaging_record_wake(Arc::clone(&session_wake));
+        }
+    });
     let chooser_attended = Arc::new(AtomicBool::new(false));
     let mut published_room = PublishedRoom::new();
     let chooser_service = start_chooser_service(
@@ -10718,6 +10724,9 @@ pub fn run() {
             // the normal desktop way; it is not a process kill.
             let mut close_requests = Vec::new();
             frame_builder.with_chrome(|chrome| {
+                if let Some(apps) = chrome.hosted_inputs.in_process() {
+                    apps.borrow_mut().pump_messaging_records();
+                }
                 for request in app_closes.drain() {
                     let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
                     eprintln!(

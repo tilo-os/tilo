@@ -463,6 +463,17 @@ impl AppActionBroker {
         self.state.certified_local_action_host(caller, presentation)
     }
 
+    /// Reuse the checked signed person-room admission for native owner checks.
+    /// # Errors
+    /// Refuses non-person, foreign, stale or unadmitted execution; grants none.
+    pub fn certified_person_context(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+    ) -> Result<crate::services::CertifiedPersonContext, String> {
+        self.state.certified_person_context(caller, presentation)
+    }
+
     /// Reusable native broker attachment for an ordinary standalone peer.
     ///
     /// # Errors

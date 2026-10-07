@@ -182,6 +182,9 @@ impl SecretVault {
     pub fn get(&self, id: &AccountId) -> Option<Secret> {
         self.entries.get(id.as_str()).cloned()
     }
+    pub(crate) fn contains(&self, id: &AccountId) -> bool {
+        self.entries.contains_key(id.as_str())
+    }
 
     /// Internal snapshot used by the typed stores layered over this encrypted
     /// container. Kept crate-private so applications cannot enumerate account
