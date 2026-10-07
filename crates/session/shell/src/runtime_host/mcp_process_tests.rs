@@ -403,6 +403,53 @@ fn mcp_process_owns_and_reaps_its_children() {
         // No retry: the replacement must immediately acquire both profile and file leases.
         drop(Session::start(&root).expect("completed retirement releases the native writer lease"));
     }
+    fn identity_clients_retire_before_the_native_writer_lease() {
+        use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Response};
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+        let Some(root) = isolated_root("identity_clients_retire_before_the_native_writer_lease")
+        else {
+            return;
+        };
+        let session = Session::start(&root).unwrap();
+        let mut client = UnixStream::connect(session.identity_socket()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        HANDSHAKE_FRAMING
+            .write(
+                &mut client,
+                &serde_json::to_vec(&Handshake {
+                    workspace_id: session.room.clone(),
+                    app_id: "so.tilo.file-explorer".into(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        FRAMING
+            .write_value(&mut client, &Request::Metadata)
+            .unwrap();
+        let reply: Response = FRAMING.read_value(&mut client).unwrap().unwrap();
+        assert!(
+            !matches!(reply, Response::Denied(_)),
+            "the actual identity worker answered: {reply:?}"
+        );
+        // Another accepted connection stops inside a partial handshake.
+        let mut partial = UnixStream::connect(session.identity_socket()).unwrap();
+        partial.write_all(&[0]).unwrap();
+        drop(session);
+        // The client's socket stays open: host retirement must own cancellation.
+        let replacement = Session::start(&root)
+            .expect("retired identity clients release the native writer lease without retries");
+        assert!(
+            FRAMING
+                .read_value::<_, Response>(&mut client)
+                .unwrap()
+                .is_none(),
+            "the previous session cannot keep serving identity requests"
+        );
+        drop(replacement);
+    }
     // Helper role: a publication helper re-enters this test and must go
     // straight to its publishing loop, which never returns.
     if std::env::var_os("TILO_MCP_PUBLICATION_HELPER").is_some() {
@@ -417,4 +464,5 @@ fn mcp_process_owns_and_reaps_its_children() {
     // Phase `duplicate_app_ids_publish_as_distinct_normal_sdk_instances` (defined above).
     duplicate_app_ids_publish_as_distinct_normal_sdk_instances();
     shutdown_saves_finish_before_the_profile_is_released();
+    identity_clients_retire_before_the_native_writer_lease();
 }
