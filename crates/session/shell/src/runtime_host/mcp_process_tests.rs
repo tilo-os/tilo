@@ -348,6 +348,61 @@ fn mcp_process_owns_and_reaps_its_children() {
         assert!(roots.iter().all(|root| root.app_id == "dev.tilo.same"));
         assert_ne!(roots[0].peer_id, roots[1].peer_id);
     }
+    // A real broker lifecycle listener publishes a final snapshot during close.
+    fn shutdown_saves_finish_before_the_profile_is_released() {
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        let Some(root) = isolated_root("shutdown_saves_finish_before_the_profile_is_released")
+        else {
+            return;
+        };
+        let session = Session::start(&root).unwrap();
+        let tree = Arc::downgrade(&session.workspace_tree());
+        let path = root.join("workspace.json");
+        let (started, saving) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let released = Mutex::new(Some(released));
+        let listener: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let tree = tree
+                .upgrade()
+                .expect("broker close still owns its workspace");
+            let released = released.lock().unwrap().take().expect("one close callback");
+            let started = started.clone();
+            crate::shell::persist::queue_save(&tree.read(), &path, move || {
+                started.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+        });
+        session.broker.local_session_lifecycle().watch(&listener);
+        let returned = Arc::new(AtomicBool::new(false));
+        let observed = returned.clone();
+        let controller = std::thread::spawn(move || {
+            saving.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Keep the actual final writer occupied while checking retirement.
+            std::thread::sleep(Duration::from_millis(100));
+            let waited = !observed.load(Ordering::SeqCst);
+            let locked = tilo_runtime::profile::lock(&root)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock);
+            release.send(()).unwrap();
+            (root, waited, locked)
+        });
+        drop(session);
+        returned.store(true, Ordering::SeqCst);
+        let (root, waited, locked) = controller.join().unwrap();
+        assert!(
+            waited,
+            "session returned while its shutdown snapshot was still running"
+        );
+        assert!(
+            locked,
+            "profile lock was released before the shutdown save completed"
+        );
+        // No retry: the replacement must immediately acquire both profile and file leases.
+        drop(Session::start(&root).expect("completed retirement releases the native writer lease"));
+    }
     // Helper role: a publication helper re-enters this test and must go
     // straight to its publishing loop, which never returns.
     if std::env::var_os("TILO_MCP_PUBLICATION_HELPER").is_some() {
@@ -361,4 +416,5 @@ fn mcp_process_owns_and_reaps_its_children() {
     output_failure_reaps_the_surviving_child_and_releases_the_profile();
     // Phase `duplicate_app_ids_publish_as_distinct_normal_sdk_instances` (defined above).
     duplicate_app_ids_publish_as_distinct_normal_sdk_instances();
+    shutdown_saves_finish_before_the_profile_is_released();
 }
