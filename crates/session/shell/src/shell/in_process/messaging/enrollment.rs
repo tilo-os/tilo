@@ -84,6 +84,48 @@ impl NativeVerifiedSignalEnrollment {
 }
 
 impl super::super::InProcessApps {
+    pub(super) fn publish_native_whatsapp_account(
+        &mut self,
+        identity: &NativeMessagingIdentity,
+        name: String,
+        jid: String,
+    ) -> Result<(), LaunchError> {
+        identity.check().map_err(|_| LaunchError::BindingMismatch)?;
+        let owner = &identity.owner;
+        if owner.principal != self.author.0
+            || owner.device != self.device_id
+            || owner.service != tilo_messaging_protocol::Service::Whatsapp
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let action = PersonAccounts::PUBLISH_WHATSAPP_ACCOUNT
+            .with((owner.account.clone(), name, jid, owner.linking_generation))
+            .build(tilo_resource::origin_now_ms())
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        let records = ui::record::person::PersonRecords::open(
+            &mut self.owners,
+            accounts::person::ACCOUNTS_OWNER,
+            self.author.clone(),
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        let record = records
+            .open_original_record(ui::record::RecordKind::new(PersonAccounts::KIND), |doc| {
+                PersonAccounts::initialize(doc).map_err(|error| error.to_string())
+            })
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        record
+            .edit(true, |doc| {
+                identity
+                    .check()
+                    .map_err(|_| "original native admission retired".to_owned())?;
+                action.apply(doc).map_err(|error| error.to_string())
+            })
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        records
+            .flush()
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        identity.check().map_err(|_| LaunchError::BindingMismatch)
+    }
     /// Prepare private key custody only for the exact unpublished enrollment
     /// that passed provider self-identity verification. The protected Passwords
     /// decision remains separate; this door creates no grant or ready adapter.
@@ -94,7 +136,17 @@ impl super::super::InProcessApps {
         candidate: &NativeVerifiedSignalEnrollment,
         origin: &str,
     ) -> Result<accounts::SecretId, LaunchError> {
-        let owner = candidate.owner();
+        if candidate.owner() != &candidate.identity.owner {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.prepare_native_messaging_profile_key(&candidate.identity, origin)
+    }
+    pub(super) fn prepare_native_messaging_profile_key(
+        &self,
+        identity: &NativeMessagingIdentity,
+        origin: &str,
+    ) -> Result<accounts::SecretId, LaunchError> {
+        let owner = &identity.owner;
         let vault = self
             .credential_owner
             .as_ref()
@@ -103,27 +155,22 @@ impl super::super::InProcessApps {
             .native_broker_socket
             .as_ref()
             .ok_or(LaunchError::BindingMismatch)?;
-        if owner != &candidate.identity.owner
-            || owner.principal != self.author.0
+        if owner.principal != self.author.0
             || owner.device != self.device_id
             || owner.principal != vault.principal()
             || owner.device != vault.device()
-            || !candidate
-                .identity
+            || !identity
                 .native_session
                 .as_ref()
                 .is_some_and(|session| session.matches_socket(socket))
         {
             return Err(LaunchError::BindingMismatch);
         }
-        candidate
-            .identity
-            .check()
-            .map_err(|_| LaunchError::BindingMismatch)?;
+        identity.check().map_err(|_| LaunchError::BindingMismatch)?;
         let id = vault
             .prepare_profile_key(&super::credential_scope(owner), origin)
             .map_err(|_| LaunchError::BindingMismatch)?;
-        if candidate.identity.check().is_err() {
+        if identity.check().is_err() {
             // This call created a new item, never an existing key or grant.
             vault
                 .edit(|store| store.remove(&id))

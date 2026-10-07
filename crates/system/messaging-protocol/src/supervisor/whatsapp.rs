@@ -13,7 +13,11 @@ pub struct Network {
     pub http: Arc<dyn HttpClient>,
     pub transport: Arc<dyn TransportFactory>,
 }
+mod linking;
+#[cfg(target_os = "linux")]
+mod native_network;
 mod network;
+pub use linking::WhatsappLinking;
 struct Http(Arc<dyn HttpClient>);
 #[whatsapp_rust::async_trait]
 impl HttpClient for Http {
