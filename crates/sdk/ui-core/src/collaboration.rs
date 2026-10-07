@@ -1544,6 +1544,14 @@ impl CollaborationManager {
         }
     }
 
+    pub(crate) fn action_directory_observation(&self) -> (bool, Option<(u64, u64)>) {
+        let counts = match &self.backend {
+            Backend::Transport(transport) => transport.action_directory_publication_counts(),
+            Backend::Disabled(_) => None,
+        };
+        (self.action_directory_published, counts)
+    }
+
     /// Drain requests issued by the transport's `ActionDirectory` server.
     /// This must be called by [`crate::app::App`] on its owner thread.
     pub(crate) fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
