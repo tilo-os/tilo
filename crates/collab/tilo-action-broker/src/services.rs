@@ -358,6 +358,19 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Admit kernel-attested executing custody only beneath this exact launch.
+    /// This grants no new identity or filesystem permissions.
+    #[cfg(target_os = "linux")]
+    fn attest_executing_process(
+        &self,
+        launcher_pid: u32,
+        peer: &runtime_portal::process_binding::ExecutingPeer,
+        app: &str,
+        room: &str,
+    ) -> bool {
+        let _ = (launcher_pid, peer, app, room);
+        false
+    }
     /// Original declarations of this exact live launch, not the currently
     /// installed replacement package. Unsupported hosts grant no creation.
     ///

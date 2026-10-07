@@ -39,6 +39,8 @@ dev-overrides = ["package-store/dev-overrides"]
 managed-tree-test = []
 
 [dependencies]
+# Kernel-authenticated custody of the executing native service peer.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }

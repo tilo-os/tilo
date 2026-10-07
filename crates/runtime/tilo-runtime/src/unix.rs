@@ -138,6 +138,8 @@ impl ServiceConnections {
                 self.identity.as_raw_fd().to_string(),
             ),
         ];
+        #[cfg(target_os = "linux")]
+        env.push((launcher::services::COLLAB_EXECUTING_PEER_ENV, "1".into()));
         if let Some(blobs) = &self.blobs {
             env.push(("TILO_SVC_BLOBS_FD", blobs.as_raw_fd().to_string()));
         }

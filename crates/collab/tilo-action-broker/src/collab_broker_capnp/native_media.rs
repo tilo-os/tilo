@@ -58,7 +58,10 @@ pub(super) struct LocalAppConnection {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
-pub(super) struct PeerProcess(Arc<std::os::fd::OwnedFd>);
+pub(super) struct PeerProcess {
+    task: Arc<std::os::fd::OwnedFd>,
+    launcher: Option<Arc<std::os::fd::OwnedFd>>,
+}
 #[cfg(not(target_os = "linux"))]
 pub(super) struct PeerProcess;
 
@@ -87,7 +90,21 @@ impl PeerProcess {
         if len as usize != std::mem::size_of::<libc::c_int>() {
             return None;
         }
-        let process = Self(Arc::new(owned));
+        let process = Self {
+            task: Arc::new(owned),
+            launcher: None,
+        };
+        process.alive().then_some(process)
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn with_executing(
+        self,
+        peer: runtime_portal::process_binding::ExecutingPeer,
+    ) -> Option<Self> {
+        let process = Self {
+            task: Arc::new(peer.into_pidfd()),
+            launcher: Some(self.task),
+        };
         process.alive().then_some(process)
     }
     #[cfg(not(target_os = "linux"))]
@@ -102,7 +119,7 @@ impl PeerProcess {
         // SAFETY: owned kernel-attested pidfd, bounded descriptor number, zero
         // flags. Success returns a fresh owned close-on-exec descriptor.
         let result =
-            unsafe { libc::syscall(libc::SYS_pidfd_getfd, self.0.as_raw_fd(), descriptor, 0) };
+            unsafe { libc::syscall(libc::SYS_pidfd_getfd, self.task.as_raw_fd(), descriptor, 0) };
         let fd = i32::try_from(result).map_err(|_| "peer descriptor exceeds bound")?;
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
@@ -116,14 +133,23 @@ impl PeerProcess {
     }
 
     #[cfg(target_os = "linux")]
-    fn alive(&self) -> bool {
+    pub(super) fn alive(&self) -> bool {
         let mut poll = libc::pollfd {
-            fd: self.0.as_raw_fd(),
+            fd: self.task.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
         // SAFETY: one initialized pollfd, owned pidfd, nonblocking query.
-        unsafe { libc::poll(&raw mut poll, 1, 0) == 0 }
+        (unsafe { libc::poll(&raw mut poll, 1, 0) == 0 })
+            && self.launcher.as_ref().is_none_or(|launcher| {
+                let mut poll = libc::pollfd {
+                    fd: launcher.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: another owned launch pidfd and nonblocking query.
+                unsafe { libc::poll(&raw mut poll, 1, 0) == 0 }
+            })
     }
     #[cfg(not(target_os = "linux"))]
     #[expect(
@@ -138,7 +164,7 @@ impl PeerProcess {
 #[cfg(target_os = "linux")]
 impl AsRawFd for PeerProcess {
     fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        self.0.as_raw_fd()
+        self.task.as_raw_fd()
     }
 }
 
@@ -157,6 +183,15 @@ impl LocalAppConnection {
                 process,
                 connected: AtomicBool::new(true),
             })
+        })
+    }
+    pub(super) fn from_launch(
+        handoff: super::CollabLaunchHandoff,
+        process: Option<PeerProcess>,
+        creation: Option<crate::services::ApplicationCreationEvidence>,
+    ) -> Option<Arc<Self>> {
+        process.and_then(|process| {
+            Self::attested(handoff.app_id, handoff.workspace_id, process, creation)
         })
     }
     pub(super) fn current(&self) -> bool {
@@ -214,10 +249,26 @@ fn watch_death(
     process: PeerProcess,
     stop: Arc<dyn Fn() + Send + Sync>,
 ) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    let launcher = process
+        .launcher
+        .as_ref()
+        .map(|task| {
+            tokio::io::unix::AsyncFd::new(PeerProcess {
+                task: Arc::clone(task),
+                launcher: None,
+            })
+        })
+        .transpose()?;
     let process = tokio::io::unix::AsyncFd::new(process)?;
     Ok(tokio::spawn(async move {
         // Death and monitor failure both revoke before the callback returns.
-        let _ = process.readable().await;
+        tokio::select! {
+            _ = process.readable() => {},
+            () = async {
+                if let Some(launcher) = launcher { let _ = launcher.readable().await; }
+                else { std::future::pending::<()>().await; }
+            } => {},
+        }
         stop();
     }))
 }

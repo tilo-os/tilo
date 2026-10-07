@@ -32,6 +32,8 @@ mod invoker;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+#[cfg(target_os = "linux")]
+mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
 #[path = "workspace_memberships.rs"]
@@ -467,6 +469,8 @@ struct CollabLaunchHandoff {
     protocol: u16,
     app_id: String,
     workspace_id: String,
+    #[serde(default)]
+    executing_peer: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11644,16 +11648,35 @@ async fn authenticate_launcher_handoff(
                 .map_err(|error| LaunchRefusal {
                     error: capnp::Error::failed(error),
                     peer: peer.clone(),
-                    answerable: true,
+                    answerable: !handoff.executing_peer,
                 })?;
-            return Ok(media_process.and_then(|process| {
-                native_media::LocalAppConnection::attested(
-                    handoff.app_id,
-                    handoff.workspace_id,
-                    process,
-                    creation,
+            #[cfg(target_os = "linux")]
+            let media_process = if handoff.executing_peer {
+                Some(
+                    process_binding::bind(stream, media_process, services, pid, &handoff)
+                        .await
+                        .map_err(|error| LaunchRefusal {
+                            error,
+                            peer: peer.clone(),
+                            answerable: false,
+                        })?,
                 )
-            }));
+            } else {
+                media_process
+            };
+            #[cfg(not(target_os = "linux"))]
+            if handoff.executing_peer {
+                return Err(LaunchRefusal {
+                    error: capnp::Error::failed("executing custody requires Linux".into()),
+                    peer,
+                    answerable: false,
+                });
+            }
+            return Ok(native_media::LocalAppConnection::from_launch(
+                handoff,
+                media_process,
+                creation,
+            ));
         }
         if attempt < LAUNCH_RECORD_RACE_RETRIES {
             tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
@@ -11669,7 +11692,7 @@ async fn authenticate_launcher_handoff(
     Err(LaunchRefusal {
         error: capnp::Error::failed(error.into()),
         peer,
-        answerable: true,
+        answerable: !handoff.executing_peer,
     })
 }
 

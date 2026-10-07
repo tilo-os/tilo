@@ -2757,6 +2757,16 @@ fn run_with_context(
     )?;
     let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    if enrolled.is_none()
+        && binds
+            .iter()
+            .any(|bind| bind.name == crate::services::COLLAB_SERVICE)
+    {
+        splice_cli_setenv(
+            &mut argv,
+            Some((runtime_portal::process_binding::ENV.into(), "1".into())),
+        )?;
+    }
     if let Some((services, _)) = enrolled.as_ref() {
         splice_cli_setenv(
             &mut argv,
@@ -3370,6 +3380,15 @@ fn run_with_capture_spawn<T>(
         &capabilities,
     )?;
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    if binds
+        .iter()
+        .any(|bind| bind.name == crate::services::COLLAB_SERVICE)
+    {
+        splice_cli_setenv(
+            &mut argv,
+            Some((runtime_portal::process_binding::ENV.into(), "1".into())),
+        )?;
+    }
     let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
