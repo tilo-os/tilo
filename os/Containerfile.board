@@ -25,6 +25,7 @@
 # TILO_CFS_DIGEST set: only the UKI is rebuilt, the rootfs layers are the
 # cached ones the digest was computed from.
 ARG BASE_IMAGE
+ARG BASE_REF
 ARG RPMS_REF
 # The resealing bootc (os/Containerfile.bootc-helper); only cfs-digest uses it.
 ARG BOOTC_HELPER_IMAGE=scratch
@@ -111,7 +112,10 @@ FROM board-root AS split
 RUN mkdir -p /kernel && test -z "$(ls -A /kernel)" \
     && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
-FROM ${BASE_IMAGE} AS uki-tools
+# Construction tooling uses the same pinned Fedora base as the production
+# sealer. It must not inherit the installed OS's rejection of unsigned build
+# intermediates. This throwaway stage is never copied into the board rootfs.
+FROM ${BASE_REF} AS uki-tools
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
