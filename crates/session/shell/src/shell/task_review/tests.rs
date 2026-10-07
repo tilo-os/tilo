@@ -210,6 +210,66 @@ impl tilo_desktop::activity::ActivityHost for PaneHost {
     }
 }
 #[test]
+fn native_review_binds_owner_read_and_commit_to_one_selected_certificate() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (_directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
+    admit(&owner, room);
+    let caller = owner
+        .with_current(room, |view| Ok(view.device().clone()))
+        .unwrap();
+    let task_id = task(&owner, room, &caller);
+    let actor = owner.workspace_task_snapshot(room).unwrap().tasks[0]
+        .created_by
+        .clone();
+    let resolutions = Arc::new(AtomicUsize::new(0));
+    let next = resolutions.clone();
+    let review = NativeTaskReview::start(
+        worker::Worker::new(
+            owner.clone(),
+            Arc::new(
+                crate::shell::broker_services::NativeOwnerCommitService::new(
+                    native_workspace_owner::tree_of(&owner),
+                    None,
+                ),
+            ),
+        )
+        .with_certificate_resolver(move |_| {
+            if next.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(caller.clone())
+            } else {
+                Err("selected identity changed after observation".into())
+            }
+        }),
+    )
+    .unwrap();
+    let request = TaskReviewRequest {
+        room: room.to_string(),
+        invocation: uuid::Uuid::new_v4(),
+        observed_actor: actor.clone(),
+        command: TaskReviewCommand::Steer {
+            task_id: task_id.clone(),
+            run_epoch: 1,
+            after_revision: 0,
+            text: "Retain the reviewed person's attribution".into(),
+        },
+    };
+    review.submit(request.clone()).unwrap();
+    wait(&review, request.invocation).unwrap();
+    let snapshot = owner.workspace_task_snapshot(room).unwrap();
+    assert_eq!(snapshot.controls[&task_id].directions.len(), 1);
+    assert_eq!(snapshot.controls[&task_id].directions[0].author, actor);
+    assert_eq!(
+        snapshot.controls[&task_id].directions[0].text,
+        "Retain the reviewed person's attribution"
+    );
+    assert!(
+        resolutions.load(Ordering::SeqCst) >= 2,
+        "the follow-up freshness read must independently observe the changed selection"
+    );
+    assert!(review.snapshot(&room.to_string()).unwrap().is_err());
+}
+
+#[test]
 fn native_review_renders_signed_owner_evidence_in_three_themes() {
     let (_directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
     admit(&owner, room);
