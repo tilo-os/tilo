@@ -17,9 +17,7 @@ const NAMESPACE: &str = "urn:x-cast:com.google.cast.tp.deviceauth";
 const MAX_FRAME: usize = 64 * 1024;
 const MAX_CERT: usize = 16 * 1024;
 const MAX_CHAIN: usize = 8;
-const CAST_ROOT: &[u8] = include_bytes!("chromecast_auth/cast-root.der");
-const EUREKA_ROOT: &[u8] = include_bytes!("chromecast_auth/eureka-root.der");
-const CRL_ROOT: &[u8] = include_bytes!("chromecast_auth/cast-crl-root.der");
+include!("chromecast_auth/authorities.rs");
 const AUTHORITIES: Authorities<'static> = Authorities {
     device: &[CAST_ROOT, EUREKA_ROOT],
     revocation: &[CRL_ROOT],

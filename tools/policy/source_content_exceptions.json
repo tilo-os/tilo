@@ -985,21 +985,6 @@
     "reason": "Upstream vendored test fixture or example asset; preserve upstream bytes."
   },
   {
-    "path": "vendor/fcast-sender-sdk/src/chromecast_auth/cast-crl-root.der",
-    "oid": "407e04c863fa692edcfc88f6d1a7b5a2032a07b9",
-    "reason": "Public Cast revocation signer authority DER from immutable Open Screen revision 1c526caf732881bd0aa1ab9479c36861bb225ba6; SHA-256 8b77c60291f9d62764613083f49750b1c5caac2d9efbe5a28edf301f9d84831d and BSD-3-Clause provenance retained in vendor/fcast-sender-sdk/PROVENANCE.md. Exact bytes are required by the protocol-private verifier."
-  },
-  {
-    "path": "vendor/fcast-sender-sdk/src/chromecast_auth/cast-root.der",
-    "oid": "15f2aecdd40a58a4fbe9fb27f695f136cada1cb2",
-    "reason": "Public Cast receiver identity authority DER from immutable Open Screen revision 1c526caf732881bd0aa1ab9479c36861bb225ba6; SHA-256 809af14700b3fe2611ad597eb1584d6354313b64ccdb3390f097fa3e5826d6ca and BSD-3-Clause provenance retained in vendor/fcast-sender-sdk/PROVENANCE.md. Exact bytes are required by the protocol-private verifier."
-  },
-  {
-    "path": "vendor/fcast-sender-sdk/src/chromecast_auth/eureka-root.der",
-    "oid": "608bd36c24bede1ba33504a646ae0f968b981f41",
-    "reason": "Public Eureka receiver identity authority DER from immutable Open Screen revision 1c526caf732881bd0aa1ab9479c36861bb225ba6; SHA-256 caf6d1e37b532203e01a76bf07187bb731ccd38801565ab2211a2c0ab7f3bc46 and BSD-3-Clause provenance retained in vendor/fcast-sender-sdk/PROVENANCE.md. Exact bytes are required by the protocol-private verifier."
-  },
-  {
     "path": "vendor/wgpu/src/macros/be-aligned.spv",
     "oid": "0e2d0657840989e5b2dc34afbb8ad832b3c2263a",
     "reason": "Upstream vendored test fixture or example asset; preserve upstream bytes."

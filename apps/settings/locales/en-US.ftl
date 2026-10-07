@@ -1940,3 +1940,9 @@ settings-appearance-schedule-follow = Follow the day and night schedule
 settings-appearance-shared-body = Your appearance preferences follow you across your devices. Wallpaper can apply to one workspace or every workspace.
 settings-appearance-shared-card = Your preferences
 settings-appearance-text-scale = Text scale
+
+display-devices-title = Screens on your devices
+display-device-screen = { $device } · { $screen } · { $status }
+display-device-online = Online
+display-device-offline = Offline
+display-devices-observed = Observed screen positions. Input access is granted separately.

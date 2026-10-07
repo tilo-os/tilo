@@ -5387,6 +5387,20 @@ impl ShellNetwork {
         if let Some(snapshot) = self.local_device_fabric_checkpoint() {
             self.publish_device_fabric_payload(PersonalFabricPayload::Snapshot(snapshot));
         }
+        if self
+            .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::DisplayInput)
+            && let Some(local) = self.personal_continuity_device.as_ref()
+            && let Some(display) = self
+                .device_fabric()
+                .snapshots()
+                .get(local)
+                .and_then(|snapshot| snapshot.display.clone())
+        {
+            self.publish_device_fabric_payload(PersonalFabricPayload::DisplayConnectors {
+                stamp: display.stamp,
+                outputs: display.outputs,
+            });
+        }
     }
 
     fn publish_personal_continuity_request(&self) {
@@ -5856,39 +5870,16 @@ impl ShellNetwork {
         match payload {
             PersonalFabricPayload::Request => self.publish_device_fabric_snapshot(),
             PersonalFabricPayload::Snapshot(bytes) => {
-                let Ok(incoming) =
-                    crate::shell::device_fabric::DeviceFabric::decode_checkpoint(&bytes)
-                else {
-                    tracing::warn!(peer = %peer, "dropping invalid personal fabric checkpoint");
-                    return;
-                };
-                if incoming.snapshots().len() != 1 {
-                    tracing::warn!(peer = %peer, "dropping relayed personal fabric authorship");
-                    return;
-                }
-                let expected = hex::encode(identity.device_pubkey);
-                let Some(snapshot) = incoming.snapshots().values().next().cloned() else {
-                    return;
-                };
-                if snapshot.owner.as_str() != expected {
-                    tracing::warn!(peer = %peer, "personal fabric owner does not match device certificate");
-                    return;
-                }
-                let Ok(mut fabric) = self.device_fabric.lock() else {
-                    return;
-                };
-                match fabric.upsert(snapshot) {
-                    Ok(true) => {
-                        if let Some(path) = self.device_fabric_path.as_deref()
-                            && !persist_device_fabric(path, &fabric)
-                        {
-                            tracing::warn!("device fabric merge persistence failed");
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, peer = %peer, "dropping conflicting personal fabric state");
-                    }
+                self.dispatch_personal_fabric_checkpoint(peer, identity.device_pubkey, &bytes);
+            }
+            PersonalFabricPayload::DisplayConnectors { stamp, outputs } => {
+                if self.permits_continuity(
+                    crate::shell::continuity_policy::ContinuityCapability::DisplayInput,
+                ) && let Ok(mut fabric) = self.device_fabric.lock()
+                    && let Err(error) =
+                        fabric.observe_display_connectors(&route.device, &stamp, outputs)
+                {
+                    tracing::debug!(%error, peer = %peer, "dropping invalid connector observation");
                 }
             }
             PersonalFabricPayload::Action(bytes) => {
@@ -5922,6 +5913,47 @@ impl ShellNetwork {
             payload @ (PersonalFabricPayload::RecordContentWant { .. }
             | PersonalFabricPayload::RecordContentPiece { .. }) => {
                 self.dispatch_person_content(ws, peer, payload);
+            }
+        }
+    }
+
+    fn dispatch_personal_fabric_checkpoint(
+        &self,
+        peer: iroh::EndpointId,
+        device_public_key: [u8; 32],
+        bytes: &[u8],
+    ) {
+        let Ok(incoming) = crate::shell::device_fabric::DeviceFabric::decode_checkpoint(bytes)
+        else {
+            tracing::warn!(peer = %peer, "dropping invalid personal fabric checkpoint");
+            return;
+        };
+        if incoming.snapshots().len() != 1 {
+            tracing::warn!(peer = %peer, "dropping relayed personal fabric authorship");
+            return;
+        }
+        let expected = hex::encode(device_public_key);
+        let Some(snapshot) = incoming.snapshots().values().next().cloned() else {
+            return;
+        };
+        if snapshot.owner.as_str() != expected {
+            tracing::warn!(peer = %peer, "personal fabric owner does not match device certificate");
+            return;
+        }
+        let Ok(mut fabric) = self.device_fabric.lock() else {
+            return;
+        };
+        match fabric.upsert(snapshot) {
+            Ok(true) => {
+                if let Some(path) = self.device_fabric_path.as_deref()
+                    && !persist_device_fabric(path, &fabric)
+                {
+                    tracing::warn!("device fabric merge persistence failed");
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%error, peer = %peer, "dropping conflicting personal fabric state");
             }
         }
     }
