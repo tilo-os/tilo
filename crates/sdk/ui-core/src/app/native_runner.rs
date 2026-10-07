@@ -3399,13 +3399,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // spellcheck), not "commit a buffer". Files' 750ms metadata
             // poll found nothing and still presented at ~2 Hz because
             // `needs_sync` forced a full redraw.
-            let updated = app.update_model();
-            let _ = app.sync_model(true);
-            let structure = app.forget_replaced_widgets();
-            if present_after_deadline_sync(
-                updated || structure || app.layout.layout_dirty,
-                app.root_widget.needs_animation_frame(),
-            ) {
+            if sync_scheduled_deadline(app) {
                 request_primary_redraw();
             }
         }
@@ -4097,9 +4091,121 @@ fn present_after_deadline_sync(model_or_layout_dirty: bool, needs_animation: boo
     model_or_layout_dirty || needs_animation
 }
 
+/// Run the model work behind one due widget deadline and decide whether its
+/// observable result needs a frame. A deadline is demand to poll, not evidence
+/// that the presentation changed.
+fn sync_scheduled_deadline(app: &mut App) -> bool {
+    let updated = app.update_model();
+    let _ = app.sync_model(true);
+    let structure = app.forget_replaced_widgets();
+    present_after_deadline_sync(
+        updated || structure || app.layout.layout_dirty,
+        app.root_widget.needs_animation_frame(),
+    )
+}
+
 #[cfg(test)]
 mod deadline_present_tests {
-    use super::present_after_deadline_sync;
+    use super::*;
+    use crate::widget::{AppModel, ModelPath, TaffyTreeExt};
+    use std::{cell::Cell, rc::Rc};
+    use vello::kurbo::{Affine, Point, Rect};
+
+    struct DeadlineProbe {
+        deadline: Rc<Cell<Option<crate::time::Instant>>>,
+        changed: bool,
+    }
+
+    impl Widget for DeadlineProbe {
+        fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+            let due = self
+                .deadline
+                .get()
+                .is_some_and(|deadline| deadline <= crate::time::now());
+            if due {
+                self.deadline.set(None);
+            }
+            due && self.changed
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            _theme: &Theme,
+            _node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            taffy.leaf_node(taffy::Style::default())
+        }
+
+        fn apply_layout(
+            &mut self,
+            _taffy: &taffy::TaffyTree<()>,
+            _node: taffy::NodeId,
+            _origin: Point,
+        ) {
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut vello::Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+            self.deadline.get()
+        }
+
+        fn needs_redraw(&self) -> bool {
+            true
+        }
+
+        fn name(&self) -> &str {
+            "DeadlineProbe"
+        }
+
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    fn due_app(changed: bool) -> (App, Rc<Cell<Option<crate::time::Instant>>>) {
+        let deadline = Rc::new(Cell::new(Some(crate::time::now())));
+        let probe = DeadlineProbe {
+            deadline: Rc::clone(&deadline),
+            changed,
+        };
+        let mut app =
+            App::from_factory_with_controlled_inputs(crate::State::new(), || Box::new(probe));
+        app.layout.layout_dirty = false;
+        (app, deadline)
+    }
+
+    #[test]
+    fn scheduled_widget_poll_presents_changed_observation_but_not_unchanged_idle() {
+        let (mut unchanged, unchanged_deadline) = due_app(false);
+        assert!(
+            unchanged
+                .root_widget
+                .next_wake_deadline()
+                .is_some_and(|deadline| deadline <= crate::time::now())
+        );
+        assert!(
+            !sync_scheduled_deadline(&mut unchanged),
+            "an unchanged scheduled observation must not present a frame even when needs_redraw is sticky"
+        );
+        assert!(unchanged_deadline.get().is_none());
+
+        let (mut changed, changed_deadline) = due_app(true);
+        assert!(
+            sync_scheduled_deadline(&mut changed),
+            "a changed scheduled observation must still become visible"
+        );
+        assert!(changed_deadline.get().is_none());
+    }
 
     #[test]
     fn idle_scheduled_sync_does_not_request_frames() {
