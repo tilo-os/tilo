@@ -6773,6 +6773,8 @@ mod tests {
         committed_history_fixture: Option<Vec<u8>>,
         committed_documentless_fixture: bool,
         committed_unavailable_fixture: bool,
+        committed_malformed_refresh_fixture: bool,
+        committed_malformed_refresh_replies: usize,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         op_stream_subscriptions: usize,
@@ -7137,6 +7139,7 @@ mod tests {
 
     struct FakeChannel {
         captures: SharedCaptures,
+        committed_requests: std::cell::Cell<usize>,
         op_backlog: OpBacklog,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
         context_backlog: Rc<RefCell<Vec<SeedContext>>>,
@@ -7241,12 +7244,32 @@ mod tests {
             let result = (|| {
                 let request = Request::decode(params.get()?.get_request()?)
                     .map_err(|error| capnp::Error::failed(error.into()))?;
+                let request_number = self.committed_requests.get().saturating_add(1);
+                self.committed_requests.set(request_number);
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
                 let reply = if captures.committed_documentless_fixture {
                     Reply::Documentless
                 } else if captures.committed_unavailable_fixture {
                     Reply::Unavailable
+                } else if captures.committed_malformed_refresh_fixture
+                    && request_number >= 3
+                    && matches!(
+                        &request,
+                        Request::Open {
+                            known_revision: None
+                        }
+                    )
+                {
+                    captures.committed_malformed_refresh_replies += 1;
+                    Reply::Chunk {
+                        capture: 2,
+                        revision: [8; 32],
+                        total: 1,
+                        offset: 1,
+                        bytes: vec![0],
+                        token: [4; 16],
+                    }
                 } else {
                     match captures.committed_history_fixture.as_ref() {
                         None => Reply::Legacy,
@@ -7552,6 +7575,7 @@ mod tests {
 
             let chan = FakeChannel {
                 captures: self.captures.clone(),
+                committed_requests: std::cell::Cell::new(0),
                 op_backlog: Rc::new(RefCell::new(self.op_backlog.clone())),
                 presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
                 context_backlog: Rc::new(RefCell::new(self.context_backlog.clone())),
@@ -11839,6 +11863,87 @@ mod tests {
             )),
             Err(crate::collaboration::CollabSendError::Unavailable),
             "an owner refusal is fatal rather than a healthy apply delay"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn malformed_later_committed_history_closes_the_exact_route_without_retrying() {
+        let cluster = Uuid::new_v4();
+        let want = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("report"),
+        );
+        let captures = Captures {
+            committed_history_fixture: Some(automerge::AutoCommit::new().save()),
+            committed_malformed_refresh_fixture: true,
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let (wake_scope, wakes) = wake_channel();
+        let mut manager = {
+            let _entry = wake_scope.enter();
+            CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.test", cluster)
+        };
+        let mut initial = None;
+        tilo_test_env::wait_until("the valid initial history", || {
+            initial = manager.prepare_native_record(&want);
+            initial.is_some()
+        });
+        initial.unwrap().applied();
+        manager.switch_native_record(&want).unwrap();
+        let channel = manager
+            .primary_route
+            .accepted
+            .as_ref()
+            .unwrap()
+            .route
+            .channel_id();
+        tilo_test_env::wait_until("the valid history recheck", || {
+            broker_state(&manager).document_reads.publishable(&channel)
+        });
+        while wakes.try_recv().is_ok() {}
+        std::thread::sleep(Duration::from_millis(450));
+        let _ = manager.poll();
+        assert!(
+            wakes.try_recv().is_err(),
+            "a ready route does not wake itself without an explicit history read"
+        );
+
+        assert!(
+            manager.prepare_native_record(&want).is_none(),
+            "an explicit later read closes publication until its history is verified"
+        );
+        assert_eq!(
+            manager.try_send(CollabRequest::document_snapshot(b"held locally".to_vec())),
+            Err(crate::collaboration::CollabSendError::NotReady)
+        );
+        tilo_test_env::wait_until("the malformed refresh to close its route", || {
+            broker_state(&manager).document_reads.state(&channel)
+                == crate::collaboration::DocumentRouteState::Unavailable
+        });
+        assert!(
+            wakes.try_recv().is_ok(),
+            "a definite refresh failure wakes the retained terminal owner"
+        );
+        assert_eq!(
+            manager.try_send(CollabRequest::document_snapshot(
+                b"must remain local".to_vec()
+            )),
+            Err(crate::collaboration::CollabSendError::Unavailable)
+        );
+        std::thread::sleep(Duration::from_millis(450));
+        assert_eq!(
+            captures.lock().unwrap().committed_malformed_refresh_replies,
+            1,
+            "a malformed later capture is fatal rather than a retryable warm-up"
         );
     }
 

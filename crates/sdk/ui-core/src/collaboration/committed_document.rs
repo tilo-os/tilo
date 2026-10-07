@@ -756,16 +756,14 @@ pub(super) async fn install(
                     if !inbound.state.document_reads.applying(&key, &ready) {
                         break;
                     }
-                    match read_capture(&channel, reply).await {
-                        Ok((read, next)) => {
-                            current = Some(read);
-                            revision = Some(next);
-                            continue;
-                        }
-                        Err(_) => {
-                            revision = None;
-                        }
+                    if let Ok((read, next)) = read_capture(&channel, reply).await {
+                        current = Some(read);
+                        revision = Some(next);
+                        continue;
                     }
+                    inbound.state.document_reads.unavailable(&key, &ready);
+                    inbound.state.notify_events();
+                    break;
                 }
                 _ => {
                     inbound.state.document_reads.unavailable(&key, &ready);
