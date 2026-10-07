@@ -232,10 +232,11 @@ To repair a shell-only swap on an older development image, rebuild the paired
 component from the matching source in the existing worktree:
 
 ```sh
-TILO_VM_CARGO=rcargo tilo-vm swap shell --slot spotify-acceptance --builder host --profile dev
+TILO_VM_CARGO="$CARGO" tilo-vm swap shell --slot my-slot --builder host --profile dev
 ```
 
 Select the registered VM with `TILO_VM` (or `--target` on a current client).
-`rcargo` builds remotely; the host path packages and uploads its received binary
+Set `CARGO` to your Cargo drop-in when using a remote builder. The host path
+packages and uploads its received binary
 and this worktree's mandatory startup companion. The slot restarts through its
 normal PAM unit; no OS image rebuild, account reset or lock override is needed.
