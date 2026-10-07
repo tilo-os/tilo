@@ -17,7 +17,7 @@ use serde_json::json;
 use tilo_agent::surface::Catalogue;
 use tilo_agent::tools::Answer;
 use tilo_agent_participant::{
-    HostedApp, ModelPlanner, PlanContext, PlanModel, Planner, Seed, StepAction,
+    ModelPlanner, PlanContext, PlanModel, Planner, Replica, Seed, StepAction,
 };
 use tilo_browser_peer::DocumentRoute;
 
@@ -33,9 +33,9 @@ impl PlanModel for Canned {
     }
 }
 
-fn context_with_scratchpad() -> (PlanContext, DocumentRoute, HostedApp) {
+fn context_with_scratchpad() -> (PlanContext, DocumentRoute, Replica) {
     let catalogue = common::catalogue();
-    let mut app = HostedApp::open(&catalogue, SCRATCHPAD, ROOM, "agent", true, Seed::New).unwrap();
+    let app = Replica::open(&catalogue, SCRATCHPAD, ROOM, "agent", true, Seed::New).unwrap();
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
         cluster_id: ROOM.into(),
@@ -43,7 +43,6 @@ fn context_with_scratchpad() -> (PlanContext, DocumentRoute, HostedApp) {
     };
     let context = PlanContext {
         open: vec![(route.clone(), app.survey())],
-        controls: vec![(route.clone(), app.controls())],
         known: Vec::new(),
         apps: vec![SCRATCHPAD.into(), "so.tilo.notes".into()],
     };
@@ -73,12 +72,11 @@ fn a_natural_language_task_becomes_a_published_action_with_typed_arguments() {
         .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
         .unwrap();
     assert!(body.contains("hello from the model"), "{body}");
-    app.close();
 }
 
 #[test]
 fn explicit_steps_still_bypass_the_model() {
-    let (context, _, app) = context_with_scratchpad();
+    let (context, _, _app) = context_with_scratchpad();
     let mut planner = ModelPlanner::new(Box::new(Canned(Answer {
         actions: vec!["never#asked".into()],
         arguments: vec![serde_json::Map::new()],
@@ -88,17 +86,20 @@ fn explicit_steps_still_bypass_the_model() {
     })));
     let steps = planner
         .plan(
-            &json!({"app": SCRATCHPAD, "control": "note-editor", "input": "focus"}).to_string(),
+            &json!({"app": SCRATCHPAD, "resource": "scratchpad.note", "action": "edit"})
+                .to_string(),
             &context,
         )
         .unwrap();
-    assert!(matches!(steps[0].action, StepAction::Operate { .. }));
-    app.close();
+    assert!(matches!(
+        &steps[0].action,
+        StepAction::Invoke { address, .. } if address.action == "edit"
+    ));
 }
 
 #[test]
 fn an_answer_outside_the_offers_is_refused_and_an_open_continues() {
-    let (context, _, app) = context_with_scratchpad();
+    let (context, _, _app) = context_with_scratchpad();
     let mut invented = ModelPlanner::new(Box::new(Canned(Answer {
         actions: vec!["scratchpad.note#format-disk".into()],
         arguments: vec![serde_json::Map::new()],
@@ -123,5 +124,4 @@ fn an_answer_outside_the_offers_is_refused_and_an_open_continues() {
         steps[1].action,
         StepAction::Continue("add a page called Plans".into())
     );
-    app.close();
 }

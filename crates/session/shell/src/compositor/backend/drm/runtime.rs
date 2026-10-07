@@ -44,6 +44,7 @@ use super::access_keys::{
     BounceKeys, BounceVerdict, ButtonEdge, MouseKeys, MouseKeysOutput, PointerButton,
 };
 use super::devices::{ModeInfo, filter_kms_nodes, is_kms_node, order_by_connected_connectors};
+use super::direct_retry::DirectDegradation;
 #[cfg(test)]
 use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
@@ -1084,16 +1085,10 @@ fn reconcile_capability_topology(
 impl DrmDispatchState {
     /// Keep the cursor planes' offset in step with the image they show.
     fn sync_cursor_hotspot(&mut self) {
-        let hotspot = self
-            .pointer_image
-            .bitmap(self.accessibility.effective_cursor_size())
-            .map_or((0, 0), |bitmap| {
-                (
-                    i32::try_from(bitmap.hotspot.0).unwrap_or(0),
-                    i32::try_from(bitmap.hotspot.1).unwrap_or(0),
-                )
-            });
-        self.hw_cursor.set_hotspot(hotspot);
+        self.hw_cursor.set_image_hotspot(
+            &self.pointer_image,
+            self.accessibility.effective_cursor_size(),
+        );
     }
 
     /// Build the initial dispatch state from everything [`DrmRuntime::new`]
@@ -1224,13 +1219,21 @@ impl DrmDispatchState {
         self.events.push(ev);
     }
 
-    /// Report the class of a physical event when it differs from the last
-    /// one. Emitted ahead of the event itself, so the compositor has already
-    /// switched modality when it handles that event.
+    /// Report a physical modality change, or deliberate pointer activation.
+    /// Pointer activation also follows hover, which shares its modality.
+    /// Emitted ahead of the event, so the compositor switches modality first.
     fn note_input_used(&mut self, modality: ui::InputModality) {
-        if self.last_input_used != Some(modality) {
+        if self.last_input_used != Some(modality) || modality == ui::InputModality::Pointer {
             self.last_input_used = Some(modality);
             self.push(BackendEvent::InputUsed(modality));
+        }
+    }
+
+    /// Coalesce hover reports without losing a later touch or click transition.
+    fn note_pointer_motion(&mut self) {
+        if self.last_input_used != Some(ui::InputModality::Pointer) {
+            self.last_input_used = Some(ui::InputModality::Pointer);
+            self.push(BackendEvent::PointerMotionUsed);
         }
     }
 
@@ -1553,8 +1556,9 @@ impl DrmDispatchState {
                 color_transform: None,
                 color_buffer: Vec::new(),
                 direct_targets: None,
-                direct_unavailable: None,
-                hdr_direct_unavailable: None,
+                direct_ineligible: None,
+                direct_degradation: DirectDegradation::default(),
+                hdr_direct_degradation: DirectDegradation::default(),
                 hdr_failure: None,
                 powered_off: false,
                 signal_reported: OutputSignalStatus::default(),
@@ -2162,7 +2166,12 @@ impl DrmDispatchState {
     /// Super mask flips, followed by the `KeyboardInput` itself. No-op when the xkb keymap failed to load.
     ///
     /// `keycode` is smithay's [`KeyboardKeyEvent::key_code`], already including the +8 evdev→xkb offset, so it feeds straight into xkb state.
-    fn handle_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+    fn handle_keyboard_key(
+        &mut self,
+        keycode: xkb::Keycode,
+        pressed: bool,
+        input_time_ns: Option<u64>,
+    ) {
         let evdev = keycode.raw().saturating_sub(8);
         let now = std::time::Instant::now();
         if self.accessibility.bounce_keys {
@@ -2198,7 +2207,7 @@ impl DrmDispatchState {
             }
             self.process_keyboard_key(keycode, true);
         }
-        self.process_keyboard_key(keycode, pressed);
+        self.process_keyboard_key_timed(keycode, pressed, input_time_ns);
         if pressed {
             if self
                 .keyboard
@@ -2282,6 +2291,15 @@ impl DrmDispatchState {
     }
 
     fn process_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+        self.process_keyboard_key_timed(keycode, pressed, None);
+    }
+
+    fn process_keyboard_key_timed(
+        &mut self,
+        keycode: xkb::Keycode,
+        pressed: bool,
+        input_time_ns: Option<u64>,
+    ) {
         // Scope the `&mut self.keyboard` borrow so we can push onto `self.events` afterwards without aliasing.
         let outcome = {
             let Some(kbd) = self.keyboard.as_mut() else {
@@ -2313,7 +2331,13 @@ impl DrmDispatchState {
         if let Some(input) = outcome.input {
             let consumes_sticky =
                 self.accessibility.sticky_keys && pressed && !self.sticky_latched.is_empty();
-            self.events.push(BackendEvent::Input(input));
+            self.events.push(match input_time_ns {
+                Some(input_time_ns) => BackendEvent::PhysicalKey {
+                    event: input,
+                    input_time_ns,
+                },
+                None => BackendEvent::Input(input),
+            });
             if consumes_sticky {
                 self.sticky_latched = ModifiersState::empty();
                 self.events
@@ -2646,10 +2670,11 @@ impl DrmDispatchState {
             InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
                 self.handle_libinput_device_event(event);
             }
-            InputEvent::PointerMotionAbsolute { .. }
-            | InputEvent::PointerMotion { .. }
-            | InputEvent::PointerButton { .. }
-            | InputEvent::PointerAxis { .. } => {
+            InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerMotion { .. } => {
+                self.note_pointer_motion();
+                self.handle_libinput_pointer_event(event);
+            }
+            InputEvent::PointerButton { .. } | InputEvent::PointerAxis { .. } => {
                 self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_pointer_event(event);
             }
@@ -2662,7 +2687,8 @@ impl DrmDispatchState {
                 if pressed {
                     self.note_input_used(ui::InputModality::Keyboard);
                 }
-                self.handle_keyboard_key(event.key_code(), pressed);
+                // libinput time_usec is the original kernel monotonic event time.
+                self.handle_keyboard_key(event.key_code(), pressed, event.time().checked_mul(1000));
             }
             InputEvent::GestureSwipeBegin { .. }
             | InputEvent::GestureSwipeUpdate { .. }
@@ -2972,6 +2998,36 @@ impl DrmDispatchState {
         }
         for code in codes.iter().rev() {
             self.process_keyboard_key(evdev_to_xkb(*code), false);
+        }
+    }
+
+    /// Adopt already queued startup devices without waiting for the first key
+    /// or touch to make libinput's fd readable. Keep physical event translation
+    /// in the registered Smithay backend.
+    fn adopt_initial_input_devices(&mut self, context: &Libinput) -> Result<(), DrmBackendError> {
+        use smithay::reexports::input::{AsRaw, event::EventTrait as _, ffi};
+        let mut context = context.clone();
+        // Do not dispatch or consume a key, contact or switch here: Smithay's
+        // registered backend remains the sole translator of physical input.
+        // This peek preserves any non-device event for that normal route.
+        loop {
+            // SAFETY: the live context is exclusively driven on this thread;
+            // peeking changes neither its queue nor any event's ownership.
+            let next = unsafe { ffi::libinput_next_event_type(context.as_raw_mut()) };
+            if next != ffi::libinput_event_type_LIBINPUT_EVENT_DEVICE_ADDED {
+                return Ok(());
+            }
+            let Some(smithay::reexports::input::Event::Device(
+                smithay::reexports::input::event::DeviceEvent::Added(event),
+            )) = context.next()
+            else {
+                return Err(DrmBackendError::Libinput(
+                    "queued input device could not be adopted".into(),
+                ));
+            };
+            self.handle_libinput_device_event(InputEvent::DeviceAdded {
+                device: event.device(),
+            });
         }
     }
 
@@ -3395,11 +3451,14 @@ pub struct ScanoutEntry {
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
-    /// Permanent failure for this output generation. Cleared only when a
-    /// lifecycle/topology boundary makes reprobe meaningful.
-    pub direct_unavailable: Option<String>,
-    /// HDR direct targets could not be made; HDR uses the readback path.
-    pub hdr_direct_unavailable: Option<String>,
+    /// Why this output's current shape cannot use direct scanout (more than
+    /// one output, a rotation, ...). Re-evaluated every frame.
+    pub direct_ineligible: Option<&'static str>,
+    /// Direct scanout failed: the readback presenter stands in until the
+    /// retry this records.
+    pub direct_degradation: DirectDegradation,
+    /// The same for HDR direct targets; HDR uses the readback path meanwhile.
+    pub hdr_direct_degradation: DirectDegradation,
     /// HDR could not be driven at all; the output fell back to SDR.
     pub hdr_failure: Option<settings_store::hardware::HdrUnavailable>,
     /// An output-power client switched this panel off. It is neither
@@ -3437,7 +3496,7 @@ impl ScanoutEntry {
             self.direct_targets = None;
         }
         if request.is_some() {
-            self.hdr_direct_unavailable = None;
+            self.hdr_direct_degradation.reset();
         }
         self.scanout.set_hdr_request(request);
     }
@@ -3858,6 +3917,10 @@ impl DrmRuntime {
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
         let scanouts = dispatch.finalize_startup_scanouts(scanout_builds);
+        // Seat assignment queues the attached devices immediately, before the
+        // libinput fd becomes readable. Publish/configure those devices through
+        // the ordinary handler before waiting for physical input.
+        dispatch.adopt_initial_input_devices(&libinput)?;
 
         Ok(Self {
             event_loop,
@@ -4750,7 +4813,7 @@ pub struct KeyboardXkb {
     /// The layouts, variants and options this keymap was compiled from, so
     /// a settings reload that only moves the active source switches groups
     /// instead of recompiling and dropping held modifiers.
-    compiled: (String, String, Option<String>),
+    compiled: (String, String, String, Option<String>),
 }
 
 /// What translating one key event yields: an optional `KeyboardInput` (absent for keys with no logical mapping, e.g. bare modifiers) and an optional `ModifiersChanged` (present only when the mask flips).
@@ -4778,8 +4841,8 @@ impl KeyboardXkb {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_names(
             &context,
-            "", // rules -> XKB_DEFAULT_RULES (normally evdev)
-            "", // model -> XKB_DEFAULT_MODEL
+            "",              // rules -> XKB_DEFAULT_RULES (normally evdev)
+            &settings.model, // explicit physical model
             &settings.layouts,
             &settings.variants,
             settings.options.clone(),
@@ -4797,8 +4860,9 @@ impl KeyboardXkb {
         })
     }
 
-    fn keymap_names(settings: &KeyboardSettings) -> (String, String, Option<String>) {
+    fn keymap_names(settings: &KeyboardSettings) -> (String, String, String, Option<String>) {
         (
+            settings.model.clone(),
             settings.layouts.clone(),
             settings.variants.clone(),
             settings.options.clone(),
@@ -5709,6 +5773,7 @@ mod tests {
         // Phase `xkb_uses_the_persisted_active_group_without_reordering_sources`.
         fn xkb_uses_the_persisted_active_group_without_reordering_sources() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["us".into(), "de".into()],
                 layouts: "us,de".into(),
                 variants: ",".into(),
@@ -5734,6 +5799,7 @@ mod tests {
         // pre-translated character fixture.
         fn german_xkb_shift_and_punctuation_keep_physical_positions() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de".into()],
                 layouts: "de".into(),
                 variants: String::new(),
@@ -5801,6 +5867,7 @@ mod tests {
         // Phase `switching_the_active_source_keeps_held_modifiers`.
         fn switching_the_active_source_keeps_held_modifiers() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["us".into(), "de".into()],
                 layouts: "us,de".into(),
                 variants: ",".into(),
@@ -5837,6 +5904,7 @@ mod tests {
         // Phase `xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes`.
         fn xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de:nodeadkeys".into()],
                 layouts: "de".into(),
                 variants: "nodeadkeys".into(),
@@ -5882,6 +5950,7 @@ mod tests {
         // Phase `german_altgr_produces_text_without_becoming_a_shell_alt_chord`.
         fn german_altgr_produces_text_without_becoming_a_shell_alt_chord() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de:nodeadkeys".into()],
                 layouts: "de".into(),
                 variants: "nodeadkeys".into(),
@@ -6316,6 +6385,47 @@ mod tests {
                     .failed_card_close_paths
                     .contains(Path::new("/dev/dri/card0")),
                 "the original path stays diagnostic, but unknown new paths are blocked too"
+            );
+        }
+    }
+
+    #[test]
+    fn client_cursor_hotspot_is_not_scaled_twice_by_the_cursor_plane() {
+        use crate::compositor::cursor::{CursorBitmap, CursorShape, PointerImage};
+        for scale in [1.0, 1.5, 2.0] {
+            let client =
+                CursorBitmap::from_client(&vec![255; 32 * 32 * 4], 32, 32, (4, 6), 2, scale)
+                    .expect("a valid client cursor buffer");
+            let expected = (
+                i32::try_from(client.hotspot.0).unwrap(),
+                i32::try_from(client.hotspot.1).unwrap(),
+            );
+            let mut state = DrmDispatchState {
+                pointer_image: PointerImage::Client(std::sync::Arc::new(client)),
+                ..Default::default()
+            };
+            state.sync_cursor_hotspot();
+            assert_eq!(
+                state.hw_cursor.hotspot_pixels(scale),
+                expected,
+                "the plane must honor the client bitmap's actual pixel hotspot at {scale}x"
+            );
+            state.pointer_image = PointerImage::Shape(CursorShape::Text);
+            state.sync_cursor_hotspot();
+            let named = crate::compositor::cursor::bitmap(
+                CursorShape::Text,
+                crate::compositor::cursor::pixel_size(
+                    state.accessibility.effective_cursor_size(),
+                    scale,
+                ),
+            );
+            assert_eq!(
+                state.hw_cursor.hotspot_pixels(scale),
+                (
+                    i32::try_from(named.hotspot.0).unwrap(),
+                    i32::try_from(named.hotspot.1).unwrap(),
+                ),
+                "named cursors must still follow the output density"
             );
         }
     }
@@ -6977,6 +7087,46 @@ mod tests {
         assert_eq!(at(&state, "eDP-1"), ((2560, 0), 1.25));
     }
 
+    #[test]
+    fn physical_key_timestamp_survives_translation_but_not_synthetic_repeat() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        let a = xkb::Keycode::new(38);
+        let origin = 123_456_789_000;
+        state.handle_keyboard_key(a, true, Some(origin));
+        assert!(state.events.iter().any(|event| matches!(event,
+            BackendEvent::PhysicalKey { event: WindowEvent::KeyboardInput { event, .. }, input_time_ns }
+                if *input_time_ns == origin && event.state == ElementState::Pressed)));
+        state.events.clear();
+        state.process_keyboard_key(a, false);
+        assert!(state.events.iter().any(|event| matches!(
+            event,
+            BackendEvent::Input(WindowEvent::KeyboardInput { .. })
+        )));
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::PhysicalKey { .. }))
+        );
+        state.key_repeat.press(
+            a,
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .expect("fixture clock permits an earlier repeat deadline"),
+            std::time::Duration::from_millis(1),
+            25,
+        );
+        state.events.clear();
+        state.pump_keyboard_repeat(std::time::Instant::now());
+        assert!(state.events.iter().any(|event| matches!(event, BackendEvent::Input(WindowEvent::KeyboardInput { event, .. }) if event.repeat)));
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::PhysicalKey { .. }))
+        );
+    }
+
     fn keyboard_dispatch(accessibility: AccessibilityInputSettings) -> DrmDispatchState {
         let (mut state, _rx) = dispatch_with_channel();
         state.keyboard = Some(
@@ -7003,14 +7153,14 @@ mod tests {
             ..Default::default()
         });
         let a = xkb::Keycode::new(38); // KEY_A + 8
-        state.handle_keyboard_key(a, true);
-        state.handle_keyboard_key(a, false);
+        state.handle_keyboard_key(a, true, None);
+        state.handle_keyboard_key(a, false, None);
         assert_eq!(typed_keys(&state), 2, "the first keystroke is real");
         state.events.clear();
 
         // Pressed again well inside the 300 ms default window.
-        state.handle_keyboard_key(a, true);
-        state.handle_keyboard_key(a, false);
+        state.handle_keyboard_key(a, true, None);
+        state.handle_keyboard_key(a, false, None);
         assert_eq!(typed_keys(&state), 0, "press and release both swallowed");
         assert_eq!(
             state
@@ -7030,8 +7180,8 @@ mod tests {
             ..Default::default()
         });
         let kp5 = xkb::Keycode::new(76 + 8);
-        state.handle_keyboard_key(kp5, true);
-        state.handle_keyboard_key(kp5, false);
+        state.handle_keyboard_key(kp5, true, None);
+        state.handle_keyboard_key(kp5, false, None);
         let clicks: Vec<_> = state
             .events
             .iter()
@@ -7053,8 +7203,8 @@ mod tests {
 
         state.events.clear();
         state.accessibility.mouse_keys = false;
-        state.handle_keyboard_key(kp5, true);
-        state.handle_keyboard_key(kp5, false);
+        state.handle_keyboard_key(kp5, true, None);
+        state.handle_keyboard_key(kp5, false, None);
         assert_eq!(
             typed_keys(&state),
             2,
@@ -7069,7 +7219,7 @@ mod tests {
             ..Default::default()
         });
         let kp0 = xkb::Keycode::new(82 + 8);
-        state.handle_keyboard_key(kp0, true);
+        state.handle_keyboard_key(kp0, true, None);
         state.events.clear();
         state.release_mouse_keys();
         assert!(state.events.iter().any(|e| matches!(
@@ -7288,8 +7438,8 @@ mod tests {
                     .expect("the default test keymap must compile"),
             );
 
-            state.handle_keyboard_key(xkb::Keycode::new(50), true); // KEY_LEFTSHIFT + 8
-            state.handle_keyboard_key(xkb::Keycode::new(22), true); // KEY_BACKSPACE + 8
+            state.handle_keyboard_key(xkb::Keycode::new(50), true, None); // KEY_LEFTSHIFT + 8
+            state.handle_keyboard_key(xkb::Keycode::new(22), true, None); // KEY_BACKSPACE + 8
             assert!(
                 state
                     .keyboard
@@ -7320,7 +7470,7 @@ mod tests {
             );
 
             state.events.clear();
-            state.handle_keyboard_key(xkb::Keycode::new(38), true); // KEY_A + 8
+            state.handle_keyboard_key(xkb::Keycode::new(38), true, None); // KEY_A + 8
             assert!(
                 !state
                     .events

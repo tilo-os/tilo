@@ -16,6 +16,9 @@ pub struct Cli {
     /// Print one JSON object instead of text (errors too: {"error","hint","see"}).
     #[arg(long, global = true)]
     pub json: bool,
+    /// Registered development target; overrides `TILO_VM`, `.tilo-vm` and the default.
+    #[arg(long, global = true)]
+    pub target: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -132,8 +135,10 @@ pub enum Command {
         /// `sha:<commit>` or `ci:<tag>` (extract it from the published CI image).
         #[arg(long, default_value = "worktree")]
         from: String,
-        /// Where `--from worktree` builds: `vm` (default; syncs the worktree
-        /// into the VM) or `host` (Linux hosts only).
+        /// Where `--from worktree` builds: `vm` (syncs the worktree into the
+        /// VM), `host` (Linux hosts only) or `remote` (a builder of the
+        /// machine's architecture; the default for a device whose
+        /// architecture has one in vms.toml's `[remote_builders]`).
         #[arg(long, value_enum)]
         builder: Option<Builder>,
         /// Cargo profile for `--from worktree` builds (default: the manifest's,
@@ -228,6 +233,39 @@ pub enum Command {
     /// Cold-boot scenarios in a throwaway VM: boot components that swapping cannot replace.
     #[command(subcommand)]
     Scenario(ScenarioCommand),
+    /// Build one component in this worktree and write its layer to stdout
+    /// as framed lines (what `swap --builder remote` runs on the builder).
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm layer-pack --component shell --profile release   # on the builder, through its cargo drop-in's run"
+    )]
+    LayerPack {
+        /// A component from os/components.toml.
+        #[arg(long)]
+        component: String,
+        /// The cargo profile to build it with.
+        #[arg(long)]
+        profile: String,
+        /// Extra cargo features, comma separated.
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: Option<PathBuf>,
+    },
+    /// Package one app on the architecture-configured remote builder.
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm app-pack --app so.tilo.notes --source-inventory target/source-inventory.json   # on the architecture-configured builder"
+    )]
+    AppPack {
+        /// App id to package from the attested source inventory.
+        #[arg(long)]
+        app: String,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: PathBuf,
+    },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
         after_help = "Examples:\n  tilo-vm gc --dry-run\n  tilo-vm gc --keep 2\n  tilo-vm gc --keep-targets 0   # evict every in-VM build dir not in use\n  tilo-vm gc --min-age 0        # also your own orphaned layers from the last hour\n\nUnreferenced layers younger than an hour stay by default: another agent's\nimport may still be waiting for its swap. gc names them and when they go."
@@ -358,6 +396,8 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         command,
         None | Some(
             Command::Status { .. }
+                | Command::LayerPack { .. }
+                | Command::AppPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
@@ -433,6 +473,10 @@ pub enum Builder {
     Vm,
     /// Build on this host with its cargo (Linux only).
     Host,
+    /// Build on a remote builder of the machine's architecture
+    /// (`[remote_builders]` in vms.toml); the layer streams through this
+    /// host, never onto its disk.
+    Remote,
 }
 
 #[derive(Debug, Subcommand)]
@@ -449,8 +493,12 @@ pub enum InputCommand {
     /// Type text on a US keyboard layout.
     #[command(after_help = "Examples:\n  tilo-vm input type 'hello world'")]
     Type {
-        /// The text to type.
-        text: String,
+        /// The text to type. Use --stdin for sensitive text.
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        text: Option<String>,
+        /// Read exact text from standard input, without recording it in argv.
+        #[arg(long, conflicts_with = "text")]
+        stdin: bool,
     },
     /// Move the pointer to desktop pixel X, Y.
     #[command(
@@ -692,6 +740,21 @@ pub enum VmCommand {
         #[arg(long)]
         off: bool,
     },
+    /// Enrol this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it certifies this machine over SSH\n  tilo-vm vm enrol-admin              # this machine's key, and how to certify it by hand\n  tilo-vm vm enrol-admin --cert admin.cert\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine enrols once, like\nany other device: the owner's root certifies its key with `tilo-enroll\ncertify --capability admin`, on the device where they approve new devices,\nwhich also lists it among their devices (Settings can remove it). With --via\ntilo-vm runs that over SSH as the account it logs in with; that account must\nown the identity (an owner-account device: vm add --ssh <owner>@...).\nNeeds tilo-device-admin beside tilo-vm. Details: tilo-vm guide devices."
+    )]
+    EnrolAdmin {
+        /// A registered device that holds the owner's identity: it certifies this machine over SSH.
+        #[arg(long, conflicts_with = "cert")]
+        via: Option<String>,
+        /// A certificate the owner made for this machine's key (tilo-enroll certify --capability admin).
+        #[arg(long)]
+        cert: Option<std::path::PathBuf>,
+        /// This machine's name in the owner's device list (default: its hostname).
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
     Start {
@@ -843,11 +906,11 @@ pub struct CreateArgs {
     /// libvirt only: virtio-gpu outputs, e.g. 2 for a two-monitor layout.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=16))]
     pub heads: Option<u8>,
-    /// libvirt only: virgl 3D acceleration on the host GPU, so the desktop
+    /// libvirt or QEMU: virgl 3D acceleration on the host GPU, so the desktop
     /// renders on a GPU instead of in software.
     #[arg(long)]
     pub gl: bool,
-    /// libvirt only: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
+    /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
     /// Guest CPUs (default: the adapter's).
@@ -1061,6 +1124,17 @@ pub enum SeatCommand {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn target_flag_works_before_and_after_swap() {
+        use clap::Parser as _;
+        for args in [
+            vec!["tilo-vm", "--target", "review", "swap", "shell"],
+            vec!["tilo-vm", "swap", "shell", "--target", "review"],
+        ] {
+            let cli = super::Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.target.as_deref(), Some("review"));
+        }
+    }
     use clap::CommandFactory;
 
     use super::*;

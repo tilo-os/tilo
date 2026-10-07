@@ -85,7 +85,10 @@ pub async fn refresh_offers(
             offer.environments = environments;
         }
     }
-    endpoint.close().await;
+    // A relay that never answered leaves a connection attempt behind, and a
+    // graceful close waits seconds for it; the answers are already in hand,
+    // so the caller is not held for that.
+    tokio::spawn(async move { endpoint.close().await });
     if let Some(parent) = offers.parent() {
         std::fs::create_dir_all(parent)?;
     }

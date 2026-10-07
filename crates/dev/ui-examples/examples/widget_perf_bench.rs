@@ -61,6 +61,21 @@ fn caption(key: &'static str) -> Box<dyn Widget> {
     Box::new(Text::new(key))
 }
 
+/// Three avatars (two initials, one picture) and three badges.
+fn avatar_badge_row() -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .push(Box::new(Avatar::person("Quinn Daley", "quinn.daley")))
+            .push(Box::new(Avatar::person("Ada Lovelace", "ada.lovelace")))
+            .push(Box::new(
+                Avatar::person("Sam Okafor", "sam.okafor").with_image(placeholder_image()),
+            ))
+            .push(Box::new(Badge::dot()))
+            .push(Box::new(Badge::count(7)))
+            .push(Box::new(Badge::count(120))),
+    )
+}
+
 fn build_tree() -> Box<dyn Widget> {
     let tree_root = TreeNode::branch(
         1u64,
@@ -91,16 +106,14 @@ fn build_tree() -> Box<dyn Widget> {
                 .push(caption("row_basics"))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(tilo_ui::widget::Button::new(
-                            "btn", "btn_save", None,
-                        )))
+                        .push(Box::new(tilo_ui::widget::Button::new("btn", "btn_save")))
                         .push(Box::new(tilo_ui::widget::Toggle::new("tog", "toggle_1")))
                         .push(Box::new(tilo_ui::widget::Checkbox::new("chk", "check_1")))
                         .push(Box::new(tilo_ui::widget::Slider::new("sld", "slider_1")))
                         .push(Box::new(
-                            tilo_ui::widget::TextInput::new(vec![])
-                                .with_id("txt")
-                                .with_on_change_path("text_1"),
+                            tilo_ui::widget::TextInput::local()
+                                .with_initial_value("Edit me")
+                                .with_id("txt"),
                         )),
                 ))
                 .push(caption("row_indicators"))
@@ -111,15 +124,7 @@ fn build_tree() -> Box<dyn Widget> {
                         .push(Box::new(Spinner::with_size(32.0))),
                 ))
                 .push(caption("row_avatar_badge"))
-                .push(Box::new(
-                    Row::new()
-                        .push(Box::new(Avatar::from_initials("QD", 48.0)))
-                        .push(Box::new(Avatar::from_initials("AL", 48.0)))
-                        .push(Box::new(Avatar::new(placeholder_image(), 48.0)))
-                        .push(Box::new(Badge::dot()))
-                        .push(Box::new(Badge::count(7)))
-                        .push(Box::new(Badge::count(120))),
-                ))
+                .push(avatar_badge_row())
                 .push(caption("row_nav"))
                 .push(Box::new(Breadcrumb::new(vec![
                     "home".into(),
@@ -324,7 +329,7 @@ pub fn run(_args: &[String]) {
     // outliers we don't want polluting the steady-state numbers.
     let mut warm = Phases::default();
     bench.full_redraw(&mut warm);
-    bench.root.sync(&mut bench.doc, &automerge::ObjId::Root);
+    bench.root.sync(&bench.doc, &automerge::ObjId::Root);
     eprintln!(
         "warm-up: compute={}us apply={}us draw={}us render={}us",
         warm.compute_us, warm.apply_us, warm.draw_us, warm.render_us
@@ -386,7 +391,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -405,7 +410,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -424,7 +429,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

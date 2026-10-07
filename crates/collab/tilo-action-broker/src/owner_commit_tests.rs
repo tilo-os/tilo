@@ -670,6 +670,13 @@ mod owner_commit_tests {
                 device: f.owner.peer().authority().device_public_key,
             },
         };
+        let actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
+        let context = tilo_actions::ActionContext::for_resource(
+            "Publish",
+            "record:bounded",
+            "document",
+            "Receipt test",
+        );
         f.state
             .journal
             .lock()
@@ -678,12 +685,21 @@ mod owner_commit_tests {
             .unwrap()
             .as_mut()
             .unwrap()
-            .admit(key.clone(), serde_json::json!({"effect":"bounded-test"}), 1)
+            .admit(
+                key.clone(),
+                serde_json::json!({
+                    "operation_kind": tilo_actions::OperationKind::Effect,
+                    "actor": actor,
+                    "context": context,
+                }),
+                1,
+            )
             .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         f.state.pending_invocations.lock().unwrap().insert(
             1,
             PendingInvocation {
+                caller: None,
                 activity: None,
                 owner: key.owner.clone(),
                 network_evidence: None,
@@ -693,22 +709,19 @@ mod owner_commit_tests {
                 peer_id: 72,
                 tx,
                 update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                prepared_effect: Arc::default(),
                 last_sequence: 0,
-                actor: principal_id_for_root(f.owner.peer().authority().user_public_key),
+                actor,
                 cancellable: false,
                 retryable_on_disconnect: false,
                 execution: tilo_actions::ExecutionMode::Immediate,
                 result: tilo_actions::ResultSpec::None,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 cluster_id: f.route.cluster_id.clone(),
-                context: tilo_actions::ActionContext::for_resource(
-                    "Publish",
-                    "record:bounded",
-                    "document",
-                    "Receipt test",
-                ),
+                context,
                 last_activity: std::time::Instant::now(),
                 cancellation_requested_at: None,
+                cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
         (key, rx)
@@ -732,8 +745,14 @@ mod owner_commit_tests {
                     request
                         .get()
                         .set_update_json(serde_json::to_string(&update).unwrap());
-                    let response = tokio::task::spawn_local(request.send().promise);
-                    let pending = f.mailbox.recv().await.unwrap();
+                    let mut response = tokio::task::spawn_local(request.send().promise);
+                    let pending = tokio::select! {
+                        pending = f.mailbox.recv() => pending.unwrap(),
+                        rejected = &mut response => {
+                            let rejected = rejected.map(|reply| reply.map(|_| ()));
+                            panic!("terminal update ended before owner receipt admission: {rejected:?}");
+                        }
+                    };
                     assert!(!response.is_finished());
                     assert!(result.try_recv().is_err());
                     assert!(matches!(
@@ -905,7 +924,7 @@ mod owner_commit_tests {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
             fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
-            fn scrollback_request(&self, _: ArtifactId, _: u64, _: u16) {}
+            fn scrollback_request(&self, _: &str, _: ArtifactId, _: u64, _: u16) {}
         }
         let root = canonical_tempdir();
         let mut owner =
@@ -1056,9 +1075,24 @@ mod owner_commit_tests {
             manager,
         )
         .unwrap();
+        // The checked app needs its ordinary model and retained surface phases;
+        // presence-only pumping cannot adopt the model or service an invocation.
+        struct HeadlessSurface;
+        impl ui::app::AppSurface for HeadlessSurface {
+            fn scale_factor(&self) -> f64 {
+                1.0
+            }
+            fn inner_size(&self) -> ui::winit::dpi::PhysicalSize<u32> {
+                ui::winit::dpi::PhysicalSize::new(1024, 768)
+            }
+            fn request_redraw(&self) {}
+            fn set_cursor(&self, _: ui::winit::window::CursorIcon) {}
+        }
+        let mut scene = ui::vello::Scene::new();
         let deadline = tilo_test_env::hang_deadline();
         let (surface, action) = loop {
-            app.pump_collab_presence();
+            scene.reset();
+            app.surface_frame(&HeadlessSurface, &mut scene);
             if let Some(found) =
                 broker
                     .published_action_surfaces()
@@ -1076,7 +1110,42 @@ mod owner_commit_tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "actual checked Writer did not publish actions"
+                "actual checked Writer did not publish actions: connection={:?}, coverage={:?}, resources={:?}, surfaces={:?}",
+                app.collaboration_state(),
+                app.control_action_coverage(),
+                {
+                    fn addresses(
+                        resources: &[tilo_actions::Resource],
+                    ) -> Vec<(String, Vec<String>)> {
+                        let mut rows = Vec::new();
+                        for resource in resources {
+                            rows.push((
+                                resource.id.as_str().to_owned(),
+                                resource
+                                    .actions
+                                    .iter()
+                                    .map(|action| action.id.clone())
+                                    .collect(),
+                            ));
+                            rows.extend(addresses(&resource.children));
+                        }
+                        rows
+                    }
+                    addresses(&app.collect_resources())
+                },
+                broker
+                    .published_action_surfaces()
+                    .iter()
+                    .map(|surface| (
+                        surface.app_id.clone(),
+                        surface.route.clone(),
+                        surface
+                            .actions
+                            .iter()
+                            .map(|action| (action.resource.clone(), action.action.clone()))
+                            .collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>()
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
@@ -1091,7 +1160,8 @@ mod owner_commit_tests {
             )
             .unwrap();
         loop {
-            app.pump_collab_presence();
+            scene.reset();
+            app.surface_frame(&HeadlessSurface, &mut scene);
             if job.completion.try_recv().is_ok() {
                 break;
             }
@@ -1671,6 +1741,7 @@ mod owner_commit_tests {
                 let invocation = tilo_actions::InvocationId::new();
                 let (tx, _rx) = std::sync::mpsc::channel();
                 let pending = PendingInvocation {
+                    caller: None,
                     activity: None,
                     owner: InvocationOwner::Certified {
                         root: f.owner.peer().authority().user_public_key,
@@ -1683,6 +1754,7 @@ mod owner_commit_tests {
                     peer_id: 72,
                     tx,
                     update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                    prepared_effect: Arc::default(),
                     last_sequence: 0,
                     actor: principal_id_for_root(f.owner.peer().authority().user_public_key),
                     cancellable: false,
@@ -1699,11 +1771,14 @@ mod owner_commit_tests {
                     ),
                     last_activity: std::time::Instant::now(),
                     cancellation_requested_at: None,
+                    cancellation_fence: Arc::new(AtomicBool::new(false)),
                 };
                 let update = tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
                     output: tilo_actions::ActionOutput::default(),
                 };
+                let retry_pending = pending.clone();
+                let retry_update = update.clone();
                 let state = f.state.clone();
                 let completion = tokio::task::spawn_local(async move {
                     state.commit_effect_before_terminal(&pending, &update).await
@@ -1718,7 +1793,225 @@ mod owner_commit_tests {
                 // An unavailable native operation must remain failure, never a legacy receipt.
                 drop(commit);
                 assert!(completion.await.unwrap().is_err());
+                assert_exact_effect_retry(retry_pending, retry_update).await;
             })
             .await;
+    }
+    async fn assert_exact_effect_retry(
+        mut pending: PendingInvocation,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        // The refusal above intentionally poisons that owner. A separate live
+        // owner checks identical prepared bytes and successful durable retries.
+        let root = canonical_tempdir();
+        let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
+        pending.cluster_id = f.route.cluster_id.clone();
+        pending.owner = InvocationOwner::Certified {
+            root: f.owner.peer().authority().user_public_key,
+            device: f.owner.peer().authority().device_public_key,
+        };
+        pending.actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
+        pending.prepared_effect = Arc::default();
+        let state = f.state.clone();
+        let retry_pending = pending.clone();
+        let retry_update = update.clone();
+        let retry = tokio::task::spawn_local(async move {
+            state
+                .commit_effect_before_terminal(&retry_pending, &retry_update)
+                .await
+        });
+        let commit = tilo_test_env::within(
+            "exact effect retry lost its owner barrier",
+            f.mailbox.recv(),
+        )
+        .await
+        .unwrap();
+        let first_request = prepared_effect_bytes(&pending);
+        commit.apply(&mut f.owner).unwrap();
+        assert!(retry.await.unwrap().is_ok());
+        let state = f.state.clone();
+        let replay_pending = pending.clone();
+        let replay_update = update.clone();
+        let replay = tokio::task::spawn_local(async move {
+            state
+                .commit_effect_before_terminal(&replay_pending, &replay_update)
+                .await
+        });
+        let commit = tilo_test_env::within(
+            "accepted effect retry must use the same owner",
+            f.mailbox.recv(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared_effect_bytes(&pending), first_request);
+        commit.apply(&mut f.owner).unwrap();
+        assert!(replay.await.unwrap().is_ok());
+        let changed = tilo_actions::InvocationUpdate::Cancelled {
+            invocation: update.invocation(),
+            message: Some("different terminal outcome".into()),
+        };
+        assert!(
+            f.state
+                .commit_effect_before_terminal(&pending, &changed)
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), f.mailbox.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    fn prepared_effect_bytes(pending: &PendingInvocation) -> Vec<u8> {
+        let prepared = pending.prepared_effect.lock().unwrap();
+        serde_json::to_vec(&prepared.as_ref().unwrap().request).unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepared_effect_owner_accept_then_restart_reconciles_without_action_delivery() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let root = canonical_tempdir();
+                let mut f = owner_fixture(root.path());
+                let caller = effect_owner_caller(&f);
+                let (key, request, prepared) = prepare_owner_effect(&f, &caller);
+                let state = f.state.clone();
+                let original = request.clone();
+                let submit = tokio::task::spawn_local(async move {
+                    state.publisher.commit_owner(original, None).await
+                });
+                let commit = tilo_test_env::within("effect owner submission", f.mailbox.recv())
+                    .await
+                    .unwrap();
+                commit.apply(&mut f.owner).unwrap();
+                submit.await.unwrap().unwrap();
+                let before = f.owner.status();
+                // Simulate the exact crash gap: owner durable, broker terminal not yet durable.
+                let journal = f
+                    .state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .take()
+                    .unwrap();
+                drop(journal);
+                *f.state.journal.lock().unwrap() = Ok(Some(
+                    InvocationJournal::open(&root.path().join("journal")).unwrap(),
+                ));
+                let record = f
+                    .state
+                    .verified_invocation_status(&caller, key.invocation)
+                    .unwrap()
+                    .unwrap();
+                assert!(record.uncertain);
+                assert_eq!(record.prepared_effect.as_ref(), Some(&prepared));
+                let state = f.state.clone();
+                let retained_caller = caller.clone();
+                let reconcile = tokio::task::spawn_local(async move {
+                    state
+                        .reconcile_prepared_effect(record, || {
+                            state.verified_invocation_status(&retained_caller, key.invocation)?;
+                            Ok(())
+                        })
+                        .await
+                });
+                let commit =
+                    tilo_test_env::within("exact prepared reconciliation", f.mailbox.recv())
+                        .await
+                        .unwrap();
+                commit.apply(&mut f.owner).unwrap();
+                let terminal = reconcile.await.unwrap().unwrap();
+                assert!(!terminal.uncertain);
+                assert_eq!(terminal.update, prepared.update);
+                assert_eq!(terminal.prepared_effect, Some(prepared));
+                assert_eq!(
+                    f.owner.status(),
+                    before,
+                    "exact retry must not create new owner history"
+                );
+                assert!(
+                    f.state.pending_invocations.lock().unwrap().is_empty(),
+                    "no action redispatch"
+                );
+                let journal = f
+                    .state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .take()
+                    .unwrap();
+                drop(journal);
+                let journal = InvocationJournal::open(&root.path().join("journal")).unwrap();
+                assert_eq!(journal.lookup(&terminal.key).unwrap().unwrap(), terminal);
+            })
+            .await;
+    }
+
+    fn effect_owner_caller(f: &OwnerFixture) -> VerifiedActionCaller {
+        let certificate = f.owner.peer().authority();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: f.route.cluster_id.clone(),
+            device_certificate: serde_json::to_vec(certificate).unwrap(),
+            proof: f
+                .owner
+                .signing_key()
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &f.route.cluster_id,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        f.state
+            .verify_action_caller(&f.route.cluster_id, &presentation)
+            .unwrap()
+    }
+
+    fn prepare_owner_effect(
+        f: &OwnerFixture,
+        caller: &VerifiedActionCaller,
+    ) -> (
+        InvocationKey,
+        tilo_peer_state::owner_commit::OwnerCommitRequest,
+        invocation_journal::PreparedEffect,
+    ) {
+        let key = f
+            .state
+            .caller_key(caller, tilo_actions::InvocationId::new())
+            .unwrap();
+        let actor = caller.admitted.broker_actor().id;
+        let context = tilo_actions::ActionContext::default();
+        let contract = tilo_actions::ActionContract::default();
+        let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
+            "actor":actor,"contract":contract,"app_id":f.route.app_id,"action":"open"});
+        let update = tilo_actions::InvocationUpdate::Succeeded {
+            invocation: key.invocation,
+            output: tilo_actions::ActionOutput::default(),
+        };
+        let mut effect = crate::policy::redacted_effect_receipt(
+            key.invocation,
+            &actor,
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        );
+        effect.completed_at = 100;
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+            room: f.route.cluster_id.clone(),
+            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                invocation: key.invocation.0,
+                redacted: serde_json::to_vec(&effect).unwrap(),
+            },
+        };
+        let mut guard = f.state.journal.lock().unwrap();
+        let journal = guard.as_mut().unwrap().as_mut().unwrap();
+        journal.admit(key.clone(), intent, 1).unwrap();
+        let prepared = journal.prepare_effect(&key, update, &request).unwrap();
+        (key, request, prepared)
     }
 }

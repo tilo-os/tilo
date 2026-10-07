@@ -75,21 +75,29 @@ test('capture source belongs to its mount and never takes input focus',async()=>
  const before=f.document.activeElement;
  assert.throws(()=>observer.render({cx:50,cy:25,scale:1}),/presented/);
  // A missing real backing size cannot silently yield a successful frame.
- f.update({phase:'presented',frames:2,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ f.update({phase:'presented',captureProtected:false,frames:2,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
  await tick();
  assert.throws(()=>observer.render({cx:50,cy:25,scale:1}),/dimensions/);
  assert.equal(f.document.activeElement,before);
  const originalCreate=f.document.createElement;
  f.document.createElement=tag=>{const n=originalCreate(tag);n.getContext=()=>ctx;return n;};
  f.host.canvas.width=100;f.host.canvas.height=50;
- f.update({phase:'presented',frames:3,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ f.update({phase:'presented',captureProtected:false,frames:3,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
  await tick();
  const receipt=observer.render({cx:50,cy:25,scale:1});
  assert.equal(receipt.panes[0].record,'one');assert.equal(receipt.panes[0].frame,3);
  assert.equal(receipt.panes[0].presenceAvailable,false);
- f.update({phase:'presented',frames:4,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ f.update({phase:'presented',captureProtected:false,frames:4,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
  assert.equal(observer.render({cx:50,cy:25,scale:1}).panes[0].frame,4,'pixels and generation are captured before queued page callbacks');
  f.update({clipboard:'copied'});assert.equal(observer.render({cx:50,cy:25,scale:1}).panes[0].frame,4);
+ const draws=calls.filter(call=>call[0]==='drawImage').length;
+ for(const captureProtected of [true,undefined]){
+  f.update({phase:'presented',captureProtected,frames:5,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+  assert.throws(()=>observer.render({cx:50,cy:25,scale:1}),/capture protection/);
+  assert.equal(calls.filter(call=>call[0]==='drawImage').length,draws,'protected or unknown pixels never reach either copy or output');
+ }
+ f.update({phase:'presented',captureProtected:false,frames:6,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ assert.equal(observer.render({cx:50,cy:25,scale:1}).panes[0].frame,6);
  assert.equal(f.document.activeElement,before);observer.close();
 });
 test('mounted dead key composes one caret and retains the following numeric input',async()=>{
@@ -206,7 +214,7 @@ test('mounted semantic watch latches with pixels and preserves input through dis
  const ctx=new Proxy({}, {get:()=>()=>{}});
  const observer=createPanorama({canvas:{getContext:()=>ctx},sources:[{source:f.host.captureSource,rect:[0,0,100,50]}],width:100,height:50});
  document.createElement=tag=>Object.assign(new Node(tag),{getContext:()=>ctx});
- const state={phase:'presented',presentation:true,frames:2,record:'one',gpuGeneration:1,layoutGeneration:1,logicalSize:[100,50],surfaceSize:[100,50],semanticLoci:[{target,rect:[2,3,20,30]}]};
+ const state={phase:'presented',captureProtected:false,presentation:true,frames:2,record:'one',gpuGeneration:1,layoutGeneration:1,logicalSize:[100,50],surfaceSize:[100,50],semanticLoci:[{target,rect:[2,3,20,30]}]};
  f.update(state);
  const semantic=watch.read(),pane=observer.render({cx:50,cy:25,scale:1}).panes[0];
  assert.deepEqual(semantic.rect,[2,3,20,30]);assert.equal(semantic.frame,pane.frame);assert.equal(semantic.gpuGeneration,pane.gpuGeneration);assert.equal(semantic.layoutGeneration,pane.layoutGeneration);assert.equal(semantic.presentedAtMs,pane.presentedAtMs);

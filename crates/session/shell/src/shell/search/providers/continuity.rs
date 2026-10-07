@@ -734,6 +734,60 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
     }
 
+    for unlock in &view.device_unlocks {
+        let device = if unlock.device_label.is_empty() {
+            t("search-continuity-certified-device")
+        } else {
+            unlock.device_label.clone()
+        };
+        for (approved, verb, title_key) in [
+            (true, "approve", "search-continuity-unlock-approve"),
+            (false, "deny", "search-continuity-unlock-deny"),
+        ] {
+            actions.push(DeviceAction {
+                // The code is the one the waiting boot shows.
+                id: format!(
+                    "{}.{verb}.{}",
+                    crate::shell::device_unlock::DEVICE_UNLOCK_ACTION,
+                    unlock.approval_code
+                ),
+                title: t_args(
+                    title_key,
+                    &[
+                        ("device", device.as_str().into()),
+                        ("code", unlock.approval_code.as_str().into()),
+                    ],
+                ),
+                subtitle: t("search-continuity-unlock-subtitle"),
+                action: DeviceFabricUiAction::AuthorizeDeviceUnlock {
+                    request_digest: unlock.request_digest,
+                    approved,
+                },
+                confirm: approved,
+            });
+        }
+    }
+    for device in view.devices.iter().filter(|device| !device.is_local) {
+        actions.push(DeviceAction {
+            id: format!(
+                "device.remove.{}",
+                opaque(
+                    "so.tilo.continuity.device.v1",
+                    device.id.as_str().as_bytes()
+                )
+            ),
+            title: t_args(
+                "search-continuity-device-remove",
+                &[("device", device.label.as_str().into())],
+            ),
+            subtitle: t("search-continuity-device-remove-subtitle"),
+            action: DeviceFabricUiAction::RemoveDevice {
+                device: device.id.clone(),
+            },
+            confirm: true,
+        });
+    }
+
     let receiver_kinds = [
         (
             RemoteCaptureKind::Camera,
@@ -1859,6 +1913,8 @@ mod tests {
             let doc = AutoCommit::new();
             let wanted = [ResourceKind::Action];
             let context = |needle| SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &wanted,
                 chrome: &chrome,
@@ -1946,42 +2002,42 @@ mod tests {
         }
     }
 
+    fn continuity_test_group(
+        id: u64,
+        tab_id: u64,
+        title: &str,
+    ) -> crate::shell::state::WindowGroup {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: title.into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.notes".into(),
+                    label: title.into(),
+                    note: String::new(),
+                },
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }
+    }
+
     #[test]
     fn palette_continue_focuses_the_offered_tab_and_then_retires() {
         use crate::shell::continuity_suggestion::{ContinuityFeed, FocusObservation};
         use crate::shell::personal_continuity::{AppInstanceId, ContinuityStamp};
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use crate::shell::search::{SearchRegistry, SearchScope};
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-
         let mut tree = WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
         let workspace = tree.desktop.workspaces[0].id;
         let strip = tree.desktop.workspaces[0].strips[0].id;
-        let tab = |id: u64, title: &str| Tab {
-            id,
-            title: title.into(),
-            tile: TileContent::LocalApp {
-                app_id: "so.tilo.notes".into(),
-                label: title.into(),
-                note: String::new(),
-            },
-        };
         tree.desktop.workspaces[0].strips[0].window_groups = vec![
-            WindowGroup {
-                id: 1,
-                tabs: vec![tab(11, "Terminal")],
-                active_tab: 11,
-                width: WindowWidth::Normal,
-                maximized: false,
-            },
-            WindowGroup {
-                id: 2,
-                tabs: vec![tab(22, "Notes")],
-                active_tab: 22,
-                width: WindowWidth::Normal,
-                maximized: false,
-            },
+            continuity_test_group(1, 11, "Terminal"),
+            continuity_test_group(2, 22, "Notes"),
         ];
         tree.desktop.active = workspace;
         tree.desktop.active_strip.insert(workspace, strip);
@@ -2032,7 +2088,12 @@ mod tests {
         catalog
             .select(&ResourceRef::new(CONTINUE_PROVIDER_ID, CONTINUE_ID))
             .expect("continue row")
-            .invoke(&mut doc, &automerge::ROOT, &chrome, [])
+            .invoke(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                [],
+            )
             .expect("accepted");
         let focused_group = chrome
             .borrow()

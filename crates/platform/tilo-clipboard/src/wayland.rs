@@ -73,6 +73,11 @@ impl RichClipboard {
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
 const CLIPBOARD_SHUTDOWN_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
 
+fn publication_deadline() -> tilo_clock::Instant {
+    let now = tilo_clock::now();
+    now.checked_add(CLIPBOARD_READ_BUDGET).unwrap_or(now)
+}
+
 fn recv_bounded<T>(
     receiver: &std::sync::mpsc::Receiver<T>,
     budget: tilo_clock::Duration,
@@ -130,11 +135,13 @@ struct PublicationClipboard {
 }
 
 enum ClipboardCommand {
-    SetText(Vec<u8>, std::sync::mpsc::Sender<bool>),
-    SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>),
+    SetText(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
+    SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
     Exit,
-    #[cfg(test)]
     Fence(std::sync::mpsc::Sender<()>),
+    ReadText(std::sync::mpsc::Sender<Option<String>>, tilo_clock::Instant),
+    #[cfg(test)]
+    CommandProcessed(std::sync::mpsc::Sender<()>),
 }
 
 impl WaylandClipboard {
@@ -204,10 +211,39 @@ impl WaylandClipboard {
     pub fn new_for_wayland_test(
         connection: smithay_client_toolkit::reexports::client::Connection,
     ) -> Self {
-        Self::new_test_connection(connection, CLIPBOARD_READ_BUDGET)
+        Self::new_for_wayland_test_with_read_budget(connection, CLIPBOARD_READ_BUDGET)
     }
 
-    fn new_test_connection(
+    /// Wait until the compositor has processed this worker's seat and device
+    /// bindings before a protocol fixture maps its window and acquires focus.
+    #[doc(hidden)]
+    pub fn wait_ready_for_wayland_test(&self, budget: tilo_clock::Duration) -> bool {
+        let Some(end) = tilo_clock::now().checked_add(budget) else {
+            return false;
+        };
+        // The first reply follows seat capabilities; their callbacks bind the
+        // keyboard and data device. The second follows those new requests.
+        for _ in 0..2 {
+            let (reply, received) = std::sync::mpsc::channel();
+            if self
+                .publication
+                .sender
+                .send(ClipboardCommand::Fence(reply))
+                .is_err()
+                || recv_bounded(&received, end.saturating_duration_since(tilo_clock::now()))
+                    .is_none()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Use the production worker with an explicit transfer deadline in protocol
+    /// tests. Cancellation tests must finish before this deadline, so expiry
+    /// cannot satisfy an assertion that focus loss or NULL cleared an offer.
+    #[doc(hidden)]
+    pub fn new_for_wayland_test_with_read_budget(
         connection: smithay_client_toolkit::reexports::client::Connection,
         rich_read_budget: tilo_clock::Duration,
     ) -> Self {
@@ -344,6 +380,7 @@ mod image_worker_impl {
         rich_seat: Option<WlSeat>,
         rich_active_seat: Option<WlSeat>,
         rich_pending: Option<PendingRich>,
+        plain_pending: Option<PendingPlain>,
         rich_read_budget: tilo_clock::Duration,
         exit: bool,
     }
@@ -419,30 +456,50 @@ mod image_worker_impl {
             rich_seat: None,
             rich_active_seat: None,
             rich_pending: None,
+            plain_pending: None,
             rich_read_budget,
             exit: false,
         };
-        #[cfg(test)]
         let fence_connection = connection.clone();
         let _ = loop_handle.insert_source(commands, move |event, (), state| {
             if let calloop::channel::Event::Msg(command) = event {
                 match command {
-                    ClipboardCommand::SetText(text, reply) => {
-                        state.store_text(text);
-                        let _ = reply.send(state.publish_current());
+                    ClipboardCommand::SetText(text, reply, deadline) => {
+                        fence_connection.display().sync(
+                            &state.queue_handle,
+                            PendingPublication::new(
+                                PublicationPayload::Text(text),
+                                reply,
+                                deadline,
+                            ),
+                        );
+                        let _ = fence_connection.flush();
                     }
-                    ClipboardCommand::SetImage(png, reply) => {
-                        state.store_image(png);
-                        let _ = reply.send(state.publish_current());
+                    ClipboardCommand::SetImage(png, reply, deadline) => {
+                        fence_connection.display().sync(
+                            &state.queue_handle,
+                            PendingPublication::new(
+                                PublicationPayload::Image(png),
+                                reply,
+                                deadline,
+                            ),
+                        );
+                        let _ = fence_connection.flush();
                     }
                     ClipboardCommand::Exit => state.exit = true,
                     #[cfg(test)]
+                    ClipboardCommand::CommandProcessed(reply) => {
+                        let _ = reply.send(());
+                    }
                     ClipboardCommand::Fence(reply) => {
                         // A protocol sync reply shares the worker's event queue.
                         // It proves earlier selection/focus events were handled,
                         // unlike observing a command-channel acknowledgement.
                         fence_connection.display().sync(&state.queue_handle, reply);
                         let _ = fence_connection.flush();
+                    }
+                    ClipboardCommand::ReadText(reply, deadline) => {
+                        state.request_plain_read(&fence_connection, reply, deadline);
                     }
                 }
             }
@@ -456,7 +513,107 @@ mod image_worker_impl {
         state.invalidate_rich();
     }
 
+    enum PublicationPayload {
+        Text(Vec<u8>),
+        Image(Vec<u8>),
+    }
+
+    struct PendingPublication {
+        payload: std::sync::Mutex<Option<PublicationPayload>>,
+        reply: std::sync::mpsc::Sender<bool>,
+        deadline: tilo_clock::Instant,
+    }
+
+    struct PlainRequest {
+        reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
+        deadline: tilo_clock::Instant,
+    }
+
+    struct PendingPlain {
+        seat: WlSeat,
+        generation: u64,
+        reply: std::sync::mpsc::Sender<Option<String>>,
+        reader: Option<calloop::RegistrationToken>,
+        timer: Option<calloop::RegistrationToken>,
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PlainRequest> for State {
+        fn event(
+            state: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            request: &PlainRequest,
+            connection: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let Ok(mut reply) = request.reply.lock()
+                && let Some(reply) = reply.take()
+            {
+                state.start_plain_read(connection, reply, request.deadline);
+            }
+        }
+    }
+
+    impl PendingPublication {
+        fn new(
+            payload: PublicationPayload,
+            reply: std::sync::mpsc::Sender<bool>,
+            deadline: tilo_clock::Instant,
+        ) -> Self {
+            Self {
+                payload: std::sync::Mutex::new(Some(payload)),
+                reply,
+                deadline,
+            }
+        }
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PendingPublication>
+        for State
+    {
+        fn event(
+            state: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            pending: &PendingPublication,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            // This callback follows all earlier focus events on the same
+            // protocol queue. A timed-out or unfocused copy must not become
+            // a selection later when the application regains focus.
+            let payload = pending
+                .payload
+                .lock()
+                .ok()
+                .and_then(|mut payload| payload.take());
+            let ok = if tilo_clock::now() < pending.deadline && state.can_publish() {
+                match payload {
+                    Some(PublicationPayload::Text(text)) => {
+                        state.store_text(text);
+                        state.publish_current()
+                    }
+                    Some(PublicationPayload::Image(png)) => {
+                        state.store_image(png);
+                        state.publish_current()
+                    }
+                    None => false,
+                }
+            } else {
+                false
+            };
+            let _ = pending.reply.send(ok);
+        }
+    }
+
     impl State {
+        fn can_publish(&self) -> bool {
+            self.latest_seat
+                .as_ref()
+                .and_then(|seat| self.seats.get(seat))
+                .is_some_and(|seat| seat.has_focus && seat.data_device.is_some())
+        }
+
         fn store_text(&mut self, text: Vec<u8>) {
             self.text_contents = Some(Arc::from(text));
             self.pending_image = None;
@@ -516,10 +673,8 @@ mod image_worker_impl {
             };
             source.set_selection(device, serial);
             self.data_sources.push(source);
-            // Keep the latest image around just like text. If this command
-            // arrived before the seat's focus/serial event, publish_current
-            // will be retried from that event rather than silently dropping
-            // the user's copy.
+            // Keep the accepted payload available for protocol transfers and
+            // subsequent focus/serial updates.
             true
         }
 
@@ -739,6 +894,159 @@ mod image_worker_impl {
     }
 
     impl State {
+        fn request_plain_read(
+            &self,
+            connection: &Connection,
+            reply: std::sync::mpsc::Sender<Option<String>>,
+            deadline: tilo_clock::Instant,
+        ) {
+            // Read only after this queue has handled preceding selection and
+            // keyboard-focus events, including a queued focus revocation.
+            connection.display().sync(
+                &self.queue_handle,
+                PlainRequest {
+                    reply: std::sync::Mutex::new(Some(reply)),
+                    deadline,
+                },
+            );
+            let _ = connection.flush();
+        }
+
+        fn finish_plain_read(&mut self, value: Option<String>) {
+            if let Some(pending) = self.plain_pending.take() {
+                for token in [pending.reader, pending.timer].into_iter().flatten() {
+                    self.loop_handle.remove(token);
+                }
+                let _ = pending.reply.send(value);
+                self.rich.wake.wake();
+            }
+        }
+
+        fn start_plain_read(
+            &mut self,
+            connection: &Connection,
+            reply: std::sync::mpsc::Sender<Option<String>>,
+            deadline: tilo_clock::Instant,
+        ) {
+            // One explicit paste can own one bounded pipe. A newer request
+            // cancels the previous transfer rather than accumulating readers.
+            self.finish_plain_read(None);
+            let offered = self.latest_seat.as_ref().and_then(|seat| {
+                let data = self.seats.get(seat)?;
+                if !data.keyboard_focus || !data.rich_offer_seen {
+                    return None;
+                }
+                let device = data.data_device.as_ref()?;
+                let offer = device.data().selection_offer()?;
+                let mime = offer.with_mime_types(|types| {
+                    [
+                        "text/plain;charset=utf-8",
+                        "text/plain",
+                        "UTF8_STRING",
+                        "STRING",
+                        "TEXT",
+                    ]
+                    .into_iter()
+                    .find(|mime| types.iter().any(|offered| offered == mime))
+                })?;
+                Some((seat.clone(), offer.receive(mime.into()).ok()?))
+            });
+            let Some((seat, pipe)) = offered.filter(|_| tilo_clock::now() < deadline) else {
+                let _ = reply.send(None);
+                self.rich.wake.wake();
+                return;
+            };
+            let generation = self.rich.generation();
+            self.plain_pending = Some(PendingPlain {
+                seat,
+                generation,
+                reply,
+                reader: None,
+                timer: None,
+            });
+            if !self.register_plain_reader(pipe, generation, deadline) {
+                self.finish_plain_read(None);
+                return;
+            }
+            let timer = self.loop_handle.insert_source(
+                calloop::timer::Timer::from_deadline(deadline),
+                move |_, (), state| {
+                    if let Some(pending) = state.plain_pending.as_mut()
+                        && pending.generation == generation
+                    {
+                        pending.timer = None;
+                        state.finish_plain_read(None);
+                    }
+                    calloop::timer::TimeoutAction::Drop
+                },
+            );
+            if let Ok(timer) = timer {
+                if let Some(pending) = self.plain_pending.as_mut() {
+                    pending.timer = Some(timer);
+                }
+            } else {
+                self.finish_plain_read(None);
+            }
+            if connection.flush().is_err() {
+                self.finish_plain_read(None);
+            }
+        }
+
+        fn register_plain_reader(
+            &mut self,
+            pipe: sctk::data_device_manager::ReadPipe,
+            generation: u64,
+            deadline: tilo_clock::Instant,
+        ) -> bool {
+            let Ok(flags) = get_fd_flags(pipe.as_raw_fd()) else {
+                return false;
+            };
+            if !set_fd_flags(pipe.as_raw_fd(), flags | libc::O_NONBLOCK) {
+                return false;
+            }
+            let mut reader = RichPipe::new(RichPart::Plain);
+            let inserted = self
+                .loop_handle
+                .insert_source(pipe, move |(), pipe, state| {
+                    let Some(pending) = state.plain_pending.as_ref() else {
+                        return PostAction::Remove;
+                    };
+                    if pending.generation != generation {
+                        return PostAction::Remove;
+                    }
+                    let current = generation == state.rich.generation()
+                        && tilo_clock::now() < deadline
+                        && state
+                            .seats
+                            .get(&pending.seat)
+                            .is_some_and(|seat| seat.keyboard_focus);
+                    // SAFETY: this source owns the nonblocking pipe throughout
+                    // this callback, and the borrow ends before returning.
+                    let result = if current {
+                        reader.read(unsafe { pipe.get_mut() })
+                    } else {
+                        RichRead::Finished(None)
+                    };
+                    match result {
+                        RichRead::Pending => PostAction::Continue,
+                        RichRead::Finished(value) => {
+                            if let Some(pending) = state.plain_pending.as_mut() {
+                                pending.reader = None;
+                            }
+                            state.finish_plain_read(value);
+                            PostAction::Remove
+                        }
+                    }
+                });
+            let Ok(token) = inserted else {
+                return false;
+            };
+            if let Some(pending) = self.plain_pending.as_mut() {
+                pending.reader = Some(token);
+            }
+            true
+        }
+
         fn stop_rich_readers(&mut self) {
             if let Some(pending) = self.rich_pending.take() {
                 for token in [pending.html_reader, pending.plain_reader, pending.timer]
@@ -751,13 +1059,19 @@ mod image_worker_impl {
         }
 
         fn invalidate_rich(&mut self) {
+            self.finish_plain_read(None);
             self.rich.invalidate();
             self.stop_rich_readers();
             self.rich_seat = None;
         }
 
         fn invalidate_rich_seat(&mut self, seat: &WlSeat) {
-            if self.rich_seat.as_ref() == Some(seat) {
+            if self.rich_seat.as_ref() == Some(seat)
+                || self
+                    .plain_pending
+                    .as_ref()
+                    .is_some_and(|pending| &pending.seat == seat)
+            {
                 self.invalidate_rich();
             }
         }
@@ -1316,7 +1630,6 @@ mod image_worker_impl {
         }
     }
 
-    #[cfg(test)]
     impl
         Dispatch<
             sctk::reexports::client::protocol::wl_callback::WlCallback,
@@ -1397,12 +1710,32 @@ fn publication_worker(
 }
 
 impl ClipboardBackend for WaylandClipboard {
+    fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        let (reply, result) = std::sync::mpsc::channel();
+        if target == ClipboardTarget::Primary {
+            let _ = reply.send(self.text(target));
+        } else {
+            let now = tilo_clock::now();
+            let deadline = now
+                .checked_add(tilo_clock::Duration::from_secs(2))
+                .unwrap_or(now);
+            if !self.send_publication(ClipboardCommand::ReadText(reply.clone(), deadline)) {
+                let _ = reply.send(None);
+            }
+        }
+        result
+    }
+
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         match target {
             ClipboardTarget::Clipboard => {
+                let deadline = publication_deadline();
                 let (reply, result) = std::sync::mpsc::channel();
-                let ok = self
-                    .send_publication(ClipboardCommand::SetText(text.as_bytes().to_vec(), reply));
+                let ok = self.send_publication(ClipboardCommand::SetText(
+                    text.as_bytes().to_vec(),
+                    reply,
+                    deadline,
+                ));
                 if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
                     *cache = Some(text.to_owned());
                 }
@@ -1435,8 +1768,9 @@ impl ClipboardBackend for WaylandClipboard {
         let Some(png) = encode_png(width, height, rgba) else {
             return false;
         };
+        let deadline = publication_deadline();
         let (reply, result) = std::sync::mpsc::channel();
-        self.send_publication(ClipboardCommand::SetImage(png, reply))
+        self.send_publication(ClipboardCommand::SetImage(png, reply, deadline))
             && recv_bounded(&result, CLIPBOARD_READ_BUDGET).unwrap_or(false)
     }
 

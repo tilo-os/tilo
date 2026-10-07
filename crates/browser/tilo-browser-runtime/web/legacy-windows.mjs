@@ -43,7 +43,9 @@ const MAX_FRAME_BYTES = 64 * 1024;
 const MAX_STREAMS = 32;
 const MAX_ROOM_STREAMS = 64;
 const MAX_ROOM_PIXELS = 32 * 1024 * 1024;
-const MAX_INPUT_BACKLOG = 128;
+// Four seconds of physical mixed-case typing can exceed 128 events while an
+// HTTPS send is pending. Keep eight wire batches, still bounded by 128 KiB.
+const MAX_INPUT_BACKLOG = 512;
 const MAX_INPUT_BACKLOG_BYTES = 128 * 1024;
 /** The host re-sends a live index every second: a silent publisher's streams are gone. */
 export const INDEX_EXPIRE_MS = 5000;
@@ -51,6 +53,10 @@ export const INDEX_EXPIRE_MS = 5000;
 const MAX_DECODE_QUEUE = 6;
 /** Most events one input request carries (`legacy_window::MAX_INPUT_EVENTS`). */
 const MAX_INPUT_EVENTS = 64;
+// Native input permits 120 offered events per second. A 32-event burst plus
+// 80 events/second of catch-up stays below that fence, with room for focus.
+const INPUT_SEND_BATCH = MAX_INPUT_EVENTS / 2;
+const INPUT_EVENTS_PER_SECOND = 80;
 /** Pasted text one event carries (`legacy_window::MAX_CLIPBOARD_BYTES`). */
 const MAX_CLIPBOARD_BYTES = 64 * 1024;
 /** Pixels one wheel line scrolls. */
@@ -204,6 +210,8 @@ const KEYS = {
   PageUp: 104, ArrowLeft: 105, ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109, Insert: 110, Delete: 111,
   MetaLeft: 125, MetaRight: 126,
 };
+/** Control, Shift, Alt and Meta, which never repeat. */
+const MODIFIERS = new Set([KEYS.ControlLeft, KEYS.ControlRight, KEYS.ShiftLeft, KEYS.ShiftRight, KEYS.AltLeft, KEYS.AltRight, KEYS.MetaLeft, KEYS.MetaRight]);
 
 /**
  * The Linux evdev keycode of a `KeyboardEvent.code`, or null. With `mac`,
@@ -293,6 +301,7 @@ export function createLegacyWindows({
   VideoDecoder = globalThis.VideoDecoder,
   EncodedVideoChunk = globalThis.EncodedVideoChunk,
   now = () => performance.now(),
+  inputPause = ms => new Promise(resolve => globalThis.setTimeout(resolve, ms)),
   requestFrame = defaultRequestFrame,
   cancelFrame = defaultCancelFrame,
   setInterval: every = (callback, ms) => globalThis.setInterval(callback, ms),
@@ -305,6 +314,7 @@ export function createLegacyWindows({
   layer.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden;contain:strict;z-index:1';
   surface.append(layer);
   const streams = new Map(); // `${publisher}:${surface}` -> entry
+  const inputSenders = new Map(); // One native rate budget across a publisher's windows.
   const indexed = new Map(); // publisher -> last index time
   const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0};
   let api;
@@ -371,6 +381,27 @@ export function createLegacyWindows({
     streams.set(key, entry);
     probeControl(entry);
   }
+  function pacedInput(entry, events) {
+    let sender = inputSenders.get(entry.publisher);
+    if (!sender) {
+      sender = {tail: Promise.resolve(), next: 0};
+      inputSenders.set(entry.publisher, sender);
+    }
+    const operation = sender.tail.then(async () => {
+      const delay = sender.next - now();
+      if (delay > 0) await inputPause(delay);
+      if (closed || streams.get(streamKey(entry.publisher, entry.stream)) !== entry) return false;
+      try {
+        return await sendInput(entry.publisher, entry.stream.surface, events);
+      } finally {
+        // Start the quiet period after acknowledgement: a delayed request must
+        // not spend its wait time buying an immediate catch-up burst.
+        sender.next = now() + events.length * 1000 / INPUT_EVENTS_PER_SECOND;
+      }
+    });
+    sender.tail = operation.catch(() => {});
+    return operation;
+  }
   async function probeControl(entry) {
     try {
       const may = Boolean(await sendInput(entry.publisher, entry.stream.surface, []));
@@ -402,8 +433,8 @@ export function createLegacyWindows({
     entry.flushing = true;
     try {
       while (entry.input.length && entry.control && !closed) {
-        const events = entry.input.splice(0, MAX_INPUT_EVENTS);
-        const sent = await sendInput(entry.publisher, entry.stream.surface, events);
+        const events = entry.input.splice(0, INPUT_SEND_BATCH);
+        const sent = await pacedInput(entry, events);
         if (sent) stats.inputSent += events.length;
         else { stats.inputRefused += events.length; entry.control = false; schedule(); }
       }
@@ -414,9 +445,9 @@ export function createLegacyWindows({
       entry.release = undefined;
       if (release?.length) {
         try {
-          for (let offset = 0; offset < release.length; offset += MAX_INPUT_EVENTS) {
-            const events = release.slice(offset, offset + MAX_INPUT_EVENTS);
-            if (await sendInput(entry.publisher, entry.stream.surface, events)) stats.inputSent += events.length;
+          for (let offset = 0; offset < release.length; offset += INPUT_SEND_BATCH) {
+            const events = release.slice(offset, offset + INPUT_SEND_BATCH);
+            if (await pacedInput(entry, events)) stats.inputSent += events.length;
           }
         } catch (error) { report(error); }
       }
@@ -489,9 +520,45 @@ export function createLegacyWindows({
       if (dx || dy) queueInput(entry, {PointerAxis: {dx, dy}});
     }, {passive: false});
     on('contextmenu', event => { if (entry.control) event.preventDefault(); });
+    // A modifier may already be held when this window gains focus. Browser
+    // typing also supplies its state on each character without a separate
+    // modifier edge. Wayland needs those edges before the character's keycode.
+    const syncModifiers = event => {
+      const ctrl = mac && (typeof event.ctrlKey === 'boolean' || typeof event.metaKey === 'boolean')
+        ? Boolean(event.ctrlKey || event.metaKey) : event.ctrlKey;
+      const groups = [
+        [event.shiftKey, [KEYS.ShiftLeft, KEYS.ShiftRight]],
+        [ctrl, [KEYS.ControlLeft, KEYS.ControlRight]],
+        [event.altKey, [KEYS.AltLeft, KEYS.AltRight]],
+        ...mac ? [] : [[event.metaKey, [KEYS.MetaLeft, KEYS.MetaRight]]],
+      ];
+      for (const [held, keys] of groups) {
+        if (typeof held !== 'boolean') continue;
+        const down = keys.filter(keysym => entry.keys.has(keysym));
+        if (held && !down.length) {
+          entry.keys.add(keys[0]);
+          queueInput(entry, {Key: {keysym: keys[0], pressed: true, modifiers: 0}});
+        } else if (!held) {
+          for (const keysym of down) {
+            entry.keys.delete(keysym);
+            queueInput(entry, {Key: {keysym, pressed: false, modifiers: 0}});
+          }
+        }
+      }
+    };
     const key = pressed => event => {
       const keysym = evdevKey(event.code, {mac});
-      if (!entry.control || keysym === null || (pressed && event.repeat)) return;
+      if (!entry.control || keysym === null) return;
+      if (pressed && event.repeat && !entry.keys.has(keysym)) return;
+      if (!MODIFIERS.has(keysym)) syncModifiers(event);
+      // The window repeats a held key only as the browser does: one more
+      // press of it. Modifiers do not repeat.
+      if (pressed && event.repeat) {
+        if (!entry.keys.has(keysym)) return;
+        event.preventDefault();
+        if (!MODIFIERS.has(keysym)) queueInput(entry, {Key: {keysym, pressed: true, modifiers: 0}});
+        return;
+      }
       // Paste: the browser's clipboard reaches the window first (the
       // `paste` event), then the key, so the window pastes this text.
       if (event.code === 'KeyV' && (event.ctrlKey || event.metaKey)) {
@@ -639,9 +706,10 @@ export function createLegacyWindows({
     try { keys = dismissed() ?? []; } catch (error) { report(error); }
     for (const key of keys) {
       const entry = streams.get(key);
-      if (!entry?.control) continue;
+      if (!entry?.control || entry.closeRequested) continue;
+      entry.closeRequested = true;
       releaseInput(entry);
-      sendInput(entry.publisher, entry.stream.surface, ['Close']).catch(report);
+      pacedInput(entry, ['Close']).catch(report);
     }
   }
   /** Send what the person did on painted windows to their hosts. */
@@ -682,6 +750,7 @@ export function createLegacyWindows({
       for (const key of [...streams.keys()]) removeStream(key);
       try { setWindows([]); } catch {}
       indexed.clear();
+      inputSenders.clear();
       api = undefined;
       layer.remove();
     },

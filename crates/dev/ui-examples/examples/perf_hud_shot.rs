@@ -62,7 +62,7 @@ pub fn run(_args: &[String]) {
     // live app runs, timed into the profiler exactly as `App` times it.
     for _ in 0..frames {
         let t = tilo_ui::time::now();
-        root.sync(&mut state.doc, &state.root);
+        root.sync(&state.doc, &state.root);
         prof.record(Pass::Sync, t.elapsed());
 
         // build_layout = widget-tree build + the taffy solve (one pass, as in
@@ -112,7 +112,7 @@ pub fn run(_args: &[String]) {
         (f64::from(WIDTH), f64::from(HEIGHT)),
     );
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, &out);
     println!(
         "wrote {} ({WIDTH}x{HEIGHT} px, {frames} frames)",
         out.display()

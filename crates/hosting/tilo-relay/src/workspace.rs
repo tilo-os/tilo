@@ -932,6 +932,12 @@ impl WorkspaceRuntime {
             .get(target)
             .is_some_and(|sub| sub.tx.try_send(envelope).is_ok())
     }
+
+    /// The outbound queue of the live subscriber `target`, for a caller
+    /// that waits for room in it rather than dropping what does not fit.
+    pub fn subscriber_queue(&self, target: &[u8; 32]) -> Option<mpsc::Sender<Envelope>> {
+        self.subscribers.get(target).map(|sub| sub.tx.clone())
+    }
 }
 
 /// Shorthand: a workspace runtime held under an async mutex.

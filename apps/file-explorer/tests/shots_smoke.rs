@@ -17,8 +17,9 @@ use std::fs;
 
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
-/// The default `--shots` render writes a PNG; on Windows the projection-backed
-/// scenarios fail instead of producing misleading images.
+/// The default `--shots` render writes a PNG; on a host without extended
+/// attributes the projection-backed scenarios are not offered, so they fail
+/// instead of producing misleading images.
 #[test]
 fn shots_flag_writes_png_and_refuses_unavailable_projection_scenarios() {
     #[cfg(windows)]
@@ -29,7 +30,7 @@ fn shots_flag_writes_png_and_refuses_unavailable_projection_scenarios() {
 #[cfg(windows)]
 fn unavailable_projection_scenarios_fail_instead_of_producing_misleading_images() {
     let directory = tempfile::tempdir().unwrap();
-    for scenario in ["sync", "thumbnails-fs", "history"] {
+    for scenario in ["sync", "thumbnails-fs"] {
         let output = directory.path().join(format!("{scenario}.png"));
         let result = crate::common::app_command()
             .arg("--shots")
@@ -39,10 +40,7 @@ fn unavailable_projection_scenarios_fail_instead_of_producing_misleading_images(
             .unwrap();
         assert!(!result.status.success());
         assert!(!output.exists());
-        assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains("requires the Tilo filesystem projection")
-        );
+        assert!(String::from_utf8_lossy(&result.stderr).contains("unknown screenshot scenario"));
     }
 }
 

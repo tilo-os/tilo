@@ -119,3 +119,5 @@ mod tests {
         assert_eq!(PowerProfile::Performance.label(), "Performance");
     }
 }
+
+pub(crate) mod radio;

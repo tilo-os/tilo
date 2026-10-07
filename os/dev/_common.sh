@@ -458,9 +458,21 @@ firmware_setup() {
   fi
 
   cands=""; for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.qcow2"; done
+  if [ "$TILO_VM_S3" = 1 ]; then
+    # S3 needs the build without SMM: the SMM-protected store and S3 resume do
+    # not coexist (see secboot_qemu_args). Same 4 MB measuring build otherwise.
+    [ "$TILO_SECBOOT_KEYS" = none ] || [ "$TILO_SECBOOT_KEYS" = persist ] \
+      || die "TILO_VM_S3=1 boots the firmware without Secure Boot; it cannot hold TILO_SECBOOT_KEYS=$TILO_SECBOOT_KEYS"
+    cands=""; for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.qcow2"; done
+  fi
   # shellcheck disable=SC2086
   TILO_FW_CODE="$(_env_first_file $cands)"
-  if [ -n "$TILO_FW_CODE" ]; then
+  [ "$TILO_VM_S3" != 1 ] || [ -n "$TILO_FW_CODE" ] \
+    || die "TILO_VM_S3=1 needs the 4 MB OVMF build without SMM (OVMF_CODE_4M.qcow2 from edk2-ovmf)"
+  if [ "$TILO_VM_S3" = 1 ]; then
+    TILO_FW_FMT=qcow2; TILO_FW_MEASURES=1; TILO_FW_SMM=0
+    TILO_FW_VARS="$(dirname "$TILO_FW_CODE")/OVMF_VARS_4M.qcow2"
+  elif [ -n "$TILO_FW_CODE" ]; then
     TILO_FW_FMT=qcow2; TILO_FW_MEASURES=1; TILO_FW_SMM=1
     dir="$(dirname "$TILO_FW_CODE")"
     case "$TILO_SECBOOT_KEYS" in
@@ -578,6 +590,13 @@ secboot_qemu_args() {
   printf -- '-global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1'
 }
 # q35 machine options; SMM is required by the Secure-Boot firmware.
+# TILO_VM_S3=1 offers the guest suspend-to-RAM, which the monitor's
+# `system_wakeup` resumes (x86_64 only; ARM `virt` has no S3).
+TILO_VM_S3="${TILO_VM_S3:-0}"
+# Refused at load time, like the LAN settings: inside the substitution that
+# builds QEMU's arguments a refusal would only end that subshell.
+[ "$TILO_VM_S3" != 1 ] || [ "$TILO_VM_ARCH" != aarch64 ] \
+  || die "TILO_VM_S3=1: the ARM virt machine has no suspend-to-RAM"
 machine_args() {
   if [ "$TILO_VM_ARCH" = aarch64 ]; then
     printf -- '-machine virt,gic-version=max'
@@ -585,6 +604,8 @@ machine_args() {
   fi
   if [ "$TILO_FW_SMM" = "1" ]; then
     printf -- '-machine q35,smm=on'
+  elif [ "$TILO_VM_S3" = 1 ]; then
+    printf -- '-machine q35 -global ICH9-LPC.disable_s3=0'
   else
     printf -- '-machine q35'
   fi
@@ -635,6 +656,9 @@ console_qemu_args() {
 TILO_VM_LAN_PORT="${TILO_VM_LAN_PORT:-}"
 TILO_VM_LAN_PEER="${TILO_VM_LAN_PEER:-}"
 TILO_VM_LAN_MAC="${TILO_VM_LAN_MAC:-}"
+# The NIC model on that segment. e1000 implements Wake-on-LAN settings, so a
+# guest can enable magic-packet wake on it; virtio-net cannot.
+TILO_VM_LAN_MODEL="${TILO_VM_LAN_MODEL:-virtio-net-pci}"
 # Validated here, at load time: a refusal inside the command substitution that
 # builds QEMU's arguments would only end that subshell and boot without the NIC.
 if [ -n "$TILO_VM_LAN_PORT$TILO_VM_LAN_PEER$TILO_VM_LAN_MAC" ]; then
@@ -642,11 +666,15 @@ if [ -n "$TILO_VM_LAN_PORT$TILO_VM_LAN_PEER$TILO_VM_LAN_MAC" ]; then
     || die "TILO_VM_LAN_PORT and TILO_VM_LAN_PEER must both be loopback UDP ports"
   [[ "$TILO_VM_LAN_MAC" =~ ^52:54:00(:[0-9a-f]{2}){3}$ ]] \
     || die "TILO_VM_LAN_MAC must be a lowercase 52:54:00:xx:xx:xx address"
+  case "$TILO_VM_LAN_MODEL" in
+    virtio-net-pci|e1000) ;;
+    *) die "TILO_VM_LAN_MODEL must be virtio-net-pci or e1000" ;;
+  esac
 fi
 lan_qemu_args() {
   [ -n "$TILO_VM_LAN_PORT" ] || return 0
-  printf -- '-netdev socket,id=tilolan,udp=127.0.0.1:%s,localaddr=127.0.0.1:%s -device virtio-net-pci,netdev=tilolan,mac=%s' \
-    "$TILO_VM_LAN_PEER" "$TILO_VM_LAN_PORT" "$TILO_VM_LAN_MAC"
+  printf -- '-netdev socket,id=tilolan,udp=127.0.0.1:%s,localaddr=127.0.0.1:%s -device %s,netdev=tilolan,mac=%s' \
+    "$TILO_VM_LAN_PEER" "$TILO_VM_LAN_PORT" "$TILO_VM_LAN_MODEL" "$TILO_VM_LAN_MAC"
 }
 
 input_qemu_args() {

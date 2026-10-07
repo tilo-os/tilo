@@ -1,0 +1,755 @@
+{
+  "schema": 1,
+  "date": "2026-10-06",
+  "production_decoder": "whisper.cpp 1.8.3, CPU greedy, two threads, unchanged parameters",
+  "limits": {
+    "address_space_bytes": 1073741824,
+    "audio_seconds": 120,
+    "transcript_bytes": 16384
+  },
+  "dataset": {
+    "name": "google/fleurs",
+    "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+    "license": "CC-BY-4.0",
+    "attribution": "Google FLEURS dataset authors",
+    "source": "https://huggingface.co/datasets/google/fleurs/blob/70bb2e84b976b7e960aa89f1c648e09c59f894dd/README.md",
+    "selection": "First three archive members per language, without listening or selecting recognition results. Five additional distinct utterances per English/French/Mandarin provide 70–90 second splices.",
+    "manifest_sha256_before_additional_model": "2b5e3f2886662798af3eebb90b519f12b2c012984ab58cad8c78ed573c6c9dab",
+    "fixtures": [
+      {
+        "id": "en_us-0",
+        "source_id": "1904",
+        "source_file": "1003119935936341070.wav",
+        "source_sha256": "33aca50159ec2e3cbcc894eb26faa916d6badb1b49fb75994973561540a7f012",
+        "sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7",
+        "duration_seconds": 10.56,
+        "primary": true
+      },
+      {
+        "id": "en_us-1",
+        "source_id": "1675",
+        "source_file": "10052240106321793346.wav",
+        "source_sha256": "7603cae3294309ef70d234180cefccc3b13865ee525262228a636069b9b62841",
+        "sha256": "fd99727983733f9771077fe1a030fcc44ea7e16be1e9396cff525db2886a8f0f",
+        "duration_seconds": 8.76,
+        "primary": true
+      },
+      {
+        "id": "en_us-2",
+        "source_id": "1950",
+        "source_file": "10167324587744183095.wav",
+        "source_sha256": "260bdd1a15e1d35bcc5d91667516ca3bc659285e10f94872182715bcd7880398",
+        "sha256": "b4aea90be63667ffe68bd0c67fcc11b6a5bc334a4566df8153c074b37e2760d6",
+        "duration_seconds": 11.46,
+        "primary": true
+      },
+      {
+        "id": "en_us-3",
+        "source_id": "1728",
+        "source_file": "10197164397713068203.wav",
+        "source_sha256": "b174be7730f0aab6a26762130b66f2125392b50550645727bd057d8479fb6219",
+        "sha256": "1a2230cb99ec7ed59df1ad0cf43020b093c6536f9b4ca02636b8daa9c4577229",
+        "duration_seconds": 5.76,
+        "primary": false
+      },
+      {
+        "id": "en_us-4",
+        "source_id": "1972",
+        "source_file": "10233995782544396174.wav",
+        "source_sha256": "bfa2f3fb72a05cbcb7c0000a460435f2d0eedca7c5cc90f01aacc89127df7f63",
+        "sha256": "5fda1c914915f9fcd856b11739eb88570deb747c0a492c841255f13383d00e82",
+        "duration_seconds": 4.32,
+        "primary": false
+      },
+      {
+        "id": "en_us-5",
+        "source_id": "1938",
+        "source_file": "10235738076911595987.wav",
+        "source_sha256": "3802ffc3e69c66e0d2e66652015bff0c6b1b8498bfb8670623eb4e34bc9e008d",
+        "sha256": "c15df2cdf2811dde17f6086317a9aeb0f2cb4a9967204c6beac2cd87fadfb93b",
+        "duration_seconds": 11.42,
+        "primary": false
+      },
+      {
+        "id": "en_us-6",
+        "source_id": "1876",
+        "source_file": "10323357556845456822.wav",
+        "source_sha256": "6b3081a29a5bb6fc6434e8525690edc26b23844841e119c916183f4ba1863372",
+        "sha256": "b804e68fee5b002c5a6942a4dbefe4dba14b3f816e07404c80ee508527ecf956",
+        "duration_seconds": 10.8,
+        "primary": false
+      },
+      {
+        "id": "en_us-7",
+        "source_id": "1914",
+        "source_file": "10335587906469246566.wav",
+        "source_sha256": "14c9f40d7087ed487823917a9bc1838a037d78d315a694f7ace632651c612a61",
+        "sha256": "eecacd023023857f4a8fb8b86a5815a06c972ac49584d34fec14d71640a9c684",
+        "duration_seconds": 6.96,
+        "primary": false
+      },
+      {
+        "id": "de_de-0",
+        "source_id": "2003",
+        "source_file": "10004059102127011984.wav",
+        "source_sha256": "1603ed8fcea31a7f32f51d137eaa3516d15aca947898b81a136f4a9732f08ad2",
+        "sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+        "duration_seconds": 17.94,
+        "primary": true
+      },
+      {
+        "id": "de_de-1",
+        "source_id": "1738",
+        "source_file": "10009182821551087671.wav",
+        "source_sha256": "90d0470adf728783e98cc8dddd51e2c2cbf0d6bf360da65f7d2ac5c3e65876aa",
+        "sha256": "97d77a9d323b903dcc10c608521fa07fb78766d4b65d016ba620caae442dece9",
+        "duration_seconds": 11.16,
+        "primary": true
+      },
+      {
+        "id": "de_de-2",
+        "source_id": "1849",
+        "source_file": "10014044777125235464.wav",
+        "source_sha256": "13041e21e6a44d30da9595905fbb4367056191a513245b84e64a13449c8d08ea",
+        "sha256": "653973c6e8fa8623883b83b429c112623011445bdbcf06da3db4358a71a5d06e",
+        "duration_seconds": 12.42,
+        "primary": true
+      },
+      {
+        "id": "fr_fr-0",
+        "source_id": "1987",
+        "source_file": "10043298898524273336.wav",
+        "source_sha256": "c834367fd212902124bdd0e0f6c1f16b5561af6386600f145e5aec50008b298d",
+        "sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+        "duration_seconds": 10.2,
+        "primary": true
+      },
+      {
+        "id": "fr_fr-1",
+        "source_id": "1690",
+        "source_file": "10097171356371990207.wav",
+        "source_sha256": "9b9450e1cb9ea3badb2223f726adabb754cd6ff2278b9fc4dc2ad86c73791db7",
+        "sha256": "96eaa990ca9b4a8fb0ed3420a395cfd6cc7714c434246d1ed05412d77cfe72c2",
+        "duration_seconds": 23.4,
+        "primary": true
+      },
+      {
+        "id": "fr_fr-2",
+        "source_id": "1857",
+        "source_file": "10138021779681596478.wav",
+        "source_sha256": "05ccf3ccc2ab4b72d056c3f02e3ffcf6ea0f37b1c42bea5c35789c85291fbdc5",
+        "sha256": "5113362855b95d8bcb3ad2b5dcad22fb26b3732a3ee57c0cf0fcf3856c6327ab",
+        "duration_seconds": 8.28,
+        "primary": true
+      },
+      {
+        "id": "fr_fr-3",
+        "source_id": "1913",
+        "source_file": "10143749263702132703.wav",
+        "source_sha256": "fc42db1a8eb9339fa89be21f013b2e2ea231b3eb9b4af3bf82c7a3a1aae78b3b",
+        "sha256": "e8ccc9b81998a1560496e799bb5ebac9e1d1c28da4da13d8f091b3638b2583ee",
+        "duration_seconds": 10.2,
+        "primary": false
+      },
+      {
+        "id": "fr_fr-4",
+        "source_id": "2004",
+        "source_file": "10166091086920486572.wav",
+        "source_sha256": "315a3fc3328acea267098f2cbc0cfa5dccee6e125c6861c229335f9b476cb4b9",
+        "sha256": "9badc4354702bd32b7316e5f86e7b0fd04e143a01f5f2c5e2bf83dc5833bdf37",
+        "duration_seconds": 8.34,
+        "primary": false
+      },
+      {
+        "id": "fr_fr-5",
+        "source_id": "1853",
+        "source_file": "10174413140250646001.wav",
+        "source_sha256": "bbd0709fac97a44791bceecac6d7e9ebf799625bbe62f13658d5634c7a8ddc2e",
+        "sha256": "a2f90efa4fb0ecd048e07f8369cdc9e08db2b94ed2c45b5dbf096360e5e65372",
+        "duration_seconds": 7.2,
+        "primary": false
+      },
+      {
+        "id": "fr_fr-6",
+        "source_id": "1929",
+        "source_file": "10221277978969763776.wav",
+        "source_sha256": "f149d230427496afa3223808edee58e64316f2bd3d879ad9c962b12d2f0bf9a3",
+        "sha256": "7bf9fcebec31751ae13c5c2de055004f9d6099b72e1107d54ca95a2b83e676b3",
+        "duration_seconds": 8.4,
+        "primary": false
+      },
+      {
+        "id": "fr_fr-7",
+        "source_id": "1980",
+        "source_file": "10334413597118469552.wav",
+        "source_sha256": "7ec432adcd9dc8b56c41238f16fd11ec3acd93a9fd8c4b5d14a567e59aa9e7c3",
+        "sha256": "d9fc2f58c0e0bdb23cfcf1e32a98cf37796c6c12805219c7d51aa4dd646577e4",
+        "duration_seconds": 11.64,
+        "primary": false
+      },
+      {
+        "id": "es_419-0",
+        "source_id": "2001",
+        "source_file": "1001146817223348054.wav",
+        "source_sha256": "861ceedc4d50fbe52fc89b6d0c0fa740b9cd6fa668388e754064847386af0faf",
+        "sha256": "95df54f13e862069293afca618669316d194c1b4c6601eb808b501c86292b527",
+        "duration_seconds": 12.84,
+        "primary": true
+      },
+      {
+        "id": "es_419-1",
+        "source_id": "1852",
+        "source_file": "10050510856477907332.wav",
+        "source_sha256": "5b0fcf5b42064d33a36d26dab527cb230b4751587b4066ef11157ea603586d8d",
+        "sha256": "5ef951507d91ab3af0f4f7b346aa0a098feb98461dde2510b2fccacbe5a49405",
+        "duration_seconds": 21.36,
+        "primary": true
+      },
+      {
+        "id": "es_419-2",
+        "source_id": "1764",
+        "source_file": "1008205615316519958.wav",
+        "source_sha256": "0576e73da35ef17b6ce6396d31b32830b7ab19cea98f9f5db68de3756dc3d4fc",
+        "sha256": "e6bc71c132b6022fdaee690b0c87051925430c4ed94049827f6ba90e3faf06ac",
+        "duration_seconds": 9.72,
+        "primary": true
+      },
+      {
+        "id": "ar_eg-0",
+        "source_id": "1993",
+        "source_file": "10019390257075855641.wav",
+        "source_sha256": "40d979a6239fc08951f387c671fb5fc46fffdc5df823ed1dbdb809bc75e26620",
+        "sha256": "2404e18b8048817f6f6df46c910c93bcc9934337d66eb3359e5dce736d6eef43",
+        "duration_seconds": 8.16,
+        "primary": true
+      },
+      {
+        "id": "ar_eg-1",
+        "source_id": "1730",
+        "source_file": "10035416633083120372.wav",
+        "source_sha256": "318e95704f15e5050d5f3703172415c5e9d7f83495c3589590e8c4ca8b2628f6",
+        "sha256": "4c8e0057b6a4347b0abf260d1f4a14b15dade63caf991f475da70909f3602035",
+        "duration_seconds": 14.16,
+        "primary": true
+      },
+      {
+        "id": "ar_eg-2",
+        "source_id": "1995",
+        "source_file": "10080665469720750912.wav",
+        "source_sha256": "cca59df14be2fc8fd0f064dd7ad524878db5e976b03634db7833f0268e18a058",
+        "sha256": "1b96219820effce0138ef8384c806a885480971ac93a7755c18b4153d5a5e9f7",
+        "duration_seconds": 16.02,
+        "primary": true
+      },
+      {
+        "id": "cmn_hans_cn-0",
+        "source_id": "1906",
+        "source_file": "10026684690566417990.wav",
+        "source_sha256": "a72c0b59fdba80850552af7991de07f9f4940846d2d70f0890eeb153c40f164b",
+        "sha256": "407400c0a228817cfe9cc95feffe48261e005aaaea828412d6bcbb36915d8f7b",
+        "duration_seconds": 10.38,
+        "primary": true
+      },
+      {
+        "id": "cmn_hans_cn-1",
+        "source_id": "2006",
+        "source_file": "10040380210557600780.wav",
+        "source_sha256": "b39d2c84aefada280b73a9ab439726d370d45e5a75bd05f0a90153288ea4561b",
+        "sha256": "d15ddc6cf1c0eaac6277cd7c57d061d06c71fb2e1ecdfb68fea9484a6eb35db8",
+        "duration_seconds": 8.28,
+        "primary": true
+      },
+      {
+        "id": "cmn_hans_cn-2",
+        "source_id": "1883",
+        "source_file": "10048525650290665384.wav",
+        "source_sha256": "aeb95366f4907daf8797d66797c87f6e002f10704e78e87a0c4b4521756a1616",
+        "sha256": "a0b2f1f1b106e400cd7e80ec8ebcb8a3a9e30deec0da732036bc23c6c7b6a668",
+        "duration_seconds": 13.86,
+        "primary": true
+      },
+      {
+        "id": "cmn_hans_cn-3",
+        "source_id": "1852",
+        "source_file": "10053956375630517392.wav",
+        "source_sha256": "d1274fd5e5ce0029473faa0df42bd714094428b853029d6f6c64ffd3f36a8afe",
+        "sha256": "2efa08e65685c20429024da9f390bd74fdf9dd978cae4197fe2145b371b73727",
+        "duration_seconds": 15.42,
+        "primary": false
+      },
+      {
+        "id": "cmn_hans_cn-4",
+        "source_id": "1734",
+        "source_file": "10056338555786085046.wav",
+        "source_sha256": "7cc0e10d7c4ad3297d1803ac968c996a747117edd75a6cec59e485a93bbe0fe9",
+        "sha256": "feaa69d9082d796cff4f15d77fb19b152efde65ad325384785ebe2a7b803357d",
+        "duration_seconds": 12.9,
+        "primary": false
+      },
+      {
+        "id": "cmn_hans_cn-5",
+        "source_id": "1890",
+        "source_file": "10073099671796350432.wav",
+        "source_sha256": "e07c342ae53173bec1c3d5f534073fa6368713f76e7b5ab9497b015b1020167f",
+        "sha256": "1ad6110c5249948cbcb79f21dd88e185ff8a8de733329f35edcf39c369c4faac",
+        "duration_seconds": 13.74,
+        "primary": false
+      },
+      {
+        "id": "cmn_hans_cn-6",
+        "source_id": "1721",
+        "source_file": "10081186303620187437.wav",
+        "source_sha256": "379999ca5e729d35f81b0d62087e78f23481e0eb47bf8aca2c66208e90a072ce",
+        "sha256": "7482d481451c24e8b3c0dd2f5b1e14d99753298a8ae1c9aee7c7c5a52729f0b2",
+        "duration_seconds": 15.18,
+        "primary": false
+      },
+      {
+        "id": "cmn_hans_cn-7",
+        "source_id": "1869",
+        "source_file": "10104380129516909856.wav",
+        "source_sha256": "cd509460412479ebc989b962938881b47aad636eca388e890e3fd219e999b60d",
+        "sha256": "011dec65dcb0c89663e1ad85cf899c8d6b8900c487111162c86bab32fac15097",
+        "duration_seconds": 15.46,
+        "primary": false
+      }
+    ]
+  },
+  "normalization": "Unicode NFKC/casefold, punctuation to spaces, whitespace collapse. No number/accent/script normalization. Mandarin CER includes Simplified/Traditional differences; its space-token WER is not meaningful.",
+  "draft_revision": "Five-second draft aligned by edit distance to best final prefix, allowing appended final text. This is decoder revision, not measured user correction effort.",
+  "limitations": [
+    "Only three short public read-speech cases per language, one artificial splice per long language; no population or conversational accuracy claim.",
+    "Remote x86_64 build machine timings; older CPUs and ARM not qualified.",
+    "Public assets only; no microphone, installed model, production signing or account permissions.",
+    "Bare decoder probes run after worker preparation and full confinement; signed-store/process/session journeys are separately tested.",
+    "Final latency excludes cold loading and the end of capture; automatic language adds its detection pass.",
+    "Both tested models make significant errors and omit long English passages. Neither is approved as a Flow-quality default."
+  ],
+  "models": [
+    {
+      "load": {
+        "model": "tiny",
+        "load_ms": 1115,
+        "threads": 2,
+        "memory_limit_bytes": 1073741824,
+        "probes": 36
+      },
+      "short": {
+        "en": {
+          "cases": 3,
+          "text_wer": 0.1644,
+          "auto_text_wer": 0.1644,
+          "text_cer": 0.0526,
+          "auto_text_cer": 0.0526,
+          "draft_prefix_revision_fraction": 0.0732,
+          "draft_ms": {
+            "median": 519,
+            "max": 532
+          },
+          "final_ms": {
+            "median": 543,
+            "max": 579
+          },
+          "auto_ms": {
+            "median": 1018,
+            "max": 1053
+          },
+          "audio_seconds": 30.78
+        },
+        "de": {
+          "cases": 3,
+          "text_wer": 0.2742,
+          "auto_text_wer": 0.2742,
+          "text_cer": 0.0349,
+          "auto_text_cer": 0.0349,
+          "draft_prefix_revision_fraction": 0.2381,
+          "draft_ms": {
+            "median": 524,
+            "max": 531
+          },
+          "final_ms": {
+            "median": 564,
+            "max": 613
+          },
+          "auto_ms": {
+            "median": 1091,
+            "max": 1130
+          },
+          "audio_seconds": 41.52
+        },
+        "fr": {
+          "cases": 3,
+          "text_wer": 0.367,
+          "auto_text_wer": 0.367,
+          "text_cer": 0.153,
+          "auto_text_cer": 0.153,
+          "draft_prefix_revision_fraction": 0.2821,
+          "draft_ms": {
+            "median": 521,
+            "max": 571
+          },
+          "final_ms": {
+            "median": 588,
+            "max": 746
+          },
+          "auto_ms": {
+            "median": 1030,
+            "max": 1219
+          },
+          "audio_seconds": 41.88
+        },
+        "es": {
+          "cases": 3,
+          "text_wer": 0.1667,
+          "auto_text_wer": 0.1667,
+          "text_cer": 0.0372,
+          "auto_text_cer": 0.0372,
+          "draft_prefix_revision_fraction": 0.125,
+          "draft_ms": {
+            "median": 512,
+            "max": 524
+          },
+          "final_ms": {
+            "median": 581,
+            "max": 669
+          },
+          "auto_ms": {
+            "median": 1034,
+            "max": 1127
+          },
+          "audio_seconds": 43.92
+        },
+        "ar": {
+          "cases": 3,
+          "text_wer": 0.5942,
+          "auto_text_wer": 0.5942,
+          "text_cer": 0.2566,
+          "auto_text_cer": 0.2566,
+          "draft_prefix_revision_fraction": 0.25,
+          "draft_ms": {
+            "median": 544,
+            "max": 556
+          },
+          "final_ms": {
+            "median": 665,
+            "max": 666
+          },
+          "auto_ms": {
+            "median": 1128,
+            "max": 1162
+          },
+          "audio_seconds": 38.34
+        },
+        "zh": {
+          "cases": 3,
+          "text_wer": 1.0,
+          "auto_text_wer": 1.0,
+          "text_cer": 0.2469,
+          "auto_text_cer": 0.2469,
+          "draft_prefix_revision_fraction": 0.3333,
+          "draft_ms": {
+            "median": 530,
+            "max": 1744
+          },
+          "final_ms": {
+            "median": 539,
+            "max": 556
+          },
+          "auto_ms": {
+            "median": 1025,
+            "max": 1054
+          },
+          "audio_seconds": 32.52
+        }
+      },
+      "long": {
+        "en": {
+          "cases": 1,
+          "text_wer": 0.6603,
+          "auto_text_wer": 0.6603,
+          "text_cer": 0.6367,
+          "auto_text_cer": 0.6367,
+          "draft_prefix_revision_fraction": 0.0,
+          "draft_ms": {
+            "median": 520,
+            "max": 520
+          },
+          "final_ms": {
+            "median": 1761,
+            "max": 1761
+          },
+          "auto_ms": {
+            "median": 2295,
+            "max": 2295
+          },
+          "audio_seconds": 70.04
+        },
+        "fr": {
+          "cases": 1,
+          "text_wer": 0.5345,
+          "auto_text_wer": 0.5345,
+          "text_cer": 0.2819,
+          "auto_text_cer": 0.2819,
+          "draft_prefix_revision_fraction": 1.0,
+          "draft_ms": {
+            "median": 521,
+            "max": 521
+          },
+          "final_ms": {
+            "median": 3419,
+            "max": 3419
+          },
+          "auto_ms": {
+            "median": 3628,
+            "max": 3628
+          },
+          "audio_seconds": 87.66
+        },
+        "zh": {
+          "cases": 1,
+          "text_wer": 1.0,
+          "auto_text_wer": 1.0,
+          "text_cer": 0.4902,
+          "auto_text_cer": 0.4588,
+          "draft_prefix_revision_fraction": 0.5385,
+          "draft_ms": {
+            "median": 577,
+            "max": 577
+          },
+          "final_ms": {
+            "median": 4494,
+            "max": 4494
+          },
+          "auto_ms": {
+            "median": 4769,
+            "max": 4769
+          },
+          "audio_seconds": 89.76
+        }
+      }
+    },
+    {
+      "load": {
+        "model": "base",
+        "load_ms": 2053,
+        "threads": 2,
+        "memory_limit_bytes": 1073741824,
+        "probes": 36
+      },
+      "short": {
+        "en": {
+          "cases": 3,
+          "text_wer": 0.1096,
+          "auto_text_wer": 0.1096,
+          "text_cer": 0.0464,
+          "auto_text_cer": 0.0464,
+          "draft_prefix_revision_fraction": 0.125,
+          "draft_ms": {
+            "median": 1115,
+            "max": 1127
+          },
+          "final_ms": {
+            "median": 1171,
+            "max": 1204
+          },
+          "auto_ms": {
+            "median": 2177,
+            "max": 2250
+          },
+          "audio_seconds": 30.78
+        },
+        "de": {
+          "cases": 3,
+          "text_wer": 0.2097,
+          "auto_text_wer": 0.2097,
+          "text_cer": 0.0349,
+          "auto_text_cer": 0.0349,
+          "draft_prefix_revision_fraction": 0.2174,
+          "draft_ms": {
+            "median": 1098,
+            "max": 1120
+          },
+          "final_ms": {
+            "median": 1186,
+            "max": 1229
+          },
+          "auto_ms": {
+            "median": 2228,
+            "max": 2279
+          },
+          "audio_seconds": 41.52
+        },
+        "fr": {
+          "cases": 3,
+          "text_wer": 0.2661,
+          "auto_text_wer": 0.2661,
+          "text_cer": 0.1166,
+          "auto_text_cer": 0.1166,
+          "draft_prefix_revision_fraction": 0.3542,
+          "draft_ms": {
+            "median": 1117,
+            "max": 1188
+          },
+          "final_ms": {
+            "median": 1223,
+            "max": 1427
+          },
+          "auto_ms": {
+            "median": 2268,
+            "max": 2488
+          },
+          "audio_seconds": 41.88
+        },
+        "es": {
+          "cases": 3,
+          "text_wer": 0.098,
+          "auto_text_wer": 0.098,
+          "text_cer": 0.0331,
+          "auto_text_cer": 0.0331,
+          "draft_prefix_revision_fraction": 0.1765,
+          "draft_ms": {
+            "median": 1143,
+            "max": 1150
+          },
+          "final_ms": {
+            "median": 1257,
+            "max": 1364
+          },
+          "auto_ms": {
+            "median": 2238,
+            "max": 2422
+          },
+          "audio_seconds": 43.92
+        },
+        "ar": {
+          "cases": 3,
+          "text_wer": 0.4203,
+          "auto_text_wer": 0.4203,
+          "text_cer": 0.1239,
+          "auto_text_cer": 0.1239,
+          "draft_prefix_revision_fraction": 0.1724,
+          "draft_ms": {
+            "median": 1195,
+            "max": 1226
+          },
+          "final_ms": {
+            "median": 1326,
+            "max": 1354
+          },
+          "auto_ms": {
+            "median": 2355,
+            "max": 2455
+          },
+          "audio_seconds": 38.34
+        },
+        "zh": {
+          "cases": 3,
+          "text_wer": 1.0,
+          "auto_text_wer": 1.0,
+          "text_cer": 0.3333,
+          "auto_text_cer": 0.3333,
+          "draft_prefix_revision_fraction": 0.1282,
+          "draft_ms": {
+            "median": 1131,
+            "max": 1409
+          },
+          "final_ms": {
+            "median": 1187,
+            "max": 1218
+          },
+          "auto_ms": {
+            "median": 2245,
+            "max": 2280
+          },
+          "audio_seconds": 32.52
+        }
+      },
+      "long": {
+        "en": {
+          "cases": 1,
+          "text_wer": 0.6474,
+          "auto_text_wer": 0.6474,
+          "text_cer": 0.6315,
+          "auto_text_cer": 0.6315,
+          "draft_prefix_revision_fraction": 0.0,
+          "draft_ms": {
+            "median": 1103,
+            "max": 1103
+          },
+          "final_ms": {
+            "median": 3672,
+            "max": 3672
+          },
+          "auto_ms": {
+            "median": 4899,
+            "max": 4899
+          },
+          "audio_seconds": 70.04
+        },
+        "fr": {
+          "cases": 1,
+          "text_wer": 0.4009,
+          "auto_text_wer": 0.4009,
+          "text_cer": 0.2204,
+          "auto_text_cer": 0.2204,
+          "draft_prefix_revision_fraction": 1.0,
+          "draft_ms": {
+            "median": 1116,
+            "max": 1116
+          },
+          "final_ms": {
+            "median": 6232,
+            "max": 6232
+          },
+          "auto_ms": {
+            "median": 7244,
+            "max": 7244
+          },
+          "audio_seconds": 87.66
+        },
+        "zh": {
+          "cases": 1,
+          "text_wer": 1.0,
+          "auto_text_wer": 1.0,
+          "text_cer": 0.4275,
+          "auto_text_cer": 0.4275,
+          "draft_prefix_revision_fraction": 0.2,
+          "draft_ms": {
+            "median": 1311,
+            "max": 1311
+          },
+          "final_ms": {
+            "median": 5959,
+            "max": 5959
+          },
+          "auto_ms": {
+            "median": 7251,
+            "max": 7251
+          },
+          "audio_seconds": 89.76
+        }
+      }
+    }
+  ],
+  "rejected_experiment": {
+    "change": "Globally disable predicted timestamps",
+    "result": "Long English WER 55.13% versus 64.74%, but long French worsened to 63.36% versus 40.09% and Mandarin CER to 54.51% versus 42.75%; omissions remained. No production decoder change retained."
+  },
+  "stronger_model_probe": {
+    "name": "small-q5_1",
+    "size_bytes": 190085487,
+    "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "license": "MIT",
+    "result": "Verified input; GGML_ASSERT(ctx->mem_buffer != NULL) during native loading under unchanged 1 GiB RLIMIT_AS, before transcript probes. No accuracy or latency claim.",
+    "isolated_clip": {
+      "id": "en_us-0",
+      "audio_samples": 168960,
+      "result": "Same native allocation assertion before load with only one 10.56-second clip, ruling out bulk fixture preload as the cause."
+    }
+  },
+  "loader_regression": {
+    "before": "Base worker exited abnormally during native loading with geometrically grown read buffer.",
+    "after": "Exact receipt size plus one byte reserved before read; base loaded in 2053 ms and all 21 probes completed under unchanged 1 GiB limit. The independent signed-store fixture checks the production loader capacity."
+  }
+}

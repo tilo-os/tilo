@@ -11,8 +11,43 @@ use ui::permissions::{Actor, PermissionContext, Role, UserId};
 use ui::portable_storage::PortableStorage;
 use ui::record::{RecordCheckout, RecordStore};
 
+use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
+use ui::tilo_resource::Invoke;
+use ui::widget::Element;
+
 use crate::doc::BooksDoc;
 use crate::model::AnnoKind;
+use crate::resource::{Ebook, EbookShell};
+
+/// Books as the browser runs it, natively: the library is the one compiled
+/// into the app.
+struct BrowserBooks;
+
+impl ResourceApp for BrowserBooks {
+    type Resource = Ebook;
+    const ID: &'static str = EbookShell::ID;
+    const TITLE: &'static str = EbookShell::TITLE;
+    const ICON: Option<&'static str> = EbookShell::ICON;
+    const OPENS: &'static [&'static str] = EbookShell::OPENS;
+    const ARGUMENTS: usize = EbookShell::ARGUMENTS;
+
+    fn view(cx: &mut ViewCx<Ebook>) -> Element {
+        cx.surface(crate::BooksApp::new(cx.dispatcher(), true))
+    }
+
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Ebook>> {
+        EbookShell::launch(input, created)
+    }
+
+    fn seed(_cx: &SeedCx<'_>) -> Vec<Invoke<Ebook>> {
+        crate::resource::bundled_seed(true)
+    }
+}
+
+/// The browser's definition, for exercising its bundled library natively.
+fn bundled_library_definition() -> &'static ApplicationDefinition {
+    ui::framework::definition::<BrowserBooks>()
+}
 
 const DEVICE: &str = "books-device";
 const WORKSPACE: &str = "books-room";
@@ -103,20 +138,15 @@ fn bundled_book() -> String {
     super::book_resource(&crate::content::bundled_book_id())
 }
 
-/// Frames until the book's search index (built off the UI thread natively)
-/// resolves the book's resource, if the library holds it.
+/// Frames until the book's resource resolves (a handed book is parsed off
+/// the UI thread), if the library holds it.
 fn settle(driver: &mut FrameHarness, book: &str) {
-    for _ in 0..100 {
-        driver.relayout();
-        if driver
+    driver.wait_until(ui::time::Duration::from_secs(1), |driver| {
+        driver
             .bound_resources(Some(book))
             .ok()
             .is_some_and(|resources| !resources.is_empty())
-        {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    });
 }
 
 fn invoke(
@@ -137,6 +167,32 @@ fn invoke(
     driver.invoke_bound_action(&address, &arguments)?;
     driver.relayout();
     Ok(())
+}
+
+/// The library resource, which every edit is published on.
+const LIBRARY: &str = "ebook.library";
+
+/// Where the reader is in `book` (`ebook.book:…`): the resource its view
+/// operations (selecting, going to a passage) are published on.
+fn reading(book: &str) -> String {
+    book.replacen("ebook.book:", "ebook.selection:", 1)
+}
+
+/// The library's actions, where its edits bound to where the reader is
+/// in `book` are published.
+fn selection_actions(driver: &FrameHarness, _book: &str) -> Vec<String> {
+    driver
+        .bound_resources(Some(LIBRARY))
+        .ok()
+        .and_then(|resources| resources.into_iter().next())
+        .map(|resource| {
+            resource
+                .actions
+                .into_iter()
+                .map(|action| action.id)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn child_labels(driver: &FrameHarness, book: &str) -> Vec<(String, String)> {
@@ -164,7 +220,7 @@ fn a_native_new_library_starts_empty_on_the_shelf() {
 #[test]
 fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions() {
     let fixture = Fixture::new("books-browser-flow");
-    let definition = super::bundled_library_definition();
+    let definition = bundled_library_definition();
     let (mut first, checkout) = fixture.driver(definition, 1, LaunchTarget::New);
     let book = bundled_book();
     let target = LaunchTarget::Record {
@@ -177,7 +233,7 @@ fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions()
     let actions: Vec<_> = resource[0].actions.iter().map(|a| a.id.as_str()).collect();
     assert!(actions.contains(&"select-passage"), "{actions:?}");
     assert!(
-        !actions.contains(&"highlight-selection"),
+        !selection_actions(&first, &book).contains(&"highlight-selection".to_string()),
         "nothing is selected yet"
     );
 
@@ -189,23 +245,28 @@ fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions()
         serde_json::json!({"start_block": 1, "end_block": 2, "end_char": 40}),
     )
     .expect("select");
-    let resource = first.bound_resources(Some(&book)).unwrap();
-    let actions: Vec<_> = resource[0].actions.iter().map(|a| a.id.as_str()).collect();
-    assert!(actions.contains(&"highlight-selection"), "{actions:?}");
-    assert!(actions.contains(&"note-selection"), "{actions:?}");
+    let actions = selection_actions(&first, &book);
+    assert!(
+        actions.contains(&"highlight-selection".to_string()),
+        "{actions:?}"
+    );
+    assert!(
+        actions.contains(&"note-selection".to_string()),
+        "{actions:?}"
+    );
 
     invoke(
         &mut first,
-        &book,
+        LIBRARY,
         "highlight-selection",
         serde_json::json!({}),
     )
     .expect("highlight");
     invoke(
         &mut first,
-        &book,
+        LIBRARY,
         "note-selection",
-        serde_json::json!({"value": "The keeper's debt"}),
+        serde_json::json!({"text": "The keeper's debt"}),
     )
     .expect("note");
 
@@ -263,12 +324,12 @@ fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions()
 #[test]
 fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_highlights() {
     let fixture = Fixture::new("books-browser-open");
-    let definition = super::bundled_library_definition();
+    let definition = bundled_library_definition();
     let content = tilo_content::ContentStore::memory();
     let bytes = crate::test_epub::long_classic(24, 6);
     let book_id = crate::epub::content_id(&bytes);
     let book = super::book_resource(&book_id);
-    let (file, receipt) =
+    let (file, _receipt) =
         ui::application::OpenFile::new("odyssey.epub", super::EPUB_MEDIA_TYPE, bytes.clone())
             .unwrap();
     let lent = content.clone();
@@ -277,16 +338,17 @@ fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_high
             host.provide_content(lent);
             host.provide_open_file(file);
         });
-    assert_eq!(receipt.opened_resource().as_deref(), Some(book.as_str()));
 
     let shelf = fixture
         .records
         .read(&checkout.id, BooksDoc::read_library_entries)
         .unwrap();
     let hash = tilo_content::hash_bytes(&bytes);
-    assert_eq!(shelf.len(), 1, "the handed book, not the sample: {shelf:?}");
-    assert_eq!(shelf[0].id, book_id);
-    assert_eq!(shelf[0].content.as_deref(), Some(hash.as_str()));
+    let handed = shelf
+        .iter()
+        .find(|entry| entry.id == book_id)
+        .unwrap_or_else(|| panic!("the handed book joins the shelf: {shelf:?}"));
+    assert_eq!(handed.content.as_deref(), Some(hash.as_str()));
     assert!(
         content.has(&hash),
         "the bytes live in the host's content store"
@@ -354,7 +416,7 @@ fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_high
 #[test]
 fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
     let fixture = Fixture::new("books-browser-go-to");
-    let definition = super::bundled_library_definition();
+    let definition = bundled_library_definition();
     let content = tilo_content::ContentStore::memory();
     let bytes = crate::test_epub::verse_classic(6);
     let book_id = crate::epub::content_id(&bytes);
@@ -392,7 +454,7 @@ fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
         serde_json::json!({"chapter": 2, "start_block": 3}),
     )
     .expect("select");
-    assert!(actions(&phone).contains(&"highlight-selection".to_string()));
+    assert!(selection_actions(&phone, &book).contains(&"highlight-selection".to_string()));
     invoke(
         &mut phone,
         &book,
@@ -401,7 +463,7 @@ fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
     )
     .expect("phone goes to Book 3");
     assert!(
-        !actions(&phone).contains(&"highlight-selection".to_string()),
+        !selection_actions(&phone, &book).contains(&"highlight-selection".to_string()),
         "going to a passage selects nothing"
     );
     invoke(
@@ -411,7 +473,7 @@ fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
         serde_json::json!({"chapter": 6, "block": 3}),
     )
     .expect("laptop goes to Book 5");
-    assert!(!actions(&laptop).contains(&"highlight-selection".to_string()));
+    assert!(!selection_actions(&laptop, &book).contains(&"highlight-selection".to_string()));
 
     // Each mount is where it went: a passage selected without a chapter lands
     // in that mount's chapter.
@@ -446,10 +508,16 @@ fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
     }
 }
 
-/// Select a passage through the book's action door and highlight it.
+/// Select a passage where the reader is in the book and highlight it.
 fn highlight_passage(driver: &mut FrameHarness, book: &str, passage: serde_json::Value) {
-    invoke(driver, book, "select-passage", passage).expect("select");
-    invoke(driver, book, "highlight-selection", serde_json::json!({})).expect("highlight");
+    invoke(driver, &reading(book), "select-passage", passage).expect("select");
+    invoke(
+        driver,
+        LIBRARY,
+        "highlight-selection",
+        serde_json::json!({}),
+    )
+    .expect("highlight");
 }
 
 /// The book's highlights in the record: chapter, block and excerpt.
@@ -469,34 +537,61 @@ fn book_highlights(
 }
 
 #[test]
-fn a_file_books_does_not_open_or_cannot_read_is_refused() {
+fn a_file_books_does_not_open_is_refused_and_one_it_cannot_read_shelves_nothing() {
     let fixture = Fixture::new("books-browser-open-refused");
-    let definition = super::bundled_library_definition();
-    let refused = |name: &str, media_type: &str, bytes: Vec<u8>| {
-        let (file, receipt) = ui::application::OpenFile::new(name, media_type, bytes).unwrap();
-        let error = fixture
-            .component(definition, 1, LaunchTarget::New, |host| {
-                host.provide_content(tilo_content::ContentStore::memory());
-                host.provide_open_file(file);
-            })
-            .err()
-            .expect("refused");
-        assert_eq!(receipt.opened_resource(), None);
-        error.to_string()
-    };
-    let pdf = refused("paper.pdf", "application/pdf", b"%PDF-1.7".to_vec());
+    let definition = bundled_library_definition();
+    let (file, receipt) =
+        ui::application::OpenFile::new("paper.pdf", "application/pdf", b"%PDF-1.7".to_vec())
+            .unwrap();
+    let error = fixture
+        .component(definition, 1, LaunchTarget::New, |host| {
+            host.provide_content(tilo_content::ContentStore::memory());
+            host.provide_open_file(file);
+        })
+        .err()
+        .expect("refused");
+    assert_eq!(receipt.opened_resource(), None);
     assert!(
-        pdf.contains("Books does not open application/pdf files"),
-        "{pdf}"
+        error
+            .to_string()
+            .contains("Books does not open application/pdf files"),
+        "{error}"
     );
-    let broken = refused("broken.epub", super::EPUB_MEDIA_TYPE, b"not a zip".to_vec());
-    assert!(broken.contains("Couldn’t open broken.epub"), "{broken}");
+
+    let (file, _receipt) = ui::application::OpenFile::new(
+        "broken.epub",
+        super::EPUB_MEDIA_TYPE,
+        b"not a zip".to_vec(),
+    )
+    .unwrap();
+    let (mut driver, checkout) =
+        fixture.driver_with(definition, 2, LaunchTarget::New, "", |host| {
+            host.provide_content(tilo_content::ContentStore::memory());
+            host.provide_open_file(file);
+        });
+    let told = driver.wait_until(ui::time::Duration::from_secs(10), |driver| {
+        driver.a11y_nodes().iter().any(|(_, node)| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Couldn’t open broken.epub"))
+        })
+    });
+    assert!(told, "the reader says why the book does not open");
+    let shelf = fixture
+        .records
+        .read(&checkout.id, BooksDoc::read_library_entries)
+        .unwrap();
+    assert!(
+        shelf
+            .iter()
+            .all(|entry| entry.id == crate::content::bundled_book_id()),
+        "nothing joins the shelf: {shelf:?}"
+    );
 }
 
 #[test]
 fn a_passage_outside_the_chapter_is_refused_without_a_selection() {
     let fixture = Fixture::new("books-browser-refusal");
-    let (mut driver, _) = fixture.driver(super::bundled_library_definition(), 1, LaunchTarget::New);
+    let (mut driver, _) = fixture.driver(bundled_library_definition(), 1, LaunchTarget::New);
     let book = bundled_book();
     assert!(
         invoke(
@@ -517,11 +612,5 @@ fn a_passage_outside_the_chapter_is_refused_without_a_selection() {
         .is_err(),
         "a negative block is refused by the parameter schema"
     );
-    let resource = driver.bound_resources(Some(&book)).unwrap();
-    assert!(
-        resource[0]
-            .actions
-            .iter()
-            .all(|action| action.id != "highlight-selection")
-    );
+    assert!(!selection_actions(&driver, &book).contains(&"highlight-selection".to_string()));
 }

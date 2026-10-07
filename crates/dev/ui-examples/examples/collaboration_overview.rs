@@ -145,14 +145,14 @@ pub fn run(args: &[String]) {
 
 fn render(mut widget: Box<dyn Widget>, out: &Path) {
     let (w, h) = (420, 760);
-    let mut state = State::new();
+    let state = State::new();
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    widget.sync(&mut state.doc, &state.root);
+    widget.sync(&state.doc, &state.root);
     let child = widget.build_layout(&mut taffy, &theme, &mut map);
     let Ok(root) = taffy.new_with_children(
         Style {

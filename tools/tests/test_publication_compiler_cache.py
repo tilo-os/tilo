@@ -200,16 +200,20 @@ class AppCollectionPublicationTests(unittest.TestCase):
             stop = script.index("[[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] || exit 0")
             self.assertLess(script.index("build-thin-apps.sh\"\n"), stop)
             self.assertLess(stop, script.index("key generate"))
-            self.assertLess(stop, script.index("RUNTIME_VERSION="))
+            self.assertLess(stop, script.index("RUNTIME_RELEASE="))
 
 
 class DesktopPayloadPublicationTests(unittest.TestCase):
     def test_only_an_unpublishable_branch_dispatch_uses_the_cache(self):
-        build = steps(DESKTOP_WORKFLOW.read_text())["Build and install-test all five target userspaces"]
-        self.assertIn(
-            "TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && "
-            "github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') "
-            "&& '1' || '0' }}", build)
+        workflow_steps = steps(DESKTOP_WORKFLOW.read_text())
+        for name in ("Build and install-test unsigned candidate userspaces",
+                     "Build, install-test and sign protected desktop release userspaces"):
+            with self.subTest(step=name):
+                build = workflow_steps[name]
+                self.assertIn(
+                    "TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && "
+                    "github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') "
+                    "&& '1' || '0' }}", build)
         job = (ROOT / "dist/ci/run-package-job.sh").read_text()
         disabled = job.split("if [[ ${TILO_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then", 1)[1]
         disabled = disabled.split("    else\n", 1)[1].split("    fi\n", 1)[0]

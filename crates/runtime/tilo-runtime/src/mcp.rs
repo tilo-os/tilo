@@ -1075,6 +1075,8 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         };
         let workspace = tilo_actions::remote::workspace_provider_room(&provider).is_some();
         let query = CatalogueQuery {
+            canonical_route: None,
+            view_resource: None,
             provider: Some(provider),
             parent_resource: (!parent.is_empty()).then_some(parent),
             // A host matches one substring; the longest word narrows most,
@@ -1755,6 +1757,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     ) -> Result<Value, String> {
         let (revision, current) = self.revision_for(&target.provider, revision).await?;
         let mut request = InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target,
             argument: InvokeArgument::Json(arguments),

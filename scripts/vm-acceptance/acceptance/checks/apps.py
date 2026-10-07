@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import wait_until
+from ..vm import VmError, wait_until
 
 AREA = "apps"
 
@@ -220,6 +220,21 @@ def _app_procs(ctx, before: dict, app_id: str):
                     if p in first and first[p].cmd == c.cmd}, now
 
 
+def close_group(ctx, gid) -> None:
+    """Close one window group through its close action.
+
+    Closing one window of an app can take its others with it (Wine File's
+    windows all end with its process), so a group already gone is closed, not
+    an unknown action."""
+    if core.group_by_id(ctx.state(), gid) is None:
+        return
+    try:
+        ctx.vm.invoke("desktop-windows", f"group.close:{gid}")
+    except VmError as exc:
+        if "unknown_action" not in str(exc) or core.group_by_id(ctx.state(), gid) is not None:
+            raise
+
+
 def _close(ctx, res, label, gid, app_procs, toasts0):
     title = (core.group_by_id(ctx.state(), gid) or {"tabs": [{}]})["tabs"][0].get("title") or ""
     # Windows the app raised on its own (a first-run dialog) are closed with it.
@@ -227,7 +242,7 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
     extra = [g["id"] for g in core.all_groups(ctx.state()) if g["id"] not in before and g["id"] != gid]
     res.metrics["extra_windows"] = len(extra)
     for other in [gid, *extra]:
-        ctx.vm.invoke("desktop-windows", f"group.close:{other}")
+        close_group(ctx, other)
     ctx.wait_state(lambda s: core.group_by_id(s, gid) is None, 10, f"{label}'s window gone after close")
     launch = ctx.facts[f"launch:{label}"]
     left = wait_until(lambda: not lingering(_procs(ctx), launch, app_procs) or None, CLOSE_GRACE_S, 1.0)

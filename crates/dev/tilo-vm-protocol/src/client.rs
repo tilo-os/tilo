@@ -107,10 +107,11 @@ impl<R: BufRead, W: Write> Client<R, W> {
     /// [`crate::LayerSource::Upload`].
     ///
     /// # Errors
-    /// Read failures on `bytes` and any call failure.
+    /// Read failures on `bytes`, call failures, and incorrect byte acknowledgments.
     pub fn upload(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
         let upload = self.call(LayerUploadBegin {})?.upload;
         let mut buffer = vec![0_u8; UPLOAD_CHUNK_BYTES];
+        let mut sent = 0_u64;
         loop {
             let mut filled = 0;
             while filled < buffer.len() {
@@ -127,10 +128,17 @@ impl<R: BufRead, W: Write> Client<R, W> {
                 break;
             }
             let data = STANDARD.encode(buffer.get(..filled).unwrap_or_default());
-            self.call(LayerUploadChunk {
+            sent = sent.saturating_add(filled as u64);
+            let reply = self.call(LayerUploadChunk {
                 upload: upload.clone(),
                 data,
             })?;
+            if reply.received != sent {
+                return Err(ClientError::Protocol(format!(
+                    "upload acknowledgment: expected {sent} bytes, got {}",
+                    reply.received
+                )));
+            }
             if filled < buffer.len() {
                 break;
             }
@@ -138,3 +146,6 @@ impl<R: BufRead, W: Write> Client<R, W> {
         Ok(upload)
     }
 }
+
+#[cfg(test)]
+mod tests;

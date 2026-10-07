@@ -12,14 +12,14 @@
 //! The payload is a compact, dependency-free string ([`AuthUpdate`]) so it
 //! rides the `External(String)` variant without pulling in serde. A failure
 //! crosses as its meaning only ([`Failure`]); greetd's and PAM's raw text
-//! stays in the log and never reaches the screen.
+//! is neither logged nor published through the remote console.
 
-use winit::event_loop::EventLoopProxy;
-use zeroize::Zeroizing;
+use crate::greetd_client::{AuthError, Denial};
 
-use ui::app::UserEvent;
-
-use crate::greetd_client::{AuthError, AuthPrompt, Denial, authenticate_and_start};
+mod conversation;
+#[cfg(test)]
+pub(crate) use conversation::spawn_auth_updates;
+pub use conversation::{AuthSession, Challenge, spawn_auth};
 
 /// Field separator for the [`AuthUpdate`] wire form. A control character
 /// that never appears in PAM prompt text or our own copy.
@@ -29,6 +29,8 @@ const SEP: char = '\u{1f}';
 /// needs to understand it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
+    /// The person cancelled the attempt before the session started.
+    Cancelled,
     /// Wrong passcode (or username). Never says which.
     Credentials,
     /// Too many failed attempts.
@@ -46,7 +48,8 @@ pub enum Failure {
 }
 
 impl Failure {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
+        Self::Cancelled,
         Self::Credentials,
         Self::Locked,
         Self::AccountExpired,
@@ -59,6 +62,7 @@ impl Failure {
 
     fn wire(self) -> &'static str {
         match self {
+            Self::Cancelled => "cancelled",
             Self::Credentials => "credentials",
             Self::Locked => "locked",
             Self::AccountExpired => "account-expired",
@@ -74,6 +78,7 @@ impl Failure {
 impl From<&AuthError> for Failure {
     fn from(error: &AuthError) -> Self {
         match error {
+            AuthError::Cancelled => Self::Cancelled,
             AuthError::Denied { reason, .. } => match reason {
                 Denial::Credentials => Self::Credentials,
                 Denial::Locked => Self::Locked,
@@ -92,10 +97,12 @@ impl From<&AuthError> for Failure {
 }
 
 /// A state update sent from the auth worker thread to the `GreeterApp` on
-/// the UI thread. Encoded to / decoded from the [`UserEvent::External`]
+/// the UI thread. Encoded to / decoded from the [`ui::app::UserEvent::External`]
 /// string payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthUpdate {
+    /// Content-free identity of the current private response prompt.
+    Challenge(Challenge),
     /// A PAM conversation prompt to display while auth is in progress
     /// (fingerprint instructions, info, or a warning). `is_error` styles
     /// it as a warning.
@@ -112,6 +119,9 @@ impl AuthUpdate {
     /// Encode to the compact `External` wire form.
     pub fn encode(&self) -> String {
         match self {
+            AuthUpdate::Challenge(challenge) => {
+                format!("C{SEP}{}{SEP}{}", challenge.id, u8::from(challenge.secret))
+            }
             AuthUpdate::Prompt { text, is_error } => {
                 format!("P{SEP}{}{SEP}{text}", i32::from(*is_error))
             }
@@ -126,6 +136,15 @@ impl AuthUpdate {
     pub fn decode(s: &str) -> Option<Self> {
         let mut it = s.splitn(3, SEP);
         match it.next()? {
+            "C" => {
+                let id = it.next()?.parse().ok()?;
+                let secret = match it.next()? {
+                    "0" => false,
+                    "1" => true,
+                    _ => return None,
+                };
+                Some(AuthUpdate::Challenge(Challenge { id, secret }))
+            }
             "A" => Some(AuthUpdate::Accepted),
             "P" => {
                 let flag = it.next()?;
@@ -145,54 +164,6 @@ impl AuthUpdate {
             _ => None,
         }
     }
-}
-
-/// Run the greetd authenticate-and-start exchange on a background thread,
-/// reporting prompts and the final failure back to the UI through `proxy`.
-///
-/// On success the exchange `process::exit(0)`s from the worker (greetd then
-/// takes over the VT), so this thread simply ends the process. On failure
-/// it logs greetd's own description and sends an [`AuthUpdate::Failed`] so
-/// the UI returns to the form.
-pub fn spawn_auth(
-    proxy: EventLoopProxy<UserEvent>,
-    sock: String,
-    username: String,
-    password: Zeroizing<String>,
-    cmd: Vec<String>,
-    env: Vec<String>,
-) {
-    std::thread::spawn(move || {
-        let prompt_proxy = proxy.clone();
-        let accepted_proxy = proxy.clone();
-        let result = authenticate_and_start(
-            &sock,
-            &username,
-            &password,
-            &cmd,
-            &env,
-            move |prompt: AuthPrompt| {
-                let _ = prompt_proxy.send_event(UserEvent::External(
-                    AuthUpdate::Prompt {
-                        text: prompt.text,
-                        is_error: prompt.is_error,
-                    }
-                    .encode(),
-                ));
-            },
-            move || {
-                let _ =
-                    accepted_proxy.send_event(UserEvent::External(AuthUpdate::Accepted.encode()));
-            },
-        );
-        // `authenticate_and_start` exits the process on success; only the
-        // Err path returns here.
-        if let Err(error) = result {
-            let failure = Failure::from(&error);
-            tracing::warn!(?failure, detail = ?error.detail(), "sign-in did not start a session");
-            let _ = proxy.send_event(UserEvent::External(AuthUpdate::Failed(failure).encode()));
-        }
-    });
 }
 
 #[cfg(test)]

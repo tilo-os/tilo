@@ -12,9 +12,10 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, transaction::Transactable as _};
 use taffy::prelude::*;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
@@ -31,6 +32,7 @@ use crate::shell::foreign::ForeignSurfaceWidget;
 use crate::shell::overlay_host::ShellOverlayHost;
 use crate::shell::state::WorkspaceTree;
 
+use ui::backdrop::{BackdropFrame, BackdropRecording, BackdropRegion, RecordedBackdrop};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -159,6 +161,79 @@ pub struct FramePaint {
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
     pub hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    /// What `scene`'s floating surfaces are drawn over. A renderer that
+    /// composites materials blurs these before rendering the scene; any
+    /// other shows the surfaces opaque.
+    pub backdrop: Option<Arc<BackdropFrame>>,
+    /// Optional separable canvases; the screen-space scene remains authoritative.
+    pub cache: Option<FrameCache>,
+}
+
+/// A strip drawn in canvas coordinates. The presenter shows the workspace
+/// layer `scroll_x` pixels to the right of `dest_*`, in scene pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StripBlit {
+    pub dest_x: u32,
+    pub dest_y: u32,
+    pub dest_w: u32,
+    pub dest_h: u32,
+    pub scroll_x: u32,
+}
+
+/// A frame as layers a presenter retains between frames.
+#[derive(Clone)]
+pub struct FrameCache {
+    /// Width of the workspace layer in scene pixels: wider than the screen
+    /// when a strip is drawn in canvas coordinates and its content is wider
+    /// than its viewport.
+    pub width: u32,
+    /// Where each panned strip reads the workspace layer. A strip at rest
+    /// reads it in place and is not listed.
+    pub strips: Vec<StripBlit>,
+    pub layers: FrameLayers,
+}
+
+/// The desktop's sections as layers, bottom to top. Drawing them over each
+/// other in order (source over), the workspace read at each strip's pan,
+/// gives the frame's scene, so a presenter can rasterize each into its own
+/// retained buffer and composite the buffers: a strip's pan then moves the
+/// workspace layer over a backdrop and chrome that stay put, without drawing
+/// any of them again.
+#[derive(Clone)]
+pub struct FrameLayers {
+    /// The wallpaper and anything drawn behind every window.
+    pub backdrop: Scene,
+    /// Strips, their floating surfaces and the docked wheel, in canvas
+    /// coordinates when [`FrameCache::strips`] pans them.
+    pub workspace: Scene,
+    /// Everything above: notices over the desktop, the top bar, quick
+    /// settings and every overlay above them.
+    pub chrome: Scene,
+}
+
+/// Widest workspace layer, in scene pixels. Past this the strips keep their
+/// pan in the scene.
+const MAX_CANVAS_WIDTH: u32 = 16384;
+
+/// Layer composition is a Linux DRM capability; other presenters retain their dense path.
+fn separable_layer(scene: &Scene) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !tilo_cpu_raster::reads_backdrop(scene.encoding())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = scene;
+        false
+    }
+}
+
+/// How the strips of one frame are drawn.
+struct StripPlan {
+    /// The strips are drawn in canvas coordinates.
+    unbake: bool,
+    width: u32,
+    strips: Vec<StripBlit>,
 }
 
 impl FramePaint {
@@ -174,12 +249,27 @@ impl FramePaint {
             workspace_hold: false,
             workspace_clip: None,
             hdr_layers: Vec::new(),
+            backdrop: None,
+            cache: None,
         }
+    }
+
+    /// The same frame, with its floating surfaces drawn over `backdrop`.
+    #[must_use]
+    pub fn with_backdrop(mut self, backdrop: Option<Arc<BackdropFrame>>) -> Self {
+        if backdrop.is_some() {
+            self.cache = None;
+        }
+        self.backdrop = backdrop;
+        self
     }
 
     /// The same frame, with `layers` composited where HDR is shown.
     #[must_use]
     pub fn with_hdr_layers(mut self, layers: Vec<crate::shell::hdr_surface::HdrLayer>) -> Self {
+        if !layers.is_empty() {
+            self.cache = None;
+        }
         self.hdr_layers = layers;
         self
     }
@@ -193,14 +283,22 @@ impl FramePaint {
         self.damage_regions = None;
         self.previous_revision = None;
         self.overview_patch = None;
+        self.cache = None;
+        // The appended commands are in the scene only; a presenter drawing
+        // the layers would miss them.
+        self.cache = None;
     }
 }
 
 #[derive(Clone)]
 struct ProducedSections {
+    foreign_images: Vec<super::foreign_damage::DrawnImage>,
     backdrop: Scene,
     topbar: Scene,
     workspace: Scene,
+    workspace_overlays: Scene,
+    /// Strips drawn in canvas coordinates, as the scene showed them.
+    strips: Option<Vec<StripBlit>>,
     topbar_bounds: Option<Rect>,
     quick_settings: Scene,
     above_quick_settings: Scene,
@@ -362,6 +460,13 @@ impl VisualAccessibility {
 
 use crate::shell::output_scene::{self, OutputGeometry};
 
+/// Whether `widget` is a terminal tab's root: the terminal's own widget, or
+/// the framework root of the terminal mounted as its component, which
+/// answers to the terminal's address.
+fn is_terminal(widget: &dyn Widget) -> bool {
+    widget.name() == "Terminal" || matches!(widget.test_id(), Some("terminal" | "so.tilo.terminal"))
+}
+
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
 /// the native compositor's per-frame tick.
 ///
@@ -386,6 +491,7 @@ pub struct FrameBuilder {
     /// Widget-pointer map captured during `build_layout`, kept alive so the
     /// measure closure in `compute_layout_with_measure` can re-borrow each frame.
     node_map: HashMap<NodeId, *mut dyn Widget>,
+    ime_stamp_key: zeroize::Zeroizing<[u8; 32]>,
     /// Inner node — the host's own root child, target of `apply_layout` so
     /// the host's rect tree roots at the viewport origin.
     host_node: Option<NodeId>,
@@ -395,7 +501,15 @@ pub struct FrameBuilder {
     root_node: Option<NodeId>,
     text_renderer: TextRenderer,
     theme: Theme,
+    /// The theme the settings document describes, before the active
+    /// workspace's temperature and the person's colour dress it into
+    /// [`Self::theme`].
+    configured_theme: Theme,
     watch_configured_theme: bool,
+    /// Every workspace's temperature and the person's colour: what the
+    /// chrome wears for the active workspace, and what each app window is
+    /// sent for the workspace it is in.
+    windows: super::window_appearance::WindowAppearances,
     theme_store_stamp: Option<SystemTime>,
     last_theme_store_check: Instant,
     appearance_generation: u64,
@@ -469,8 +583,13 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// Capacity of this builder's actual presenter; absent for dense captures.
+    retained_layer_width: Option<u32>,
+    workspace_clip_supported: bool,
     /// HDR layers of the latest [`Self::paint`], until taken.
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
+    painted_backdrop: Option<Arc<BackdropFrame>>,
     /// What the pointer shows right now, so captures draw the same image.
     pointer_image: crate::compositor::cursor::PointerImage,
     /// The session network, once peer sync is up, so a control invoke can
@@ -499,6 +618,17 @@ struct FramePresentationInputs {
     theme_store_stamp: Option<std::time::SystemTime>,
 }
 
+/// The theme `shots --theme NAME` asked for; read before
+/// `TILO_SHOTS_THEME`, for callers that cannot set the environment.
+static SHOTS_THEME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Render every frame builder this process creates in the theme `name`
+/// (`dark`, `light`, `high-contrast`). Offscreen capture only; the first
+/// request wins.
+pub fn request_shots_theme(name: String) {
+    let _ = SHOTS_THEME.set(name);
+}
+
 impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
@@ -517,12 +647,15 @@ impl FrameBuilder {
     }
 
     /// Optional presentation overrides for offscreen `shots` capture:
-    /// `TILO_SHOTS_THEME=light|high-contrast|dark` and
+    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds) and
     /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
     /// a theme-driven chrome change be proven in high contrast and at large
     /// text, not just its comfortable default density.
     fn shots_theme_override() -> Option<Theme> {
-        let requested_theme = std::env::var("TILO_SHOTS_THEME").ok();
+        let requested_theme = SHOTS_THEME
+            .get()
+            .cloned()
+            .or_else(|| std::env::var("TILO_SHOTS_THEME").ok());
         let requested_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
@@ -530,15 +663,10 @@ impl FrameBuilder {
         if requested_theme.is_none() && requested_scale.is_none() {
             return None;
         }
-        let theme = match requested_theme
+        let theme = requested_theme
             .as_deref()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("light") => Theme::light(),
-            Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
-            _ => Theme::dark(),
-        };
+            .and_then(|name| Theme::named(name.trim()))
+            .unwrap_or_else(Theme::dark);
         Some(if let Some(scale) = requested_scale {
             theme.with_text_scale(scale)
         } else {
@@ -643,12 +771,25 @@ impl FrameBuilder {
             chrome,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
+            ime_stamp_key: {
+                let a = uuid::Uuid::new_v4();
+                let b = uuid::Uuid::new_v4();
+                let mut key = [0; 32];
+                for (slot, value) in key.iter_mut().zip(a.as_bytes().iter().chain(b.as_bytes())) {
+                    *slot = *value;
+                }
+                zeroize::Zeroizing::new(key)
+            },
             host_node: None,
             root_node: None,
             text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
+            configured_theme: presentation.theme.clone(),
             theme: presentation.theme,
             watch_configured_theme: false,
+            windows: super::window_appearance::WindowAppearances::new(
+                ui::tokens::PresenceHue::Blue,
+            ),
             theme_store_stamp: presentation.theme_store_stamp,
             last_theme_store_check: Instant::now(),
             appearance_generation: 0,
@@ -686,7 +827,10 @@ impl FrameBuilder {
             native_focus_ordinal: None,
             last_produced_sections: None,
             next_scene_revision: 1,
+            retained_layer_width: None,
+            workspace_clip_supported: false,
             painted_hdr_layers: Vec::new(),
+            painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
         };
@@ -954,6 +1098,54 @@ impl FrameBuilder {
         self.set_native_focus_with_reveal(focus, target, true);
     }
 
+    /// Request a real frame from each embedded component's existing wake scope.
+    #[cfg(test)]
+    pub(crate) fn wake_mounted_components(&mut self) -> usize {
+        let mut count = 0_usize;
+        for pointer in self.node_map.values_mut() {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid for the exclusive borrow of this frame.
+            let widget = unsafe { &mut **pointer };
+            if let Some(app) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::app::EmbeddedApp>())
+            {
+                let _entry = app.app().enter_wake_scope();
+                ui::wake::WakeHandle::new().wake();
+                count = count.saturating_add(1);
+            }
+        }
+        count
+    }
+
+    /// The first widget in the live layout `find` recognises: an app a tab
+    /// mounted, for a test that drives it.
+    #[cfg(test)]
+    pub(crate) fn mounted_mut<T: 'static>(
+        &mut self,
+        find: impl Fn(&mut dyn Widget) -> Option<&mut T>,
+    ) -> Option<&mut T> {
+        self.node_map.values_mut().find_map(|widget| {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid for the borrow of `self`.
+            let widget = unsafe { &mut **widget };
+            // An app's own widgets are inside the App its tile shows.
+            let embedded = widget
+                .as_any()
+                .is_some_and(<dyn std::any::Any>::is::<ui::app::EmbeddedApp>);
+            if embedded {
+                widget
+                    .as_any_mut()?
+                    .downcast_mut::<ui::app::EmbeddedApp>()?
+                    .component_root_mut()
+                    .and_then(&find)
+            } else {
+                find(widget)
+            }
+        })
+    }
+
+    #[cfg(test)]
     fn widget_name(&self, id: NodeId) -> Option<&'static str> {
         self.node_map.get(&id).map(|&widget| {
             // SAFETY: this map belongs to the current, live layout tree.
@@ -1082,15 +1274,16 @@ impl FrameBuilder {
             // Terminal even though it is in the live node map.
             if let Some((&id, _)) = self.node_map.iter().find(|(_, mapped)| {
                 let widget = unsafe { &***mapped };
-                widget.name() == "Terminal" && widget.is_focusable() && widget.is_enabled()
+                is_terminal(widget) && widget.is_focusable() && widget.is_enabled()
             }) {
                 return Some(id);
             }
-            if let Some(terminal) = order
-                .iter()
-                .copied()
-                .find(|id| self.widget_name(*id) == Some("Terminal"))
-            {
+            if let Some(terminal) = order.iter().copied().find(|id| {
+                self.node_map
+                    .get(id)
+                    // SAFETY: this map belongs to the current, live layout tree.
+                    .is_some_and(|&widget| is_terminal(unsafe { &*widget }))
+            }) {
                 return Some(terminal);
             }
         }
@@ -1285,7 +1478,16 @@ impl FrameBuilder {
         let records_done = std::time::Instant::now();
         self.pump_room_contents();
         let rooms_done = std::time::Instant::now();
+        let before_settle = (doc.base_heads(), doc.pending_ops());
+        self.host.settle(&mut ui::widget::Edits::lend(doc), root);
+        let mut settled = before_settle != (doc.base_heads(), doc.pending_ops());
         self.host.sync(doc, root);
+        let before_settle = (doc.base_heads(), doc.pending_ops());
+        self.host.settle(&mut ui::widget::Edits::lend(doc), root);
+        if before_settle != (doc.base_heads(), doc.pending_ops()) {
+            settled = true;
+            self.host.sync(doc, root);
+        }
         // First-login setup gives the session its identity mid-session; that
         // principal is "me" too, or the owner sees presence over their windows.
         {
@@ -1296,6 +1498,12 @@ impl FrameBuilder {
         }
         let sync_done = std::time::Instant::now();
         let changed = self.host.update(doc, root);
+        let before_settle = (doc.base_heads(), doc.pending_ops());
+        self.host.settle(&mut ui::widget::Edits::lend(doc), root);
+        if before_settle != (doc.base_heads(), doc.pending_ops()) {
+            settled = true;
+            self.host.sync(doc, root);
+        }
         let update_done = std::time::Instant::now();
         let total = update_done.duration_since(started);
         if total >= std::time::Duration::from_millis(50) {
@@ -1309,7 +1517,7 @@ impl FrameBuilder {
                 "widget app pump stalled compositor input"
             );
         }
-        changed
+        changed || settled
     }
 
     /// Turn "a peer's changes landed in the tree" into "the widget tree is
@@ -1388,18 +1596,84 @@ impl FrameBuilder {
     /// every display draws its part of the desktop at its own scale. Caller
     /// hands it to a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
+        // Dense captures must not inherit a surrounding presenter's canvas draw.
+        let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+        let backdrop = BackdropRecording::begin();
         let logical = self.paint_logical();
+        let surfaces = backdrop.finish();
         let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
         self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
+        // One scene: each surface's backdrop is what was drawn before it.
+        self.painted_backdrop = self.backdrop_to_scene(surfaces, |_| Some(Vec::new()));
         self.to_scene(logical)
     }
 
     /// The HDR layers the latest [`Self::paint`] drew, in scene pixels.
     pub fn take_hdr_layers(&mut self) -> Vec<crate::shell::hdr_surface::HdrLayer> {
         std::mem::take(&mut self.painted_hdr_layers)
+    }
+
+    /// The backdrops the latest [`Self::paint`] drew its floating surfaces
+    /// over, in scene pixels. Hand them to the renderer of that scene.
+    pub fn take_backdrop(&mut self) -> Option<Arc<BackdropFrame>> {
+        self.painted_backdrop.take()
+    }
+
+    /// Recorded floating surfaces in scene pixels, each with the complete
+    /// scene below it: the layers `below_layer` names under its own layer,
+    /// then what its layer drew before it. A surface whose layer has no
+    /// known place (`None`) keeps its opaque placeholder.
+    fn backdrop_to_scene<'a>(
+        &self,
+        surfaces: Vec<RecordedBackdrop>,
+        below_layer: impl Fn(u32) -> Option<Vec<&'a Scene>>,
+    ) -> Option<Arc<BackdropFrame>> {
+        let regions: Vec<BackdropRegion> = surfaces
+            .into_iter()
+            .filter_map(|surface| {
+                let layers = below_layer(surface.layer)?;
+                let (rect, scale) = self.surface_to_scene(surface.bounds)?;
+                let below = if layers.is_empty() {
+                    surface.below
+                } else {
+                    let mut below = Scene::new();
+                    for layer in layers {
+                        below.append(layer, None);
+                    }
+                    below.append(&surface.below, None);
+                    below
+                };
+                Some(BackdropRegion {
+                    image: surface.image,
+                    rect,
+                    blur_px: surface.blur_px * scale,
+                    below: self.to_scene(below),
+                    ground: surface.ground,
+                })
+            })
+            .collect();
+        (!regions.is_empty()).then(|| Arc::new(BackdropFrame { regions }))
+    }
+
+    /// A floating surface's logical bounds in scene pixels, through the
+    /// display it is on, and that display's scale. Every display draws the
+    /// surface, but it sits on one; that is the one its backdrop is blurred
+    /// for.
+    fn surface_to_scene(&self, bounds: Rect) -> Option<(Rect, f64)> {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let output = output_scene::output_at(outputs, bounds.center())?;
+                let transform = output.to_scene();
+                Some((
+                    transform.transform_rect_bbox(bounds),
+                    transform.determinant().abs().sqrt(),
+                ))
+            }
+            _ => Some((bounds, 1.0)),
+        }
     }
 
     /// Whether HDR surfaces may be composited outside the scene. A
@@ -1455,8 +1729,11 @@ impl FrameBuilder {
     /// logical coordinates, the space the widget tree is laid out in.
     fn paint_logical(&mut self) -> Scene {
         self.refresh_configured_theme();
+        self.refresh_workspace_temperature();
         self.refresh_magnifier();
         let mut scene = Scene::new();
+        // One scene: a floating surface's backdrop is what was drawn before it.
+        ui::backdrop::layer_scene(&scene, 0);
         self.host.draw(
             &mut scene,
             Affine::IDENTITY,
@@ -1541,12 +1818,21 @@ impl FrameBuilder {
         scene
     }
 
+    /// Enable clip-only transition frames only for a presenter which retains and
+    /// replays workspace pixels. Refresh this capability after output changes.
+    pub fn set_workspace_clip_supported(&mut self, supported: bool) {
+        self.workspace_clip_supported = supported;
+    }
+
     /// A transition frame is the clip, not a new encoding of both displays.
     /// `None` when the desktop itself has to be drawn.
     fn paint_content_clip(&mut self) -> Option<FramePaint> {
         // Reduced motion is a settled frame, not a clip run. The retained
         // oracle has to see the new workspace's commands.
-        if self.theme.reduce_motion || !self.host.presents_on_content_clip() {
+        if !self.workspace_clip_supported
+            || self.theme.reduce_motion
+            || !self.host.presents_on_content_clip()
+        {
             return None;
         }
         self.host
@@ -1559,8 +1845,11 @@ impl FrameBuilder {
             .map(|last| last.revision);
         let overview_patch = self.host.take_overview_fast_patch();
         let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
-        let workspace_hold = self.host.workspace_switch_holding();
-        let workspace_clip = self.host.workspace_switch_clip();
+        let workspace_hold = self.workspace_clip_supported && self.host.workspace_switch_holding();
+        let workspace_clip = self
+            .workspace_clip_supported
+            .then(|| self.host.workspace_switch_clip())
+            .flatten();
         Some(FramePaint {
             scene: Scene::new(),
             revision,
@@ -1571,6 +1860,8 @@ impl FrameBuilder {
             workspace_hold,
             workspace_clip,
             hdr_layers: Vec::new(),
+            backdrop: None,
+            cache: None,
         })
     }
 
@@ -1582,15 +1873,29 @@ impl FrameBuilder {
         reason = "Retained-damage metadata must be derived alongside the exact scene composition; splitting this transaction risks draw-order or damage-region divergence."
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
+        // This producer owns the policy even when invoked during another draw.
+        let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         self.refresh_configured_theme();
+        self.refresh_workspace_temperature();
         self.refresh_magnifier();
         if let Some(frame) = self.paint_content_clip() {
             return frame;
         }
         self.host.dense_scene_covers_content_rebuild();
+        let global_filter = self.global_filter();
+        let layered = self.retained_layer_width.is_some();
+        // A presenter that composites layers cannot composite HDR layers, and
+        // they would be recorded in canvas coordinates.
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+        let plan = (layered && !global_filter)
+            .then(|| self.strip_plan())
+            .flatten();
+        let unbake = plan.as_ref().is_some_and(|plan| plan.unbake);
+        let retained_scope = ui::retained_present::RetainedScene::begin(unbake);
+        let foreign_recording = super::foreign_damage::Recording::begin();
+        let backdrop_recording = BackdropRecording::begin();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -1645,12 +1950,23 @@ impl FrameBuilder {
                 &self.presence,
             );
         }
+        drop(retained_scope);
 
+        let backdrop_surfaces = backdrop_recording.finish();
+        let foreign_images = foreign_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
             recording
                 .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
                 .unwrap_or_default(),
         );
+        if unbake && (!backdrop_surfaces.is_empty() || !hdr_layers.is_empty()) {
+            // Material sampling needs the original screen-space sections.
+            // Discard this provisional retained draw and produce those sections.
+            let capacity = self.retained_layer_width.take();
+            let frame = self.paint_with_damage();
+            self.retained_layer_width = capacity;
+            return frame;
+        }
         let revision = self.next_scene_revision;
         self.next_scene_revision = self.next_scene_revision.saturating_add(1);
         let previous_revision = self
@@ -1665,13 +1981,62 @@ impl FrameBuilder {
                 )
                 || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair);
-        let damage_regions = (!global_filter)
-            .then(|| self.damage_from_sections(&sections, global_filter))
+        let strips = unbake.then(|| {
+            plan.as_ref()
+                .map(|plan| plan.strips.clone())
+                .unwrap_or_default()
+        });
+        let strips_kept = self
+            .last_produced_sections
+            .as_ref()
+            .is_some_and(|previous| previous.strips == strips);
+        // Section and foreign-image bounds are in canvas coordinates while
+        // a strip is unbaked. They cannot authorize sparse screen damage.
+        let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
+        let damage_regions = (!global_filter && strips_kept && screen_space_damage)
+            .then(|| {
+                self.damage_from_sections_with_images(&sections, global_filter, &foreign_images)
+            })
             .flatten();
+        let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
+        // A backdrop-dependent section is never independently composited.
+        let separable = backdrop_surfaces.is_empty()
+            && hdr_layers.is_empty()
+            && [
+                &sections.workspace,
+                &sections.workspace_overlays,
+                &sections.topbar,
+                &sections.quick_settings,
+                &sections.above_quick_settings,
+            ]
+            .into_iter()
+            .all(separable_layer);
+        let cache = plan.filter(|_| separable).map(|plan| {
+            let mut chrome = Scene::new();
+            chrome.append(&sections.workspace_overlays, None);
+            chrome.append(&sections.topbar, None);
+            chrome.append(&sections.quick_settings, None);
+            chrome.append(&sections.above_quick_settings, None);
+            FrameCache {
+                width: plan.width,
+                strips: plan.strips,
+                layers: FrameLayers {
+                    backdrop: self.to_scene(sections.backdrop.clone()),
+                    workspace: self.to_scene(sections.workspace.clone()),
+                    chrome: self.to_scene(chrome),
+                },
+            }
+        });
+        let backdrop =
+            self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
 
         let mut scene = Scene::new();
         scene.append(&sections.backdrop, None);
-        scene.append(&sections.workspace, None);
+        match &strips {
+            Some(strips) => self.append_panned(&mut scene, &sections.workspace, strips),
+            None => scene.append(&sections.workspace, None),
+        }
+        scene.append(&sections.workspace_overlays, None);
         // OS chrome owns this layer. Its normal controls stay inside the
         // reserved top-bar band, while anchored surfaces such as the center
         // widget editor must remain above app tabs and client content.
@@ -1703,9 +2068,12 @@ impl FrameBuilder {
         let scene = self.to_scene(scene);
 
         self.last_produced_sections = Some(ProducedSections {
+            foreign_images,
             backdrop: sections.backdrop,
             topbar: sections.topbar,
             workspace: sections.workspace,
+            workspace_overlays: sections.workspace_overlays,
+            strips,
             topbar_bounds: sections.topbar_bounds,
             quick_settings: sections.quick_settings,
             above_quick_settings: sections.above_quick_settings,
@@ -1715,8 +2083,11 @@ impl FrameBuilder {
         });
         let overview_patch = self.host.take_overview_fast_patch();
         let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
-        let workspace_hold = self.host.workspace_switch_holding();
-        let workspace_clip = self.host.workspace_switch_clip();
+        let workspace_hold = self.workspace_clip_supported && self.host.workspace_switch_holding();
+        let workspace_clip = self
+            .workspace_clip_supported
+            .then(|| self.host.workspace_switch_clip())
+            .flatten();
         FramePaint {
             scene,
             revision,
@@ -1727,35 +2098,234 @@ impl FrameBuilder {
             workspace_hold,
             workspace_clip,
             hdr_layers,
+            backdrop,
+            cache,
         }
     }
 
+    /// A floating surface shows a blur of what is below it, which can change
+    /// without its own section changing (a ticking clock under its edge, a
+    /// repaint inside the blur's reach). Any frame that repaints part of the
+    /// screen therefore repaints every blurred surface too. An unchanged
+    /// frame (`Some` and empty) stays unchanged: nothing below moved.
+    fn with_backdrop_damage(
+        &self,
+        damage: Option<Vec<FineDamageRect>>,
+        surfaces: &[RecordedBackdrop],
+    ) -> Option<Vec<FineDamageRect>> {
+        let mut regions = damage?;
+        if regions.is_empty() || surfaces.is_empty() {
+            return Some(regions);
+        }
+        for surface in surfaces {
+            regions.push(self.native_damage_rect(Some(surface.bounds))?);
+        }
+        Some(regions)
+    }
+
+    fn foreign_damage_regions(
+        &self,
+        previous: &ProducedSections,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        images: &[super::foreign_damage::DrawnImage],
+    ) -> Option<Vec<FineDamageRect>> {
+        let old_scenes = [
+            &previous.backdrop,
+            &previous.workspace,
+            &previous.workspace_overlays,
+            &previous.topbar,
+            &previous.quick_settings,
+            &previous.above_quick_settings,
+        ];
+        let new_scenes = [
+            &current.backdrop,
+            &current.workspace,
+            &current.workspace_overlays,
+            &current.topbar,
+            &current.quick_settings,
+            &current.above_quick_settings,
+        ];
+        if !super::foreign_damage::unique_uses(old_scenes, &previous.foreign_images)
+            || !super::foreign_damage::unique_uses(new_scenes, images)
+        {
+            return None;
+        }
+        let mut image_regions = Vec::new();
+        for (old, new) in [
+            (&previous.workspace, &current.workspace),
+            (&previous.workspace_overlays, &current.workspace_overlays),
+            (
+                &previous.above_quick_settings,
+                &current.above_quick_settings,
+            ),
+        ] {
+            for bounds in super::foreign_damage::image_only_damage(
+                old,
+                new,
+                &previous.foreign_images,
+                images,
+            )? {
+                image_regions.push(self.native_damage_rect(Some(bounds))?);
+            }
+        }
+        Some(image_regions)
+    }
+
+    /// Update only this producer's presenter capacity. Captures keep the default dense path.
+    pub fn set_retained_layer_width(&mut self, width: Option<u32>) {
+        let width = width.filter(|width| *width > 0);
+        if self.retained_layer_width != width {
+            self.retained_layer_width = width;
+            self.last_produced_sections = None;
+        }
+    }
+
+    /// A filter over the whole desktop (night light, a colour filter, the
+    /// magnifier, the crosshair) transforms every pixel of the scene.
+    fn global_filter(&self) -> bool {
+        self.watch_configured_theme
+            && (self.night_light
+                || !matches!(
+                    self.visual_accessibility.color_filter,
+                    DesktopColorFilter::None
+                )
+                || self.visual_accessibility.magnifier.is_on()
+                || self.visual_accessibility.cursor_crosshair)
+    }
+
+    /// How the strips are drawn for a presenter that composites layers, in
+    /// scene pixels, or `None` when the desktop cannot be drawn as layers:
+    /// on several displays each draws it at its own place and scale.
+    fn strip_plan(&self) -> Option<StripPlan> {
+        if self
+            .outputs
+            .as_ref()
+            .is_some_and(|outputs| !output_scene::is_identity(outputs))
+        {
+            return None;
+        }
+        let screen_w = scene_px(self.scene_size.0).max(1);
+        let max_width = self.retained_layer_width?.min(MAX_CANVAS_WIDTH);
+        if screen_w > max_width {
+            return None;
+        }
+        let mut plan = StripPlan {
+            unbake: true,
+            width: screen_w,
+            strips: Vec::new(),
+        };
+        for (id, scroll, max_scroll) in self.host.strip_scroll_offsets() {
+            let Some(rect) = self.host.strip_row_rect(crate::shell::state::StripId(id)) else {
+                continue;
+            };
+            let dest_x = scene_px(rect.x0);
+            let dest_w = scene_px(rect.width()).max(1);
+            let right = dest_x
+                .saturating_add(dest_w)
+                .saturating_add(scene_px(max_scroll.ceil()));
+            if right > max_width {
+                // Too wide for the presenter: the pans stay in the scene.
+                return Some(StripPlan {
+                    unbake: false,
+                    width: screen_w,
+                    strips: Vec::new(),
+                });
+            }
+            plan.width = plan.width.max(right);
+            // Fractional pans keep their exact screen-space drawing.
+            if scroll.fract() != 0.0 {
+                return Some(StripPlan {
+                    unbake: false,
+                    width: screen_w,
+                    strips: Vec::new(),
+                });
+            }
+            if scroll > 0.0 && ui::widget::pan_within_canvas(scroll, max_scroll) {
+                let pans = self
+                    .host
+                    .strip_pan_rect(crate::shell::state::StripId(id))
+                    .unwrap_or(rect);
+                let dest_y = scene_px(pans.y0);
+                let dest_y1 = scene_px(pans.y1);
+                plan.strips.push(StripBlit {
+                    dest_x,
+                    dest_y,
+                    dest_w,
+                    dest_h: dest_y1.saturating_sub(dest_y).max(1),
+                    scroll_x: scene_px(scroll),
+                });
+            }
+        }
+        Some(plan)
+    }
+
+    /// Append a workspace drawn in canvas coordinates as it appears on
+    /// screen: inside each panned strip read at the strip's pan, everywhere
+    /// else in place, as a presenter compositing the layers shows it.
+    fn append_panned(&self, scene: &mut Scene, workspace: &Scene, strips: &[StripBlit]) {
+        use vello::kurbo::Shape as _;
+        if strips.is_empty() {
+            scene.append(workspace, None);
+            return;
+        }
+        let dest = |strip: &StripBlit| {
+            Rect::new(
+                f64::from(strip.dest_x),
+                f64::from(strip.dest_y),
+                f64::from(strip.dest_x) + f64::from(strip.dest_w),
+                f64::from(strip.dest_y) + f64::from(strip.dest_h),
+            )
+        };
+        for strip in strips {
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &dest(strip));
+            scene.append(
+                workspace,
+                Some(Affine::translate((-f64::from(strip.scroll_x), 0.0))),
+            );
+            scene.pop_layer();
+        }
+        let (w, h) = self.scene_size;
+        let mut rest = Rect::new(0.0, 0.0, w, h).to_path(0.1);
+        for strip in strips {
+            rest.extend(dest(strip).path_elements(0.1));
+        }
+        scene.push_clip_layer(Fill::EvenOdd, Affine::IDENTITY, &rest);
+        scene.append(workspace, None);
+        scene.pop_layer();
+    }
+
+    #[cfg(test)]
     fn damage_from_sections(
         &self,
         current: &crate::shell::overlay_host::ShellSceneSections,
         current_global_filter: bool,
     ) -> Option<Vec<FineDamageRect>> {
+        self.damage_from_sections_with_images(current, current_global_filter, &[])
+    }
+
+    fn damage_from_sections_with_images(
+        &self,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        current_global_filter: bool,
+        images: &[super::foreign_damage::DrawnImage],
+    ) -> Option<Vec<FineDamageRect>> {
         let previous = self.last_produced_sections.as_ref()?;
         if previous.global_filter || current_global_filter {
             return None;
         }
-        if !previous.backdrop.encoding_eq(&current.backdrop)
-            || !previous.workspace.encoding_eq(&current.workspace)
-            || !previous
-                .above_quick_settings
-                .encoding_eq(&current.above_quick_settings)
-        {
+        if !previous.backdrop.encoding_eq(&current.backdrop) {
             return None;
         }
+        let image_regions = self.foreign_damage_regions(previous, current, images)?;
         let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         if !topbar_changed && !quick_settings_changed {
             // Proven identical to the previous frame. `None` means "no
             // authority, redraw everything"; an empty list means the pixels
             // already on screen are still correct.
-            return Some(Vec::new());
+            return Some(image_regions);
         }
-        let mut regions = Vec::with_capacity(2);
+        let mut regions = image_regions;
         if topbar_changed {
             let old = self.topbar_damage_rect(&previous.topbar, previous.topbar_bounds)?;
             let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
@@ -1982,8 +2552,12 @@ impl FrameBuilder {
         let settings = settings_store::load();
         let scheduled_night_light =
             settings_store::bool_at(&settings, "display", "night_light_schedule").unwrap_or(false);
-        let automatic_theme = settings_store::str_at(&settings, "appearance", "theme")
-            .is_some_and(settings_store::day_schedule::is_automatic);
+        let automatic_theme = settings_store::str_at(
+            &settings,
+            "appearance",
+            settings_store::day_schedule::MODE_KEY,
+        )
+        .is_some_and(settings_store::day_schedule::is_automatic);
         self.day_phase = (scheduled_night_light || automatic_theme).then(|| {
             let schedule = settings_store::day_schedule::Scheduled::from_settings(&settings);
             (schedule, schedule.is_night(ui::theme::local_moment()))
@@ -2034,6 +2608,7 @@ impl FrameBuilder {
     fn refresh_configured_theme(&mut self) {
         if !self.watch_configured_theme
             || std::env::var_os("TILO_SHOTS_THEME").is_some()
+            || SHOTS_THEME.get().is_some()
             || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
         {
             return;
@@ -2055,11 +2630,107 @@ impl FrameBuilder {
         }
         self.theme_store_stamp = stamp;
         self.appearance_generation = appearance_generation;
-        self.theme = Theme::configured();
+        self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
         self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
+    }
+
+    /// Read the configured theme and the person's colour (their stored
+    /// choice, or the one their identity derives) again, and dress the
+    /// chrome in them.
+    fn apply_configured_theme(&mut self) {
+        self.configured_theme = Theme::configured();
+        self.windows
+            .set_your_colour(crate::shell::state::read_local_presence_hue());
+        self.theme = self
+            .configured_theme
+            .clone()
+            .in_window(&self.windows.active());
+        self.text_renderer
+            .set_distinct_letters(self.theme.tokens.typography.distinct_letters);
+    }
+
+    /// Entering a workspace enters its temperature: the neutral material
+    /// takes the hue the person set for a workspace
+    /// (`appearance.workspace_temperatures`), or else its wallpaper's
+    /// ([`super::desktop_backdrop::native_workspace_hue`]); a grey wallpaper
+    /// leaves it neutral. Only the hue moves, so a neutral palette shows
+    /// none. Every workspace is looked at when the active one changes and
+    /// every few seconds otherwise, so a new wallpaper retints the room it
+    /// was set on, in the chrome and in every app window shown there. Live
+    /// sessions only: offscreen capture stays on the theme it was asked for.
+    fn refresh_workspace_temperature(&mut self) {
+        if !self.watch_configured_theme {
+            return;
+        }
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        let workspaces = tree
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.0.to_string())
+            .collect::<Vec<_>>();
+        let active = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id.0.to_string());
+        drop(tree);
+        drop(chrome);
+        let now = Instant::now();
+        if !self.windows.due(active.as_deref(), now) {
+            return;
+        }
+        let settings = serde_json::Value::Object(settings_store::load());
+        let mut temperature_of = |id: &str| {
+            ui::theme::workspace_temperature_override(&settings, id)
+                .or_else(|| super::desktop_backdrop::native_workspace_hue(id))
+        };
+        if !self
+            .windows
+            .update(&workspaces, active.as_deref(), now, &mut temperature_of)
+        {
+            return;
+        }
+        self.theme = self
+            .configured_theme
+            .clone()
+            .in_window(&self.windows.active());
+        self.rebuild_layout_tree();
+        self.relayout();
+    }
+
+    /// What the app window(s) of `app_id` are shown in: the temperature of
+    /// the workspace holding its window (the active one before it has a
+    /// tile) and the person's colour. The compositor sends it over the
+    /// app's shell-ui connection whenever it changes.
+    #[must_use]
+    pub fn window_appearance_for_app(&self, app_id: &str) -> ui::WindowAppearance {
+        let id = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .any(|tab| {
+                            matches!(
+                                &tab.tile,
+                                crate::shell::state::TileContent::Foreign { app_id: candidate, .. }
+                                    if candidate == app_id
+                            )
+                        })
+                })
+                .map(|workspace| workspace.id.0.to_string())
+        };
+        self.windows.in_workspace(id.as_deref())
     }
 
     /// Enable the session-wide configured theme and live settings watcher.
@@ -2067,7 +2738,7 @@ impl FrameBuilder {
     /// for a specific palette.
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
-        self.theme = Theme::configured();
+        self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
         self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();
@@ -2140,6 +2811,12 @@ impl FrameBuilder {
     }
 
     #[cfg(feature = "hosted-test-control")]
+    /// Draw floating chrome as under the reduced-transparency setting, so a
+    /// capture can show the opaque material beside the blurred one.
+    pub fn set_reduce_transparency_for_shots(&mut self, on: bool) {
+        self.theme = self.theme.clone().with_reduce_transparency(on);
+    }
+
     pub fn set_remote_display_name_for_shots(&mut self, user: &str, name: &str) {
         self.presence
             .set_display_name(ui::permissions::UserId(user.to_string()), name.to_string());
@@ -2544,7 +3221,7 @@ impl FrameBuilder {
         if windows.is_empty() && prompts.is_empty() {
             return std::borrow::Cow::Borrowed(presented);
         }
-        let window_radius = f64::from(self.theme.tokens.radii.xl);
+        let window_radius = f64::from(self.theme.tokens.radii.tile);
         for rect in windows {
             // One pixel past the tile, so the client's antialiased edge is
             // covered too.
@@ -2964,6 +3641,18 @@ impl FrameBuilder {
 
     /// Whether the trusted on-screen keyboard service has a surface, shown
     /// or not.
+    /// Whether field activation and the input modality request the keyboard.
+    pub fn osk_requested(&self) -> bool {
+        self.osk_active
+    }
+
+    /// Whether the keyboard has supplied a buffer, even while hidden.
+    pub fn osk_mapped(&self) -> bool {
+        self.osk_overlay
+            .as_ref()
+            .is_some_and(ForeignSurfaceWidget::is_mapped)
+    }
+
     pub fn osk_connected(&self) -> bool {
         self.osk_overlay.is_some()
     }
@@ -3014,11 +3703,48 @@ impl FrameBuilder {
     /// What the focused chrome widget asks of an input method — its purpose
     /// and caret — when it takes text; `None` otherwise.
     pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
+        if self.host.palette_visible() {
+            return self.host.palette_ime_field();
+        }
         let widget = *self.node_map.get(&focus?)?;
         // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
         // pointer stays valid until the next structural rebuild, the same
         // invariant every focused-node dispatch here relies on.
         ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
+    }
+
+    pub(crate) fn focused_ime_edit_stamp(
+        &self,
+        focus: Option<NodeId>,
+        document: &automerge::AutoCommit,
+    ) -> Option<crate::compositor::shell_text_input::NativeEditStamp> {
+        if self.host.palette_visible() {
+            return Some(crate::compositor::shell_text_input::NativeEditStamp {
+                document: ui::bound_dispatch::DocumentEditStamp::for_document(document),
+                fingerprint: self
+                    .host
+                    .palette_ime_edit_fingerprint(&self.ime_stamp_key)?,
+            });
+        }
+        let focus = focus?;
+        let widget = *self.node_map.get(&focus)?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: the host, layout and pointer map are the same exclusively
+        // owned live build used by focused_ime_field; nothing mutates here.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+        }
+        Some(crate::compositor::shell_text_input::NativeEditStamp {
+            document: admitted.document_edit_stamp(focus, document).ok()?,
+            // SAFETY: the live map's pointer remains owned by the host during
+            // this read; no raw field value escapes the keyed fingerprint.
+            fingerprint: unsafe { &*widget }.ime_edit_fingerprint(&self.ime_stamp_key)?,
+        })
     }
 
     /// Whether a chrome widget under `point` handles a touch contact that
@@ -3067,7 +3793,7 @@ impl FrameBuilder {
         &mut self,
         target: ui::accesskit::NodeId,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root_obj: &ObjId,
         focus: &mut Option<NodeId>,
     ) -> bool {
@@ -3101,8 +3827,20 @@ impl FrameBuilder {
             }
         };
         if handled {
-            if matches!(action, Action::Focus) {
+            // Semantic input bypasses handle_event's tab writeback. Accept it
+            // before the next model sync can restore the previous selection.
+            self.host.flush_active_tab_writeback();
+            let activated_tab_bar = matches!(action, Action::Activate)
+                && semantic_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with("tab:"))
+                && unsafe { (*widget).accessibility() }
+                    .is_some_and(|node| node.role == ui::a11y::Role::TabBar);
+            if matches!(action, Action::Focus) || activated_tab_bar {
                 self.set_native_focus(focus, Some(taffy_id));
+            }
+            if activated_tab_bar && self.chrome().axis_navigation_enabled() {
+                self.chrome.borrow_mut().request_axis_gather();
             }
             if self.host.take_focus_reset() {
                 self.relayout();
@@ -3192,7 +3930,7 @@ impl FrameBuilder {
         &self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root_obj: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
@@ -3217,7 +3955,7 @@ impl FrameBuilder {
         let Some((&id, &widget)) = self
             .node_map
             .iter()
-            .find(|(_, mapped)| unsafe { (***mapped).name() } == "Terminal")
+            .find(|(_, mapped)| is_terminal(unsafe { &***mapped }))
         else {
             return false;
         };
@@ -3229,7 +3967,7 @@ impl FrameBuilder {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: root_obj,
                     handled: &mut handled,
                     focus_target,
@@ -3253,7 +3991,7 @@ impl FrameBuilder {
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root_obj: &ObjId,
         focus: &mut Option<NodeId>,
     ) -> bool {
@@ -3284,7 +4022,7 @@ impl FrameBuilder {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: root_obj,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3459,6 +4197,10 @@ impl FrameBuilder {
         for (name, rect) in host.trusted_frame_targets(&self.theme) {
             put(name.to_string(), rect);
         }
+        #[cfg(any(test, debug_assertions))]
+        for (name, rect) in host.permission_prompt_choice_rects_for_tests() {
+            put(name.to_string(), rect);
+        }
     }
 }
 
@@ -3581,11 +4323,110 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 )]
 mod tests {
     use super::*;
+
+    /// The terminal a hosted Terminal tab shows, inside its app.
+    fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
+        let embedded = widget
+            .as_any_mut()?
+            .downcast_mut::<ui::app::EmbeddedApp>()?;
+        terminal::mounted_terminal(embedded.component_root_mut()?)
+    }
+    /// Attach a real process before rebuilding any pointers into its widget.
+    /// A probe of the unopened production tab cannot prove PTY dispatch.
+    fn live_hosted_terminal_probe(fb: &mut FrameBuilder) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        // Focus-window first changes chrome structure; materialize that tab
+        // before looking for its mounted application in the current node map.
+        fb.relayout();
+        let terminal = fb
+            .node_map
+            .values()
+            .find_map(|widget| {
+                // SAFETY: these pointers still belong to the current live tree.
+                let widget = unsafe { &mut **widget };
+                is_terminal(widget)
+                    .then(|| hosted_terminal(widget))
+                    .flatten()
+            })
+            .expect("production chrome must mount a hosted Terminal");
+        *terminal = terminal::TerminalWidget::spawn_command(terminal::CommandBuilder::new("cat"))
+            .expect("attach a real PTY process to the hosted Terminal");
+        assert!(
+            !terminal.is_disconnected(),
+            "the real PTY must be available"
+        );
+        let probe = terminal.attach_input_probe();
+        // Replacing the widget invalidates descendant pointers; rebuild before
+        // measurement or focus reconciliation can dereference the old map.
+        fb.rebuild_layout_tree();
+        fb.relayout();
+        probe
+    }
+
+    fn finish_hosted_terminal_probe(fb: &mut FrameBuilder) {
+        let terminal = fb
+            .node_map
+            .values_mut()
+            .find_map(|widget| {
+                // SAFETY: the map was rebuilt after attaching the real process.
+                let widget = unsafe { &mut **widget };
+                is_terminal(widget)
+                    .then(|| hosted_terminal(widget))
+                    .flatten()
+            })
+            .expect("the live hosted Terminal remains mounted");
+        // The assertion already consumed the tested bytes. EOF is cleanup,
+        // delivered through the same real PTY so cat and its reader both exit.
+        terminal
+            .try_write_input(b"\x04")
+            .expect("close the real cat input");
+        tilo_test_env::wait_until("the real PTY process and reader finish", || {
+            terminal.is_disconnected()
+        });
+    }
     use crate::shell::state::FreshId as _;
-    use automerge::ReadDoc;
+    use automerge::ReadDoc as _;
     use automerge::transaction::Transactable;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
+
+    #[test]
+    fn frame_pump_settles_a_launchpad_request_once() {
+        let mut frame = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
+        doc.put(
+            &automerge::ROOT,
+            tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP,
+            true,
+        )
+        .expect("queued launcher request");
+
+        assert!(
+            frame.pump_apps(&mut doc, &automerge::ROOT),
+            "a settled action requests repaint"
+        );
+        assert!(
+            frame.host.palette_visible(),
+            "the production frame pump opens the launcher"
+        );
+        assert!(
+            matches!(
+                doc.get(&automerge::ROOT, tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP),
+                Ok(Some((automerge::Value::Scalar(value), _)))
+                    if matches!(value.as_ref(), automerge::ScalarValue::Boolean(false))
+            ),
+            "typed settlement consumes the request"
+        );
+        doc.put(&automerge::ROOT, "pending-observer-witness", "uncommitted")
+            .expect("pending fixture edit");
+        assert!(doc.pending_ops() > 0);
+        let revision = (doc.base_heads(), doc.pending_ops());
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            revision,
+            (doc.base_heads(), doc.pending_ops()),
+            "the next pump does not repeat the request"
+        );
+    }
 
     #[test]
     #[allow(
@@ -3644,6 +4485,8 @@ mod tests {
                 let state = chrome.borrow();
                 ActionsProvider::new()
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "bring record",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -3667,7 +4510,7 @@ mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("record action is asynchronous")(
-                &mut document,
+                &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
                 &chrome,
                 &args,
@@ -3705,7 +4548,7 @@ mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("record action is asynchronous")(
-                &mut document,
+                &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
                 &chrome,
                 &denied_args,
@@ -4106,49 +4949,60 @@ mod tests {
             crate::shell::foreign::store().forget(SURFACE);
         }
 
-        fn hdr_surfaces_are_recorded_as_frame_layers() {
-            const SURFACE: u64 = 9_900_702;
-            let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
-                crate::collab::colorimetry::Colorimetry::hdr10(),
-                crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
-            )
-            .expect("PQ");
-            let plane =
-                crate::shell::hdr_surface::HdrPlane::from_signal_rgb(2, 2, [[0.6; 3]; 4], signal)
-                    .expect("plane");
-            let plane_id = plane.id();
-            crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
-            let mut fb = FrameBuilder::new((1600, 900));
-            fb.set_osk_surface(Some(SURFACE), None, None, true);
-
-            let frame = fb.paint_with_damage();
-            let [layer] = frame.hdr_layers.as_slice() else {
-                panic!("one HDR layer, got {}", frame.hdr_layers.len());
-            };
-            assert_eq!(layer.plane.id(), plane_id);
-            assert_eq!(layer.channel, 0);
-            assert!(
-                layer.bounds.width() > 2.0 && layer.bounds.y1 <= 900.0,
-                "the keyboard's surface is scaled into its bottom panel: {:?}",
-                layer.bounds
-            );
-            let _ = fb.paint();
-            assert_eq!(fb.take_hdr_layers().len(), 1, "the dense paint records too");
-            assert!(fb.take_hdr_layers().is_empty(), "taken once");
-
-            crate::shell::foreign::store().publish_rgba(SURFACE, &[40; 16], 2, 2);
-            assert!(
-                fb.paint_with_damage().hdr_layers.is_empty(),
-                "an SDR frame has none"
-            );
-            crate::shell::foreign::store().forget(SURFACE);
-        }
-
+        let _env_lock = tilo_test_env::lock();
         native_damage_covers_clip_tiles_and_clamps_the_viewport();
         transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist();
         night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin();
         osk_overlay_is_bottom_anchored_and_active_only();
-        hdr_surfaces_are_recorded_as_frame_layers();
+    }
+
+    #[test]
+    fn hdr_surfaces_are_recorded_as_frame_layers() {
+        const SURFACE: u64 = 9_900_702;
+        let _env_lock = tilo_test_env::lock();
+        let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+            crate::collab::colorimetry::Colorimetry::hdr10(),
+            crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+        )
+        .expect("PQ");
+        let plane =
+            crate::shell::hdr_surface::HdrPlane::from_signal_rgb(2, 2, [[0.6; 3]; 4], signal)
+                .expect("plane");
+        let plane_id = plane.id();
+        crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
+        let mut fb = FrameBuilder::new((1600, 900));
+        fb.set_osk_surface(Some(SURFACE), None, None, true);
+
+        let frame = fb.paint_with_damage();
+        let [layer] = frame.hdr_layers.as_slice() else {
+            panic!("one HDR layer, got {}", frame.hdr_layers.len());
+        };
+        assert_eq!(layer.plane.id(), plane_id);
+        assert_eq!(layer.channel, 0);
+        assert!(
+            layer.bounds.width() > 2.0 && layer.bounds.y1 <= 900.0,
+            "the keyboard's surface is scaled into its bottom panel: {:?}",
+            layer.bounds
+        );
+        let _ = fb.paint();
+        assert_eq!(fb.take_hdr_layers().len(), 1, "the dense paint records too");
+        assert!(fb.take_hdr_layers().is_empty(), "taken once");
+
+        fb.set_retained_layer_width(Some(8192));
+        let retained = fb.paint_with_damage();
+        assert!(
+            retained.cache.is_none(),
+            "HDR keeps the dense compositor path"
+        );
+        assert_eq!(retained.hdr_layers.len(), 1);
+        assert_eq!(retained.hdr_layers[0].plane.id(), plane_id);
+
+        crate::shell::foreign::store().publish_rgba(SURFACE, &[40; 16], 2, 2);
+        assert!(
+            fb.paint_with_damage().hdr_layers.is_empty(),
+            "an SDR frame has none"
+        );
+        crate::shell::foreign::store().forget(SURFACE);
     }
 
     fn key_press(key: Key) -> WindowEvent {
@@ -4188,7 +5042,13 @@ mod tests {
         let root = automerge::ROOT;
         let mut focus = None;
         let press = key_press(Key::Named(NamedKey::Space));
-        fb.dispatch_event(&press, &chord, &mut doc, &root, &mut focus);
+        fb.dispatch_event(
+            &press,
+            &chord,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus,
+        );
 
         assert_eq!(
             fb.chrome.borrow_mut().take_input_source_request(),
@@ -4212,12 +5072,49 @@ mod tests {
             "Super+Alt+Space is not the Super+Space search chord"
         );
 
-        fb.dispatch_event(&press, &chord, &mut doc, &root, &mut focus);
+        fb.dispatch_event(
+            &press,
+            &chord,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus,
+        );
         assert_eq!(
             fb.chrome.borrow_mut().take_input_source_request(),
             Some(0),
             "the sources wrap around"
         );
+    }
+
+    #[test]
+    fn palette_text_input_is_exposed_without_a_native_focus_node() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        assert!(fb.focused_ime_field(focus).is_none());
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Space)),
+            &Modifiers::from(ModifiersState::SUPER),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let _ = fb.paint_settled();
+        assert!(fb.host().palette_visible());
+        let field = fb
+            .focused_ime_field(None)
+            .expect("the open palette owns the input method even without a native focus node");
+        assert_eq!(field.purpose, winit::window::ImePurpose::Normal);
+        assert!(field.width > 0 && field.height > 0);
+        fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Escape)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        );
+        assert!(!fb.host().palette_visible());
+        assert!(fb.focused_ime_field(None).is_none());
     }
 
     #[test]
@@ -4238,7 +5135,7 @@ mod tests {
             fb.dispatch_event(
                 &key_press(Key::Character("s".into())),
                 &chord,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
                 &mut focus
             ),
@@ -4284,6 +5181,298 @@ mod tests {
             .iter()
             .find(|(_, node)| node.label() == Some(name))
             .cloned()
+    }
+
+    fn axis_a11y_tree() -> (
+        crate::shell::state::WorkspaceTree,
+        crate::shell::state::StripId,
+        Vec<crate::shell::state::GroupId>,
+        Vec<[u64; 2]>,
+    ) {
+        use crate::shell::state::{
+            AppKind, FreshId as _, GroupId, Strip, StripId, Tab, TileContent, WindowGroup,
+            WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
+        };
+        const GROUPS: usize = 5;
+        const GROUP_WIDTH_PERMILLE: u16 = 515;
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let groups: Vec<GroupId> = (0..GROUPS)
+            .map(|i| 1001u64.saturating_add(i as u64))
+            .collect();
+        let tabs: Vec<[u64; 2]> = (0..GROUPS)
+            .map(|i| {
+                let base = (i as u64).saturating_add(1).saturating_mul(10);
+                [base.saturating_add(1), base.saturating_add(2)]
+            })
+            .collect();
+
+        let mk_tab = |id: u64, label: &str| Tab {
+            id,
+            title: label.into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Other("Test".into()),
+                label: label.into(),
+            },
+        };
+
+        let window_groups = groups
+            .iter()
+            .zip(tabs.iter())
+            .enumerate()
+            .map(|(i, (&gid, ids))| WindowGroup {
+                id: gid,
+                tabs: vec![
+                    mk_tab(ids[0], &format!("G{i}-A")),
+                    mk_tab(ids[1], &format!("G{i}-B")),
+                ],
+                active_tab: ids[0],
+                width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
+                maximized: false,
+            })
+            .collect();
+
+        let ws = Workspace {
+            strips: vec![Strip {
+                id: strip_id,
+                name: "Main".into(),
+                window_groups,
+            }],
+            ..Workspace::new(ws_id, "Test")
+        };
+
+        let mut active_strip = HashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = HashMap::new();
+        active_group.insert(strip_id, groups[0]);
+
+        let tree = WorkspaceTree {
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        (tree, strip_id, groups, tabs)
+    }
+
+    #[test]
+    fn axis_a11y_tab_activation_commits_selection_and_focus_before_resync() {
+        for enabled in [false, true] {
+            let (tree, strip, groups, tabs) = axis_a11y_tree();
+            let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+            fb.with_chrome(|chrome| chrome.set_axis_navigation_enabled(enabled));
+            fb.host_mut().run_requested_shortcut_actions();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut focus = None;
+            fb.paint_settled();
+            for (label, group, tab) in [
+                ("G4-A", groups[4], tabs[4][0]),
+                ("G0-B", groups[0], tabs[0][1]),
+            ] {
+                let update = fb.build_a11y_tree_update(focus, 1.0);
+                let (target, node) = exported_node_named(&update, label).expect("tab exported");
+                assert_eq!(node.role(), ui::accesskit::Role::Tab);
+                assert!(node.supports_action(ui::accesskit::Action::Click));
+                assert!(fb.dispatch_a11y_action(
+                    target,
+                    &ui::a11y::Action::Activate,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &mut focus
+                ));
+                assert_eq!(
+                    fb.chrome().tree().desktop.active_group.get(&strip),
+                    Some(&group),
+                    "activation stamps spatial focus before another event; mode={enabled}"
+                );
+                fb.pump_apps(&mut doc, &root);
+                fb.paint_settled();
+                fb.paint_settled();
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                let selected = tree.desktop.active_workspace().unwrap().strips[0]
+                    .window_groups
+                    .iter()
+                    .find(|candidate| candidate.id == group)
+                    .unwrap()
+                    .active_tab;
+                assert_eq!(
+                    selected, tab,
+                    "model resync must retain assistive selection; mode={enabled}"
+                );
+                drop(tree);
+                drop(chrome);
+                let update = fb.build_a11y_tree_update(focus, 1.0);
+                let (_, node) = exported_node_named(&update, label).expect("same tab exported");
+                assert_eq!(node.is_selected(), Some(true));
+                let focused = update
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == update.focus)
+                    .expect("exported focus");
+                assert_eq!(focused.1.role(), ui::accesskit::Role::TabList);
+                assert_eq!(
+                    focused.1.value(),
+                    Some(label),
+                    "assistive focus follows the activated tab bar"
+                );
+                if enabled {
+                    let row = fb
+                        .host_mut()
+                        .group_row_mut_for_tests(strip)
+                        .expect("live row");
+                    let rect = row
+                        .groups
+                        .iter()
+                        .find(|candidate| candidate.id == group)
+                        .unwrap()
+                        .get_rect();
+                    let (x0, x1) = row.visible_canvas_span();
+                    let scroll = row.scroll_x();
+                    assert!(
+                        rect.x0 >= x0 - scroll - 0.5 && rect.x1 <= x1 - scroll + 0.5,
+                        "assistive activation gathers axis focus"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn axis_a11y_tab_activation_follows_its_display_and_gathers_only_that_lane() {
+        use crate::shell::overlay_host::OutputGeometry;
+        let (tree, strip, groups, _) = axis_a11y_tree();
+        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+        let first = OutputGeometry::unscaled(0.0, 0.0, 640.0, 800.0).with_id(10);
+        let mut second = OutputGeometry::unscaled(640.0, 0.0, 640.0, 800.0).with_id(20);
+        second.scale = 1.5;
+        second.scene = Rect::new(640.0, 0.0, 1600.0, 1200.0);
+        fb.set_output_geometry(vec![first, second]);
+        fb.with_chrome(|chrome| {
+            chrome.set_axis_navigation_enabled(true);
+            let mut tree = chrome.tree_mut();
+            let workspaces = tree.desktop.workspaces.clone();
+            for (index, group) in groups.iter().enumerate() {
+                tree.desktop.outputs.move_group(
+                    &workspaces,
+                    *group,
+                    if index == 1 || index == 3 { 20 } else { 10 },
+                );
+            }
+            tree.desktop.outputs.set_focused(10);
+        });
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut focus = None;
+        fb.pump_apps(&mut doc, &root);
+        fb.paint_settled();
+        fb.paint_settled();
+        let other_pan = fb
+            .host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .output_pan(10)
+            .unwrap()
+            .scroll_x();
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (target, _) = exported_node_named(&update, "G3-B").expect("other display tab exported");
+        assert!(fb.dispatch_a11y_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus
+        ));
+        assert_eq!(
+            fb.chrome().tree().desktop.active_group.get(&strip),
+            Some(&groups[3])
+        );
+        assert_eq!(
+            fb.chrome().tree().desktop.outputs.focused_display(),
+            Some(20)
+        );
+        fb.pump_apps(&mut doc, &root);
+        fb.paint_settled();
+        fb.paint_settled();
+        let row = fb.host_mut().group_row_mut_for_tests(strip).unwrap();
+        assert_eq!(
+            row.output_pan(10).unwrap().scroll_x(),
+            other_pan,
+            "assistive gather leaves the other display's pan alone"
+        );
+        let view = row.output_pan(20).unwrap().viewport();
+        let rect = row
+            .groups
+            .iter()
+            .find(|candidate| candidate.id == groups[3])
+            .unwrap()
+            .get_rect();
+        assert!(rect.x0 >= view.x0 - 0.5 && rect.x1 <= view.x1 + 0.5);
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (_, selected) = exported_node_named(&update, "G3-B").unwrap();
+        assert_eq!(selected.is_selected(), Some(true));
+        let (_, focused) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == update.focus)
+            .unwrap();
+        assert_eq!(focused.value(), Some("G3-B"));
+    }
+
+    #[test]
+    fn axis_a11y_media_control_preserves_spatial_and_native_focus() {
+        let (tree, strip, groups, tabs) = axis_a11y_tree();
+        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+        fb.with_chrome(|chrome| chrome.set_axis_navigation_enabled(true));
+        fb.host_mut().run_requested_shortcut_actions();
+        fb.paint_settled();
+        let mut focus = None;
+        fb.focus_first(&mut focus);
+        let before = focus;
+        fb.host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .groups
+            .iter_mut()
+            .find(|group| group.id == groups[4])
+            .unwrap()
+            .bar_mut_for_tests()
+            .set_mark(tabs[4][0], Some(ui::widget::TabMark::Playing));
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (target, node) =
+            exported_node_named(&update, "Mute G4-A").expect("new media control exported");
+        assert_eq!(node.role(), ui::accesskit::Role::Button);
+        let mut doc = AutoCommit::new();
+        assert!(fb.dispatch_a11y_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus
+        ));
+        assert_eq!(
+            fb.chrome().tree().desktop.active_group.get(&strip),
+            Some(&groups[0])
+        );
+        assert_eq!(focus, before, "mute is a media action, not tab selection");
+        assert!(!fb.chrome.borrow_mut().take_axis_gather_request());
+        let intent = fb
+            .host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .groups
+            .iter_mut()
+            .find(|group| group.id == groups[4])
+            .unwrap()
+            .bar_mut_for_tests()
+            .take_mark_click();
+        assert_eq!(intent, Some((tabs[4][0], ui::widget::TabMark::Playing)));
     }
 
     #[test]
@@ -4341,7 +5530,7 @@ mod tests {
         assert!(fb.dispatch_a11y_action(
             query_id,
             &ui::a11y::Action::SetValue("photos".into()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         ));
@@ -4349,19 +5538,27 @@ mod tests {
     }
 
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
+        let (fb, identity_dir, _press) = onboarding_frame_with_presser();
+        (fb, identity_dir)
+    }
+
+    /// An onboarding frame plus a way to take a setup action as its button
+    /// would, for tests that walk past a step rather than exercise it.
+    fn onboarding_frame_with_presser()
+    -> (FrameBuilder, tempfile::TempDir, Box<dyn Fn(&'static str)>) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));
         let identity_path = identity_dir.path().join("primary.json");
-        fb.enable_test_onboarding(crate::onboarding_view::OnboardingView::with_minter(
-            Box::new(move || {
-                Ok(crate::onboarding::MintedIdentity {
-                    fingerprint: "ab".repeat(32),
-                    path: identity_path.clone(),
-                })
-            }),
-        ));
+        let view = crate::onboarding_view::OnboardingView::with_minter(Box::new(move || {
+            Ok(crate::onboarding::MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: identity_path.clone(),
+            })
+        }));
+        let press = view.presser();
+        fb.enable_test_onboarding(view);
         fb.relayout();
-        (fb, identity_dir)
+        (fb, identity_dir, press)
     }
 
     #[test]
@@ -4417,7 +5614,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &typed,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4426,7 +5623,7 @@ mod tests {
         assert!(fb.dispatch_event(
             &key_press(Key::Named(NamedKey::Enter)),
             &Modifiers::default(),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         ));
@@ -4479,8 +5676,9 @@ mod tests {
             let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 4: Choose")
                 .expect("the OOBE progress state reaches the external tree");
 
-            assert_eq!(existing.role(), ui::accesskit::Role::Button);
-            assert_eq!(create.role(), ui::accesskit::Role::Button);
+            // The ways forward are one list of rows that each open a flow.
+            assert_eq!(existing.role(), ui::accesskit::Role::ListItem);
+            assert_eq!(create.role(), ui::accesskit::Role::ListItem);
             assert_eq!(progress.role(), ui::accesskit::Role::ProgressIndicator);
             assert!(existing.supports_action(ui::accesskit::Action::Focus));
             assert!(existing.supports_action(ui::accesskit::Action::Click));
@@ -4503,7 +5701,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 existing_id,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4516,7 +5714,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 restore_id,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4534,7 +5732,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 field_id,
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4548,7 +5746,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 field_id,
                 &ui::a11y::Action::SetValue(probe.into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4562,14 +5760,13 @@ mod tests {
         }
 
         fn native_oobe_external_tree_replaces_step_and_updates_control_state() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut focus = None;
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
             let intro = fb.build_a11y_tree_update(focus, 1.0);
 
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-                .expect("begin identity setup");
+            press(crate::onboarding_view::KEY_BEGIN);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
@@ -4599,7 +5796,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 ack_id,
                 &ui::a11y::Action::ToggleCheck,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4649,7 +5846,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &tab,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4660,16 +5857,15 @@ mod tests {
             assert!(fb.dispatch_event(
                 &key_press(Key::Named(NamedKey::Enter)),
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
             assert_eq!(
                 doc.get(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN)
-                    .expect("read begin action")
-                    .and_then(|(value, _)| value.as_bool()),
-                Some(true),
-                "activation must write the begin action into the document"
+                    .expect("read begin action"),
+                None,
+                "activation is a view action, never a document write"
             );
 
             fb.pump_apps(&mut doc, &automerge::ROOT);
@@ -4684,14 +5880,18 @@ mod tests {
         }
 
         fn native_oobe_backup_tab_order_reaches_fields_acknowledgement_and_continue() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut focus = None;
             let mut doc = AutoCommit::new();
             for key in [
                 crate::onboarding_view::KEY_BEGIN,
                 crate::onboarding_view::KEY_UNDERSTOOD,
             ] {
-                doc.put(&automerge::ROOT, key, true).expect("advance OOBE");
+                if key == crate::onboarding_view::KEY_UNDERSTOOD {
+                    doc.put(&automerge::ROOT, key, true).expect("advance OOBE");
+                } else {
+                    press(key);
+                }
                 fb.pump_apps(&mut doc, &automerge::ROOT);
                 fb.relayout();
                 // The replacement subtree must sync once before a gated control
@@ -4709,8 +5909,7 @@ mod tests {
             .expect("acknowledge identity protection");
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CREATE, true)
-                .expect("create identity");
+            press(crate::onboarding_view::KEY_CREATE);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.pump_apps(&mut doc, &automerge::ROOT);
@@ -4768,14 +5967,14 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 field,
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
             assert!(fb.dispatch_a11y_action(
                 field,
                 &ui::a11y::Action::SetValue("tilosecretprobe42".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4813,7 +6012,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &enter,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4824,7 +6023,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &tab,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4844,7 +6043,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &tab,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4854,7 +6053,13 @@ mod tests {
             );
 
             let shift = Modifiers::from(ModifiersState::SHIFT);
-            assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
+            assert!(fb.dispatch_event(
+                &tab,
+                &shift,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus,
+            ));
             assert_eq!(
                 focused_name(&fb, focus).as_deref(),
                 Some("Use my existing Tilo identity")
@@ -4862,10 +6067,9 @@ mod tests {
         }
 
         fn native_oobe_focus_order_excludes_disabled_controls() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut doc = AutoCommit::new();
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-                .expect("begin identity setup");
+            press(crate::onboarding_view::KEY_BEGIN);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
 
@@ -4888,7 +6092,7 @@ mod tests {
             let terminal = fb.node_map.iter().find_map(|(id, widget)| {
                 // SAFETY: node_map pointers are owned by the live widget tree and
                 // remain valid until the next structural rebuild.
-                (unsafe { (**widget).name() } == "Terminal").then_some(*id)
+                is_terminal(unsafe { &**widget }).then_some(*id)
             });
             let Some(terminal) = terminal else {
                 // Environments without a PTY deliberately mount the terminal
@@ -4903,7 +6107,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &key_press(Key::Named(NamedKey::Tab)),
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4961,26 +6165,18 @@ mod tests {
             fb.host_mut().focus_window_on_strip(strip, group, tab),
             "the compositor must be able to focus the hosted Terminal tab"
         );
-        fb.relayout();
+        let probe = live_hosted_terminal_probe(&mut fb);
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
-        assert_eq!(
-            fb.widget_name(focus.expect("a terminal tile must take initial focus")),
-            Some("Terminal"),
-            "chrome must not keep initial focus on a workspace pill"
-        );
-        let probe = fb.node_map.values().find_map(|widget| {
+        let focused = focus.expect("a terminal tile must take initial focus");
+        assert!(
             // SAFETY: node_map pointers are owned by the live widget tree.
-            let widget = unsafe { &mut **widget };
-            (widget.name() == "Terminal")
-                .then(|| widget.as_any_mut())
-                .flatten()
-                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
-                .map(|term| term.attach_input_probe())
-        });
-        let Some(probe) = probe else {
-            panic!("production chrome must mount a hosted Terminal");
-        };
+            fb.node_map
+                .get(&focused)
+                .is_some_and(|&widget| is_terminal(unsafe { &*widget })),
+            "chrome must not keep initial focus on a workspace pill: {:?}",
+            fb.widget_name(focused)
+        );
         let mut doc = AutoCommit::new();
         for key in [
             Key::Character(SmolStr::new_static("e")),
@@ -4991,7 +6187,7 @@ mod tests {
                 fb.dispatch_event(
                     &key_press(key),
                     &Modifiers::default(),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                     &mut focus,
                 ),
@@ -5007,6 +6203,7 @@ mod tests {
             b"e \r",
             "letters, Space and Enter must reach the PTY, not chrome Activate",
         );
+        finish_hosted_terminal_probe(&mut fb);
     }
 
     #[test]
@@ -5047,7 +6244,7 @@ mod tests {
         };
         let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
         assert!(fb.host_mut().focus_window_on_strip(strip, group, tab));
-        fb.relayout();
+        let probe = live_hosted_terminal_probe(&mut fb);
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
         let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
@@ -5061,17 +6258,6 @@ mod tests {
             Some("TopBarChrome"),
             "this case is the VM path: chrome, not the Terminal, holds focus"
         );
-        let probe = fb.node_map.values().find_map(|widget| {
-            let widget = unsafe { &mut **widget };
-            (widget.name() == "Terminal")
-                .then(|| widget.as_any_mut())
-                .flatten()
-                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
-                .map(|term| term.attach_input_probe())
-        });
-        let Some(probe) = probe else {
-            panic!("production chrome must mount a hosted Terminal");
-        };
         let mut doc = AutoCommit::new();
         for key in [
             Key::Character(SmolStr::new_static("e")),
@@ -5082,7 +6268,7 @@ mod tests {
                 fb.dispatch_event(
                     &key_press(key),
                     &Modifiers::default(),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                     &mut focus,
                 ),
@@ -5098,6 +6284,7 @@ mod tests {
             b"e \r",
             "Space and Enter must reach the PTY while chrome still has focus",
         );
+        finish_hosted_terminal_probe(&mut fb);
     }
 
     #[test]
@@ -5155,10 +6342,9 @@ mod tests {
         );
         let probe = fb.node_map.values().find_map(|widget| {
             let widget = unsafe { &mut **widget };
-            (widget.name() == "Terminal")
-                .then(|| widget.as_any_mut())
+            is_terminal(widget)
+                .then(|| hosted_terminal(widget))
                 .flatten()
-                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
                 .map(|term| term.attach_input_probe())
         });
         let Some(probe) = probe else {
@@ -5193,7 +6379,7 @@ mod tests {
             fb.dispatch_event(
                 &key_press(Key::Named(NamedKey::Enter)),
                 &chord,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ),
@@ -5262,7 +6448,7 @@ mod tests {
                     position: winit::dpi::PhysicalPosition::new(position.x, position.y),
                 },
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -5274,7 +6460,7 @@ mod tests {
         }
 
         fn native_oobe_step_transition_reseats_focus_on_new_first_control() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut focus = None;
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
@@ -5283,8 +6469,7 @@ mod tests {
                 Some("Use my existing Tilo identity")
             );
 
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-                .expect("begin identity setup");
+            press(crate::onboarding_view::KEY_BEGIN);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
@@ -5296,19 +6481,13 @@ mod tests {
         }
 
         fn native_oobe_step_transition_keeps_the_new_page_at_its_top() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut focus = None;
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
 
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_EXISTING, true)
-                .expect("open the use-existing choice");
-            doc.put(
-                &automerge::ROOT,
-                crate::onboarding_view::KEY_CHOOSE_RESTORE,
-                true,
-            )
-            .expect("open identity restore");
+            press(crate::onboarding_view::KEY_EXISTING);
+            press(crate::onboarding_view::KEY_CHOOSE_RESTORE);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
@@ -5339,7 +6518,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &tab,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -5618,6 +6797,7 @@ mod tests {
 
     fn both_directions_hold_the_scanout() {
         let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_workspace_clip_supported(true);
         let _ = fb.paint_settled();
         let mut switched = false;
         fb.with_chrome(|st| {
@@ -5742,6 +6922,7 @@ mod tests {
         use crate::shell::output_scene::OutputGeometry;
 
         let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_workspace_clip_supported(true);
         fb.set_output_geometry(vec![
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
             OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
@@ -5803,6 +6984,7 @@ mod tests {
 
         fn overview_open_is_a_clip() {
             let mut fb = FrameBuilder::new((3200, 1080));
+            fb.set_workspace_clip_supported(true);
             fb.set_output_geometry(vec![
                 OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
                 OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
@@ -5829,6 +7011,7 @@ mod tests {
 
         fn workspace_open_is_a_clip() {
             let mut fb = FrameBuilder::new((3200, 1080));
+            fb.set_workspace_clip_supported(true);
             fb.set_output_geometry(vec![
                 OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
                 OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
@@ -5868,6 +7051,7 @@ mod tests {
         use crate::shell::render::paint::VelloDrmBridge;
 
         let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_workspace_clip_supported(true);
         fb.set_output_geometry(vec![
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
             OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
@@ -5964,7 +7148,7 @@ mod tests {
                 position: winit::dpi::PhysicalPosition::new(center.x, center.y),
             },
             &modifiers,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         );
@@ -5975,7 +7159,7 @@ mod tests {
                 button: winit::event::MouseButton::Left,
             },
             &modifiers,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         );
@@ -5998,9 +7182,21 @@ mod tests {
 
     #[test]
     fn an_unchanged_frame_reports_empty_damage() {
-        let mut frame = FrameBuilder::new((800, 600));
+        // Hosted apps can finish a background save between paints (Notes'
+        // "Saving…" chip becomes "Saved"). This assertion needs an unchanged
+        // scene, so use the production empty workspace with owned services and
+        // controlled fonts instead of starting asynchronous demo applications.
+        let mut frame = crate::shell::test_support::PopulatedShellFixture::with_tree(
+            (800, 600),
+            Theme::dark(),
+            WorkspaceTree::bootstrap_default(),
+        );
         frame.relayout();
         let first = frame.paint_with_damage();
+        assert!(
+            !first.scene.encoding().is_empty(),
+            "real shell chrome is painted"
+        );
         assert!(
             first.damage_regions.is_none(),
             "the first frame has no predecessor to retain"
@@ -6126,6 +7322,8 @@ mod tests {
                 let state = chrome.borrow();
                 provider
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -6138,7 +7336,7 @@ mod tests {
             };
             let mut document = AutoCommit::new();
             (row.on_open)(
-                &mut document,
+                &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
                 &chrome,
                 &ActionArgs::none(),
@@ -6149,13 +7347,13 @@ mod tests {
         invoke("appearance.theme.light");
         let _ = frame.paint();
         let light = panel_ground(&frame.theme);
-        let light_bg = frame.theme.bg_app;
+        let light_bg = frame.theme.tokens.colors.surfaces.base;
         let light_y = relative_luminance(light);
 
         invoke("appearance.theme.dark");
         let _ = frame.paint();
         let dark = panel_ground(&frame.theme);
-        let dark_bg = frame.theme.bg_app;
+        let dark_bg = frame.theme.tokens.colors.surfaces.base;
         let dark_y = relative_luminance(dark);
 
         assert_ne!(
@@ -6183,7 +7381,7 @@ mod tests {
 
         let write = |theme: &str| {
             let mut values = serde_json::Map::new();
-            values.insert("theme".into(), serde_json::Value::String(theme.into()));
+            values.insert("mode".into(), serde_json::Value::String(theme.into()));
             values.insert("high_contrast".into(), serde_json::Value::Bool(false));
             settings_store::update_section("appearance", values).expect("write appearance");
         };
@@ -6197,14 +7395,14 @@ mod tests {
         frame.with_chrome(ChromeState::note_appearance_change);
         let _ = frame.paint();
         let light = panel_ground(&frame.theme);
-        let light_bg = frame.theme.bg_app;
+        let light_bg = frame.theme.tokens.colors.surfaces.base;
         let light_y = relative_luminance(light);
 
         write("dark");
         frame.with_chrome(ChromeState::note_appearance_change);
         let _ = frame.paint();
         let dark = panel_ground(&frame.theme);
-        let dark_bg = frame.theme.bg_app;
+        let dark_bg = frame.theme.tokens.colors.surfaces.base;
         let dark_y = relative_luminance(dark);
 
         assert_ne!(
@@ -6222,3 +7420,19 @@ mod tests {
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
+
+/// A non-negative scene coordinate as whole pixels, rounded down.
+fn scene_px(value: f64) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    let value = value.min(f64::from(u32::MAX));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scene pixel edges are finite, non-negative, and clamped to u32"
+    )]
+    {
+        value as u32
+    }
+}

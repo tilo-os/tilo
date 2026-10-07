@@ -96,6 +96,67 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
 }
 
 #[test]
+fn authenticated_room_projection_requires_the_exact_durable_room() {
+    let mut ws = room();
+    let durable_room = ws.room.to_string();
+    ws.grant_capability(CapOverride::membership(
+        Subject::agent("member"),
+        durable_room.clone(),
+        Verb::Write,
+    ));
+    ws.grant_capability(CapOverride::membership(
+        Subject::agent("other-room"),
+        "a-different-durable-room",
+        Verb::Write,
+    ));
+
+    assert_eq!(
+        ws.agent_members_in_room_at(&durable_room, NOW),
+        vec![("member".to_string(), CapRole::Editor)]
+    );
+    assert!(
+        ws.agent_members_in_room_at("a-third-room", NOW).is_empty(),
+        "the authenticated projection never treats an arbitrary Room scope as membership"
+    );
+    assert_eq!(
+        ws.agent_members_at(NOW).len(),
+        2,
+        "the legacy replicated reader retains its historical room spelling compatibility"
+    );
+}
+
+#[test]
+fn authenticated_people_roster_excludes_other_rooms_and_their_role_grants() {
+    let mut ws = room();
+    let durable_room = ws.room.to_string();
+    ws.grant_capability(CapOverride::membership(
+        Subject::person("member"),
+        durable_room.clone(),
+        Verb::Read,
+    ));
+    ws.grant_capability(CapOverride::membership(
+        Subject::person("member"),
+        "other-room",
+        Verb::Write,
+    ));
+    ws.grant_capability(CapOverride::membership(
+        Subject::person("not-a-member-here"),
+        "other-room",
+        Verb::Read,
+    ));
+    assert_eq!(
+        ws.roster_in_room_at(&durable_room, NOW),
+        vec![
+            ("quinten".into(), CapRole::Owner),
+            ("member".into(), CapRole::Viewer),
+        ]
+    );
+    assert!(ws.roster_in_room_at("other-room", NOW).is_empty());
+    assert_eq!(ws.roster_at(NOW).len(), 3);
+    assert_eq!(ws.role_of_at(&"member".into(), NOW), Some(CapRole::Editor));
+}
+
+#[test]
 fn membership_is_replicated_and_people_and_agents_stay_separate() {
     // Phase `replicated_membership_does_not_depend_on_the_local_workspace_handle`.
     {

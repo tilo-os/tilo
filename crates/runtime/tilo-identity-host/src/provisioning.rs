@@ -1054,6 +1054,47 @@ fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
     persist::read_public_key(path).map_err(|error| io::Error::other(error.to_string()))
 }
 
+/// Whether the identity this account signs in with owns the device.
+///
+/// The owner is the identity that claimed the machine at its first login
+/// ([`claim_device_owner`]) and holds the device's primary certificate; the
+/// account that signs in with it is the device admin. Another account on the
+/// same machine has its own identity and a shared-device certificate, and an
+/// account that has not finished first login has no identity at all: both
+/// answer `false`.
+///
+/// Only public material is read — the active record's metadata, the owner
+/// claim and the certificate — so the answer needs no unlocked secret.
+///
+/// # Errors
+///
+/// Fails when the owner claim, the device certificate, the device key or the
+/// active identity record exists but cannot be read, or when the primary
+/// certificate does not verify.
+pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -> io::Result<bool> {
+    let Some(record) = runtime_identity::resolve_active_identity(identity_dir) else {
+        return Ok(false);
+    };
+    if !paths.user_pubkey.exists() {
+        return Ok(false);
+    }
+    let owner = read_claimed_owner(&paths.user_pubkey)?;
+    let identity = runtime_identity::load_metadata_from_path(&record)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    if identity.group_public_key != owner {
+        return Ok(false);
+    }
+    let cert = persist::read_device_cert(&paths.device_cert)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    tilo_user_identity::verify_device_cert(&cert)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let device = persist::load_device_key(paths)
+        .map_err(|error| io::Error::other(error.to_string()))?
+        .verifying_key()
+        .to_bytes();
+    Ok(cert.user_public_key == owner && cert.device_public_key == device)
+}
+
 /// Enrol the machine's existing device key under an imported local identity.
 ///
 /// This keeps app signing and collaboration transport authentication on the
@@ -1394,6 +1435,7 @@ mod tests {
                 can_act_as_host: false,
                 can_read_all_workspaces: true,
                 foreign: false,
+                can_administer_devices: false,
             },
             issued_at_ns: 1_000,
             expires_at_ns: None,
@@ -1985,6 +2027,28 @@ mod tests {
                     .expect("identity-specific certificate");
             tilo_user_identity::verify_device_cert(&cert).expect("valid imported chain");
         }
+    }
+
+    #[test]
+    fn only_the_identity_that_claimed_the_device_owns_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        let alice = tmp.path().join("alice/tilo/identity");
+        let bob = tmp.path().join("bob/tilo/identity");
+        let carol = tmp.path().join("carol/tilo/identity");
+        // Before anyone's first login there is no owner.
+        assert!(!active_identity_owns_device(&alice, &paths).expect("no identity yet"));
+        ensure_collaboration_identity(&alice, &paths).expect("alice claims the device");
+        ensure_collaboration_identity(&bob, &paths).expect("bob shares it");
+        assert!(active_identity_owns_device(&alice, &paths).expect("alice"));
+        assert!(!active_identity_owns_device(&bob, &paths).expect("bob"));
+        // An account that never finished first login is not the owner either.
+        assert!(!active_identity_owns_device(&carol, &paths).expect("carol"));
+        // A primary certificate that no longer verifies is an error, not a yes.
+        let mut cert = persist::read_device_cert(&paths.device_cert).expect("cert");
+        cert.device_label = "Tampered".into();
+        persist::write_device_cert(&paths.device_cert, &cert).expect("rewrite cert");
+        assert!(active_identity_owns_device(&alice, &paths).is_err());
     }
 
     #[test]

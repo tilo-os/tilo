@@ -9,7 +9,7 @@ fn open() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, 0, "Outline")).unwrap())
+    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "Outline")).unwrap())
         .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);

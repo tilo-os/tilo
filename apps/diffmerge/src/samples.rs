@@ -21,7 +21,7 @@ impl Sample {
 /// additions, removals, and modified lines so every row kind is represented.
 pub fn diff_pair() -> (Sample, Sample) {
     let left = Sample::new(
-        "rate_limiter.rs · HEAD",
+        "rate_limiter.rs (HEAD)",
         "\
 use ui::time::Instant;
 
@@ -30,6 +30,7 @@ pub struct RateLimiter {
     capacity: u32,
     tokens: u32,
     last: Instant,
+    paused: bool,
 }
 
 impl RateLimiter {
@@ -38,6 +39,7 @@ impl RateLimiter {
             capacity,
             tokens: capacity,
             last: ui::time::now(),
+            paused: false,
         }
     }
 
@@ -54,7 +56,7 @@ impl RateLimiter {
     );
 
     let right = Sample::new(
-        "rate_limiter.rs · working tree",
+        "rate_limiter.rs (working tree)",
         "\
 use ui::time::{Duration, Instant};
 
@@ -104,7 +106,7 @@ impl RateLimiter {
 /// regions auto-resolve cleanly.
 pub fn merge_triple() -> (Sample, Sample, Sample) {
     let base = Sample::new(
-        "config.toml · base",
+        "config.toml (base)",
         "\
 [server]
 host = \"0.0.0.0\"
@@ -121,7 +123,7 @@ level = \"info\"
     );
 
     let ours = Sample::new(
-        "config.toml · ours",
+        "config.toml (ours)",
         "\
 [server]
 host = \"0.0.0.0\"
@@ -139,7 +141,7 @@ level = \"debug\"
     );
 
     let theirs = Sample::new(
-        "config.toml · theirs",
+        "config.toml (theirs)",
         "\
 [server]
 host = \"127.0.0.1\"

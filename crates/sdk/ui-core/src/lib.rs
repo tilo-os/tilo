@@ -110,10 +110,16 @@ pub mod a11y_tree;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
+/// The document action host behind the framework's dispatcher. Apps submit
+/// edits through the framework, never through this host.
+#[doc(hidden)]
 pub mod action_host;
 mod action_locus;
+pub mod table_model;
 pub use action_locus::ActionUiRoute;
 pub mod action_palette;
+pub mod agent_identity;
+pub mod agent_task_frontier;
 pub mod animation;
 #[cfg(test)]
 extern crate self as tilo_ui;
@@ -128,6 +134,7 @@ pub(crate) mod application_test_support;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 pub mod auth_backdrop;
+pub mod backdrop;
 pub mod caps_lock;
 pub mod chart_palette;
 pub mod charts;
@@ -150,7 +157,7 @@ pub mod diag;
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
-pub mod doc_binding;
+pub mod doc_source;
 #[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
 pub mod floating_surface;
@@ -173,6 +180,7 @@ mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
+pub mod owner_wake;
 /// The session's read-only vello pipeline cache every app starts from.
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
@@ -215,10 +223,24 @@ pub mod standalone_history_pane;
 pub mod storage;
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
+pub mod personal_dictionary;
 pub mod text_assistance;
 pub mod text_break;
+pub mod text_detect;
 pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod close_admission;
+/// The raw operation protocol between a host and the toolkit's widgets: the
+/// operation the host admits, how a widget starts it, and the routing to a
+/// widget's children. For the toolkit's hosts (the app framework, the shell,
+/// the browser runtime, the installer); an app answers operations as a typed
+/// effect vocabulary and never names these
+/// (`tools/policy/check_app_resource_action_contract.py`).
+pub mod host_operation {
+    pub use crate::widget::resource_operation::{
+        OperationRequest, ResourceOperation, ResourceOperationStart, start_in_children,
+    };
+}
+pub mod host_palette;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;
@@ -226,6 +248,7 @@ pub mod remote_actions;
 pub mod render_thread;
 pub mod reorder;
 pub mod resources;
+pub mod retained_present;
 pub mod richtext;
 pub mod scale;
 pub mod screen_reader;
@@ -243,9 +266,11 @@ pub mod sysdirs;
 pub mod testing;
 pub mod text_edit;
 pub mod text_metrics;
+pub mod text_position;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+mod theme_document;
 mod theme_layers;
 pub mod tokens;
 pub mod ui_graph;
@@ -320,7 +345,7 @@ pub use profiling::{
     StatSummary, run_scenario, run_scenario_on,
 };
 pub use reader_hud::{
-    HudAction, HudControls, HudPlacement, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud,
+    HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
 };
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
 pub use remote_actions::{
@@ -339,12 +364,12 @@ pub use state::{
 };
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{
-    AppearanceIntent, BrandAccentRejection, ContentSurface, Theme, resolve_theme_layers,
+    AppearanceIntent, ContentSurface, Theme, WindowAppearance, resolve_theme_layers, workspace_hue,
 };
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
-    UiButtonStyle, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
-    UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+    UiButtonRole, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
+    UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource, UiValues,
     parse_ui_graph_edits,
 };
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
@@ -369,7 +394,6 @@ pub use a11y_tree::{
 // narrator the `App` holds when `A11ySettings.screen_reader` is on.
 pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
-pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
 pub use tilo_actions;
 pub use widget::ModelView;
@@ -377,7 +401,6 @@ pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
 };
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
-pub use widget::{AppShell, NarrowScreen, ShellLayout};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
 pub use widget::{EditOutcome, EditableLabel};
 pub use widget::{Element, Widget};
@@ -385,6 +408,8 @@ pub use widget::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
     NativeViewInput,
 };
+pub use widget::{NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
+
 pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
@@ -436,19 +461,19 @@ pub use widget::channel_browser::{ChannelBrowser, ChannelEntry};
 // Conflict toolkit — see `widget/merge_strategy.rs` module doc-comment for
 // the design intent and convention for declaring a merge strategy on a
 // CRDT-bound widget.
-pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
-pub use status_bubble::StatusBubble;
+pub use status_bubble::{SaveAction, SaveState, SaveStatusSurface, StatusBubble};
 pub use text_edit::{
-    CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TYPING_RUN_IDLE,
-    TypingRun, delete_last_grapheme, word_at_caret,
+    CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,
+    delete_last_grapheme, word_at_caret,
 };
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
     NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,
-    TextFlowRegion, TextFlowRegionError, TextLayoutConstraints, TextLayoutEngine, TextRenderer,
-    TextStyle, TextWeight, TextWrapMode, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
+    TextFlowRegion, TextFlowRegionError, TextGround, TextKind, TextLayoutConstraints,
+    TextLayoutEngine, TextRenderer, TextScaling, TextStyle, TextWeight, TextWrapMode,
+    UI_HYPERLEGIBLE_FAMILY, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
     configured_font_system,
 };
 pub use text_selection::{
@@ -458,6 +483,7 @@ pub use text_selection::{
     next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
     prev_word_boundary_chars, try_clipboard_copy, word_boundaries, word_boundaries_chars,
 };
+pub use tokens::{ReadingFace, TextRole, UiFace};
 pub use widget::conflict_banner::ConflictBanner;
 pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};
 pub use widget::merge_strategy::{
@@ -485,6 +511,11 @@ pub mod host_worker;
 pub mod invocation_scope;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;
+#[cfg(feature = "native")]
+mod physical_input_trace;
+#[cfg(all(feature = "native", feature = "test-support"))]
+#[doc(hidden)]
+pub use physical_input_trace::Trace as NativePhysicalInputTrace;
 pub mod semantic_document_read;
 pub mod synthetic_input;
 
@@ -499,3 +530,5 @@ pub use control_custody::{
     ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
 };
 mod focus_navigation;
+
+pub use widget::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};

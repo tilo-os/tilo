@@ -39,7 +39,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         for accessor in ["inner", "inner_mut"] {
             assert!(decorator.remove(accessor), "Decorator::{accessor} missing");
         }
-        let blanket = block_methods(source, "impl<T: Decorator> Widget for T {");
+        let blanket = block_methods(source, "impl<T: Decorator + 'static> Widget for T {");
         assert!(
             widget.len() > 20,
             "parsed only {} Widget methods",
@@ -78,7 +78,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
 
         assert_eq!(widget.name(), "Named");
         assert_eq!(widget.get_rect(), Rect::new(1.0, 2.0, 3.0, 4.0));
-        widget.sync(&mut doc, &automerge::ROOT);
+        widget.sync(&doc, &automerge::ROOT);
         let node = widget.build_layout(&mut taffy, &theme, &mut nodes);
         widget.apply_layout(&taffy, node, Point::ORIGIN);
         widget.draw(
@@ -95,7 +95,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -131,8 +131,14 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
                 "start_operation",
             ]
         );
-        // The inner widget registered its own node.
+        // The inner widget registered its node; the decorator stands in for
+        // it, so a host reaching the node meets the decorator.
         assert_eq!(nodes.len(), 1);
+        let registered = nodes[&node];
+        // SAFETY: `decorated` is alive and was laid out into `nodes` above.
+        let registered = unsafe { &*registered };
+        assert!(registered.concrete_type_name().ends_with("Named"));
+        assert_eq!(registered.name(), "Named");
     }
 
     /// A decorator's `handle_event` override sees input before its inner widget.
@@ -168,7 +174,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut AutoCommit::new(),
+                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -188,11 +194,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             children: Vec<Box<dyn Widget>>,
         }
         impl Widget for Plain {
-            fn sync(
-                &mut self,
-                _state: &mut crate::widget::AppModel,
-                _path: &crate::widget::ModelPath,
-            ) {
+            fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
             }
             fn build_layout(
                 &mut self,
@@ -260,6 +262,7 @@ struct Recorder {
     log: Log,
     dirty: bool,
     rect: Rect,
+    physical: Option<super::super::PhysicalInput>,
 }
 
 impl Recorder {
@@ -268,6 +271,7 @@ impl Recorder {
             log: Rc::clone(log),
             dirty: false,
             rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+            physical: None,
         }
     }
 
@@ -279,12 +283,16 @@ impl Recorder {
 use vello::kurbo::{Point, Rect};
 
 impl Widget for Recorder {
+    fn observe_physical_input(&mut self, input: super::super::PhysicalInput) {
+        self.physical = Some(input);
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources
     );
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.note("sync");
     }
 
@@ -334,7 +342,7 @@ impl Widget for Recorder {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         use automerge::transaction::Transactable;
@@ -342,7 +350,8 @@ impl Widget for Recorder {
             return Ok(None);
         }
         self.note("start_operation");
-        doc.put(path, "admitted", true)
+        doc.document_mut()
+            .put(path, "admitted", true)
             .map_err(|error| error.to_string())?;
         Ok(Some(ResourceOperationStart::Accepted))
     }
@@ -390,6 +399,34 @@ fn start(widget: &mut dyn Widget, doc: &mut AutoCommit) -> Option<ResourceOperat
         "test.effect",
         b"{}",
     )
-    .start(widget, doc, &automerge::ROOT)
+    .start(
+        widget,
+        &mut crate::widget::Edits::lend(doc),
+        &automerge::ROOT,
+    )
     .expect("admission succeeds")
+}
+
+#[test]
+fn decorators_preserve_content_free_physical_feedback() {
+    use crate::widget::PhysicalInput;
+    let mut decorated = Named {
+        inner: Recorder::new(&Log::default()),
+    };
+    let key = winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    Widget::observe_physical_input(
+        &mut decorated,
+        PhysicalInput::Key {
+            key,
+            state: winit::event::ElementState::Pressed,
+        },
+    );
+    assert!(matches!(decorated.inner.physical, Some(PhysicalInput::Key {
+        key: observed, state: winit::event::ElementState::Pressed,
+    }) if observed == key));
+    Widget::observe_physical_input(&mut decorated, PhysicalInput::Focused(false));
+    assert!(matches!(
+        decorated.inner.physical,
+        Some(PhysicalInput::Focused(false))
+    ));
 }

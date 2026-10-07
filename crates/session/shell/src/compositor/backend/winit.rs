@@ -73,9 +73,9 @@ fn relative_motion_from_device_event(focused: bool, event: &DeviceEvent) -> Opti
         .then_some((*dx, *dy))
 }
 
-/// Base color for the first few frames before a theme arrives. Matches
-/// `ui::theme::Theme::dark().bg_app` so the window doesn't flash white on
-/// boot; overridden each frame via [`WinitBackend::set_base_color`].
+/// Base color for the first few frames before a theme arrives: a dark
+/// desktop ground, so the window doesn't flash white on boot; overridden
+/// each frame via [`WinitBackend::set_base_color`].
 const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
 
 pub struct WinitBackend {
@@ -114,6 +114,9 @@ struct RenderState {
     render_cx: RenderContext,
     surface: RenderSurface<'static>,
     renderer: Renderer,
+    /// Blurs floating surfaces' backdrops; built with the first frame that
+    /// has any.
+    backdrop_blur: Option<ui::backdrop::BackdropBlur>,
 }
 
 impl WinitBackend {
@@ -178,7 +181,7 @@ impl WinitBackend {
     }
 
     /// Override the per-frame clear color; the compositor calls this each
-    /// tick with `theme.bg_app` so theme changes apply without touching the
+    /// tick with the desktop ground (`surfaces.base`) so theme changes apply without touching the
     /// backend trait.
     pub fn set_base_color(&mut self, color: Color) {
         self.inner.base_color = color;
@@ -199,7 +202,11 @@ impl WinitPresenter {
     /// `device.poll` at the end paces this thread to the surface's
     /// `AutoVsync` present mode; off the input thread, that costs a frame
     /// of throughput rather than a keystroke of latency.
-    fn render_and_present(&mut self, scene: &Scene) {
+    fn render_and_present(
+        &mut self,
+        scene: &Scene,
+        backdrop: Option<&ui::backdrop::BackdropFrame>,
+    ) {
         let base_color = self.base_color;
         let render = &mut self.render;
         let width = render.surface.config.width;
@@ -215,6 +222,19 @@ impl WinitPresenter {
             return;
         };
 
+        if let Some(backdrop) = backdrop.filter(|frame| !frame.is_empty()) {
+            render
+                .backdrop_blur
+                .get_or_insert_with(|| ui::backdrop::BackdropBlur::new(&device_handle.device))
+                .prepare(
+                    &device_handle.device,
+                    &device_handle.queue,
+                    &mut render.renderer,
+                    backdrop,
+                    (width, height),
+                    base_color,
+                );
+        }
         // vello 0.5 removed `render_to_surface`; render into the surface's
         // target_view, blit via `TextureBlitter`, then present.
         let result = render.renderer.render_to_texture(
@@ -229,6 +249,9 @@ impl WinitPresenter {
                 antialiasing_method: AaConfig::Area,
             },
         );
+        if let Some(blur) = render.backdrop_blur.as_mut() {
+            blur.release(&mut render.renderer);
+        }
         if let Err(e) = result {
             eprintln!("tilo compositor: render_to_texture: {e:?}");
             return;
@@ -288,7 +311,11 @@ impl WinitPresenter {
 
 impl Presenter for WinitPresenter {
     fn present(&mut self, scene: &Scene, _output: OutputId) {
-        self.render_and_present(scene);
+        self.render_and_present(scene, None);
+    }
+
+    fn present_frame(&mut self, frame: &crate::compositor::frame::FramePaint, _output: OutputId) {
+        self.render_and_present(&frame.scene, frame.backdrop.as_deref());
     }
 
     /// Reconfigure the swap chain for a new window size. Arrives through
@@ -362,6 +389,20 @@ impl Backend for WinitBackend {
         };
         let mut presenter = WinitPresenter { render, base_color };
         presenter.present(scene, output);
+        self.inner.render = Some(presenter.render);
+    }
+
+    fn submit_frame_with_damage(
+        &mut self,
+        frame: &crate::compositor::frame::FramePaint,
+        output: OutputId,
+    ) {
+        let base_color = self.inner.base_color;
+        let Some(render) = self.inner.render.take() else {
+            return;
+        };
+        let mut presenter = WinitPresenter { render, base_color };
+        presenter.present_frame(frame, output);
         self.inner.render = Some(presenter.render);
     }
 
@@ -515,6 +556,7 @@ impl ApplicationHandler for Inner {
             render_cx,
             surface,
             renderer,
+            backdrop_blur: None,
         });
     }
 
@@ -596,10 +638,13 @@ impl ApplicationHandler for Inner {
             | WindowEvent::MouseWheel { .. }) => {
                 // A nested window sees one host keyboard and pointer, so
                 // the event class is all it can report about the devices.
-                self.event_buffer.push(BackendEvent::InputUsed(match ev {
-                    WindowEvent::KeyboardInput { .. } => ui::InputModality::Keyboard,
-                    _ => ui::InputModality::Pointer,
-                }));
+                self.event_buffer.push(match ev {
+                    WindowEvent::CursorMoved { .. } => BackendEvent::PointerMotionUsed,
+                    WindowEvent::KeyboardInput { .. } => {
+                        BackendEvent::InputUsed(ui::InputModality::Keyboard)
+                    }
+                    _ => BackendEvent::InputUsed(ui::InputModality::Pointer),
+                });
                 // Carried whole so `compositor::native::run` can dispatch
                 // via `FrameBuilder::dispatch_event` — same wire scripted
                 // input uses.

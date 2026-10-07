@@ -14,6 +14,19 @@ SPEC.loader.exec_module(contract)
 
 
 class AppResourceActionContractTests(unittest.TestCase):
+    def test_code_runs_preserve_delimiters_lifetimes_and_unicode(self):
+        cases = [
+            ("let ratio = α / β;\n", "let ratio = α / β;\n"),
+            ("fn f<'a>(x: &'a str) {}", "fn f<'a>(x: &'a str) {}"),
+            ("a// hidden\nb", "a         \nb"),
+            ("a/* hidden */b", "a          b"),
+            ('a"hidden\\\"text"b', "a              b"),
+            ("a'/' + '\"'b", "a    +    b"),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(contract.rust_code_only(source), expected)
+
     def fixture(
         self,
         source: str,
@@ -33,6 +46,33 @@ class AppResourceActionContractTests(unittest.TestCase):
         )
         (app / "src" / "lib.rs").write_text(source, encoding="utf-8")
         return root
+
+    def test_char_literals_do_not_hide_the_code_after_them(self):
+        code = contract.rust_code_only(
+            "fn f<'a>(s: &'a str) -> String { s.replace('\"', \"\").trim_matches('\\'') }\n"
+            "fn handler() { start_operation(); }\n"
+        )
+        self.assertIn("fn handler() { start_operation(); }", code)
+        self.assertIn("fn f<'a>(s: &'a str)", code)
+        self.assertNotIn('"', code)
+
+    def test_repeated_audits_observe_source_changes_at_the_same_path(self):
+        valid = (
+            "pub struct Note;\n"
+            "impl Resource for Note { fn register(registry: &mut ActionRegistry) {} }\n"
+            "struct Sample;\n"
+            "impl ResourceApp for Sample { type Resource = Note; }\n"
+        )
+        root = self.fixture(valid)
+        source = root / "apps/sample/src/lib.rs"
+        (source.parent / "main.rs").write_text("ui::main!(sample::Sample);\n")
+        self.assertEqual(contract.audit(root), ([], 1))
+        source.write_text("struct Sample;\nimpl ResourceApp for Sample {}\n")
+        violations, apps = contract.audit(root)
+        self.assertEqual(apps, 1)
+        self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        source.write_text(valid)
+        self.assertEqual(contract.audit(root), ([], 1))
 
     def test_resource_surface_requires_a_real_nonempty_resource_provider(self):
         with self.subTest(phase='resource action app passes'):
@@ -107,7 +147,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "pub fn app_root() {\n"
                 " let mut resource = tilo_actions::Resource::new(\"k:root\", \"k\", \"K\");\n"
                 " resource.actions.push(ActionSpec::operation(\"a\", \"A\", OperationKind::Effect, T, &()).unwrap());\n"
-                " ui::widget::resource_actions::background(root, resource, |_| {});\n"
+                " ui::widget::resource_actions::immediate(root, resource, |_| {});\n"
                 "}\n"
             )
             violations, _ = contract.audit(root)

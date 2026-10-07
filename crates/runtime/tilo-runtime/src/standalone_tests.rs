@@ -50,6 +50,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         app_id: "so.tilo.files".into(),
         route: CrdtRoute::app("so.tilo.files", room.clone()),
         actions: vec![PublishedAction {
+            semantic_identity: None,
             resource: "files.entry:/tmp/synthetic-report".into(),
             action: "refresh".into(),
             resource_kind: "files.entry".into(),
@@ -82,6 +83,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let other = owner.clone().in_new_execution();
     let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
+        on_behalf_of: None,
         invocation: id,
         target: RemoteActionTarget {
             provider: "7".into(),

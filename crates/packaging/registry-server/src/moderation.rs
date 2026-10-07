@@ -475,20 +475,58 @@ impl ModerationService {
         let _thread_guard = thread_lock(&self.transition_lock)?;
         self.ensure_not_reserved_by_promotion(submission_id)?;
         let pending = self.require_pending(submission_id)?;
+        self.reject_locked(pending, reviewer.into(), reason.into(), reviewed_at_unix)
+    }
+
+    /// Reject exactly the pending request the operator inspected. A newer
+    /// publisher revision must be reviewed before it can be rejected.
+    /// Like ordinary rejection, this also clears malformed or revoked
+    /// requests without re-verifying their signatures.
+    ///
+    /// # Errors
+    /// Returns a changed-request error without mutation if the queued
+    /// request was replaced, or an existing storage/promotion error.
+    pub fn reject_reviewed(
+        &self,
+        candidate: &PendingSubmission,
+        reviewer: impl Into<String>,
+        reason: impl Into<String>,
+        reviewed_at_unix: u64,
+    ) -> Result<ReviewRecord, ModerationError> {
+        let _transaction = self.storage.lock_snapshot()?;
+        let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.ensure_not_reserved_by_promotion(&candidate.submission_id)?;
+        let pending = self.require_pending(&candidate.submission_id)?;
+        if pending != *candidate {
+            return Err(ModerationError::PendingChanged(
+                candidate.submission_id.clone(),
+            ));
+        }
+        self.reject_locked(pending, reviewer.into(), reason.into(), reviewed_at_unix)
+    }
+
+    fn reject_locked(
+        &self,
+        pending: PendingSubmission,
+        reviewer: String,
+        reason: String,
+        reviewed_at_unix: u64,
+    ) -> Result<ReviewRecord, ModerationError> {
+        let submission_id = pending.submission_id.clone();
         let review_id = submission_review_id(&pending);
         let review = self
             .storage
             .load_review(&review_id)?
-            .unwrap_or_else(|| ReviewRecord {
+            .unwrap_or(ReviewRecord {
                 review_id,
                 decision: ReviewDecision::Rejected,
-                reviewer: reviewer.into(),
-                reason: reason.into(),
+                reviewer,
+                reason,
                 reviewed_at_unix,
                 subject: ReviewSubject::Submission(pending),
             });
         self.persist_review_if_absent(&review)?;
-        let _deleted = self.storage.delete_pending(submission_id)?;
+        let _deleted = self.storage.delete_pending(&submission_id)?;
         Ok(review)
     }
 
@@ -1112,6 +1150,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: timestamp,
@@ -1347,6 +1386,7 @@ mod tests {
             architecture: registry_types::WASM32_ARCHITECTURE.into(),
             isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
             runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
+            interfaces: Vec::new(),
         };
         with_web.versions.push(web);
         assert!(validate_version_history(&with_web, Some(&current), &official).is_ok());
@@ -1379,6 +1419,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
             };
             with_android.versions.push(android);
         }
@@ -1422,6 +1463,84 @@ mod tests {
         assert!(hosts.allows("https://apps.tilo.so/artifacts/ab.tapp"));
         assert!(!hosts.allows("http://127.0.0.1:8788/artifacts/ab.tapp"));
         assert!(!ArtifactHosts::default().allows("http://127.0.0.1:8787/artifacts/ab.tapp"));
+    }
+
+    #[test]
+    fn rejection_refuses_a_replaced_review_but_preserves_exact_feedback() {
+        let (_dir, service) = setup();
+        let key = SigningKey::from_bytes(&[23; 32]);
+        let candidate = service
+            .submit(change(&key, EntryAction::Add, 10), 100)
+            .unwrap();
+        let replacement = service
+            .submit(append_change(&key, &candidate.change, 11), 101)
+            .unwrap();
+        assert_ne!(
+            candidate.review_id().unwrap(),
+            replacement.review_id().unwrap()
+        );
+        assert!(
+            matches!(service.reject_reviewed(&candidate, "Owner", "Old feedback", 102),
+            Err(ModerationError::PendingChanged(id)) if id == candidate.submission_id)
+        );
+        assert_eq!(
+            service.pending(&candidate.submission_id).unwrap(),
+            Some(replacement.clone())
+        );
+        assert!(
+            service
+                .storage
+                .load_review(&submission_review_id(&candidate))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            service
+                .storage
+                .load_entry(&candidate.submission_id)
+                .unwrap()
+                .is_none()
+        );
+        let feedback = "Please revise the sandbox; keep the \"notes\" app accessible.";
+        let result = service
+            .reject_reviewed(&replacement, "Owner", feedback, 103)
+            .unwrap();
+        assert_eq!(result.reason, feedback);
+        assert_eq!(result.reviewer, "Owner");
+        assert_eq!(result.subject, ReviewSubject::Submission(replacement));
+        assert!(service.pending(&candidate.submission_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejection_clears_the_exact_malformed_request_without_authorizing_it() {
+        let (_dir, service) = setup();
+        let key = SigningKey::from_bytes(&[24; 32]);
+        let original = service
+            .submit(change(&key, EntryAction::Add, 10), 100)
+            .unwrap();
+        let mut malformed = original.clone();
+        malformed.change.publisher_signature_hex = "not a signature".into();
+        service.storage.save_pending(&malformed).unwrap();
+        assert_ne!(
+            original.review_id().unwrap(),
+            malformed.review_id().unwrap()
+        );
+        assert!(matches!(
+            service.reject_reviewed(&original, "Owner", "Stale", 101),
+            Err(ModerationError::PendingChanged(_))
+        ));
+        let result = service
+            .reject_reviewed(&malformed, "Owner", "Invalid signature", 102)
+            .unwrap();
+        assert_eq!(result.subject, ReviewSubject::Submission(malformed));
+        assert!(service.pending(&original.submission_id).unwrap().is_none());
+        assert!(
+            service
+                .storage
+                .load_entry(&original.submission_id)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

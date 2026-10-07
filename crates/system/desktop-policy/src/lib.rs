@@ -24,8 +24,9 @@ pub mod mimeapps;
 pub mod storage;
 
 pub use defaults::{
-    AppCandidate, DefaultAppError, DefaultAppResolver, DefaultAppSelection, PersonalDefaults,
-    ResourceKind, UserWorkspaceChoice, WorkspaceDefaultPolicy, WorkspaceDefaults,
+    AppCandidate, DefaultAppError, DefaultAppResolver, DefaultAppSelection,
+    PERSONAL_DEFAULTS_SECTION, PersonalDefaults, ResourceKind, UserWorkspaceChoice,
+    WorkspaceDefaultPolicy, WorkspaceDefaults,
 };
 pub use mimeapps::{MimeAppsChain, MimeAppsList, host_app_id, host_desktop_id};
 #[cfg(all(feature = "host-storage", not(target_arch = "wasm32")))]

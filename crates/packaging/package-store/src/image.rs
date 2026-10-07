@@ -2,7 +2,7 @@
 //!
 //! An environment's `/usr` and `/etc` are a stack of images. The supervisor
 //! names each by its [`PackageId`] and turns it into a directory with
-//! [`materialized_tree`], the only way an image ref becomes a path:
+//! [`materialized_tree`] (or [`local_materialized_tree`] for overlay lowers):
 //!
 //! 1. The system stores the OS or the host package shipped (read-only, so
 //!    the first environment opens offline) are looked in first.
@@ -643,6 +643,105 @@ impl BlobFetcher for ImageShelf {
 /// or is revoked, or a fetch or store error.
 pub fn materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError> {
     store.resolve(*id).map(|(_, tree)| tree)
+}
+
+/// Resolve an admitted image on the user's filesystem, suitable as an overlay lower.
+/// System image trees can themselves sit on bootc/system-extension overlays;
+/// another overlay over those exceeds the kernel's stacking limit. Rebuild the
+/// same signed tree from verified bytes in the existing content store instead.
+/// Every call checks current publisher trust before consulting this cache.
+///
+/// # Errors
+/// Returns the ordinary image resolution errors, or an integrity/store error.
+pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError> {
+    let (meta, source) = store.resolve(*id)?;
+    let local = store.user.layout().payload(*id);
+    let _lock = store.user.lock()?;
+    if read_image(store.user.layout(), *id)?.is_some() {
+        verify_local_tree(&meta, &local)?;
+        return Ok(local);
+    }
+    let layout = store.user.layout();
+    crate::content::session(&layout.content(), &layout.tmp(), |content| {
+        for (relative, expected) in &meta.collection.entries {
+            let path = source.join(relative);
+            if !std::fs::symlink_metadata(&path)?.is_file() {
+                return Err(StoreError::Payload(format!(
+                    "{relative}: image payload is not a regular file"
+                )));
+            }
+            let mut file = std::fs::File::open(&path)?;
+            let actual = content.ingest(file.metadata()?.len(), &mut file)?;
+            if actual != *expected {
+                return Err(StoreError::Payload(format!(
+                    "{relative}: image payload does not match its signed hash"
+                )));
+            }
+        }
+        store.user.materialise(content, &meta)
+    })?;
+    verify_local_tree(&meta, &local)?;
+    Ok(local)
+}
+
+fn verify_local_tree(meta: &PackageMeta, root: &std::path::Path) -> Result<(), StoreError> {
+    for (relative, expected) in &meta.collection.entries {
+        let path = root.join(relative);
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            return Err(StoreError::Payload(format!(
+                "{relative}: cached image payload is not a regular file"
+            )));
+        }
+        let actual = BlobHash::of_reader(&mut std::fs::File::open(path)?)?.0;
+        if actual != *expected {
+            return Err(StoreError::Payload(format!(
+                "{relative}: cached image payload does not match its signed hash"
+            )));
+        }
+    }
+    let tree = tilo_app_package::TreeSpec::from_bytes(&std::fs::read(
+        root.join(tilo_app_package::TREE_FILE),
+    )?)
+    .map_err(|error| StoreError::Payload(error.to_string()))?;
+    tree.check(&meta.collection)
+        .map_err(|error| StoreError::Payload(error.to_string()))?;
+    if tilo_app_package::TreeSpec::scan(root)
+        .map_err(|error| StoreError::Payload(error.to_string()))?
+        != tree
+    {
+        return Err(StoreError::Payload(
+            "cached image links, executable modes or directories differ from the signed tree"
+                .into(),
+        ));
+    }
+    verify_local_entries(root, root, meta)
+}
+
+fn verify_local_entries(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    meta: &PackageMeta,
+) -> Result<(), StoreError> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            verify_local_entries(root, &entry.path(), meta)?;
+        } else if kind.is_file() {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| StoreError::Payload(error.to_string()))?
+                .to_str()
+                .ok_or_else(|| StoreError::Payload("cached image has a non-UTF-8 path".into()))?;
+            if !meta.collection.entries.contains_key(relative) {
+                return Err(StoreError::Payload(format!(
+                    "{relative}: unsigned file in cached image"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The `env-runtime` the tool image `tool` was built for, materialising

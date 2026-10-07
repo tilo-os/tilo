@@ -1,8 +1,0 @@
-# Audited ceilings of apps/logs (tools/policy/check_app_resource_action_contract.py).
-# Each count may only go down; the target is an empty file.
-
-[ratchets.app_action_host]
-"apps/logs/src/resource.rs" = 2
-
-[ratchets.standalone_launch]
-"apps/logs/src/main.rs" = 2

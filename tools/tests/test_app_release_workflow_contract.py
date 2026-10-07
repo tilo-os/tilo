@@ -22,11 +22,40 @@ def bash_path(path: Path) -> str:
 
 
 class AppReleaseWorkflowContract(unittest.TestCase):
+    def test_collection_address_identifies_assembled_bytes_for_the_same_source(self):
+        source = PUBLISH_SCRIPT.read_text()
+        start = source.index('  bundle_sha=$(sha256sum "$bundle"')
+        end = source.index('  if [[ ${VERIFY_FINAL_RECEIPT', start)
+        address = source[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / 'tilo-apps-x86_64.tar.gz'
+
+            def urls(content):
+                bundle.write_bytes(content)
+                script = address + '\nprintf "%s\\n%s\\n" "$bundle_upload_url" "$bundle_url"\n'
+                return subprocess.check_output(
+                    ['bash', '-eu', '-c', script], text=True,
+                    env={'PATH': '/usr/bin:/bin', 'bundle': bash_path(bundle),
+                         'VERSION': '0.0.0-' + 'a' * 40,
+                         'package_api': 'https://code.tilo.so/api/packages/tilo/generic',
+                         'package_public_api': 'https://registry.tilo.so/artifacts/tilo/generic'},
+                ).splitlines()
+
+            first = urls(b'first selected app cohort')
+            second = urls(b'second selected app cohort')
+            self.assertNotEqual(first, second)
+            self.assertEqual(first, urls(b'first selected app cohort'))
+            for url in first:
+                self.assertIn(hashlib.sha256(b'first selected app cohort').hexdigest(), url)
+            self.assertNotIn('tilo-app-collections/$VERSION/', source)
+            self.assertEqual(source.count('tilo-app-collections/$collection_version/'), 5)
+
     def test_jobs_check_out_the_exact_commit_with_complete_shell_steps(self):
         with self.subTest(phase='each job checks out only the exact event commit'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             checkouts = source.split('uses: actions/checkout@')[1:]
-            self.assertEqual(len(checkouts), 5)
+            # Signal adds one compilation and one publication checkout.
+            self.assertEqual(len(checkouts), 9)
             for checkout in checkouts:
                 block = checkout.split('\n      - ', 1)[0]
                 self.assertIn('fetch-depth: 1', block)

@@ -23,13 +23,33 @@ pub struct MediaLane {
     next: u64,
     pending: BTreeMap<u64, (CallbackBinding, u64)>,
     owners: BTreeMap<String, (CallbackBinding, MediaRequest)>,
+    ready: Vec<MediaRequest>,
+    catalogues: Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
 }
 impl MediaLane {
     /// Take local media commands from each retained component under its
     /// bound callback context. This lane carries no identity or remote authority.
     /// The host handles document replication separately.
     pub fn take(&mut self, frame: &mut FrameHarness) -> Vec<MediaRequest> {
-        let mut requests = Vec::new();
+        self.pump(frame);
+        std::mem::take(&mut self.ready)
+    }
+
+    /// Drain read-only catalogue requests without stealing pending media commands.
+    /// The transport must authenticate them; closed component owners are discarded.
+    pub fn take_catalogue_requests(
+        &mut self,
+        frame: &mut FrameHarness,
+    ) -> Vec<tilo_actions::remote::RemoteActionMessage> {
+        self.pump(frame);
+        std::mem::take(&mut self.catalogues)
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect()
+    }
+
+    fn pump(&mut self, frame: &mut FrameHarness) {
+        let requests = &mut self.ready;
         self.owners.retain(|_, (binding, original)| {
             if binding.closing.get() || !binding.lifetime.is_active() {
                 let mut retirement = original.clone();
@@ -44,6 +64,9 @@ impl MediaLane {
         });
         self.pending
             .retain(|_, (binding, _)| !binding.closing.get() && binding.lifetime.is_active());
+        requests.retain(|request| request.retired || self.pending.contains_key(&request.ticket));
+        self.catalogues
+            .retain(|(binding, _)| !binding.closing.get() && binding.lifetime.is_active());
         let mut visit = |binding: &CallbackBinding,
                          widget: &mut dyn crate::widget::AppWidget,
                          _: &tilo_actions::ActionRegistry| {
@@ -98,6 +121,8 @@ impl MediaLane {
                     self.owners
                         .insert(request.owner.clone(), (binding.clone(), request.clone()));
                     requests.push(request);
+                } else if let CollabRequest::RemoteAction { message } = request {
+                    queue_catalogue(&mut self.catalogues, binding, widget, message);
                 }
             }
             None
@@ -107,7 +132,6 @@ impl MediaLane {
             found: false,
             visit: &mut visit,
         });
-        requests
     }
 
     /// Complete only the exact retained owner that asked. Closed components
@@ -139,5 +163,32 @@ impl MediaLane {
         let _ = frame.root.visit_components(&mut request);
         frame.relayout();
         request.found
+    }
+}
+
+fn queue_catalogue(
+    catalogues: &mut Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
+    binding: &CallbackBinding,
+    widget: &mut dyn crate::widget::AppWidget,
+    message: tilo_actions::remote::RemoteActionMessage,
+) {
+    use tilo_actions::remote::{ActionHostError, RemoteActionMessage};
+    let RemoteActionMessage::CatalogueRequest { correlation, .. } = &message else {
+        return;
+    };
+    if catalogues.len() < 16 {
+        catalogues.push((binding.clone(), message));
+    } else {
+        crate::widget::handle_collab_event(
+            widget,
+            &CollabEvent::RemoteAction {
+                message: RemoteActionMessage::CatalogueResponse {
+                    correlation: *correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: "local catalogue lane is busy".into(),
+                    }),
+                },
+            },
+        );
     }
 }

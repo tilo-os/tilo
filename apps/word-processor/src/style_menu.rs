@@ -127,7 +127,11 @@ mod tests {
         {
             let mut menu = StyleMenu::default();
             menu.open("custom-1", Point::new(10.0, 20.0));
-            let first_row = Point::new(20.0, 27.0);
+            let first_row = menu
+                .menu
+                .item_rect(0)
+                .expect("the first row is laid out")
+                .center();
             assert_eq!(
                 menu.click(first_row),
                 Some(StyleMenuAction::Delete("custom-1".into()))

@@ -676,7 +676,7 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
         });
     }
     match access.role {
-        Role::Slider | Role::SpinButton if !s.disabled => {
+        Role::Slider | Role::Separator | Role::SpinButton if !s.disabled => {
             out.push(SemanticAction {
                 name: "increment".into(),
                 label: "Increment".into(),
@@ -687,6 +687,13 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
                 label: "Decrement".into(),
                 kind: SemanticActionKind::Verb(Action::Decrement),
             });
+            if matches!(access.role, Role::Slider | Role::Separator) && !s.read_only {
+                out.push(SemanticAction {
+                    name: "set-value".into(),
+                    label: "Set value".into(),
+                    kind: SemanticActionKind::Verb(Action::SetValue(String::new())),
+                });
+            }
         }
         Role::ComboBox | Role::TreeItem => {
             if let Some(expanded) = s.expanded {
@@ -809,6 +816,9 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                 let mut children: Vec<SemanticId> = Vec::new();
                 let mut hosted = HostedByIndex::new();
                 for (child_index, child) in w.children().into_iter().enumerate() {
+                    if w.accessibility_represents_child(child_index) {
+                        continue;
+                    }
                     if let Some(mut path) = w.accessibility_child_path(child_index)
                         && !path.is_empty()
                     {
@@ -975,6 +985,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                 self.bound_actions.insert(
                     (id.clone(), spec.id.clone()),
                     crate::bound_dispatch::BoundActionTarget {
+                        physical_text: false,
                         binding: binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: binding.instance_id,
@@ -1073,12 +1084,54 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_range_controls_publish_existing_set_value_alongside_steps() {
+        use crate::widget::{Slider, SplitHandle, SplitOrientation, SplitRatio};
+        let slider = Slider::new("volume", "volume").with_accessible_name("Volume");
+        let separator = SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default());
+        let controls = [
+            slider.accessibility().unwrap(),
+            SplitHandle::accessibility(&separator),
+        ];
+        for mut access in controls {
+            let actions = verbs_for(&access);
+            for verb in ["increment", "decrement", "set-value"] {
+                assert!(actions.iter().any(|action| action.name == verb));
+            }
+            access.state.read_only = true;
+            assert!(
+                verbs_for(&access)
+                    .iter()
+                    .all(|action| action.name != "set-value")
+            );
+            access.state.disabled = true;
+            assert!(verbs_for(&access).is_empty());
+        }
+        let mut slider = slider;
+        let map = layout(&mut slider);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&slider, &map, None, &[]);
+        let resources = tree.action_resources();
+        let volume = resources
+            .iter()
+            .find(|resource| resource.label == "Volume")
+            .unwrap();
+        assert!(volume.actions.iter().any(|action| action.id == "set-value"));
+        assert!(
+            tilo_actions::validate_surface_contracts(
+                &resources,
+                &tilo_actions::ActionRegistry::new()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
     fn semantic_ids_are_durable_and_exported_only_when_stable() {
         // Case `identity_is_stable_across_frames`.
         {
             let mut col = Column::new()
-                .push(Box::new(Button::new("a", "Alpha", None)))
-                .push(Box::new(Button::new("b", "Beta", None)));
+                .push(Box::new(Button::new("a", "Alpha")))
+                .push(Box::new(Button::new("b", "Beta")));
             let node_map = layout(&mut col);
 
             let mut tree = SemanticTree::new();
@@ -1151,8 +1204,8 @@ mod tests {
         // Case `durable_widget_keys_survive_layout_rebuild_and_sibling_reorder`.
         {
             let mut first = Column::new()
-                .push(Box::new(Button::new("alpha", "Alpha", None)))
-                .push(Box::new(Button::new("beta", "Beta", None)));
+                .push(Box::new(Button::new("alpha", "Alpha")))
+                .push(Box::new(Button::new("beta", "Beta")));
             let first_map = layout(&mut first);
             let mut tree = SemanticTree::new();
             tree.refresh(&first, &first_map, None, &[]);
@@ -1175,9 +1228,9 @@ mod tests {
             assert!(alpha.as_str().contains("~k:alpha"));
 
             let mut rebuilt = Column::new()
-                .push(Box::new(Button::new("unrelated", "Unrelated", None)))
-                .push(Box::new(Button::new("beta", "Beta", None)))
-                .push(Box::new(Button::new("alpha", "Alpha", None)));
+                .push(Box::new(Button::new("unrelated", "Unrelated")))
+                .push(Box::new(Button::new("beta", "Beta")))
+                .push(Box::new(Button::new("alpha", "Alpha")));
             let rebuilt_map = layout(&mut rebuilt);
             tree.refresh(&rebuilt, &rebuilt_map, None, &[]);
             assert_eq!(tree.find_by_name("Alpha").expect("alpha").id, alpha);
@@ -1192,7 +1245,7 @@ mod tests {
 
         // Case `encoded_action_keys_remain_valid_resource_ids`.
         {
-            let mut button = Button::new("settings.section:network\u{1f}open", "Network", None);
+            let mut button = Button::new("settings.section:network\u{1f}open", "Network");
             let node_map = layout(&mut button);
             let mut tree = SemanticTree::new();
             tree.refresh(&button, &node_map, None, &[]);
@@ -1214,7 +1267,7 @@ mod tests {
 
         // Case `frame_local_control_identity_is_not_exported`.
         {
-            let mut button = Button::new("go", "Go", None);
+            let mut button = Button::new("go", "Go");
             let node_map = layout(&mut button);
             let mut tree = SemanticTree::new();
             tree.refresh(&button, &node_map, None, &[]);
@@ -1232,7 +1285,7 @@ mod tests {
         // Case `controls_in_a_scroll_region_are_published_only_under_a_key`.
         {
             let published = |scroll: crate::widget::Scrollable| {
-                let mut scroll = scroll.with_child(Box::new(Button::new("go", "Go", None)));
+                let mut scroll = scroll.with_child(Box::new(Button::new("go", "Go")));
                 let node_map = layout(&mut scroll);
                 let mut tree = SemanticTree::new();
                 tree.refresh(&scroll, &node_map, None, &[]);
@@ -1262,9 +1315,9 @@ mod tests {
             .push(Box::new(
                 crate::widget::Scrollable::new_vertical()
                     .with_semantic_key("advanced")
-                    .with_child(Box::new(Button::new("save", "Deep save", None))),
+                    .with_child(Box::new(Button::new("save", "Deep save"))),
             ))
-            .push(Box::new(Button::new("save", "Shallow save", None)));
+            .push(Box::new(Button::new("save", "Shallow save")));
         let nodes = layout(&mut root);
         let mut tree = SemanticTree::new();
         tree.refresh(&root, &nodes, None, &[]);
@@ -1307,7 +1360,7 @@ mod tests {
 
         // Case `button_node_affords_focus_and_activate_verbs`.
         {
-            let mut btn = Button::new("go", "Go", None);
+            let mut btn = Button::new("go", "Go");
             let node_map = layout(&mut btn);
             let mut tree = SemanticTree::new();
             tree.refresh(&btn, &node_map, None, &[]);
@@ -1356,7 +1409,7 @@ mod tests {
 
         // Case `effectful_controls_are_not_projected_without_a_domain_contract`.
         {
-            let mut button = Button::new("go", "Go", None);
+            let mut button = Button::new("go", "Go");
             let node_map = layout(&mut button);
             let mut tree = SemanticTree::new();
             tree.refresh(&button, &node_map, None, &[]);
@@ -1397,8 +1450,8 @@ mod tests {
         // Case `focus_change_updates_the_same_node`.
         {
             let mut col = Column::new()
-                .push(Box::new(Button::new("a", "Alpha", None)))
-                .push(Box::new(Button::new("b", "Beta", None)));
+                .push(Box::new(Button::new("a", "Alpha")))
+                .push(Box::new(Button::new("b", "Beta")));
             let node_map = layout(&mut col);
             let first_button_taffy = node_map
                 .iter()
@@ -1443,15 +1496,15 @@ mod tests {
         // Case `added_and_removed_nodes_surface_in_the_delta`.
         {
             let mut two = Column::new()
-                .push(Box::new(Button::new("a", "Alpha", None)))
-                .push(Box::new(Button::new("b", "Beta", None)));
+                .push(Box::new(Button::new("a", "Alpha")))
+                .push(Box::new(Button::new("b", "Beta")));
             let map2 = layout(&mut two);
             let mut tree = SemanticTree::new();
             tree.refresh(&two, &map2, None, &[]);
             let baseline: std::collections::HashSet<SemanticId> =
                 tree.iter().map(|n| n.id.clone()).collect();
 
-            let mut one = Column::new().push(Box::new(Button::new("a", "Alpha", None)));
+            let mut one = Column::new().push(Box::new(Button::new("a", "Alpha")));
             let map1 = layout(&mut one);
             let delta = tree.refresh(&one, &map1, None, &[]);
             assert!(
@@ -1472,7 +1525,7 @@ mod tests {
                 ColumnDef::new("actions", "Actions", ColumnWidth::Fixed(120.0)).with_widget(
                     |row: &RowData, _| {
                         let id = format!("edit-{}", row.id);
-                        Box::new(Button::new(&id, "Edit", None))
+                        Box::new(Button::new(&id, "Edit"))
                     },
                 ),
             ];

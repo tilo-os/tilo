@@ -1186,6 +1186,30 @@ impl SigningIdentity {
         }
     }
 
+    /// The person's secret-sync key: an X25519 key derived from the root,
+    /// which secrets every device of the person must open (disk-unlock
+    /// sibling halves) are sealed to. Only a single-device root held by
+    /// this process derives it; the root itself never leaves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] for a threshold share or a
+    /// broker connection, which hold no root to derive from.
+    pub fn secret_sync_key(&self) -> Result<tilo_seal::SecretKey, NotAvailable> {
+        match &self.source {
+            SigningSource::Local(Some(sk)) => {
+                let seed = Zeroizing::new(sk.to_bytes());
+                let derived =
+                    Zeroizing::new(blake3::derive_key("tilo secret-sync key v1", seed.as_ref()));
+                Ok(tilo_seal::SecretKey::from_bytes(*derived))
+            }
+            _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the secret-sync key needs the person's root on this device",
+            ))),
+        }
+    }
+
     /// Ask the workspace identity broker to sign one named app action. The
     /// shell binds the package and workspace before the app inherits this
     /// connection, then evaluates the exact action capability.

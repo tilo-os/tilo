@@ -80,6 +80,26 @@ intervals — rather than growing a queue the display can never drain.
 Resize and DPMS travel the same channel as frames, so a blank cannot
 overtake a frame already queued.
 
+Clip-only workspace and overview transitions require a separate presenter
+capability. Multi-output DRM GPU readback can retain and replay those frames;
+single-output direct/XRGB, CPU, nested and headless paths receive complete scenes.
+The native loop refreshes this capability from the current output topology before
+each paint, without disabling ordinary retained damage. If an old empty held frame
+is still queued when a display is unplugged, the single-output presenter keeps its
+shown pixels until the next complete frame instead of rasterising the empty scene.
+
+With `TILO_PROFILE_GPU_STAGES=1`, the existing `FRAME-LIFECYCLE` retirement
+record includes the exact pipe serial and scene revision, CPU encode/submission
+wall time, GPU completion wait, bump-counter settlement and separate KMS
+retirement wait. Direct scanout collects those bridge phases without staging
+or reading back pixels. These CPU clock intervals locate blocking work; they
+are not GPU timestamp samples or proof of successful physical presentation.
+Vello dispatch timestamps additionally require both `VELLO_GPU_TIMESTAMPS=1`
+and `VELLO_GPU_DISPATCH_TIMESTAMPS=1` before device/renderer creation. Enable
+these fixed options through the greeter's ordinary next-sign-in diagnostics
+action. A disabled/unsupported recorder and discarded presentation remain
+ineligible for a hardware latency claim.
+
 `crates/session/shell/src/compositor/metrics.rs` instruments all of it
 (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
 drives a measured run and diffs two of them.
@@ -101,15 +121,30 @@ per frame, is the follow-up — and the frame trace already measures it.
 
 **What is verified, and what isn't.** The loop demonstrably holds the
 cadence it is configured for — including non-60 rates, via the
-`TILO_REFRESH_HZ` override. That is a statement about the *loop*. It is
-not a statement about frames landing on a real panel's vblank: nothing in
-this design consumes hardware presentation feedback (DRM page-flip
-completion timestamps, or a `presentation-time` protocol event from a
-nested parent). `FrameClock::note_presented` is called at submit, so the
-deadline series is anchored on production, not on photons. Closing that
-loop — feeding real flip timestamps back into `note_presented`, which the
-clock is already shaped to accept — is the next step, and it needs
-hardware to be worth anything.
+`TILO_REFRESH_HZ` override. `FrameClock::note_presented` is still called at
+submit: cadence remains anchored on frame production.
+
+Standard `wp_presentation` feedback separately binds a client's committed
+buffer generation to the pixels drawn by the foreign-surface widget and
+then to the exact `PresentPipe` submission serial. On one physical DRM
+output, a successful page-flip event for that output's CRTC completes the
+feedback with the original kernel timestamp and sequence, provided the
+driver advertises monotonic timestamps. Presenter return and ordinary
+frame retirement do not prove presentation. Failed capture, uncertain
+completion, timeout, missing output, nested/headless backends and ambiguous
+multi-output frames discard feedback. Timeout or resetting a still-pending
+flip disables physical proof for that scanout: a late event without a
+submission cookie must not certify a newer frame. Refresh is unknown when adaptive
+sync is active. Feedback does not change the frame clock's cadence policy.
+
+Native protocol tests verify commit/frame ownership and discard paths;
+DRM event fixtures verify timestamp preservation and completion guards.
+They do not prove Yoga latency. Opt-in `TILO_PROFILE_PRESENTATION=1`
+content-free traces preserve the original libinput monotonic event time,
+Wayland delivery serial and delivery time for correlation with actual app
+state changes and presentation feedback. Synthetic input and repeats lack
+an original physical timestamp and cannot qualify as physical latency
+samples. Panel timing and latency goals require a real hardware run.
 
 ## Event loop + state
 
@@ -230,7 +265,7 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 | Shortcut                  | Action                                         |
 |---------------------------|------------------------------------------------|
 | Ctrl+K                    | Search the focused app                         |
-| Super+K / Super+Space     | Search all of Tilo                             |
+| Super+Space               | Search all of Tilo                             |
 | Super+Page Up / Page Down | Previous / next workspace                      |
 | Super+Up / Down           | Previous / next strip                          |
 | Super+Shift+Up / Down     | Carry the focused group to the strip above / below |

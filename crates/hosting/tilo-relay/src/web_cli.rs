@@ -119,12 +119,6 @@ pub struct AgentArgs {
     /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
     #[arg(long = "agent-model-name", value_name = "ID")]
     pub model_name: Option<String>,
-    /// Let agents' apps use this user's own files, Keychain or Secret
-    /// Service, as a person at this machine would. Without it each agent
-    /// has a profile of its own under the state directory and secrets
-    /// kept in memory.
-    #[arg(long = "agent-host-profile")]
-    pub host_profile: bool,
 }
 
 #[cfg(feature = "agents")]
@@ -159,7 +153,6 @@ impl AgentArgs {
         Ok(Some(tilo_relay::agents::AgentOptions {
             state_dir,
             model,
-            host_profile: self.host_profile,
             catalogue: None,
         }))
     }

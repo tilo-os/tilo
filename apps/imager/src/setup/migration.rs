@@ -646,7 +646,11 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
         if metadata.is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
             self.report.skipped.push((
                 relative.to_path_buf(),
-                "symbolic link or unsupported file type".to_string(),
+                if metadata.is_symlink() {
+                    "A link, which is not copied".to_string()
+                } else {
+                    "A special file, which is not copied".to_string()
+                },
             ));
             return Ok(());
         }

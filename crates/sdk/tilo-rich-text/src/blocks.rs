@@ -425,49 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn a_direct_field_writes_its_edits_straight_into_the_document() {
-        use crate::RichTextSource;
-        let mut doc = AutoCommit::new();
-        let root = field(&mut doc);
-        doc.commit();
-        let located = root.clone();
-        let mut source = crate::DirectField::new(move |_| Some(located.clone()));
-        source.sync(&mut doc);
-        let block = source
-            .with_state(|state| state.body().id_at(0).unwrap().to_owned())
-            .unwrap();
-        let heads = doc.base_heads();
-        source
-            .apply(
-                &mut doc,
-                &tilo_document::RichTextAction::SpliceText {
-                    region: tilo_document::action::RegionKind::Body,
-                    block,
-                    at: 0,
-                    del: 0,
-                    ins: "typed".into(),
-                },
-            )
-            .unwrap();
-        assert!(
-            doc.pending_ops() > 0,
-            "an open write, not a committed action"
-        );
-        assert_eq!(doc.base_heads(), heads);
-        source.sync(&mut doc);
-        assert_eq!(RichText::plain_text_under(&doc, &root).unwrap(), "typed");
-        source.set_read_only(true);
-        assert!(
-            source
-                .apply(
-                    &mut doc,
-                    &tilo_document::RichTextAction::AppendParagraph { text: "x".into() }
-                )
-                .is_err()
-        );
-    }
-
-    #[test]
     fn text_already_there_is_never_overwritten() {
         let mut doc = AutoCommit::new();
         let root = field(&mut doc);

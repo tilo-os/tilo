@@ -29,6 +29,7 @@ pub struct ActionCx {
     minted: u64,
     now_ms: i64,
     author: Option<String>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 /// Who invoked the action applying now, as its envelope pinned it.
@@ -36,6 +37,10 @@ fn invoking_author() -> Option<String> {
     tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
         .map(|invoker| invoker.actor)
+}
+
+fn invoking_invocation() -> Option<tilo_actions::InvocationId> {
+    tilo_actions::invoking_context().and_then(|context| context.source_invocation)
 }
 
 impl ActionCx {
@@ -52,6 +57,7 @@ impl ActionCx {
             minted: 0,
             now_ms,
             author: invoking_author(),
+            invocation: invoking_invocation(),
         }
     }
 
@@ -81,6 +87,7 @@ impl ActionCx {
             minted: 0,
             now_ms: 0,
             author: invoking_author(),
+            invocation: invoking_invocation(),
         }
     }
 
@@ -108,6 +115,24 @@ impl ActionCx {
     /// (an edit written straight into a document outside the host).
     pub fn author(&self) -> Option<&str> {
         self.author.as_deref()
+    }
+
+    /// The invocation admitted by the action door, pinned in the action
+    /// envelope so origin and replay observe the same correlation identity.
+    /// This is not caller authority; use [`Self::author`] for that.
+    pub const fn invocation(&self) -> Option<tilo_actions::InvocationId> {
+        self.invocation
+    }
+
+    /// The content store of the window applying the action, where the bytes
+    /// the record names by hash are kept: the one the host lent that window,
+    /// which carries them on the record's route. Content is not replayed —
+    /// a replica that applies the action reads the bytes through its own
+    /// window's store. `None` where no window applies it (a tool writing a
+    /// document directly).
+    #[must_use]
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        crate::content::current()
     }
 }
 
@@ -445,12 +470,28 @@ impl<R: Resource> Invoke<R> {
         })
     }
 
+    /// Select the audited low-risk door when this exact value is opted in.
+    /// The target independently revalidates the decoded value.
+    ///
+    /// # Errors
+    /// Returns the serialization error of `action`.
+    pub fn checked_apply(action: &R::Action) -> Result<Self, serde_json::Error> {
+        let mut invocation = Self::apply(action)?;
+        if R::AUDITED_LOW_MUTATIONS
+            && R::allows_low_mutation(action)
+            && tilo_actions::Action::risk(action) == tilo_actions::RiskLevel::Low
+        {
+            invocation.id = crate::APPLY_LOW;
+        }
+        Ok(invocation)
+    }
+
     /// Several invocations applied as one action: one change, one version,
     /// one undo step. Members that are groups themselves are flattened.
     pub fn group(members: impl IntoIterator<Item = Self>) -> Self {
         let mut actions = Vec::new();
         for member in members {
-            if member.id == crate::GROUP {
+            if member.is_group() {
                 if let Some(serde_json::Value::Array(inner)) =
                     member.arguments.get(crate::GROUP_PARAM)
                 {
@@ -463,8 +504,12 @@ impl<R: Resource> Invoke<R> {
                 }));
             }
         }
+        let low = !actions.is_empty()
+            && actions.iter().all(|member| {
+                member.get("action").and_then(serde_json::Value::as_str) == Some(crate::APPLY_LOW)
+            });
         Self {
-            id: crate::GROUP,
+            id: if low { crate::GROUP_LOW } else { crate::GROUP },
             arguments: serde_json::Map::from_iter([(
                 crate::GROUP_PARAM.to_owned(),
                 serde_json::Value::Array(actions),
@@ -476,7 +521,7 @@ impl<R: Resource> Invoke<R> {
 
     /// Whether this is a [`group`](Self::group) of invocations.
     pub fn is_group(&self) -> bool {
-        self.id == crate::GROUP
+        self.id == crate::GROUP || self.id == crate::GROUP_LOW
     }
 
     /// Build the replayable action on this (origin) machine. A group builds

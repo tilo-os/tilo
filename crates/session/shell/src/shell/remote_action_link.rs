@@ -98,19 +98,40 @@ impl ReplyWaiters {
     pub fn register(&self, peer: iroh::EndpointId, key: ReplyKey) -> Pending<RemoteActionMessage> {
         let (completer, answer) = tilo_actions::remote::pending();
         let now = Instant::now();
+        self.expire(now);
         let deadline = now.checked_add(REPLY_DEADLINE).unwrap_or(now);
         if let Ok(mut waiting) = self.waiting.lock() {
-            // Dropping an expired completer abandons its answer.
-            waiting.retain(|_, waiters| {
-                waiters.retain(|(until, _)| *until > now);
-                !waiters.is_empty()
-            });
             waiting
                 .entry((peer, key))
                 .or_default()
                 .push((deadline, completer));
         }
         answer
+    }
+
+    /// Release unanswered requests even when no further request is made.
+    /// Callbacks may immediately try another peer, so release them outside
+    /// the registry lock rather than while retaining its entries.
+    pub(crate) fn expire(&self, now: Instant) {
+        let expired = {
+            let Ok(mut waiting) = self.waiting.lock() else {
+                return;
+            };
+            let mut expired = Vec::new();
+            waiting.retain(|_, waiters| {
+                for (until, completer) in std::mem::take(waiters) {
+                    if until <= now {
+                        expired.push(completer);
+                    } else {
+                        waiters.push((until, completer));
+                    }
+                }
+                !waiters.is_empty()
+            });
+            drop(waiting);
+            expired
+        };
+        drop(expired);
     }
 
     /// Hand an answer from `peer` to everyone waiting for it. Returns
@@ -284,5 +305,55 @@ impl<L: RemoteActionLink> RemoteActionLink for std::sync::Arc<L> {
         message: RemoteActionMessage,
     ) -> Result<Pending<RemoteActionMessage>, String> {
         (**self).request(workspace_topic, peer, message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{REPLY_DEADLINE, ReplyKey, ReplyWaiters};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tilo_actions::remote::PendingPoll;
+
+    #[test]
+    fn an_idle_expired_request_is_abandoned_without_another_request() {
+        let waiters = ReplyWaiters::default();
+        let peer = iroh::SecretKey::from_bytes(&[0xC1; 32]).public();
+        let mut answer = waiters.register(peer, ReplyKey::Record(1));
+        waiters.expire(Instant::now());
+        assert!(matches!(answer.poll_ready(), PendingPoll::Waiting));
+        waiters.expire(Instant::now().checked_add(REPLY_DEADLINE).unwrap());
+        assert!(matches!(answer.poll_ready(), PendingPoll::Abandoned));
+    }
+
+    #[test]
+    fn expiry_callback_can_register_the_next_request_without_deadlocking() {
+        let waiters = Arc::new(ReplyWaiters::default());
+        let next = Arc::new(Mutex::new(None));
+        let peer = iroh::SecretKey::from_bytes(&[0xC2; 32]).public();
+        let callback_waiters = Arc::clone(&waiters);
+        let callback_next = Arc::clone(&next);
+        waiters
+            .register(peer, ReplyKey::Record(1))
+            .then(move |reply| {
+                assert!(reply.is_none());
+                *callback_next.lock().unwrap() =
+                    Some(callback_waiters.register(peer, ReplyKey::Record(2)));
+            });
+        waiters.expire(Instant::now().checked_add(REPLY_DEADLINE).unwrap());
+        let mut answer = next
+            .lock()
+            .unwrap()
+            .take()
+            .expect("retry callback ran outside the registry lock");
+        assert!(matches!(answer.poll_ready(), PendingPoll::Waiting));
+        waiters.expire(
+            Instant::now()
+                .checked_add(REPLY_DEADLINE)
+                .unwrap()
+                .checked_add(Duration::from_secs(1))
+                .unwrap(),
+        );
+        assert!(matches!(answer.poll_ready(), PendingPoll::Abandoned));
     }
 }

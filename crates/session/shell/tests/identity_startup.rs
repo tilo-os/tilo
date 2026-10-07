@@ -17,9 +17,14 @@ use tempfile::TempDir;
 fn provision_identity_fails_closed_without_replacing_metadata_when_secret_service_is_unavailable() {
     let root = TempDir::new().expect("test root");
     let config = root.path().join("config");
+    let cache = root.path().join("cache");
     let bin = root.path().join("bin");
     fs::create_dir_all(config.join("tilo/identity")).expect("identity directory");
     fs::create_dir_all(&bin).expect("fake PATH");
+    let shader_seed = cache.join("tilo/public-mesa-seed/mesa");
+    fs::create_dir_all(&shader_seed).expect("private shader seed directory");
+    fs::write(shader_seed.join("seed.json"), b"invalid shader manifest")
+        .expect("shader seed negative control");
     let secret_tool = bin.join("secret-tool");
     fs::write(&secret_tool, b"#!/bin/sh\nexit 1\n").expect("fake secret-tool");
     fs::set_permissions(&secret_tool, fs::Permissions::from_mode(0o755))
@@ -44,6 +49,7 @@ fn provision_identity_fails_closed_without_replacing_metadata_when_secret_servic
         },
     });
     let identity = config.join("tilo/identity/primary.json");
+    let startup_metrics = root.path().join("startup.json");
     let original = serde_json::to_vec_pretty(&metadata).expect("metadata JSON");
     fs::write(&identity, &original).expect("metadata");
     fs::set_permissions(&identity, fs::Permissions::from_mode(0o600)).expect("metadata mode");
@@ -52,7 +58,12 @@ fn provision_identity_fails_closed_without_replacing_metadata_when_secret_servic
         .arg("--provision-identity")
         .env("HOME", root.path().join("home"))
         .env("XDG_CONFIG_HOME", &config)
-        .env("TILO_STARTUP_WARM", "off")
+        .env("XDG_CACHE_HOME", &cache)
+        .env_remove("TILO_SHADER_SEED_PREPARED")
+        .env_remove("MESA_SHADER_CACHE_DISABLE")
+        .env("TILO_STARTUP_WARM", "1")
+        .env("TILO_STARTUP_WARM_VELLO", "1")
+        .env("TILO_STARTUP_METRICS_PATH", &startup_metrics)
         .env("PATH", &bin)
         .output()
         .expect("run production shell binary");
@@ -62,4 +73,21 @@ fn provision_identity_fails_closed_without_replacing_metadata_when_secret_servic
         String::from_utf8_lossy(&status.stderr)
     );
     assert_eq!(fs::read(&identity).expect("read metadata"), original);
+    assert!(
+        !String::from_utf8_lossy(&status.stderr).contains("session shader seed unavailable"),
+        "a non-rendering identity helper must not inspect the shader seed"
+    );
+    let metrics: serde_json::Value =
+        serde_json::from_slice(&fs::read(startup_metrics).expect("production startup metrics"))
+            .expect("startup metrics JSON");
+    let events = metrics["events"]
+        .as_array()
+        .expect("recorded startup events");
+    assert!(events.iter().any(|event| event["name"] == "main-start"));
+    assert!(
+        !events.iter().any(|event| event["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("warmup-"))),
+        "a non-rendering identity helper must not start font or GPU warmup: {metrics}"
+    );
 }

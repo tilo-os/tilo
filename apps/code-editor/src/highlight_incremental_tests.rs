@@ -34,6 +34,34 @@ fn incremental_highlights_match_a_fresh_parse_across_edit_sequences() {
     unicode_newline_and_language_switches_match_fresh();
 }
 
+#[test]
+fn hardware_comment_edits_and_dialect_switches_match_fresh_highlights() {
+    check_sequence(&[
+        (Language::Verilog, "module mac;\nassign out = 8;\nendmodule"),
+        (
+            Language::Verilog,
+            "module mac;\n/*\nassign out = 8;\nendmodule",
+        ),
+        (
+            Language::Verilog,
+            "module mac;\n/*\nassign out = 8;\n*/\nendmodule",
+        ),
+        (Language::Verilog, "module mac;\nassign out = 8;\nendmodule"),
+        (
+            Language::SystemVerilog,
+            "module mac;\nlogic valid;\nendmodule",
+        ),
+        (
+            Language::SystemVerilog,
+            "module mac;\n/* logic valid; */\nendmodule",
+        ),
+        (
+            Language::PlainText,
+            "module mac;\n/* logic valid; */\nendmodule",
+        ),
+    ]);
+}
+
 fn prefix_suffix_insert_delete_and_undo_style_reverts_match_fresh() {
     check_sequence(&[
         (Language::Rust, "fn main() {\n    let n = 1;\n}\n"),

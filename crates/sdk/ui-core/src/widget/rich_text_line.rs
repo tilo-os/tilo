@@ -27,6 +27,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::TokenKind;
 use crate::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
@@ -76,9 +77,6 @@ pub enum LineSignal {
         open_at: usize,
     },
 }
-
-/// Matches the body baseline the rest of the UI uses for `TextInput`.
-const DEFAULT_FONT_SIZE: f32 = 16.0;
 
 /// Geometry shared by every mark segment `draw` paints in one frame, so
 /// `paint_mark_segment` doesn't need a fistful of separate parameters.
@@ -132,6 +130,8 @@ pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
     signal: Option<LineSignal>,
+    /// The line's 1× type size: its role's, or a document editor's own
+    /// (a heading block under the page zoom).
     font_size: f32,
     wrap: bool,
     inline_formatting: bool,
@@ -177,13 +177,12 @@ pub struct RichTextLine {
 impl RichTextLine {
     pub fn new() -> Self {
         // Block-editor cells render as document copy, not a form field.
-        let inner = TextInput::local()
-            .with_plain_chrome()
-            .with_font_size(DEFAULT_FONT_SIZE);
+        let mut inner = TextInput::local().with_plain_chrome();
+        inner.keep_document_inset();
         Self {
             inner,
             signal: None,
-            font_size: DEFAULT_FONT_SIZE,
+            font_size: crate::tokens::typography::stock().size(TextRole::Body),
             wrap: false,
             inline_formatting: true,
             measurement_theme: default_measurement_theme(),
@@ -234,12 +233,25 @@ impl RichTextLine {
         self
     }
 
-    /// For `BlockEditor` heading blocks (H1=28, H2=22, H3=18).
+    /// Set the line in `role`: `Body` for interface copy, `Reading` for
+    /// long-form text. The default is `Body`.
     #[must_use]
-    pub fn with_size(mut self, size: f32) -> Self {
-        self.stack_measure = None;
-        self.font_size = size;
-        self.inner.set_font_size(size);
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.set_text_role(role);
+        self
+    }
+
+    /// Change the line's role; its height is measured again.
+    pub fn set_text_role(&mut self, role: TextRole) {
+        self.inner.set_text_role(role);
+        self.set_size(crate::tokens::typography::stock().size(role));
+    }
+
+    /// A document editor's own 1× size for this line (a heading block, the
+    /// page zoom).
+    #[must_use]
+    pub(crate) fn with_size(mut self, size: f32) -> Self {
+        self.set_size(size);
         self
     }
 
@@ -368,12 +380,6 @@ impl RichTextLine {
         self.inner.bound_obj().cloned()
     }
 
-    /// Retain document reconciliation while routing edits through an owning
-    /// action bridge instead of allowing `TextInput` to splice Automerge.
-    pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
-        self.inner.set_direct_crdt_writes(enabled);
-    }
-
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.inner.set_local_author(author);
     }
@@ -465,16 +471,12 @@ impl RichTextLine {
         self.inner.apply_layout_external(rect);
     }
 
-    pub fn font_size(&self) -> f32 {
-        self.font_size
-    }
-
-    /// Change the line's type size; its height is measured again.
-    pub fn set_size(&mut self, size: f32) {
+    /// A document editor's own 1× size; its height is measured again.
+    pub(crate) fn set_size(&mut self, size: f32) {
         if self.font_size.to_bits() != size.to_bits() {
             self.stack_measure = None;
             self.font_size = size;
-            self.inner.set_font_size(size);
+            self.inner.set_base_size(size);
         }
     }
 
@@ -532,6 +534,12 @@ impl RichTextLine {
         }
     }
 
+    /// How far the line's text starts inside its rect: the text field's
+    /// own horizontal inset (none for the editor's plain lines).
+    pub fn text_inset(&self, theme: &Theme) -> f64 {
+        self.inner.text_inset_x(theme)
+    }
+
     /// Returns 0.0 before the first draw.
     pub fn pixel_x_for_byte(&self, theme: &Theme, byte: usize) -> f64 {
         let xs = self.inner.char_x_positions();
@@ -539,7 +547,8 @@ impl RichTextLine {
             return self.inner.get_rect().x0;
         }
         let idx = byte.min(xs.len().saturating_sub(1));
-        let pad = self.inner.text_padding_x(theme);
+        // The same inset the line's text is laid out at, multiline or not.
+        let pad = self.text_inset(theme);
         let x = xs.get(idx).copied().unwrap_or(0.0);
         self.inner.get_rect().x0 + pad + x - self.inner.scroll_x()
     }
@@ -646,13 +655,13 @@ impl RichTextLine {
                 } else {
                     syntax
                 };
-                attributes.spans.push(
-                    RichSpan::new(slice)
-                        .bold(segment.bold || segment.mention.is_some())
-                        .italic(segment.italic)
-                        .color(color)
-                        .background(mention_band),
-                );
+                let mut span = RichSpan::new(slice)
+                    .bold(segment.bold || segment.mention.is_some())
+                    .italic(segment.italic)
+                    .color(color)
+                    .background(mention_band);
+                span.kind = mark_kind(&segment);
+                attributes.spans.push(span);
             }
             if segment.underline {
                 attributes.underlines.push(range);
@@ -671,7 +680,7 @@ impl RichTextLine {
     }
 
     fn prepare_attributes(&mut self, theme: &Theme) {
-        let color = theme.tokens.colors.accent[5];
+        let color = theme.tokens.colors.text_primary;
         self.accent_rgb = Some([color.r(), color.g(), color.b()]);
         self.syntax = Some(theme.tokens.syntax.clone());
         self.refresh_attributes();
@@ -767,10 +776,11 @@ impl RichTextLine {
         let spans = marks::segments_for(text.len(), &self.marks)
             .into_iter()
             .filter_map(|segment| {
-                let source = text.get(segment.range)?;
+                let source = text.get(segment.range.clone())?;
                 let mut span = crate::richtext::RichSpan::new(source)
                     .bold(segment.bold || segment.mention.is_some())
                     .italic(segment.italic);
+                span.kind = mark_kind(&segment);
                 if let Some(id) = segment.mention.as_deref() {
                     let (ink, band) = self.mention_rgb(id);
                     span.color = ink;
@@ -782,7 +792,7 @@ impl RichTextLine {
                     span.background = Some([background.r(), background.g(), background.b()]);
                 }
                 if segment.code || segment.link.is_some() || segment.external_link {
-                    let color = theme.tokens.colors.accent[5];
+                    let color = theme.tokens.colors.text_primary;
                     span.color = Some([color.r(), color.g(), color.b()]);
                 }
                 Some(span)
@@ -798,7 +808,7 @@ impl RichTextLine {
         for span in &self.marks {
             let (color, strike) = match span.mark {
                 Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_) => {
-                    (theme.tokens.colors.accent[5], false)
+                    (theme.tokens.colors.text_primary, false)
                 }
                 Mark::Underline => (theme.tokens.colors.text_primary, false),
                 Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
@@ -843,16 +853,20 @@ impl RichTextLine {
             self.measurement_theme = Arc::clone(theme);
             self.stack_measure = None;
         }
-        self.inner.set_font_size(self.font_size);
+        self.inner.set_base_size(self.font_size);
         self.inner.set_multiline(self.wrap);
         self.sync_wrapped_spans(theme);
     }
 
     /// The fixed row height of a line that is not measured, and the minimum
-    /// of one that is: `font_size * 1.5`, so headings stand taller than
-    /// paragraph rows without a measure pass.
+    /// of one that is: the line's size at its role's leading (Body 1.45,
+    /// Heading 1.3, a title tighter), so headings stand taller than
+    /// paragraph rows without a measure pass and the rhythm is the one
+    /// every other surface uses.
     pub(super) fn row_height(&self, text_scale: f32) -> f32 {
-        (self.font_size * text_scale * 1.5).max(20.0 * text_scale)
+        let style = crate::tokens::typography::stock().style(self.inner.text_role());
+        let leading = (style.line_height_px() / style.size.max(1.0)).max(1.0);
+        (self.font_size * text_scale * leading).max(20.0 * text_scale)
     }
 
     /// Whether the line's height comes from measuring its content rather
@@ -921,8 +935,8 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.inner.is_layout_dirty()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
@@ -1033,11 +1047,13 @@ impl Widget for RichTextLine {
                 clippy::cast_precision_loss,
                 reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
             )]
+            // The image stands on the editor's content edge, inside the
+            // line's text inset on both sides, at its native aspect.
+            let pad = self.text_inset(&self.measurement_theme) as f32;
+            let image_width = (width - 2.0 * pad).max(1.0);
             let preview_height = dimensions.map_or(
                 220.0 * self.measurement_theme.text_scale,
-                |(image_width, image_height)| {
-                    width * image_height.max(1) as f32 / image_width.max(1) as f32
-                },
+                |(image_w, image_h)| image_width * image_h.max(1) as f32 / image_w.max(1) as f32,
             );
             return Size {
                 width,
@@ -1239,6 +1255,10 @@ impl Widget for RichTextLine {
     }
 
     /// `multiline` is cleared — a block editor stacks many of these to form a document.
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.inner.ime_edit_fingerprint(key)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Widget::accessibility(&self.inner)
     }
@@ -1246,7 +1266,7 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = crate::doc::document(state, path);
@@ -1345,11 +1365,7 @@ fn paint_mark_segment(
     }
 
     let tokens = &theme.tokens;
-    let color = if seg.link.is_some() || seg.external_link || seg.code {
-        tokens.colors.accent[5]
-    } else {
-        tokens.colors.text_primary
-    };
+    let color = tokens.colors.text_primary;
 
     let weight = if seg.bold {
         TextWeight::Bold
@@ -1421,7 +1437,7 @@ fn paint_segment_decorations(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.accent[5],
+            tokens.colors.text_primary,
             None,
             &underline,
         );
@@ -1543,6 +1559,22 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
     None
 }
 
+/// What a marked stretch is: a mention names a person
+/// ([`TextKind::Identifier`](crate::text_render::TextKind::Identifier)) and
+/// an external link is a [`TextKind::Url`](crate::text_render::TextKind::Url),
+/// whatever its label says. Everything else is found in the prose.
+fn mark_kind(segment: &MarkSegment) -> Option<crate::text_render::TextKind> {
+    if segment.code {
+        None
+    } else if segment.mention.is_some() {
+        Some(crate::text_render::TextKind::Identifier)
+    } else if segment.external_link {
+        Some(crate::text_render::TextKind::Url)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1600,7 +1632,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: crate::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1798,7 +1830,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_line_reads_and_splices_the_document() {
+    fn bound_line_reads_the_document_and_keeps_edits_for_its_owner() {
         // Case `bound_line_reads_text_from_doc`.
         {
             use automerge::{ObjType, ROOT, transaction::Transactable};
@@ -1809,11 +1841,11 @@ mod tests {
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
             // The root arg is unused once a Text is bound.
-            line.sync(&mut doc, &ROOT);
+            line.sync(&doc, &ROOT);
             assert_eq!(line.value(), "hello");
         }
 
-        // Case `editing_bound_line_splices_into_doc`.
+        // Case `editing_bound_line_leaves_the_document_to_the_owner`.
         {
             use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
             let mut doc = automerge::AutoCommit::new();
@@ -1834,7 +1866,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus_target,
@@ -1845,64 +1877,35 @@ mod tests {
             }
 
             assert_eq!(line.value(), "hi");
-            assert_eq!(
-                doc.text(&tid).unwrap(),
-                "hi",
-                "edits must splice into the bound Text"
-            );
+            assert_eq!(doc.text(&tid).unwrap(), "", "the owner writes the edit");
+            assert_eq!(line.take_dirty().as_deref(), Some("hi"));
         }
 
-        // Case `authored_edit_stamps_mark_caches_run_and_survives_round_trip`.
+        // Case `author_marks_in_the_document_become_author_runs`.
         {
-            use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+            use automerge::{ObjType, ROOT, transaction::Transactable};
             let mut doc = automerge::AutoCommit::new();
             let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+            doc.splice_text(&tid, 0, 0, "hi").unwrap();
+            doc.mark(
+                &tid,
+                automerge::marks::Mark::new(
+                    crate::widget::text_input::AUTHOR_MARK.to_string(),
+                    "alice",
+                    0,
+                    2,
+                ),
+                automerge::marks::ExpandMark::None,
+            )
+            .unwrap();
 
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
-            line.set_local_author(Some("alice".to_string()));
-            line.set_focus(true);
-
-            let taffy: TaffyTree<()> = TaffyTree::new();
-            for c in ["h", "i"] {
-                let ev = char_press(c);
-                let mut handled = false;
-                let mut focus_target = None;
-                line.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &Modifiers::default(),
-                        state: &mut doc,
-                        path: &ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: NodeId::new(0),
-                        taffy: &taffy,
-                    },
-                );
-            }
-            assert_eq!(doc.text(&tid).unwrap(), "hi");
-
-            let marks = doc.marks(&tid).unwrap();
-            assert!(
-                marks.iter().any(|m| m.name.as_str() == "author"),
-                "expected an author mark, got {marks:?}"
-            );
-
-            line.sync(&mut doc, &ROOT);
+            line.sync(&doc, &ROOT);
             assert!(
                 line.author_runs().iter().any(|(_, _, a)| a == "alice"),
                 "expected an alice author run, got {:?}",
                 line.author_runs()
-            );
-
-            // Survives a save/load round-trip, which is how authorship reaches a peer.
-            let reloaded = automerge::AutoCommit::load(&doc.save()).unwrap();
-            let marks2 = reloaded.marks(&tid).unwrap();
-            assert!(
-                marks2.iter().any(|m| m.name.as_str() == "author"),
-                "author mark must survive save/load (CRDT sync)"
             );
         }
 
@@ -2084,7 +2087,7 @@ mod tests {
                     anchor: 0,
                     focus: 4
                 },
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let _ = line.take_dirty(); // Selection has its own presentation edge.
@@ -2099,7 +2102,7 @@ mod tests {
                     anchor: 4,
                     focus: 4
                 },
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let _ = line.take_dirty(); // Selection has its own presentation edge.

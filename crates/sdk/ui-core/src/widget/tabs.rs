@@ -3,15 +3,15 @@ use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
 use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
+use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
 use crate::widget::AppKind;
+use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -46,10 +46,6 @@ pub const CLOSE_FADE_MS: f32 = 180.0;
 const CLOSE_SCALE_END: f64 = 0.95;
 /// Terminal y-offset of the close curve; negative drifts upward.
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
-
-/// Idle "+" slot dotted-outline alpha; aliases the shell-wide hairline weight
-/// (`crates/sdk/ui-core/HIG.md` §9.5) so the tab strip can't drift from the rest of the chrome.
-const PILL_BORDER_ALPHA: u8 = crate::chrome::shell::HAIRLINE_ALPHA;
 
 /// Alias of [`crate::chrome::shell::SelectionTier`] so the tab strip, top bar,
 /// quick settings, workspace disc and strip ribbon all express selection the same
@@ -212,6 +208,36 @@ enum GroupFocus {
     Unfocused,
 }
 
+/// What a tab's content is doing, marked in the tab's leading slot in place
+/// of its icon: loading, or making sound. A sound mark is a control: a
+/// click on it is reported by [`TabBar::take_mark_click`] (the host mutes
+/// or unmutes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TabMark {
+    /// The content is loading.
+    Busy,
+    /// The content is playing sound.
+    Playing,
+    /// The content's sound is muted.
+    Muted,
+}
+
+impl TabMark {
+    /// What the mark says to someone who cannot see it.
+    fn description(self) -> &'static str {
+        match self {
+            Self::Busy => "Loading",
+            Self::Playing => "Playing audio",
+            Self::Muted => "Muted",
+        }
+    }
+
+    /// Whether a click on the mark does something.
+    fn is_control(self) -> bool {
+        matches!(self, Self::Playing | Self::Muted)
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent interaction and animation flags are not one state machine"
@@ -244,7 +270,7 @@ pub struct TabBar {
     /// Keyed by tab id, alongside the title/size it was measured at, so a rename or
     /// theme change invalidates rather than reusing a stale advance. Set from `draw`
     /// (the only pass with a [`TextRenderer`]) and read back by `apply_layout`.
-    title_advance: HashMap<u64, (String, f32, f64)>,
+    title_advance: HashMap<u64, (String, TextStyle, f64)>,
     /// Aligned 1:1 with `tabs`; `None` for a pinned, icon-only pill.
     visible_titles: Vec<Option<String>>,
     pending_context_menu: Option<(u64, Point)>,
@@ -311,6 +337,22 @@ pub struct TabBar {
     /// window has nothing for it to do, and a chip that appears under the
     /// pointer and then does nothing is worse than no chip.
     show_maximize: bool,
+    /// Whether tabs close from the strip. A strip of fixed views (a
+    /// settings window's sections) has no close control.
+    closable: bool,
+    /// Whether the strip offers a new-tab control.
+    new_tab: bool,
+    /// Per-tab content marks, keyed by tab id (a sidecar like the others).
+    marks: HashMap<u64, TabMark>,
+    /// The painted mark of each tab, aligned 1:1 with `tabs`.
+    mark_rects: Vec<Rect>,
+    /// A click on a sound mark, drained by [`TabBar::take_mark_click`].
+    pending_mark: Option<(u64, TabMark)>,
+    /// Whether this strip's host shows which window group has keyboard
+    /// input ([`TabBar::set_group_focused`]). Only then does the active tab
+    /// carry the focus keyline; in a strip of documents the active tab is
+    /// the lift alone, like every other selection.
+    shows_group_focus: bool,
     reveal_anim: HashMap<u64, RevealAnim>,
     /// Aligned 1:1 with `tabs`; read by the title zone, chip rects and body wash so
     /// width, hit region and paint can never disagree.
@@ -318,6 +360,9 @@ pub struct TabBar {
     /// Cached because `apply_layout`, where the reveal is interpolated, has no
     /// `Theme` of its own.
     reduce_motion: bool,
+    /// The host's reduced-motion setting ([`Widget::set_motion_reduced`]),
+    /// which holds whatever the theme says.
+    host_reduced_motion: bool,
     /// `tokens.metrics.min_pointer_target`, cached from `build_layout` for
     /// the same reason: the pointer target of a maximize/search chip is
     /// derived from its glyph rect at hit-test time (see
@@ -342,6 +387,32 @@ pub(crate) struct TabDragVisual {
 }
 
 impl TabBar {
+    /// Move the bar and every rectangle laid out in it by `dx`; see
+    /// [`super::window_group::WindowGroup::offset_layout`].
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.rect = shift_rect(self.rect, shift);
+        for rect in &mut self.tab_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.close_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.close_hit_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.max_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.search_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
+    }
+
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
     /// inactive but the slot still holds its place (no neighbour reflow).
     pub const SOURCE_PILL_DIM_ALPHA: f32 = 0.35;
@@ -377,6 +448,12 @@ impl TabBar {
             accent_ids: HashMap::new(),
             modified_ids: HashSet::new(),
             show_maximize: true,
+            closable: true,
+            new_tab: true,
+            marks: HashMap::new(),
+            mark_rects: Vec::new(),
+            pending_mark: None,
+            shows_group_focus: false,
             press_origin: None,
             drag_offset: None,
             drag_lifted_at: None,
@@ -400,13 +477,62 @@ impl TabBar {
             reveal_anim: HashMap::new(),
             reveal_px: Vec::new(),
             reduce_motion: false,
+            host_reduced_motion: false,
             drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
             drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
         }
     }
 
+    /// Whether tabs close from the strip (default `true`). Without it no
+    /// close control is drawn, reserved or announced.
+    #[must_use]
+    pub fn closable(mut self, closable: bool) -> Self {
+        self.closable = closable;
+        self
+    }
+
+    /// No new-tab control at the end of the strip.
+    #[must_use]
+    pub fn without_new_tab(mut self) -> Self {
+        self.new_tab = false;
+        self
+    }
+
+    /// Mark what tab `id`'s content is doing, or clear the mark.
+    pub fn set_mark(&mut self, id: u64, mark: Option<TabMark>) {
+        match mark {
+            Some(mark) => {
+                self.marks.insert(id, mark);
+            }
+            None => {
+                self.marks.remove(&id);
+            }
+        }
+    }
+
+    /// Tab `id`'s mark, if any.
+    pub fn mark(&self, id: u64) -> Option<TabMark> {
+        self.marks.get(&id).copied()
+    }
+
+    /// Where tab `id`'s mark is painted, for hit-testing and tests.
+    pub fn mark_rect(&self, id: u64) -> Option<Rect> {
+        self.marks.get(&id)?;
+        let i = self.tabs.iter().position(|t| t.id == id)?;
+        self.mark_rects.get(i).copied().filter(|r| r.area() > 0.0)
+    }
+
+    /// A click on a tab's sound mark, once: the host mutes or unmutes it.
+    pub fn take_mark_click(&mut self) -> Option<(u64, TabMark)> {
+        self.pending_mark.take()
+    }
+
+    /// The host shows which window group has keyboard input: the active tab
+    /// of the focused group carries a keyline in your colour, the focus
+    /// colour, and the others carry the lift alone.
     pub fn set_group_focused(&mut self, focused: bool) {
+        self.shows_group_focus = true;
         self.group_focus = if focused {
             GroupFocus::Focused
         } else {
@@ -493,8 +619,8 @@ impl TabBar {
             return;
         };
         let is_pinned = self.pinned_ids.contains(&t.id);
-        let pill_height = (self.rect.height() - 2.0 * TAB_PILL_INSET_Y).max(0.0);
-        let radius = pill_height / 2.0;
+        // Tabs are not pills: the control radius (design language, Shape).
+        let radius = f64::from(theme.tokens.radii.control);
         let Some(&target) = self.tab_rects.get(i) else {
             return;
         };
@@ -519,7 +645,7 @@ impl TabBar {
         // can't drift from the rest of the chrome.
         let shape = RoundedRect::from_rect(r, radius);
         crate::chrome::shell::paint_glass_body(scene, pill_transform, r, radius, theme, &look, 1.0);
-        if is_active && self.group_focus == GroupFocus::Focused {
+        if is_active && self.shows_group_focus && self.group_focus == GroupFocus::Focused {
             // A restrained focus keyline separates two different facts that
             // used to share one treatment: "active tab in this group" and
             // "group receiving keyboard input".  It sits inside the pill so
@@ -537,7 +663,7 @@ impl TabBar {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 pill_transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.you,
                 None,
                 &keyline,
             );
@@ -596,21 +722,38 @@ impl TabBar {
         } = pill;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        let text_color = if is_active || is_hover {
+        // The cursor-following copy suppresses hover, but carries the primary
+        // label ink so an inactive source stays readable in motion.
+        let text_color = if is_active || is_hover || pill.suppress_hover {
             text_primary
         } else {
             text_dim
         };
-        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Label);
         let title_weight = TextWeight::Semibold;
-        let (_tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
+        let (_tw, th) = tr.measure_style(
+            &t.title,
+            None,
+            &text_style.clone().with_weight(title_weight),
+        );
         let accent = self.accent_ids.get(&t.id).copied();
         if is_pinned {
             Self::draw_pill_pinned_marker(scene, transform, r, t, accent, text_color);
             return;
         }
-        let leading_shift =
-            Self::draw_pill_leading_glyph(scene, transform, r, t, accent, text_color);
+        let leading_shift = if let Some(mark) = self.marks.get(&t.id).copied() {
+            self.draw_pill_mark(
+                scene,
+                transform,
+                theme,
+                leading_glyph_rect(r),
+                mark,
+                text_color,
+            );
+            ICON_W + ICON_GAP
+        } else {
+            Self::draw_pill_leading_glyph(scene, transform, r, t, accent, text_color)
+        };
         let title_x = title_x0(r, leading_shift);
         let title_y = r.center().y - f64::from(th) / 2.0;
         // Clip at this frame's reveal, not the close chip, so an idle pill gets
@@ -635,14 +778,13 @@ impl TabBar {
             transform,
             &clip_r,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             label,
-            text_size,
             text_color,
             compose(transform, Affine::translate((title_x, title_y))),
             None,
-            title_weight,
+            &text_style.clone().with_weight(title_weight),
         );
         scene.pop_layer();
     }
@@ -678,6 +820,78 @@ impl TabBar {
             // centred like the glyph would have been.
             let c = vello::kurbo::Circle::new(r.center(), ACCENT_DOT_R);
             scene.fill(vello::peniko::Fill::NonZero, transform, dot, None, &c);
+        }
+    }
+
+    /// A tab's content mark in its leading slot: a turning arc while busy
+    /// (a still three-quarter ring under reduced motion), a speaker while it
+    /// plays or is muted, lifted under the pointer since a click on it
+    /// mutes or unmutes.
+    fn draw_pill_mark(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        mark: TabMark,
+        ink: vello::peniko::Color,
+    ) {
+        match mark {
+            TabMark::Busy => {
+                let turn = if self.reduce_motion {
+                    0.0
+                } else {
+                    let t = crate::time::now()
+                        .saturating_duration_since(busy_epoch())
+                        .as_secs_f64();
+                    t.fract() * std::f64::consts::TAU
+                };
+                let radius = rect.width().min(rect.height()) / 2.0 - 1.5;
+                let arc = vello::kurbo::Arc::new(
+                    rect.center(),
+                    (radius, radius),
+                    turn,
+                    std::f64::consts::TAU * 0.75,
+                    0.0,
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.5).with_caps(vello::kurbo::Cap::Round),
+                    transform,
+                    ink,
+                    None,
+                    &arc,
+                );
+            }
+            TabMark::Playing | TabMark::Muted => {
+                if rect.inflate(2.0, 2.0).contains(self.last_cursor) {
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        theme
+                            .tokens
+                            .colors
+                            .lift_on(theme.tokens.colors.surfaces.content, 1.0),
+                        None,
+                        &RoundedRect::from_rect(
+                            rect.inflate(2.0, 2.0),
+                            f64::from(theme.tokens.radii.item),
+                        ),
+                    );
+                }
+                let icon = if mark == TabMark::Muted {
+                    icons::Icon::VolumeX
+                } else {
+                    icons::Icon::Volume2
+                };
+                icons::draw_icon(
+                    scene,
+                    transform,
+                    rect,
+                    icon,
+                    ink,
+                    icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
         }
     }
 
@@ -950,8 +1164,7 @@ impl TabBar {
         theme: &Theme,
     ) {
         let r = c.pill_rect;
-        let pill_height = (r.height()).max(0.0);
-        let radius = pill_height / 2.0;
+        let radius = f64::from(theme.tokens.radii.control);
         let text_dim = theme.tokens.colors.text_dim;
         // Hovered tier, not inactive: active-id already shifted at close-start, and
         // an inactive pill is fully transparent, which would leave the title and ×
@@ -965,9 +1178,13 @@ impl TabBar {
             &pill_appearance(theme, false, true, false),
             1.0,
         );
-        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Label);
         let title_weight = TextWeight::Semibold;
-        let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
+        let (_tw, th) = tr.measure_style(
+            &c.desc.title,
+            None,
+            &text_style.clone().with_weight(title_weight),
+        );
         let leading_shift = if let Some(kind) = c.desc.app_kind {
             draw_app_icon(scene, transform, leading_glyph_rect(r), kind, text_dim);
             ICON_W + ICON_GAP
@@ -986,14 +1203,13 @@ impl TabBar {
             transform,
             &clip_r,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &c.desc.title,
-            text_size,
             text_dim,
             compose(transform, Affine::translate((title_x, title_y))),
             None,
-            title_weight,
+            &text_style.clone().with_weight(title_weight),
         );
         scene.pop_layer();
         icons::draw_icon(
@@ -1075,7 +1291,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return Reveal::None;
         };
-        if self.pinned_ids.contains(&t.id) {
+        if self.pinned_ids.contains(&t.id) || !self.closable {
             return Reveal::None;
         }
         if t.id == self.active_id || self.modified_ids.contains(&t.id) {
@@ -1094,7 +1310,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return Reveal::None;
         };
-        if self.pinned_ids.contains(&t.id) {
+        if self.pinned_ids.contains(&t.id) || !self.closable {
             return Reveal::None;
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
@@ -1267,7 +1483,11 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return 0.0;
         };
-        if t.app_kind.is_some() || t.icon.is_some() || self.accent_ids.contains_key(&t.id) {
+        if t.app_kind.is_some()
+            || t.icon.is_some()
+            || self.accent_ids.contains_key(&t.id)
+            || self.marks.contains_key(&t.id)
+        {
             ICON_W + ICON_GAP
         } else {
             0.0
@@ -1297,14 +1517,18 @@ impl TabBar {
         if self.pinned_ids.contains(&t.id) {
             return None;
         }
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Label);
         let title = t.title.clone();
         let id = t.id;
         // Record the shaped advance here — `apply_layout` has no text renderer of
         // its own, so it reads this back on the next pass.
-        let (full_w, _) = tr.measure_weighted(&title, size, None, TextWeight::Semibold);
+        let (full_w, _) = tr.measure_style(
+            &title,
+            None,
+            &style.clone().with_weight(TextWeight::Semibold),
+        );
         self.title_advance
-            .insert(id, (title.clone(), size, f64::from(full_w)));
+            .insert(id, (title.clone(), style.clone(), f64::from(full_w)));
         let r = *self.tab_rects.get(i)?;
         let (zx0, zx1) = self.title_zone(i, r);
         // A pill's title zone is a few hundred px at most, well inside `f32`'s
@@ -1329,7 +1553,11 @@ impl TabBar {
                         .collect();
                     let candidate = format!("…{tail}{suffix}");
                     if tr
-                        .measure_weighted(&candidate, size, None, TextWeight::Semibold)
+                        .measure_style(
+                            &candidate,
+                            None,
+                            &style.clone().with_weight(TextWeight::Semibold),
+                        )
                         .0
                         <= budget
                     {
@@ -1338,7 +1566,11 @@ impl TabBar {
                 }
             }
         }
-        Some(tr.elide_to_width_weighted(&title, size, budget, TextWeight::Semibold))
+        Some(tr.elide_to_width_style(
+            &title,
+            budget,
+            &style.clone().with_weight(TextWeight::Semibold),
+        ))
     }
 
     pub fn tabs(&self) -> &[TabDescriptor] {
@@ -1607,6 +1839,17 @@ impl TabBar {
     pub fn take_drag(&mut self) -> Option<DragPayload> {
         self.pending_drag.take()
     }
+    /// Abandon a pending or lifted tab without turning its release into a drop.
+    pub fn cancel_drag(&mut self) -> bool {
+        if self.press_origin.is_none() && self.pending_drag.is_none() {
+            return false;
+        }
+        self.pending_drag = None;
+        let mut handled = false;
+        self.finish_drag_release(&mut handled);
+        true
+    }
+
     pub fn drag_in_flight(&self) -> bool {
         self.pending_drag.is_some()
     }
@@ -1840,11 +2083,19 @@ impl TabBar {
         let is_active = self.tabs.get(idx).is_some_and(|t| t.id == self.active_id);
         let is_hover = !suppress_hover && Some(idx) == self.hover_idx;
         let is_pressed = !suppress_hover && self.press_origin.is_some_and(|(j, _)| j == idx);
-        let mut look = pill_appearance(theme, is_active, is_hover, is_pressed);
+        let is_carried = suppress_hover
+            && matches!(
+                &self.pending_drag,
+                Some(DragPayload::Tab { tab, .. })
+                    if self.tabs.get(idx).is_some_and(|item| item.id == *tab)
+            );
+        // The carried object needs its own readable surface even when its
+        // source tab is inactive. This changes paint, not tab selection.
+        let mut look = pill_appearance(theme, is_active || is_carried, is_hover, is_pressed);
         // Inactive body rides the reveal curve instead of switching on/off with
         // the pointer, fading (fill + edge together, so the hairline can't flicker
         // off a frame late) over the same frames its chips slide back in.
-        if !is_active && !is_pressed {
+        if !is_active && !is_pressed && !is_carried {
             let fade = if suppress_hover {
                 0.0
             } else {
@@ -1961,7 +2212,7 @@ impl TabBar {
 //   off the grid  TAB_PILL_INSET_Y 6 (pill 32 tall inside a 44 bar — the
 //                 bar height is pinned), PILL_GAP 6, ICON_GAP 6, CLOSE_W 18,
 //                 ACTION_W 14, ICON_W 14, CLOSE_INSET 3, TITLE_CHIP_GAP 10,
-//                 CHIP_FADE_PX 10, PILL_SQUEEZE_FLOOR_PX 54, NEW_TAB_GLYPH_PX 11
+//                 CHIP_FADE_PX 10, PILL_SQUEEZE_FLOOR_PX 54
 //
 // The off-grid values are lucide glyph sizes and optical gaps around a
 // 32 px pill; they are kept, named, and audited here rather than rounded,
@@ -1983,9 +2234,6 @@ const CLOSE_INSET: f64 = 3.0;
 /// How far a maximize/search chip's pointer rect stops short of the pill's
 /// top and bottom edges.
 const ACTION_HIT_INSET_Y: f64 = 4.0;
-/// The "+" glyph inside the new-tab chip. Smaller than the action glyphs:
-/// at 14 px the arms nearly touched the dashed ring and read as crowded.
-const NEW_TAB_GLYPH_PX: f64 = 11.0;
 /// The group-focus keyline under an active pill: its thickness, and how
 /// far it floats above the pill's bottom edge.
 const FOCUS_KEYLINE_PX: f64 = 2.0;
@@ -2202,6 +2450,13 @@ fn square_at(c: Point, side: f64) -> Rect {
 /// `ICON_W` square, starting on the pill's text inset and centred on the
 /// pill's centre line. The title starts `ICON_GAP` after it — see
 /// [`title_x0`].
+/// The instant a busy mark's turn is measured from, shared by every strip so
+/// two loading tabs turn together.
+fn busy_epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(crate::time::now)
+}
+
 fn leading_glyph_rect(r: Rect) -> Rect {
     let x0 = r.x0 + PILL_PAD_X;
     Rect::new(
@@ -2246,7 +2501,7 @@ impl Widget for TabBar {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.reduce_motion = theme.reduce_motion;
+        self.reduce_motion = theme.reduce_motion || self.host_reduced_motion;
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // `TAB_BAR_HEIGHT` is a fixed 44px layout constant, well inside `f32`'s
         // exact-integer range.
@@ -2290,6 +2545,8 @@ impl Widget for TabBar {
         self.reveal_px.clear();
         self.reveal_px
             .resize(self.tabs.len(), Reveal::None.reserve());
+        self.mark_rects.clear();
+        self.mark_rects.resize(self.tabs.len(), Rect::ZERO);
 
         let (visual_order, widths, grow) = self.compute_pill_layout();
 
@@ -2357,6 +2614,13 @@ impl Widget for TabBar {
             if let Some(slot) = self.tab_rects.get_mut(i) {
                 *slot = r;
             }
+            // Every unpinned tab keeps the slot, so a mark set between
+            // layouts lands (and hit-tests) where it will be painted.
+            if let Some(slot) = self.mark_rects.get_mut(i)
+                && !is_pinned
+            {
+                *slot = leading_glyph_rect(r);
+            }
             if let Some(slot) = self.close_rects.get_mut(i) {
                 *slot = close;
             }
@@ -2374,7 +2638,7 @@ impl Widget for TabBar {
         // `x` is the strip's write head; the "+" chip is suppressed once pills
         // fill the bar.
         let plus_x1 = x + NEW_TAB_CHIP_PX;
-        self.new_tab_rect = if plus_x1 <= self.rect.x1 {
+        self.new_tab_rect = if self.new_tab && plus_x1 <= self.rect.x1 {
             Rect::new(x, pill_y0, plus_x1, pill_y1)
         } else {
             Rect::ZERO
@@ -2419,13 +2683,21 @@ impl Widget for TabBar {
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
         self.draw_keyboard_focus(scene, transform, theme);
-        self.draw_new_tab_chip(scene, transform, theme);
+        self.draw_new_tab_chip(scene, transform, tr, theme);
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && event.logical_key == Key::Named(NamedKey::Escape)
+            && self.cancel_drag()
+        {
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
             && self.handle_keyboard_navigation(&event.logical_key)
@@ -2537,7 +2809,7 @@ impl Widget for TabBar {
                 // that can't see it gets it as a description instead.
                 // `AccessState` has no flag for this and inventing one would
                 // ripple through every widget.
-                let node = if self.pinned_ids.contains(&t.id) {
+                let node = if self.pinned_ids.contains(&t.id) || !self.closable {
                     node
                 } else {
                     node.with_children(vec![
@@ -2550,22 +2822,42 @@ impl Widget for TabBar {
                             }),
                     ])
                 };
-                if self.modified_ids.contains(&t.id) {
+                let node = if self.modified_ids.contains(&t.id) {
                     node.with_description(crate::i18n!("tab-modified"))
                 } else {
                     node
+                };
+                match self.marks.get(&t.id) {
+                    Some(mark) if mark.is_control() => {
+                        let mut node = node.with_description(mark.description());
+                        node.children.push(
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name(format!("Mute {}", t.title))
+                                .with_action_target(format!("tab-mute:{}", t.id))
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    checked: Some(*mark == TabMark::Muted),
+                                    ..Default::default()
+                                }),
+                        );
+                        node
+                    }
+                    Some(mark) => node.with_description(mark.description()),
+                    None => node,
                 }
             })
             .collect();
-        tab_children.push(
-            AccessNode::new(Role::Button)
-                .with_name("New tab")
-                .with_action_target("tab-new")
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
-        );
+        if self.new_tab {
+            tab_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("New tab")
+                    .with_action_target("tab-new")
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            );
+        }
         node = node.with_children(tab_children);
         Some(node)
     }
@@ -2574,13 +2866,16 @@ impl Widget for TabBar {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
         if target == "tab-new" {
+            if !self.new_tab {
+                return false;
+            }
             self.pending_new_tab = Some(());
             return true;
         }
@@ -2588,7 +2883,17 @@ impl Widget for TabBar {
             .strip_prefix("tab-close:")
             .and_then(|value| value.parse::<u64>().ok())
         {
-            return !self.pinned_ids.contains(&id) && self.start_closing(id);
+            return self.closable && !self.pinned_ids.contains(&id) && self.start_closing(id);
+        }
+        if let Some(id) = target
+            .strip_prefix("tab-mute:")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            let Some(mark) = self.marks.get(&id).copied().filter(|m| m.is_control()) else {
+                return false;
+            };
+            self.pending_mark = Some((id, mark));
+            return true;
         }
         let Some(id) = target
             .strip_prefix("tab:")
@@ -2629,6 +2934,15 @@ impl Widget for TabBar {
     fn accepts_drop(&self, payload: &DragPayload) -> bool {
         matches!(payload, DragPayload::Tab { .. })
     }
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        // The busy mark stands still and a drag lifts at once.
+        self.host_reduced_motion = reduced;
+        self.reduce_motion = reduced;
+        for child in self.children_mut() {
+            child.set_motion_reduced(reduced);
+        }
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep pumping redraws while any curve is in flight: drop-zone expand,
         // layout spring, insert fade, close fade, drop-line fade-in, or reveal.
@@ -2658,6 +2972,7 @@ impl Widget for TabBar {
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
+        let busy = !self.reduce_motion && self.marks.values().any(|m| *m == TabMark::Busy);
         let drag_lift = !self.reduce_motion
             && self.pending_drag.is_some()
             && self
@@ -2674,6 +2989,7 @@ impl Widget for TabBar {
             || reveal
             || drag_lift
             || hover_intent
+            || busy
     }
 }
 
@@ -2877,11 +3193,19 @@ impl TabBar {
             return;
         };
         let ring_rect = rect.inset(1.0);
-        let ring = RoundedRect::from_rect(ring_rect, (ring_rect.height() / 2.0).max(0.0));
+        let ring = RoundedRect::from_rect(
+            ring_rect,
+            f64::from(
+                theme
+                    .tokens
+                    .radii
+                    .concentric(theme.tokens.radii.control, 1.0),
+            ),
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(2.0),
             transform,
-            theme.tokens.colors.border_focus,
+            theme.tokens.colors.intent.you,
             None,
             &ring,
         );
@@ -2890,49 +3214,23 @@ impl TabBar {
     /// The idle/hover "+" new-tab chip, painted after the pills so a springing
     /// neighbour never draws over it; skipped during a drag so it can't be
     /// mistaken for a drop target.
-    fn draw_new_tab_chip(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn draw_new_tab_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         if !(self.new_tab_rect.area() > 0.0 && self.pending_drag.is_none()) {
             return;
         }
-        let r = self.new_tab_rect;
-        let radius = r.height() / 2.0;
-        let shape = RoundedRect::from_rect(r, radius);
-        let colors = &theme.tokens.colors;
-        // Idle: dotted outline, not a filled button, so it doesn't compete with
-        // the active pill. Hover: the same glass a hovered pill uses.
-        if self.hover_new_tab {
-            crate::chrome::shell::paint_glass_body(
-                scene,
-                transform,
-                r,
-                radius,
-                theme,
-                &pill_appearance(theme, false, true, false),
-                1.0,
-            );
-        } else {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-                transform,
-                Colors::hairline_on(colors.surfaces.base, PILL_BORDER_ALPHA),
-                None,
-                &shape,
-            );
-        }
-        let glyph_rect = square_at(r.center(), NEW_TAB_GLYPH_PX);
-        let glyph_color = if self.hover_new_tab {
-            colors.text_primary
-        } else {
-            colors.text_dim
-        };
-        icons::draw_icon(
-            scene,
-            transform,
-            glyph_rect,
-            icons::Icon::Plus,
-            glyph_color,
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
+        // The shared icon button: bare at rest so it never competes with the
+        // active tab, a lift of the bar under the pointer.
+        let face =
+            crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, "New tab")
+                .control_size(crate::widget::ControlSize::Small)
+                .hovered(self.hover_new_tab);
+        crate::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
     /// Pills mid close-fade, retained past the fade window (at alpha 0) until
@@ -3091,7 +3389,11 @@ impl TabBar {
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
-            Self::GHOST_PILL_ALPHA,
+            if theme.colors_are_forced() {
+                1.0
+            } else {
+                Self::GHOST_PILL_ALPHA
+            },
             transform,
             &clip,
         );
@@ -3254,6 +3556,18 @@ impl TabBar {
             *handled = true;
             return;
         }
+        // A sound mark is a control of its own: it mutes, it does not select.
+        let mark_hit = self.tabs.iter().zip(&self.mark_rects).find_map(|(t, r)| {
+            let mark = self.marks.get(&t.id).copied()?;
+            (mark.is_control() && r.area() > 0.0 && r.inflate(2.0, 2.0).contains(cursor_pos))
+                .then_some((t.id, mark))
+        });
+        if let Some(hit) = mark_hit {
+            self.pending_mark = Some(hit);
+            *handled = true;
+            return;
+        }
+
         // Close button takes priority over selection/drag.
         if let Some(ci) = close_idx
             && let Some(t) = self.tabs.get(ci)
@@ -3500,7 +3814,7 @@ mod tests {
                     .resources
                     .glyph_runs
                     .iter()
-                    .all(|run| run.font_size <= theme.tokens.typography.scale.sm)
+                    .all(|run| run.font_size <= theme.tokens.typography.size(TextRole::Label))
             );
             assert!(
                 scene
@@ -3508,7 +3822,10 @@ mod tests {
                     .resources
                     .glyph_runs
                     .iter()
-                    .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01),
+                    .any(
+                        |run| (run.font_size - theme.tokens.typography.size(TextRole::Label)).abs()
+                            < 0.01
+                    ),
                 "tab title must retain the requested 200% font size"
             );
         }
@@ -4086,7 +4403,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4158,7 +4475,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4372,7 +4689,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4785,7 +5102,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4814,7 +5131,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4834,7 +5151,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4883,7 +5200,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4911,7 +5228,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5525,7 +5842,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5546,7 +5863,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -6021,7 +6338,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -6086,7 +6403,7 @@ mod tests {
                 &mut b,
                 "tab-new",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(b.take_new_tab().is_some());
@@ -6094,7 +6411,7 @@ mod tests {
                 &mut b,
                 "tab-close:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(b.take_close(), Some(2));
@@ -6141,7 +6458,7 @@ mod tests {
                 &mut b,
                 "tab:3",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(b.active_id(), 3);
@@ -6150,7 +6467,7 @@ mod tests {
                 &mut b,
                 "tab:999",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
         }
@@ -6452,7 +6769,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &obj,
                 handled,
                 focus_target: &mut focus,
@@ -6486,7 +6803,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &obj,
                 handled,
                 focus_target: &mut focus,
@@ -6780,5 +7097,104 @@ mod tests {
                 "no curve may be left running under reduce-motion"
             );
         }
+    }
+
+    #[test]
+    fn a_strip_of_fixed_views_has_no_close_or_new_tab_and_marks_paint_and_hit() {
+        let theme = crate::theme::Theme {
+            reduce_motion: true,
+            ..crate::theme::Theme::dark()
+        };
+        let mut fixed = bar().closable(false).without_new_tab();
+        lay_out_at_width_with(&mut fixed, 600.0, &theme);
+        assert_eq!(fixed.new_tab_rect(), Rect::ZERO, "no new-tab control");
+        hover_pill(&mut fixed, 1, 600.0, &theme);
+        assert!(
+            fixed.close_rects.iter().all(|r| r.area() <= 0.0),
+            "no close control, even under the pointer"
+        );
+        let node = Widget::accessibility(&fixed).unwrap();
+        assert!(
+            node.children
+                .iter()
+                .all(|tab| tab.children.is_empty() && tab.name.as_deref() != Some("New tab")),
+            "nothing to close or add is announced"
+        );
+
+        // Marks: a playing tab's speaker is a control of its own.
+        let mut tabs = bar();
+        tabs.set_mark(2, Some(TabMark::Playing));
+        tabs.set_mark(3, Some(TabMark::Busy));
+        lay_out_at_width_with(&mut tabs, 600.0, &theme);
+        let speaker = tabs
+            .mark_rect(2)
+            .expect("the mark stands in the leading slot");
+        assert!(tabs.tab_rects()[1].contains(speaker.center()));
+        let mut handled = false;
+        dispatch_cursor(&mut tabs, speaker.center(), &mut handled);
+        dispatch_left_button(&mut tabs, ElementState::Pressed, &mut handled);
+        assert_eq!(tabs.take_mark_click(), Some((2, TabMark::Playing)));
+        assert_eq!(
+            tabs.active_id(),
+            1,
+            "a click on the mark does not select the tab"
+        );
+        assert!(
+            tabs.needs_animation_frame() || theme.reduce_motion,
+            "a busy mark turns"
+        );
+        let node = Widget::accessibility(&tabs).unwrap();
+        assert_eq!(
+            node.children[1].description.as_deref(),
+            Some("Playing audio")
+        );
+        assert_eq!(node.children[2].description.as_deref(), Some("Loading"));
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        tabs.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(!scene.encoding().draw_tags.is_empty());
+    }
+
+    #[test]
+    fn the_active_tab_is_the_lift_alone_unless_the_host_shows_group_focus() {
+        let theme = crate::theme::Theme::dark();
+        let you = theme
+            .tokens
+            .colors
+            .intent
+            .you
+            .premultiply()
+            .to_rgba8()
+            .to_u32();
+        let paint = |b: &mut TabBar| {
+            lay_out_at_width_with(b, 600.0, &theme);
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            b.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            scene.encoding().draw_data.contains(&you)
+        };
+        let mut documents = bar();
+        assert!(
+            !paint(&mut documents),
+            "a strip of documents shows no keyline"
+        );
+        let mut groups = bar();
+        groups.set_group_focused(true);
+        assert!(
+            paint(&mut groups),
+            "the focused window group's active tab does"
+        );
     }
 }

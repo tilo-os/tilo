@@ -152,6 +152,7 @@ case ",$5," in *,password-cache=no,*) ;; *) exit 1 ;; esac
 case ",$5," in *,tpm2-device=auto,*) ;; *) exit 1 ;; esac
 case ",$5," in *,fido2-device=auto,*) ;; *) exit 1 ;; esac
 [ "$LC_ALL" = C ] && [ "$SYSTEMD_LOG_TARGET" = console ]
+echo attach >>"$TILO_TEST_ORDER_LOG"
 if [ "${TILO_TEST_ATTACH_FAILURE:-0}" = 1 ]; then
   echo 'Fatal device failure' >&2
   exit 2
@@ -163,7 +164,17 @@ cat >"$work/bin/plymouth" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >>"$TILO_TEST_PLYMOUTH_LOG"
 EOF
-chmod +x "$work/bin/encrypted" "$work/bin/attach" "$work/bin/plymouth"
+cat >"$work/bin/systemctl" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >>"$TILO_TEST_ORDER_LOG"
+EOF
+# A root with a sibling-unlock token: the probe answers yes for exactly it.
+cat >"$work/bin/sibling" <<'EOF'
+#!/bin/bash
+[ "$1" = probe ] && [ "$2" = "$TILO_ROOT_DEVROOT/tilo-root" ]
+EOF
+chmod +x "$work/bin/encrypted" "$work/bin/attach" "$work/bin/plymouth" "$work/bin/systemctl" \
+  "$work/bin/sibling"
 encrypted_discover() {
 TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
 TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_TEST_DISK=disk0 \
@@ -171,6 +182,8 @@ TILO_ROOT_TEST_PARTS="$esp tilo-root:$tilo_type" \
 TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
 TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/encrypted" \
 TILO_ROOT_CRYPTSETUP="$work/bin/attach" TILO_ROOT_UNLOCK=true \
+TILO_ROOT_SIBLING_UNLOCK="${TILO_TEST_SIBLING:-false}" TILO_ROOT_SYSTEMCTL="$work/bin/systemctl" \
+TILO_TEST_ORDER_LOG="$work/order" \
 TILO_ROOT_PLYMOUTH="$work/bin/plymouth" TILO_TEST_PLYMOUTH_LOG="$work/plymouth-events" \
 TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
 }
@@ -188,6 +201,27 @@ fi
 grep -q 'encrypted Tilo root did not unlock' "$work/attach-failure"
 test ! -e "$work/run/tilo-root/source"
 echo 'ok: fatal attach errors still fail root discovery'
+
+# Without a sibling-unlock token nothing but the attach runs.
+test "$(cat "$work/order")" = $'attach\nattach'
+echo 'ok: a root without a sibling factor starts no sibling unlock'
+
+# With one, the attempt starts before the prompt and is stopped (and wiped)
+# once the volume is open, or when opening it failed.
+sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$work/dev/tilo-root").service"
+rm -rf "$work/run/tilo-root" "$work/order" "$work/plymouth-events"
+TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
+printf '%s\n' "start --no-block $sibling_unit" attach "stop $sibling_unit" "stop $sibling_unit" \
+  >"$work/expected-order"
+cmp "$work/expected-order" "$work/order"
+rm -rf "$work/run/tilo-root" "$work/order"
+if TILO_TEST_SIBLING="$work/bin/sibling" TILO_TEST_ATTACH_FAILURE=1 encrypted_discover 2>/dev/null; then
+  echo 'fatal encrypted device failure was swallowed with a sibling unlock running' >&2
+  exit 1
+fi
+printf '%s\n' "start --no-block $sibling_unit" attach "stop $sibling_unit" >"$work/expected-order"
+cmp "$work/expected-order" "$work/order"
+echo 'ok: a sibling unlock runs beside the prompt and is stopped once it is done'
 
 
 # The install preflight binds both the PCR policy and the exact target UKI to

@@ -5,6 +5,8 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
+#[cfg(test)]
+mod nearby_transfer_tests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,6 +66,34 @@ pub enum PersonalFabricPayload {
     /// Resumable generic Nearby object data. Offers and resume checkpoints
     /// travel as authenticated actions; this lane carries bounded bytes only.
     NearbyTransfer(PersonalNearbyTransferFrame),
+    /// One signed mutation of a record in the person's own room. Its room is
+    /// implied by the route: the fabric only ever joins one person's devices.
+    /// `record_id` is the sealed wire name, as on a room topic.
+    Document {
+        app_id: String,
+        record_id: String,
+        envelope: Box<collab_types::SignedOp>,
+    },
+    /// A device of the person asking for content one of `app_id`'s person
+    /// records references. Its room is the person's, implied by the route.
+    RecordContentWant {
+        app_id: String,
+        hash: String,
+    },
+    /// One bounded piece of that content, for the device that asked alone.
+    RecordContentPiece {
+        app_id: String,
+        hash: String,
+        total: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    /// Optional owner-authored screen observation extension. Appended to keep
+    /// every existing payload discriminant and schema-6 checkpoint unchanged.
+    DisplayConnectors {
+        stamp: crate::shell::device_fabric::FabricStamp,
+        outputs: Vec<crate::shell::device_fabric::DisplayConnectorPlacement>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -168,6 +198,13 @@ pub enum NetCmd {
         ws: u64,
         msg: NeighbourMsg,
     },
+    /// A message for `ws`'s workspace hosts only, held until a host session
+    /// is up, never gossiped: what only the hosts of the person's own
+    /// continuity topic may keep for their other devices.
+    PublishToHosts {
+        ws: u64,
+        msg: NeighbourMsg,
+    },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
     /// Ask the room authority of the relay at `relay`, as `certificate`, from
@@ -216,6 +253,8 @@ pub enum NetCmd {
         target: EndpointId,
         msg: NeighbourMsg,
     },
+    /// Send one piece of a record's content to the device that asked for it.
+    PublishRecordContent(RecordContentDelivery),
     /// Publish a shell-tree message that is known to contain the complete
     /// room history. Only the deliberate `HostReady` baseline uses this;
     /// ordinary `SyncResp` messages may be partial anti-entropy responses.
@@ -277,6 +316,17 @@ pub enum NetCmd {
         host: uuid::Uuid,
         rooms: Vec<uuid::Uuid>,
     },
+}
+
+/// A piece of a record's content on its way to the device of the room that
+/// asked: over the direct plane when that device is a live peer of the
+/// room's topic, else through the room's workspace hosts, which hand it to
+/// that device alone and keep nothing, else on the topic itself.
+#[derive(Debug)]
+pub struct RecordContentDelivery {
+    pub ws: WorkspaceId,
+    pub target: Option<EndpointId>,
+    pub msg: NeighbourMsg,
 }
 
 /// One immutable Nearby spool object and the receiver-confirmed checkpoint
@@ -518,6 +568,21 @@ struct HostRuntime {
     replaying: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Early boot of another of the person's devices asking for its sibling
+/// half. The peer is not authenticated by transport: the boot key
+/// certificate and the challenge are what the sibling checks.
+#[derive(Clone, Debug)]
+struct DeviceUnlockProtocol;
+
+impl ProtocolHandler for DeviceUnlockProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        tokio::spawn(crate::shell::device_unlock_runtime::serve_connection(
+            connection,
+        ));
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -559,6 +624,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::PermissionGrant { .. }
                         | NeighbourMsg::RemoteInput { .. }
                         | NeighbourMsg::RemoteAction { .. }
+                        | NeighbourMsg::RecordContentPiece { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -603,6 +669,7 @@ async fn enqueue_surface_event(
         InternalEvent::SurfaceFrame {
             msg: NeighbourMsg::RemoteInput { .. }
                 | NeighbourMsg::RemoteAction { .. }
+                | NeighbourMsg::RecordContentPiece { .. }
                 | NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::PermissionGrant { .. },
@@ -778,7 +845,7 @@ struct ActorState {
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// When each recent remote-input message arrived (see [`mark_new_input`]).
-    recent_input: HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    recent_input: HashMap<(WorkspaceId, [u8; 32]), (EndpointId, Instant)>,
     /// Channel governance this device published to each room, by retention
     /// channel (see [`remember_governance`]).
     governance: HashMap<WorkspaceId, GovernanceLog>,
@@ -1154,6 +1221,19 @@ impl ActorState {
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
+            Some(NetCmd::PublishToHosts { ws, msg }) => {
+                self.hold_for_host(ws, &msg, false);
+                publish(
+                    &self.topics,
+                    &self.host_sessions,
+                    ws,
+                    msg,
+                    false,
+                    false,
+                    true,
+                )
+                .await;
+            }
             Some(NetCmd::PublishHostedTopology { ws, msg }) => {
                 if matches!(msg, NeighbourMsg::SyncResp { .. }) {
                     publish(
@@ -1176,6 +1256,9 @@ impl ActorState {
             }
             Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
                 self.publish_remote_action(ws, target, msg).await;
+            }
+            Some(NetCmd::PublishRecordContent(delivery)) => {
+                self.publish_record_content(delivery).await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 if self.native_routes.contains(ws) {
@@ -1848,6 +1931,50 @@ impl ActorState {
         }
     }
 
+    async fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
+        let RecordContentDelivery { ws, target, msg } = delivery;
+        if !matches!(msg, NeighbourMsg::RecordContentPiece { .. }) {
+            tracing::warn!(
+                ws,
+                "refused a non-content message on the record-content route"
+            );
+            return;
+        }
+        if let Some(target) = target
+            && self.peers_seen.contains_key(&(ws, target))
+            && self.publish_direct(ws, target, msg.clone()).await
+        {
+            return;
+        }
+        // The workspace hosts route it to that device alone when it is
+        // connected to them.
+        if let Some(target) = target
+            && let Ok(frame) = postcard::to_allocvec(&msg)
+            && self
+                .host_sessions
+                .iter()
+                .filter(|((session_ws, _), _)| *session_ws == ws)
+                .any(|(_, runtime)| {
+                    runtime
+                        .session
+                        .publish_record_content(*target.as_bytes(), frame.clone())
+                        .is_ok()
+                })
+        {
+            return;
+        }
+        publish(
+            &self.topics,
+            &self.host_sessions,
+            ws,
+            msg,
+            false,
+            true,
+            false,
+        )
+        .await;
+    }
+
     /// Deliver one message to exactly `target` on the authenticated direct
     /// surface/control plane. The peer must be live on this workspace.
     /// Returns whether the message was written.
@@ -1863,7 +1990,10 @@ impl ActorState {
         }
         // Input must land within an interactive frame budget or not at all;
         // an action frame (up to a catalogue page) is worth waiting for.
-        let budget = if matches!(msg, NeighbourMsg::RemoteAction { .. }) {
+        let budget = if matches!(
+            msg,
+            NeighbourMsg::RemoteAction { .. } | NeighbourMsg::RecordContentPiece { .. }
+        ) {
             Duration::from_secs(2)
         } else {
             Duration::from_millis(40)
@@ -2555,9 +2685,13 @@ impl ActorState {
                 // before on purpose too: the broker drops what it holds.
                 let new = match msg {
                     NeighbourMsg::RemoteAction { .. } => true,
-                    NeighbourMsg::RemoteInput { .. } => {
-                        mark_new_input(ws, fingerprint, Instant::now(), &mut self.recent_input)
-                    }
+                    NeighbourMsg::RemoteInput { .. } => mark_new_input(
+                        ws,
+                        peer,
+                        fingerprint,
+                        Instant::now(),
+                        &mut self.recent_input,
+                    ),
                     _ => {
                         mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
                     }
@@ -3215,6 +3349,7 @@ async fn run(
                 next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
+        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .spawn();
     let mut state = ActorState {
         endpoint,
@@ -3432,22 +3567,28 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Remote input is not deduplicated for good: a second click or key press is
-/// byte-identical to the first. Only a copy arriving within [`INPUT_COPY`]
-/// (the same event over another route to this room) is dropped.
+/// byte-identical to the first. Only a copy that another host session
+/// delivers within [`INPUT_COPY`] (the same event over another route to this
+/// room) is dropped; one session delivers each event once, in order, so
+/// identical events over it (a doubled letter in one batch) are all new.
 fn mark_new_input(
     ws: WorkspaceId,
+    host: EndpointId,
     fingerprint: [u8; 32],
     now: Instant,
-    recent: &mut HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    recent: &mut HashMap<(WorkspaceId, [u8; 32]), (EndpointId, Instant)>,
 ) -> bool {
     const INPUT_COPY: Duration = Duration::from_millis(30);
     if recent.len() > 256 {
-        recent.retain(|_, seen| now.saturating_duration_since(*seen) < INPUT_COPY);
+        recent.retain(|_, (_, seen)| now.saturating_duration_since(*seen) < INPUT_COPY);
     }
-    match recent.insert((ws, fingerprint), now) {
-        Some(seen) => now.saturating_duration_since(seen) >= INPUT_COPY,
-        None => true,
+    let copy = recent.get(&(ws, fingerprint)).is_some_and(|(via, seen)| {
+        *via != host && now.saturating_duration_since(*seen) < INPUT_COPY
+    });
+    if !copy {
+        recent.insert((ws, fingerprint), (host, now));
     }
+    !copy
 }
 
 fn mark_new_message(
@@ -3850,6 +3991,12 @@ fn spawn_host_pump(
                         msg: NeighbourMsg::RemoteAction { frame },
                     }
                 }
+                HostInbound::RecordContent { from, frame } => {
+                    let Some(event) = record_content_event(&from, &frame) else {
+                        continue;
+                    };
+                    event
+                }
                 HostInbound::Delta { author, data } if native_scope.is_some() => {
                     let Ok(msg) = postcard::from_bytes(&data) else {
                         continue;
@@ -3907,6 +4054,19 @@ fn spawn_host_pump(
     })
 }
 
+/// A piece of a record's content a workspace host handed this device from
+/// `from`; `None` for anything else.
+fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
+    let author = EndpointId::from_bytes(from).ok()?;
+    let msg = postcard::from_bytes(frame).ok()?;
+    matches!(msg, NeighbourMsg::RecordContentPiece { .. }).then(|| HostEvent::Message {
+        author,
+        fingerprint: message_fingerprint(frame),
+        replayed: false,
+        msg,
+    })
+}
+
 fn topic_id(ws: WorkspaceId) -> TopicId {
     let mut hasher = blake3::Hasher::new_derive_key("tilo-workspace-gossip-v1");
     hasher.update(&ws.to_le_bytes());
@@ -3925,22 +4085,50 @@ mod tests {
     #[test]
     fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
         let mut recent = HashMap::new();
+        let host = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
+        let other = iroh::SecretKey::from_bytes(&[0xA2; 32]).public();
         let start = Instant::now();
-        assert!(mark_new_input(1, [7; 32], start, &mut recent));
+        assert!(mark_new_input(1, host, [7; 32], start, &mut recent));
         assert!(
-            !mark_new_input(1, [7; 32], start + Duration::from_millis(1), &mut recent),
+            !mark_new_input(
+                1,
+                other,
+                [7; 32],
+                start + Duration::from_millis(1),
+                &mut recent
+            ),
             "the same event arriving over a second relay session"
         );
         assert!(
-            mark_new_input(1, [7; 32], start + Duration::from_millis(200), &mut recent),
+            mark_new_input(
+                1,
+                host,
+                [7; 32],
+                start + Duration::from_millis(200),
+                &mut recent
+            ),
             "a second, byte-identical click"
         );
         assert!(mark_new_input(
             2,
+            host,
             [7; 32],
             start + Duration::from_millis(200),
             &mut recent
         ));
+        // "ll" typed in one batch: both strokes come over one session at once.
+        for _ in 0..2 {
+            assert!(
+                mark_new_input(
+                    1,
+                    host,
+                    [9; 32],
+                    start + Duration::from_millis(300),
+                    &mut recent
+                ),
+                "a repeated key over the same session"
+            );
+        }
     }
 
     fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
@@ -4054,6 +4242,48 @@ mod tests {
             .await
             .unwrap();
         (endpoint, lookup)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn personal_fabric_unknown_extension_preserves_following_streams() {
+        let (a, _) = endpoint().await;
+        let (b, _) = endpoint().await;
+        let (internal_tx, mut events) = mpsc::channel(8);
+        let router = Router::builder(b.clone())
+            .accept(
+                PERSONAL_FABRIC_ALPN,
+                PersonalFabricProtocol {
+                    internal_tx,
+                    next_connection_incarnation: Arc::new(AtomicU64::new(1)),
+                },
+            )
+            .spawn();
+        let connection = a.connect(b.addr(), PERSONAL_FABRIC_ALPN).await.unwrap();
+        let frame = PersonalFabricWireFrame {
+            workspace: 43,
+            user_public_key: [0xA5; 32],
+            payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+        };
+        let valid = postcard::to_allocvec(&frame).unwrap();
+        assert_eq!(valid[33], 1, "the legacy Snapshot payload tag stays fixed");
+        let mut future = valid.clone();
+        future[33] = 9; // First unsupported tag after optional connector observations.
+        assert!(postcard::from_bytes::<PersonalFabricWireFrame>(&future).is_err());
+        for bytes in [&future, &valid] {
+            let mut stream = connection.open_uni().await.unwrap();
+            stream.write_all(bytes).await.unwrap();
+            stream.finish().unwrap();
+        }
+        let event =
+            tilo_test_env::within("valid checkpoint after unknown extension", events.recv())
+                .await
+                .unwrap();
+        assert!(matches!(event, InternalEvent::PersonalFabric {
+            ws: 43, payload: PersonalFabricPayload::Snapshot(bytes), ..
+        } if bytes == vec![1, 2, 3]));
+        connection.close(0u32.into(), b"fixture complete");
+        router.shutdown().await.unwrap();
+        a.close().await;
     }
 
     #[tokio::test]
@@ -4788,12 +5018,21 @@ mod tests {
         a_pub: [u8; 32],
         b_pub: [u8; 32],
     ) -> (Relay, tempfile::TempDir, DeviceCert) {
+        spawn_pinned_relay_for_members_on(root, 42, a_pub, b_pub).await
+    }
+
+    async fn spawn_pinned_relay_for_members_on(
+        root: &ed25519_dalek::SigningKey,
+        ws: WorkspaceId,
+        a_pub: [u8; 32],
+        b_pub: [u8; 32],
+    ) -> (Relay, tempfile::TempDir, DeviceCert) {
         let (host_key, host_cert) = enrol(root, DeviceCapabilities::host(), "host");
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
             state_root: state.path().to_path_buf(),
             workspaces: vec![WorkspaceBinding {
-                id: 42,
+                id: ws,
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
@@ -4814,7 +5053,7 @@ mod tests {
         .await
         .unwrap();
         relay
-            .set_workspace_membership(42, true, vec![a_pub, b_pub], state.path().to_path_buf())
+            .set_workspace_membership(ws, true, vec![a_pub, b_pub], state.path().to_path_buf())
             .await
             .unwrap();
         (relay, state, host_cert)
@@ -5743,6 +5982,152 @@ mod tests {
                 }
             }
         })
+        .await;
+    }
+
+    /// The person's always-on host keeps a record of their own room that one
+    /// of their devices published to it, and hands it to another of their
+    /// devices that connects after the first went away; only to hosts, on
+    /// the person's continuity topic.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a host, two of one person's devices and the first leaving before the second arrives in one scenario"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_persons_host_keeps_their_records_for_a_device_that_comes_later() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let user = root.verifying_key().to_bytes();
+        let continuity = tilo_relay_protocol::personal_continuity_workspace_id(&user);
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "laptop");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "phone");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_members_on(
+            &root,
+            continuity,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let cluster = collab_types::person_room(&user).to_string();
+        let mut op = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(b"watched one video".to_vec())
+                .encode()
+                .unwrap(),
+            collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
+            collab_types::Ed25519PublicKey::from_bytes(a_key.verifying_key().to_bytes()),
+            collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut op, &a_key).unwrap();
+
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (cmd_a, task_a) = Actor::spawn_reporting_addrs(
+            a,
+            lookup_a,
+            Some(identity(a_key, a_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_a, mut rx_a) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: continuity,
+                on_event: events_a,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::PublishToHosts {
+                ws: continuity,
+                msg: NeighbourMsg::AppDocument {
+                    peer: 7,
+                    app_id: "so.tilo.tube".into(),
+                    cluster_id: cluster.clone(),
+                    record_id: "history".into(),
+                    envelope: Box::new(op.clone()),
+                },
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("the laptop's host session is ready", async {
+            while !matches!(rx_a.recv().await, Some(NetEvent::HostReady { .. })) {}
+        })
+        .await;
+        // The host has it once the session is up; the laptop goes away.
+        tilo_test_env::within("the host retains the laptop's record", async {
+            while relay
+                .room_records()
+                .retained(continuity)
+                .await
+                .unwrap_or_default()
+                .is_empty()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        drop(cmd_a);
+        task_a.abort();
+
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+            b,
+            lookup_b,
+            Some(identity(b_key, b_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_b, mut rx_b) = mpsc::channel(16);
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: continuity,
+                on_event: events_b,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within(
+            "the phone receives the laptop's record from the host",
+            async {
+                loop {
+                    if let Some(NetEvent::Msg {
+                        ws,
+                        msg:
+                            NeighbourMsg::AppDocument {
+                                envelope,
+                                cluster_id,
+                                ..
+                            },
+                        ..
+                    }) = rx_b.recv().await
+                        && *envelope == op
+                    {
+                        assert_eq!(ws, continuity);
+                        assert_eq!(cluster_id, cluster);
+                        break;
+                    }
+                }
+            },
+        )
         .await;
     }
 

@@ -32,12 +32,12 @@ impl SplitRow {
 }
 
 impl Widget for SplitRow {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.left.sync(state, path);
         self.right.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let a = self.left.update(state, path);
         let b = self.right.update(state, path);
         a || b

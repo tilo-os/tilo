@@ -136,6 +136,7 @@ pub fn build_group(
             let checked = matches!(
                 &resolution,
                 crate::resolver::TileResolution::Component(_)
+                    | crate::resolver::TileResolution::App(..)
                     | crate::resolver::TileResolution::Retained(_)
             );
             let mut host = resolution.mount(failures, wake.clone());
@@ -665,9 +666,14 @@ impl DesktopSurface {
                 let Some(live) = row.groups.iter_mut().find(|g| g.id == group.id) else {
                     continue;
                 };
-                changed |=
-                    live.width() != ui_width(group.width) || live.maximized != group.maximized;
-                live.set_width(ui_width(group.width));
+                // Width is a local intent committed on release. An unrelated
+                // snapshot revision must not reset a captured edge to its saved
+                // width or re-arm the width spring underneath the pointer.
+                if !live.edge_resize_in_flight() || live.maximized != group.maximized {
+                    changed |= live.width() != ui_width(group.width);
+                    live.set_width(ui_width(group.width));
+                }
+                changed |= live.maximized != group.maximized;
                 live.maximized = group.maximized;
                 let stale: Vec<_> = live
                     .tabs()
@@ -734,6 +740,7 @@ impl DesktopSurface {
                                     let checked = matches!(
                                         &other,
                                         crate::resolver::TileResolution::Component(_)
+                                            | crate::resolver::TileResolution::App(..)
                                             | crate::resolver::TileResolution::Retained(_)
                                     );
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
@@ -787,6 +794,7 @@ impl DesktopSurface {
                         let checked = matches!(
                             &resolution,
                             crate::resolver::TileResolution::Component(_)
+                                | crate::resolver::TileResolution::App(..)
                                 | crate::resolver::TileResolution::Retained(_)
                         );
                         let mut host = resolution.mount(&mut failures, wake_sink.clone());
@@ -948,7 +956,7 @@ impl Widget for DesktopSurface {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let wake = self.take_component_wake();
         self.root.update(doc, path) || wake
     }

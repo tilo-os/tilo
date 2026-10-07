@@ -45,7 +45,7 @@ class ArtifactTests(unittest.TestCase):
         self.write(self.ENGINE, bytes(header), 0o755)
         for name in ('runtime-bundle-publisher.hex', 'app-publisher.hex'):
             self.write('out/' + name, b'1' * 64 + b'\n')
-        self.write('usr/lib/tilo-runtime/2026.07/bundle.json', b'{}')
+        self.write('usr/lib/tilo-runtime/2026.07+native.' + '0' * 32 + '/bundle.json', b'{}')
         self.write('usr/share/tilo-apps/registry.toml', b'fixture')
 
     def write(self, name, data, mode=0o644):

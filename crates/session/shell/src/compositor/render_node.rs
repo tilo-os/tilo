@@ -27,6 +27,12 @@
 //! buffer it would have to reject. Buffer exchange loads the GPU driver, so it runs where
 //! [`launcher::gpu::in_isolation`] puts it: a forked child while the compositor is still
 //! single-threaded.
+//!
+//! A render node is not always a GPU. A virtio GPU without 3D acceleration (QEMU's plain
+//! `virtio-vga`, a cloud VM's display) still registers `renderD128`, but nothing renders behind
+//! it: Mesa falls back to dumb buffers, which the kernel refuses on render nodes with `EACCES`.
+//! Such a machine has no GPU to miss, so those nodes are told apart
+//! ([`ProbeError::NoRenderer`]) from a GPU whose buffers fail to exchange, which is a fault.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -52,6 +58,9 @@ pub enum ProbeError {
     NoRenderNodes,
     /// Nodes exist but none passed. Carries `(path, reason)` per node.
     NoneUsable(Vec<(PathBuf, String)>),
+    /// Nodes exist but none has a GPU behind it (a virtio GPU without 3D acceleration), so
+    /// software rendering is all this machine has. Carries `(path, reason)` per node.
+    NoRenderer(Vec<(PathBuf, String)>),
     /// `TILO_DMABUF_DEVICE` was set but unusable.
     OverrideUnusable { path: PathBuf, reason: String },
 }
@@ -64,12 +73,12 @@ impl std::fmt::Display for ProbeError {
             }
             ProbeError::NoneUsable(rejected) => {
                 write!(f, "no usable render node (")?;
-                for (i, (path, why)) in rejected.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, "; ")?;
-                    }
-                    write!(f, "{}: {why}", path.display())?;
-                }
+                write_rejected(f, rejected)?;
+                write!(f, ")")
+            }
+            ProbeError::NoRenderer(rejected) => {
+                write!(f, "no render node has a GPU behind it (")?;
+                write_rejected(f, rejected)?;
                 write!(f, ")")
             }
             ProbeError::OverrideUnusable { path, reason } => {
@@ -80,6 +89,34 @@ impl std::fmt::Display for ProbeError {
 }
 
 impl std::error::Error for ProbeError {}
+
+fn write_rejected(
+    f: &mut std::fmt::Formatter<'_>,
+    rejected: &[(PathBuf, String)],
+) -> std::fmt::Result {
+    for (i, (path, why)) in rejected.iter().enumerate() {
+        if i > 0 {
+            write!(f, "; ")?;
+        }
+        write!(f, "{}: {why}", path.display())?;
+    }
+    Ok(())
+}
+
+/// Why [`choose`] passed over a node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Rejection {
+    /// A GPU whose buffers cannot reach the compositor: a fault worth reporting.
+    Unusable(String),
+    /// No GPU behind the node at all.
+    NoRenderer(String),
+}
+
+impl From<String> for Rejection {
+    fn from(why: String) -> Self {
+        Rejection::Unusable(why)
+    }
+}
 
 /// Driver name for a render node, read out of sysfs: `/dev/dri/renderD128` →
 /// `/sys/class/drm/renderD128/device/driver` → symlink basename. `None` when the node isn't a
@@ -172,6 +209,9 @@ fn probe_uncached() -> Result<RenderNode, ProbeError> {
     choose(render_nodes(), |path| {
         opens(path).map_err(|e| format!("cannot open: {e}"))?;
         let dev = dev_of(path).map_err(|e| format!("stat failed: {e}"))?;
+        if let Some(why) = renderer::missing(path) {
+            return Err(Rejection::NoRenderer(why));
+        }
         let exchange = launcher::gpu::in_isolation(|| exchange::check(path))
             .and_then(std::convert::identity)?;
         tracing::info!(
@@ -184,16 +224,18 @@ fn probe_uncached() -> Result<RenderNode, ProbeError> {
     })
 }
 
-/// The first of `nodes` that `usable` accepts, or every node's reason.
+/// The first of `nodes` that `usable` accepts, or every node's reason. Nodes are a GPU's
+/// fault ([`ProbeError::NoneUsable`]) unless every one of them has no GPU behind it.
 /// Split from the host so tests can stand in for `/dev/dri`.
 fn choose(
     nodes: Vec<PathBuf>,
-    usable: impl Fn(&Path) -> Result<libc::dev_t, String>,
+    usable: impl Fn(&Path) -> Result<libc::dev_t, Rejection>,
 ) -> Result<RenderNode, ProbeError> {
     if nodes.is_empty() {
         return Err(ProbeError::NoRenderNodes);
     }
     let mut rejected = Vec::new();
+    let mut every_node_lacks_a_renderer = true;
     for path in nodes {
         match usable(&path) {
             Ok(dev) => {
@@ -203,7 +245,14 @@ fn choose(
                     dev,
                 });
             }
-            Err(why) => {
+            Err(rejection) => {
+                let why = match rejection {
+                    Rejection::Unusable(why) => {
+                        every_node_lacks_a_renderer = false;
+                        why
+                    }
+                    Rejection::NoRenderer(why) => why,
+                };
                 let why = match driver_name(&path) {
                     Some(driver) => format!("{why} (driver `{driver}`)"),
                     None => why,
@@ -212,7 +261,11 @@ fn choose(
             }
         }
     }
-    Err(ProbeError::NoneUsable(rejected))
+    if every_node_lacks_a_renderer {
+        Err(ProbeError::NoRenderer(rejected))
+    } else {
+        Err(ProbeError::NoneUsable(rejected))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -223,6 +276,92 @@ fn driver_name(path: &Path) -> Option<String> {
 #[cfg(not(target_os = "linux"))]
 fn driver_name(_path: &Path) -> Option<String> {
     None
+}
+
+/// Is there a GPU behind a render node at all?
+///
+/// Only virtio GPUs register a render node with nothing behind it: the kernel exposes
+/// `renderD*` whether or not the host offers 3D acceleration, and says which through
+/// `DRM_IOCTL_VIRTGPU_GETPARAM`. That ioctl number means something else on every other
+/// driver, so it is asked only of a node whose DRM driver says it is `virtio_gpu`.
+#[cfg(target_os = "linux")]
+mod renderer {
+    use smithay::reexports::drm::Device as _;
+    use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd};
+    use std::path::Path;
+
+    /// `DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_GETPARAM, struct drm_virtgpu_getparam)`.
+    const DRM_IOCTL_VIRTGPU_GETPARAM: libc::c_ulong = 0xc010_6443;
+    /// The host renders virgl (OpenGL) command streams.
+    const VIRTGPU_PARAM_3D_FEATURES: u64 = 1;
+    /// The host offers context types beyond virgl (Venus, gfxstream, cross-domain).
+    const VIRTGPU_PARAM_CONTEXT_INIT: u64 = 6;
+
+    #[repr(C)]
+    struct VirtgpuGetparam {
+        param: u64,
+        /// User pointer the kernel writes an `int` through.
+        value: u64,
+    }
+
+    struct Node(std::fs::File);
+
+    impl AsFd for Node {
+        fn as_fd(&self) -> BorrowedFd<'_> {
+            self.0.as_fd()
+        }
+    }
+
+    impl smithay::reexports::drm::Device for Node {}
+
+    /// `Some(reason)` when `path` has no GPU behind it; `None` when it has one, or when the
+    /// kernel would not say (the buffer exchange then judges the node as a GPU).
+    pub(super) fn missing(path: &Path) -> Option<String> {
+        let node = Node(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .ok()?,
+        );
+        let driver = node.get_driver().ok()?;
+        if driver.name() != "virtio_gpu" {
+            return None;
+        }
+        let renders = |param| getparam(&node, param).map(|value| value != 0);
+        match (
+            renders(VIRTGPU_PARAM_3D_FEATURES),
+            renders(VIRTGPU_PARAM_CONTEXT_INIT),
+        ) {
+            (Ok(false), Ok(false) | Err(_)) => Some(
+                "virtio GPU without 3D acceleration: the host renders nothing for it (boot                  the VM with virgl or Venus for a GPU)"
+                    .to_string(),
+            ),
+            _ => None,
+        }
+    }
+
+    fn getparam(node: &Node, param: u64) -> std::io::Result<libc::c_int> {
+        let mut value: libc::c_int = 0;
+        let mut request = VirtgpuGetparam {
+            param,
+            value: (&raw mut value).expose_provenance() as u64,
+        };
+        // SAFETY: `request` is the `struct drm_virtgpu_getparam` this ioctl number encodes
+        // (two u64s, 16 bytes), and its `value` points at an `int` that outlives the call.
+        let result = unsafe {
+            libc::ioctl(
+                node.0.as_raw_fd(),
+                DRM_IOCTL_VIRTGPU_GETPARAM,
+                &raw mut request,
+            )
+        };
+        if result == 0 {
+            Ok(value)
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
 }
 
 /// Can a buffer this node's driver allocates reach the compositor's pixels?
@@ -364,8 +503,14 @@ pub fn pin_process() -> Option<ProcessPin> {
         Err(e) => {
             // Nothing to pin to. Not fatal: `State::new` logs the same rejection in prose and the compositor falls back to shm.
             tracing::debug!(target: "shell::compositor::gpu", "no render node to pin to: {e}");
-            if matches!(e, ProbeError::NoneUsable(_)) {
-                crate::compositor::gpu_health::record_probe_failure(&e.to_string());
+            match &e {
+                ProbeError::NoneUsable(_) => {
+                    crate::compositor::gpu_health::record_probe_failure(&e.to_string());
+                }
+                ProbeError::NoRenderer(nodes) => {
+                    crate::compositor::gpu_health::record_no_renderer(nodes);
+                }
+                ProbeError::NoRenderNodes | ProbeError::OverrideUnusable { .. } => {}
             }
             return None;
         }
@@ -415,10 +560,10 @@ mod tests {
                 PathBuf::from("/fake/dri/renderD130"),
             ];
             let chosen = choose(nodes.clone(), |path| match path.file_name() {
-                Some(name) if name == "renderD128" => Err(
+                Some(name) if name == "renderD128" => Err(Rejection::Unusable(
                     "its buffers reach the compositor neither by CPU map nor by GL import"
                         .to_string(),
-                ),
+                )),
                 Some(name) if name == "renderD129" => Ok(0xe281),
                 _ => panic!("the probe must stop at the first usable node"),
             })
@@ -433,7 +578,7 @@ mod tests {
                 PathBuf::from("/fake/dri/renderD129"),
             ];
             let Err(ProbeError::NoneUsable(rejected)) = choose(nodes, |path| {
-                Err(format!("no exchange on {}", path.display()))
+                Err(format!("no exchange on {}", path.display()).into())
             }) else {
                 panic!("no usable node must be an error");
             };
@@ -443,6 +588,39 @@ mod tests {
                 choose(Vec::new(), |_| Ok(0)),
                 Err(ProbeError::NoRenderNodes)
             );
+        }
+        // Phase `a_machine_whose_nodes_have_no_gpu_behind_them_has_no_gpu`.
+        // A virtio GPU without 3D acceleration registers a render node all the same; that
+        // is a machine without a GPU, not a GPU that fails. One real GPU among such nodes
+        // that cannot exchange buffers is still that GPU's fault.
+        {
+            let display = PathBuf::from("/fake/dri/renderD128");
+            let gpu = PathBuf::from("/fake/dri/renderD129");
+            let no_renderer = |path: &Path| {
+                Err(Rejection::NoRenderer(format!(
+                    "virtio GPU without 3D acceleration at {}",
+                    path.display()
+                )))
+            };
+            let Err(ProbeError::NoRenderer(rejected)) = choose(vec![display.clone()], no_renderer)
+            else {
+                panic!("a lone display-only node is no GPU");
+            };
+            assert_eq!(rejected.len(), 1);
+            assert!(rejected[0].1.contains("without 3D"), "{rejected:?}");
+            let mixed = choose(vec![display.clone(), gpu], |path| {
+                if path == display {
+                    no_renderer(path)
+                } else {
+                    Err(Rejection::Unusable("cannot export the buffer".to_string()))
+                }
+            });
+            let Err(ProbeError::NoneUsable(rejected)) = mixed else {
+                panic!("a GPU that cannot exchange buffers is a fault: {mixed:?}");
+            };
+            assert_eq!(rejected.len(), 2);
+            let text = ProbeError::NoRenderer(vec![(display, "no 3D".to_string())]).to_string();
+            assert!(text.contains("renderD128: no 3D"), "{text}");
         }
         // Phase `probe_result_is_self_describing`.
         {

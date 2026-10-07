@@ -6,14 +6,6 @@ face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.
 face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
 face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
 face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
-/usr/share/fonts/google-noto-vf/NotoSerif[wght].ttf
-face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
-face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
-face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
-/usr/share/fonts/google-noto-vf/NotoSerif-Italic[wght].ttf
-face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
-face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
-face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
 /usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf
 face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
 face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://scripts.sil.org/OFL
@@ -73,4 +65,82 @@ face=0 nameID=14 platform=3 encoding=1 language=0x0409: http://scripts.sil.org/O
 /usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf
 face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2016 The Inter Project Authors
 face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: http://scripts.sil.org/OFL
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: http://scripts.sil.org/OFL
+tilo/tilo-sans@025d4613d723e0da70d0d2d99e39fbb781f9f45f (v1.002):fonts/default/TiloSans[wdth,wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans). Copyright 2026 The Tilo Sans Project Authors.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+tilo/tilo-sans@025d4613d723e0da70d0d2d99e39fbb781f9f45f (v1.002):fonts/default/TiloSans-Italic[wdth,wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans). Copyright 2026 The Tilo Sans Project Authors.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/onest/Onest[wght].ttf, Cyrillic subset Onest-Cyrillic[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2021 The Onest Project Authors (https://github.com/simpals/onest)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/atkinsonhyperlegiblenext/AtkinsonHyperlegibleNext[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (https://github.com/googlefonts/atkinson-hyperlegible-next)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/atkinsonhyperlegiblenext/AtkinsonHyperlegibleNext-Italic[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (https://github.com/googlefonts/atkinson-hyperlegible-next)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+newcm-8.1.1.txz (download.gnu.org.ua/release/newcm):newcm-8.1.1/otf/NewCM10-Book.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: (C) 2019-2026 Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+newcm-8.1.1.txz (download.gnu.org.ua/release/newcm):newcm-8.1.1/otf/NewCM10-BookItalic.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: (C) 2019-2016 Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+newcm-8.1.1.txz (download.gnu.org.ua/release/newcm):newcm-8.1.1/otf/NewCM10-Regular.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: (Copyleft) 2019-2026 Antonis Tsolomitis.  This work is released under the GPL3+FE -- see https://www.gnu.org/licenses/gpl-faq.html#FontException  Distribution Exception (DE) is added in Section 7 of GNU-GPL3. See License file that comes with  te distribution of the fonts.
+newcm-8.1.1.txz (download.gnu.org.ua/release/newcm):newcm-8.1.1/otf/NewCM10-Italic.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: (C) 2019-2016 Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+newcm-8.1.1.txz (download.gnu.org.ua/release/newcm):newcm-8.1.1/otf/NewCM10-Bold.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: (C) 2019-2026 Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+newcm-8.1.1.txz (download.gnu.org.ua/release/newcm):newcm-8.1.1/otf/NewCM10-BoldItalic.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: (C) 2019-2026 Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+newcm-8.1.1.txz (download.gnu.org.ua/release/newcm):newcm-8.1.1/otf/NewCM08-Book.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: (C) 2019-2026 A. Tsolomitis This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+alerque/libertinus v7.051 Libertinus-7.051.zip:Libertinus-7.051/static/OTF/LibertinusSerif-Regular.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright © 2012-2024 The Libertinus Project Authors.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+alerque/libertinus v7.051 Libertinus-7.051.zip:Libertinus-7.051/static/OTF/LibertinusSerif-Italic.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright © 2012-2024 The Libertinus Project Authors.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+alerque/libertinus v7.051 Libertinus-7.051.zip:Libertinus-7.051/static/OTF/LibertinusSerif-Bold.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright © 2012-2024 The Libertinus Project Authors.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+alerque/libertinus v7.051 Libertinus-7.051.zip:Libertinus-7.051/static/OTF/LibertinusSerif-BoldItalic.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright © 2012-2024 The Libertinus Project Authors.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+alerque/libertinus v7.051 Libertinus-7.051.zip:Libertinus-7.051/static/OTF/LibertinusSerifDisplay-Regular.otf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright © 2012-2024 The Libertinus Project Authors.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+googlefonts/literata 3.103 3.103.zip:fonts/variable/Literata[opsz,wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2017 The Literata Project Authors (https://github.com/googlefonts/literata)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://scripts.sil.org/OFL
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://scripts.sil.org/OFL
+googlefonts/literata 3.103 3.103.zip:fonts/variable/Literata-Italic[opsz,wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2017 The Literata Project Authors (https://github.com/googlefonts/literata)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://scripts.sil.org/OFL
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://scripts.sil.org/OFL
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/ebgaramond/EBGaramond[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2017 The EB Garamond Project Authors (https://github.com/octaviopardo/EBGaramond12)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/ebgaramond/EBGaramond-Italic[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2017 The EB Garamond Project Authors (https://github.com/octaviopardo/EBGaramond12)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+adobe-fonts/source-serif 4.005R source-serif-4.005_Desktop.zip:source-serif-4.005_Desktop/VAR/SourceSerif4Variable-Roman.ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: © 2014 - 2023 Adobe (http://www.adobe.com/), with Reserved Font Name ‘Source’.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: http://scripts.sil.org/OFL. This Font Software is distributed on an ‘AS IS’ BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: http://scripts.sil.org/OFL
+adobe-fonts/source-serif 4.005R source-serif-4.005_Desktop.zip:source-serif-4.005_Desktop/VAR/SourceSerif4Variable-Italic.ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: © 2014 - 2023 Adobe (http://www.adobe.com/), with Reserved Font Name ‘Source’.
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: http://scripts.sil.org/OFL. This Font Software is distributed on an ‘AS IS’ BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.
 face=0 nameID=14 platform=3 encoding=1 language=0x0409: http://scripts.sil.org/OFL

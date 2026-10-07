@@ -323,44 +323,13 @@ fn validate_top(stage: &Path) -> Result<(), DaemonError> {
 /// # Errors
 /// Special files and I/O failures.
 pub fn tree_hash(root: &Path) -> Result<String, DaemonError> {
-    let mut entries = Vec::new();
-    fsutil::walk(root, Path::new(""), &mut entries).map_err(DaemonError::io("walk layer"))?;
-    entries.sort();
-    let mut hasher = Sha256::new();
-    for relative in entries {
-        let text = relative.to_string_lossy().replace('\\', "/");
-        if text == PROVENANCE || text == RELEASE_DIR || text.starts_with(&format!("{RELEASE_DIR}/"))
-        {
-            continue;
-        }
-        let path = root.join(&relative);
-        let meta = fs::symlink_metadata(&path).map_err(DaemonError::io("stat layer entry"))?;
-        let kind = meta.file_type();
-        let (tag, content) = if kind.is_dir() {
-            // Directories are implied by the paths below them; empty ones
-            // carry nothing a sysext needs.
-            continue;
-        } else if kind.is_symlink() {
-            let target = fs::read_link(&path).map_err(DaemonError::io("read link"))?;
-            ("l", target.to_string_lossy().into_owned())
-        } else if kind.is_file() {
-            let tag = if fsutil::is_executable(&meta) {
-                "x"
-            } else {
-                "f"
-            };
-            (tag, file_digest(&path)?)
+    tilo_vm_protocol::layer_hash::tree_hash(root).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            DaemonError::InvalidLayer(error.to_string())
         } else {
-            return Err(DaemonError::InvalidLayer(format!(
-                "{text} is not a file, directory or symlink"
-            )));
-        };
-        for part in [tag, text.as_str(), content.as_str()] {
-            hasher.update(part.as_bytes());
-            hasher.update([0]);
+            DaemonError::io("hash layer")(error)
         }
-    }
-    Ok(hex::encode(hasher.finalize()))
+    })
 }
 
 fn file_digest(path: &Path) -> Result<String, DaemonError> {
@@ -452,6 +421,10 @@ mod tests {
             assert!(layer.join("provenance.json").is_file());
             // The published layer hashes to its own name: the release file is excluded.
             assert_eq!(tree_hash(&layer).unwrap(), a);
+            assert_eq!(
+                a, "f2f0d3c50144acd8bb0005d2b2121c93cb336b88098616b0e88c8a5b996b9342",
+                "existing layer identities remain stable"
+            );
             assert_eq!(store.list().unwrap().len(), 1);
             assert_eq!(
                 fs::read_dir(root.path().join("staging")).unwrap().count(),

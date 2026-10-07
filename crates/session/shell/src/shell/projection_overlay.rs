@@ -36,10 +36,11 @@ use crate::shell::projection::{
     DisplayResolutionLimit, ProjectionBackend, ProjectionController, ProjectionMode,
     ProjectionProtocol, ProjectionStatus,
 };
+use ui::TextRole;
+use ui::widget::ButtonRole;
 
 const OPEN_ANIM_MS: u64 = 220;
 const SCRIM_ALPHA: f32 = 0.45;
-const SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 /// How often an open sheet re-reads the compositor's display snapshot and
 /// the transaction it staged. Bounded so an open sheet never turns into
 /// per-frame settings I/O.
@@ -71,10 +72,6 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 )]
 fn f32_to_u8_saturating(v: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
-}
-
-fn panel_surface(theme: &Theme) -> Color {
-    ui::chrome::shell::panel_ground(theme).with_alpha_factor(SURFACE_ALPHA)
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
@@ -152,6 +149,8 @@ pub(crate) struct DisplayLayouts {
     /// settings is never reported as the answer to a new choice.
     staged: Option<u64>,
     notice: Option<String>,
+    answer: Option<crate::shell::display_persistence::PendingAnswer>,
+    staging: Option<crate::shell::display_persistence::PendingLayout>,
 }
 
 impl DisplayLayouts {
@@ -165,7 +164,47 @@ impl DisplayLayouts {
         self.polled_at = Some(now);
     }
 
+    fn poll_completions(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        if let Some(staging) = self.staging.as_ref() {
+            match staging.poll() {
+                Ok(None) => {}
+                Ok(Some(transaction)) => {
+                    changed = true;
+                    self.staging = None;
+                    self.staged = Some(transaction.id);
+                    self.transaction = Some(transaction);
+                    self.notice = None;
+                }
+                Err(error) => {
+                    changed = true;
+                    self.staging = None;
+                    self.notice = Some(error.to_string());
+                }
+            }
+        }
+        if let Some(answer) = self.answer.as_ref() {
+            match answer.poll() {
+                Ok(None) => {}
+                Ok(Some(())) => {
+                    changed = true;
+                    self.answer = None;
+                    self.notice = None;
+                    self.refresh(now);
+                }
+                Err(error) => {
+                    changed = true;
+                    self.answer = None;
+                    self.notice = Some(error.to_string());
+                    self.refresh(now);
+                }
+            }
+        }
+        changed
+    }
+
     fn poll(&mut self, now: Instant) {
+        self.poll_completions(now);
         if self
             .polled_at
             .is_none_or(|at| now.duration_since(at) >= DISPLAY_POLL)
@@ -204,10 +243,12 @@ impl DisplayLayouts {
     }
 
     fn apply(&mut self, mode: DisplayLayoutMode, now: Instant) {
-        match display_mode::stage_layout(mode) {
-            Ok(transaction) => {
-                self.staged = Some(transaction.id);
-                self.transaction = Some(transaction);
+        if self.staging.is_some() {
+            return;
+        }
+        match crate::shell::display_persistence::stage_layout(mode) {
+            Ok(staging) => {
+                self.staging = Some(staging);
                 self.notice = None;
             }
             Err(error) => {
@@ -219,18 +260,28 @@ impl DisplayLayouts {
     }
 
     fn keep(&mut self) {
-        if let Some(transaction) = self.transaction.as_mut()
-            && let Err(error) = transaction.request_confirmation()
-        {
-            self.notice = Some(error.to_string());
-        }
+        self.queue_answer(crate::shell::display_persistence::Answer::Keep);
     }
 
     fn revert(&mut self) {
-        if let Some(transaction) = self.transaction.as_mut()
-            && let Err(error) = transaction.request_revert()
-        {
-            self.notice = Some(error.to_string());
+        self.queue_answer(crate::shell::display_persistence::Answer::Revert);
+    }
+
+    fn queue_answer(&mut self, answer: crate::shell::display_persistence::Answer) {
+        if self.answer.is_some() {
+            return;
+        }
+        let Some(transaction) = self.transaction.as_ref() else {
+            return;
+        };
+        match crate::shell::display_persistence::answer_for(answer, Some(transaction.id)) {
+            Ok(answer) => {
+                self.answer = Some(answer);
+                self.notice = None;
+            }
+            Err(error) => {
+                self.notice = Some(error.to_string());
+            }
         }
     }
 
@@ -395,6 +446,13 @@ impl ProjectionOverlay {
         Some(Rect::new(field.x0, field.y0, field.x1 + slide, field.y1))
     }
 
+    /// Drain storage receipts on the ordinary host update, even at rest.
+    /// Waiting itself is not animation; the existing native wake schedules
+    /// this update and only a completed receipt invalidates the sheet.
+    pub(crate) fn poll_storage(&mut self) -> bool {
+        self.displays.poll_completions(Instant::now())
+    }
+
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
         self.transition.is_animating(now)
             || matches!(
@@ -420,6 +478,9 @@ impl ProjectionOverlay {
     /// Whether choosing `mode` does anything: it can be planned for the
     /// attached displays, or the selected receiver can stream it.
     fn layout_enabled(&self, mode: DisplayLayoutMode) -> bool {
+        if self.displays.staging.is_some() {
+            return false;
+        }
         self.displays.plan_error(mode).is_none()
             || (!self.controller.devices.is_empty()
                 && wireless_mode_for(mode)
@@ -577,7 +638,7 @@ impl ProjectionOverlay {
             &mut EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: &mut *ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut input_handled,
                 focus_target: &mut *ctx.focus_target,
@@ -824,7 +885,15 @@ impl ProjectionOverlay {
 
         let mut sheet = AccessNode::new(Role::Dialog)
             .with_name(t("display-sheet-title"))
-            .with_description(t("display-sheet-a11y-description"))
+            .with_description(if self.displays.staging.is_some() {
+                format!(
+                    "{}. {}",
+                    t("display-sheet-saving-layout"),
+                    t("display-sheet-a11y-description")
+                )
+            } else {
+                t("display-sheet-a11y-description")
+            })
             .with_bounds(self.sheet_rect())
             .with_state(AccessState::new().modal(true));
         let active = self.active_layout();
@@ -867,7 +936,11 @@ impl ProjectionOverlay {
                         .with_name(t(key))
                         .with_description(t("display-confirm-title"))
                         .with_bounds(rect)
-                        .with_state(AccessState::new().focused(self.focus == focus)),
+                        .with_state(
+                            AccessState::new()
+                                .focused(self.focus == focus)
+                                .disabled(self.displays.answer.is_some()),
+                        ),
                 );
             }
         }
@@ -1029,7 +1102,10 @@ impl ProjectionOverlay {
     /// Top of the wireless section; the confirmation band or a rejection
     /// notice pushes it down while visible.
     fn wireless_top(&self) -> f64 {
-        let band = if self.confirming() || self.displays.rejection().is_some() {
+        let band = if self.displays.staging.is_some()
+            || self.confirming()
+            || self.displays.rejection().is_some()
+        {
             Self::confirm_band_height() + 10.0
         } else {
             0.0
@@ -1071,7 +1147,7 @@ impl ProjectionOverlay {
     ) {
         let r = self.sheet_rect();
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
 
         self.draw_header(scene, transform, text_renderer, theme, r);
         self.draw_layout_rows(scene, transform, text_renderer, theme);
@@ -1093,14 +1169,15 @@ impl ProjectionOverlay {
         }
 
         let footer = t("wireless-protocols");
-        let (fw, _) = text_renderer.measure(&footer, type_scale.xs, None);
-        text_renderer.draw_text(
+        let (fw, _) =
+            text_renderer.measure_style(&footer, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &footer,
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.center().x - f64::from(fw) / 2.0, r.y1 - 28.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
     }
 
@@ -1114,11 +1191,17 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, r.height());
         let card = RoundedRect::from_rect(r, radius);
         ui::chrome::shell::panel_shadow(scene, transform, r, radius, theme, 1.0);
-        scene.fill(Fill::NonZero, transform, panel_surface(theme), None, &card);
+        ui::floating_surface::paint_material(
+            scene,
+            transform,
+            &card,
+            ui::floating_surface::Material::Floating,
+            theme,
+        );
         // Panel edge derived against the ground (HIG §9.5), not declared.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -1128,22 +1211,21 @@ impl ProjectionOverlay {
             &card,
         );
 
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("display-sheet-title"),
-            type_scale.xl,
             colors.text_primary,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 18.0).into()),
             None,
-            TextWeight::Semibold,
+            &type_scale.style(TextRole::Title),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("display-sheet-subtitle"),
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
             Some(f64_to_f32_lossy(r.width() - 88.0)),
+            &type_scale.style(TextRole::Caption),
         );
 
         self.close_rect = Rect::new(r.x1 - 48.0, r.y0 + 12.0, r.x1 - 12.0, r.y0 + 48.0);
@@ -1167,7 +1249,7 @@ impl ProjectionOverlay {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         // Control role (HIG §9.1/§9.3): the highlighted layout is a lift with
         // the tier's hairline, never an accent wash (the accent means live
         // state, §9.4); idle rows rest on the lift floor with an edge
@@ -1201,19 +1283,15 @@ impl ProjectionOverlay {
                 &ui::surface::edge_outline(row, radius),
             );
             if highlighted {
-                ui::widget::ActionRowFace::new(row, t(layout_title_key(mode)))
-                    .focused(true)
-                    .radius(radius)
-                    .paint_focus(scene, transform, theme);
+                ui::widget::paint_focus_ring(scene, transform, row, radius, theme);
             }
             let pictogram = Rect::new(row.x0 + 12.0, row.y0 + 14.0, row.x0 + 56.0, row.y1 - 14.0);
             draw_layout_pictogram(scene, transform, pictogram, mode, theme, enabled);
             let text_x = pictogram.x1 + 14.0;
             let text_w = f64_to_f32_lossy(row.x1 - text_x - 44.0);
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t(layout_title_key(mode)),
-                type_scale.sm,
                 if enabled {
                     colors.text_primary
                 } else {
@@ -1221,7 +1299,9 @@ impl ProjectionOverlay {
                 },
                 transform.pre_translate((text_x, row.y0 + 8.0).into()),
                 Some(text_w),
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             let detail = if enabled {
                 t(layout_detail_key(mode))
@@ -1230,16 +1310,20 @@ impl ProjectionOverlay {
                     .plan_error(mode)
                     .map_or_else(|| t(layout_detail_key(mode)), |e| t(unavailable_key(&e)))
             };
-            let detail = text_renderer.elide_to_width(&detail, type_scale.xs, text_w);
-            text_renderer.draw_text(
+            let detail = text_renderer.elide_to_width_style(
+                &detail,
+                text_w,
+                &type_scale.style(TextRole::Caption),
+            );
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                type_scale.xs,
                 colors
                     .text_dim
                     .with_alpha_factor(if enabled { 1.0 } else { 0.62 }),
                 transform.pre_translate((text_x, row.y0 + 29.0).into()),
                 None,
+                &type_scale.style(TextRole::Caption),
             );
             if active == Some(mode) {
                 ui::icons::draw_icon(
@@ -1272,7 +1356,7 @@ impl ProjectionOverlay {
         self.keep_rect = Rect::ZERO;
         self.revert_rect = Rect::ZERO;
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.confirm_top();
         let band = Rect::new(
             r.x0 + 16.0,
@@ -1280,10 +1364,28 @@ impl ProjectionOverlay {
             r.x1 - 16.0,
             top + Self::confirm_band_height(),
         );
-        if self.confirming() {
-            let status = crate::shell::display_confirm::countdown_status(
-                self.displays.seconds_left(tilo_clock::unix_now_ms()),
+        if self.displays.staging.is_some() {
+            text_renderer.draw_style(
+                scene,
+                &t("display-sheet-saving-layout"),
+                colors.text_dim,
+                transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
+                Some(f64_to_f32_lossy(band.width() - 8.0)),
+                &type_scale.style(TextRole::Caption),
             );
+        } else if self.confirming() {
+            let status = if self.displays.answer.is_some() {
+                t("display-confirm-answer-pending")
+            } else if let Some(notice) = self.displays.notice.as_ref() {
+                t_args(
+                    "display-confirm-answer-failed",
+                    &[("reason", ArgValue::Text(notice.clone()))],
+                )
+            } else {
+                crate::shell::display_confirm::countdown_status(
+                    self.displays.seconds_left(tilo_clock::unix_now_ms()),
+                )
+            };
             let focus = match self.focus {
                 SheetFocus::Keep => Some(crate::shell::display_confirm::BandFocus::Keep),
                 SheetFocus::Revert => Some(crate::shell::display_confirm::BandFocus::Revert),
@@ -1297,19 +1399,22 @@ impl ProjectionOverlay {
                 band,
                 &t("display-confirm-title"),
                 &status,
-                focus,
+                crate::shell::display_confirm::BandState {
+                    focus,
+                    disabled: self.displays.answer.is_some(),
+                },
             );
             self.keep_rect = buttons.keep;
             self.revert_rect = buttons.revert;
         } else if let Some(reason) = self.displays.rejection() {
             let message = t_args("display-rejected", &[("reason", ArgValue::Text(reason))]);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &message,
-                type_scale.xs,
                 colors.semantic.danger,
                 transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
                 Some(f64_to_f32_lossy(band.width() - 8.0)),
+                &type_scale.style(TextRole::Caption),
             );
         }
     }
@@ -1324,16 +1429,17 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let heading_y = self.wireless_top();
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("wireless-heading"),
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.x0 + 20.0, heading_y).into()),
             None,
-            TextWeight::Semibold,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
         self.refresh_rect = Rect::new(r.x1 - 48.0, heading_y - 8.0, r.x1 - 12.0, heading_y + 28.0);
         ui::icons::draw_icon(
@@ -1356,7 +1462,7 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.wireless_top() + 32.0;
         self.audio_rect = Rect::new(r.x0 + 20.0, top, r.x1 - 62.0, top + 38.0);
         ui::icons::draw_icon(
@@ -1371,13 +1477,13 @@ impl ProjectionOverlay {
             colors.text_dim,
             1.5,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("wireless-share-audio"),
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.x0 + 52.0, top + 10.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
         let toggle = Rect::new(r.x1 - 58.0, top + 6.0, r.x1 - 20.0, top + 28.0);
         // The shared switch (HIG §9.9): track, knob and their palette come
@@ -1400,16 +1506,17 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.wireless_top() + 76.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("wireless-stream"),
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, top + 10.0).into()),
             None,
-            TextWeight::Medium,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
         let x0 = r.x0 + 76.0;
         let fps = f64::from(self.controller.options.stream_policy.max_fps);
@@ -1459,11 +1566,11 @@ impl ProjectionOverlay {
                 None,
                 &ui::surface::edge_outline(chip, radius),
             );
-            let (label_w, label_h) = text_renderer.measure(label, type_scale.xs, None);
-            text_renderer.draw_text_weighted(
+            let (label_w, label_h) =
+                text_renderer.measure_style(label, None, &type_scale.style(TextRole::Caption));
+            text_renderer.draw_style(
                 scene,
                 label,
-                type_scale.xs,
                 colors.text_primary,
                 transform.pre_translate(
                     (
@@ -1473,7 +1580,9 @@ impl ProjectionOverlay {
                         .into(),
                 ),
                 None,
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             chip_x += width + 6.0;
         }
@@ -1491,30 +1600,31 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         if self.airplay_selected() {
             let top = self.wireless_top() + 120.0;
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t("wireless-credential-label"),
-                type_scale.xs,
                 colors.text_primary,
                 transform.pre_translate((r.x0 + 20.0, top).into()),
                 None,
-                TextWeight::Semibold,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
             self.credential_rect = Rect::new(r.x0 + 20.0, top + 21.0, r.x1 - 20.0, top + 63.0);
             self.credential_input
                 .apply_layout_external(self.credential_rect);
             self.credential_input
                 .draw(scene, transform, text_renderer, theme, presence);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &t("wireless-credential-hint"),
-                type_scale.xs,
                 colors.text_dim,
                 transform.pre_translate((r.x0 + 20.0, top + 71.0).into()),
                 Some(f64_to_f32_lossy(r.width() - 40.0)),
+                &type_scale.style(TextRole::Caption),
             );
         } else {
             self.credential_rect = Rect::ZERO;
@@ -1533,7 +1643,7 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let (message, detail) = match &self.controller.status {
             ProjectionStatus::Scanning => (t("wireless-scanning"), t("wireless-scanning-detail")),
             ProjectionStatus::Error(error) => (t("wireless-scan-failed"), error.clone()),
@@ -1549,29 +1659,32 @@ impl ProjectionOverlay {
             colors.text_dim,
             1.5,
         );
-        let (mw, _) = text_renderer.measure(&message, type_scale.sm, None);
-        text_renderer.draw_text_weighted(
+        let (mw, _) =
+            text_renderer.measure_style(&message, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &message,
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.center().x - f64::from(mw) / 2.0, top + 40.0).into()),
             None,
-            TextWeight::Medium,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
-        let detail = text_renderer.elide_to_width(
+        let detail = text_renderer.elide_to_width_style(
             &detail,
-            type_scale.xs,
             f64_to_f32_lossy(r.width() - 56.0),
+            &type_scale.style(TextRole::Caption),
         );
-        let (dw, _) = text_renderer.measure(&detail, type_scale.xs, None);
-        text_renderer.draw_text(
+        let (dw, _) =
+            text_renderer.measure_style(&detail, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &detail,
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.center().x - f64::from(dw) / 2.0, top + 64.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
     }
 
@@ -1586,7 +1699,7 @@ impl ProjectionOverlay {
         max_rows: usize,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         // Control role: the selected device is a lift (HIG §9.3); every row
         // carries an edge derived from its fill (§9.5).
         let floor = colors.lift(0.35);
@@ -1617,10 +1730,7 @@ impl ProjectionOverlay {
                 &ui::surface::edge_outline(row, radius),
             );
             if selected && receivers_focused {
-                ui::widget::ActionRowFace::new(row, device.name.as_str())
-                    .focused(true)
-                    .radius(radius)
-                    .paint_focus(scene, transform, theme);
+                ui::widget::paint_focus_ring(scene, transform, row, radius, theme);
             }
             ui::icons::draw_icon(
                 scene,
@@ -1634,19 +1744,20 @@ impl ProjectionOverlay {
                 },
                 1.5,
             );
-            let name = text_renderer.elide_to_width(
+            let name = text_renderer.elide_to_width_style(
                 &device.name,
-                type_scale.sm,
                 f64_to_f32_lossy(row.width() - 142.0),
+                &type_scale.style(TextRole::Caption),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &name,
-                type_scale.sm,
                 colors.text_primary,
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             let sub = if connected {
                 t("wireless-connected")
@@ -1657,10 +1768,9 @@ impl ProjectionOverlay {
             } else {
                 format!("{} · {}", device.protocol.label(), device.detail)
             };
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &sub,
-                type_scale.xs,
                 if connected {
                     colors.semantic.success
                 } else {
@@ -1668,6 +1778,7 @@ impl ProjectionOverlay {
                 },
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 142.0)),
+                &type_scale.style(TextRole::Caption),
             );
             Self::draw_device_action(
                 scene,
@@ -1706,12 +1817,11 @@ impl ProjectionOverlay {
             text_renderer,
             theme,
             &ui::widget::ButtonFace::new(action, &label)
-                .style(if connected {
-                    ui::widget::ButtonStyle::DangerOutline
+                .role(if connected {
+                    ButtonRole::Destructive
                 } else {
-                    ui::widget::ButtonStyle::Neutral
+                    ButtonRole::Secondary
                 })
-                .text_size(theme.tokens.typography.scale.xs)
                 .disabled(connecting),
         );
     }
@@ -1732,7 +1842,11 @@ fn draw_layout_pictogram(
     let alpha = if enabled { 1.0 } else { 0.5 };
     let lit = colors.text_primary.with_alpha_factor(alpha);
     let dark = colors.text_dim.with_alpha_factor(0.45 * alpha);
-    let content = theme.accent_primary.with_alpha_factor(0.85 * alpha);
+    let content = theme
+        .tokens
+        .colors
+        .text_primary
+        .with_alpha_factor(0.85 * alpha);
     let gap = 4.0;
     let width = (rect.width() - gap) / 2.0;
     let left = Rect::new(rect.x0, rect.y0, rect.x0 + width, rect.y1);

@@ -30,6 +30,7 @@ use crate::detail::{self, Detail, LayerLevel, Mips, Request, Tiles, Work};
 use crate::media;
 use crate::model::{Adjust, Artwork, Gradient, Layer, Mark, Shape};
 use crate::picture::{Pictures, Placement, Treatment};
+use crate::settle::{Ask, Settle};
 
 /// The longest side of a painted layer's simulation grid, in cells. Painted
 /// layers simulate at most this finely; an export scales the result.
@@ -75,9 +76,10 @@ fn with_opacity(colour: Color, opacity: f64) -> Color {
 }
 
 struct PaintedLayer {
-    painter: LayerPainter,
-    key: blake3::Hash,
-    image: Option<ImageData>,
+    /// The simulation, kept up with the marks away from the window.
+    settle: Settle,
+    /// The marks as paint, kept while they stay.
+    sources: Sources,
     /// The painting graded by the layer's adjustments, and what they were.
     graded: Option<(String, ImageData)>,
     /// The picture's halvings, for a view farther than its scale.
@@ -89,6 +91,76 @@ struct PaintedLayer {
     graded_mosaic: Option<(u64, String, ImageData)>,
 }
 
+/// A painted layer's marks as its medium paints them, each kept while the
+/// mark, what it is cut to and the palette and scale stay the same, so a
+/// frame does not turn every mark into paint again.
+#[derive(Default)]
+struct Sources {
+    /// The palette and scale the marks were turned into paint with.
+    basis: String,
+    marks: HashMap<String, (Mark, Option<BezPath>, Vec<Painted>)>,
+    /// The marks' ids in order, and all of them as paint with its key.
+    order: Vec<String>,
+    laid: Option<(blake3::Hash, Arc<[Painted]>)>,
+}
+
+impl Sources {
+    /// `layer`'s marks as paint, and their key.
+    fn of(
+        &mut self,
+        art: &Artwork,
+        layer: &str,
+        palette: &[Pigment],
+        scale: f64,
+    ) -> (blake3::Hash, Arc<[Painted]>) {
+        let basis = format!("{scale}|{palette:?}");
+        if basis != self.basis {
+            *self = Self {
+                basis,
+                ..Self::default()
+            };
+        }
+        let mut changed = self.laid.is_none();
+        let mut order = Vec::new();
+        for mark in art.marks_of(layer) {
+            let cut = wet_cut(art, mark);
+            let kept = self
+                .marks
+                .get(&mark.id)
+                .is_some_and(|(kept, kept_cut, _)| kept == mark && *kept_cut == cut);
+            if !kept {
+                let painted = wet_marks(mark, cut.as_ref(), palette, scale);
+                self.marks
+                    .insert(mark.id.clone(), (mark.clone(), cut, painted));
+                changed = true;
+            }
+            order.push(mark.id.as_str());
+        }
+        if order != self.order {
+            changed = true;
+            self.order = order.into_iter().map(str::to_owned).collect();
+            let order = &self.order;
+            self.marks.retain(|id, _| order.contains(id));
+        }
+        if changed || self.laid.is_none() {
+            let painted: Vec<Painted> = self
+                .order
+                .iter()
+                .filter_map(|id| self.marks.get(id))
+                .flat_map(|(_, _, painted)| painted.iter().cloned())
+                .collect();
+            let mut key = blake3::Hasher::new();
+            for mark in &painted {
+                key.update(&mark.fingerprint);
+            }
+            self.laid = Some((key.finalize(), painted.into()));
+        }
+        #[allow(clippy::expect_used, reason = "set just above when absent")]
+        let (key, painted) = self.laid.as_ref().expect("marks laid");
+        (*key, Arc::clone(painted))
+    }
+}
+
 /// Keeps what is expensive between frames: the lit ground, each painted
 /// layer's simulation and the decoded and graded pictures.
 #[derive(Default)]
@@ -96,13 +168,50 @@ pub struct Renderer {
     ground: Option<(String, Arc<Heightfield>, ImageData)>,
     painted: HashMap<String, PaintedLayer>,
     pub pictures: Pictures,
-    wet: Option<WetPreview>,
     tooth: Option<(String, ImageData)>,
     brushes: BrushCache,
+    paths: PathCache,
     /// The ground's halvings, for a view farther than its scale.
     ground_mips: Mips,
     /// Tiles of a close view, simulated finer than the whole layer.
     tiles: Tiles,
+}
+
+/// Parsed SVG geometry survives viewport redraws. Bound source bytes so an
+/// agent replacing outlines repeatedly cannot keep unbounded old geometry.
+#[derive(Default)]
+struct PathCache {
+    entries: HashMap<String, (String, Arc<BezPath>)>,
+    bytes: usize,
+}
+
+impl PathCache {
+    fn get(&mut self, mark: &Mark) -> Option<Arc<BezPath>> {
+        const BUDGET: usize = 4 << 20;
+        let Shape::Path { d } = &mark.shape else {
+            return None;
+        };
+        if let Some((known, path)) = self.entries.get(&mark.id)
+            && known == d
+        {
+            return Some(Arc::clone(path));
+        }
+        let path = Arc::new(mark.shape.path());
+        if d.len() > BUDGET {
+            return Some(path);
+        }
+        if let Some((old, _)) = self.entries.remove(&mark.id) {
+            self.bytes = self.bytes.saturating_sub(old.len());
+        }
+        if self.bytes.saturating_add(d.len()) > BUDGET || self.entries.len() >= 512 {
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(d.len());
+        self.entries
+            .insert(mark.id.clone(), (d.clone(), Arc::clone(&path)));
+        Some(path)
+    }
 }
 
 /// Dabbed strokes as last laid, by what they were laid from, so a frame
@@ -149,6 +258,7 @@ struct MarkCx<'a> {
     text: &'a mut TextRenderer,
     tooth: Option<&'a Speckle>,
     brushes: &'a mut BrushCache,
+    paths: &'a mut PathCache,
     /// The ground's height field and cells per unit, which graphite and
     /// charcoal catch on.
     ground: (&'a Heightfield, f64),
@@ -157,18 +267,6 @@ struct MarkCx<'a> {
     /// The adjustments of the layer the marks are on.
     layer_adjust: Option<&'a Adjust>,
 }
-
-/// The last picture of a stroke still being painted, and what it cost, so
-/// a slow medium is previewed only as often as it can keep up.
-struct WetPreview {
-    layer: String,
-    image: ImageData,
-    at: ui::time::Instant,
-    cost: ui::time::Duration,
-}
-
-/// The least time between two previews of a stroke being painted.
-const WET_INTERVAL: ui::time::Duration = ui::time::Duration::from_millis(16);
 
 /// What a scene shows.
 #[allow(
@@ -199,6 +297,11 @@ pub struct Options {
     /// simulation, the part shown is simulated finer; farther, its picture
     /// is drawn from halved copies.
     pub detail: Option<Detail>,
+    /// A frame of a live view: a painted layer still being simulated shows
+    /// its last picture (and a stroke just laid, its preview) rather than
+    /// the window waiting for it. Anything else, a `look` or an export,
+    /// waits for the exact picture.
+    pub live: bool,
 }
 
 /// The ground where an artwork's colour cannot be read: white primed
@@ -333,6 +436,12 @@ impl Renderer {
         self.tiles.pending()
     }
 
+    /// Whether a painted layer's simulation is being brought up to its
+    /// marks in the background, so the view should be drawn again soon.
+    pub fn settling(&self) -> bool {
+        self.painted.values().any(|entry| entry.settle.running())
+    }
+
     /// Draw one layer, through its mask when it has one switched on.
     fn draw_layer(
         &mut self,
@@ -354,7 +463,7 @@ impl Renderer {
                 let wet = options.wet.as_ref().filter(|wet| wet.layer == layer.id);
                 self.draw_painted(
                     art,
-                    (layer, wet),
+                    (layer, wet, options.live),
                     &medium,
                     (scene, transform, options.detail.as_ref()),
                     text,
@@ -421,6 +530,7 @@ impl Renderer {
             text: &mut *text,
             tooth: tooth.as_ref(),
             brushes: &mut self.brushes,
+            paths: &mut self.paths,
             ground: (&field, cell_scale(art)),
             pictures: &mut self.pictures,
             layer_adjust: layer.adjust.as_ref(),
@@ -663,13 +773,12 @@ impl Renderer {
     fn draw_painted(
         &mut self,
         art: &Artwork,
-        (layer, wet): (&Layer, Option<&Mark>),
+        (layer, wet, live): (&Layer, Option<&Mark>, bool),
         medium: &media::MediumSpec,
         (scene, transform, detail): (&mut Scene, Affine, Option<&Detail>),
         text: &mut TextRenderer,
     ) {
-        let engines = Engines::builtin();
-        let Some(engine) = engines.get(&medium.engine) else {
+        let Some(engine) = Engines::builtin().get(&medium.engine) else {
             return;
         };
         let scale = cell_scale(art);
@@ -678,47 +787,11 @@ impl Renderer {
         let preset = medium.to_preset();
         let settings = Settings::new(engine.parameters(), &preset.params);
         let palette = preset.palette;
-        let marks: Vec<Painted> = art
-            .marks_of(&layer.id)
-            .flat_map(|mark| wet_marks(mark, wet_cut(art, mark).as_ref(), &palette, scale))
-            .collect();
-        let mut key = blake3::Hasher::new();
-        for mark in &marks {
-            key.update(&mark.fingerprint);
-        }
-        key.update(medium.engine.as_bytes());
-        key.update(format!("{:?}", settings.resolved()).as_bytes());
-        let key = key.finalize();
-        let entry = self
-            .painted
-            .entry(layer.id.clone())
-            .or_insert_with(|| PaintedLayer {
-                painter: LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings.clone()),
-                key,
-                image: None,
-                graded: None,
-                mips: Mips::default(),
-                level: None,
-                graded_mosaic: None,
-            });
-        if !entry.painter.matches(engine.id(), &canvas, &settings) {
-            entry.painter =
-                LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings.clone());
-            entry.image = None;
-        }
-        if entry.image.is_none() || entry.key != key {
-            let pixels = entry.painter.paint(&marks).to_vec();
-            entry.image = Some(image(pixels, canvas.width, canvas.height));
-            entry.key = key;
-        }
-        let strokes = wet.map(|wet| wet_marks(wet, wet_cut(art, wet).as_ref(), &palette, scale));
-        let shown = shown_painting(
-            &mut self.wet,
-            entry,
-            layer,
-            (&marks, strokes),
-            (canvas.width, canvas.height),
-            scale,
+        let wait = !live || detail.is_some_and(|detail| detail.wait);
+        let (key, shown) = self.painting(
+            art,
+            (layer, wet, wait),
+            (&engine, &canvas, &settings, &palette),
         );
         let blend = match engine.blend() {
             Blend::Normal => BlendMode::default(),
@@ -764,6 +837,87 @@ impl Renderer {
             vignette(scene, transform, board, amount);
         }
         scene.pop_layer();
+    }
+
+    /// `layer`'s painting as shown now, with `wet` being painted over it,
+    /// and the key of its marks and medium. With `wait`, the exact
+    /// painting; otherwise the last one finished while the rest is
+    /// simulated in the background.
+    fn painting(
+        &mut self,
+        art: &Artwork,
+        (layer, wet, wait): (&Layer, Option<&Mark>, bool),
+        (engine, canvas, settings, palette): (
+            &Arc<dyn tilo_wet_media::MediumEngine>,
+            &Canvas,
+            &Settings,
+            &[Pigment],
+        ),
+    ) -> (blake3::Hash, Option<ImageData>) {
+        let scale = cell_scale(art);
+        let entry = self
+            .painted
+            .entry(layer.id.clone())
+            .or_insert_with(|| PaintedLayer {
+                settle: Settle::new(LayerPainter::new(
+                    Arc::clone(engine),
+                    canvas.clone(),
+                    settings.clone(),
+                )),
+                sources: Sources::default(),
+                graded: None,
+                mips: Mips::default(),
+                level: None,
+                graded_mosaic: None,
+            });
+        let (marks_key, marks) = entry.sources.of(art, &layer.id, palette, scale);
+        let mut key = blake3::Hasher::new();
+        key.update(marks_key.as_bytes());
+        key.update(engine.id().as_bytes());
+        key.update(format!("{:?}", settings.resolved()).as_bytes());
+        let key = key.finalize();
+        // What the background finished is taken in first, so the painter
+        // is checked before it paints again.
+        entry.settle.collect(wait);
+        if entry
+            .settle
+            .painter()
+            .is_some_and(|painter| !painter.matches(engine.id(), canvas, settings))
+        {
+            entry.settle.replace(LayerPainter::new(
+                Arc::clone(engine),
+                canvas.clone(),
+                settings.clone(),
+            ));
+        }
+        let stroke = wet.map(|wet| {
+            let strokes = wet_marks(wet, wet_cut(art, wet).as_ref(), palette, scale);
+            let mut stroke = blake3::Hasher::new();
+            for mark in &strokes {
+                stroke.update(&mark.fingerprint);
+            }
+            (stroke.finalize(), Arc::from(strokes))
+        });
+        let ask = Ask {
+            key,
+            marks,
+            wet: stroke,
+            size: (canvas.width, canvas.height),
+        };
+        let painting = entry.settle.show(&ask, wait);
+        // A stroke being painted shows as it is laid, before the layer's
+        // adjustments grade it.
+        let shown = match painting {
+            Some(painting) if wet.is_none() => Some(graded_painting(
+                entry,
+                painting,
+                layer.adjust.as_ref(),
+                (canvas.width, canvas.height),
+                scale,
+            )),
+            painting => painting,
+        };
+        (key, shown)
     }
 
     /// The tiles of `layer`'s part shown, simulated at a finer level than
@@ -908,39 +1062,6 @@ fn level_grid(art: &Artwork, scale: f64) -> (usize, usize) {
     (side(art.width), side(art.height))
 }
 
-/// What a painted layer shows: a stroke still being painted previewed over
-/// its painting (only as often as the medium keeps up), else its painting
-/// as the layer's adjustments grade it.
-fn shown_painting(
-    preview: &mut Option<WetPreview>,
-    entry: &mut PaintedLayer,
-    layer: &Layer,
-    (marks, wet): (&[Painted], Option<Vec<Painted>>),
-    (width, height): (usize, usize),
-    scale: f64,
-) -> Option<ImageData> {
-    let Some(strokes) = wet else {
-        if preview.as_ref().is_some_and(|wet| wet.layer == layer.id) {
-            *preview = None;
-        }
-        return graded_painting(entry, layer.adjust.as_ref(), width, height, scale);
-    };
-    let now = ui::time::now();
-    let due = preview.as_ref().is_none_or(|wet| {
-        wet.layer != layer.id || now.duration_since(wet.at) >= (wet.cost * 2).max(WET_INTERVAL)
-    });
-    if due {
-        let pixels = entry.painter.preview(marks, &strokes);
-        *preview = Some(WetPreview {
-            layer: layer.id.clone(),
-            image: image(pixels, width, height),
-            at: now,
-            cost: ui::time::now().duration_since(now),
-        });
-    }
-    preview.as_ref().map(|wet| wet.image.clone())
-}
-
 /// The marks of a painted layer its medium does not paint: its pictures
 /// (`pictures`), or its lettering, graded by their own and the layer's
 /// adjustments.
@@ -1021,30 +1142,29 @@ pub(crate) fn graded_mark(mark: &Mark, palette: &[Pigment], grades: &[Grade]) ->
 /// painting and adjustment.
 fn graded_painting(
     entry: &mut PaintedLayer,
+    image: ImageData,
     adjust: Option<&Adjust>,
-    width: usize,
-    height: usize,
+    (width, height): (usize, usize),
     cells_per_unit: f64,
-) -> Option<ImageData> {
-    let image = entry.image.clone()?;
+) -> ImageData {
     let Some(adjust) = adjust else {
-        return Some(image);
+        return image;
     };
     let treatment = Treatment::of(&[adjust], cells_per_unit);
     if treatment.is_empty() {
-        return Some(image);
+        return image;
     }
-    let key = format!("{}|{}", entry.key.to_hex(), treatment.key);
+    let key = format!("{}|{}", image.data.id(), treatment.key);
     if let Some((have, graded)) = &entry.graded
         && *have == key
     {
-        return Some(graded.clone());
+        return graded.clone();
     }
     let mut pixels = image.data.data().to_vec();
     treatment.run(&mut pixels, width, height, 1.0);
     let graded = crate::picture::image_of(pixels, width, height);
     entry.graded = Some((key, graded.clone()));
-    Some(graded)
+    graded
 }
 
 /// The scale a transform draws at: device pixels per unit.
@@ -1081,10 +1201,21 @@ fn draw_picture(
         .collect();
     let treatment = Treatment::of(&adjusts, per_unit);
     let device = pixels_per_unit(at) / per_unit.max(1e-9);
-    let Some((image, step)) = pictures.shown(src, device, &treatment) else {
+    let Some((image, step)) = pictures.shown(
+        src,
+        if mark.style.pixelated {
+            device.max(1.0)
+        } else {
+            device
+        },
+        &treatment,
+    ) else {
         return;
     };
-    let brush = ImageBrush::new(image).with_alpha(narrow(mark.style.opacity()));
+    let mut brush = ImageBrush::new(image).with_alpha(narrow(mark.style.opacity()));
+    if mark.style.pixelated {
+        brush = brush.with_quality(ui::vello::peniko::ImageQuality::Low);
+    }
     let to_frame = placement.picture_to_local(size) * Affine::scale(step);
     let vignetted = mark
         .style
@@ -1164,51 +1295,6 @@ pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f
         &dashes,
         Affine::IDENTITY,
         SHADOW_INK.with_alpha(1.0),
-        None,
-        path,
-    );
-}
-
-/// Where an eraser took paint off, outlined over the artwork: faint dots,
-/// light under dark so they read over any paint, or `marked` (hovered or
-/// picked) in that colour.
-pub fn eraser_outline(scene: &mut Scene, path: &BezPath, marked: Option<Color>) {
-    let (under, dashes, ink) = match marked {
-        Some(colour) => (
-            Stroke::new(2.5),
-            Stroke::new(1.5).with_dashes(0.0, [6.0, 3.0]),
-            colour,
-        ),
-        None => (
-            Stroke::new(2.0),
-            Stroke::new(1.0).with_dashes(0.0, [2.0, 3.0]),
-            SHADOW_INK.with_alpha(0.75),
-        ),
-    };
-    scene.stroke(
-        &under,
-        Affine::IDENTITY,
-        BLANK_GROUND.multiply_alpha(if marked.is_some() { 0.9 } else { 0.55 }),
-        None,
-        path,
-    );
-    scene.stroke(&dashes, Affine::IDENTITY, ink, None, path);
-}
-
-/// Where a brush or eraser will land, round the pointer: a dark ring
-/// under a light one, so it reads on any paint.
-pub fn footprint_ring(scene: &mut Scene, path: &BezPath) {
-    scene.stroke(
-        &Stroke::new(1.5),
-        Affine::IDENTITY,
-        SHADOW_INK.with_alpha(0.6),
-        None,
-        path,
-    );
-    scene.stroke(
-        &Stroke::new(0.75),
-        Affine::IDENTITY,
-        BLANK_GROUND.multiply_alpha(0.9),
         None,
         path,
     );
@@ -1311,9 +1397,7 @@ fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f6
     };
     let mut painted = Vec::new();
     match &mark.shape {
-        Shape::Stroke { points, size, .. }
-            if crate::brushes::Preset::of(style) == crate::brushes::Preset::Eraser =>
-        {
+        Shape::Stroke { points, size, .. } if crate::brushes::Preset::of(style).erases() => {
             let dynamics = crate::brushes::Dynamics::of_mark(mark);
             painted.push(Painted::new(
                 &mark.id,
@@ -1577,20 +1661,17 @@ fn draw_mark(
 ) {
     let transform = cx.transform;
     let preset = crate::brushes::Preset::of(&mark.style);
-    if matches!(mark.shape, Shape::Stroke { .. }) && preset == crate::brushes::Preset::Eraser {
+    if matches!(mark.shape, Shape::Stroke { .. }) && preset.erases() {
         draw_eraser(art, mark, scene, cx);
         return;
     }
     let picture = matches!(mark.shape, Shape::Image { .. });
     let graded;
-    let mark = if picture {
+    let adjustments = grades_of(&[mark.style.adjust.as_ref(), cx.layer_adjust]);
+    let mark = if picture || adjustments.is_empty() {
         mark
     } else {
-        graded = graded_mark(
-            mark,
-            palette,
-            &grades_of(&[mark.style.adjust.as_ref(), cx.layer_adjust]),
-        );
+        graded = graded_mark(mark, palette, &adjustments);
         &graded
     };
     let mut layers = 0;
@@ -1637,11 +1718,16 @@ fn draw_mark(
     // paint does not: the mark is drawn into a group of its own and the
     // speckle lands only on what it covers. Opaque paint takes the cheap
     // path, its outline filled with the speckle.
-    let reach = mark.bounds().inflate(
-        style.feather.unwrap_or(0.0) + 2.0,
-        style.feather.unwrap_or(0.0) + 2.0,
-    );
     let isolated = !speckles.is_empty() && !opaque(mark, palette);
+    let reach = if isolated {
+        mark.bounds().inflate(
+            style.feather.unwrap_or(0.0) + 2.0,
+            style.feather.unwrap_or(0.0) + 2.0,
+        )
+    } else {
+        Rect::ZERO
+    };
+    let path = cx.paths.get(mark);
     if isolated {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &reach);
     }
@@ -1650,11 +1736,11 @@ fn draw_mark(
     match style.feather {
         _ if picture => {
             draw_picture(mark, cx.layer_adjust, scene, transform, cx.pictures);
-            draw_vector(mark, palette, scene, transform, cx.text);
+            draw_vector_path(mark, palette, scene, transform, cx.text, path.as_deref());
         }
         _ if dabbed => draw_dabbed(mark, palette, scene, cx, Compose::SrcOver),
         Some(feather) if feather > 0.0 => draw_feathered(mark, palette, scene, transform, feather),
-        _ => draw_vector(mark, palette, scene, transform, cx.text),
+        _ => draw_vector_path(mark, palette, scene, transform, cx.text, path.as_deref()),
     }
     if let Some(inner) = &style.inner_shadow {
         draw_inner_shadow(mark, inner, palette, scene, transform);
@@ -1691,7 +1777,7 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
     for outline in &cuts {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, outline);
     }
-    if crate::brushes::Preset::Eraser.dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
+    if crate::brushes::Preset::of(&mark.style).dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
         draw_dabbed(mark, &[], scene, cx, Compose::SrcOver);
     } else {
         scene.fill(
@@ -1745,7 +1831,7 @@ fn draw_dabbed(
         return;
     }
     let style = &mark.style;
-    let eraser = crate::brushes::Preset::of(style) == crate::brushes::Preset::Eraser;
+    let eraser = crate::brushes::Preset::of(style).erases();
     let ink = if eraser {
         ERASED
     } else {
@@ -2234,7 +2320,7 @@ pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
         _ => ui::ParagraphAlign::Start,
     };
     Some(
-        ui::TextStyle::new(narrow(*size))
+        ui::TextStyle::content(narrow(*size))
             .with_family(family)
             .with_weight(tier)
             // The shipped faces are variable: any weight between their
@@ -2453,6 +2539,17 @@ pub fn draw_vector(
     transform: Affine,
     text: &mut TextRenderer,
 ) {
+    draw_vector_path(mark, palette, scene, transform, text, None);
+}
+
+fn draw_vector_path(
+    mark: &Mark,
+    palette: &[Pigment],
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    cached: Option<&BezPath>,
+) {
     let style = &mark.style;
     let at = transform * mark.affine();
     let opacity = style.opacity();
@@ -2465,7 +2562,7 @@ pub fn draw_vector(
     match &mark.shape {
         Shape::Stroke { .. } => {
             let preset = crate::brushes::Preset::of(style);
-            if preset == crate::brushes::Preset::Eraser {
+            if preset.erases() {
                 return;
             }
             let Some(ink) = named(&style.stroke).or_else(|| named(&style.fill)) else {
@@ -2482,16 +2579,22 @@ pub fn draw_vector(
             draw_text_shape(&mark.shape, ink, scene, at, text);
         }
         shape => {
-            let path = shape.path();
+            let fresh;
+            let path = if let Some(path) = cached {
+                path
+            } else {
+                fresh = shape.path();
+                &fresh
+            };
             if shape.closed() {
                 if let Some(gradient) = style
                     .gradient
                     .as_ref()
                     .and_then(|gradient| gradient_brush(gradient, palette, opacity))
                 {
-                    scene.fill(Fill::NonZero, at, &gradient, None, &path);
+                    scene.fill(Fill::NonZero, at, &gradient, None, path);
                 } else if let Some(fill) = named(&style.fill) {
-                    scene.fill(Fill::NonZero, at, fill, None, &path);
+                    scene.fill(Fill::NonZero, at, fill, None, path);
                 }
             }
             let width = if shape.closed() {
@@ -2502,7 +2605,7 @@ pub fn draw_vector(
             if width > 0.0
                 && let Some(line) = named(&style.stroke)
             {
-                scene.stroke(&pen(style, width), at, line, None, &path);
+                scene.stroke(&pen(style, width), at, line, None, path);
             }
         }
     }
@@ -2544,13 +2647,13 @@ fn draw_grid(
             None,
             &Rect::new(x, y, x + width, y + pixel * 14.0),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &words,
-            font,
             label,
             transform * Affine::translate((x + pixel * 2.0, y + pixel)),
             None,
+            &ui::TextStyle::content(font),
         );
     };
     let lines = |from: f64, to: f64| {

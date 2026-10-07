@@ -92,6 +92,15 @@ No new wire message was added to `tilo-relay/1`: adding an enum variant to the
 postcard protocol would make old peers reject the stream. Compute uses its own
 versioned ALPN so old relay peers keep their byte-compatible v1 stream.
 
+Device administration follows the same rule. `can_administer_devices` is a
+certificate capability like `foreign`: a certificate that grants it signs under
+its own preimage tag (`tilo-devcert-v3`) and encodes its capabilities behind a
+marker byte older verifiers refuse. Every certificate that does not grant it
+keeps its byte-identical encoding and signature, so no existing peer sees a
+change; only a machine enrolled for administration is refused by builds that
+predate it. Admin traffic travels on its own versioned ALPN,
+`tilo-device-admin/1` (docs/device-reach.md), never inside an existing stream.
+
 ## Personal device fabric
 
 `shell::device_fabric` is the common, transport-neutral policy model for the

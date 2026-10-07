@@ -13,6 +13,7 @@ use crate::search::system::{
     self, Provider, Query, ResourceKind, SearchBudget, SearchCursor, SearchPage, SearchRow,
     SearchScope,
 };
+use crate::tokens::TextRole;
 use tilo_actions::ActionAddress;
 
 const UNAVAILABLE_DOMAINS: &str = "Files and host apps are unavailable in this browser.";
@@ -187,13 +188,13 @@ impl Widget for Overlay {
             self.hover,
         );
         let rect = self.palette.get_rect();
-        text.draw_text(
+        text.draw_style(
             scene,
             UNAVAILABLE_DOMAINS,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((rect.x0 + 12.0, rect.y1 + 8.0)),
             Some((rect.width() - 24.0).max(1.0) as f32),
+            &theme.text(TextRole::Caption),
         );
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -505,7 +506,7 @@ impl FrameHarness {
                 continue;
             };
             let page = provider.search_page(
-                &needle,
+                &crate::search::SearchQuery::new(needle.as_str()),
                 None,
                 SearchBudget::PALETTE.max_work,
                 SearchBudget::PALETTE.max_results,
@@ -815,7 +816,7 @@ impl FrameHarness {
             &mut crate::widget::EventCtx {
                 scale_factor: self.input_scale,
                 modifiers: &self.modifiers,
-                state: &mut self.state.doc,
+                state: crate::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -841,6 +842,7 @@ impl FrameHarness {
         Point::new(position.x / self.input_scale, position.y / self.input_scale)
     }
     pub(super) fn draw_system_search(&mut self) {
+        let transform = self.capture_draw_transform();
         let Some(overlay) = self.system_search.overlay.as_mut() else {
             return;
         };
@@ -878,7 +880,7 @@ impl FrameHarness {
         }
         overlay.draw(
             &mut self.scene,
-            Affine::IDENTITY,
+            transform,
             &mut self.text,
             &self.theme,
             &self.presence,
@@ -949,7 +951,7 @@ impl FrameHarness {
             overlay.palette.perform_semantic_action(
                 target,
                 action,
-                &mut self.state.doc,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             )
         })

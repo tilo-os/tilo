@@ -66,6 +66,10 @@ impl ResourceApp for BoardApp {
     const ID: &'static str = "so.tilo.test-board";
     const TITLE: &'static str = "Board";
 
+    fn label(_: &Board) -> String {
+        "Studio mixer".into()
+    }
+
     fn view(cx: &mut ViewCx<Board>) -> Element {
         let me = cx.me().map(str::to_owned);
         let signed_in = format!("Signed in as {}", me.as_deref().unwrap_or("nobody"));
@@ -208,7 +212,7 @@ impl<R: Resource<Action = LevelAction>> Widget for LevelSlider<R> {
                         operation: BoardAction::SetLevel { level },
                         now_ms: 0,
                     };
-                    dispatch.apply_now(ctx.state, &action).unwrap();
+                    dispatch.apply_now(&mut ctx.edits(), &action).unwrap();
                     *ctx.handled = true;
                 }
             }
@@ -302,7 +306,12 @@ fn views_surfaces_and_actions_know_who_is_editing() {
     drag(&mut app, 10.0, 40.0);
     assert_eq!(app.state().level, 40.0);
     let last = app.versions().pop().unwrap();
-    let invoker = last.context.and_then(|context| context.invoker).unwrap();
+    let context = last.context.unwrap();
+    let resource = context.resource.unwrap();
+    assert_eq!(resource.kind, "test.board");
+    assert_eq!(resource.label, "Studio mixer");
+    assert_ne!(resource.label, <Board as Resource>::LABEL);
+    let invoker = context.invoker.unwrap();
     assert_eq!(invoker.actor, "test-author");
 
     // A past version is read by nobody in particular.

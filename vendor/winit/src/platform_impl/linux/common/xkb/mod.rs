@@ -95,6 +95,60 @@ impl Context {
         })
     }
 
+    /// Snapshot the actual received keymap/state, not a reconstruction from
+    /// environment, logical characters or current application preferences.
+    #[cfg(wayland_platform)]
+    pub fn keyboard_layout(&self, masks: [u32; 4]) -> Option<crate::keyboard::KeyboardLayout> {
+        use crate::keyboard::{KeyboardLayout, KeyboardLayoutKey, KeyboardLayoutSymbol};
+        let keymap = self.keymap.as_ref()?;
+        let state = self.state.as_ref()?;
+        let first = unsafe { (XKBH.xkb_keymap_min_keycode)(keymap.as_ptr()) };
+        let last = unsafe { (XKBH.xkb_keymap_max_keycode)(keymap.as_ptr()) };
+        if first < 8 || last < first || last > 1023 {
+            return None;
+        }
+        let mut keys = Vec::new();
+        for code in first..=last {
+            let mut symbols = Vec::new();
+            for sym in state.effective_symbols(code)? {
+                if sym == 0 {
+                    continue;
+                }
+                let mut name = [0u8; 65];
+                let mut text = [0u8; 33];
+                let name_len = unsafe {
+                    (XKBH.xkb_keysym_get_name)(sym, name.as_mut_ptr().cast(), name.len())
+                };
+                let text_len =
+                    unsafe { (XKBH.xkb_keysym_to_utf8)(sym, text.as_mut_ptr().cast(), text.len()) };
+                if !(1..65).contains(&name_len) || !(0..=33).contains(&text_len) {
+                    return None;
+                }
+                symbols.push(KeyboardLayoutSymbol {
+                    name: std::str::from_utf8(&name[..name_len as usize])
+                        .ok()?
+                        .to_owned(),
+                    text: std::str::from_utf8(&text[..(text_len as usize).saturating_sub(1)])
+                        .ok()?
+                        .to_owned(),
+                });
+            }
+            if !symbols.is_empty() {
+                keys.push(KeyboardLayoutKey {
+                    physical: keymap::raw_keycode_to_physicalkey(code),
+                    symbols,
+                });
+            }
+        }
+        Some(KeyboardLayout {
+            depressed: masks[0],
+            latched: masks[1],
+            locked: masks[2],
+            group: masks[3],
+            keys,
+        })
+    }
+
     #[cfg(feature = "x11")]
     pub fn from_x11_xkb(xcb: *mut xcb_connection_t) -> Result<Self, Error> {
         let result = unsafe {
@@ -126,6 +180,12 @@ impl Context {
 
     pub fn keymap_mut(&mut self) -> Option<&mut XkbKeymap> {
         self.keymap.as_mut()
+    }
+
+    #[cfg(wayland_platform)]
+    pub fn clear_keymap(&mut self) {
+        self.state = None;
+        self.keymap = None;
     }
 
     #[cfg(wayland_platform)]
@@ -199,7 +259,7 @@ impl KeyContext<'_> {
         let (key_without_modifiers, _) = event.key_without_modifiers();
         let text_with_all_modifiers = event.text_with_all_modifiers();
 
-        let platform_specific = KeyEventExtra { text_with_all_modifiers, key_without_modifiers };
+        let platform_specific = KeyEventExtra { text_with_all_modifiers, key_without_modifiers, wayland_stamp: None };
 
         KeyEvent { physical_key, logical_key, text, location, state, repeat, platform_specific }
     }

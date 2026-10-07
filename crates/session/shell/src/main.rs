@@ -351,31 +351,35 @@ mod macos_tests {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("mac-note.txt"), "real content").unwrap();
             let inputs =
-                shell::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
-                    .unwrap();
-            let tile = shell::shell::state::TileContent::AppPlaceholder {
-                kind: shell::shell::state::AppKind::FileExplorer,
-                label: "Files".into(),
-            };
-            let ui::widget::TileContent::App(mut app) = shell::shell::try_to_ui_tile(
-                &tile,
-                terminal::HostedProcessServices::default(),
-                &inputs,
-            )
-            .unwrap() else {
-                panic!("Files must be a real app, not a notice");
-            };
-            let files = app
-                .as_any_mut()
-                .unwrap()
-                .downcast_mut::<file_explorer::FileExplorerWidget>()
+                shell::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
+                    directory.path(),
+                )
                 .unwrap();
-            assert!(
-                files
-                    .entries()
-                    .iter()
-                    .any(|entry| entry.name == "mac-note.txt")
-            );
+            let tab = shell::shell::state::Tab {
+                id: 7,
+                title: "Files".into(),
+                tile: shell::shell::state::TileContent::AppPlaceholder {
+                    kind: shell::shell::state::AppKind::FileExplorer,
+                    label: "Files".into(),
+                },
+            };
+            let request = tilo_desktop::resolver::TileRequest {
+                room: shell::shell::state::RoomId::new(),
+                tab: &tab,
+            };
+            let Some(tilo_desktop::resolver::TileResolution::App(component, _)) =
+                shell::shell::mount_in_process(&request, &inputs)
+            else {
+                panic!("Files must be its own component, not a notice");
+            };
+            let mut harness = ui::headless::FrameHarness::from_component(
+                component,
+                (1000, 700),
+                ui::application::ComponentRunnerInputs::from_native_process(),
+            )
+            .unwrap();
+            harness.relayout();
+            assert!(harness.inspection_json().unwrap().contains("mac-note.txt"));
         }
         // Phase `hosted_files_expose_each_rendered_row_with_its_own_bounds`.
         {

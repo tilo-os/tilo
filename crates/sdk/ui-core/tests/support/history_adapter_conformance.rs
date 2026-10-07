@@ -152,9 +152,24 @@ fn managed_driver(doc: AutoCommit, selected: automerge::ChangeHash) -> ui::headl
         (1000, 750),
     )
     .unwrap();
-    driver.click_named("history-open").unwrap();
+    click_history_opener(&mut driver);
     select_version(&mut driver, selected);
     driver
+}
+
+/// Press the History control the window presents: `NavShell` apps carry it in
+/// their header row, a painted header row hosts it as the window's History
+/// control, other apps find it in the window's History bar.
+fn click_history_opener(driver: &mut ui::headless::Driver) {
+    let opener = [
+        "nav-shell-history",
+        ui::widget::HISTORY_CONTROL_ID,
+        "history-open",
+    ]
+    .into_iter()
+    .find(|name| driver.targets().contains_key(*name))
+    .expect("the window presents a History control");
+    driver.click_named(opener).unwrap();
 }
 
 fn select_version(driver: &mut ui::headless::Driver, selected: automerge::ChangeHash) {

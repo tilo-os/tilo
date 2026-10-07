@@ -73,6 +73,8 @@ mod multi_host;
 mod out_of_band_join_modes;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
+#[path = "record_content_routing.rs"]
+mod record_content_routing;
 #[path = "relay_daemon.rs"]
 mod relay_daemon;
 #[path = "remote_action_routing.rs"]

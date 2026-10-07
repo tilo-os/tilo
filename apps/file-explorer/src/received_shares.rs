@@ -18,6 +18,46 @@ use wire_frame::FrameError;
 
 use crate::i18n::{arg, t, t_args};
 
+/// How a received share link starts: the recipient service decodes the rest.
+pub const LINK_SCHEME: &str = "tilo-file://";
+
+/// The launch switch that hands Files a received link on standard input,
+/// which keeps the bearer secret out of the process list.
+pub const STDIN_FLAG: &str = "--open-share-stdin";
+
+/// The longest received link Files reads.
+const MAX_LINK_BYTES: usize = 16 * 1024;
+
+/// Read one received link from `input` (standard input for
+/// [`STDIN_FLAG`]).
+///
+/// # Errors
+///
+/// Returns a localized reason when the input cannot be read, is too long,
+/// is not text or is empty.
+pub fn read_link(input: impl std::io::Read) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    if input
+        .take((MAX_LINK_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Err(crate::i18n::t("files-received-link-read-failed"));
+    }
+    if bytes.len() > MAX_LINK_BYTES {
+        return Err(crate::i18n::t("files-received-link-too-large"));
+    }
+    let Ok(uri) = String::from_utf8(bytes) else {
+        return Err(crate::i18n::t("files-received-link-invalid-text"));
+    };
+    let uri = uri.trim_end_matches(['\r', '\n']);
+    if uri.is_empty() {
+        return Err(crate::i18n::t("files-received-link-empty"));
+    }
+    Ok(uri.to_owned())
+}
+
 /// Admit a copied bearer link through the inherited recipient service.
 ///
 /// # Errors
@@ -163,5 +203,19 @@ mod tests {
             service.write_all(&[0, 0, 0, 0]).await.unwrap();
             assert!(exchange(&mut client, operation).await.is_err());
         });
+    }
+
+    /// A link on standard input is read whole, without its line ending;
+    /// empty, oversized and non-text input is refused.
+    #[test]
+    fn a_link_on_standard_input_is_read_and_checked() {
+        crate::i18n::set_locale("en-US");
+        assert_eq!(
+            read_link(&b"tilo-file://v2/abc#key\n"[..]).unwrap(),
+            "tilo-file://v2/abc#key"
+        );
+        assert!(read_link(&b"\n"[..]).is_err());
+        assert!(read_link(&[0xff, 0xfe][..]).is_err());
+        assert!(read_link(&vec![b'a'; MAX_LINK_BYTES + 1][..]).is_err());
     }
 }

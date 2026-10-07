@@ -173,7 +173,7 @@ impl Emoji {
     }
 }
 
-/// A top-level Unicode emoji group ("Smileys & Emotion"): a picker tab.
+/// A top-level Unicode emoji group ("Smileys & emotion"): a picker tab.
 #[derive(Debug, Clone)]
 pub struct Group {
     id: &'static str,

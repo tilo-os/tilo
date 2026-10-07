@@ -34,14 +34,20 @@ use vello::kurbo::{Affine, Point};
 const WIDTH: u32 = 1000;
 const HEIGHT: u32 = 720;
 
-fn shoot(theme: &Theme, out: &Path, steps: &[&str], width: u32, height: u32) -> Result<(), String> {
+fn shoot(
+    theme: &Theme,
+    out: &Path,
+    steps: &[&'static str],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
     shoot_in_context(theme, out, steps, width, height, false, false)
 }
 
 fn shoot_host(
     theme: &Theme,
     out: &Path,
-    steps: &[&str],
+    steps: &[&'static str],
     width: u32,
     height: u32,
 ) -> Result<(), String> {
@@ -51,7 +57,7 @@ fn shoot_host(
 fn shoot_host_mint_error(
     theme: &Theme,
     out: &Path,
-    steps: &[&str],
+    steps: &[&'static str],
     width: u32,
     height: u32,
 ) -> Result<(), String> {
@@ -65,7 +71,7 @@ fn shoot_host_mint_error(
 fn shoot_in_context(
     theme: &Theme,
     out: &Path,
-    steps: &[&str],
+    steps: &[&'static str],
     width: u32,
     height: u32,
     host_desktop: bool,
@@ -90,12 +96,17 @@ fn shoot_in_context(
         OnboardingView::with_minter(minter)
     };
 
-    // Drive the widget through one sync per key press, as a click would.
-    for key in steps {
-        let _ = state.doc.put(&state.root, *key, ScalarValue::Boolean(true));
-        view.sync(&mut state.doc, &state.root);
+    // Drive the widget through one sync per step, as a click would. The
+    // acknowledgement checkboxes are document-bound; the rest are buttons.
+    for &key in steps {
+        if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            let _ = state.doc.put(&state.root, key, ScalarValue::Boolean(true));
+        } else {
+            view.press(key);
+        }
+        view.sync(&state.doc, &state.root);
     }
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
 
     let mut tr = TextRenderer::new();
     let mut taffy = TaffyTree::<()>::new();
@@ -121,7 +132,7 @@ fn shoot_in_context(
     // their own state out of the CRDT yet — a freshly built Checkbox does not
     // know it is ticked until it syncs. The live loop syncs once per frame,
     // so this captures the settled state after the tree was rebuilt.
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
     view.settle_motion_for_snapshot();
 
     let mut scene = Scene::new();
@@ -129,7 +140,7 @@ fn shoot_in_context(
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(width, height);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.base, out);
     println!("wrote {}", out.display());
     Ok(())
 }
@@ -147,12 +158,12 @@ fn shoot_visual(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    let mut state = State::new();
+    let state = State::new();
     let mut view = OnboardingView::with_minter(Box::new(|| {
         Err("identity creation is not part of this snapshot".to_string())
     }));
     view.set_visual_state_for_snapshot(visual);
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
 
     let mut tr = TextRenderer::new();
     let mut taffy = TaffyTree::<()>::new();
@@ -173,7 +184,7 @@ fn shoot_visual(
         )
         .map_err(|e| format!("compute_layout_with_measure: {e}"))?;
     view.apply_layout(&taffy, node, Point::ZERO);
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
     view.settle_motion_for_snapshot();
 
     let mut scene = Scene::new();
@@ -181,7 +192,7 @@ fn shoot_visual(
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(width, height);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.base, out);
     println!("wrote {}", out.display());
     Ok(())
 }
@@ -301,7 +312,7 @@ fn main() -> Result<(), String> {
         720,
     )?;
 
-    let accessibility_states: &[(&str, &[&str])] = &[
+    let accessibility_states: &[(&str, &[&'static str])] = &[
         ("choose", &[]),
         ("connect", &[KEY_EXISTING, KEY_CHOOSE_RESTORE]),
         ("protect", &[KEY_BEGIN]),

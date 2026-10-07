@@ -199,10 +199,7 @@ impl ExportSettings {
         } else {
             String::new()
         };
-        format!(
-            "{:.0} Mbit/s{audio}, size not predictable here",
-            self.resolution.target_mbps(),
-        )
+        format!("{:.0} Mbit/s{audio}", self.resolution.target_mbps())
     }
 
     pub fn suggested_filename(&self, project: &str) -> String {

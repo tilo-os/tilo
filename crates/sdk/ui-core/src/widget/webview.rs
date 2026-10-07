@@ -375,6 +375,7 @@ impl Widget for WebView {
             &self.rect,
         );
 
+        self.engine.presented();
         self.share_page();
         // A display list replaces pixels: draw it like any other widget
         // content, in this toolkit's own text and Vello.
@@ -466,6 +467,19 @@ impl Widget for WebView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // Someone is using the page: it is on screen, whether or not a frame
+        // has been drawn since it came back.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Focused(true)
+                | WindowEvent::Occluded(false)
+        ) {
+            self.engine.presented();
+        }
         if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
             self.scale_factor = to_f32(ctx.scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
@@ -612,12 +626,7 @@ impl Widget for WebView {
     /// Two-finger swipe / edge-pull → browser-style history navigation.
     /// Overriding this here makes every embedder of `WebView`
     /// swipe-navigable, not just the browser app.
-    fn on_nav_gesture(
-        &mut self,
-        dir: NavDirection,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
+    fn on_nav_gesture(&mut self, dir: NavDirection, _state: &AppModel, _path: &ModelPath) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,
             NavDirection::Forward => WebViewCommand::GoForward,
@@ -736,7 +745,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut state,
+                state: crate::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1366,10 +1375,10 @@ mod tests {
             use crate::gesture::NavDirection;
             let engine = TestEngine::new();
             let mut w = WebView::new(engine.clone());
-            let mut state = AutoCommit::new();
+            let state = AutoCommit::new();
             let root = automerge::ROOT;
-            assert!(w.on_nav_gesture(NavDirection::Back, &mut state, &root));
-            assert!(w.on_nav_gesture(NavDirection::Forward, &mut state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Back, &state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Forward, &state, &root));
             let cmds = engine.commands();
             assert!(cmds.contains(&WebViewCommand::GoBack));
             assert!(cmds.contains(&WebViewCommand::GoForward));

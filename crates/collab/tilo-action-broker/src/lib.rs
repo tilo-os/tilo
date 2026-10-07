@@ -15,6 +15,7 @@ pub mod owner_turn;
 pub mod peer_actions;
 pub mod policy;
 pub mod published_authorization;
+pub mod record_content;
 pub mod route;
 pub mod services;
 #[cfg(test)]

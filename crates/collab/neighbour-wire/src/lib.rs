@@ -25,6 +25,7 @@
 )]
 
 pub mod colorimetry;
+pub mod contribution;
 pub mod hdr_metadata;
 pub mod retention;
 
@@ -60,6 +61,15 @@ pub type SurfaceId = u64;
 
 /// Presence channel key — namespaces presence updates (e.g. cursor, selection).
 pub type PresenceKey = String;
+
+/// The colour the person at the publishing session wears for everyone in
+/// the room: one of the twelve presence hues by its stored name (`"red"` …
+/// `"pink"`, as `identity.colour` spells it) — their choice, or the one their
+/// stable identity derives, so every collaborator paints them the same. Self-
+/// asserted and cosmetic, like `user`. `None` when the sender did not say; a
+/// receiver then derives one from the sender's handle. A name the receiver
+/// does not know is treated as unsaid.
+pub type PresenceColour = Option<String>;
 
 /// Tagged envelope for everything that crosses the neighbour boundary.
 ///
@@ -99,12 +109,15 @@ pub enum NeighbourMsg {
     /// leave the host that minted them. `user` is the session's claim of who is
     /// there (the sender's local user id), not something the
     /// receiver infers; empty falls back to showing the session handle.
+    /// `colour` is the colour the person there wears ([`PresenceColour`]).
     PresenceMoved {
         peer: PeerId,
         user: String,
         key: PresenceKey,
         point: (f64, f64),
         ts: u64,
+        #[serde(default)]
+        colour: PresenceColour,
     },
     /// Peer's presence cursor disappeared from `key`'s coordinate space.
     PresenceCleared { peer: PeerId, key: PresenceKey },
@@ -236,11 +249,14 @@ pub enum NeighbourMsg {
     },
     /// App-level presence crossing the host boundary. Presence is cluster scoped,
     /// so a participant remains visible while moving between apps in one room.
+    /// `colour` is the colour the person there wears ([`PresenceColour`]).
     AppPresenceV2 {
         peer: PeerId,
         app_id: String,
         cluster_id: String,
         presence: collab_types::PeerPresence,
+        #[serde(default)]
+        colour: PresenceColour,
     },
     /// Cooperative scrollback request, broadcast over gossip when a peer's
     /// local broker has no in-memory scrollback for a range an app asked for.
@@ -390,6 +406,33 @@ pub enum NeighbourMsg {
     PersonalWorkspaces {
         user_public_key: [u8; 32],
         update: Box<tilo_user_identity::DirectoryUpdate>,
+    },
+    /// A device asking the room for one piece of content a record of
+    /// `app_id` in room `cluster_id` refers to, by its BLAKE3 `hash`. Rides
+    /// the room's topic, so only peers admitted to read the room see it;
+    /// any of them holding the content answers with
+    /// [`Self::RecordContentPiece`]. Appended to preserve every existing
+    /// Postcard discriminant.
+    RecordContentWant {
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
+    /// One bounded piece of a record's content, answering `requester`'s
+    /// [`Self::RecordContentWant`]: `bytes` start at `offset` of the
+    /// `total`-byte content named by `hash`. The receiver keeps the content
+    /// only once every piece arrived and the bytes hash to `hash`. Appended
+    /// to preserve every existing Postcard discriminant.
+    RecordContentPiece {
+        responder: PeerId,
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+        total: u64,
+        offset: u64,
+        bytes: Vec<u8>,
     },
 }
 
@@ -542,6 +585,7 @@ mod tests {
                     key: "cursor".into(),
                     point: (12.5, -3.25),
                     ts: 1_700_000_000,
+                    colour: Some("violet".into()),
                 },
             ),
             (
@@ -728,6 +772,29 @@ mod tests {
                         key: vec![4, 5],
                         payload: PeerPresencePayload::Selection { start: 3, end: 8 },
                     },
+                    colour: Some("teal".into()),
+                },
+            ),
+            (
+                "record content want",
+                NeighbourMsg::RecordContentWant {
+                    requester: 0x00AB_CDEF,
+                    app_id: "so.tilo.slides".into(),
+                    cluster_id: "room".into(),
+                    hash: "ab".into(),
+                },
+            ),
+            (
+                "record content piece",
+                NeighbourMsg::RecordContentPiece {
+                    responder: 0x123_456,
+                    requester: 0x00AB_CDEF,
+                    app_id: "so.tilo.slides".into(),
+                    cluster_id: "room".into(),
+                    hash: "ab".into(),
+                    total: 3,
+                    offset: 0,
+                    bytes: vec![1, 2, 3],
                 },
             ),
             (
@@ -799,10 +866,12 @@ mod tests {
             NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
             NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
             NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
+            NeighbourMsg::RecordContentWant { .. } => "RecordContentWant",
+            NeighbourMsg::RecordContentPiece { .. } => "RecordContentPiece",
         }
     }
 
-    const VARIANT_COUNT: usize = 26;
+    const VARIANT_COUNT: usize = 28;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -834,7 +903,7 @@ mod tests {
             "presence moved",
             concat!(
                 "022a03626f6206637572736f7200000000000029400000000000000ac080e2cf",
-                "aa06",
+                "aa06010676696f6c6574",
             ),
         ),
         ("presence cleared", "032a06637572736f72"),
@@ -940,7 +1009,16 @@ mod tests {
             concat!(
                 "0def9baf05056e6f7465732436623366396131302d303030302d343030302d38",
                 "3030302d303030303030303030303063020405020308",
+                "01047465616c",
             ),
+        ),
+        (
+            "record content want",
+            "1aef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
+        ),
+        (
+            "record content piece",
+            "1bd6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162030003010203",
         ),
         (
             "scrollback request",

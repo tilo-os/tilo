@@ -33,6 +33,7 @@ pub const KEY_REPEAT_RATE_HZ_KEY: &str = "key_repeat_rate_hz";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyboardSettings {
     pub source_ids: Vec<String>,
+    pub model: String,
     pub layouts: String,
     pub variants: String,
     pub options: Option<String>,
@@ -43,6 +44,7 @@ impl Default for KeyboardSettings {
     fn default() -> Self {
         Self {
             source_ids: vec!["us".into()],
+            model: "pc105".into(),
             layouts: "us".into(),
             variants: String::new(),
             options: None,
@@ -56,6 +58,7 @@ impl KeyboardSettings {
         let config = settings_store::hardware::RichInputConfig::from_section(section);
         let sources = config.sources();
         Self {
+            model: config.keyboard_model.clone(),
             source_ids: sources.iter().map(|source| source.id.clone()).collect(),
             layouts: sources
                 .iter()
@@ -103,7 +106,7 @@ impl KeyboardSettings {
         let Some(keymap) = xkb::Keymap::new_from_names(
             &context,
             "",
-            "",
+            &self.model,
             &self.layouts,
             &self.variants,
             None,

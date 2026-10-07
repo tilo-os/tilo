@@ -155,9 +155,11 @@ run_script() {
   TILO_AIRPLAY_FIXTURE_DIR="$work/fixture" \
   TILO_AIRPLAY_FIXTURE_SCENARIO="$1" \
   TILO_AIRPLAY_GST_INSPECT="$work/bin/gst-inspect" \
+  TILO_AIRPLAY_GST_LAUNCH="$work/bin/gst-launch" \
   TILO_DOUBLETAKE_TEST_RECEIVER="$work/bin/receiver" \
   TILO_DOUBLETAKE="$work/bin/sender" \
   AIRPLAY_PLUGIN_DEADLINE_SEC="${AIRPLAY_PLUGIN_DEADLINE_SEC:-$ample}" \
+  AIRPLAY_CODEC_DEADLINE_SEC="${AIRPLAY_CODEC_DEADLINE_SEC:-$ample}" \
   AIRPLAY_SETUP_DEADLINE_SEC="${AIRPLAY_SETUP_DEADLINE_SEC:-$ample}" \
   AIRPLAY_MEDIA_DEADLINE_SEC="${AIRPLAY_MEDIA_DEADLINE_SEC:-$ample}" \
   AIRPLAY_TEARDOWN_DEADLINE_SEC="${AIRPLAY_TEARDOWN_DEADLINE_SEC:-$ample}" \
@@ -173,6 +175,7 @@ short=1
 deadline_var() {
   case "$1" in
     plugin-discovery) echo AIRPLAY_PLUGIN_DEADLINE_SEC ;;
+    codec-initialization) echo AIRPLAY_CODEC_DEADLINE_SEC ;;
     setup) echo AIRPLAY_SETUP_DEADLINE_SEC ;;
     media) echo AIRPLAY_MEDIA_DEADLINE_SEC ;;
     teardown) echo AIRPLAY_TEARDOWN_DEADLINE_SEC ;;
@@ -202,6 +205,30 @@ expect_fail_phase() {
   fi
 }
 
+write_codec() {
+  local mode="$1"
+  cat >"$work/bin/gst-launch" <<'BIN'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${TILO_AIRPLAY_FIXTURE_CODEC:?}" in
+  hang) sleep 1000 ;;
+  stub) exit 1 ;;
+  empty) exit 0 ;;
+  ok)
+    for argument in "$@"; do
+      if [[ $argument == location=* ]]; then
+        truncate -s 691200 "${argument#location=}"
+        exit 0
+      fi
+    done
+    exit 1 ;;
+esac
+BIN
+  chmod +x "$work/bin/gst-launch"
+  export TILO_AIRPLAY_FIXTURE_CODEC="$mode"
+}
+write_codec ok
+
 # --- plugin-discovery hang names its phase ---------------------------------
 write_gst_hang
 write_receiver
@@ -216,6 +243,7 @@ set +e
 TILO_AIRPLAY_FIXTURE_DIR="$work/fixture" \
 TILO_AIRPLAY_FIXTURE_SCENARIO=setup-stall \
 TILO_AIRPLAY_GST_INSPECT="$work/bin/gst-inspect" \
+  TILO_AIRPLAY_GST_LAUNCH="$work/bin/gst-launch" \
 TILO_DOUBLETAKE_TEST_RECEIVER="$work/bin/receiver" \
 TILO_DOUBLETAKE="$work/bin/sender" \
 AIRPLAY_PLUGIN_DEADLINE_SEC=2 \
@@ -224,6 +252,25 @@ status=$?
 set -e
 (( status != 0 ))
 grep -Fq 'airplay plugin-discovery failed: openh264enc is not available' "$work/stderr"
+
+# Discovery succeeds for a stub; initialization failure or no decoded frames
+# must stop before either network participant starts.
+write_gst_ok
+for codec in stub empty; do
+  write_codec "$codec"
+  rm -rf "$work/fixture"
+  mkdir -p "$work/fixture"
+  if run_script happy; then
+    echo "expected codec initialization failure for $codec" >&2
+    exit 1
+  fi
+  grep -Fq 'airplay codec-initialization failed:' "$work/stderr"
+  test ! -e "$work/fixture/sender-ready"
+done
+write_codec hang
+expect_fail_phase happy codec-initialization
+test ! -e "$work/fixture/sender-ready"
+write_codec ok
 
 # --- setup / media / teardown / force-cleanup each name their phase --------
 write_gst_ok

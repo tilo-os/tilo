@@ -15,6 +15,18 @@ the pinned runtime profile, and the staged runtime payload. Compilation receipts
 must establish the executable's provenance; a matching hash alone does not prove
 which source produced a binary.
 
+Assembly also pins that source's product font catalog and its license notices,
+then copies them to `Contents/Resources/fonts`. The exact relative link
+`Contents/MacOS/fonts -> ../Resources/fonts` serves the renderer's first catalog
+location beside the executable while keeping resource data in Apple's standard
+location. This is the only allowed bundle symlink. The source's own font validator checks its
+catalog version and hashes; fixture-only fonts are excluded. The compiled-in
+manifest must match byte for byte. Missing, changed, executable or symlinked
+font resources or a changed lookup link fail verification. This prevents an installed app from depending
+on the build checkout for its product fonts, including a checkout under a
+privacy-protected directory. Older receipts without a font catalog remain
+verifiable as historical artifacts; a fresh assembly always includes it.
+
 ```sh
 python3 dist/macos/collection_local_apps.py assemble \
   --source-root /path/to/qualified/tilo --revision SOURCE_COMMIT \

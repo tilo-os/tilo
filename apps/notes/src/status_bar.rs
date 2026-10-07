@@ -1,5 +1,5 @@
-//! `StatusModel` — the note's save + page/word status, surfaced as a
-//! transient floating [`ui::StatusBubble`] rather than a permanent bottom
+//! `StatusModel` — the note's save + page/word status, surfaced on the
+//! framework's [`ui::SaveStatusSurface`] rather than a permanent bottom
 //! strip (which stole a row of vertical space from the editor at every
 //! width, and read especially poorly on mobile).
 //!
@@ -11,10 +11,19 @@
 //! This type owns no CRDT state and does no rendering — it holds the
 //! snapshot and formats the labels, which keeps it trivially unit-testable.
 
-use ui::theme::Theme;
-use vello::peniko::Color;
-
-use crate::storage::SaveStatus;
+/// Whether the notebook's changes are on disk, as the status bubble says it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum SaveStatus {
+    /// Nothing waits to be written.
+    #[default]
+    Saved,
+    /// A write is queued or in progress.
+    Saving,
+    /// The last write failed; sticky until a write succeeds.
+    Failed,
+    /// The record exists only in this session and has no durable writer.
+    SessionOnly,
+}
 
 /// Snapshot of the note's status. Cheap to clone (small strings, two
 /// numbers, one enum).
@@ -97,15 +106,7 @@ impl StatusModel {
         }
     }
 
-    pub fn save_color(&self, theme: &Theme) -> Color {
-        match self.state.save_status {
-            SaveStatus::Saved => theme.tokens.colors.text_dim,
-            SaveStatus::Saving => theme.accent_primary,
-            SaveStatus::SessionOnly => theme.tokens.colors.semantic.warning,
-            SaveStatus::Failed => theme.tokens.colors.semantic.danger,
-        }
-    }
-
+    /// How much the notebook and the open note hold, as a sentence fragment.
     pub fn right_text(&self) -> String {
         let pages = match self.state.page_count {
             1 => "1 note".to_string(),
@@ -117,10 +118,19 @@ impl StatusModel {
                     1 => "1 word".to_string(),
                     _ => format!("{w} words"),
                 };
-                format!("{pages} · {words}")
+                format!("{pages}, {words}")
             }
             None => pages,
         }
+    }
+
+    /// How long the open note is ("142 words"), for the saved bubble; none
+    /// with no note open.
+    pub fn word_text(&self) -> Option<String> {
+        self.state.word_count.map(|words| match words {
+            1 => "1 word".to_string(),
+            _ => format!("{words} words"),
+        })
     }
 
     /// The full bubble label: save state, then the page/word counts.
@@ -128,7 +138,7 @@ impl StatusModel {
         if self.needs_attention() {
             return self.save_detail();
         }
-        format!("{}  ·  {}", self.save_text(), self.right_text())
+        format!("{}\n{}", self.save_text(), self.right_text())
     }
 }
 
@@ -164,8 +174,8 @@ mod tests {
         // (page path, pages, words, right-hand text): counts singularize and a
         // missing word count is dropped.
         for (page_path, page_count, word_count, text) in [
-            ("Welcome", 1, Some(1), "1 note · 1 word"),
-            ("Welcome", 4, Some(142), "4 notes · 142 words"),
+            ("Welcome", 1, Some(1), "1 note, 1 word"),
+            ("Welcome", 4, Some(142), "4 notes, 142 words"),
             ("", 3, None, "3 notes"),
         ] {
             bar.set_state(StatusBarState {

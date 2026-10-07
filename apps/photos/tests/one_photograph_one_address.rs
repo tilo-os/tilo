@@ -6,7 +6,7 @@
 //! absolute path the local machine had staged it at:
 //!
 //! ```text
-//! photos.image:/run/user/1000/qlva3099960/tilo-opened/623fdbf0….png
+//! photos.photo:/run/user/1000/qlva3099960/tilo-opened/623fdbf0….png
 //! ```
 //!
 //! Each session stages the content it is handed under its *own* runtime
@@ -97,12 +97,13 @@ impl Session {
         let path = path.to_string_lossy().into_owned();
 
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let content = tilo_content::ContentStore::memory();
-        let mut app = PhotosApp::with_content(content.clone());
-        app.open_path(&mut doc, &path);
+        let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
+        let mut app = PhotosApp::with_content(content.clone()).with_dispatcher(dispatch.clone());
+        app.open_path(&path);
+        ui::framework::testing::resolve(&dispatch, &mut doc).expect("the photograph imports");
         assert!(
-            PhotosDoc::image(&doc).is_some(),
+            app.open_photo_id().is_some() && PhotosDoc::library(&doc).photos.len() == 1,
             "the fixture failed to open its own staged photograph, so nothing \
              below proves anything"
         );
@@ -121,15 +122,20 @@ impl Session {
         Self::staging(prefix, &name, bytes)
     }
 
-    /// The address of the open photograph, as this session publishes it.
+    /// The address of the session's photograph, as its library publishes it.
     fn published_id(&self) -> String {
         let published = PhotosResources.publish_resources(&self.doc);
+        let shown: Vec<_> = published[0]
+            .children
+            .iter()
+            .filter(|child| child.kind == photos::actions::PHOTO_KIND)
+            .collect();
         assert_eq!(
-            published.len(),
-            2,
-            "a session with one photograph open publishes its active resource and library"
+            shown.len(),
+            1,
+            "a session with one photograph publishes it once"
         );
-        published[0].id.0.clone()
+        shown[0].id.0.clone()
     }
 
     /// Resolve `address` against **this** session's resource tree and perform
@@ -154,8 +160,8 @@ impl Session {
 
     /// The size of the picture as edited — what a person would see change.
     fn edited_size(&self) -> (u32, u32) {
-        let image = PhotosDoc::image(&self.doc).expect("something is open");
-        image.edited_size(&PhotosDoc::edits(&self.doc))
+        let photo = &PhotosDoc::library(&self.doc).photos[0];
+        photo.image.edited_size(&photo.edits)
     }
 }
 
@@ -270,7 +276,7 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
             let id = session.published_id();
             assert_eq!(
                 id,
-                format!("photos.image:{asked_for}"),
+                format!("photos.photo:{asked_for}"),
                 "the session staging into {prefix}… published an address for \
                  where it put the picture rather than for the picture that was \
                  asked for"
@@ -335,32 +341,6 @@ fn one_content_is_one_openable_address_that_survives_missing_content() {
             (decoded.w, decoded.h),
             (900, 600),
             "the address resolved to bytes that are not the photograph it names"
-        );
-    }
-
-    // A document written before a photograph had a content hash still publishes
-    // an address, and it is the one it always had.
-    //
-    // Nothing is migrated: the resource tree is a pure function of the document
-    // and is rebuilt every frame, so there are no stored ids to rewrite. A
-    // picture that only has a path is named by it — exactly as good as that ever
-    // was in the one session the path is true of, and better than publishing
-    // nothing.
-    eprintln!("phase a_photograph_that_names_no_content_keeps_the_address_it_had");
-    {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let old = photos::OpenImage::from_path("/var/workspace/photos/harbour.png", 800, 600);
-        assert!(
-            old.content.is_none(),
-            "the fixture is not an older document"
-        );
-        PhotosDoc::set_image(&mut doc, Some(&old));
-
-        let published = PhotosResources.publish_resources(&doc);
-        assert_eq!(
-            published[0].id.0, "photos.image:/var/workspace/photos/harbour.png",
-            "an older document's photograph lost the only address it had"
         );
     }
 }

@@ -8,12 +8,18 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+
+from git_fixture import isolated_git_environment
 
 CI = Path(__file__).resolve().parents[1] / "ci"
 
 
 class ChangedRustComparisonTests(unittest.TestCase):
     def setUp(self):
+        environment = mock.patch.dict(os.environ, isolated_git_environment(), clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
