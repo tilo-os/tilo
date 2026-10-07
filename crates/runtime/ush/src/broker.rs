@@ -2104,7 +2104,9 @@ mod tests {
         std::fs::write(
             &app,
             format!(
-                "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}'\nwait\n",
+                "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}.pending'\nmv '{}.pending' '{}'\nwait\n",
+                pid_file.display(),
+                pid_file.display(),
                 pid_file.display()
             ),
         )
@@ -2149,7 +2151,11 @@ mod tests {
             stopped, pids,
             "the command process group survived its guest connection"
         );
-        let audit = broker.state().lock().unwrap().audit.read_all();
+        // A terminated child can precede its connection worker's final audit.
+        // Join that worker before asserting on the production cancellation record.
+        let state = broker.state().clone();
+        drop(broker);
+        let audit = state.lock().unwrap().audit.read_all();
         assert!(audit.iter().any(|record| {
             !record.allowed
                 && record
@@ -2157,7 +2163,6 @@ mod tests {
                     .as_deref()
                     .is_some_and(|detail| detail.contains("disconnected"))
         }));
-        drop(broker);
     }
 
     #[test]
