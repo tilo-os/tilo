@@ -802,7 +802,9 @@ def native_float_return(socket, room, record, output, size, process):
     draft += "!"
     wait_for("physical edit retained for detached undo",
              lambda: private_editor_value_matches(access, draft), process)
-    before = private_editor_observation(access, draft)
+    physical_chord(socket, "ArrowLeft", shift=True)
+    before = wait_for_private_selection(
+        socket, access, draft, [len(draft) - 1, len(draft)], process, output)
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"before-float-{size}.png")}))
     # Editing publishes fresh AccessKit transactions. Resolve the current
     # drag handle beside the same editor instead of using a retained node.
@@ -850,7 +852,9 @@ def native_float_return(socket, room, record, output, size, process):
     draft += "?"
     wait_for("detached edit retained for attached undo",
              lambda: private_editor_value_matches(access, draft), process)
-    before_return_editor = private_editor_observation(access, draft)
+    physical_chord(socket, "ArrowLeft", shift=True)
+    before_return_editor = wait_for_private_selection(
+        socket, access, draft, [len(draft) - 1, len(draft)], process, output)
     before_return = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
     if before_return is None:
         raise RuntimeError("Chat's primary presentation disappeared before Return")

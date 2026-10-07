@@ -795,6 +795,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
                         source.index("detached edit retained for attached undo"))
         self.assertLess(source.index("detached edit retained for attached undo"),
                         source.index("detached undo history in the returned editor"))
+        self.assertGreaterEqual(source.count("before = wait_for_private_selection("), 2)
+        self.assertIn("before_return_editor = wait_for_private_selection(", source)
 
     def test_presented_content_geometry_accepts_only_authoritative_finite_fields(self):
         expected = {
