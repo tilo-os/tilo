@@ -210,6 +210,52 @@ pub fn first_elf(tree: &Path) -> Option<ElfFacts> {
     })
 }
 
+/// Read compiler evidence from the exact signed toolkit object, never a
+/// native C dependency that happens to sort first in the paired closure.
+///
+/// # Errors
+/// Missing, ambiguous, non-native or compiler-unidentified toolkit objects.
+pub fn runtime_elf(tree: &Path) -> Result<ElfFacts, CliError> {
+    let root = tree.join("usr/lib/tilo-runtime");
+    let mut objects = Vec::new();
+    for entry in std::fs::read_dir(&root).map_err(CliError::io("read staged SDK versions"))? {
+        let entry = entry.map_err(CliError::io("read staged SDK version"))?;
+        if !entry
+            .file_type()
+            .map_err(CliError::io("inspect staged SDK version"))?
+            .is_dir()
+        {
+            continue;
+        }
+        let path = entry.path().join("lib/libruntime_dylib.so");
+        if path.exists() {
+            objects.push(path);
+        }
+    }
+    let [path] = objects.as_slice() else {
+        return Err(CliError::InvalidInput(
+            "exact staged SDK toolkit is missing or ambiguous".into(),
+        ));
+    };
+    if !std::fs::symlink_metadata(path)
+        .map_err(CliError::io("inspect staged SDK toolkit"))?
+        .is_file()
+    {
+        return Err(CliError::InvalidInput(
+            "staged SDK toolkit must be a regular ELF".into(),
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(CliError::io("read staged SDK toolkit"))?;
+    let facts = elf_facts(&bytes)
+        .ok_or_else(|| CliError::InvalidInput("staged SDK toolkit is not native ELF".into()))?;
+    if facts.target.is_none() || facts.toolchain.is_none() {
+        return Err(CliError::InvalidInput(
+            "staged SDK toolkit lacks native compiler evidence".into(),
+        ));
+    }
+    Ok(facts)
+}
+
 /// Machine and rustc of a little-endian ELF64 file; `None` for anything else.
 pub fn elf_facts(bytes: &[u8]) -> Option<ElfFacts> {
     let field = |at: usize, len: usize| bytes.get(at..at.checked_add(len)?);
@@ -477,6 +523,46 @@ mod tests {
                 Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
             );
         }
+    }
+
+    #[test]
+    fn paired_runtime_provenance_uses_actual_toolkit_after_native_c_closure() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("usr/lib/tilo-runtime/native.test/lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let machine = if std::env::consts::ARCH == "aarch64" {
+            0xb7
+        } else {
+            0x3e
+        };
+        std::fs::write(lib.join("libc.so.6"), elf(machine, b"GCC: (GNU) 16\0")).unwrap();
+        // Actual compiled Rust ELF, through the real assembled SDK path.
+        let compiled = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let expected = elf_facts(&compiled).unwrap();
+        assert!(expected.toolchain.as_ref().unwrap().starts_with("rustc "));
+        std::fs::write(lib.join("libruntime_dylib.so"), &compiled).unwrap();
+        assert_eq!(
+            first_elf(dir.path()).unwrap().toolchain,
+            None,
+            "native C closure reproduces the old first-ELF provenance loss"
+        );
+        assert_eq!(runtime_elf(dir.path()).unwrap(), expected);
+        std::fs::write(
+            lib.join("libruntime_dylib.so"),
+            elf(machine, b"GCC: (GNU) 16\0"),
+        )
+        .unwrap();
+        assert!(runtime_elf(dir.path()).is_err(), "no host rustc fallback");
+        std::fs::remove_file(lib.join("libruntime_dylib.so")).unwrap();
+        assert!(runtime_elf(dir.path()).is_err());
+        std::fs::write(lib.join("libruntime_dylib.so"), &compiled).unwrap();
+        let other = dir.path().join("usr/lib/tilo-runtime/native.other/lib");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("libruntime_dylib.so"), &compiled).unwrap();
+        assert!(
+            runtime_elf(dir.path()).is_err(),
+            "ambiguous SDK compiler evidence"
+        );
     }
 
     /// Packing keeps /usr and symlinks, and sccache JSON totals parse.

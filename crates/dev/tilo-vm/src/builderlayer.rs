@@ -240,7 +240,11 @@ fn pack_component(
             "source changed during component assembly".into(),
         ));
     }
-    let facts = build::first_elf(&tree).unwrap_or_default();
+    let facts = if component.name == "apps+runtime" {
+        build::runtime_elf(&tree)?
+    } else {
+        build::first_elf(&tree).unwrap_or_default()
+    };
     let packed = Packed {
         component: component.name,
         target: facts.target,
