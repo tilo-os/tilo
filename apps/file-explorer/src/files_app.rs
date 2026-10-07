@@ -1785,7 +1785,7 @@ impl FileExplorerWidget {
             merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
             merge_preflight_pending: None,
             effect_reply: None,
-            local_clipboard: clipboard_client::Client::default(),
+            local_clipboard: clipboard_client::Client::new(),
             accounts_root: None,
             accounts_cache: Vec::new(),
             host_intent: None,
@@ -1985,7 +1985,7 @@ impl FileExplorerWidget {
                 Some(self.selection_answer())
             }
             FilesEffect::CopySelection | FilesEffect::CutSelection => {
-                if matches!(self.services, FileServices::Hosted(_)) {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
                     return self.publish_clipboard(
                         invocation,
                         matches!(effect, FilesEffect::CutSelection),
@@ -2002,7 +2002,7 @@ impl FileExplorerWidget {
                 None
             }
             FilesEffect::Paste => {
-                if matches!(self.services, FileServices::Hosted(_)) {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
                     return self.paste_clipboard(invocation);
                 }
                 self.paste()?;
@@ -2147,7 +2147,7 @@ impl FileExplorerWidget {
                 None
             }
             FilesEffect::Copy { entry } => {
-                if matches!(self.services, FileServices::Hosted(_)) {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
                     let target = self
                         .visible_entry_path(&entry)
                         .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
@@ -2156,7 +2156,7 @@ impl FileExplorerWidget {
                 self.entry_command(&entry, |_, _| Some(FileCommand::Copy))?
             }
             FilesEffect::Cut { entry } => {
-                if matches!(self.services, FileServices::Hosted(_)) {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
                     let target = self
                         .visible_entry_path(&entry)
                         .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
@@ -4932,7 +4932,7 @@ impl FileExplorerWidget {
 
     /// `FileCommand::Copy` — copy the selection into the clipboard.
     fn apply_copy(&mut self) -> bool {
-        if matches!(self.services, FileServices::Hosted(_)) {
+        if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
             self.perform(crate::effects::FilesEffect::CopySelection);
             return true;
         }
@@ -4947,7 +4947,7 @@ impl FileExplorerWidget {
 
     /// `FileCommand::Cut` — cut the selection into the clipboard.
     fn apply_cut(&mut self) -> bool {
-        if matches!(self.services, FileServices::Hosted(_)) {
+        if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
             self.perform(crate::effects::FilesEffect::CutSelection);
             return true;
         }
@@ -5501,7 +5501,7 @@ impl FileExplorerWidget {
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         use crate::effects::FilesEffect;
         let mut statuses = Vec::new();
-        if !matches!(&self.services, FileServices::Hosted(services) if services.local_clipboard) {
+        if !self.hosted_clipboard() {
             statuses.push(Self::clipboard_unavailable(FilesEffect::CLIPBOARD_STATUS));
             statuses.push(Self::clipboard_unavailable(
                 FilesEffect::RECOVER_CLIPBOARD_TRANSFERS,

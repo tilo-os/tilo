@@ -770,3 +770,93 @@ fn clipboard_bridge_same_process_connection_cannot_spend_another_routes_ticket()
         assert_eq!(current.id, offer);
     });
 }
+
+#[test]
+fn clipboard_bridge_local_home_consent_refuses_foreign_person_without_blocking_shared_grants() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let system = home.config().join("test-system");
+    home.env()
+        .set("TILO_IDENTITY_ROOT", &system)
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1")
+        .set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/nonexistent-tilo-test-bus",
+        )
+        .remove("TILO_USER_IDENTITY")
+        .remove("TILO_IDENTITY_BROKER_FD");
+    let identity = runtime_identity::identity_dir_from_env().unwrap();
+    crate::firstboot::ensure_throwaway_test_identity(
+        &identity,
+        &crate::firstboot::collaboration_identity_paths(),
+    )
+    .unwrap();
+    let fixture = Fixture::new();
+    let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&identity);
+    let identity_id = registry
+        .load_reconciled()
+        .unwrap()
+        .default_identity
+        .unwrap();
+    registry
+        .bind_workspace(&fixture.room, &identity_id)
+        .unwrap();
+    let workspace = fixture.tree.read().workspaces.first().unwrap().id;
+    assert!(
+        crate::shell::search::providers::applications::grant_file_manager_home(
+            &mut fixture.tree.write(),
+            workspace,
+            APP,
+        )
+    );
+    let private = home.home().join("private.txt");
+    fs::write(&private, b"selected person's private bytes").unwrap();
+    let public = fixture.directory.path().join("shared.txt");
+    let receiving = fixture.directory.path().join("receiving");
+    fs::write(&public, b"explicitly shared bytes").unwrap();
+    fs::create_dir(&receiving).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    tokio::task::LocalSet::new().block_on(&runtime, async {
+        let connection = fixture.connect("foreign-person").await;
+        let (retained, descriptor) = selected(&private);
+        let error = connection
+            .command(Command::Capture {
+                sources: vec![descriptor],
+                destination: None,
+            })
+            .await
+            .expect_err("an admitted different person cannot inherit local home consent");
+        assert!(error.contains("live grants"), "{error}");
+        drop(retained);
+        let ticket = connection.capture(&public, false).await;
+        let offer = connection.publish(ticket, false).await;
+        let destination = connection.capture(&receiving, true).await;
+        let operation = uuid::Uuid::new_v4().to_string();
+        connection
+            .command(Command::Paste {
+                offer,
+                destination,
+                operation: operation.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            connection.settled(&operation).await,
+            Reply::Settled {
+                completed: 1,
+                error: None,
+                ..
+            }
+        ));
+    });
+    assert_eq!(
+        fs::read(private).unwrap(),
+        b"selected person's private bytes"
+    );
+    assert_eq!(
+        fs::read(receiving.join("shared.txt")).unwrap(),
+        b"explicitly shared bytes"
+    );
+}

@@ -11,6 +11,7 @@ files-shortcuts-primary = Primary modifier: Ctrl on most desktops, Command on ma
 files-shortcuts-navigate = Move selection: ↑ and ↓
 files-selection-empty = Select files first.
 files-clipboard-source-unavailable = A selected file has changed or is no longer available. Select it again before copying.
+files-clipboard-source-changed = The shown object differs from its retained selection. Select it again before copying.
 files-clipboard-unavailable = The workspace file clipboard is unavailable.
 files-clipboard-empty = The workspace file clipboard is empty.
 files-clipboard-undone = Paste undone.

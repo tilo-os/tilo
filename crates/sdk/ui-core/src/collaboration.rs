@@ -1691,12 +1691,19 @@ impl CollaborationManager {
             }
             Backend::Disabled(_) => false,
         };
-        if unpublishable {
+        let known_pending_document = matches!(&req, CollabRequest::Document { .. })
+            && matches!(&self.backend, Backend::Transport(transport)
+                if transport.committed_document_required(&route.channel_id()));
+        if unpublishable && !known_pending_document {
             // Join first; the route's original history must be applied
             // before any local mutation is published on it.
             let _ = self.submit(TransportCommand::Join(route));
             return Err(CollabSendError::Unavailable);
         }
+        // A known committed route may be refreshing. Required original
+        // custody was checked above; retain this mutation in the bounded queue.
+        // The worker still waits for this exact route before checking retained
+        // custody and applying the route's existing certification/commit policy.
         Ok(self.submit(TransportCommand::ToRoute(route, req))?)
     }
 

@@ -335,6 +335,7 @@ files-received-link-empty = Link zur freigegebenen Datei ist leer
 files-app-title = Dateien
 files-selection-empty = Wählen Sie zuerst Dateien aus.
 files-clipboard-source-unavailable = Eine ausgewählte Datei wurde geändert oder ist nicht mehr verfügbar. Wählen Sie sie vor dem Kopieren erneut aus.
+files-clipboard-source-changed = Das angezeigte Objekt unterscheidet sich von der gespeicherten Auswahl. Wählen Sie es vor dem Kopieren erneut aus.
 files-clipboard-unavailable = Die Datei-Zwischenablage des Arbeitsbereichs ist nicht verfügbar.
 files-clipboard-empty = Die Datei-Zwischenablage des Arbeitsbereichs ist leer.
 files-clipboard-undone = Einfügen rückgängig gemacht.

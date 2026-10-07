@@ -549,3 +549,187 @@ fn failed_effect(
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[test]
+fn native_files_home_consent_refuses_unattested_identity_without_leaving_a_grant() {
+    use crate::portal::{GrantStoreHandle, PortalCaller};
+    use crate::shell::state::{ResourceRef, Scope, Verb};
+    const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let workspace = tree.read().desktop.active;
+    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    std::fs::remove_file(paths.device_cert_for_user(&fixture.certificate.user_public_key)).unwrap();
+    assert!(
+        tilo_identity_host::broker::trusted_current_device_public(&fixture.room.to_string())
+            .is_err()
+    );
+    assert!(
+        !crate::shell::search::providers::applications::grant_file_manager_home(
+            &mut tree.write(),
+            workspace,
+            FILES
+        )
+    );
+    let home = fixture.home.home().to_string_lossy().into_owned();
+    assert!(
+        !tree
+            .read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .capabilities
+            .iter()
+            .any(|cap| cap.scope == Scope::FsPath(home.clone()))
+    );
+    let grants = GrantStoreHandle::new(tree);
+    let caller = PortalCaller::new(workspace, FILES);
+    let resource = ResourceRef::FsPath(format!("{home}/source/report.txt"));
+    assert!(!grants.permits(&caller, &resource, Verb::Read));
+    assert!(!grants.permits(&caller, &resource, Verb::Write));
+}
+
+#[test]
+fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurrect() {
+    use crate::portal::{GrantStoreHandle, PortalCaller};
+    use crate::shell::state::{ResourceRef, Scope, Verb};
+    const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let actions = fixture.broker.app_action_broker().unwrap();
+    wait_for_membership_surface(&actions, fixture.room);
+    let workspace = tree.read().desktop.active;
+    assert!(
+        crate::shell::search::providers::applications::grant_file_manager_home(
+            &mut tree.write(),
+            workspace,
+            FILES
+        )
+    );
+    let home = fixture.home.home().to_string_lossy().into_owned();
+    let saved = tree
+        .read()
+        .desktop
+        .active_workspace()
+        .unwrap()
+        .capabilities
+        .iter()
+        .find(|cap| cap.scope == Scope::FsPath(home.clone()))
+        .unwrap()
+        .clone();
+    let grants = GrantStoreHandle::new(tree.clone());
+    let caller = PortalCaller::new(workspace, FILES);
+    let resource = ResourceRef::FsPath(format!("{home}/source/report.txt"));
+    let publish = |app: &str| {
+        let job = actions
+            .change_workspace_membership(
+                &fixture.room.to_string(),
+                &WorkspaceMembershipCommand::GrantAppAuthorship { app: app.into() },
+                &fixture.certificate,
+            )
+            .unwrap();
+        let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(completed.code.is_empty(), "{}", completed.message);
+        assert!(matches!(
+            actions.status(job.id),
+            Some(InvocationUpdate::Succeeded { .. })
+        ));
+    };
+    publish(FILES);
+    assert!(
+        tree.read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .capabilities
+            .contains(&saved)
+    );
+    assert!(grants.permits(&caller, &resource, Verb::Read));
+    assert!(grants.permits(&caller, &resource, Verb::Write));
+    assert!(!grants.permits(
+        &PortalCaller::new(workspace, "so.tilo.chat"),
+        &resource,
+        Verb::Read
+    ));
+    let person = crate::shell::state::local_user_id_for_room(&fixture.room);
+    assert!(
+        tree.write()
+            .revoke_in_workspace(workspace, &person, &saved.id)
+    );
+    assert!(!grants.permits(&caller, &resource, Verb::Read));
+    publish("so.tilo.chat");
+    assert!(
+        !tree
+            .read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .capabilities
+            .contains(&saved)
+    );
+    assert!(!grants.permits(&caller, &resource, Verb::Read));
+    assert!(!grants.permits(&caller, &resource, Verb::Write));
+}
+
+#[test]
+fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
+    use crate::portal::{GrantStoreHandle, PortalCaller};
+    use crate::shell::state::{ResourceRef, Verb};
+    const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let actions = fixture.broker.app_action_broker().unwrap();
+    wait_for_membership_surface(&actions, fixture.room);
+    let workspace = tree.read().desktop.active;
+    assert!(
+        crate::shell::search::providers::applications::grant_file_manager_home(
+            &mut tree.write(),
+            workspace,
+            FILES
+        )
+    );
+    let job = actions
+        .change_workspace_membership(
+            &fixture.room.to_string(),
+            &WorkspaceMembershipCommand::GrantAppAuthorship { app: FILES.into() },
+            &fixture.certificate,
+        )
+        .unwrap();
+    let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(completed.code.is_empty(), "{}", completed.message);
+    let resource = ResourceRef::FsPath(fixture.home.home().to_string_lossy().into_owned());
+    let caller = PortalCaller::new(workspace, FILES);
+    assert!(GrantStoreHandle::new(tree.clone()).permits(&caller, &resource, Verb::Read));
+    drop(actions);
+    drop(tree);
+    drop(fixture.broker);
+    crate::shell::persist::wait_for_saves();
+    drop(fixture.owner);
+    let mut stored = crate::shell::persist::load_tree_from(&fixture.path).unwrap();
+    stored.persist_path = Some(fixture.path);
+    let tree = stored.shared();
+    let reopened = native_workspace_owner::open(tree.clone()).unwrap();
+    reopened
+        .with_current(fixture.room, |view| {
+            use collab_types::caps::{Actor, CapDecision, decide_capability};
+            let now = std::time::SystemTime::now();
+            let (_, caps, _) = view
+                .peer()
+                .permissions(fixture.certificate.device_public_key, now)?;
+            assert_eq!(
+                decide_capability(
+                    &Actor::app(FILES).in_room(fixture.room.to_string()),
+                    &ResourceRef::Workspace,
+                    Verb::Write,
+                    &caps,
+                    Some(now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
+                ),
+                CapDecision::Allow
+            );
+            Ok(())
+        })
+        .unwrap();
+    let grants = GrantStoreHandle::new(tree);
+    assert!(!grants.permits(&caller, &resource, Verb::Read));
+    assert!(!grants.permits(&caller, &resource, Verb::Write));
+}

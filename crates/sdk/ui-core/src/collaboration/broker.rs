@@ -8264,7 +8264,27 @@ mod tests {
             handle: None,
         }));
         manager.await_primary_route().unwrap();
-        assert!(manager.send(CollabRequest::document_incremental(b"refused".to_vec())));
+        let route = manager.primary_route().unwrap().route.clone();
+        let ready = broker_state(&manager)
+            .document_reads
+            .close_for_test(&route.channel_id());
+        assert!(
+            manager
+                .try_send_to_route(
+                    route,
+                    CollabRequest::document_incremental(b"refused".to_vec())
+                )
+                .is_ok()
+        );
+        let pending = manager.begin_document_publication_barrier().unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(
+            pending.try_complete(),
+            Ok(None),
+            "certified publication must still await exact route readiness"
+        );
+        assert!(captures.lock().unwrap().signed_ops.is_empty());
+        ready.store(true, Ordering::Release);
         // Signing may fail before the marker enqueue; either path must carry the cause.
         let error = match manager.begin_document_publication_barrier() {
             Ok(receipt) => receipt

@@ -61,8 +61,8 @@ impl Folder {
     ) -> Result<SecureNearbyDestination, String> {
         context.authorize(Permission::Write)?;
         let path = decode_path(&self.path)?;
-        let grant = Grant::open(tree, context.workspace(), &path, true)?;
-        grant.check(tree, context.workspace())?;
+        let grant = Grant::open(tree, context.workspace(), &path, true, context.owner())?;
+        grant.check(tree, context.workspace(), context.owner())?;
         if grant.root.as_os_str().as_bytes() != self.root
             || !self
                 .root_identity
