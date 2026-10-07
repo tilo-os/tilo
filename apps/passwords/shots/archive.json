@@ -1,0 +1,38 @@
+[
+  {
+    "name": "passwords-desktop.png",
+    "sha256": "c4ec99b59d92c6905c63e189f17859b9edda8ec44bcd75818c8cc70910e9e4d8",
+    "bytes": 133257,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/c4ec99b59d92c6905c63e189f17859b9edda8ec44bcd75818c8cc70910e9e4d8/passwords-desktop.png"
+  },
+  {
+    "name": "passwords-editor.png",
+    "sha256": "d2f3edccf6b891a8145e44aaaa697152b81d58bf0e3187d4883ac47891dc0a6e",
+    "bytes": 141059,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/d2f3edccf6b891a8145e44aaaa697152b81d58bf0e3187d4883ac47891dc0a6e/passwords-editor.png"
+  },
+  {
+    "name": "passwords-export.png",
+    "sha256": "711e3f0c574cba8a7e3b39b8a60900e53e75427389ae0d59442cdcdfdae3caac",
+    "bytes": 129130,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/711e3f0c574cba8a7e3b39b8a60900e53e75427389ae0d59442cdcdfdae3caac/passwords-export.png"
+  },
+  {
+    "name": "passwords-health.png",
+    "sha256": "302e07dc6e187d4ab1a5b165231daf31d42d92198268f9af3da0fc97d9ea48ca",
+    "bytes": 109286,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/302e07dc6e187d4ab1a5b165231daf31d42d92198268f9af3da0fc97d9ea48ca/passwords-health.png"
+  },
+  {
+    "name": "passwords-import.png",
+    "sha256": "f0b4e035272dd81e2b65caec375f4a3efcb663fcf1b7ea9cfe1080ca846c5960",
+    "bytes": 121126,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/f0b4e035272dd81e2b65caec375f4a3efcb663fcf1b7ea9cfe1080ca846c5960/passwords-import.png"
+  },
+  {
+    "name": "passwords-narrow.png",
+    "sha256": "ec07427f8f192272972c05d7de6bf89818d0b54e1ab54bd95a62b0ddd769e895",
+    "bytes": 93504,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/ec07427f8f192272972c05d7de6bf89818d0b54e1ab54bd95a62b0ddd769e895/passwords-narrow.png"
+  }
+]

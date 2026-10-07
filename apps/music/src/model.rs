@@ -232,6 +232,8 @@ pub const LIKED_PLAYLIST_ID: &str = "pl_liked";
 /// as a render snapshot, refreshed from the CRDT each `sync`.
 #[derive(Clone, Debug, Default)]
 pub struct Library {
+    /// Explicit recommendation feedback, governed by this library's sharing permissions.
+    pub recommendations: crate::recommendations::Preferences,
     pub artists: BTreeMap<ArtistId, Artist>,
     pub albums: BTreeMap<AlbumId, Album>,
     pub tracks: BTreeMap<TrackId, Track>,

@@ -428,7 +428,7 @@ fn plain_text(input: &str) -> String {
 }
 
 /// Merge a Tilo pile and a Flathub pile into one deduped list.
-/// Tilo wins on any name collision (case-insensitive).
+/// Prefer native offers on name collisions, while retaining every installed app.
 pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<StoreItem> {
     let mut out = tilo_items;
     let tilo_names: std::collections::HashSet<String> = out
@@ -436,7 +436,8 @@ pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<S
         .map(|i| i.name.trim().to_ascii_lowercase())
         .collect();
     for fh in flathub_items {
-        if !tilo_names.contains(&fh.name.trim().to_ascii_lowercase()) {
+        if fh.installed.is_installed() || !tilo_names.contains(&fh.name.trim().to_ascii_lowercase())
+        {
             out.push(fh);
         }
     }

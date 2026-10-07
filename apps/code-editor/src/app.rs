@@ -370,6 +370,8 @@ fn language_from_label(label: &str) -> Option<Language> {
         Language::C,
         Language::Cpp,
         Language::Go,
+        Language::Verilog,
+        Language::SystemVerilog,
         Language::PlainText,
     ]
     .into_iter()

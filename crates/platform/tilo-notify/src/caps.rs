@@ -45,8 +45,6 @@ impl fmt::Display for Unsupported {
 
 impl std::error::Error for Unsupported {}
 
-pub(crate) const LINUX_SCHEDULE: &str =
-    "Linux shows notifications only while the app that sends them runs.";
 pub(crate) const WEB_SCHEDULE: &str = "A closed web page cannot show notifications.";
 pub(crate) const WEB_ACTIVATE: &str = "A click on a web notification only focuses the page.";
 pub(crate) const MAC_PRIORITY: &str = "macOS decides who breaks through Focus.";
@@ -61,11 +59,7 @@ pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
         (Feature::Show, [Available, Prompt, Prompt]),
         (
             Feature::Schedule,
-            [
-                Unsupported(LINUX_SCHEDULE),
-                Prompt,
-                Unsupported(WEB_SCHEDULE),
-            ],
+            [Available, Prompt, Unsupported(WEB_SCHEDULE)],
         ),
         (
             Feature::Activate,

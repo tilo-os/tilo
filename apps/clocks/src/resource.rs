@@ -19,6 +19,8 @@ use crate::schedule::OnThisDevice;
 #[derive(Clone, Debug, Effect)]
 #[effect(operation = "clocks.effects", device_only)]
 pub enum ClocksEffect {
+    /// Dismiss the due alarm or timer notice on this device.
+    DismissNotice,
     /// Float a timer above other windows.
     FloatTimer {
         #[param("The timer's id")]
@@ -162,6 +164,7 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
 
     fn effect(&mut self, effect: ClocksEffect, _cx: &mut EffectCx<Clocks, Self>) -> EffectAnswer {
         match effect {
+            ClocksEffect::DismissNotice => self.notice.set(None),
             ClocksEffect::FloatTimer { timer, floating } => {
                 if !self
                     .state

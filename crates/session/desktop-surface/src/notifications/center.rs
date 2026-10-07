@@ -27,6 +27,7 @@ use super::history::{
 };
 use super::log::NotificationLog;
 use super::model::Notification;
+use super::reader::NotificationReader;
 use crate::drill_in::{self as qs, DrillInList};
 use crate::i18n::{t, t_args};
 use ui::TextRole;
@@ -57,7 +58,7 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
     clippy::cast_possible_truncation,
     reason = "device-pixel wrap width; f32 is already the renderer's own unit"
 )]
-fn f64_to_f32_lossy(v: f64) -> f32 {
+pub(super) fn f64_to_f32_lossy(v: f64) -> f32 {
     v as f32
 }
 
@@ -81,6 +82,7 @@ pub struct CenterMetrics {
     back_width: f64,
     clear_width: f64,
     undo_width: f64,
+    read_width: f64,
     height: f64,
 }
 
@@ -91,6 +93,7 @@ impl From<(f64, f64)> for CenterMetrics {
             back_width: 2.0 * qs::TARGET,
             clear_width: 2.0 * qs::TARGET,
             undo_width: 2.0 * qs::TARGET,
+            read_width: 2.0 * qs::TARGET,
             height: qs::TARGET,
         }
     }
@@ -133,6 +136,7 @@ impl CenterLayout {
             back_width: width("drill-in-back", ButtonRole::Plain, text),
             clear_width: width("notification-center-clear-all", ButtonRole::Plain, text),
             undo_width: width("notification-center-undo", ButtonRole::Secondary, text),
+            read_width: width("notification-center-read", ButtonRole::Plain, text),
             height: ButtonFace::height(ControlSize::Regular, theme),
         }
     }
@@ -263,6 +267,21 @@ impl CenterLayout {
     /// Trailing icon buttons of a row: dismiss on the trailing edge,
     /// hand-to-agent one related step inboard of it. They sit under the
     /// source/time line so the relative time keeps its place.
+    pub(super) fn reading_viewport(&self) -> Rect {
+        Rect::new(
+            self.panel.x0 + qs::PANEL_PAD,
+            self.panel.y0 + self.header_height() + qs::RELATED_GAP,
+            self.panel.x1 - qs::PANEL_PAD,
+            self.panel.y1 - qs::PANEL_PAD,
+        )
+    }
+
+    fn read_control(&self, row: Rect, with_agent: bool) -> Rect {
+        let (dismiss, agent) = self.row_controls(row, with_agent);
+        let end = agent.unwrap_or(dismiss).x0 - qs::RELATED_GAP;
+        Rect::new(end - self.actions.read_width, dismiss.y0, end, dismiss.y1)
+    }
+
     pub fn row_controls(&self, row: Rect, with_agent: bool) -> (Rect, Option<Rect>) {
         let top = row.y0 + qs::CONTROL_PAD + self.caption_lh;
         let room = (row.y1 - top).max(0.0);
@@ -283,6 +302,7 @@ impl CenterLayout {
 pub enum RowControl {
     Dismiss,
     HandToAgent,
+    Read,
 }
 
 /// What an input asks of the host beyond what the centre did itself.
@@ -314,11 +334,52 @@ pub struct NotificationCenter {
     row_control: Option<RowControl>,
     /// App groups the viewer folded.
     collapsed: BTreeSet<String>,
+    reader: Option<NotificationReader>,
 }
 
 impl NotificationCenter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Return from reading without invoking or dismissing the notification.
+    pub fn close_reader(&mut self) -> bool {
+        self.reader.take().is_some()
+    }
+
+    pub fn is_reading(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    fn reading_notification(&self, host: &dyn NotificationHost) -> Option<Notification> {
+        let id = self.reader.as_ref()?.id;
+        host.log().history().iter().find(|n| n.id == id).cloned()
+    }
+
+    /// Shared scrollbar pointer, wheel and keyboard handling.
+    pub fn reader_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        self.reader
+            .as_mut()
+            .is_some_and(|reader| reader.event(event, ctx))
+    }
+
+    pub fn reading_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        self.reader.as_ref()?.scroll()
+    }
+
+    pub fn apply_reading_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        self.reader
+            .as_mut()
+            .map_or(ui::widget::PrimaryScrollResult::Unsupported, |reader| {
+                reader.apply_scroll(action)
+            })
     }
 
     /// The centre's rows, newest first, honouring the viewer's folded groups.
@@ -333,7 +394,11 @@ impl NotificationCenter {
         metrics: impl Into<CenterMetrics>,
     ) -> f64 {
         let metrics = metrics.into();
-        let total = log.rows(&self.collapsed).len();
+        let total = if self.is_reading() {
+            PREFERRED_ROWS
+        } else {
+            log.rows(&self.collapsed).len()
+        };
         let height = CenterLayout::preferred_height(total.min(PREFERRED_ROWS), total, metrics);
         if log.can_undo_clear() {
             height + CenterLayout::new(Rect::ZERO, metrics).footer_reserve()
@@ -403,6 +468,9 @@ impl NotificationCenter {
         delta: MouseScrollDelta,
         scale_factor: f64,
     ) {
+        if self.is_reading() {
+            return;
+        }
         let rows = match delta {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
             MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
@@ -490,6 +558,10 @@ impl NotificationCenter {
                 Some(RowControl::Dismiss)
             } else if agent.is_some_and(|agent| agent.contains(p)) {
                 Some(RowControl::HandToAgent)
+            } else if matches!(row, HistoryRow::Item { .. })
+                && layout.read_control(rect, with_agent).contains(p)
+            {
+                Some(RowControl::Read)
             } else {
                 None
             };
@@ -519,6 +591,20 @@ impl NotificationCenter {
                 }
                 self.selected = Some(RowIdentity::Group(key));
                 host.changed();
+            }
+            (HistoryRow::Item { index: at, .. }, Some(RowControl::Read)) => {
+                let id = host
+                    .log()
+                    .history()
+                    .get(at)
+                    .map(|notification| notification.id);
+                if let Some(id) = id {
+                    self.selected = Some(RowIdentity::Item(id));
+                    self.row_control = Some(RowControl::Read);
+                    self.action_focus = None;
+                    self.reader = Some(NotificationReader::new(id));
+                    host.changed();
+                }
             }
             (HistoryRow::Item { index: at, .. }, Some(RowControl::HandToAgent)) => {
                 let notification = host.log().history().get(at).cloned();
@@ -600,6 +686,13 @@ impl NotificationCenter {
         layout: &CenterLayout,
         p: Point,
     ) -> CenterOutcome {
+        if self.is_reading() {
+            if self.reading_notification(host).is_none() || layout.back().contains(p) {
+                self.close_reader();
+                host.changed();
+            }
+            return CenterOutcome::Handled;
+        }
         if layout.back().contains(p) {
             return CenterOutcome::Back;
         }
@@ -634,12 +727,105 @@ impl NotificationCenter {
     /// history stays usable by keyboard and assistive-technology users.
     /// Consumes at either edge too, so arrows never start moving whatever is
     /// under the panel once the list has reached its beginning or end.
+    fn reading_key(&mut self, host: &dyn NotificationHost, logical_key: &Key) -> bool {
+        if let Some(reader) = self.reader.as_mut() {
+            if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+                reader.toggle_focus();
+                host.changed();
+                return true;
+            }
+            if reader.key(logical_key) {
+                host.changed();
+            }
+            let back = matches!(logical_key, Key::Named(NamedKey::Escape))
+                || (matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space))
+                    && reader.activate_back());
+            if back || self.reading_notification(host).is_none() {
+                self.close_reader();
+                host.changed();
+            }
+            return true;
+        }
+        false
+    }
+
+    fn row_focus_order(host: &dyn NotificationHost, row: &HistoryRow) -> Vec<Option<RowControl>> {
+        let mut order = vec![None];
+        if matches!(row, HistoryRow::Item { .. }) {
+            order.push(Some(RowControl::Read));
+        }
+        order.push(Some(RowControl::Dismiss));
+        if Self::row_agent(host, row).is_some() {
+            order.push(Some(RowControl::HandToAgent));
+        }
+        order
+    }
+
+    fn cycle_row_focus(
+        &mut self,
+        host: &dyn NotificationHost,
+        layout: &CenterLayout,
+        backwards: bool,
+    ) {
+        let rows = self.rows(host);
+        let Some(index) = self.selected_row(&rows, host.log().history()) else {
+            self.select_row(host, layout, self.start);
+            return;
+        };
+        let Some(row) = rows.get(index) else {
+            return;
+        };
+        let order = Self::row_focus_order(host, row);
+        let current = order
+            .iter()
+            .position(|control| *control == self.row_control)
+            .unwrap_or(0);
+        let next = if backwards {
+            current.checked_sub(1)
+        } else {
+            current.checked_add(1).filter(|next| *next < order.len())
+        };
+        if let Some(next) = next {
+            self.row_control = order.get(next).copied().flatten();
+        } else {
+            let row = if backwards {
+                index
+                    .checked_sub(1)
+                    .unwrap_or_else(|| rows.len().saturating_sub(1))
+            } else {
+                index.saturating_add(1).checked_rem(rows.len()).unwrap_or(0)
+            };
+            self.select_row(host, layout, row);
+            if backwards {
+                self.row_control = rows
+                    .get(row)
+                    .and_then(|row| Self::row_focus_order(host, row).last().copied())
+                    .flatten();
+            }
+        }
+        self.action_focus = None;
+        host.changed();
+    }
+
     pub fn key(
         &mut self,
         host: &dyn NotificationHost,
         layout: &CenterLayout,
         logical_key: &Key,
     ) -> CenterOutcome {
+        self.key_with_shift(host, layout, logical_key, false)
+    }
+
+    pub fn key_with_shift(
+        &mut self,
+        host: &dyn NotificationHost,
+        layout: &CenterLayout,
+        logical_key: &Key,
+        backwards: bool,
+    ) -> CenterOutcome {
+        if self.reading_key(host, logical_key) {
+            return CenterOutcome::Handled;
+        }
         let rows = self.rows(host);
         let total = rows.len();
         let selected = self.selected_row(&rows, host.log().history());
@@ -677,7 +863,19 @@ impl NotificationCenter {
                     outcome = self.activate_row(host, layout, index, None);
                 }
             }
-            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowLeft) if selected.is_some() => {}
+            Key::Named(NamedKey::ArrowRight) if selected.is_some() => {
+                if selected
+                    .is_some_and(|index| matches!(rows.get(index), Some(HistoryRow::Item { .. })))
+                {
+                    self.row_control = Some(RowControl::Read);
+                    host.changed();
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) if selected.is_some() => {
+                self.row_control = None;
+                host.changed();
+            }
+            Key::Named(NamedKey::Tab) => self.cycle_row_focus(host, layout, backwards),
             Key::Named(NamedKey::ArrowDown) => self.move_selection(host, layout, 1),
             Key::Named(NamedKey::ArrowUp) => self.move_selection(host, layout, -1),
             Key::Named(NamedKey::PageDown) if selected.is_some() => {
@@ -714,6 +912,15 @@ impl NotificationCenter {
         layout: &CenterLayout,
         prefix: &str,
     ) -> Vec<(String, Rect)> {
+        if self.is_reading() {
+            return vec![
+                (format!("{prefix}notifications_back"), layout.back()),
+                (
+                    format!("{prefix}notification_reading"),
+                    layout.reading_viewport(),
+                ),
+            ];
+        }
         let rows = self.rows(host);
         let visible = layout.visible_rows(rows.len());
         let mut out = vec![(format!("{prefix}notifications_back"), layout.back())];
@@ -726,6 +933,12 @@ impl NotificationCenter {
             let (dismiss, agent_rect) = layout.row_controls(rect, agent.is_some());
             out.push((format!("{prefix}notification_row[{offset}]"), rect));
             out.push((format!("{prefix}notification_dismiss[{offset}]"), dismiss));
+            if matches!(row, HistoryRow::Item { .. }) {
+                out.push((
+                    format!("{prefix}notification_read[{offset}]"),
+                    layout.read_control(rect, agent.is_some()),
+                ));
+            }
             if let Some(agent_rect) = agent_rect {
                 out.push((format!("{prefix}notification_agent[{offset}]"), agent_rect));
             }
@@ -743,6 +956,11 @@ impl NotificationCenter {
         layout: &CenterLayout,
         now: Instant,
     ) -> AccessNode {
+        if let (Some(reader), Some(notification)) =
+            (self.reader.as_ref(), self.reading_notification(host))
+        {
+            return reader.accessibility(&notification, layout);
+        }
         let total = self.rows(host).len();
         let visible = layout.visible_rows(total);
         let start = self.start.min(total.saturating_sub(visible));
@@ -817,6 +1035,14 @@ impl NotificationCenter {
         layout: &CenterLayout,
         path: &[usize],
     ) -> Option<Rect> {
+        if self.is_reading() {
+            return match path {
+                [] => Some(layout.panel()),
+                [0] => Some(layout.back()),
+                [1] => Some(layout.reading_viewport()),
+                _ => None,
+            };
+        }
         let (history_empty, can_undo) = {
             let log = host.log();
             (log.history().is_empty(), log.can_undo_clear())
@@ -846,16 +1072,32 @@ impl NotificationCenter {
         host: &dyn NotificationHost,
         path: &[usize],
     ) -> bool {
+        if let Some(reader) = self.reader.as_mut() {
+            let focused = reader.focus(path);
+            if focused {
+                host.changed();
+            }
+            return focused;
+        }
         if let [0, row, rest @ ..] = path {
             let rows = self.rows(host);
             let index = self.start.saturating_add(*row);
             let identity = rows
                 .get(index)
                 .and_then(|row| row.identity(host.log().history()));
+            let Some(row) = rows.get(index) else {
+                return false;
+            };
+            let has_agent = Self::row_agent(host, row).is_some();
             let control = match rest {
                 [] => None,
                 [0] => Some(RowControl::Dismiss),
-                [1] => Some(RowControl::HandToAgent),
+                [1] if has_agent => Some(RowControl::HandToAgent),
+                [at] if matches!(row, HistoryRow::Item { .. })
+                    && *at == if has_agent { 2 } else { 1 } =>
+                {
+                    Some(RowControl::Read)
+                }
                 _ => return false,
             };
             let Some(identity) = identity else {
@@ -1007,6 +1249,16 @@ impl NotificationCenter {
                     ),
             );
         }
+        controls.push(
+            AccessNode::new(Role::Button)
+                .with_name(t("notification-center-read-description"))
+                .with_bounds(layout.read_control(rect, agent_rect.is_some()))
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(control_focused(RowControl::Read)),
+                ),
+        );
         AccessNode::new(Role::ListItem)
             .with_semantic_key(format!("notification:{}", notification.id))
             .with_name(notification.title.clone())
@@ -1037,6 +1289,21 @@ impl NotificationCenter {
         theme: &Theme,
         cursor: Option<Point>,
     ) {
+        if let Some(notification) = self.reading_notification(host)
+            && let Some(reader) = self.reader.as_mut()
+        {
+            reader.draw(
+                &notification,
+                layout,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                cursor,
+            );
+            return;
+        }
+        self.reader = None;
         let rect = layout.panel();
         let colors = &theme.tokens.colors;
         let caption_style = theme.text(TextRole::Caption);
@@ -1214,7 +1481,8 @@ impl NotificationCenter {
             };
             let agent = host.agent_for(notification);
             let controls = layout.row_controls(row, agent.is_some());
-            let text_right = controls.1.unwrap_or(controls.0).x0 - qs::RELATED_GAP;
+            let read = layout.read_control(row, agent.is_some());
+            let text_right = read.x0 - qs::RELATED_GAP;
             // A row is a resting Control surface (HIG §9.5): the lift floor
             // with its derived edge, never a ramp-slot wash.
             ui::surface::card(
@@ -1314,6 +1582,16 @@ impl NotificationCenter {
                 controls,
                 (focused_control, cursor),
             );
+            Self::chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                (read, cursor, focused_control == Some(RowControl::Read)),
+                &t("notification-center-read"),
+                ButtonRole::Plain,
+            );
+
             if row_selected && self.row_control.is_none() {
                 Self::draw_selection(scene, transform, theme, row);
             }
@@ -1770,5 +2048,149 @@ mod tests {
         assert_eq!(center.start, 2);
         center.key(&host, &layout, &Key::Named(NamedKey::End));
         assert_eq!(center.start, 20 - visible);
+    }
+    #[test]
+    fn full_notification_text_has_a_visible_reading_control() {
+        let host = TestHost::default();
+        host.log.borrow_mut().retain(Notification::new(
+            "Couldn't open Notes",
+            "The app stopped before opening. Try again. Your document is safe.",
+        ));
+        let layout = layout();
+        let center = NotificationCenter::new();
+        let targets = center.semantic_rects(&host, &layout, "");
+        let read = targets
+            .iter()
+            .find(|(name, _)| name == "notification_read[0]")
+            .expect("a visible control opens complete notification text");
+        assert!(layout.row(0).contains(read.1.center()));
+        let tree = center.accessibility(&host, &layout, ui::time::now());
+        assert_eq!(
+            tree.children[0].children[0].children[1]
+                .bounds
+                .map(ui::a11y::AccessBounds::to_rect),
+            Some(read.1)
+        );
+    }
+
+    #[test]
+    fn reading_preserves_text_identity_and_never_invokes_or_dismisses() {
+        let host = TestHost::default();
+        let body = "The app stopped before opening. Try again. Your document is safe.";
+        host.log
+            .borrow_mut()
+            .retain(Notification::new("Couldn't open Notes", body));
+        let layout = layout();
+        let mut center = NotificationCenter::new();
+        center.key(&host, &layout, &Key::Named(NamedKey::ArrowDown));
+        center.key(&host, &layout, &Key::Named(NamedKey::ArrowRight));
+        assert_eq!(center.row_control, Some(RowControl::Read));
+        center.key(&host, &layout, &Key::Named(NamedKey::Enter));
+        assert!(center.is_reading());
+        let tree = center.accessibility(&host, &layout, ui::time::now());
+        assert_eq!(tree.children[1].description.as_deref(), Some(body));
+        assert!(tree.children[1].state.focused);
+        for key in [NamedKey::Enter, NamedKey::Space, NamedKey::Delete] {
+            assert_eq!(
+                center.key(&host, &layout, &Key::Named(key)),
+                CenterOutcome::Handled
+            );
+            assert!(center.is_reading());
+            assert_eq!(host.log().history().len(), 1);
+        }
+        assert_eq!(
+            center.key(&host, &layout, &Key::Named(NamedKey::Escape)),
+            CenterOutcome::Handled
+        );
+        assert!(!center.is_reading());
+        assert_eq!(center.row_control, Some(RowControl::Read));
+        assert_eq!(
+            center.key(&host, &layout, &Key::Named(NamedKey::Escape)),
+            CenterOutcome::Back
+        );
+        center.key(&host, &layout, &Key::Named(NamedKey::Enter));
+        assert!(center.is_reading());
+        assert!(center.focus_accessibility_path(&host, &[0]));
+        assert_eq!(
+            center.key(&host, &layout, &Key::Named(NamedKey::Enter)),
+            CenterOutcome::Handled
+        );
+        assert!(!center.is_reading());
+        assert_eq!(host.log().history().len(), 1);
+    }
+
+    #[test]
+    fn reading_pointer_back_removed_notifications_and_hidden_previews_are_safe() {
+        let host = TestHost::default();
+        let mut notification = Notification::new("Private message", "Do not reveal this body");
+        notification.show_preview = false;
+        let id = notification.id;
+        host.log.borrow_mut().retain(notification);
+        let layout = layout();
+        let mut center = NotificationCenter::new();
+        let read = center
+            .semantic_rects(&host, &layout, "")
+            .into_iter()
+            .find(|(name, _)| name == "notification_read[0]")
+            .unwrap()
+            .1;
+        assert_eq!(
+            center.click(&host, &layout, read.center()),
+            CenterOutcome::Handled
+        );
+        assert!(center.is_reading());
+        let tree = center.accessibility(&host, &layout, ui::time::now());
+        assert_ne!(
+            tree.children[1].description.as_deref(),
+            Some("Do not reveal this body")
+        );
+        assert_eq!(
+            center.click(&host, &layout, layout.clear().center()),
+            CenterOutcome::Handled
+        );
+        assert_eq!(host.log().history().len(), 1);
+        assert_eq!(
+            center.click(&host, &layout, layout.back().center()),
+            CenterOutcome::Handled
+        );
+        assert!(!center.is_reading());
+        center.click(&host, &layout, read.center());
+        host.log.borrow_mut().take_history(id);
+        assert_eq!(
+            center.key(&host, &layout, &Key::Named(NamedKey::Enter)),
+            CenterOutcome::Handled
+        );
+        assert!(!center.is_reading());
+        assert!(host.log().history().is_empty());
+        assert!(!center.focus_accessibility_path(&host, &[0, 0, 1]));
+    }
+    #[test]
+    fn reading_control_tab_order_reverses_and_moves_between_notifications() {
+        let host = TestHost::default();
+        for title in ["first", "second"] {
+            host.log
+                .borrow_mut()
+                .retain(Notification::new(title, "body"));
+        }
+        let layout = layout();
+        let mut center = NotificationCenter::new();
+        let tab = Key::Named(NamedKey::Tab);
+        center.key_with_shift(&host, &layout, &tab, false);
+        let selected = center.selected.clone();
+        assert_eq!(center.row_control, None);
+        center.key_with_shift(&host, &layout, &tab, false);
+        assert_eq!(center.row_control, Some(RowControl::Read));
+        center.key_with_shift(&host, &layout, &tab, true);
+        assert_eq!(center.row_control, None);
+        assert_eq!(center.selected, selected);
+        center.key_with_shift(&host, &layout, &tab, true);
+        assert_eq!(center.row_control, Some(RowControl::Dismiss));
+        assert_ne!(center.selected, selected);
+        center.key_with_shift(&host, &layout, &tab, false);
+        assert_eq!(center.row_control, None);
+        assert_eq!(center.selected, selected);
+        center.key_with_shift(&host, &layout, &tab, false);
+        center.key(&host, &layout, &Key::Named(NamedKey::Enter));
+        assert!(center.is_reading());
     }
 }
