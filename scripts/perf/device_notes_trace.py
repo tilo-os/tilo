@@ -17,7 +17,8 @@ phase_fields = set("serial event revision phase_timing queue_wait_us render_us t
                    "inflight_at_enqueue input_age_at_enqueue_us encode_submit_us "
                    "gpu_completion_wait_us bump_settle_us backdrop_us kms_retirement_us "
                    "cpu_copy_us readback_bytes output_bytes physical_presented_time_ns "
-                   "physical_sequence".split())
+                   "physical_sequence render_work target_width target_height render_attempts "
+                   "sparse_attempts full_attempts damage_admitted".split())
 optional_numbers = {"input_age_at_enqueue_us", "physical_presented_time_ns", "physical_sequence"}
 lifecycle = []
 records = []
@@ -39,9 +40,9 @@ for line in Path(sys.argv[1]).read_text().splitlines():
             if key in fields:
                 raise SystemExit("Duplicate compositor lifecycle field")
             valid = ((key == "event" and value == "render-retired")
-                     or (key == "phase_timing" and value in ("true", "false"))
+                     or (key in ("phase_timing", "render_work", "damage_admitted") and value in ("true", "false"))
                      or (key in optional_numbers and value == "none")
-                     or (key not in ("event", "phase_timing") and value.isascii() and value.isdecimal()))
+                     or (key not in ("event", "phase_timing", "render_work", "damage_admitted") and value.isascii() and value.isdecimal()))
             if not valid:
                 raise SystemExit("Invalid compositor lifecycle field")
             fields[key] = value

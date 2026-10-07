@@ -45,6 +45,7 @@ impl Observer {
         worker_frame_ix: u64,
         cpu_frame_id: Option<u64>,
         bounds: crate::render_thread::timing::CallBounds,
+        native: Option<crate::render_thread::timing::CallBounds>,
     ) {
         crate::native_scenario::log::emit_timing_json(
             "tilo-native-present-call",
@@ -56,6 +57,13 @@ impl Observer {
                 "before_host_hi_s": bounds.before.map(|b| b.hi_s),
                 "after_host_lo_s": bounds.after.map(|b| b.lo_s),
                 "after_host_hi_s": bounds.after.map(|b| b.hi_s),
+                // Inside the wrapper, after Wayland's window lock and feedback
+                // request. This includes the native driver's present call;
+                // these wall-clock bounds are not GPU timestamps.
+                "native_before_host_lo_s": native.and_then(|b| b.before).map(|b| b.lo_s),
+                "native_before_host_hi_s": native.and_then(|b| b.before).map(|b| b.hi_s),
+                "native_after_host_lo_s": native.and_then(|b| b.after).map(|b| b.lo_s),
+                "native_after_host_hi_s": native.and_then(|b| b.after).map(|b| b.hi_s),
             }),
         );
     }

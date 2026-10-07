@@ -158,10 +158,24 @@ pub struct BridgeAdapterInfo {
     pub drm_device: Option<ui::dmabuf_import::VulkanDrmDeviceIdentity>,
 }
 
+/// Actual rendering decisions for one completed bridge transaction, not estimates
+/// inferred from the caller's damage request. Available only with phase timing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderWork {
+    pub width: u32,
+    pub height: u32,
+    pub render_attempts: usize,
+    pub sparse_attempts: usize,
+    pub full_attempts: usize,
+    pub damage_admitted: bool,
+}
+
 /// Per-paint wall-clock breakdown, available only when explicit profiling is enabled.
 /// Values are accumulated across bounded Vello recovery submissions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BridgePhaseTiming {
+    /// Actual completed work; absent for paths without an observed render transaction.
+    pub work: Option<RenderWork>,
     /// CPU time used to prepare and submit Vello plus the appended texture copy.
     pub submit_us: u128,
     /// Blocking completion time for GPU rendering plus the texture copy, followed by map setup;
@@ -880,7 +894,7 @@ impl RetainedGpuTarget {
         damage: Option<SceneDamage<'_>>,
         output: FrameOutput<'_>,
         policy: CompletionPolicy,
-        timing: Option<&mut BridgePhaseTiming>,
+        mut timing: Option<&mut BridgePhaseTiming>,
         post_render: F,
     ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError>
     where
@@ -898,8 +912,22 @@ impl RetainedGpuTarget {
         // Once encoding starts, even a pre-submit abort leaves renderer-owned downloads and
         // timestamp bookkeeping unusable. Clear poison only after both completion facts hold.
         let result = match Self::band_rows(self.size).filter(|_| sparse.is_none()) {
-            Some(rows) => self.render_banded(scene, rows, output, policy, timing, post_render),
-            None => self.render_attempts(scene, sparse, output, policy, timing, post_render),
+            Some(rows) => self.render_banded(
+                scene,
+                rows,
+                output,
+                policy,
+                timing.as_deref_mut(),
+                post_render,
+            ),
+            None => self.render_attempts(
+                scene,
+                sparse,
+                output,
+                policy,
+                timing.as_deref_mut(),
+                post_render,
+            ),
         };
         if let Some(pass) = self.hdr_pass.as_ref() {
             // Later renders (and captures on this renderer) draw the images
@@ -912,7 +940,17 @@ impl RetainedGpuTarget {
             blur.release(&mut self.renderer);
         }
         match &result {
-            Ok(_) => {
+            Ok((_, damage_admitted)) => {
+                if let Some(timing) = timing {
+                    timing.work = Some(RenderWork {
+                        width: self.size.0,
+                        height: self.size.1,
+                        render_attempts: self.last_render_attempts,
+                        sparse_attempts: self.last_sparse_render_attempts,
+                        full_attempts: self.last_full_render_attempts,
+                        damage_admitted: *damage_admitted,
+                    });
+                }
                 #[cfg(target_os = "linux")]
                 crate::shader_seed::after_frame();
                 self.retained_target_valid = true;
@@ -8453,6 +8491,14 @@ mod tests {
             timing.completed_readback_map_us > 0,
             "actual GPU completion poll"
         );
+        let work = timing.work.expect("actual completed rendering decisions");
+        assert_eq!((work.width, work.height), (128, 96));
+        assert_eq!(work.render_attempts, stats.render_attempts);
+        assert_eq!(work.sparse_attempts, stats.sparse_attempts);
+        assert_eq!(work.full_attempts, stats.full_attempts);
+        assert_eq!(work.damage_admitted, stats.damage_admitted);
+        assert!(work.full_attempts > 0);
+        assert_eq!(work.sparse_attempts, 0);
         assert_eq!(timing.readback_bytes, 0);
         assert_eq!(timing.cpu_output_bytes, 0);
         assert_eq!(timing.cpu_copy_swizzle_us, 0);
@@ -8463,11 +8509,13 @@ mod tests {
             bridge.take_phase_timing().is_none(),
             "timing is consumed exactly once"
         );
+        assert_sparse_phase_work(&mut bridge, &scene, &target, white);
+
         assert!(
             bridge
                 .paint_imported_until(
                     &scene,
-                    version(3, None, None),
+                    version(4, None, None),
                     &target,
                     Instant::now()
                         .checked_sub(Duration::from_millis(1))
@@ -8485,7 +8533,7 @@ mod tests {
         bridge
             .paint_imported_until(
                 &scene,
-                version(4, None, None),
+                version(5, None, None),
                 &target,
                 tilo_test_env::hang_deadline(),
                 white,
@@ -8493,6 +8541,38 @@ mod tests {
             )
             .unwrap();
         assert!(bridge.last_phase_timing().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_sparse_phase_work(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        target: &ui::dmabuf_import::ImportedRenderTarget,
+        white: f32,
+    ) {
+        let region = vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 16,
+            height: 16,
+        };
+        let sparse = bridge
+            .paint_imported_until(
+                scene,
+                version(3, Some(2), Some(&[region])),
+                target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .unwrap();
+        let work = bridge.last_phase_timing().unwrap().work.unwrap();
+        assert_eq!(work.sparse_attempts, sparse.sparse_attempts);
+        assert_eq!(work.full_attempts, sparse.full_attempts);
+        assert_eq!(work.render_attempts, sparse.render_attempts);
+        assert_eq!(work.damage_admitted, sparse.damage_admitted);
+        assert!(work.damage_admitted && work.sparse_attempts > 0);
+        assert_eq!(work.full_attempts, 0);
     }
 
     /// Runs the ordinary direct paint, not a diagnostic helper or a fake GPU sample.

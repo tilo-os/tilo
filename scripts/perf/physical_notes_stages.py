@@ -104,6 +104,16 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
                      render_start_to_present_call=(start, present_before),
                      present_call_cpu=(present_before, present_after),
                      present_return_to_display=(present_after, shown))
+        native_fields = [f'{point}_host_{bound}_s'
+                         for point in ('native_before', 'native_after') for bound in ('lo', 'hi')]
+        native_available = any(present.get(field) is not None for field in native_fields)
+        if native_available:
+            native_before, native_after = [bracket(present, point)
+                                           for point in ('native_before', 'native_after')]
+            _ordered(present_before, native_before, native_after, present_after)
+            pairs.update(present_wrapper_before_native=(present_before, native_before),
+                         native_present_cpu=(native_before, native_after),
+                         present_wrapper_after_native=(native_after, present_after))
         if mains:
             if cpu not in mains:
                 raise ValueError('Partial Notes main-thread stage evidence')
@@ -113,12 +123,13 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
             pairs['pre_send_gap'] = points[-1], before
         frames.append(dict(input_id=sample['input_id'], cpu_frame_id=cpu,
                            worker_id=worker_key[0], worker_frame_ix=worker_key[1],
+                           native_present_samples_available=native_available,
                            intervals_ms={key: _interval(*pair)
                                          for key, pair in pairs.items()}))
     stages = {key: {bound: distribution(
         [frame['intervals_ms'][key][index] for frame in frames], scale=1)
         for index, bound in enumerate(('lower', 'upper'))}
-        for key in frames[0]['intervals_ms']}
+        for key in set.intersection(*(set(frame['intervals_ms']) for frame in frames))}
     phase_lines = lines if compositor_lines is None else compositor_lines
     compositor = summarize_compositor_phases(phase_lines, latency['samples'], feedback)
     capture = summarize_foreign_capture(phase_lines, compositor['frames'], latency['samples'],

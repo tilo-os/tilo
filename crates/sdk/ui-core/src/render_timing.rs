@@ -195,6 +195,46 @@ mod tests {
     }
 
     #[test]
+    fn nested_present_clocks_distinguish_wrapper_from_native_call_and_stay_off() {
+        for enabled in [false, true] {
+            let count = std::cell::Cell::new(0);
+            let clock = || {
+                assert!(enabled, "disabled present probes cannot read a clock");
+                let next = count.get() + 1;
+                count.set(next);
+                Some(HostClockBracket {
+                    lo_s: f64::from(next),
+                    hi_s: f64::from(next),
+                })
+            };
+            let mut native = None;
+            let calls = std::cell::Cell::new(0);
+            let (result, wrapper) = around_with(enabled, clock, || {
+                let (result, bounds) = around_with(enabled, clock, || {
+                    calls.set(calls.get() + 1);
+                    17
+                });
+                native = bounds;
+                result
+            });
+            assert_eq!(result, 17);
+            assert_eq!(calls.get(), 1);
+            if enabled {
+                let wrapper = wrapper.unwrap();
+                let native = native.unwrap();
+                assert_eq!(wrapper.before.unwrap().lo_s, 1.0);
+                assert_eq!(native.before.unwrap().lo_s, 2.0);
+                assert_eq!(native.after.unwrap().hi_s, 3.0);
+                assert_eq!(wrapper.after.unwrap().hi_s, 4.0);
+                assert_eq!(count.get(), 4);
+            } else {
+                assert!(wrapper.is_none() && native.is_none());
+                assert_eq!(count.get(), 0);
+            }
+        }
+    }
+
+    #[test]
     fn timed_operations_are_bracketed_once_and_keep_their_result() {
         // Case `operation_is_bracketed_once_and_error_result_is_preserved`.
         {

@@ -1444,11 +1444,17 @@ fn render_one_frame(
     if let Some(observer) = presentation {
         observer.arm(&surface.surface, frame_ix, cpu_frame_id);
     }
-    let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
+    let observe_present = presentation.is_some() && timing::enabled();
+    let mut native_present_bounds = None;
+    let ((), present_bounds) = timing::around(observe_present, || {
+        let present_native = || {
+            let ((), bounds) = timing::around(observe_present, || surface_texture.present());
+            native_present_bounds = bounds;
+        };
         if let Some(observer) = presentation {
-            observer.present_wayland(frame_ix, cpu_frame_id, || surface_texture.present());
+            observer.present_wayland(frame_ix, cpu_frame_id, present_native);
         } else {
-            surface_texture.present();
+            present_native();
         }
     });
     if frame_ix == 0 {
@@ -1495,7 +1501,7 @@ fn render_one_frame(
         );
     }
     if let (Some(observer), Some(bounds)) = (presentation, present_bounds) {
-        observer.log_native_present(frame_ix, cpu_frame_id, bounds);
+        observer.log_native_present(frame_ix, cpu_frame_id, bounds, native_present_bounds);
     }
     // `Poll` is the non-blocking variant — nudges the queue without stalling.
     let _ = device_handle.device.poll(vello::wgpu::PollType::Poll);

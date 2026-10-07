@@ -110,6 +110,17 @@ these fixed options through the greeter's ordinary next-sign-in diagnostics
 action. A disabled/unsupported recorder and discarded presentation remain
 ineligible for a hardware latency claim.
 
+The existing native-present row also brackets the inner surface presentation
+call. Its outer-before → native-before interval includes the Wayland window-state
+lock and feedback registration; native-before → native-after includes the WSI/driver
+present call, and native-after → outer-after covers wrapper cleanup. These nested
+wall-clock intervals are not shader durations. The existing exact compositor
+retirement row reports actual target size and sparse/full render attempt counts,
+including dense recovery after a sparse attempt, only when phase timing is enabled.
+Missing render-work evidence remains explicitly unavailable; requested damage alone
+is never described as a successfully sparse render. These fields add no waits,
+rows, buffer releases or changes to feedback transaction locking.
+
 Native app render workers use those same startup options and the existing
 Vello timestamp trackers. `tilo-native-gpu-stages` reports bounded pass and
 per-dispatch samples with observer session, worker, worker frame, CPU frame and

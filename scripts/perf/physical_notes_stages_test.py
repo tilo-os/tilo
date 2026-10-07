@@ -48,6 +48,37 @@ class PhysicalNotesStages(unittest.TestCase):
                               ('present_call_cpu', .1), ('present_return_to_display', 1.9)]:
             self.assertAlmostEqual(report['stages'][key]['upper']['p50_ms'], expected)
 
+    def test_native_present_boundary_separates_wrapper_and_driver_wall_time(self):
+        records = self.fixture()
+        for prefix, row in records:
+            if prefix == 'tilo-native-present-call ':
+                row.update(native_before_host_lo_s=row['before_host_lo_s'] + .00002,
+                           native_before_host_hi_s=row['before_host_hi_s'] + .00002,
+                           native_after_host_lo_s=row['after_host_lo_s'] - .00001,
+                           native_after_host_hi_s=row['after_host_hi_s'] - .00001)
+        result = self.report(records)
+        self.assertTrue(all(frame['native_present_samples_available'] for frame in result['frames']))
+        self.assertAlmostEqual(result['stages']['present_wrapper_before_native']['upper']['p50_ms'], .02)
+        self.assertAlmostEqual(result['stages']['native_present_cpu']['upper']['p50_ms'], .07)
+        self.assertAlmostEqual(result['stages']['present_wrapper_after_native']['upper']['p50_ms'], .01)
+        changed = copy.deepcopy(records)
+        row = next(row for prefix, row in changed if prefix == 'tilo-native-present-call ')
+        row['native_before_host_lo_s'] = row['before_host_lo_s'] - .001
+        with self.assertRaises(ValueError):
+            self.report(changed)
+        changed = copy.deepcopy(records)
+        row = next(row for prefix, row in changed if prefix == 'tilo-native-present-call ')
+        del row['native_after_host_hi_s']
+        with self.assertRaises(ValueError):
+            self.report(changed)
+        row = next(row for prefix, row in records if prefix == 'tilo-native-present-call ')
+        for key in list(row):
+            if key.startswith('native_'):
+                row.pop(key)
+        mixed = self.report(records)
+        self.assertFalse(mixed['frames'][0]['native_present_samples_available'])
+        self.assertNotIn('native_present_cpu', mixed['stages'])
+
     def test_foreign_process_lifetime_cannot_supply_missing_stage(self):
         for changes in [dict(process_id=999), dict(observer_session=
                         'd18a8ac3-c453-437f-b6d6-3fef3f242154')]:
@@ -263,6 +294,25 @@ class CompositorPhaseJoin(unittest.TestCase):
         self.assertEqual(result['frames'][0]['byte_counts']['readback_bytes'], 4096)
         self.assertEqual(result['costs']['kms_retirement_us']['p50_ms'], .019)
         self.assertEqual(result['frames'][0]['readback_classification'], 'compositor_readback_reported')
+
+    def test_actual_render_decisions_are_optional_and_exact_outcome_owned(self):
+        result = self.report([self.line(render_work='true', target_width=1920,
+            target_height=1080, render_attempts=2, sparse_attempts=1,
+            full_attempts=1, damage_admitted='false')])
+        work = result['frames'][0]['render_work']
+        self.assertEqual(work['sparse_attempts'], 1)
+        self.assertEqual(work['full_attempts'], 1)
+        self.assertFalse(work['damage_admitted'])
+        self.assertIsNone(self.report([self.line()])['frames'][0]['render_work'])
+        for changes in (dict(render_attempts=3), dict(target_width=0),
+                        dict(damage_admitted='unknown'), dict(render_work='false')):
+            with self.subTest(changes=changes):
+                work = dict(render_work='true', target_width=1920, target_height=1080,
+                            render_attempts=2, sparse_attempts=1, full_attempts=1,
+                            damage_admitted='false')
+                work.update(changes)
+                with self.assertRaises(ValueError):
+                    self.report([self.line(**work)])
 
     def test_measured_zero_readback_is_distinct_from_unsupported_or_missing(self):
         direct = self.report([self.line(readback_bytes=0, output_bytes=0, cpu_copy_us=0)])

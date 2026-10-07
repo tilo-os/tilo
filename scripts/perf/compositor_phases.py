@@ -66,8 +66,22 @@ def summarize_compositor_phases(lines, samples, feedback):
         if (timestamp == 'none') != (sequence == 'none'):
             raise ValueError('Partial physical compositor outcome')
         proof = None if timestamp == 'none' else (integer(timestamp), integer(sequence))
+        work = None
+        if 'render_work' in row:
+            if row['render_work'] not in ('true', 'false') or row.get('damage_admitted') not in ('true', 'false'):
+                raise ValueError('Invalid compositor render decision')
+            counts = {key: integer(row.get(key)) for key in
+                      ('target_width', 'target_height', 'render_attempts', 'sparse_attempts', 'full_attempts')}
+            if row['render_work'] == 'true':
+                if (not phase_complete or not counts['target_width'] or not counts['target_height']
+                        or not counts['render_attempts'] or counts['render_attempts'] !=
+                        counts['sparse_attempts'] + counts['full_attempts']):
+                    raise ValueError('Incomplete compositor render decision')
+                work = dict(counts, damage_admitted=row['damage_admitted'] == 'true')
+            elif any(counts.values()) or row['damage_admitted'] != 'false':
+                raise ValueError('Unavailable compositor render work reports decisions')
         record = dict(serial=serial, revision=revision, phase_samples_available=phase_complete,
-                      costs_us=costs, byte_counts=byte_counts, physical_outcome=proof)
+                      costs_us=costs, byte_counts=byte_counts, physical_outcome=proof, render_work=work)
         records.append(record)
         if proof is not None:
             if proof in proofs:

@@ -189,7 +189,26 @@ impl std::fmt::Display for FrameLifecycleRecord {
         } = timing;
         write!(
             output,
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} cpu_copy_us={} readback_bytes={} output_bytes={} physical_presented_time_ns={} physical_sequence={}",
+            "FRAME-LIFECYCLE serial={serial} event=render-retired render_work={} target_width={} target_height={} render_attempts={} sparse_attempts={} full_attempts={} damage_admitted={} queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} cpu_copy_us={} readback_bytes={} output_bytes={} physical_presented_time_ns={} physical_sequence={}",
+            phases.and_then(|value| value.paint.work).is_some(),
+            phases
+                .and_then(|value| value.paint.work)
+                .map_or(0, |work| work.width),
+            phases
+                .and_then(|value| value.paint.work)
+                .map_or(0, |work| work.height),
+            phases
+                .and_then(|value| value.paint.work)
+                .map_or(0, |work| work.render_attempts),
+            phases
+                .and_then(|value| value.paint.work)
+                .map_or(0, |work| work.sparse_attempts),
+            phases
+                .and_then(|value| value.paint.work)
+                .map_or(0, |work| work.full_attempts),
+            phases
+                .and_then(|value| value.paint.work)
+                .is_some_and(|work| work.damage_admitted),
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -214,7 +233,7 @@ impl std::fmt::Display for FrameLifecycleRecord {
     }
 }
 
-fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
+fn log_frame_lifecycle(serial: u64, revision: u64, timing: &FrameLifecycle) {
     // Keep the first completed presentation observable even when
     // it is fast and the event loop then parks indefinitely.
     if timing.phases.is_some()
@@ -228,7 +247,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
             FrameLifecycleRecord {
                 serial,
                 revision,
-                timing
+                timing: *timing
             }
         );
     }
@@ -275,6 +294,18 @@ mod phase_record_tests {
             super::super::render::paint::BridgePhaseTiming::default();
         let direct = record.to_string();
         assert!(direct.contains("phase_timing=true"));
+        assert!(direct.contains("render_work=false target_width=0 target_height=0"));
+        record.timing.phases.as_mut().unwrap().paint.work =
+            Some(super::super::render::paint::RenderWork {
+                width: 1920,
+                height: 1080,
+                render_attempts: 2,
+                sparse_attempts: 1,
+                full_attempts: 1,
+                damage_admitted: false,
+            });
+        let recovered = record.to_string();
+        assert!(recovered.contains("render_work=true target_width=1920 target_height=1080 render_attempts=2 sparse_attempts=1 full_attempts=1 damage_admitted=false"));
         record.timing.physical = Some(PhysicalPresentation {
             timestamp: Duration::new(123, 456_000),
             sequence: 789,
@@ -347,7 +378,7 @@ impl PresentPipe {
                             log_frame_lifecycle(
                                 serial,
                                 frame.revision,
-                                FrameLifecycle {
+                                &FrameLifecycle {
                                     queue_wait,
                                     render,
                                     total,
