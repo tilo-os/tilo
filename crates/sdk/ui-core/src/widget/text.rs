@@ -447,15 +447,18 @@ impl Text {
 
     fn observe_renderer_text_scale(&mut self, renderer: &TextRenderer) {
         let epoch = renderer.layout_epoch();
+        // The first measure already uses this renderer. Only a change from
+        // an observed renderer invalidates an existing layout; recording the
+        // initial epoch must not make a pure scroll remeasure the subtree.
         if self
             .renderer_epoch
             .as_ref()
-            .is_none_or(|observed| !std::sync::Arc::ptr_eq(observed, epoch))
+            .is_some_and(|observed| !std::sync::Arc::ptr_eq(observed, epoch))
         {
-            self.renderer_epoch = Some(epoch.clone());
             self.dirty = true;
             self.layout_dirty = true;
         }
+        self.renderer_epoch = Some(epoch.clone());
         let scale = renderer.text_scale();
         if self.observed_renderer_text_scale.to_bits() != scale.to_bits() {
             self.observed_renderer_text_scale = scale;
