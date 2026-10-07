@@ -468,6 +468,7 @@ impl ApplicationHandler<UserEvent> for Application {
                 info!("Smart zoom");
             },
             WindowEvent::TouchpadPressure { .. }
+            | WindowEvent::PenSample { .. }
             | WindowEvent::HoveredFileCancelled
             | WindowEvent::KeyboardInput { .. }
             | WindowEvent::CursorEntered { .. }
