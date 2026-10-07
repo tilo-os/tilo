@@ -660,6 +660,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn owner_takeover_reserves_bounded_acknowledgement_capacity() {
+        use crate::shell::personal_continuity::{
+            AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceId, TabPlacement,
+            WorkspaceContinuation,
+        };
+        let room = RoomId::new();
+        let device = DeviceId::new("owner-capacity").unwrap();
+        let metadata =
+            ui::app::compose_structural_continuation_metadata(ui::view::View::default(), None)
+                .unwrap();
+        let mut registry = ContinuationRegistry::default();
+        let mut apps = Vec::new();
+        for id in 1..=130 {
+            let instance = AppInstanceId(id);
+            registry.bind_tab(instance, instance);
+            registry
+                .report(
+                    room,
+                    "so.tilo.code-editor",
+                    instance,
+                    metadata.schema_version,
+                    metadata.bytes.clone(),
+                )
+                .unwrap();
+            apps.push(AppInstanceState::new(
+                instance,
+                TabPlacement {
+                    strip: 0,
+                    group: u32::try_from(id).unwrap(),
+                    tab: 0,
+                },
+                LaunchIntent::App {
+                    app_id: "so.tilo.code-editor".into(),
+                },
+                registry.resume_for(room, "so.tilo.code-editor", instance),
+                ContinuityStamp {
+                    counter: 1,
+                    device: device.clone(),
+                },
+            ));
+        }
+        for app in &apps[..128] {
+            registry.offer_owner_view(room, app, None);
+        }
+        assert_eq!(registry.drain_owner_views().len(), 128);
+        let original = registry.resume_for(room, "so.tilo.code-editor", AppInstanceId(129));
+        assert!(
+            registry
+                .claim_owner_view(
+                    room,
+                    "so.tilo.code-editor".into(),
+                    AppInstanceId(129),
+                    2,
+                    metadata.clone()
+                )
+                .is_err()
+        );
+        assert_eq!(registry.owner_claim_revision(), 0);
+        assert_eq!(
+            registry.resume_for(room, "so.tilo.code-editor", AppInstanceId(129)),
+            original
+        );
+        registry.forget_local_tab(AppInstanceId(1));
+        registry
+            .claim_owner_view(
+                room,
+                "so.tilo.code-editor".into(),
+                AppInstanceId(129),
+                2,
+                metadata,
+            )
+            .unwrap();
+        // A different offered app cannot steal the pending claim's last slot.
+        registry.offer_owner_view(room, &apps[129], None);
+        assert!(registry.drain_owner_views().is_empty());
+        let snapshot = DeviceContinuationSnapshot::new(
+            device,
+            1,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![apps[128].clone()],
+            }],
+        )
+        .unwrap();
+        registry.acknowledge_owner_claims(registry.owner_claim_revision(), &snapshot);
+        let views = registry.drain_owner_views();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].0.instance, 129);
+        assert!(views[0].0.local_claim);
+        assert!(!registry.owner_claimed(room, &apps[128]));
+    }
+
+    #[test]
     fn native_text_metadata_is_bounded_path_free_and_structurally_checked() {
         use automerge::{ObjType, ROOT, transaction::Transactable};
         use ui::text_position::{ResolvedTextPosition, TextPosition};

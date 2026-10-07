@@ -964,3 +964,40 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Wechseln zu
 overview-panel-new-workspace = Neuer Arbeitsbereich
 browser-new-workspace-name = Arbeitsbereich { $number }
+
+notification-center-read = Lesen
+notification-center-read-description = Vollständige Benachrichtigung lesen
+notification-preview-hidden = Benachrichtigungsvorschau verborgen
+
+activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }
+activity-catch-up-review-description = Prüfe wartende Aufgaben, Ziele und die Arbeit von Agenten in diesem Arbeitsbereich. Das Lesen der Aktivitäten schließt keine Aufgabe ab.
+activity-catch-up-review-goals = Ziele und die Arbeit von Agenten prüfen
+activity-acknowledge-viewed = Gesehene Aktivitäten bestätigen
+activity-acknowledge-description = Markiere nur die angezeigten Zusammenfassungen als gelesen. Verborgene Änderungen und wartende Aufgaben bleiben offen.
+activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
+    [one] eine wartende Aufgabe
+   *[other] { $count } wartende Aufgaben
+    }
+activity-catch-up-waiting-detail = { $task } · { $who }
+
+activity-task-review-unavailable = Authentifizierte Aufgabensteuerung ist nicht verfügbar. Der bisherige Verlauf bleibt lesbar.
+activity-task-review-history = Aktionsverlauf prüfen
+activity-task-steer = Anweisungen ändern
+activity-task-cancel-run = Diesen Lauf abbrechen
+activity-task-retry-run = Aufgabe erneut versuchen
+activity-task-direction-send = Anweisungen senden
+activity-task-direction-close = Zurück zur Aufgabe
+activity-task-direction-label = Öffentliche Aufgabenanweisungen
+activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
+activity-task-direction-observation = Anweisungen für Lauf { $epoch } nach Revision { $revision }. Ein geänderter Lauf muss erneut geprüft werden.
+activity-task-review-saving = Warten auf das Speichern durch den Arbeitsbereich…
+activity-task-review-saved = Im Arbeitsbereich gespeichert. Die Anwendung durch den Agenten wird separat angezeigt.
+activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
+
+activity-task-next = Nächste Aufgabe
+activity-task-previous = Vorherige Aufgabe
+activity-task-review-source = Arbeitsbereich · Generation { $generation } · Stand { $time }
+activity-task-review-status = { $status } · Agent: { $agent }
+activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
+activity-task-review-direction = { $author }: { $text }
+activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.

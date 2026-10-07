@@ -294,6 +294,7 @@ impl StopSlot {
     fn expire(&self, startup: u64) {
         let mut generation = self.generation.lock();
         if self.startup.load(Ordering::SeqCst) == startup && !self.ready.load(Ordering::SeqCst) {
+            tracing::warn!("native microphone capture startup deadline expired");
             self.current.store(false, Ordering::SeqCst);
             let _ = self.advance();
             if let Some((capture, client)) = generation.take() {
@@ -395,11 +396,13 @@ impl Session {
         });
         // Fresh owner reads precede the independent slot lock. Owner fences
         // may hold their publication gate while synchronously stopping a slot.
-        client
-            .enable_publication()
-            .map_err(|_| Issue::PermissionDenied)?;
+        client.enable_publication().map_err(|_| {
+            tracing::warn!("native microphone publication authority refused");
+            Issue::PermissionDenied
+        })?;
         let mut installing = slot.generation.lock();
         if !current() {
+            tracing::warn!("native microphone capture installation fence closed");
             client.stop_publication();
             return Err(Issue::PermissionDenied);
         }
@@ -488,13 +491,20 @@ impl MediaSession for Session {
             }
             self.decoded_generation = generation;
         }
-        if let Some(intent) = &self.capture
-            && (!intent.slot.current.load(Ordering::SeqCst)
-                || !(intent.allowed)()
-                || !intent.source.current())
-        {
-            self.stop_capture();
-            return Err(Issue::PermissionDenied);
+        if let Some(intent) = &self.capture {
+            let capture_current = intent.slot.current.load(Ordering::SeqCst);
+            let consent_current = (intent.allowed)();
+            let source_current = intent.source.current();
+            if !capture_current || !consent_current || !source_current {
+                tracing::warn!(
+                    capture_current,
+                    consent_current,
+                    source_current,
+                    "native microphone capture fence closed"
+                );
+                self.stop_capture();
+                return Err(Issue::PermissionDenied);
+            }
         }
         self.install_prepared_capture(&client)?;
         if let Some(intent) = &self.capture {

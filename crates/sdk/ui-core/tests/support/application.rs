@@ -262,7 +262,7 @@ pub fn runner_probe_definition() -> &'static ApplicationDefinition {
 }
 pub fn runner_inputs() -> tilo_ui::application::ComponentRunnerInputs {
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
     tilo_ui::application::ComponentRunnerInputs {

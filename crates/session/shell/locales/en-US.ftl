@@ -2453,3 +2453,18 @@ dictation-copy-failed = Clipboard unavailable. Your complete transcript is still
 search-action-tab-drag-cancel = Cancel tab drag
 search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
 search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
+
+device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
+search-action-activity-acknowledge = Acknowledge viewed activity
+search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
+search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
+search-action-activity-tasks = Review workspace goals and agent work
+search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
+search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
+
+task-review-inspect = Inspect task evidence
+task-review-steer = Change task instructions
+task-review-cancel = Cancel task run
+task-review-retry = Retry task
+task-review-status = Inspect task review availability
+task-review-provider = Task review

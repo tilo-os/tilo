@@ -1,4 +1,4 @@
-//! Room administration by devices of the relay's own user.
+//! Owner-only room administration and admitted members' self-attributed audit.
 //!
 //! One bounded postcard request and reply per bidirectional stream, as in the
 //! workspace-join protocol. The request names the caller's certificate; the
@@ -87,6 +87,16 @@ pub enum RoomCommand {
         room: String,
         /// The removal.
         request: RemoveMemberRequest,
+    },
+    /// Record only the authenticated admitted person's bounded terminal audit.
+    /// This grants no administration, application authorship or other authority.
+    RecordEffectReceipt {
+        /// The governed room.
+        room: String,
+        /// The broker's terminal invocation identifier.
+        invocation: uuid::Uuid,
+        /// Canonical redacted public receipt; never action arguments or results.
+        redacted: Vec<u8>,
     },
 }
 
@@ -236,6 +246,16 @@ impl RoomAdminProtocol {
                 .map(|done| RoomReply::Governance {
                     generation: done.generation,
                 }),
+            RoomCommand::RecordEffectReceipt {
+                room,
+                invocation,
+                redacted,
+            } => rooms
+                .record_member_effect_receipt(&room, device, invocation, &redacted)
+                .await
+                .map(|done| RoomReply::Governance {
+                    generation: done.generation,
+                }),
         };
         result.unwrap_or_else(|error| RoomReply::Refused(error.to_string()))
     }
@@ -260,7 +280,8 @@ impl ProtocolHandler for RoomAdminProtocol {
     }
 }
 
-/// A device of the relay's user administering the rooms it governs.
+/// A certified device using governed commands.
+/// Administration is owner-only; terminal audit is restricted to its own admitted person.
 #[derive(Clone, Debug)]
 pub struct RoomAdminClient {
     endpoint: iroh::Endpoint,

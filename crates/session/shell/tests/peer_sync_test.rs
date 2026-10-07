@@ -1037,3 +1037,134 @@ fn native_crossing_preserves_negative_connector_coordinates() {
         (target, 959, 205)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_checked_placement_is_transport_bound_and_stale_after_owner_relayout() {
+    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(46).await;
+    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(47).await;
+    let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
+    let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
+    let endpoint_a = addr_a.id;
+    let endpoint_b = addr_b.id;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_certified_native_peer(&mut events_a).await;
+    wait_certified_native_peer(&mut events_b).await;
+    let (_, owner) = native_pair_fabrics(&source, &target);
+    let mut before = owner.snapshots().get(&target).unwrap().clone();
+    let display = before.display.as_ref().unwrap();
+    let rect = native_fabric::DisplayRect {
+        x: 0,
+        y: 540,
+        ..display.rect
+    };
+    let expected = display.stamp.clone();
+    let now = tilo_clock::unix_now_ms();
+    let envelope = native_fabric::PersonalFabricActionEnvelope {
+        request_id: [17; 16],
+        source: source.clone(),
+        target: target.clone(),
+        issued_unix_ms: now,
+        action: native_fabric::PersonalFabricAction::SetDisplayPlacementChecked {
+            expected: expected.clone(),
+            rect,
+            expires_unix_ms: now.saturating_add(native_fabric::MAX_DISPLAY_MOVE_AGE_MS),
+        },
+    };
+    let received =
+        send_native_action(&cmd_a, &mut events_b, (endpoint_a, endpoint_b), &envelope).await;
+    received.validate_at(&source, &target, now).unwrap();
+    assert!(received.validate_at(&target, &source, now).is_err());
+    assert!(
+        received
+            .validate_at(
+                &source,
+                &target,
+                now.saturating_add(native_fabric::MAX_DISPLAY_MOVE_AGE_MS + 1)
+            )
+            .is_err(),
+        "delayed gestures expire before applying after reconnect"
+    );
+    let native_fabric::PersonalFabricAction::SetDisplayPlacementChecked { expected, rect, .. } =
+        received.action
+    else {
+        panic!("checked placement");
+    };
+    assert!(
+        before
+            .display
+            .as_ref()
+            .unwrap()
+            .accepts_move(&expected, rect)
+    );
+    assert_topology_grants_no_keyboard_input(&source, &target, now);
+    before.presence.stamp.counter = 2;
+    let authored = before.display.as_mut().unwrap();
+    authored.stamp.counter = 2;
+    authored.rect = rect;
+    let mut published = native_fabric::DeviceFabric::default();
+    published.upsert(before).unwrap();
+    send_native_payload(
+        &cmd_b,
+        endpoint_a,
+        PersonalFabricPayload::Snapshot(published.encode_checkpoint().unwrap()),
+    )
+    .await;
+    let PersonalFabricPayload::Snapshot(bytes) =
+        wait_native_payload(&mut events_a, endpoint_b).await
+    else {
+        panic!("owner-authored placement checkpoint");
+    };
+    let confirmed = native_fabric::DeviceFabric::decode_checkpoint(&bytes).unwrap();
+    let actual = confirmed
+        .snapshots()
+        .get(&target)
+        .unwrap()
+        .display
+        .as_ref()
+        .unwrap();
+    assert_eq!(actual.rect, rect);
+    assert_eq!(actual.stamp.counter, 2);
+    assert!(
+        !actual.accepts_move(&expected, rect),
+        "replaying the previous drag cannot replace a newer owner layout"
+    );
+}
+
+fn assert_topology_grants_no_keyboard_input(source: &DeviceId, target: &DeviceId, now: u64) {
+    assert!(
+        !native_fabric::permits_spatial_input(
+            None,
+            source,
+            target,
+            (
+                [9; 16],
+                native_fabric::FabricInputEvent::Key {
+                    keycode: 30,
+                    pressed: true,
+                    modifiers: 0
+                }
+            ),
+            now
+        ),
+        "certified topology control grants no keyboard input"
+    );
+}
+
+async fn send_native_action(
+    cmd: &mpsc::Sender<NetCmd>,
+    events: &mut mpsc::Receiver<NetEvent>,
+    endpoints: (iroh::EndpointId, iroh::EndpointId),
+    envelope: &native_fabric::PersonalFabricActionEnvelope,
+) -> native_fabric::PersonalFabricActionEnvelope {
+    send_native_payload(
+        cmd,
+        endpoints.1,
+        PersonalFabricPayload::Action(postcard::to_allocvec(envelope).unwrap()),
+    )
+    .await;
+    let PersonalFabricPayload::Action(bytes) = wait_native_payload(events, endpoints.0).await
+    else {
+        panic!("typed placement action");
+    };
+    postcard::from_bytes(&bytes).unwrap()
+}

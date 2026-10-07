@@ -103,6 +103,15 @@ pub struct RemoveMemberRequest {
     pub user_public_key: [u8; 32],
 }
 
+/// Delegate one application's workspace authorship, with an idempotency key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantAppAuthorshipRequest {
+    /// Caller-chosen request identifier.
+    pub request_id: [u8; 32],
+    /// The exact registered application identifier.
+    pub app: String,
+}
+
 /// A committed governance change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernanceCompletion {
@@ -557,6 +566,102 @@ impl Rooms {
             "workspace member removal committed"
         );
         Ok(completion)
+    }
+
+    /// Commit application authorship under the current owner's authority.
+    ///
+    /// # Errors
+    /// Refuses non-administrators, stale admission, invalid applications and
+    /// conflicting retries; returns only after governance is durable and published.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room remains locked through the committed and published administration decision"
+    )]
+    pub async fn grant_app_authorship(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request: GrantAppAuthorshipRequest,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = now_ns();
+        self.authorize(administrator, now, "app.authorship.grant")?;
+        if request.request_id == [0; 32] {
+            return Err(CollaborationError::new(
+                "request identifier must be nonzero",
+            ));
+        }
+        let command =
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                app: request.app.clone(),
+            };
+        command.validate()?;
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        // Validate retries against today's exact certificate, admission,
+        // administration and governor custody through the same typed command.
+        let key = self.inner.host.key.clone();
+        room.peer().clone().apply_workspace_membership_command(
+            administrator,
+            &command,
+            &key,
+            system_time(now),
+        )?;
+        self.administer(
+            &mut room,
+            request.request_id,
+            request_digest(&("app.authorship.grant", &request))?,
+            |peer| {
+                peer.apply_workspace_membership_command(
+                    administrator,
+                    &command,
+                    &key,
+                    system_time(now),
+                )
+            },
+            now,
+        )
+        .await
+    }
+
+    /// Persist and publish an admitted person's own bounded terminal receipt.
+    /// All room administration commands keep their separate owner-only checks.
+    ///
+    /// # Errors
+    /// Rejects stale admission, impersonation, malformed or conflicting receipts,
+    /// and failed durable publication.
+    pub async fn record_member_effect_receipt(
+        &self,
+        room: &str,
+        caller: &DeviceCert,
+        invocation: uuid::Uuid,
+        redacted: &[u8],
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = now_ns();
+        tilo_user_identity::verify_device_cert_at(caller, now)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        if self.revocations().is_revoked(&caller.device_public_key) {
+            return Err(CollaborationError::new("device revoked"));
+        }
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let mut candidate = room.peer().clone();
+        let changed = candidate.apply_member_effect_receipt(
+            caller,
+            invocation,
+            redacted,
+            &self.inner.host.key,
+            system_time(now),
+        )?;
+        let collaboration = room.collaboration().clone();
+        let generation = if changed {
+            room.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+                Ok(collaboration)
+            })?
+        } else {
+            room.record.generation
+        };
+        self.settle(&mut room).await?;
+        Ok(GovernanceCompletion { generation })
     }
 
     async fn administer(

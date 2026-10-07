@@ -674,6 +674,7 @@ pub struct ChromeState {
     /// actions, waiting for the overlay host's session executor — the same
     /// one the power flyout's rows reach.
     session_action_requests: Vec<os_actions::SessionAction>,
+    notification_launch_requests: Vec<crate::shell::notification::NotificationLaunch>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
@@ -876,6 +877,7 @@ impl ChromeState {
             active_exposures: Vec::new(),
             session_lock_requested: false,
             session_action_requests: Vec::new(),
+            notification_launch_requests: Vec::new(),
             fullscreen_group: None,
             user_fullscreen_group: None,
             maximized_group: None,
@@ -1574,7 +1576,9 @@ impl ChromeState {
         match id {
             tilo_desktop::activity::HISTORY_COMPARE
             | tilo_desktop::activity::HISTORY_UNDO
-            | tilo_desktop::activity::HISTORY_RESTORE => {}
+            | tilo_desktop::activity::HISTORY_RESTORE
+            | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
+            | tilo_desktop::activity::ACTIVITY_TASKS => {}
             _ => return Err("Unknown history action".into()),
         }
         self.open_room_activity(None);
@@ -2490,6 +2494,9 @@ impl ChromeState {
             self.undo_deleted_workspace(id);
             return true;
         }
+        if let Some(request) = crate::shell::notification::scheduled_launch(&removed) {
+            self.notification_launch_requests.push(request);
+        }
         if let Some(command) = removed
             .default_action_key()
             .and_then(|key| remote_action_command(&removed, &key))
@@ -2682,29 +2689,33 @@ impl ChromeState {
             return HistoryActivation::Missing;
         };
         let key = notification.default_action_key();
-        let outcome = if notification.remote_route.is_some() {
-            match key.and_then(|key| remote_action_command(notification, &key)) {
-                Some(command) => {
-                    self.queue_remote_notification_command(command);
-                    HistoryActivation::Invoked
+        let outcome =
+            if let Some(request) = crate::shell::notification::scheduled_launch(notification) {
+                self.notification_launch_requests.push(request);
+                HistoryActivation::Invoked
+            } else if notification.remote_route.is_some() {
+                match key.and_then(|key| remote_action_command(notification, &key)) {
+                    Some(command) => {
+                        self.queue_remote_notification_command(command);
+                        HistoryActivation::Invoked
+                    }
+                    None => HistoryActivation::Unavailable,
                 }
-                None => HistoryActivation::Unavailable,
-            }
-        } else if let (Some(bridge), Some(dbus_id), Some(key)) = (
-            self.notification_bridge.as_ref(),
-            notification.sender_id,
-            key,
-        ) {
-            bridge.note_action(dbus_id, key);
-            HistoryActivation::Invoked
-        } else if let Some(app_id) = notification.app_id.clone() {
-            HistoryActivation::OpenApp {
-                label: tilo_desktop::notifications::group_label(notification),
-                app_id,
-            }
-        } else {
-            HistoryActivation::Unavailable
-        };
+            } else if let (Some(bridge), Some(dbus_id), Some(key)) = (
+                self.notification_bridge.as_ref(),
+                notification.sender_id,
+                key,
+            ) {
+                bridge.note_action(dbus_id, key);
+                HistoryActivation::Invoked
+            } else if let Some(app_id) = notification.app_id.clone() {
+                HistoryActivation::OpenApp {
+                    label: tilo_desktop::notifications::group_label(notification),
+                    app_id,
+                }
+            } else {
+                HistoryActivation::Unavailable
+            };
         if matches!(
             outcome,
             HistoryActivation::Invoked | HistoryActivation::OpenApp { .. }
@@ -2995,6 +3006,12 @@ impl ChromeState {
         std::mem::take(&mut self.session_action_requests)
     }
 
+    pub(crate) fn take_notification_launch_requests(
+        &mut self,
+    ) -> Vec<crate::shell::notification::NotificationLaunch> {
+        std::mem::take(&mut self.notification_launch_requests)
+    }
+
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
@@ -3015,6 +3032,7 @@ impl ChromeState {
         }
         for inc in bridge.drain_incoming() {
             let dbus_id = inc.dbus_id;
+            let scheduled_target = bridge.take_scheduled_target(dbus_id, inc.caller.as_ref());
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notification_log
                 .discard_active_where(|n| n.sender_id == Some(dbus_id));
@@ -3038,6 +3056,7 @@ impl ChromeState {
                 u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(u8::MAX),
             );
             let mut notification = crate::shell::notification::from_incoming(inc);
+            notification.scheduled_target = scheduled_target;
             notification.show_preview = effective.previews;
             notification.show_on_lock_screen = effective.lock_screen;
             if effective.cross_device

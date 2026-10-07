@@ -37,6 +37,15 @@
 # `inputs` saying what they read. A [[cargo-exempt]] entry names a reading file
 # whose read CI never runs, with the reason.
 
+[[covered]]
+suite = "tools/test-assets.py"
+by = "tools/tests/test_test_assets.py"
+
+[[group]]
+name = "android-runtime-supervisor"
+inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "tools/android/test_sticky_entry.py"]
+suites = ["tools/android/test_sticky_entry.py"]
+
 [[group]]
 name = "session-diagnostics"
 inputs = ["dist/session/tilo-flight-recorder.py"]
@@ -53,6 +62,7 @@ suites = [
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
+  "os/tests/board_release_promotion.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
@@ -322,7 +332,7 @@ suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py"]
 
 [[group]]
 name = "dist"
-inputs = ["dist/"]
+inputs = ["dist/", "os/registry-runtime-publisher.hex"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
@@ -363,6 +373,7 @@ suites = [
   "scripts/vm-acceptance/test_ci_select.py",
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
+  "scripts/vm-acceptance/test_terminal_cohort.py",
 ]
 
 [[group]]
@@ -514,11 +525,6 @@ suites = [
 # listed in the entry's optional `scope`: then only the scope's `filter`
 # (a nextest filterset) within its `test` target runs for that package.
 
-[[cargo]]
-package = "file-explorer"
-# Breadcrumb geometry shapes labels with the shipped toolkit font fixture.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/file-explorer/src/path_bar.rs"]
 
 [[cargo]]
 package = "tilo-ui"
@@ -533,6 +539,7 @@ inputs = [
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
   "crates/browser/paint-stream/tests/fixtures/",
+  "tools/test-assets.py",
 ]
 readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
@@ -549,17 +556,6 @@ scope = { inputs = [
   "crates/sdk/tilo-app/src/framework/app.rs",
 ], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
 
-[[cargo]]
-package = "ui-examples"
-# Gallery and type specimen shots render with the toolkit's checked-in fonts.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = [
-  "crates/dev/ui-examples/examples/gallery_shots.rs",
-  "crates/dev/ui-examples/examples/type_specimen_shots.rs",
-  "crates/dev/ui-examples/examples/distinct_letters_shots.rs",
-  "crates/dev/ui-examples/examples/distinct_letters_specimen.rs",
-  "crates/dev/ui-examples/examples/reading_face_shots.rs",
-]
 
 [[cargo]]
 package = "tilo-app-package"
@@ -577,8 +573,21 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
+inputs = [
+  "apps/*/tilo-app.toml",
+  "os/usr/lib/tilo/jit-entitled.conf",
+  "os/usr/lib/tilo/web-engine-entitled.conf",
+  "os/usr/share/tilo/system-interfaces.toml",
+  "tools/with-test-environment.sh",
+  "scripts/headless-examples/startup-frame-timeline.py",
+  "scripts/headless-examples/_control.py",
+]
+readers = [
+  "crates/packaging/launcher/src/manifest.rs",
+  "crates/packaging/launcher/src/seccomp.rs",
+  "crates/packaging/launcher/src/services.rs",
+  "crates/packaging/launcher/examples/startup_frame_timeline.rs",
+]
 
 [[cargo]]
 package = "tilo-vm"
@@ -783,8 +792,8 @@ readers = ["crates/agent/local-model-service/src/main.rs"]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/sdk/font-catalog/src/lib.rs"]
+inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
+readers = ["crates/sdk/font-catalog/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
@@ -814,18 +823,21 @@ inputs = ["docs/app-model/formats.md"]
 readers = ["crates/doc/format-host/tests/integration.rs"]
 
 [[cargo]]
+package = "tilo-projector"
+# The CI target compiles the exact production TLS source, including its tests.
+inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_auth/"]
+readers = ["crates/system/projector/tests/cast_tls.rs", "crates/system/projector/tests/cast_auth.rs"]
+scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/"], test = "cast_tls", filter = "binary(cast_tls)" }
+
+[[cargo]]
 package = "notes"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
+inputs = ["apps/settings/shots/settings.png"]
 readers = [
   "apps/notes/src/app.rs",
-  "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/src/scenario.rs",
   "apps/notes/tests/effects.rs",
 ]
 
-[[cargo]]
-package = "ebook"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/ebook/src/app/interaction_tests.rs"]
 
 [[cargo]]
 package = "shell"
@@ -841,30 +853,14 @@ inputs = [
 ]
 readers = [
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
-  "crates/session/shell/examples/support/populated_shell_fixture.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
-  "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
-  "crates/session/shell/src/shell/test_support.rs",
-  "crates/session/shell/tests/input_method_wire.rs",
 ]
 
-[[cargo]]
-package = "chat"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/chat/src/component_tests.rs"]
 
-[[cargo]]
-package = "word-processor"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/word-processor/tests/canonical_component.rs"]
 
-[[cargo]]
-package = "tilo-desktop"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
 package = "tilo-relay-protocol"
@@ -1403,3 +1399,7 @@ inputs = [
   "os/Containerfile",
 ]
 readers = ["crates/packaging/runtime-bundle/examples/browser_runtime_release.rs"]
+
+[[covered]]
+suite = "tools/font-catalog.py"
+by = "tools/tests/test_font_artifacts.py"

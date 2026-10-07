@@ -2794,6 +2794,65 @@ pub fn queue_launch_target_in_workspace(
     queue_prepared_launch(app, room, move || Ok(workspace), uri)
 }
 
+/// A retained host notification resolves its verified package on the same
+/// preflight worker as other launches. It carries its original room snapshot,
+/// and never adds capabilities or app authorship while opening its URI.
+pub(crate) fn queue_package_target_in_workspace(
+    package_id: String,
+    workspace: &Workspace,
+    uri: String,
+) -> Result<(), LaunchError> {
+    let workspace = workspace.clone();
+    spawn_reporting(
+        std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
+        super::launch_readiness::inherit(move || {
+            let outcome = installed_apps().and_then(|apps| {
+                let app = apps
+                    .into_iter()
+                    .find(|app| app.package_id == package_id)
+                    .ok_or_else(|| LaunchError::NotInstalled {
+                        package_id: package_id.clone(),
+                    })?;
+                if !app.has_gui {
+                    return Err(LaunchError::NotAGuiApp {
+                        package_id: package_id.clone(),
+                    });
+                }
+                let capabilities = workspace
+                    .capabilities
+                    .into_iter()
+                    .filter(|capability| capability.subject == Subject::app(&package_id))
+                    .collect();
+                execute_installed(
+                    app,
+                    workspace.room,
+                    None,
+                    Some(&uri),
+                    None,
+                    None,
+                    Some(capabilities),
+                )
+            });
+            if let Err(error) = outcome {
+                super::launch_readiness::fail_current(error.user_message());
+                push_event(LaunchEvent {
+                    display_name: package_id.clone(),
+                    package_id,
+                    managed_agent_id: None,
+                    managed_workspace_id: None,
+                    kind: LaunchEventKind::SpawnFailed {
+                        detail: error.user_message(),
+                    },
+                });
+            }
+        }),
+    )
+    .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+        detail: error.to_string(),
+    })?;
+    Ok(())
+}
+
 /// The session's existing authenticated broker, attached by its owning host.
 #[derive(Clone)]
 pub(crate) struct NativeAppOpening(pub tilo_action_broker::collab_broker::WeakAppActionBroker);
