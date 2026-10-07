@@ -597,6 +597,11 @@ def fresh_floating_presentation(current, previous):
     return current if current["frame_seq"] > previous["frame_seq"] else None
 
 
+def float_return_evidence_proven(evidence):
+    """Require the structured success field, not arbitrary container truthiness."""
+    return isinstance(evidence, dict) and evidence.get("proven") is True
+
+
 def floating_surface_presenting(response, app_id, floating_id):
     """Return is proved by withdrawal, not failed or temporarily missing paint."""
     rows = [row for row in foreign_frames(response)
@@ -2925,7 +2930,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
         require_ok(call(socket, {"op": "snapshot", "path": str(output / f"bootstrap-{size}.png")}))
         lifecycle_proven = bool(
             lifecycle
-            and float_return_proven
+            and float_return_evidence_proven(float_return_proven)
             and lifecycle_evidence is not None
             and lifecycle_evidence.get("semantic_start") is True
             and lifecycle_evidence.get("reply_actor") == "agent:tide"

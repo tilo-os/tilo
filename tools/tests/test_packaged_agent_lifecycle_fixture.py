@@ -277,6 +277,14 @@ class PresentedEditorTargetTests(unittest.TestCase):
             {"floating_id": "float-a", "frame_seq": 7}, previous
         ))
 
+    def test_final_lifecycle_requires_structured_float_return_success(self):
+        self.assertTrue(PROOF.float_return_evidence_proven({"proven": True}))
+        for evidence in (True, {"proven": 1}, {"proven": False}, {}, {"frame_seq": 9}):
+            with self.subTest(evidence=evidence):
+                self.assertFalse(PROOF.float_return_evidence_proven(evidence))
+        source = inspect.getsource(PROOF.bootstrap)
+        self.assertIn("float_return_evidence_proven(float_return_proven)", source)
+
     def test_public_progress_requires_current_exact_original_and_canonical_reply(self):
         original = {"invocation": "00000000-0000-0000-0000-000000000031",
                     "request_row": "m_00000000000000000000000000000031"}
