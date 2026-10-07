@@ -1400,10 +1400,10 @@ impl ChatApp {
             );
             ChatApp::push_hit(hits, window, Hit::AgentWindow);
             cluster_left = window.x0;
-            // A direct Agent conversation has no voice capability merely
-            // because human conversations do. The detached child is also a
-            // conversation, not a second workspace-navigation surface.
-            if self.conversation_surface || placeholder.is_some() {
+            // The primary placeholder cannot move the already-detached
+            // surface by a second grip. Its existing Return control is the
+            // only presentation action once native adoption is confirmed.
+            if placeholder.is_some() {
                 return cluster_left;
             }
             let drag = square(
@@ -1413,6 +1413,19 @@ impl ChatApp {
             ui::surface::floating_drag_grip(scene, tf, drag, theme.text_dim);
             ChatApp::push_hit(hits, drag, Hit::AgentDragHandle);
             cluster_left = drag.x0;
+            // A direct Agent conversation has no voice capability merely
+            // because human conversations do. The detached child keeps its
+            // shared drag grip, but is not a second workspace-navigation
+            // surface and therefore stops before roster controls.
+            if self.conversation_surface {
+                return cluster_left;
+            }
+        }
+        // During Prepare/Return the source is an Agent handoff placeholder,
+        // not a human channel. It therefore exposes neither call nor roster
+        // controls before native adoption makes Return available.
+        if placeholder.is_some() {
+            return cluster_left;
         }
         // Calls and the people roster matter once a workspace is shared. In
         // a private workspace the unadorned conversation header is the

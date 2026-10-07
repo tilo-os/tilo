@@ -4248,6 +4248,91 @@ mod tests {
     }
 
     #[test]
+    fn detached_agent_grip_moves_the_existing_outer_surface() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.floating_surface_bounds = vello::kurbo::Rect::new(0.0, 0.0, 1600.0, 900.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Private draft stays here");
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes the shared-host request");
+        let rect = vello::kurbo::Rect::new(920.0, 80.0, 1440.0, 720.0);
+        for message in [
+            ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: request.id.clone(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+                content_rect: ui::floating_surface::protocol_rect_array(rect),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+            ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: request.id.clone(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+            },
+        ] {
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+                &mut app, &message,
+            );
+        }
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(
+            &mut app,
+            Some(&request.id),
+        );
+        render_detached_surfaces(&mut app);
+
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        let handle = app.agent_surfaces[&channel]
+            .view
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::AgentDragHandle).then_some(rect.center()))
+            .expect("the detached conversation retains its shared drag grip");
+        let before = app.agent_surfaces[&channel].placement.rect(
+            app.agent_surfaces[&channel].source,
+            app.desktop_floating_bounds(),
+        );
+        for event in [
+            cursor(handle.x, handle.y),
+            mouse(ElementState::Pressed, MouseButton::Left),
+        ] {
+            feed_root_mods(&mut app, &mut doc, &event, Modifiers::default());
+        }
+        assert!(ui::Widget::wants_pointer_capture(&app));
+        for event in [
+            cursor(handle.x - 96.0, handle.y + 44.0),
+            mouse(ElementState::Released, MouseButton::Left),
+        ] {
+            feed_root_mods(&mut app, &mut doc, &event, Modifiers::default());
+        }
+        let after = app.agent_surfaces[&channel].placement.rect(
+            app.agent_surfaces[&channel].source,
+            app.desktop_floating_bounds(),
+        );
+        assert_ne!(after.origin(), before.origin());
+        assert_eq!(app.agent_surfaces.len(), 1);
+        assert!(app.agent_surfaces[&channel].view.agent_surfaces.is_empty());
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "Private draft stays here"
+        );
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app).is_none(),
+            "moving an adopted conversation never requests a nested surface"
+        );
+    }
+
+    #[test]
     fn detached_agent_editor_routes_keyboard_selection_undo_ime_and_accessible_return() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");

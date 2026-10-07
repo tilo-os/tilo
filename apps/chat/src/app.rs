@@ -5695,6 +5695,18 @@ impl Widget for ChatApp {
                 .values_mut()
                 .find(|surface| surface.id == id)
         {
+            let app = self.rect;
+            let desktop = if self.floating_surface_bounds.area() > 0.0 {
+                self.floating_surface_bounds
+            } else {
+                app
+            };
+            if surface.route_drag_event(event, ctx.scale_factor, app, desktop) {
+                *ctx.handled = true;
+                self.canonical_dirty = true;
+                self.request_relayout();
+                return;
+            }
             surface.view.handle_event(event, ctx);
             self.canonical_dirty |= surface.view.canonical_dirty;
             self.settle_agent_surface_commands();
@@ -6056,6 +6068,10 @@ impl Widget for ChatApp {
             || self.right_flap.is_resizing()
             || self.call.placement.is_dragging()
             || self.agent_conversation_drag.is_some()
+            || self
+                .agent_surfaces
+                .values()
+                .any(|surface| surface.placement.is_dragging())
             || (self.thread_open.is_some() && self.thread_scroll.wants_pointer_capture())
     }
 

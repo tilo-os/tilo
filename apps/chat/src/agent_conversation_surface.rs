@@ -6,9 +6,10 @@ use ui::floating_surface::{
     Attachment, FloatingPlacement, FloatingRole, FloatingSource, FloatingSurfaceHostMessage,
     FloatingSurfacePresentation, FloatingSurfaceRequest,
 };
-use vello::kurbo::{Rect, Size, Vec2};
+use vello::kurbo::{Point, Rect, Size, Vec2};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::app::ChatApp;
+use crate::app::{ChatApp, Hit};
 
 pub(crate) struct AgentConversationSurface {
     pub(crate) id: String,
@@ -129,6 +130,52 @@ impl AgentConversationSurface {
             window_rect: rect,
             returning_to_app: self.placement.is_return_pending(),
         })
+    }
+
+    /// Route the detached conversation's own grip to its retained outer
+    /// placement. Forwarding this press into `view` would begin a second
+    /// app-to-desktop handoff and manufacture a nested conversation surface.
+    pub(crate) fn route_drag_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        app: Rect,
+        desktop: Rect,
+    ) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = Point::new(position.x / scale, position.y / scale);
+                self.view.last_mouse = point;
+                if !self.placement.is_dragging() {
+                    return false;
+                }
+                let _ = self.placement.update_drag(point, app, desktop);
+                self.view.rect = self.placement.rect(self.source, desktop);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.view.hits.iter().rev().any(|(rect, hit)| {
+                rect.contains(self.view.last_mouse) && matches!(hit, Hit::AgentDragHandle)
+            }) =>
+            {
+                self.placement
+                    .begin_drag(self.view.last_mouse, app, desktop);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.placement.is_dragging() => {
+                self.placement.end_drag(desktop);
+                self.view.rect = self.placement.rect(self.source, desktop);
+                true
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn host_message(
