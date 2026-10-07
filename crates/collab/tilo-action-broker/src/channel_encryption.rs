@@ -738,6 +738,38 @@ impl ChannelKeyAccess {
         sealed
     }
 
+    /// Open an ephemeral frame only with a key this device already holds for
+    /// this exact room and channel. Observation never requests channel access,
+    /// creates a group or rejoins a removed member.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a mismatched metadata channel, missing/waiting/removed keys,
+    /// an unavailable service, or an authentication failure.
+    pub fn open_existing_live(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        artifact: ArtifactId,
+        metadata: &EncryptionMetadata,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        if metadata.channel != channel {
+            return Err("live frame channel changed".into());
+        }
+        let service = self
+            .inner
+            .lock()
+            .map_err(|_| "channel service unavailable")?;
+        let keys = service
+            .existing_keys(room, channel)
+            .ok_or("no current key for the admitted record")?;
+        drop(service);
+        keys.open_current_content(artifact, metadata, payload)
+            .map(|plaintext| plaintext.to_vec())
+            .map_err(|error| error.to_string())
+    }
+
     /// Open `envelope`, a new sealed write to one of `room`'s channels, for
     /// the durable owner that holds the channel's keys. Only under the
     /// channel's current epoch, and only while this device reads the
@@ -1144,7 +1176,7 @@ mod tests {
     fn observing_live_keys_never_opens_a_channel_or_rejoins_after_removal() {
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
-        let channel = ChannelId::new();
+        let channel = collab_types::document_channel_id("so.tilo.chat", &room_id.to_string(), "");
         let policy = Policy::default();
         policy.allowed.lock().unwrap().insert(public(2));
         let (owner_dir, member_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -1212,12 +1244,26 @@ mod tests {
         let owner = device(&room, room_id, 0, (1, 1), &Policy::default(), dir.path());
         let access = ChannelKeyAccess::new(owner.service);
         let artifact = ArtifactId::new();
+        let missing_metadata =
+            EncryptionMetadata::content_key(1, channel, collab_types::ContentRetention::Delta);
         assert!(
             access
                 .seal_existing_live(room_id, channel, artifact, b"event")
                 .is_err()
         );
+        assert!(
+            access
+                .open_existing_live(
+                    room_id,
+                    channel,
+                    artifact,
+                    &missing_metadata,
+                    b"not ciphertext",
+                )
+                .is_err()
+        );
         assert!(access.inner.lock().unwrap().stewards.is_empty());
+        assert!(access.inner.lock().unwrap().members.is_empty());
         let (ChannelAccess::Ready(keys), _) = access.access(room_id, channel) else {
             panic!("explicit fixture admission must provide keys");
         };
@@ -1225,6 +1271,28 @@ mod tests {
         let (metadata, sealed) = access
             .seal_existing_live(room_id, channel, artifact, b"event")
             .unwrap();
+        assert_eq!(
+            access
+                .open_existing_live(room_id, channel, artifact, &metadata, &sealed)
+                .unwrap(),
+            b"event"
+        );
+        let wrong_channel = ChannelId::new();
+        assert!(
+            access
+                .open_existing_live(room_id, wrong_channel, artifact, &metadata, &sealed,)
+                .is_err(),
+            "a held key for one record cannot open another record's channel"
+        );
+        assert!(
+            !access
+                .inner
+                .lock()
+                .unwrap()
+                .members
+                .contains_key(&wrong_channel),
+            "a live frame cannot request or rejoin a channel"
+        );
         assert_eq!(
             keys.open_current_content(artifact, &metadata, &sealed)
                 .unwrap()

@@ -72,10 +72,12 @@ impl WireRecordIds {
     /// Remember a local route and return its wire id.
     pub fn register(&mut self, cluster_id: &str, app_id: &str, record_id: &str) -> String {
         let wire = wire_record_id(cluster_id, app_id, record_id);
-        if wire == record_id {
-            return wire;
-        }
-        let key = (cluster_id.to_owned(), app_id.to_owned(), wire.clone());
+        self.remember(cluster_id, app_id, &wire, record_id);
+        wire
+    }
+
+    fn remember(&mut self, cluster_id: &str, app_id: &str, wire: &str, record_id: &str) {
+        let key = (cluster_id.to_owned(), app_id.to_owned(), wire.to_owned());
         if self
             .by_wire
             .insert(key.clone(), record_id.to_owned())
@@ -88,7 +90,43 @@ impl WireRecordIds {
                 }
             }
         }
-        wire
+    }
+
+    /// Resolve only a route a local app explicitly joined or published.
+    /// Public ids are not implicitly observed merely because they can be
+    /// copied from an inbound frame.
+    pub fn resolve_registered(&self, cluster_id: &str, app_id: &str, wire: &str) -> Option<String> {
+        self.by_wire
+            .get(&(cluster_id.to_owned(), app_id.to_owned(), wire.to_owned()))
+            .cloned()
+    }
+
+    /// The single explicitly registered route whose digest and canonical
+    /// channel match a sealed live header. This lookup is read-only: an
+    /// untrusted frame cannot register a route or request channel access.
+    pub fn resolve_live_header(
+        &self,
+        cluster_id: &str,
+        sealed: &tilo_relay_protocol::live::SealedLiveFrame,
+    ) -> Option<(tilo_relay_protocol::live::LiveRecord, String)> {
+        let mut matches = self
+            .by_wire
+            .iter()
+            .filter_map(|((room, app, wire), local)| {
+                if room != cluster_id {
+                    return None;
+                }
+                let record = tilo_relay_protocol::live::LiveRecord {
+                    app: app.clone(),
+                    record: wire.clone(),
+                };
+                (record.digest() == sealed.record
+                    && collab_types::document_channel_id(app, cluster_id, wire)
+                        == sealed.channel_id())
+                .then(|| (record, local.clone()))
+            });
+        let only = matches.next()?;
+        matches.next().is_none().then_some(only)
     }
 
     /// The local record id for an inbound wire id. Unsealed ids are local
@@ -149,6 +187,14 @@ mod tests {
                 ids.resolve(ROOM, "app", "uuid:7").as_deref(),
                 Some("uuid:7")
             );
+            assert_eq!(ids.resolve_registered(ROOM, "app", "uuid:7"), None);
+            ids.register(ROOM, "app", "uuid:7");
+            assert_eq!(
+                ids.resolve_registered(ROOM, "app", "uuid:7").as_deref(),
+                Some("uuid:7")
+            );
+            ids.register(ROOM, "app", "");
+            assert_eq!(ids.resolve_registered(ROOM, "app", "").as_deref(), Some(""));
             let unknown = wire_record_id(ROOM, "app", "file:/elsewhere");
             assert_eq!(ids.resolve(ROOM, "app", &unknown), None);
         }
@@ -162,5 +208,83 @@ mod tests {
             assert_eq!(ids.by_wire.len(), MAX_REMEMBERED_RECORDS);
             assert_eq!(ids.resolve(ROOM, "app", &first), None, "oldest forgotten");
         }
+    }
+
+    #[test]
+    fn live_header_resolves_only_one_explicit_exact_record() {
+        let mut ids = WireRecordIds::default();
+        ids.register(ROOM, "so.tilo.chat", "");
+        let interaction = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "agent:scribe".into(),
+                kind: tilo_actions::InteractionActorKind::Agent,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: "message".into(),
+                label: "Message".into(),
+                app: Some(tilo_actions::ActionApp {
+                    id: "so.tilo.chat".into(),
+                    label: "Chat".into(),
+                }),
+            },
+            resource: tilo_actions::ActionResource {
+                id: "chat.person:scribe".into(),
+                kind: "chat.person".into(),
+                label: "Scribe".into(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        };
+        let frame = tilo_relay_protocol::live::LiveFrame::Ops(
+            tilo_relay_protocol::live::OpsFrame::Semantic {
+                record: tilo_relay_protocol::live::LiveRecord {
+                    app: "so.tilo.chat".into(),
+                    record: String::new(),
+                },
+                event: tilo_relay_protocol::live::SemanticFrame {
+                    version: 1,
+                    seq: 1,
+                    sent_at_ms: 1,
+                    execution: interaction.invocation.0,
+                    peer: 9,
+                    interaction_json: serde_json::to_string(&interaction).unwrap(),
+                },
+            },
+        );
+        let channel = collab_types::document_channel_id("so.tilo.chat", ROOM, "");
+        let sealed =
+            tilo_relay_protocol::live::SealedLiveFrame::seal(&frame, |_, retention, bytes| {
+                Ok::<_, String>((
+                    collab_types::EncryptionMetadata::content_key(1, channel, retention),
+                    bytes.to_vec(),
+                ))
+            })
+            .unwrap();
+        let sealed = tilo_relay_protocol::live::SealedLiveFrame::decode(&sealed).unwrap();
+        assert_eq!(
+            ids.resolve_live_header(ROOM, &sealed),
+            Some((
+                tilo_relay_protocol::live::LiveRecord {
+                    app: "so.tilo.chat".into(),
+                    record: String::new(),
+                },
+                String::new(),
+            ))
+        );
+        assert_eq!(ids.resolve_live_header("other-room", &sealed), None);
+        let mut wrong_channel = sealed.clone();
+        wrong_channel.channel = uuid::Uuid::new_v4().into_bytes();
+        assert_eq!(ids.resolve_live_header(ROOM, &wrong_channel), None);
+
+        ids.register(ROOM, "so.tilo.chat", "duplicate-local-alias");
+        assert_eq!(
+            ids.resolve_live_header(ROOM, &sealed).unwrap().1,
+            "",
+            "a different record cannot match the exact empty-root digest and channel"
+        );
     }
 }

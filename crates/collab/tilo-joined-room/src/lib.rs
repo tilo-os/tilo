@@ -9,6 +9,7 @@
 //! standalone runtime keeps it in a file of its own ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
+mod agent_live_interaction;
 mod agent_message;
 mod agent_message_admission;
 mod agent_message_commit;
@@ -44,6 +45,7 @@ mod workspace_membership;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 
+pub use agent_live_interaction::AgentLiveInteractionPublisher;
 pub use agent_message_admission::{
     AgentMessageAdmissionAttestation, AgentMessageAdmissionData, AgentMessageOperationData,
 };

@@ -47,6 +47,17 @@ pub trait PeerPublishSink: Send + Sync {
     ) {
     }
 
+    /// Publish broker-authenticated semantic activity on one exact record's
+    /// sealed live plane. Implementations must not widen this into legacy
+    /// room presence, whose outer identity is a person.
+    fn app_live_interaction(
+        &self,
+        _route: &CrdtRoute,
+        _source_peer: u64,
+        _interaction: &tilo_actions::SemanticInteraction,
+    ) {
+    }
+
     /// A local app joined this route, so peers' documents for it must be
     /// routable here, including the history this device dropped before.
     fn local_route(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
@@ -201,11 +212,32 @@ impl PeerPublisher {
         true
     }
 
+    /// Publish one broker-normalized interaction without entering the legacy
+    /// person-presence lane.
+    #[must_use]
+    pub fn live_interaction(
+        &self,
+        route: &CrdtRoute,
+        source_peer: u64,
+        interaction: &tilo_actions::SemanticInteraction,
+    ) -> bool {
+        let Some(sink) = self.ready_quietly(route, "semantic interaction") else {
+            return false;
+        };
+        if source_peer == 0
+            || interaction.validate().is_err()
+            || interaction.action.app.as_ref().map(|app| app.id.as_str())
+                != Some(route.app_id.as_str())
+        {
+            return false;
+        }
+        sink.app_live_interaction(route, source_peer, interaction);
+        true
+    }
+
     /// Tell the network a local app holds `route`.
     pub fn local_route(&self, route: &CrdtRoute) {
-        if let Some(sink) = self.sink.as_ref()
-            && !route.record_id.is_empty()
-        {
+        if let Some(sink) = self.sink.as_ref() {
             sink.local_route(&route.app_id, &route.cluster_id, &route.record_id);
         }
     }
@@ -288,7 +320,7 @@ impl PeerPublisher {
 /// for assertions against the broker's single typed ingress.
 #[cfg(any(test, feature = "test-support"))]
 pub mod recording {
-    use super::{ArtifactId, PeerPresence, PeerPublishSink, SignedOp};
+    use super::{ArtifactId, CrdtRoute, PeerPresence, PeerPublishSink, SignedOp};
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
     /// What actually reached the wire, in order.
@@ -304,6 +336,11 @@ pub mod recording {
             app_id: String,
             cluster_id: String,
             presence: PeerPresence,
+        },
+        LiveInteraction {
+            route: CrdtRoute,
+            source_peer: u64,
+            interaction: Box<tilo_actions::SemanticInteraction>,
         },
         Scrollback {
             cluster_id: String,
@@ -358,6 +395,19 @@ pub mod recording {
             });
         }
 
+        fn app_live_interaction(
+            &self,
+            route: &CrdtRoute,
+            source_peer: u64,
+            interaction: &tilo_actions::SemanticInteraction,
+        ) {
+            self.sent().push(Sent::LiveInteraction {
+                route: route.clone(),
+                source_peer,
+                interaction: Box::new(interaction.clone()),
+            });
+        }
+
         fn scrollback_request(
             &self,
             cluster_id: &str,
@@ -404,6 +454,34 @@ mod tests {
         )
     }
 
+    fn interaction(route: &CrdtRoute) -> tilo_actions::SemanticInteraction {
+        tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "agent:scribe".into(),
+                kind: tilo_actions::InteractionActorKind::Agent,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: "insert".into(),
+                label: "Insert".into(),
+                app: Some(tilo_actions::ActionApp {
+                    id: route.app_id.clone(),
+                    label: "Notes".into(),
+                }),
+            },
+            resource: tilo_actions::ActionResource {
+                id: "note:7".into(),
+                kind: "note".into(),
+                label: "Note".into(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        }
+    }
+
     #[test]
     fn record_scope_survives_onto_the_wire() {
         let (pubr, sink) = wired();
@@ -419,6 +497,27 @@ mod tests {
             }],
             "the wire must carry the same route the local fanout used, \
              record included",
+        );
+    }
+
+    #[test]
+    fn semantic_interaction_keeps_exact_record_and_never_uses_person_presence() {
+        let (publisher, sink) = wired();
+        let route = CrdtRoute::record(
+            "so.tilo.notes",
+            "11111111-1111-4111-8111-111111111111",
+            "doc-7",
+        );
+        let update = interaction(&route);
+        assert!(publisher.live_interaction(&route, 41, &update));
+        assert_eq!(
+            sink.drain(),
+            vec![Sent::LiveInteraction {
+                route,
+                source_peer: 41,
+                interaction: Box::new(update),
+            }],
+            "semantic work must not also create legacy room/person presence"
         );
     }
 

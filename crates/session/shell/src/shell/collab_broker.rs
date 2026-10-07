@@ -397,6 +397,7 @@ pub(crate) fn scrollback_answer(
 /// to be one large loop body.
 struct DrainQueues {
     presence_inbound: Arc<Mutex<Vec<InboundAppPresence>>>,
+    live_interactions: Arc<Mutex<Vec<crate::shell::network::live_interaction::Inbound>>>,
     documents: Arc<Mutex<Vec<InboundDocument>>>,
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
@@ -435,12 +436,37 @@ impl DrainQueues {
             service.pump(&*self.net);
         }
         self.drain_presence(labels, announced)
+            && self.drain_live_interactions()
             && self.drain_documents(labels, announced)
             && self.drain_person_snapshot_requests()
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
             && self.drain_record_content()
+    }
+
+    fn drain_live_interactions(&self) -> bool {
+        let drained = {
+            let Ok(mut queue) = self.live_interactions.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *queue)
+        };
+        if drained.is_empty() {
+            return true;
+        }
+        let Some(state) = self.table.capnp_state() else {
+            return true;
+        };
+        let broker = AppActionBroker::from_state(state);
+        for inbound in drained {
+            let _ = broker.receive_live_agent_interaction(
+                &inbound.publisher,
+                &inbound.route,
+                inbound.interaction,
+            );
+        }
+        true
     }
 
     fn drain_record_content(&self) -> bool {
@@ -692,6 +718,7 @@ fn spawn_inner(
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
             presence_inbound: net.inbound_app_presence_handle(),
+            live_interactions: net.inbound_live_interaction_handle(),
             documents: net.inbound_documents_handle(),
             sb_req_inbound: net.inbound_scrollback_request_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),

@@ -371,6 +371,55 @@ impl AppActionBroker {
             .unwrap_or(false)
     }
 
+    /// Admit one exact-record live interaction from a currently pinned host.
+    ///
+    /// The capability is owner-minted and revalidates here. The interaction's
+    /// app, action, resource and kind must still be published by a live local
+    /// surface before it reaches subscribers.
+    ///
+    /// # Errors
+    /// The owner authority changed, attribution differs from the verified
+    /// Agent, or the exact local action publication is no longer live.
+    pub fn receive_live_agent_interaction(
+        &self,
+        publisher: &tilo_joined_room::AgentLiveInteractionPublisher,
+        route: &CrdtRoute,
+        mut interaction: tilo_actions::SemanticInteraction,
+    ) -> Result<(), String> {
+        self.state.while_live(|state| {
+            publisher.revalidate(std::time::SystemTime::now())?;
+            if route.cluster_id != publisher.room().to_string()
+                || interaction.validate().is_err()
+                || interaction.actor.kind != tilo_actions::InteractionActorKind::Agent
+                || interaction.actor.id != publisher.actor_id()
+                || interaction.action.app.as_ref().map(|app| app.id.as_str())
+                    != Some(route.app_id.as_str())
+            {
+                return Err("live Agent interaction attribution or route changed".into());
+            }
+            let current =
+                resolve_live_agent_action(state.published_surfaces(), route, &interaction)?;
+            normalize_live_agent_interaction(
+                &mut interaction,
+                current,
+                route,
+                publisher.actor_id(),
+            );
+            publisher.revalidate(std::time::SystemTime::now())?;
+            let event = CollabEvent::RemotePresenceUpdate {
+                user_id: interaction.actor.id.clone(),
+                key: ui::presence::PresenceKey::resource(
+                    route.app_id.clone(),
+                    interaction.resource.id.clone(),
+                    interaction.resource.kind.clone(),
+                ),
+                payload: ui::collaboration::PresencePayload::Interaction(Box::new(interaction)),
+            };
+            state.fanout_to_route(&event, u64::MAX, route);
+            Ok(())
+        })
+    }
+
     /// Release active owner epochs retained for one exact managed launch.
     ///
     /// # Errors
@@ -784,6 +833,199 @@ impl AppActionBroker {
                 Some(token),
             )
         })
+    }
+}
+
+fn resolve_live_agent_action(
+    surfaces: Vec<crate::collab_broker_capnp::PublishedSurface>,
+    route: &CrdtRoute,
+    interaction: &tilo_actions::SemanticInteraction,
+) -> Result<crate::collab_broker_capnp::PublishedAction, String> {
+    let mut matches = surfaces
+        .into_iter()
+        .filter(|surface| surface.live && surface.app_id == route.app_id && surface.route == *route)
+        .flat_map(|surface| surface.actions)
+        .filter(|action| {
+            action.action == interaction.action.id
+                && action.resource == interaction.resource.id
+                && action.resource_kind == interaction.resource.kind
+        });
+    let current = matches
+        .next()
+        .ok_or("live Agent interaction has no exact current action publication")?;
+    if matches.next().is_some() {
+        return Err("live Agent interaction action publication is ambiguous".into());
+    }
+    Ok(current)
+}
+
+fn normalize_live_agent_interaction(
+    interaction: &mut tilo_actions::SemanticInteraction,
+    current: crate::collab_broker_capnp::PublishedAction,
+    route: &CrdtRoute,
+    actor_id: String,
+) {
+    interaction.actor = tilo_actions::InteractionActor {
+        id: actor_id,
+        kind: tilo_actions::InteractionActorKind::Agent,
+    };
+    // Human-facing labels are descriptive, not authority. Present the current
+    // local catalogue spelling rather than a remote claim.
+    interaction.action.label = current.action_label;
+    if let Some(app) = interaction.action.app.as_mut() {
+        app.label.clone_from(&route.app_id);
+    }
+    interaction.resource.label = current.resource_label;
+    interaction.group = None;
+    // Geometry is descriptive but can still expose private or stale controls.
+    // Reconstruct it from the exact current publication, using the same policy
+    // as the managed producer, rather than accepting the remote host's claim.
+    interaction.anchor = if let Some(id) = current.resource.strip_prefix("ui:") {
+        tilo_actions::InteractionAnchor::SemanticControl { id: id.into() }
+    } else if current.resource_kind.contains("entry") || current.resource_kind.contains("file") {
+        tilo_actions::InteractionAnchor::ListItems {
+            ids: vec![current.resource],
+        }
+    } else {
+        tilo_actions::InteractionAnchor::Resource
+    };
+}
+
+#[cfg(test)]
+mod live_agent_normalization_tests {
+    use super::*;
+
+    fn interaction() -> tilo_actions::SemanticInteraction {
+        tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(9)),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "agent:remote-claim".into(),
+                kind: tilo_actions::InteractionActorKind::Agent,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: "activate".into(),
+                label: "private remote action".into(),
+                app: Some(tilo_actions::ActionApp {
+                    id: "so.tilo.chat".into(),
+                    label: "private remote app".into(),
+                }),
+            },
+            resource: tilo_actions::ActionResource {
+                id: "ui:send".into(),
+                kind: "chat.control".into(),
+                label: "private remote resource".into(),
+            },
+            anchor: tilo_actions::InteractionAnchor::SemanticControl {
+                id: "private-control".into(),
+            },
+            group: Some(tilo_actions::ActionGroup {
+                id: "private-group".into(),
+                label: "private group".into(),
+                kind: "private".into(),
+            }),
+        }
+    }
+
+    fn published(resource: &str, kind: &str) -> crate::collab_broker_capnp::PublishedAction {
+        crate::collab_broker_capnp::PublishedAction {
+            semantic_identity: None,
+            resource: resource.into(),
+            action: "activate".into(),
+            resource_kind: kind.into(),
+            resource_label: "Current resource".into(),
+            action_label: "Current action".into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: vec![],
+            contract: tilo_actions::ActionContract::default(),
+            view: None,
+            input: crate::collab_broker_capnp::PublishedInput::None,
+        }
+    }
+
+    fn surface(route: &CrdtRoute) -> crate::collab_broker_capnp::PublishedSurface {
+        crate::collab_broker_capnp::PublishedSurface {
+            peer_id: 7,
+            app_id: route.app_id.clone(),
+            route: route.clone(),
+            actions: vec![published("ui:send", "chat.control")],
+            live: true,
+        }
+    }
+
+    #[test]
+    fn hostile_descriptions_and_geometry_are_rebuilt_from_the_current_publication() {
+        let route = CrdtRoute::record("so.tilo.chat", "room-a", "");
+        let mut event = interaction();
+        normalize_live_agent_interaction(
+            &mut event,
+            published("ui:send", "chat.control"),
+            &route,
+            "agent:scribe".into(),
+        );
+        assert_eq!(event.actor.id, "agent:scribe");
+        assert_eq!(event.action.label, "Current action");
+        assert_eq!(event.action.app.unwrap().label, "so.tilo.chat");
+        assert_eq!(event.resource.label, "Current resource");
+        assert_eq!(event.group, None);
+        assert_eq!(
+            event.anchor,
+            tilo_actions::InteractionAnchor::SemanticControl { id: "send".into() }
+        );
+
+        let mut list = interaction();
+        normalize_live_agent_interaction(
+            &mut list,
+            published("file:report", "files.entry"),
+            &route,
+            "agent:scribe".into(),
+        );
+        assert_eq!(
+            list.anchor,
+            tilo_actions::InteractionAnchor::ListItems {
+                ids: vec!["file:report".into()]
+            }
+        );
+
+        let mut resource = interaction();
+        normalize_live_agent_interaction(
+            &mut resource,
+            published("chat.person:scribe", "chat.person"),
+            &route,
+            "agent:scribe".into(),
+        );
+        assert_eq!(resource.anchor, tilo_actions::InteractionAnchor::Resource);
+    }
+
+    #[test]
+    fn action_binding_requires_one_exact_live_route_resource_and_kind() {
+        let route = CrdtRoute::record("so.tilo.chat", "room-a", "");
+        let event = interaction();
+        assert!(resolve_live_agent_action(vec![surface(&route)], &route, &event).is_ok());
+
+        let mut wrong = event.clone();
+        wrong.resource.kind = "private.kind".into();
+        assert!(resolve_live_agent_action(vec![surface(&route)], &route, &wrong).is_err());
+        wrong = event.clone();
+        wrong.resource.id = "ui:other".into();
+        assert!(resolve_live_agent_action(vec![surface(&route)], &route, &wrong).is_err());
+        wrong = event.clone();
+        wrong.action.id = "other".into();
+        assert!(resolve_live_agent_action(vec![surface(&route)], &route, &wrong).is_err());
+
+        let mut retired = surface(&route);
+        retired.live = false;
+        assert!(resolve_live_agent_action(vec![retired], &route, &event).is_err());
+        assert!(
+            resolve_live_agent_action(vec![surface(&route), surface(&route)], &route, &event)
+                .is_err(),
+            "duplicate exact publications remain ambiguous instead of choosing one"
+        );
+        let other = CrdtRoute::record("so.tilo.chat", "room-b", "");
+        assert!(resolve_live_agent_action(vec![surface(&other)], &route, &event).is_err());
     }
 }
 

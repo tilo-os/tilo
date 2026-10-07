@@ -10,6 +10,7 @@ mod governor_actions;
 mod hosted_topology;
 #[cfg(test)]
 mod live_identity_tests;
+pub(crate) mod live_interaction;
 mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
@@ -1425,6 +1426,10 @@ pub struct ShellNetwork {
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
     /// This device's presence per room as workspace-host live frames.
     live_presence: Mutex<crate::shell::live_presence::Outbound>,
+    /// Ordered exact-record semantic work, independently of person presence.
+    live_interactions: Mutex<live_interaction::State>,
+    /// Authenticated semantic work awaiting exact action-broker admission.
+    inbound_live_interactions: Arc<Mutex<Vec<live_interaction::Inbound>>>,
     /// Names live members asked to be drawn with, per room and handle:
     /// browsers and agents that are no peers of the room document.
     live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
@@ -1886,6 +1891,10 @@ impl ShellNetwork {
             person_snapshots_wanted: Mutex::default(),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             live_presence: Mutex::default(),
+            live_interactions: Mutex::new(live_interaction::State::open(
+                live_interaction::state_path(keypair_path),
+            )),
+            inbound_live_interactions: Arc::new(Mutex::new(Vec::new())),
             live_labels: Mutex::default(),
             peer_colours: Mutex::default(),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -3020,6 +3029,41 @@ impl ShellNetwork {
         }
     }
 
+    /// Publish broker-authenticated semantic work on one exact record's
+    /// encrypted live stream, never through room-scoped person presence.
+    pub fn publish_live_interaction(
+        &self,
+        route: &CrdtRoute,
+        source_peer: u64,
+        interaction: &tilo_actions::SemanticInteraction,
+    ) {
+        let Some(room) = RoomId::parse(&route.cluster_id)
+            .filter(|room| !room.is_nil() && self.person_root_of_room(*room).is_none())
+        else {
+            return;
+        };
+        let wire_record = crate::network::wire_record::wire_record_id(
+            &route.cluster_id,
+            &route.app_id,
+            &route.record_id,
+        );
+        let frame = self.live_interactions.lock().ok().and_then(|mut state| {
+            state.encode(
+                route,
+                wire_record,
+                source_peer,
+                interaction,
+                tilo_clock::unix_now_ms(),
+            )
+        });
+        if let Some(frame) = frame.and_then(|frame| Self::seal_live_interaction(room, &frame)) {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishLive {
+                ws: room_topic_id(room),
+                frame,
+            });
+        }
+    }
+
     /// Repeat quiet live presence so other devices keep drawing it.
     fn live_keepalive(&self) {
         let due = self
@@ -3057,6 +3101,79 @@ impl ShellNetwork {
         })
     }
 
+    /// Seal semantic activity only with an existing exact-record key. Unlike
+    /// durable document access, a transient frame never requests or creates a
+    /// channel and never rejoins a removed member.
+    fn seal_live_interaction(room: RoomId, frame: &[u8]) -> Option<Vec<u8>> {
+        let access = crate::shell::channel_encryption::ChannelKeyProvider::session().get()?;
+        Self::seal_live_interaction_with(&access, room, frame)
+    }
+
+    fn seal_live_interaction_with(
+        access: &crate::shell::channel_encryption::ChannelKeyAccess,
+        room: RoomId,
+        frame: &[u8],
+    ) -> Option<Vec<u8>> {
+        let frame = tilo_relay_protocol::live::LiveFrame::decode(frame).ok()?;
+        let (_, _, record) = frame.seal_tags()?;
+        let channel =
+            collab_types::document_channel_id(&record.app, &room.to_string(), &record.record);
+        tilo_relay_protocol::live::SealedLiveFrame::seal(&frame, |artifact, _, cleartext| {
+            access.seal_existing_live(room, channel, artifact, cleartext)
+        })
+        .ok()
+    }
+
+    /// Open semantic activity only after its clear header maps to one exact
+    /// route already registered by a local app, and only with an existing key.
+    fn open_live_interaction(
+        &self,
+        room: RoomId,
+        frame: &[u8],
+    ) -> Option<(
+        String,
+        tilo_relay_protocol::live::LiveRecord,
+        tilo_relay_protocol::live::SemanticFrame,
+    )> {
+        let access = crate::shell::channel_encryption::ChannelKeyProvider::session().get()?;
+        self.open_live_interaction_with(&access, room, frame)
+    }
+
+    fn open_live_interaction_with(
+        &self,
+        access: &crate::shell::channel_encryption::ChannelKeyAccess,
+        room: RoomId,
+        frame: &[u8],
+    ) -> Option<(
+        String,
+        tilo_relay_protocol::live::LiveRecord,
+        tilo_relay_protocol::live::SemanticFrame,
+    )> {
+        let sealed = tilo_relay_protocol::live::SealedLiveFrame::decode(frame).ok()?;
+        if sealed.kind != tilo_relay_protocol::live::LiveKind::Ops {
+            return None;
+        }
+        let cluster_id = room.to_string();
+        let (record, local_record) = self
+            .wire_records
+            .lock()
+            .ok()?
+            .resolve_live_header(&cluster_id, &sealed)?;
+        let channel = sealed.channel_id();
+        let opened = sealed
+            .open_in_record(&cluster_id, &record, |artifact, metadata, payload| {
+                access.open_existing_live(room, channel, artifact, metadata, payload)
+            })
+            .ok()?;
+        let tilo_relay_protocol::live::LiveFrame::Ops(
+            tilo_relay_protocol::live::OpsFrame::Semantic { record, event },
+        ) = opened
+        else {
+            return None;
+        };
+        Some((local_record, record, event))
+    }
+
     /// The room whose workspace topic is `ws`.
     fn room_of_topic(&self, ws: u64) -> Option<RoomId> {
         self.replica.lock().ok().and_then(|replica| {
@@ -3091,6 +3208,17 @@ impl ShellNetwork {
         let Some(room) = self.room_of_topic(ws) else {
             return;
         };
+        if let Some((local_record, record, semantic)) = self.open_live_interaction(room, frame) {
+            self.handle_live_interaction(room, from, local_record, record, &semantic);
+            return;
+        }
+        if tilo_relay_protocol::live::SealedLiveFrame::decode(frame)
+            .is_ok_and(|sealed| sealed.kind == tilo_relay_protocol::live::LiveKind::Ops)
+        {
+            // Ordered frames never fall through to presence's access()-based
+            // path: a malformed or unknown route cannot request a key.
+            return;
+        }
         let Some(frame) = crate::shell::live_presence::open(frame, |channel| {
             Self::live_channel_keys(room, channel)
         }) else {
@@ -3137,6 +3265,57 @@ impl ShellNetwork {
         }
     }
 
+    fn handle_live_interaction(
+        &self,
+        room: RoomId,
+        from: [u8; 32],
+        local_record: String,
+        record: tilo_relay_protocol::live::LiveRecord,
+        frame: &tilo_relay_protocol::live::SemanticFrame,
+    ) {
+        let cluster_id = room.to_string();
+        let Ok(interaction) =
+            serde_json::from_str::<tilo_actions::SemanticInteraction>(&frame.interaction_json)
+        else {
+            return;
+        };
+        let Some(agent) = interaction
+            .actor
+            .id
+            .strip_prefix("agent:")
+            .filter(|agent| !agent.is_empty())
+            .filter(|_| interaction.actor.kind == tilo_actions::InteractionActorKind::Agent)
+        else {
+            return;
+        };
+        let Ok(publisher) = self.native_owner().and_then(|owner| {
+            owner.agent_live_interaction_publisher(room, from, agent, SystemTime::now())
+        }) else {
+            return;
+        };
+        let interaction =
+            self.live_interactions.lock().ok().and_then(|mut state| {
+                state.decode(from, &cluster_id, &local_record, frame, &record)
+            });
+        let Some(interaction) = interaction else {
+            return;
+        };
+        let route = CrdtRoute::record(record.app, cluster_id, local_record);
+        let Ok(mut queue) = self.inbound_live_interactions.lock() else {
+            return;
+        };
+        if queue.len() >= live_interaction::MAX_QUEUED {
+            return;
+        }
+        queue.push(live_interaction::Inbound {
+            route,
+            interaction,
+            publisher,
+        });
+        drop(queue);
+        self.drain_wake.poke();
+    }
+
     /// Ask the room's workspace hosts to replay the room, for a local app
     /// that just joined one of its records: what they replayed or fanned out
     /// before was dropped here while nothing held the record, and the app
@@ -3161,6 +3340,12 @@ impl ShellNetwork {
     /// broker and fanned to local apps as `RemotePresenceUpdate`.
     pub fn inbound_app_presence_handle(&self) -> Arc<Mutex<Vec<InboundAppPresence>>> {
         Arc::clone(&self.inbound_app_presence)
+    }
+
+    pub(crate) fn inbound_live_interaction_handle(
+        &self,
+    ) -> Arc<Mutex<Vec<live_interaction::Inbound>>> {
+        Arc::clone(&self.inbound_live_interactions)
     }
 
     pub fn handle_typed_app_presence_message(
@@ -7494,6 +7679,28 @@ impl Drop for ShellNetwork {
     }
 }
 
+#[cfg(test)]
+fn test_continuity_policy_override() -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
+    crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+        serde_json::json!({
+            "continuity": {
+                "enabled": true,
+                "clipboard": true,
+                "notifications": true,
+                "wifi_settings": true,
+                "media": true,
+                "display_input": true,
+                "file_transfer": true,
+                "realtime_sessions": true,
+                "typed_gamepad": true,
+                "app_continuations": true
+            }
+        })
+        .as_object()
+        .expect("test continuity policy object"),
+    )
+}
+
 /// Test-only constructor that wires `ShellNetwork`'s command sender to
 /// a caller-owned receiver, bypassing the iroh actor. `pub(crate)` so
 /// the broker's own tests can drive the inbound side of the peer bridge too.
@@ -7544,26 +7751,7 @@ pub(crate) fn shell_network_for_test(
         personal_focus_recency: Mutex::new(
             crate::shell::continuity_suggestion::FocusRecency::default(),
         ),
-        continuity_policy_override: Some(
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
-                serde_json::json!({
-                    "continuity": {
-                        "enabled": true,
-                        "clipboard": true,
-                        "notifications": true,
-                        "wifi_settings": true,
-                        "media": true,
-                        "display_input": true,
-                        "file_transfer": true,
-                        "realtime_sessions": true,
-                        "typed_gamepad": true,
-                        "app_continuations": true
-                    }
-                })
-                .as_object()
-                .expect("test continuity policy object"),
-            ),
-        ),
+        continuity_policy_override: Some(test_continuity_policy_override()),
         device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
@@ -7590,6 +7778,8 @@ pub(crate) fn shell_network_for_test(
         person_snapshots_wanted: Mutex::default(),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         live_presence: Mutex::default(),
+        live_interactions: Mutex::default(),
+        inbound_live_interactions: Arc::new(Mutex::new(Vec::new())),
         live_labels: Mutex::default(),
         peer_colours: Mutex::default(),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -7631,6 +7821,110 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
+
+    #[test]
+    fn joined_member_opens_exact_live_agent_interaction_with_existing_keys() {
+        use crate::shell::channel_encryption::{
+            ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
+        };
+        use channel_crypto::VaultKey;
+        use tilo_action_broker::channel_encryption::testing::{
+            Directory, Endpoint, Policy, Room, key, public,
+        };
+        use tilo_action_broker::collab_core::BrokerChannels;
+
+        let room = RoomId::new();
+        let channel = collab_types::document_channel_id("so.tilo.chat", &room.to_string(), "");
+        let transport = Arc::new(Room::default());
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(2));
+        let owner_dir = tempfile::tempdir().unwrap();
+        let member_dir = tempfile::tempdir().unwrap();
+        let broker = || Arc::new(Mutex::new(BrokerChannels::default()));
+        let mut owner = ChannelEncryption::open(
+            ChannelEncryptionConfig {
+                root: owner_dir.path().join("channels"),
+                vault: VaultKey::new([1; 32]),
+                device_key: key(1),
+            },
+            Box::new(Directory {
+                governs: true,
+                steward: public(1),
+                policy: policy.clone(),
+            }),
+            broker(),
+        )
+        .unwrap();
+        let mut member = ChannelEncryption::open(
+            ChannelEncryptionConfig {
+                root: member_dir.path().join("channels"),
+                vault: VaultKey::new([2; 32]),
+                device_key: key(2),
+            },
+            Box::new(Directory {
+                governs: false,
+                steward: public(1),
+                policy,
+            }),
+            broker(),
+        )
+        .unwrap();
+        let owner_endpoint = Endpoint::join(&transport, room, 1);
+        let member_endpoint = Endpoint::join(&transport, room, 2);
+        let mut now = std::time::Instant::now();
+        owner.access(room, channel, now);
+        member.access(room, channel, now);
+        for _ in 0..20 {
+            now += std::time::Duration::from_millis(250);
+            owner.pump(&owner_endpoint, now, 1_000);
+            member.pump(&member_endpoint, now, 1_000);
+        }
+        let owner = ChannelKeyAccess::new(owner);
+        let member = ChannelKeyAccess::new(member);
+
+        let route = CrdtRoute::record("so.tilo.chat", room.to_string(), "");
+        let interaction = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(17)),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "agent:scribe".into(),
+                kind: tilo_actions::InteractionActorKind::Agent,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: "message".into(),
+                label: "Message".into(),
+                app: Some(tilo_actions::ActionApp {
+                    id: "so.tilo.chat".into(),
+                    label: "Chat".into(),
+                }),
+            },
+            resource: tilo_actions::ActionResource {
+                id: "chat.person:scribe".into(),
+                kind: "chat.person".into(),
+                label: "Scribe".into(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        };
+        let clear = live_interaction::State::default()
+            .encode(&route, String::new(), 7, &interaction, 1)
+            .unwrap();
+        let sealed = ShellNetwork::seal_live_interaction_with(&owner, room, &clear).unwrap();
+        let (receiver, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 8);
+        receiver.register_local_record("so.tilo.chat", &room.to_string(), "");
+        let (local_record, record, frame) = receiver
+            .open_live_interaction_with(&member, room, &sealed)
+            .expect("the admitted member opens the exact registered record");
+        assert_eq!(local_record, "");
+        assert_eq!(record.app, "so.tilo.chat");
+        assert_eq!(record.record, "");
+        let decoded_interaction = live_interaction::State::default()
+            .decode([2; 32], &room.to_string(), &local_record, &frame, &record)
+            .unwrap();
+        assert_eq!(decoded_interaction, interaction);
+    }
 
     #[test]
     fn personal_device_peers_are_dialable_endpoints_except_this_device() {

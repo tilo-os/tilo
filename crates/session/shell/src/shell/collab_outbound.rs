@@ -2,6 +2,7 @@
 use super::network::ShellNetwork;
 use collab_types::{ArtifactId, PeerPresence, SignedOp};
 pub use tilo_action_broker::collab_outbound::*;
+use tilo_action_broker::route::CrdtRoute;
 impl PeerPublishSink for ShellNetwork {
     fn app_document(
         &self,
@@ -37,8 +38,19 @@ impl PeerPublishSink for ShellNetwork {
         self.publish_live_presence(app_id, cluster_id, record_id, presence);
     }
 
+    fn app_live_interaction(
+        &self,
+        route: &CrdtRoute,
+        source_peer: u64,
+        interaction: &tilo_actions::SemanticInteraction,
+    ) {
+        self.publish_live_interaction(route, source_peer, interaction);
+    }
+
     fn local_route(&self, app_id: &str, cluster_id: &str, record_id: &str) {
         let _ = self.register_local_record(app_id, cluster_id, record_id);
-        self.request_room_replay(cluster_id);
+        if !record_id.is_empty() {
+            self.request_room_replay(cluster_id);
+        }
     }
 }

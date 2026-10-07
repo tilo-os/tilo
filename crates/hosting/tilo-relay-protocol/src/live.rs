@@ -131,7 +131,7 @@ pub struct LiveRecord {
     #[serde(deserialize_with = "text128")]
     pub app: String,
     /// Record identifier within the application.
-    #[serde(deserialize_with = "text128")]
+    #[serde(deserialize_with = "record_text")]
     pub record: String,
 }
 
@@ -152,6 +152,14 @@ impl LiveRecord {
             || self.record.is_empty()
             || self.record.len() > 128
         {
+            Err(LiveWireError::Invalid)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_semantic(&self) -> Result<()> {
+        if self.app.is_empty() || self.app.len() > 128 || self.record.len() > 128 {
             Err(LiveWireError::Invalid)
         } else {
             Ok(())
@@ -356,10 +364,11 @@ impl OpsFrame {
     }
 
     fn validate(&self) -> Result<()> {
-        self.record().validate()?;
-        if let Self::Semantic { event, .. } = self {
+        if let Self::Semantic { record, event } = self {
+            record.validate_semantic()?;
             return event.validate();
         }
+        self.record().validate()?;
         let Self::Preview { ops, .. } = self else {
             return Ok(());
         };
@@ -677,6 +686,15 @@ fn text128<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Er
     bounded_text::<D, 128>(d)
 }
 
+fn record_text<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    let value = String::deserialize(d)?;
+    if value.len() > 128 {
+        Err(de::Error::custom("record exceeds bounds"))
+    } else {
+        Ok(value)
+    }
+}
+
 fn preview_text<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
     bounded_text::<D, MAX_PREVIEW_TEXT_BYTES>(d)
 }
@@ -758,6 +776,78 @@ mod tests {
                 .encode()
                 .unwrap(),
             b"\x01\x01\x0dso.tilo.notes\x02r1"
+        );
+    }
+
+    #[test]
+    fn only_semantic_ops_may_name_a_canonical_empty_root() {
+        let mut root = semantic();
+        let LiveFrame::Ops(OpsFrame::Semantic { record, .. }) = &mut root else {
+            panic!("semantic fixture");
+        };
+        record.app = "so.tilo.chat".into();
+        record.record.clear();
+        let encoded = root.encode().unwrap();
+        assert_eq!(LiveFrame::decode(&encoded).unwrap(), root);
+
+        let root_record = LiveRecord {
+            app: "so.tilo.chat".into(),
+            record: String::new(),
+        };
+        let workspace_room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let expected_channel = collab_types::document_channel_id(
+            &root_record.app,
+            workspace_room,
+            &root_record.record,
+        );
+        let sealed = SealedLiveFrame::seal(&root, |_, retention, cleartext: &[u8]| {
+            Ok::<_, String>((
+                EncryptionMetadata::content_key(3, expected_channel, retention),
+                cleartext.to_vec(),
+            ))
+        })
+        .unwrap();
+        let sealed = SealedLiveFrame::decode(&sealed).unwrap();
+        assert_eq!(sealed.channel_id(), expected_channel);
+        assert_eq!(
+            sealed
+                .open_in_record(workspace_room, &root_record, |_, _, bytes| {
+                    Ok::<_, String>(bytes.to_vec())
+                })
+                .unwrap(),
+            root
+        );
+
+        let empty = root_record;
+        assert!(
+            LiveFrame::Presence(PresenceFrame {
+                seq: 1,
+                sent_at_ms: 1,
+                focus: Some(empty.clone()),
+                pointer: None,
+                selection: None,
+                drag: None,
+                participant: None,
+            })
+            .encode()
+            .is_err()
+        );
+        assert!(
+            LiveFrame::Ops(OpsFrame::Preview {
+                seq: 1,
+                record: empty.clone(),
+                ops: vec![PreviewOp::Delete {
+                    at: LiveAnchor { cursor: vec![1] },
+                    len: 1,
+                }],
+            })
+            .encode()
+            .is_err()
+        );
+        assert!(
+            LiveFrame::Ops(OpsFrame::End { record: empty })
+                .encode()
+                .is_err()
         );
     }
 
