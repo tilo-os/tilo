@@ -62,13 +62,14 @@ The exact staged-file pre-commit hook, Python syntax and diff checks passed.
 
 ## Reproduction and boundaries
 
-Build shell, launcher and the native SDK probe with the project's remote Cargo
-wrapper, then execute the harness in that build environment:
+Build shell, launcher and the native SDK probe using Cargo or a compatible
+Cargo drop-in. Set `CARGO` to that executable and run the harness in the same
+build environment:
 
 ```sh
-rcargo --no-fallback build --locked -p shell -p launcher -p tilo-ui \
+"${CARGO:-cargo}" build --locked -p shell -p launcher -p tilo-ui \
   --bin shell --bin tilo-launcher --example startup-frame-probe -j8
-rcargo --no-fallback --on-builder run --locked -p launcher \
+"${CARGO:-cargo}" run --locked -p launcher \
   --example startup_frame_timeline -j8 -- \
   --out target/startup-frame-timeline --samples 3
 ```
