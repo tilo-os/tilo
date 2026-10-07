@@ -100,6 +100,52 @@ def synthetic_noise(pcm, snr_db):
     }
 
 
+
+class PacedAudio:
+    """Public PCM delivered every20ms while the actual decoder is busy.
+
+    One lock preserves production frame ordering. Pipe backpressure bounds queued
+    bytes; the original <=120s PCM is retained rather than dropped/accelerated.
+    """
+    def __init__(self, pipe, pcm, capture):
+        self.pipe, self.pcm, self.capture = pipe, pcm, capture
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+        self.sequence, self.sent = 1, 0
+        self.first_started_ms = self.first_finished_ms = None
+        self.last_finished_ms = None
+        self.error = None
+        self.thread = threading.Thread(target=self.feed, daemon=True)
+
+    def feed(self):
+        try:
+            while self.sent < len(self.pcm) and not self.stop.is_set():
+                due = self.capture + min(len(self.pcm), self.sent + 640) / 32000
+                if self.stop.wait(max(0, due - time.monotonic())):
+                    return
+                with self.lock:
+                    end = min(len(self.pcm), self.sent + 640)
+                    self.sequence += 1
+                    started = (time.monotonic() - self.capture) * 1000
+                    send(self.pipe, 1, self.sequence, self.pcm[self.sent:end])
+                    finished = (time.monotonic() - self.capture) * 1000
+                    if self.first_started_ms is None:
+                        self.first_started_ms, self.first_finished_ms = started, finished
+                    self.last_finished_ms = finished
+                    self.sent = end
+        except Exception as error:
+            self.error = type(error).__name__
+            self.stop.set()
+
+    def control(self, kind):
+        with self.lock:
+            if self.error is not None:
+                raise RuntimeError('owned public PCM transport failed')
+            self.sequence += 1
+            send(self.pipe, kind, self.sequence)
+            return self.sequence, self.sent, self.last_finished_ms
+
+
 def worker_failure(reply):
     # Never copy an arbitrary peer message/transcript into an exception.
     errors = {'protocol', 'model_unavailable', 'model_receipt', 'unsupported_language',
@@ -121,12 +167,16 @@ def main():
     parser.add_argument('--language', choices=('auto', 'en', 'de', 'fr', 'es', 'ar', 'zh'))
     parser.add_argument('--vocabulary', action='append', default=[])
     parser.add_argument('--noise-snr-db', type=int, choices=(10, 20))
+    parser.add_argument('--continuous-audio', action='store_true',
+                        help='deliver public PCM every20ms while inference runs; native phase review only')
     parser.add_argument('--cpus', type=int, choices=(1, 2), default=2)
     parser.add_argument('--first-draft-seconds', type=int, choices=(1, 2, 3), default=1)
     args = parser.parse_args()
     if (os.geteuid() == 0 or os.environ.get('TILO_TEST_PRIVATE_NAMESPACE') != '1'
             or args.manifest.stat().st_size > 1048576):
         parser.error('requires an unprivileged, owned hardware-free namespace')
+    if args.continuous_audio and args.native_review_model is None:
+        parser.error('continuous public PCM requires explicit native review')
     manifest = json.loads(args.manifest.read_text())
     if (manifest.get('dataset') != 'google/fleurs'
             or manifest.get('revision') != '70bb2e84b976b7e960aa89f1c648e09c59f894dd'):
@@ -195,6 +245,7 @@ def main():
     peak, memory_errors = {}, []
     finished = threading.Event()
     sampler = None
+    source = None
     try:
         if holder is not None:
             with selectors.DefaultSelector() as selector:
@@ -208,10 +259,12 @@ def main():
                               '--catalog', witness['catalog'], '--keys', witness['keys']]
         else:
             worker_command = [str(args.worker), '--model', str(model_path)]
+            if args.continuous_audio:
+                worker_command.append('--phase-review')
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         started = time.monotonic()
         worker = subprocess.Popen(worker_command, stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE if args.continuous_audio else subprocess.DEVNULL)
         def sample_memory():
             while not finished.is_set():
                 try:
@@ -237,21 +290,32 @@ def main():
         capture = time.monotonic()
         sent, first_partial, revisions, drafts = 0, None, 0, []
         previous = ''
+        next_draft = capture + args.first_draft_seconds
+        if args.continuous_audio:
+            source = PacedAudio(worker.stdin, pcm, capture)
+            source.thread.start()
         while sent < len(pcm):
             # Model backpressure advances the source clock; samples are retained
             # and never accelerated to make latency look better.
-            interval = args.first_draft_seconds if sent == 0 else 1
-            if time.monotonic() - capture < sent / 32000 + interval:
-                time.sleep(max(0, sent / 32000 + interval - (time.monotonic() - capture)))
-            available = min(len(pcm), int((time.monotonic() - capture) * 16000) * 2)
-            while sent < available:
-                end = min(available, sent + 64000)
+            arrived = None
+            if source is not None:
+                time.sleep(max(0, next_draft - time.monotonic()))
+                inference = time.monotonic()
+                sequence, sent, arrived = source.control(2)
+                next_draft = inference + 1
+            else:
+                interval = args.first_draft_seconds if sent == 0 else 1
+                if time.monotonic() - capture < sent / 32000 + interval:
+                    time.sleep(max(0, sent / 32000 + interval - (time.monotonic() - capture)))
+                available = min(len(pcm), int((time.monotonic() - capture) * 16000) * 2)
+                while sent < available:
+                    end = min(available, sent + 64000)
+                    sequence += 1
+                    send(worker.stdin, 1, sequence, pcm[sent:end])
+                    sent = end
                 sequence += 1
-                send(worker.stdin, 1, sequence, pcm[sent:end])
-                sent = end
-            sequence += 1
-            inference = time.monotonic()
-            send(worker.stdin, 2, sequence)
+                inference = time.monotonic()
+                send(worker.stdin, 2, sequence)
             draft = receive(worker.stdout)
             if draft.get('kind') != 'draft' or draft.get('sequence') != sequence:
                 failure = worker_failure(draft)
@@ -268,17 +332,35 @@ def main():
             if previous and not text.startswith(previous):
                 revisions += 1
             drafts.append({'samples': sent // 2, 'wall_ms': (time.monotonic()-capture)*1000,
-                           'inference_ms': (time.monotonic()-inference)*1000, 'text': text})
+                           'inference_ms': (time.monotonic()-inference)*1000,
+                           'last_audio_frame_finished_ms': arrived, 'text': text})
             previous = text
-        sequence += 1
         final_started = time.monotonic()
-        send(worker.stdin, 3, sequence)
+        if source is not None:
+            source.thread.join(timeout=2)
+            if source.thread.is_alive():
+                raise RuntimeError('public PCM source did not finish')
+            sequence, sent, _ = source.control(3)
+        else:
+            sequence += 1
+            send(worker.stdin, 3, sequence)
         final = receive(worker.stdout)
         final_ms = (time.monotonic() - final_started) * 1000
         if final.get('kind') != 'done' or final.get('sequence') != sequence:
             raise RuntimeError('production final failed')
         if worker.wait(timeout=10) != 0 or first_partial is None:
             raise RuntimeError('worker exit or visible partial missing')
+        preparation = None
+        if args.continuous_audio:
+            diagnostic = worker.stderr.read(4097)
+            worker.stderr.close()
+            if len(diagnostic) > 4096 or not diagnostic.startswith(b'NATIVE_PREPARATION '):
+                raise RuntimeError('bounded native preparation counters absent')
+            preparation = json.loads(diagnostic.split(b' ', 1)[1])
+            if set(preparation) != {'verify_ms', 'native_ms'} or any(
+                    not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
+                    for value in preparation.values()):
+                raise RuntimeError('invalid native preparation counters')
         finished.set()
         sampler.join(timeout=2)
         if memory_errors or not all(name in peak for name in ('VmPeak', 'VmSize', 'VmRSS', 'VmHWM', 'Threads')):
@@ -295,6 +377,10 @@ def main():
             'profile': 'builder CPU-affinity constraint; not physical older hardware',
             'audio_seconds': len(pcm)/32000, 'cold_ms': cold_ms,
             'first_draft_seconds': args.first_draft_seconds,
+            'preparation_phases': preparation,
+            'audio_transport': 'continuous20ms' if source is not None else 'source-paced draft batches',
+            'first_audio_frame_started_ms': source.first_started_ms if source is not None else None,
+            'first_audio_frame_finished_ms': source.first_finished_ms if source is not None else None,
             'first_partial_from_source_start_ms': first_partial,
             'non_prefix_partial_revisions': revisions, 'drafts': drafts,
             'finalization_ms': final_ms, 'final_text': final['text'],
@@ -307,12 +393,20 @@ def main():
             'reference': case['reference'],
         }, ensure_ascii=False), flush=True)
     finally:
+        if source is not None:
+            source.stop.set()
         if worker:
             if worker.poll() is None:
                 worker.kill()
             worker.wait(timeout=10)
             worker.stdin.close()
             worker.stdout.close()
+            if worker.stderr is not None:
+                worker.stderr.close()
+        if source is not None:
+            source.thread.join(timeout=2)
+            if source.thread.is_alive():
+                raise RuntimeError('owned PCM source cleanup failed')
         finished.set()
         if sampler:
             sampler.join(timeout=2)

@@ -31,6 +31,12 @@ mod linux {
     struct Cli {
         #[arg(long)]
         model: PathBuf,
+        /// Emit bounded non-content timing counters in isolated review only.
+        #[arg(long)]
+        phase_review: bool,
+        /// Completed sessions in one private review worker; never an idle daemon.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+        review_sessions: u8,
     }
     #[repr(C)]
     struct NativeConfig {
@@ -41,6 +47,11 @@ mod linux {
     }
     unsafe extern "C" {
         fn tilo_nemo_load(config: *const NativeConfig, status: *mut i32) -> *mut c_void;
+        fn tilo_nemo_reset(
+            context: *mut c_void,
+            language: *const std::ffi::c_char,
+            vocabulary: *const std::ffi::c_char,
+        ) -> i32;
         fn tilo_nemo_push(context: *mut c_void, samples: *const f32, count: usize) -> i32;
         fn tilo_nemo_text(
             context: *mut c_void,
@@ -116,6 +127,28 @@ mod linux {
     struct NativeDecoder(NonNull<c_void>);
     impl NativeDecoder {
         fn load(model: &ImmutableReviewModel, config: &SpeechConfig) -> Result<Self, SpeechError> {
+            let (language, words) = Self::spellings(config)?;
+            let native = NativeConfig {
+                descriptor: model.0.as_raw_fd(),
+                threads: i32::try_from(
+                    std::thread::available_parallelism().map_or(1, |count| count.get().min(2)),
+                )
+                .map_err(|_| SpeechError::WorkerStopped)?,
+                language: language.as_ptr(),
+                vocabulary: words.as_ptr().cast(),
+            };
+            let mut status = -3;
+            // SAFETY: exclusive immutable model fd and valid NUL strings live
+            // through synchronous load; native code copies request state and
+            // catches exceptions. No callback or Rust owner crosses the ABI.
+            let pointer = unsafe { tilo_nemo_load(&raw const native, &raw mut status) };
+            NonNull::new(pointer).map(Self).ok_or(if status == -2 {
+                SpeechError::UnsupportedLanguage
+            } else {
+                SpeechError::Recognition
+            })
+        }
+        fn spellings(config: &SpeechConfig) -> Result<(CString, Zeroizing<Vec<u8>>), SpeechError> {
             if config.language.is_empty()
                 || config.language.len() > 32
                 || config.vocabulary.len() > 256
@@ -142,25 +175,20 @@ mod linux {
                 words.push(b'\n');
             }
             words.push(0);
-            let native = NativeConfig {
-                descriptor: model.0.as_raw_fd(),
-                threads: i32::try_from(
-                    std::thread::available_parallelism().map_or(1, |count| count.get().min(2)),
-                )
-                .map_err(|_| SpeechError::WorkerStopped)?,
-                language: language.as_ptr(),
-                vocabulary: words.as_ptr().cast(),
-            };
-            let mut status = -3;
-            // SAFETY: exclusive immutable model fd and valid NUL strings live
-            // through synchronous load; native code copies request state and
-            // catches exceptions. No callback or Rust owner crosses the ABI.
-            let pointer = unsafe { tilo_nemo_load(&raw const native, &raw mut status) };
-            NonNull::new(pointer).map(Self).ok_or(if status == -2 {
-                SpeechError::UnsupportedLanguage
-            } else {
-                SpeechError::Recognition
-            })
+            Ok((language, words))
+        }
+        fn reset(&mut self, config: &SpeechConfig) -> Result<(), SpeechError> {
+            let (language, words) = Self::spellings(config)?;
+            // SAFETY: live exclusive context and validated NUL strings remain
+            // valid through synchronous reset. Native code accepts only a
+            // completed session and creates fresh decoder/context state.
+            match unsafe {
+                tilo_nemo_reset(self.0.as_ptr(), language.as_ptr(), words.as_ptr().cast())
+            } {
+                0 => Ok(()),
+                -2 => Err(SpeechError::UnsupportedLanguage),
+                _ => Err(SpeechError::Recognition),
+            }
         }
         fn text(&mut self, complete: bool) -> Result<String, SpeechError> {
             let mut output = Zeroizing::new(vec![0_u8; MAX_TEXT_BYTES]);
@@ -227,10 +255,19 @@ mod linux {
             if unsafe { libc::geteuid() == 0 || libc::geteuid() != libc::getuid() } {
                 return Err(SpeechError::ModelUnavailable);
             }
+            let verify_started = std::time::Instant::now();
             let model = ImmutableReviewModel::open(&args.model)?;
+            let verify_ms = verify_started.elapsed().as_secs_f64() * 1000.0;
             let (session, config) = worker::configure(&mut input)?;
             local_model_service::speech::confine_worker()?;
+            let native_started = std::time::Instant::now();
             let mut decoder = NativeDecoder::load(&model, &config)?;
+            let native_ms = native_started.elapsed().as_secs_f64() * 1000.0;
+            if args.phase_review {
+                eprintln!(
+                    "NATIVE_PREPARATION {{\"verify_ms\":{verify_ms},\"native_ms\":{native_ms}}}"
+                );
+            }
             drop(model);
             drop(config);
             worker::serve_decoder(
@@ -239,7 +276,27 @@ mod linux {
                 &mut decoder,
                 &mut input,
                 &mut output,
-            )
+            )?;
+            // This bounded private review process exits after at most two
+            // completed sessions. Cancellation never enters this reuse path.
+            for _ in 1..args.review_sessions {
+                let (session, config) = worker::configure(&mut input)?;
+                let reset_started = std::time::Instant::now();
+                decoder.reset(&config)?;
+                let native_ms = reset_started.elapsed().as_secs_f64() * 1000.0;
+                drop(config);
+                if args.phase_review {
+                    eprintln!("NATIVE_PREPARATION {{\"verify_ms\":0,\"native_ms\":{native_ms}}}");
+                }
+                worker::serve_decoder(
+                    ("nemotron-q8-review", MODEL_REVISION),
+                    session,
+                    &mut decoder,
+                    &mut input,
+                    &mut output,
+                )?;
+            }
+            Ok(())
         })();
         if let Err(error) = result {
             let _ = worker::reply(&mut output, &SpeechReply::Error { sequence: 0, error });

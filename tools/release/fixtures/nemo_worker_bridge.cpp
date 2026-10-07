@@ -52,6 +52,46 @@ struct Worker {
         return static_cast<int>(length);
     }
 };
+
+int request_options(Worker& worker, const char* input_language, const char* input_vocabulary,
+                    nemo_speech::asr::AsrRequestOptions& options, std::string& language) {
+    if (!input_language || !input_vocabulary) return -3;
+    const auto languages = worker.recognizer->supported_languages();
+    language = input_language;
+    const std::vector<std::pair<std::string, std::string>> aliases = {
+        {"en", "en-US"}, {"de", "de-DE"}, {"fr", "fr-FR"},
+        {"es", "es-ES"}, {"ar", "ar-EG"}, {"zh", "zh-CN"}};
+    for (const auto& alias : aliases) if (language == alias.first) language = alias.second;
+    if (std::find(languages.begin(), languages.end(), language) == languages.end()) {
+        return -2;
+    }
+    options.language_code = language;
+    options.verbatim_transcripts = true; // no unavailable native ITN grammars
+    options.enable_automatic_punctuation = true;
+    nemo_speech::asr::AsrRequestOptions::Boost context;
+    context.boost = 1.0f;
+    std::string vocabulary = input_vocabulary;
+    if (!vocabulary.empty()) {
+        auto* model = worker.recognizer->model();
+        if (model->head_kind() == nemo_speech::asr::HeadKind::Ctc) return -3;
+        auto* rnnt = static_cast<nemo_speech::asr::RnntModel*>(model);
+        size_t tokens = 0;
+        for (size_t start = 0; start < vocabulary.size();) {
+            size_t end = vocabulary.find('\n', start);
+            if (end == std::string::npos) end = vocabulary.size();
+            const std::string phrase = vocabulary.substr(start, end - start);
+            if (phrase.empty()) return -3;
+            const auto ids = rnnt->encode_phrase(phrase);
+            if (ids.empty() || ids.size() > 64 || tokens > 64 - ids.size()) return -3;
+            tokens += ids.size();
+            context.phrases.push_back(phrase);
+            start = end + 1;
+        }
+        options.speech_contexts.push_back(std::move(context));
+    }
+    wipe(vocabulary);
+    return 0;
+}
 }
 
 struct TiloNemoConfig {
@@ -78,42 +118,10 @@ extern "C" __attribute__((visibility("default"))) void* tilo_nemo_load(const Til
         config.decoder.boosting_tree_alpha = 1.0;
         auto worker = std::make_unique<Worker>();
         worker->recognizer = std::make_unique<nemo_speech::asr::Recognizer>(config);
-        const auto languages = worker->recognizer->supported_languages();
-        std::string language = input->language;
-        const std::vector<std::pair<std::string, std::string>> aliases = {
-            {"en", "en-US"}, {"de", "de-DE"}, {"fr", "fr-FR"},
-            {"es", "es-ES"}, {"ar", "ar-EG"}, {"zh", "zh-CN"}};
-        for (const auto& alias : aliases) if (language == alias.first) language = alias.second;
-        if (std::find(languages.begin(), languages.end(), language) == languages.end()) {
-            *status = -2;
-            return nullptr;
-        }
         nemo_speech::asr::AsrRequestOptions options;
-        options.language_code = language;
-        options.verbatim_transcripts = true; // no unavailable native ITN grammars
-        options.enable_automatic_punctuation = true;
-        nemo_speech::asr::AsrRequestOptions::Boost context;
-        context.boost = 1.0f;
-        std::string vocabulary = input->vocabulary;
-        if (!vocabulary.empty()) {
-            auto* model = worker->recognizer->model();
-            if (model->head_kind() == nemo_speech::asr::HeadKind::Ctc) return nullptr;
-            auto* rnnt = static_cast<nemo_speech::asr::RnntModel*>(model);
-            size_t tokens = 0;
-            for (size_t start = 0; start < vocabulary.size();) {
-                size_t end = vocabulary.find('\n', start);
-                if (end == std::string::npos) end = vocabulary.size();
-                const std::string phrase = vocabulary.substr(start, end - start);
-                if (phrase.empty()) return nullptr;
-                const auto ids = rnnt->encode_phrase(phrase);
-                if (ids.empty() || ids.size() > 64 || tokens > 64 - ids.size()) return nullptr;
-                tokens += ids.size();
-                context.phrases.push_back(phrase);
-                start = end + 1;
-            }
-            options.speech_contexts.push_back(std::move(context));
-        }
-        wipe(vocabulary);
+        std::string language;
+        *status = request_options(*worker, input->language, input->vocabulary, options, language);
+        if (*status != 0) return nullptr;
         // Prepare one actual cache-aware inference shape before Ready. The
         // server warmup repeats four seconds of silence; one bounded chunk
         // plus finalize loads lazy weights and graphs without that repeated
@@ -167,4 +175,27 @@ extern "C" __attribute__((visibility("default"))) int tilo_nemo_text(void* point
 
 extern "C" __attribute__((visibility("default"))) void tilo_nemo_free(void* pointer) noexcept {
     delete static_cast<Worker*>(pointer);
+}
+
+extern "C" __attribute__((visibility("default"))) int tilo_nemo_reset(
+    void* pointer, const char* language, const char* vocabulary) noexcept {
+    try {
+        auto& worker = *static_cast<Worker*>(pointer);
+        // Only fully finished sessions may reuse immutable model resources.
+        // Cancellation still kills the owned process; no active input is reused.
+        if (!worker.finished) return -3;
+        nemo_speech::asr::AsrRequestOptions options;
+        std::string resolved;
+        const int status = request_options(worker, language, vocabulary, options, resolved);
+        if (status != 0) return status;
+        // Free the old decoder slot before acquiring the one supported slot.
+        worker.stream.reset();
+        wipe(worker.confirmed);
+        wipe(worker.draft);
+        worker.samples = 0;
+        worker.stream = worker.recognizer->streaming_recognize(options, resolved, false);
+        if (!worker.stream) return -3;
+        worker.finished = false;
+        return 0;
+    } catch (...) { return -3; }
 }

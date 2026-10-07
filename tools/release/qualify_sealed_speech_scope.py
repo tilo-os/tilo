@@ -12,10 +12,13 @@ parser.add_argument('--native-review',action='store_true')
 parser.add_argument('--lifecycle',action='store_true')
 parser.add_argument('--case',choices=['en_us-0','de_de-0'],default='en_us-0')
 parser.add_argument('--vocabulary',action='append',default=[])
+parser.add_argument('--phase-repeat',action='store_true')
+parser.add_argument('--resident-second-case',choices=['en_us-0','de_de-0','silence'])
 parser.add_argument('--noise-snr-db',type=int,choices=[10,20])
 args=parser.parse_args()
-if args.lifecycle and (not args.native_review or args.vocabulary or args.noise_snr_db is not None):raise RuntimeError('native lifecycle requires its fixed public journey')
-if not args.native_review and (args.case!='en_us-0' or args.vocabulary or args.noise_snr_db is not None):raise RuntimeError('explicit native review required for alternate fixture')
+if args.lifecycle and (not args.native_review or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case):raise RuntimeError('native lifecycle requires its fixed public journey')
+if not args.native_review and (args.case!='en_us-0' or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case):raise RuntimeError('explicit native review required for alternate fixture')
+if args.resident_second_case and (args.phase_repeat or args.vocabulary or args.noise_snr_db is not None):raise RuntimeError('resident review has fixed bounded public sessions')
 root=Path(__file__).parent
 sys.path.insert(0,str(root))
 import probe_asr_candidate as probe
@@ -43,6 +46,7 @@ receipts=json.loads(receipt_path.read_text())
 required={'worker','qualifier','probe.py','probe_speech_memory.py','probe_asr_candidate.py','summarize_speech_benchmark.py','tilo-speech-worker'}
 if args.native_review:required=(required-{'qualifier'})|{'libnemo_speech_asr.so','libggml.so.0','libggml-cpu.so.0','libggml-base.so.0'}
 if args.lifecycle:required=required|{'lifecycle.py','probe_speech_stream.py'}
+if args.resident_second_case:required=required|{'resident.py','probe_speech_stream.py'}
 if set(receipts)!=required or any(not isinstance(h,str) or len(h)!=64 or any(c not in '0123456789abcdef' for c in h) for h in receipts.values()):raise RuntimeError('exact materialization closure required')
 for n,h in receipts.items():
  if hashlib.sha256((root/n).read_bytes()).hexdigest()!=h:raise RuntimeError('materialization changed')
@@ -52,6 +56,7 @@ if args.native_review:
  command[command.index('--case')+1]=args.case
  command.extend(['--native-review-model','/review/model.gguf'])
  for word in args.vocabulary:command.extend(['--vocabulary',word])
+ if args.phase_repeat:command.append('--continuous-audio')
  if args.noise_snr_db is not None:command.extend(['--noise-snr-db',str(args.noise_snr_db)])
  # Discard only this owned object's file pages, so the new scope accounts for
  # subsequent reads. fadvise is advisory; do not claim physical cold-device IO.
@@ -62,8 +67,12 @@ if args.native_review:
 if args.lifecycle:
  i=command.index('/review/probe.py')
  command=command[:i]+['/review/lifecycle.py','--manifest','/review/public/manifest.json','--worker','/review/tilo-speech-worker','--model','/review/model.gguf']
-result=probe.observe(command,sorted(os.sched_getaffinity(0))[:2])
-after=events();pressure_after=(cg/'memory.pressure').read_text()
-result.update(scope_events_before=before,scope_events_after=after,scope_pressure_before=pressure_before,scope_pressure_after=pressure_after,host_pressure_before=host_pressure,host_pressure_after=Path('/proc/pressure/memory').read_text(),memory_peak_bytes=int((cg/'memory.peak').read_text()),materialization_sha256=receipts,timing_classification='pressured-builder development; not physical latency qualification',io_isolation=False,native_review=args.native_review)
-print('SEALED_WORKER_SCOPE_RESULT '+json.dumps(result),flush=True)
-if result['exit']!=0 or result['guarded'] or any(after[k]!=before[k] for k in ['max','oom','oom_kill']):raise RuntimeError('guarded worker qualification failed')
+if args.resident_second_case:
+ i=command.index('/review/probe.py')
+ command=command[:i]+['/review/resident.py','--manifest','/review/public/manifest.json','--worker','/review/tilo-speech-worker','--model','/review/model.gguf','--case',args.case,'--second-case',args.resident_second_case]
+for attempt in range(2 if args.phase_repeat else 1):
+ result=probe.observe(command,sorted(os.sched_getaffinity(0))[:2])
+ after=events();pressure_after=(cg/'memory.pressure').read_text()
+ result.update(attempt=attempt+1,phase_repeat=args.phase_repeat,cache_advice_before_this_attempt=attempt==0,scope_events_before=before,scope_events_after=after,scope_pressure_before=pressure_before,scope_pressure_after=pressure_after,host_pressure_before=host_pressure,host_pressure_after=Path('/proc/pressure/memory').read_text(),memory_peak_bytes=int((cg/'memory.peak').read_text()),materialization_sha256=receipts,timing_classification='pressured-builder development; not physical latency qualification',io_isolation=False,native_review=args.native_review)
+ print('SEALED_WORKER_SCOPE_RESULT '+json.dumps(result),flush=True)
+ if result['exit']!=0 or result['guarded'] or any(after[k]!=before[k] for k in ['max','oom','oom_kill']):raise RuntimeError('guarded worker qualification failed')
