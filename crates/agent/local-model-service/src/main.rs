@@ -248,6 +248,19 @@ struct LocalModelSnapshot {
     /// Every catalog model that runs in-process, with its install state.
     in_process: Vec<InProcessLocalModel>,
     accelerator_setup: Option<AcceleratorSetup>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    runtime_observations: std::collections::BTreeMap<
+        String,
+        local_model_service::run_observation::Observed<
+            local_model_service::run_observation::RuntimeSample,
+        >,
+    >,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retained_run_observations: Option<
+        local_model_service::run_observation::Observed<
+            Vec<local_model_service::run_observation::RunCheckpoint>,
+        >,
+    >,
 }
 
 const SYSTEM_EXTENSION_SOCKET: &str = "/run/tilo/system-extension-api/request.sock";
@@ -1402,6 +1415,15 @@ fn local_snapshot(
         models,
         in_process: in_process_models(&catalog.models, service.state()),
         accelerator_setup: accelerator_setup_snapshot(),
+        runtime_observations: service.runtime_observations(),
+        retained_run_observations: match local_model_service::run_observation::retained(root) {
+            local_model_service::run_observation::Observed::Actual { value }
+                if value.is_empty() =>
+            {
+                None
+            }
+            retained => Some(retained),
+        },
     };
     serde_json::to_string(&payload).map_err(|error| error.to_string())
 }
@@ -1725,6 +1747,29 @@ mod tests {
         );
         assert!(model_endpoint_ready(&client, &endpoint));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn snapshot_observation_fields_are_absent_for_legacy_empty_state() {
+        let payload = LocalModelSnapshot {
+            hardware: recommendation(
+                &HardwareSnapshot::default(),
+                Err("unavailable".into()),
+                false,
+            ),
+            recommendation: None,
+            models: Vec::new(),
+            in_process: Vec::new(),
+            accelerator_setup: None,
+            runtime_observations: std::collections::BTreeMap::new(),
+            retained_run_observations: None,
+        };
+        let wire = serde_json::to_value(payload).unwrap();
+        assert!(wire.get("runtime_observations").is_none());
+        assert!(wire.get("retained_run_observations").is_none());
+        let old = serde_json::json!({"models":{}, "accepted_licenses":{}});
+        let state: local_model_service::ServiceState = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(state).unwrap(), old);
     }
 
     fn catalog_fixture() -> CatalogPayload {
