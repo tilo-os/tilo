@@ -5,7 +5,7 @@
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionError, Doc};
-use tilo_feedback::{Destination, Receipt, Submission};
+use ui::feedback::{Destination, Receipt, Submission};
 use ui::tilo_resource::Effect as _;
 
 use crate::{
@@ -320,6 +320,34 @@ pub fn durable_receipt(
     })
 }
 
+/// Read the report from its canonical owner after checking that exact record's
+/// current save status. The store is single-threaded, and no callback or yield
+/// separates this status check from the immutable document read.
+///
+/// Hosts retain the admitted room/provider identity; neither the report nor an
+/// external URL selects this store or record.
+///
+/// # Errors
+/// Refuses a missing/busy record, undurable edits or a destination mismatch.
+pub fn receipt_from_record(
+    store: &ui::record::RecordStore,
+    record: &ui::record::RecordId,
+    id: &str,
+    actual_destination: &Destination,
+) -> Result<Receipt, ActionError> {
+    let status = store
+        .save_status(record)
+        .map_err(|error| refused(error.to_string()))?;
+    store
+        .read(record, |doc| {
+            if ui::record::room_scope(doc).as_deref() != Some(actual_destination.room.as_str()) {
+                return Err(refused("feedback canonical room mismatch"));
+            }
+            durable_receipt(doc, id, actual_destination, &status)
+        })
+        .ok_or_else(|| refused("feedback destination record is missing or busy"))?
+}
+
 impl FeedbackAction {
     pub fn locus(&self) -> (&String, &String) {
         match self {
@@ -445,7 +473,7 @@ mod tests {
     use crate::actions::{ChatAction, apply_as};
     use tilo_actions::Action as _;
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_feedback::ReviewedFeedback;
+    use ui::feedback::ReviewedFeedback;
 
     fn seeded() -> (Doc, Submission) {
         let mut doc = Doc::new();
@@ -587,6 +615,80 @@ mod tests {
                 .filter(|message| message.id == format!("m_feedback_{}", submission.id))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records() {
+        use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
+        let (_, submission) = seeded();
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = RecordOwners::new(temp.path().join("profile"));
+        let store = owners
+            .open("so.tilo.chat", &submission.destination.room)
+            .unwrap();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.workspace"));
+        store
+            .reserve_record(&checkout)
+            .unwrap()
+            .initialize(|doc| {
+                ChatDoc::seed_if_empty(doc);
+                apply_as(doc, "visitor:one", &action(&submission))
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store.try_flush().unwrap();
+        assert!(
+            receipt_from_record(
+                &store,
+                &checkout.id,
+                &submission.id,
+                &submission.destination
+            )
+            .is_ok()
+        );
+        store
+            .with(&checkout.id, |doc| {
+                doc.put(ROOT, "newer_edit", "not yet stored").unwrap();
+            })
+            .unwrap();
+        assert!(
+            receipt_from_record(
+                &store,
+                &checkout.id,
+                &submission.id,
+                &submission.destination
+            )
+            .is_err()
+        );
+        store.try_flush().unwrap();
+        assert!(
+            receipt_from_record(
+                &store,
+                &checkout.id,
+                &submission.id,
+                &submission.destination
+            )
+            .is_ok()
+        );
+        let memory = RecordStore::new(
+            ui::record::RecordSet::in_memory().with_home(&submission.destination.room),
+        );
+        memory.create_record(&checkout).unwrap();
+        memory
+            .with(&checkout.id, |doc| {
+                ChatDoc::seed_if_empty(doc);
+                apply_as(doc, "visitor:one", &action(&submission)).unwrap();
+            })
+            .unwrap();
+        assert!(
+            receipt_from_record(
+                &memory,
+                &checkout.id,
+                &submission.id,
+                &submission.destination
+            )
+            .is_err()
         );
     }
 
