@@ -358,7 +358,14 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
         },
         "root" => {
             let (degree, radicand) = pair("root(n, x)")?;
-            radicand.powf(1.0 / degree)
+            // Fractional powf rejects a negative base even when an odd
+            // integer root has a real solution. Evaluate its magnitude first.
+            if radicand < 0.0 && degree.is_finite() && degree.fract() == 0.0 && degree % 2.0 != 0.0
+            {
+                -(-radicand).powf(1.0 / degree)
+            } else {
+                radicand.powf(1.0 / degree)
+            }
         }
         "pow" => {
             let (base, exp) = pair("pow(a, b)")?;
@@ -510,7 +517,9 @@ pub fn gamma(x: f64) -> f64 {
         for (i, coef) in (1u32..).zip(tail) {
             a += coef / (x + f64::from(i));
         }
-        (TAU).sqrt() * t.powf(x + 0.5) * (-t).exp() * a
+        // Combine the power and exponential in log space: the power alone
+        // overflows well before gamma's result exceeds f64's finite range.
+        ((x + 0.5) * t.ln() - t + (TAU.sqrt() * a).ln()).exp()
     }
 }
 
@@ -740,6 +749,65 @@ mod tests {
             s.eval2(0.0, 0.0).abs() < 1e-12,
             "compiled_sampling: surface at origin"
         );
+    }
+
+    #[test]
+    fn negative_radicands_have_real_odd_integer_roots() {
+        for (source, expected) in [
+            ("root(3,-8)", -2.0),
+            ("root(5,-32)", -2.0),
+            ("root(-3,-8)", -0.5),
+            ("root(1,-8)", -8.0),
+        ] {
+            check(source, ev(source), expected, Cmp::Near(1e-12));
+        }
+        for source in ["root(2,-8)", "root(2.5,-8)"] {
+            assert!(ev(source).is_nan(), "{source} has no real root");
+        }
+        let curve = compile("root(3,x)", false, false).unwrap();
+        check("odd-root graph", curve.eval1(-8.0), -2.0, Cmp::Near(1e-12));
+        let surface = compile("root(3,x+y)", false, true).unwrap();
+        check(
+            "odd-root surface",
+            surface.eval2(-3.0, -5.0),
+            -2.0,
+            Cmp::Near(1e-12),
+        );
+    }
+
+    #[test]
+    fn gamma_preserves_representable_large_results() {
+        for n in [140u32, 150, 170, 171] {
+            let source = format!("gamma({n})");
+            let expected = factorial(f64::from(n - 1));
+            let got = ev(&source);
+            assert!(got.is_finite(), "{source} overflowed: {got}");
+            assert!(
+                (got / expected - 1.0).abs() < 1e-12,
+                "{source}: got {got}, expected {expected}",
+            );
+        }
+        // Half-integer recurrence is independent of the Lanczos formula and
+        // also exercises the generalized factorial path outside integer inputs.
+        let expected = (0..150u32).fold(PI.sqrt(), |value, n| value * (f64::from(n) + 0.5));
+        for source in ["gamma(150.5)", "149.5!", "fact(149.5)"] {
+            let got = ev(source);
+            assert!(
+                (got / expected - 1.0).abs() < 1e-12,
+                "{source}: got {got}, expected {expected}",
+            );
+        }
+        check("gamma(0.5)", ev("gamma(0.5)"), PI.sqrt(), Cmp::Near(1e-12));
+        check(
+            "gamma(-0.5)",
+            ev("gamma(-0.5)"),
+            -2.0 * PI.sqrt(),
+            Cmp::Near(1e-12),
+        );
+        let curve = compile("gamma(x)", false, false).unwrap();
+        assert!(curve.eval1(150.0).is_finite());
+        assert!(ev("gamma(172)").is_infinite());
+        assert!(ev("171!").is_infinite());
     }
 
     /// What the result line shows a person: error messages and rejections for

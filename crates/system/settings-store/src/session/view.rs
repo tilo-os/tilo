@@ -21,16 +21,14 @@ struct HostView {
 pub(super) fn start(session: &Arc<SessionSettings>) -> std::io::Result<Arc<dyn SettingsSource>> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let session_weak = Arc::downgrade(session);
-    let worker = std::thread::Builder::new()
-        .name("tilo-settings-read".into())
-        .spawn(move || {
-            while receiver.recv().is_ok() {
-                let Some(session) = session_weak.upgrade() else {
-                    break;
-                };
-                session.refresh();
-            }
-        })?;
+    let worker = tilo_rt::spawn_thread("tilo-settings-read", move || {
+        while receiver.recv().is_ok() {
+            let Some(session) = session_weak.upgrade() else {
+                break;
+            };
+            session.refresh();
+        }
+    })?;
     Ok(Arc::new(HostView {
         session: Arc::clone(session),
         refresh: Some(sender),

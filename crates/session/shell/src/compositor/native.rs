@@ -2254,6 +2254,7 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
     reader: BufReader<UnixStream>,
+    input: test_control::BoundedLineBuffer,
     /// Accepted on the agent-control socket: only
     /// [`test_control::Command::agent_permitted`] commands are served.
     agent: bool,
@@ -2313,6 +2314,7 @@ impl TestControlConn {
         }
         Some(Self {
             reader: BufReader::new(stream),
+            input: test_control::BoundedLineBuffer::default(),
             agent,
             admin: false,
             wake: None,
@@ -5020,7 +5022,10 @@ fn pump_test_control_conn(
             PendingConnectionProgress::Idle | PendingConnectionProgress::WroteResponse => {}
         }
         let mut line = zeroize::Zeroizing::new(String::new());
-        match read_bounded_line(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES) {
+        match conn
+            .input
+            .read(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES)
+        {
             Ok(None) => {
                 conn.closed = true;
                 return injected_input;
@@ -14589,6 +14594,53 @@ mod tests {
                 "backpressure must not truncate or duplicate JSON bytes"
             );
         }
+    }
+
+    #[test]
+    fn fragmented_control_request_waits_for_its_complete_line() {
+        use std::io::{Read as _, Write as _};
+
+        let mut frame_builder = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        client.set_nonblocking(true).expect("nonblocking observer");
+        let mut conn = TestControlConn::new(server, false).expect("server connection");
+        client.write_all(b"{\"op\":").expect("request prefix");
+        pump_test_control_conn(
+            &mut conn,
+            &mut frame_builder,
+            &mut ctx,
+            &session,
+            &mut lock,
+            &mut state,
+        );
+        let mut probe = [0_u8; 1];
+        assert_eq!(
+            client.read(&mut probe).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "an incomplete request must not be dispatched"
+        );
+        client
+            .write_all(b"\"state_dump\"}\n")
+            .expect("request suffix");
+        pump_test_control_conn(
+            &mut conn,
+            &mut frame_builder,
+            &mut ctx,
+            &session,
+            &mut lock,
+            &mut state,
+        );
+        let response = socket_response(&mut BufReader::new(client));
+        let test_control::Response::State { chrome, .. } = response else {
+            panic!("a fragmented complete state request must be served: {response:?}")
+        };
+        assert_eq!(chrome["lock_auth"]["verifying"], false);
     }
 
     /// The device admin's socket answers the action model and read-only

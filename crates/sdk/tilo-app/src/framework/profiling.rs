@@ -2,7 +2,7 @@
 //! Scopes may nest; their durations are not additive. No recorder runs by default.
 
 use std::cell::RefCell;
-use std::time::Instant;
+use ui_core::time::Instant;
 
 const MAX_SAMPLES: usize = 1024;
 
@@ -93,5 +93,49 @@ impl Drop for Scope {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SAMPLES, Scope, observe};
+
+    #[test]
+    fn phase_recording_is_opt_in_and_preserves_nested_scopes_and_return_value() {
+        drop(Scope::start("unobserved"));
+        let (value, samples) = observe(|| {
+            let _outer = Scope::start("outer");
+            drop(Scope::start("inner"));
+            42
+        });
+        assert_eq!(value, 42);
+        assert_eq!(
+            samples
+                .iter()
+                .map(|sample| sample.phase)
+                .collect::<Vec<_>>(),
+            ["inner", "outer"]
+        );
+        assert!(observe(|| ()).1.is_empty());
+    }
+
+    #[test]
+    fn phase_recording_recovers_after_a_nested_observation_panics() {
+        let result = std::panic::catch_unwind(|| observe(|| observe(|| ())));
+        assert!(result.is_err());
+        assert!(observe(|| ()).1.is_empty());
+    }
+
+    #[test]
+    fn phase_recording_refuses_incomplete_coverage_and_retires_its_recorder() {
+        let result = std::panic::catch_unwind(|| {
+            observe(|| {
+                for _ in 0..=MAX_SAMPLES {
+                    drop(Scope::start("bounded"));
+                }
+            })
+        });
+        assert!(result.is_err());
+        assert!(observe(|| ()).1.is_empty());
     }
 }

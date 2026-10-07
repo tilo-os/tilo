@@ -57,7 +57,7 @@ for ((shard=0; shard<shards; shard++)); do
     selected+=("${apps[index]}")
   done
   echo "mount smoke shard $shard: ${#selected[@]} apps, CDP $browser_port"
-  CDP_PORT="$browser_port" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
+  TILO_WEB_SMOKE_WORKER=1 CDP_PORT="$browser_port" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
     "$base" "${selected[@]}" &
   workers+=("$!")
 done

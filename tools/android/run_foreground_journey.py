@@ -15,6 +15,7 @@ import time
 import tomllib
 
 from qualify_apk import digest, pinned, verify_runtime
+from execution_host import add_architecture, native_architecture
 from run_arity_journey import REPO, Journey, wait_for, require_ok, checked_output
 from run_integration_journey import stop, stop_bus_helpers
 
@@ -46,7 +47,8 @@ def probe_notification_ownership(output, bus_address):
         raise RuntimeError('unrelated bus sender could replace the foreground notification')
 
 
-def exercise_work(journey, output, profile, package, args, source, destination, grants):
+def exercise_work(journey, output, profile, package, args, documents, grants):
+    source, destination = documents
     frame = journey.launch()
     private = profile / 'data/tilo-rooms' / journey.workspace()['room'] / package
     def recorded(marker):
@@ -120,7 +122,7 @@ def exercise_work(journey, output, profile, package, args, source, destination, 
         raise RuntimeError('scoped source or private visits changed unexpectedly')
     (output / 'foreground.txt').write_text(record.read_text())
     result = {'schema': 1, 'completed_at_utc': datetime.now(timezone.utc).isoformat(),
-        'execution': 'production headless Tilo, actual ART, x86_64 software graphics',
+        'execution': 'production headless Tilo, actual ART, ' + args.architecture + ' software graphics',
         'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
         'production_binaries': {n: digest(REPO / 'target/debug' / n) for n in ('shell', 'tilo-launcher')},
         'presented_frame': frame, 'control_notification': control,
@@ -150,15 +152,16 @@ def exercise_denial(journey, output, profile, package, args):
     journey.close()
     (output / 'foreground.txt').write_text(record.read_text())
     return {'schema': 1, 'completed_at_utc': datetime.now(timezone.utc).isoformat(),
-        'execution': 'production headless Tilo, actual ART, x86_64 software graphics',
+        'execution': 'production headless Tilo, actual ART, ' + args.architecture + ' software graphics',
         'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
         'production_binaries': {n: digest(REPO / 'target/debug' / n) for n in ('shell', 'tilo-launcher')},
         'presented_frame': frame, 'foreground_without_notification_capability': 'denied',
         'scoped_worker_started': False, 'additional_grants': False, 'real_device': False}
 
 
-def main():
+def main(work_driver=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_architecture(parser)
     for name in ('payload', 'runtime-receipt', 'runtime-parent', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('apk', 'signer', 'runtime-receipt'):
@@ -167,7 +170,10 @@ def main():
     expectation = parser.add_mutually_exclusive_group()
     expectation.add_argument('--expect-incompatibility', action='store_true')
     expectation.add_argument('--expect-notification-denial', action='store_true')
+    if work_driver is not None:
+        expectation.add_argument('--expect-sticky-incompatibility', action='store_true')
     args = parser.parse_args()
+    native_architecture(args.architecture)
     output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / 'app.apk', args.apk_sha256)
@@ -177,7 +183,7 @@ def main():
             or qualification.get('runtime_receipt_sha256') != args.runtime_receipt_sha256
             or bool(qualification.get('notification_provider_declared')) != (not args.expect_notification_denial)):
         raise RuntimeError('fixture signature, receipt or notification declaration differs')
-    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, 'x86_64')
+    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, args.architecture)
     package = tomllib.loads((payload / 'tilo.toml').read_text())['package']['id']
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
@@ -219,14 +225,13 @@ def main():
                 if args.expect_notification_denial:
                     result = exercise_denial(journey, output, profile, package, args)
                 else:
-                    result = exercise_work(journey, output, profile, package, args, source, destination, grants)
+                    result = (work_driver or exercise_work)(journey, output, profile, package, args, (source, destination), grants)
                 log.flush()
                 text = (output / 'compositor.log').read_text()
                 if 'landlock: fully enforced' not in text or 'no_new_privs: true' not in text:
                     raise RuntimeError('mandatory confinement evidence absent')
-                if not args.expect_incompatibility and not args.expect_notification_denial \
-                        and 'sticky/redelivery process recovery unsupported; no background restart authority' not in text:
-                    raise RuntimeError('unsupported sticky recovery was not reported')
+                if work_driver is None and 'foreground sticky recovery pending' in text:
+                    raise RuntimeError('normal stop or withdrawal incorrectly entered recovery')
             finally:
                 try:
                     if journey is not None and process is not None and process.poll() is None:

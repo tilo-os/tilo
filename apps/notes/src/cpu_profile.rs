@@ -135,9 +135,12 @@ fn mounted_typing_observes_canonical_projection_scaling() {
         let setup_ns = setup.elapsed().as_nanos();
         app.harness().begin_profiling();
         for sample in 0..22 {
-            let ((elapsed, rows), framework_rows) = ui::framework::testing::phases::observe(|| {
-                observe(|| app.harness().type_text("a"))
-            });
+            let (((elapsed, rows), framework_rows), resource_rows) =
+                ui::tilo_resource::profiling::observe(|| {
+                    ui::framework::testing::phases::observe(|| {
+                        observe(|| app.harness().type_text("a"))
+                    })
+                });
             // This maintained observer pumps pending wakes. Measure its work
             // separately; captured passes belong to the combined interval.
             let mut frames = Vec::new();
@@ -158,6 +161,8 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                 "page_tree_commands",
                 "page_tree_action",
                 "page_body_resource",
+                "page_body_publish",
+                "page_body_continuations",
             ] {
                 assert!(rows.iter().any(|row| row.phase == phase));
             }
@@ -172,6 +177,16 @@ fn mounted_typing_observes_canonical_projection_scaling() {
             ] {
                 assert!(framework_rows.iter().any(|row| row.phase == phase));
             }
+            for phase in [
+                "child.publish_parts",
+                "child.rewrap",
+                "schema.cached_clone",
+                "resource.apply_spec",
+                "resource.group_spec",
+                "resource.declaration_spec",
+            ] {
+                assert!(resource_rows.iter().any(|row| row.phase == phase));
+            }
             if sample >= 2 {
                 eprintln!(
                     "notes-cpu-scaling {}",
@@ -184,7 +199,7 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                         "fixture_initialization": "peer_action_commits",
                         "setup_action_commits": pages * 2 - 1,
                         "phases": rows, "profile_drain_phases": drain_rows, "frames": frames,
-                        "framework_phases": framework_rows,
+                        "framework_phases": framework_rows, "resource_phases": resource_rows,
                         "includes_layout": true, "includes_cpu_scene_draw": true,
                         "includes_gpu_or_display": false,
                     })

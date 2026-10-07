@@ -20,7 +20,7 @@ PINS = {'src/api-impl/android/app/Service.java': '0f2601d83841e1e8f9a838742dcf87
 
 def patch_services(root):
     service = root / 'src/api-impl/android/app/Service.java'
-    text = service.read_text()
+    text = service.read_text().replace("private int notification_id;", "private volatile int notification_id;")
     begin = text.index('\tpublic void startForeground(int id, Notification notification) {')
     end = text.index('\n\tpublic Application getApplication()', begin)
     text = text[:begin] + '''    public void startForeground(int id, Notification notification) {
@@ -39,12 +39,14 @@ def patch_services(root):
         manager.notify(id, notification);
         if (notification_id != 0 && notification_id != id) manager.cancel(notification_id);
         notification_id = id;
+        get_atl_loaded_app().tiloPublishRecovery();
     }
 
     public void stopForeground(boolean remove) {
         if (remove && notification_id != 0) {
             new NotificationManager().cancel(notification_id);
             notification_id = 0;
+            get_atl_loaded_app().tiloPublishRecovery();
         }
     }
 
@@ -55,6 +57,7 @@ def patch_services(root):
     }
 
     public void tiloDestroyForeground() { stopForeground(true); }
+    public boolean tiloHasForeground() { return notification_id != 0; }
 ''' + text[end:]
     text = text.replace('System.out.println("Service.stopSelf(" + startId + ") called");',
         'this.get_atl_loaded_app().tiloStopSelf(this, startId);')
@@ -67,7 +70,9 @@ def patch_services(root):
     text = loaded.read_text()
     text = text.replace('private final HashMap<String, Service> running_services;', '''private final HashMap<String, Service> running_services;
     private final HashMap<String, Integer> tiloServiceStarts = new HashMap<>();
-    private final HashSet<Service> tiloStartedServices = new HashSet<>();''')
+    private final HashSet<Service> tiloStartedServices = new HashSet<>();
+    private final HashMap<Service, Integer> tiloRestartModes = new HashMap<>();
+    private final HashSet<String> tiloRecoveringServices = new HashSet<>();''')
     text = text.replace('final String className = component.getClassName();', '''final String className = component.getClassName();
         final int startId;
         synchronized (running_services) {
@@ -92,15 +97,47 @@ def patch_services(root):
                             if (running_services.get(className) != service) return;
                             tiloStartedServices.add(service);
                         }
-                        int restartMode = service.onStartCommand(intent, 0, startId);
-                        // Android START_STICKY=1 and START_REDELIVER_INTENT=3.
-                        // There is no independent host service supervisor.
-                        if (restartMode == 1 || restartMode == 3)
-                            android.util.Log.w("TiloService",
-                                "sticky/redelivery process recovery unsupported; no background restart authority");''')
+                        int restartMode = service.onStartCommand(tiloRecoveringServices.remove(className) ? null : intent, 0, startId);
+                        synchronized (running_services) {
+                            if (running_services.get(className) == service)
+                                tiloRestartModes.put(service, restartMode);
+                        }
+                        tiloPublishRecovery();
+                        if (restartMode == 3)
+                            android.util.Log.w("TiloService", "intent redelivery recovery is not qualified");''')
     begin = text.index('\tpublic boolean stopService(Intent intent) {')
     end = text.index('\n\tpublic void receiveBroadcast(', begin)
-    text = text[:begin] + '''    public boolean stopService(Intent intent) {
+    text = text[:begin] + '''    public synchronized void tiloPublishRecovery() {
+        StringBuilder entries = new StringBuilder();
+        synchronized (running_services) {
+            for (Service service : running_services.values()) {
+                Integer mode = tiloRestartModes.get(service);
+                if (mode != null && mode.intValue() == 1 && service.tiloHasForeground())
+                    entries.append(service.getClass().getName()).append('\\n');
+            }
+        }
+        android.app.TiloChooser.recoveryJournal(entries.toString());
+    }
+
+    public void tiloRecoverForegroundServices() {
+        String entries = System.getenv("TILO_ANDROID_RECOVER_SERVICES");
+        if (entries == null || entries.length() > 4095)
+            throw new SecurityException("no launch-local recovery record");
+        String[] names = entries.split("\\n");
+        if (names.length == 0 || names.length > 16)
+            throw new SecurityException("invalid recovery service count");
+        for (String name : names) {
+            boolean declared = false;
+            for (PackageParser.Service service : pkg.services)
+                if (service.info.enabled && name.equals(service.className)) declared = true;
+            if (!declared || !name.matches("[A-Za-z_$][A-Za-z0-9_.$]{0,254}"))
+                throw new SecurityException("recovery service is not declared by this APK");
+            tiloRecoveringServices.add(name);
+            startOrBindService(new Intent().setComponent(new ComponentName(pkg.packageName, name)), null);
+        }
+    }
+
+    public boolean stopService(Intent intent) {
         if (intent.getComponent() == null) return false;
         Service service;
         synchronized (running_services) {
@@ -122,7 +159,9 @@ def patch_services(root):
             if (startId != -1 && (latest == null || latest.intValue() != startId)) return false;
             running_services.remove(name);
             tiloStartedServices.remove(service);
+            tiloRestartModes.remove(service);
         }
+        tiloPublishRecovery();
         // Application callbacks always run on the main looper, including worker self-stops.
         if (Looper.myLooper() == Looper.getMainLooper()) {
             service.tiloDestroyForeground();
@@ -161,6 +200,10 @@ def patch(root):
     text = text.replace('\tpublic boolean shouldShowRequestPermissionRationale(String permission) {\n\t\treturn true;',
                         '\tpublic void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {}\n\n'
                         '\tpublic boolean shouldShowRequestPermissionRationale(String permission) {\n\t\treturn false;')
+    text = text.replace('Uri uri = uriString != null ? Uri.parse(uriString) : null;',
+        'if (System.getenv("TILO_ANDROID_RECOVER_SERVICES") != null)\n'
+        '\t\t\treturn internalCreateActivity("android.app.TiloRecoveryActivity", native_window, new Intent());\n'
+        '\t\tUri uri = uriString != null ? Uri.parse(uriString) : null;')
     activity.write_text(text)
     manager = root / 'src/api-impl/android/content/pm/PackageManager.java'
     text = manager.read_text()
@@ -227,6 +270,7 @@ def patch(root):
     shutil.copyfile(Path(__file__).with_name('TiloChooser.java'), root / 'src/api-impl/android/app/TiloChooser.java')
     shutil.copyfile(Path(__file__).with_name('TiloAccessibility.java'), root / 'src/api-impl/android/app/TiloAccessibility.java')
     shutil.copyfile(Path(__file__).with_name('TiloDocuments.java'), root / 'src/api-impl/android/app/TiloDocuments.java')
+    shutil.copyfile(Path(__file__).with_name('TiloRecoveryActivity.java'), root / 'src/api-impl/android/app/TiloRecoveryActivity.java')
 
 
 if __name__ == '__main__':
