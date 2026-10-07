@@ -1,4 +1,9 @@
-fn main() {
+include!("fixture_build.rs");
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    emit_hex_fixture("src/macros/le-aligned.spv.hex", "le-aligned.spv")?;
+    emit_hex_fixture("src/macros/be-aligned.spv.hex", "be-aligned.spv")?;
+
     cfg_aliases::cfg_aliases! {
         native: { not(target_arch = "wasm32") },
         Emscripten: { all(target_arch = "wasm32", target_os = "emscripten") },
@@ -59,4 +64,5 @@ fn main() {
         ) },
         no_std: { not(std) }
     }
+    Ok(())
 }
