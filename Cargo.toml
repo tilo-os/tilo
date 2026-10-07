@@ -75,6 +75,7 @@ members = [
     "apps/messages",
     "apps/clocks",
     "apps/code-editor",
+    "apps/chip-design",
     "apps/contacts",
     "apps/containers",
     "apps/db-client",

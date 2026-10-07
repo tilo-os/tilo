@@ -332,7 +332,7 @@ suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py"]
 
 [[group]]
 name = "dist"
-inputs = ["dist/"]
+inputs = ["dist/", "os/registry-runtime-publisher.hex"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",

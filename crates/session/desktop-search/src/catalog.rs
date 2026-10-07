@@ -53,6 +53,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
+        id: "so.tilo.chip-design",
+        name: "Chip Design",
+        category: "Development",
+        platforms: &["linux", "macos", "web"],
+    },
+    CatalogApp {
         id: "so.tilo.clocks",
         name: "Clocks",
         category: "Utility",

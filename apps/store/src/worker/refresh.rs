@@ -480,3 +480,91 @@ impl Refresh {
         sync_authoritative_catalogue(state);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_flatpak_survives_native_name_collision_and_remains_selected() {
+        let mut native = super::super::tests::item("so.tilo.editor", "Editor");
+        native.installed = crate::InstalledState::Installed {
+            version: "1".into(),
+            available: "1".into(),
+            pinned: false,
+            user_managed: false,
+        };
+        let mut state = super::super::tests::state_with_items(
+            vec![native],
+            crate::search::StoreDirectory::default(),
+        );
+        let mut refresh = Refresh::start(&state, None);
+        refresh.apply(
+            &mut state,
+            Response::Status(Ok(FlatpakStatus {
+                available: true,
+                installed: "org.example.Editor\t2.0\tflathub\tuser\n".into(),
+                remotes: concat!(
+                    "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\n",
+                    "flathub\thttps://dl.flathub.org/repo/\tFlathub\tuser\n",
+                )
+                .into(),
+            })),
+        );
+        for remote in state.remotes.clone() {
+            refresh.apply(
+                &mut state,
+                Response::Flatpak(
+                    remote,
+                    Ok("org.example.Editor\tEditor\tEdit documents\t2.0\tstable\tflathub\n".into()),
+                ),
+            );
+        }
+        refresh.rebuild(&mut state);
+        let item = state.base_items.iter().find(|item| item.id == "org.example.Editor")
+            .expect("the actually installed account app must not disappear behind a native name collision");
+        assert!(
+            matches!(&item.installed, crate::InstalledState::Installed { version, user_managed: true, .. } if version == "2.0")
+        );
+        assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakOpen);
+        assert_eq!(state.remotes.len(), 2);
+        let mut app = crate::StoreApp::new();
+        app.set_items(state.base_items);
+        app.set_flatpak_available(true);
+        app.admit(crate::StoreEffect::SetSearch {
+            query: "org.example.Editor".into(),
+        })
+        .unwrap();
+        app.admit(crate::StoreEffect::ShowDetails {
+            app: "org.example.Editor".into(),
+        })
+        .unwrap();
+        let exact = app.inspect_catalogue(Some("org.example.Editor")).unwrap();
+        assert_eq!(exact["matching"], 1);
+        assert_eq!(exact["selected_app"], "org.example.Editor");
+        assert_eq!(exact["detail"]["installed"], true);
+        assert_eq!(exact["detail"]["name"], "Editor");
+        app.admit(crate::StoreEffect::SetSearch {
+            query: "Editor".into(),
+        })
+        .unwrap();
+        assert!(
+            app.visible_items()
+                .iter()
+                .any(|item| item.id == "org.example.Editor")
+        );
+        app.admit(crate::StoreEffect::SetSearch {
+            query: String::new(),
+        })
+        .unwrap();
+        app.admit(crate::StoreEffect::SetSource {
+            source: "On device".into(),
+        })
+        .unwrap();
+        assert!(
+            app.visible_items()
+                .iter()
+                .any(|item| item.id == "org.example.Editor")
+        );
+    }
+}
