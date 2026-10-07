@@ -176,6 +176,16 @@ current consent and source authority remain valid; genuine denial still reports
 permission denial. A call-state observation before consent now distinguishes
 an ended call from a missing prompt. Physical Yoga/Pi testing remains outstanding.
 
+Run 40 recorded Bob's call ended with an empty channel and no issue before
+consent, while Alice again reached active capture. Neither output-observation
+loss nor registry-refresh failure was reported. Chat's explicit status read
+could overlap its automatic poll: the shared transport cancels the earlier
+status task, and this fail-closed client turns that cancellation into Leave.
+The follow-up coalesces those reads onto one in-flight refresh in Chat, keeping
+actual service errors terminal. Public call-effect and failure regressions pass;
+the next native run must establish whether this closes the observed boundary.
+Run 39 was interrupted during package assembly and produced no acceptance receipt.
+
 `journey.json` remains `qualified: false` until every step completes: presented
 native Chat on both peers; opt-in context navigation; Stop and explicit follow
 release; muted joining; visible fresh capture consent; decoded opposite-frequency
