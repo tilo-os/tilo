@@ -570,11 +570,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/platform/tilo-media/tests/fixtures/h264-aac-48s.mp4",
-    "oid": "c58495dd226f3b2f81a503b41b0e35130a0209f8",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/platform/tilo-pdf/tests/fixtures/arabic.pdf",
     "oid": "09aeb80f0e04f7efbfc338e81b341f66e9730ceb",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
