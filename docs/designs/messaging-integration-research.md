@@ -1450,3 +1450,16 @@ fgj actions workflow run release-apps.yml --ref main \
 This is a normal accepted-authority release, not a fixture-signature workaround.
 Its registry request still needs normal admission. No release dispatch or live
 account qualification is implied by documenting the entrypoint.
+
+Fresh Signal activation uses the original approved account key for its private
+profile, history and send journal. Their existing vault formats authenticate
+separate purpose identities. It no longer asks for an unrelated, unprovisioned
+messaging key from the OS keychain; no second credential is created. Each native
+assembly worker checks the original account grant before and after obtaining
+that existing key. Wrong-key existing state fails closed, without reset or a
+fallback. The full empty-app first-account fixture now invokes production native
+broker assembly on its isolated provider streams, rather than its supplied-key
+adapter. It failed before this custody repair and passes after; protected
+revocation retains the protocol-write assertion and additionally proves both
+private ciphertext files remain unchanged. This still uses synthetic provider
+peers and requires the accepted signed runtime for actual service qualification.

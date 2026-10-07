@@ -1,11 +1,15 @@
 use super::*;
 use crate::shell::in_process::messaging::{first_account, working_profile::provision};
-use std::{path::Path, sync::mpsc};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc,
+};
 
 struct FixtureSource {
     streams: Mutex<Option<(UnixStream, UnixStream)>>,
     linking: Mutex<Vec<std::thread::JoinHandle<()>>>,
     activations: AtomicUsize,
+    history_root: Mutex<Option<PathBuf>>,
 }
 impl first_account::Source for FixtureSource {
     fn provision(
@@ -34,11 +38,17 @@ impl first_account::Source for FixtureSource {
         _: crate::shell::in_process::messaging::network::Policy,
     ) -> Result<NativeSignalActivation, SendError> {
         self.activations.fetch_add(1, Ordering::SeqCst);
-        let streams = self.streams.lock().unwrap().take().unwrap();
-        let owner = NativeAccountCustody::owner(account.as_ref()).clone();
-        account.activate_on_worker(wake, move |authority| {
-            assemble_fixture(&owner, &storage.history, streams, authority)
-        })
+        *self.history_root.lock().unwrap() = Some(storage.history.clone());
+        let (sender, receiver) = self.streams.lock().unwrap().take().unwrap();
+        account.activate_native_on_worker(
+            wake,
+            NativeSignalHandles {
+                private_root: storage.history,
+                signal_account: storage.signal_account,
+                sender,
+                receiver,
+            },
+        )
     }
 }
 
@@ -72,6 +82,7 @@ fn empty_native_messages_first_account_protected_review_receive_reply_and_revoke
         streams: Mutex::new(Some((sender, receiver))),
         linking: Mutex::default(),
         activations: AtomicUsize::new(0),
+        history_root: Mutex::default(),
     });
     apps.bind_messaging_record_wake(Arc::new(|| {}));
     apps.bind_messaging_network_prompts(crate::portal::PromptQueueHandle::new(
@@ -106,7 +117,18 @@ fn empty_native_messages_first_account_protected_review_receive_reply_and_revoke
     );
     assert_eq!(source.activations.load(Ordering::SeqCst), 1);
     let reply = receive_and_reply(&mut apps, &mut mounted, &account, &arrive);
+    let history_root = source.history_root.lock().unwrap().clone().unwrap();
+    let paths = [
+        history_root.join("history/history.enc"),
+        history_root.join("journal/vault.enc"),
+    ];
+    let ciphertexts = paths.each_ref().map(|path| std::fs::read(path).unwrap());
     revoke_native_permission(&rig, &mut apps, &mut mounted, &reply, &writes);
+    assert_eq!(
+        paths.each_ref().map(|path| std::fs::read(path).unwrap()),
+        ciphertexts,
+        "original protected revocation must leave private history and send journal unchanged"
+    );
     drop(rig);
     drop(mounted);
     drop(apps);

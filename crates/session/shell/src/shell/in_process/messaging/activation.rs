@@ -200,9 +200,9 @@ impl NativeSignalAccount {
                 .try_clone()
                 .map_err(|_| SendError::Unavailable)?,
         ];
-        let owner = self.gate.startup.identity.owner.clone();
+        let account = self.clone();
         self.activate_with_interrupts(wake, interrupts, move |authority| {
-            assemble_native(&owner, handles, authority)
+            assemble_native(&account, handles, authority)
         })
     }
 }
