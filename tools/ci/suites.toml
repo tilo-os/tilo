@@ -1475,3 +1475,9 @@ readers = ["apps/video-player/build.rs"]
 [[covered]]
 suite = "tools/android/mediation/prepare-res.py"
 by = "tools/tests/test_android_fixture_resources.py"
+
+[[cargo]]
+package = "install"
+# Real signed runtime installation is checked against its broker service grants.
+inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-app-host.service"]
+readers = ["crates/packaging/install/tests/runtime_package.rs"]
