@@ -39,13 +39,13 @@ class SourceContentTests(unittest.TestCase):
         self.stage("image.png", "Unicode text: café\n".encode())
         failures, count = contract.audit(self.root, staged=True)
         self.assertEqual(count, 3)
-        self.assertEqual(failures, ["source.rs: non-text content"])
+        self.assertEqual(failures, ["source.rs: non-text content; new/modified non-text or non-LF blobs are forbidden"])
 
     def test_checks_staged_bytes_even_when_worktree_is_fixed(self):
         self.stage("source.txt", b"bad\r\n")
         (self.root / "source.txt").write_bytes(b"good\n")
         failures, _ = contract.audit(self.root, staged=True)
-        self.assertEqual(failures, ["source.txt: non-LF line endings"])
+        self.assertEqual(failures, ["source.txt: non-LF line endings; new/modified non-text or non-LF blobs are forbidden"])
 
     def test_rejects_bare_cr_invalid_utf8_and_controls(self):
         for name, data in [("cr", b"a\rb"), ("utf8", b"\xff"), ("control", b"a\x1bb")]:
@@ -57,9 +57,10 @@ class SourceContentTests(unittest.TestCase):
         self.stage("fixture", b"\x00original")
         oid = self.git("rev-parse", ":fixture").decode().strip()
         self.manifest([{"path": "fixture", "oid": oid, "reason": "Required regression fixture"}])
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.org", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "test: legacy fixture")
         self.assertEqual(contract.audit(self.root, staged=True)[0], [])
         self.stage("fixture", b"\x00replacement")
-        self.assertEqual(contract.audit(self.root, staged=True)[0], ["fixture: non-text content"])
+        self.assertEqual(contract.audit(self.root, staged=True)[0], ["fixture: non-text content; new/modified non-text or non-LF blobs are forbidden"])
 
     def test_duplicate_exception_fails(self):
         entry = {"path": "fixture", "oid": "0" * 40, "reason": "Test fixture"}
