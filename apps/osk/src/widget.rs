@@ -259,6 +259,10 @@ pub struct OskWidget {
     swipe_model: Box<dyn SwipeModel>,
     /// Offline next-word predictor, for `language`.
     predictor: Predictor,
+    /// Host-issued reader of the person's shared local vocabulary. No app
+    /// path fallback: an anonymous or unbound keyboard has no personal hints.
+    personal_vocabulary:
+        Option<std::sync::Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
     /// The language the preferred letter layout types; the predictor, the
     /// autocorrector and the swipe decoder all serve it.
     language: Language,
@@ -416,6 +420,7 @@ impl OskWidget {
             // models are present; otherwise fall back to the geometric one.
             swipe_model,
             predictor: Predictor::english(),
+            personal_vocabulary: None,
             language: Language::English,
             suggestions: Vec::new(),
             current_word: String::new(),
@@ -521,6 +526,31 @@ impl OskWidget {
     pub fn with_predictor(mut self, predictor: Predictor) -> Self {
         self.predictor = predictor;
         self
+    }
+
+    /// Install or revoke the host's authenticated personal-vocabulary reader.
+    /// The host calls this on account changes and refreshes on dictionary edits.
+    /// This does not learn words or persist an OSK-specific vocabulary.
+    pub fn set_personal_vocabulary(
+        &mut self,
+        source: Option<std::sync::Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+    ) {
+        self.personal_vocabulary = source;
+        self.last_correction = None;
+        self.refresh_completion_suggestions();
+    }
+
+    /// Refresh visible completions after the shared service reports a change.
+    /// Callers use the same host notification that refreshes other consumers.
+    pub fn refresh_personal_vocabulary(&mut self) {
+        self.refresh_completion_suggestions();
+    }
+
+    fn personal_words(&self) -> settings_store::personal_dictionary::Snapshot {
+        self.personal_vocabulary
+            .as_ref()
+            .and_then(|source| source.snapshot().ok())
+            .unwrap_or_default()
     }
 
     /// Receives every [`OskOutput`] in the order the field must apply it.
@@ -1302,7 +1332,11 @@ impl OskWidget {
     /// The correction for a finished `word`, if autocorrection applies and the
     /// word is neither known nor one this user has typed or kept before.
     fn correction_for(&mut self, word: &str) -> Option<String> {
-        if word.is_empty() || !self.autocorrect_allowed() || self.predictor.has_learned(word) {
+        if word.is_empty()
+            || !self.autocorrect_allowed()
+            || self.personal_words().contains(word, self.language.code())
+            || self.predictor.has_learned(word)
+        {
             return None;
         }
         let adjacency = KeyAdjacency::from_layout(self.current_layout());
@@ -1426,6 +1460,14 @@ impl OskWidget {
             .into_iter()
             .map(|(w, s)| Suggestion::new(w, s))
             .collect();
+        let words = self.personal_words();
+        let personal = words.completions(&self.current_word, self.language.code(), MAX_SUGGESTIONS);
+        self.suggestions
+            .retain(|suggestion| !words.contains(&suggestion.word, self.language.code()));
+        for word in personal.into_iter().rev() {
+            self.suggestions.insert(0, Suggestion::personal(word));
+        }
+        self.suggestions.truncate(MAX_SUGGESTIONS);
         self.add_emoji_suggestions();
     }
 
@@ -1484,6 +1526,15 @@ impl OskWidget {
         let Some(s) = self.suggestions.get(index).cloned() else {
             return false;
         };
+        if s.personal
+            && !self
+                .personal_words()
+                .hints(self.language.code())
+                .any(|word| word == s.word)
+        {
+            self.refresh_completion_suggestions();
+            return false;
+        }
         if s.emoji {
             // The word stays as typed; the emoji follows it.
             self.finish_word_with(" ", false);
@@ -2487,6 +2538,10 @@ struct Correction {
     /// The space or punctuation committed after the word.
     tail: String,
 }
+
+#[cfg(test)]
+#[path = "personal_vocabulary_tests.rs"]
+mod personal_vocabulary_tests;
 
 impl Widget for OskWidget {
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {

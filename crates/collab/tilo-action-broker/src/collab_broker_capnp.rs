@@ -6804,11 +6804,23 @@ fn app_settings_capability(
         ));
     };
     let app_id = route.app_id.clone();
+    // Personal vocabulary stays on this device. Admission to a workspace is
+    // insufficient: only the host's private local worker descriptor of the
+    // authenticated person receives the read/edit projection.
+    let dictionary_owner = (identity.host_scope.is_some()
+        && identity.agent_id.is_none()
+        && !identity.verified.capped
+        && !identity
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.capabilities.foreign))
+    .then_some(identity.verified.user_public_key);
     let state = Arc::clone(state);
     let revalidate: runtime_collab::settings::host::Revalidate =
         Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
     Ok(capnp_rpc::new_client(
-        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate),
+        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
+            .with_dictionary_owner(dictionary_owner),
     ))
 }
 
