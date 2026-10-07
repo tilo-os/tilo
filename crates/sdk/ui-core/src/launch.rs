@@ -2334,7 +2334,7 @@ mod tests {
             },
         )
         .unwrap();
-        let DefinitionDispatch::Native(app) = result else {
+        let DefinitionDispatch::Native(mut app) = result else {
             panic!("native component expected")
         };
         assert!(app.collaboration_is_connected());
@@ -2347,6 +2347,30 @@ mod tests {
             wake.as_ref().unwrap().is_active(),
             "same worker wake scope transfers into App"
         );
+        // Completing construction is insufficient: the ordinary first frame must
+        // reconcile the installed component owner and publish its directory on
+        // this same committed-history worker, without any input priming it.
+        crate::app::draw_prepared_component_test_frame(&mut app);
+        tilo_test_env::wait_until("fresh native component directory publication", || {
+            app.pump_collab_presence();
+            let admission = app.native_admission_snapshot();
+            admission.history.action_history_ready
+                && admission.directory.directory_enqueued
+                && admission
+                    .directory
+                    .transport_directory_rpc_successes
+                    .is_some_and(|count| count > 0)
+        });
+        let admission = app.native_admission_snapshot();
+        assert!(admission.connection.manager_connected);
+        assert!(admission.connection.custody_reconciled);
+        assert!(admission.live_document_owners > 0);
+        assert_eq!(
+            admission.live_document_owners,
+            admission.installed_document_owners
+        );
+        assert!(admission.history.primary_history_ready);
+        assert!(admission.history.all_owner_histories_ready);
         drop(app);
         assert!(!wake.as_ref().unwrap().is_active());
     }
