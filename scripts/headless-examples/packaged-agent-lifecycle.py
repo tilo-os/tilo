@@ -174,7 +174,8 @@ def foreign_frames(response):
     return frames
 
 
-def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_path=None):
+def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_path=None,
+                                     composer_name="Message composer"):
     """Observe the actual Chat route without reading private editor content."""
     address = atspi.atspi_address()
     peers = atspi.bus_pids(address)
@@ -214,7 +215,7 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
                 observed["complete_windows"] += 1
                 headings = client.named({path: name.casefold() for path, name in tree.items()},
                                         f"{agent_name.casefold()}, agent")
-                composers = [path for path in client.named(tree, "Message composer")
+                composers = [path for path in client.named(tree, composer_name)
                              if "org.a11y.atspi.EditableText" in client.interfaces(path)]
                 controls = client.named(tree, control_name)
                 drag_handles = client.named(tree, "Drag conversation")
@@ -831,6 +832,68 @@ def accessible_names(access):
     return set(accessible_subtree(
         client, access["window"], atspi.APP_TREE_NODE_LIMIT
     ).values())
+
+
+def activate_named_agent_control(access, label):
+    """Activate one exact public control in the matched Chat presentation."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+    matches = client.named(tree, label)
+    if len(matches) != 1:
+        raise RuntimeError(f"the actual Agent conversation has no unique {label} control")
+    focused = client.call(
+        matches[0], "org.a11y.atspi.Component.GrabFocus", check=False
+    )
+    if focused.strip() != "(true,)":
+        raise RuntimeError(f"the actual {label} control refused accessibility focus")
+    activated = client.call(
+        matches[0], "org.a11y.atspi.Action.DoAction", "0", check=False
+    )
+    if activated.strip() != "(true,)":
+        raise RuntimeError(f"the actual {label} control refused accessibility activation")
+    return True
+
+
+def agent_write_restricted_accessibility(agent_name, expected):
+    """Observe the mounted read-only Agent view without exporting its draft."""
+    address = atspi.atspi_address()
+    matches = {}
+    forbidden = {"Send message", "Queue task", "Send direction", "Stop current task"}
+    for bus, proxy_pid in atspi.bus_pids(address).items():
+        pid = atspi.app_process(proxy_pid)
+        if process_program(pid) != "chat":
+            continue
+        client = atspi.AtspiClient(address, bus)
+        try:
+            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
+                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                headings = client.named(
+                    {path: name.casefold() for path, name in tree.items()},
+                    f"{agent_name.casefold()}, agent",
+                )
+                notices = client.named(
+                    tree, "You cannot send messages in this conversation."
+                )
+                retained = client.named(tree, expected)
+                mutable = [path for path, name in tree.items() if name in forbidden]
+                editable = [path for path in tree
+                            if "org.a11y.atspi.EditableText" in client.interfaces(path)]
+                if (len(headings) == 1 and len(notices) == 1 and len(retained) == 1
+                        and not mutable and not editable):
+                    key = (headings[0], notices[0], retained[0])
+                    matches.setdefault(key, {
+                        "bus": bus, "process": pid, "window": window,
+                        "notice_present": True, "draft_matches": True,
+                        "mutable_controls": len(mutable),
+                        "editable_composers": len(editable),
+                        "private_content_recorded": False,
+                    })
+        except atspi.GateError:
+            continue
+    if len(matches) > 1:
+        raise RuntimeError("duplicate write-restricted Agent conversations were published")
+    return next(iter(matches.values())) if matches else None
 
 
 def activate_agent_conversation_control(access, label):
@@ -2209,6 +2272,80 @@ def grant_exact_marker_action(socket, room, agent, process, output):
     return evidence
 
 
+def assign_expiring_app_write_restriction(
+        socket, room, person, app, profile_name, process):
+    """Apply one short-lived real owner profile to the exact admitted Person."""
+    save = wait_for("owner profile.save action", lambda: offered_governance_action(
+        socket, room, "profile.save"), process)
+    save_receipt = wait_terminal(socket, invoke(socket, save, {
+        "name": profile_name,
+        "description": "Native independent app permission proof",
+        "rules": [{
+            "scope": {"App": app},
+            "effect": "Restrict",
+            "verb": "Write",
+        }],
+        "confirm": True,
+    }), process)
+    assign = wait_for("owner profile.assign action", lambda: offered_governance_action(
+        socket, room, "profile.assign"), process)
+    expires_unix = int(time.time()) + 12
+    assign_receipt = wait_terminal(socket, invoke(socket, assign, {
+        "profile": profile_name,
+        "subject_kind": "person",
+        "subject": person,
+        "expires_unix": expires_unix,
+        "confirm": True,
+    }), process)
+    return {
+        "save_invocation": terminal_invocation(save_receipt),
+        "assign_invocation": terminal_invocation(assign_receipt),
+        "expires_unix": expires_unix,
+    }
+
+
+def require_stale_action_refused(socket, action, args, process):
+    """Require a saved public offer to refuse, without treating uncertainty as refusal."""
+    response = call(socket, {
+        "op": "actions_invoke", "provider": action["provider"],
+        "id": action["id"], "args": args,
+    })
+    if "err" in response:
+        return "immediate_refusal"
+    receipt = response.get("answer", {}).get("receipt")
+    if not isinstance(receipt, dict):
+        raise RuntimeError("stale action refusal has no observable receipt")
+    update = receipt.get("update")
+    original = update.get("invocation") if isinstance(update, dict) else None
+    if not isinstance(original, str) or not original:
+        raise RuntimeError("stale action refusal lost its invocation identity")
+
+    def refused():
+        nonlocal receipt
+        update = receipt.get("update")
+        if not isinstance(update, dict) or update.get("invocation") != original:
+            raise RuntimeError("stale action refusal changed its invocation identity")
+        state = update.get("state")
+        if state in {"failed", "cancelled"}:
+            return "terminal_refusal"
+        if state == "succeeded":
+            raise RuntimeError("a stale permission-gated action unexpectedly succeeded")
+        if state not in {"accepted", "progress", "item"}:
+            raise RuntimeError("stale action refusal has no truthful lifecycle state")
+        broker_id = receipt.get("broker_invocation_id")
+        if not isinstance(broker_id, int) or isinstance(broker_id, bool) or broker_id <= 0:
+            raise RuntimeError("stale action refusal has no broker observation")
+        observed = call(socket, {"op": "actions_status", "invocation_id": broker_id})
+        if "err" in observed:
+            raise RuntimeError("stale action refusal became uncertain")
+        receipt = observed.get("answer", {}).get("receipt")
+        if not isinstance(receipt, dict):
+            raise RuntimeError("stale action refusal lost its receipt")
+        return None
+
+    return wait_for("saved permission-gated action refusal", refused, process)
+
+
 def read_task(socket, room, task_id, process):
     action = wait_for("owner-published task read", lambda: offered_desktop_action(
         socket, room, "tasks", f"desktop:task:{task_id}", "read-task"), process)
@@ -3118,6 +3255,210 @@ def native_agent_membership_revocation(
     return evidence
 
 
+def prepare_private_permission_draft(socket, access, draft, selection_length, output, process):
+    """Physically replace and select one fixture-owned private draft."""
+    frame = wait_for("presented Chat frame for permission draft", lambda: presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+    physically_click_editor(socket, access, presented_content_geometry(frame))
+    require_chat_keyboard_focus_after_click(socket, output)
+    physical_chord(socket, "a", ctrl=True)
+    require_ok(call(socket, {"op": "type", "text": draft}))
+    wait_for("physical private permission draft", lambda: private_editor_value_matches(
+        access, draft), process)
+    set_physical_modifiers(socket, shift=True)
+    try:
+        for _ in range(selection_length):
+            require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+    finally:
+        set_physical_modifiers(socket)
+    before = private_editor_observation(access, draft)
+    if before["selection"] != [len(draft) - selection_length, len(draft)]:
+        raise RuntimeError("physical permission selection did not reach the private editor")
+    return before
+
+
+def same_private_editor_state(left, right):
+    return all(left.get(field) == right.get(field)
+               for field in ("draft_matches", "caret", "selection"))
+
+
+def native_chat_write_downgrade(socket, room, record, person, output, size, process):
+    """Restrict only Chat.Write, then require expiry to restore exact state."""
+    message_draft = "Keep this Message draft through permission loss"
+    message_access = wait_for("Message editor before Chat restriction", lambda:
+                              agent_conversation_accessibility("Tide"), process)
+    message_before = prepare_private_permission_draft(
+        socket, message_access, message_draft, 8, output, process
+    )
+    stale_message = wait_for("fresh Message offer before Chat restriction", lambda:
+                             offered_agent_action(socket, room, record, "tide", "message"), process)
+    if offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
+        raise RuntimeError("independent Queue offer is absent before Chat restriction")
+    chat_profile = assign_expiring_app_write_restriction(
+        socket, room, person, "so.tilo.chat", "Native Chat write restriction", process
+    )
+
+    def chat_restricted():
+        if offered_agent_action(socket, room, record, "tide", "message") is not None:
+            return None
+        if offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
+            raise RuntimeError("Chat restriction also removed the independent Task offer")
+        return agent_write_restricted_accessibility("Tide", message_draft)
+
+    restricted_chat = wait_for("mounted Chat.Write restriction", chat_restricted, process)
+    message_refusal = require_stale_action_refused(
+        socket, stale_message, {"value": message_draft}, process
+    )
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"person-chat-write-restricted-{size}.png"
+    )}))
+
+    def chat_restored():
+        if offered_agent_action(socket, room, record, "tide", "message") is None:
+            return None
+        access = agent_conversation_accessibility("Tide")
+        if access is None:
+            return None
+        observed = private_editor_observation(access, message_draft)
+        return (access, observed) if same_private_editor_state(
+            observed, message_before
+        ) else None
+
+    message_access, message_restored = wait_for(
+        "expired Chat.Write restriction restoration", chat_restored, process, timeout=30
+    )
+    if time.time() < chat_profile["expires_unix"]:
+        raise RuntimeError("Chat.Write restored before the real profile expired")
+    return {
+        "chat_write_restricted": True,
+        "chat_read_only_notice_presented": restricted_chat["notice_present"],
+        "chat_mutable_controls_removed": restricted_chat["mutable_controls"] == 0,
+        "chat_stale_offer_refused": message_refusal in {
+            "immediate_refusal", "terminal_refusal",
+        },
+        "task_offer_remained_during_chat_restriction": True,
+        "chat_profile_expired": True,
+        "chat_draft_restored": message_restored["draft_matches"],
+        "chat_caret_restored": message_restored["caret"] == message_before["caret"],
+        "chat_selection_restored": message_restored["selection"] == message_before["selection"],
+    }
+
+
+def native_task_write_downgrade(socket, room, record, person, output, size, process):
+    """Restrict only Task.Write, then require expiry to restore exact state."""
+    message_access = wait_for(
+        "Message editor before Task restriction",
+        lambda: agent_conversation_accessibility("Tide"), process,
+    )
+    activate_named_agent_control(message_access, "Queue")
+    queue_access = wait_for("Task instruction editor before Task restriction", lambda:
+                            agent_conversation_accessibility(
+                                "Tide", composer_name="Task instruction composer"
+                            ), process)
+    queue_draft = "Keep this Queue draft through permission loss"
+    queue_before = prepare_private_permission_draft(
+        socket, queue_access, queue_draft, 8, output, process
+    )
+    stale_queue = wait_for("fresh Queue offer before Task restriction", lambda:
+                           offered_desktop_action(
+                               socket, room, "tasks", "desktop:tasks", "queue"
+                           ), process)
+    if offered_agent_action(socket, room, record, "tide", "message") is None:
+        raise RuntimeError("independent Message offer is absent before Task restriction")
+    task_profile = assign_expiring_app_write_restriction(
+        socket, room, person, "so.tilo.desktop", "Native Task write restriction", process
+    )
+
+    def task_restricted():
+        if offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is not None:
+            return None
+        if offered_agent_action(socket, room, record, "tide", "message") is None:
+            raise RuntimeError("Task restriction also removed the independent Message offer")
+        access = agent_conversation_accessibility(
+            "Tide", composer_name="Task instruction composer"
+        )
+        if access is None:
+            return None
+        observed = private_editor_observation(access, queue_draft)
+        names = accessible_names(access)
+        if "Queue task" in names:
+            return None
+        return (access, observed) if same_private_editor_state(
+            observed, queue_before
+        ) else None
+
+    _, queue_restricted = wait_for("mounted Task.Write restriction", task_restricted, process)
+    queue_refusal = require_stale_action_refused(socket, stale_queue, {
+        "instruction": queue_draft,
+        "title": "Permission proof task",
+        "agent": "tide",
+        "route": "model",
+    }, process)
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"person-task-write-restricted-{size}.png"
+    )}))
+
+    def task_restored():
+        if offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
+            return None
+        access = agent_conversation_accessibility(
+            "Tide", composer_name="Task instruction composer"
+        )
+        if access is None:
+            return None
+        observed = private_editor_observation(access, queue_draft)
+        return observed if same_private_editor_state(observed, queue_before) else None
+
+    queue_restored = wait_for(
+        "expired Task.Write restriction restoration", task_restored, process, timeout=30
+    )
+    if time.time() < task_profile["expires_unix"]:
+        raise RuntimeError("Task.Write restored before the real profile expired")
+    return {
+        "task_write_restricted": True,
+        "task_queue_control_removed": True,
+        "task_stale_offer_refused": queue_refusal in {
+            "immediate_refusal", "terminal_refusal",
+        },
+        "message_offer_remained_during_task_restriction": True,
+        "task_profile_expired": True,
+        "task_draft_retained_while_restricted": queue_restricted["draft_matches"],
+        "task_draft_restored": queue_restored["draft_matches"],
+        "task_caret_restored": queue_restored["caret"] == queue_before["caret"],
+        "task_selection_restored": queue_restored["selection"] == queue_before["selection"],
+    }
+
+
+def native_person_permission_downgrades(
+        socket, room, record, provider, output, size, process, binaries, env):
+    """Prove independent real Person Chat.Write and Task.Write restrictions."""
+    person = inspect_native_person(binaries, env, room)
+    identity = owned_agent_identity(process.pid)
+    if provider.request_count() != 4 or provider.overflow_count() != 0:
+        raise RuntimeError("permission proof requires the completed four-turn lifecycle")
+    chat = native_chat_write_downgrade(
+        socket, room, record, person, output, size, process
+    )
+    task = native_task_write_downgrade(
+        socket, room, record, person, output, size, process
+    )
+    if owned_agent_identity(process.pid) != identity \
+            or provider.request_count() != 4 or provider.overflow_count() != 0:
+        raise RuntimeError("permission proof changed Agent custody or initiated model work")
+    evidence = {
+        "typed_person_verified_in_memory": True,
+        **chat,
+        **task,
+        "provider_request_count": provider.request_count(),
+        "provider_overflow_count": provider.overflow_count(),
+        "private_content_recorded": False,
+    }
+    (output / "person-permission-downgrade.json").write_text(
+        json.dumps(evidence, indent=2) + "\n"
+    )
+    return evidence
+
+
 def managed_child_diagnostic(profile):
     """Classify bounded managed output without retaining task/model content."""
     logs = list(profile.rglob("launcher-debug-output.log"))
@@ -3800,6 +4141,24 @@ def inspect_native_owner(binaries, env, room, *, enrollment=False):
     return observed
 
 
+def inspect_native_person(binaries, env, room):
+    """Return the exact admitted Person in memory; never retain its identifier."""
+    result = subprocess.run([
+        str(binaries / "examples/packaged_agent_lifecycle"), "--inspect-native-person",
+        env["TILO_STATE_PATH"], room, "",
+    ], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+    if result.returncode:
+        raise RuntimeError("the private native Person inspector refused") from None
+    try:
+        observed = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        raise RuntimeError("the private native Person inspector returned malformed output") from None
+    person = observed.get("person") if isinstance(observed, dict) else None
+    if not isinstance(person, str) or re.fullmatch(r"[0-9a-f]{64}", person) is None:
+        raise RuntimeError("the private native Person inspector returned no typed Person")
+    return person
+
+
 def enroll_native(socket, invitation, shell, binaries, env):
     """Redeem the actual signed invitation through the ordinary Connect UI."""
     invoke(socket, require_action(socket, "peer.connect", "connect"))
@@ -3849,6 +4208,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
     float_return_proven = False
     physical_send_evidence = None
     revocation_evidence = None
+    permission_evidence = None
     marker_evidence = None
     owned_fcitx = None
     try:
@@ -4232,6 +4592,10 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                     size, shell, lifecycle_evidence["_owned_process_identity"],
                     float_return_proven,
                 )
+                permission_evidence = native_person_permission_downgrades(
+                    socket, enrollment["room"], category[0]["record"], provider, output,
+                    size, shell, binaries, env,
+                )
             time.sleep(0.5)
         else:
             invite = require_action(socket, "agent.invite", "agent")
@@ -4262,6 +4626,22 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             and revocation_evidence.get("selection_restored") is True
             and revocation_evidence.get("provider_request_count") == 4
             and revocation_evidence.get("provider_overflow_count") == 0
+            and permission_evidence is not None
+            and permission_evidence.get("typed_person_verified_in_memory") is True
+            and permission_evidence.get("chat_write_restricted") is True
+            and permission_evidence.get("chat_stale_offer_refused") is True
+            and permission_evidence.get("task_offer_remained_during_chat_restriction") is True
+            and permission_evidence.get("chat_draft_restored") is True
+            and permission_evidence.get("chat_caret_restored") is True
+            and permission_evidence.get("chat_selection_restored") is True
+            and permission_evidence.get("task_write_restricted") is True
+            and permission_evidence.get("task_stale_offer_refused") is True
+            and permission_evidence.get("message_offer_remained_during_task_restriction") is True
+            and permission_evidence.get("task_draft_restored") is True
+            and permission_evidence.get("task_caret_restored") is True
+            and permission_evidence.get("task_selection_restored") is True
+            and permission_evidence.get("provider_request_count") == 4
+            and permission_evidence.get("provider_overflow_count") == 0
         )
         (output / "bootstrap.json").write_text(json.dumps({
             "stage": "native-bootstrap-only" if native else "legacy-bootstrap-only",

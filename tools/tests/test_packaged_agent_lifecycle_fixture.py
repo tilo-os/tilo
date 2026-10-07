@@ -24,6 +24,117 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_native_person_inspector_is_private_and_fail_closed(self):
+        class Result:
+            returncode = 0
+            stdout = json.dumps({"person": "a" * 64})
+            stderr = ""
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                PROOF.subprocess, "run", return_value=Result()):
+            person = PROOF.inspect_native_person(
+                pathlib.Path(directory), {"TILO_STATE_PATH": "/state"}, "room"
+            )
+        self.assertEqual(person, "a" * 64)
+
+        private = "private-person-and-action-payload"
+        Result.stdout = private
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                PROOF.subprocess, "run", return_value=Result()), self.assertRaises(
+                    RuntimeError
+                ) as raised:
+            PROOF.inspect_native_person(
+                pathlib.Path(directory), {"TILO_STATE_PATH": "/state"}, "room"
+            )
+        self.assertNotIn(private, str(raised.exception))
+
+    def test_expiring_app_restriction_uses_exact_person_and_scope(self):
+        save = {"id": "save"}
+        assign = {"id": "assign"}
+        calls = []
+
+        def invoke(_socket, action, arguments):
+            calls.append((action, arguments))
+            return {"receipt": {"action": action["id"]}}
+
+        with patch.object(PROOF, "wait_for", side_effect=[save, assign]), \
+                patch.object(PROOF, "invoke", side_effect=invoke), \
+                patch.object(PROOF, "wait_terminal", side_effect=lambda _s, row, _p: row), \
+                patch.object(PROOF, "terminal_invocation", side_effect=["saved", "assigned"]), \
+                patch.object(PROOF.time, "time", return_value=100):
+            result = PROOF.assign_expiring_app_write_restriction(
+                "socket", "room", "b" * 64, "so.tilo.chat", "profile", None
+            )
+        self.assertEqual(calls[0][1]["rules"], [{
+            "scope": {"App": "so.tilo.chat"},
+            "effect": "Restrict",
+            "verb": "Write",
+        }])
+        self.assertEqual(calls[1][1], {
+            "profile": "profile", "subject_kind": "person", "subject": "b" * 64,
+            "expires_unix": 112, "confirm": True,
+        })
+        self.assertEqual(result, {
+            "save_invocation": "saved", "assign_invocation": "assigned",
+            "expires_unix": 112,
+        })
+        self.assertNotIn("b" * 64, json.dumps(result))
+
+    def test_permission_evidence_never_serializes_private_person(self):
+        class Provider:
+            def request_count(self):
+                return 4
+
+            def overflow_count(self):
+                return 0
+
+        private_person = "c" * 64
+        chat = {"chat_write_restricted": True}
+        task = {"task_write_restricted": True}
+        order = []
+
+        def chat_step(*_args):
+            order.append("chat")
+            return chat
+
+        def task_step(*_args):
+            order.append("task")
+            return task
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "inspect_native_person", return_value=private_person), \
+                patch.object(PROOF, "owned_agent_identity", return_value=(8, "start")), \
+                patch.object(PROOF, "native_chat_write_downgrade", side_effect=chat_step), \
+                patch.object(PROOF, "native_task_write_downgrade", side_effect=task_step):
+            output = pathlib.Path(directory)
+            evidence = PROOF.native_person_permission_downgrades(
+                "socket", "room", "record", Provider(), output, "1600x900",
+                type("Process", (), {"pid": 7})(), pathlib.Path("/binaries"), {},
+            )
+            serialized = (output / "person-permission-downgrade.json").read_text()
+        self.assertTrue(evidence["typed_person_verified_in_memory"])
+        self.assertNotIn(private_person, serialized)
+        self.assertEqual(order, ["chat", "task"])
+
+    def test_stale_action_transport_uncertainty_is_not_refusal(self):
+        receipt = {
+            "broker_invocation_id": 9,
+            "update": {"invocation": "original", "state": "accepted"},
+        }
+
+        def advance(_label, predicate, _process):
+            predicate()
+
+        with patch.object(PROOF, "call", side_effect=[
+                {"answer": {"receipt": receipt}}, {"err": {"code": "unavailable"}},
+        ]), patch.object(PROOF, "wait_for", side_effect=advance), self.assertRaises(
+                RuntimeError
+        ) as raised:
+            PROOF.require_stale_action_refused(
+                "socket", {"provider": "p", "id": "a"}, {"value": "private"}, None
+            )
+        self.assertIn("uncertain", str(raised.exception))
+
     def test_component_target_retains_exact_client_and_global_geometry(self):
         class Client:
             def call(self, path, interface, coord_type):

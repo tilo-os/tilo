@@ -14,7 +14,7 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     if matches!(
         std::env::args().nth(1).as_deref(),
-        Some("--check-native-document" | "--check-native-enrollment")
+        Some("--check-native-document" | "--check-native-enrollment" | "--inspect-native-person")
     ) {
         native_document::check()?;
         return Ok(ExitCode::SUCCESS);

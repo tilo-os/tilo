@@ -148,14 +148,53 @@ fn inspection_route() -> Result<InspectionRoute, Box<dyn std::error::Error>> {
     })
 }
 
+fn inspect_admitted_person(route: &InspectionRoute) -> Result<String, Box<dyn std::error::Error>> {
+    let owner = read_owner(&route.path)?;
+    let now = SystemTime::now();
+    owner
+        .with_current(route.room, |view| {
+            if view.peer().room() != route.room_text
+                || view.peer().admitted_room().is_none()
+                || view.host().is_some()
+                || view.governor().device_public_key != view.device().device_public_key
+            {
+                return Err("exact current-device native owner is not admitted".into());
+            }
+            view.peer()
+                .check_workspace_administration(view.device().device_public_key, now)?;
+            let (_, _, person) = view
+                .peer()
+                .permissions(view.device().device_public_key, now)?;
+            let expected = collab_types::caps::Principal::person_from_key(
+                collab_types::Ed25519PublicKey::from_bytes(view.device().user_public_key),
+            );
+            if person != expected.id() {
+                return Err("admitted Person differs from the current device certificate".into());
+            }
+            Ok(person)
+        })
+        .map_err(Into::into)
+}
+
 pub(super) fn check() -> Result<(), Box<dyn std::error::Error>> {
-    let enrollment = std::env::args().nth(1).as_deref() == Some("--check-native-enrollment");
+    let mode = std::env::args().nth(1);
+    let enrollment = mode.as_deref() == Some("--check-native-enrollment");
     let InspectionRoute {
         path,
         room_text,
         record,
         room,
     } = inspection_route()?;
+    if mode.as_deref() == Some("--inspect-native-person") {
+        let person = inspect_admitted_person(&InspectionRoute {
+            path,
+            room_text,
+            record,
+            room,
+        })?;
+        println!("{}", serde_json::json!({"person": person}));
+        return Ok(());
+    }
     let now = SystemTime::now();
     let owner = read_owner(&path)?;
     let generation = owner.with_outgoing(room, now, |view, outgoing| {
