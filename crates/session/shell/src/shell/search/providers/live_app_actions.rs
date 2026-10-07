@@ -3,6 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -70,7 +71,8 @@ pub(crate) fn set_directory_start_timeout_for_test(timeout: Option<Duration>) {
 /// query, and opaque remote continuation. Keeping the continuation in the
 /// key lets a bounded palette walk a long directory without replacing an
 /// already-rendered page.
-type DirectoryCacheKey = (u64, String, String, Vec<u8>);
+type DirectoryCacheKey = (u64, String, String, Vec<u8>, String);
+const MAX_DIRECTORY_ANCESTORS: usize = 16;
 
 struct PendingDirectoryPage {
     receiver: Pending<Result<CataloguePage, ActionHostError>>,
@@ -249,6 +251,7 @@ pub struct LiveAppActionsProvider {
     action_sessions: ActionSessionSource,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
+    directory_ancestor_pins: RefCell<HashSet<DirectoryCacheKey>>,
     /// The palette owns at most one needle's directory projection.
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
@@ -318,6 +321,7 @@ enum AuxiliaryEntry {
         descriptor: tilo_actions::ActionDescriptor,
         actor: String,
         cursor: Vec<u8>,
+        parent_resource: String,
     },
     Resource {
         root: ActionDirectoryRoot,
@@ -333,12 +337,22 @@ struct AuxiliarySnapshot {
     entries: Vec<AuxiliaryEntry>,
     pending_directory: Vec<DirectoryContinuation>,
     next_resume: Option<AuxiliaryResume>,
+    structural_refusal: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DirectoryContinuation {
     root: crate::shell::collab_broker_capnp::ActionDirectoryRoot,
     actor: String,
+    cursor: Vec<u8>,
+    row_offset: usize,
+    parent_resource: String,
+    ancestors: Vec<DirectoryAncestor>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct DirectoryAncestor {
+    parent_resource: String,
     cursor: Vec<u8>,
     row_offset: usize,
 }
@@ -436,7 +450,7 @@ impl LiveAppActionsProvider {
         let publisher = peer.to_string();
         let mut descriptors = pages
             .iter()
-            .filter(|((cached_peer, _, _, _), page)| {
+            .filter(|((cached_peer, _, _, _, _), page)| {
                 *cached_peer == peer && page.revision == revision
             })
             .flat_map(|(_, page)| &page.rows)
@@ -469,6 +483,7 @@ impl LiveAppActionsProvider {
             broker,
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
+            directory_ancestor_pins: RefCell::new(HashSet::new()),
             directory_query: RefCell::new(None),
             resource_kinds: vec![
                 ResourceKind::Action,
@@ -784,6 +799,9 @@ impl LiveAppActionsProvider {
     }
 
     fn poll_directory_pages_at(&self, now: Instant) {
+        // SDK continuation cursors are one-use. Pin the bounded active DFS
+        // ancestors, rather than replaying a consumed cursor after eviction.
+        let ancestor_keys = self.directory_ancestor_pins.borrow().clone();
         let mut ready = Vec::new();
         let mut expired = false;
         self.directory_pending.borrow_mut().retain(|key, pending| {
@@ -817,18 +835,24 @@ impl LiveAppActionsProvider {
                 // without making later rows unreachable.
                 pages.retain(|existing, _| {
                     existing == &key
+                        || ancestor_keys.contains(existing)
                         || existing.0 != key.0
                         || existing.1 != key.1
                         || existing.2 != key.2
+                        || existing.4 != key.4
                 });
                 if !pages.contains_key(&key)
                     && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
-                    && let Some(evicted) = pages.keys().next().cloned()
+                    && let Some(evicted) = pages
+                        .keys()
+                        .find(|key| !ancestor_keys.contains(*key))
+                        .cloned()
                 {
                     pages.remove(&evicted);
                 }
+                let root_page = key.4.is_empty();
                 pages.insert(key, page);
-                if initial_page {
+                if initial_page && root_page {
                     self.directory_epoch.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -850,30 +874,22 @@ impl LiveAppActionsProvider {
             return;
         }
         *current = Some(next.clone());
+        self.directory_ancestor_pins.borrow_mut().clear();
         // Dropping stale receivers explicitly cancels their shell-side
         // tickets. The LocalSet may still finish its bounded work, but cannot
         // grow this UI cache or revive an old query's results.
         self.directory_pages
             .borrow_mut()
-            .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+            .retain(|(_, _, cached_needle, _, _), _| cached_needle == &next);
         self.directory_pending
             .borrow_mut()
-            .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+            .retain(|(_, _, cached_needle, _, _), _| cached_needle == &next);
         self.directory_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     fn set_directory_context(&self, ctx: &SearchContext<'_>, needle: &str) {
-        let scoped_query = if ctx.action_scope.is_some() {
-            format!("{needle}{ID_SEPARATOR}{}", Self::surface_scope(ctx))
-        } else if let Some(scope) = &ctx.chrome.search_resource_scope {
-            format!(
-                "{needle}{ID_SEPARATOR}{}{ID_SEPARATOR}{}",
-                scope.peer_id, scope.resource
-            )
-        } else {
-            needle.to_string()
-        };
-        self.set_directory_query(&scoped_query);
+        let _ = ctx;
+        self.set_directory_query(needle);
     }
 
     fn apply_directory_invalidations(&self) {
@@ -884,6 +900,7 @@ impl LiveAppActionsProvider {
         let mut pages = self.directory_pages.borrow_mut();
         let mut pending = self.directory_pending.borrow_mut();
         for key in invalidated {
+            self.directory_ancestor_pins.borrow_mut().remove(&key);
             pages.remove(&key);
             pending.remove(&key);
         }
@@ -902,6 +919,25 @@ impl LiveAppActionsProvider {
         root_limit: usize,
         resume: &AuxiliaryResume,
     ) {
+        *self.directory_ancestor_pins.borrow_mut() =
+            resume
+                .directory
+                .as_ref()
+                .map_or_else(HashSet::new, |directory| {
+                    directory
+                        .ancestors
+                        .iter()
+                        .map(|ancestor| {
+                            (
+                                directory.root.peer_id,
+                                directory.actor.clone(),
+                                needle.to_owned(),
+                                ancestor.cursor.clone(),
+                                ancestor.parent_resource.clone(),
+                            )
+                        })
+                        .collect()
+                });
         let scope = Self::surface_scope(ctx);
         if self
             .auxiliary_snapshot
@@ -949,6 +985,8 @@ impl LiveAppActionsProvider {
             .filter(|_| ctx.action_scope.is_none())
             .map_or("", |scope| scope.resource.as_str());
         let mut entries = Vec::new();
+        let mut inspected = 0usize;
+        let mut structural_refusal = false;
         let mut pending_directory = Vec::new();
         let mut next_resume = None;
         let actor = ctx.chrome.active_local_user();
@@ -983,6 +1021,15 @@ impl LiveAppActionsProvider {
             }
         }
         for root in roots {
+            if resume.directory.is_some()
+                && !self
+                    .directory_roots(ctx)
+                    .0
+                    .iter()
+                    .any(|current| current == &root)
+            {
+                continue;
+            }
             if ctx.action_scope.is_some_and(|scope| {
                 !scope.matches_route(&root.app_id, &root.cluster_id, &root.record_id)
             }) {
@@ -996,6 +1043,8 @@ impl LiveAppActionsProvider {
                         actor: String::new(),
                         cursor: Vec::new(),
                         row_offset: 0,
+                        parent_resource: parent_resource.to_owned(),
+                        ancestors: Vec::new(),
                     }),
                 });
                 break;
@@ -1024,6 +1073,19 @@ impl LiveAppActionsProvider {
             let Some(root_actor) = root_actor else {
                 continue;
             };
+            let mut current_parent = resume
+                .directory
+                .as_ref()
+                .filter(|directory| directory.root.peer_id == root.peer_id)
+                .map_or_else(
+                    || parent_resource.to_owned(),
+                    |directory| directory.parent_resource.clone(),
+                );
+            let mut ancestors = resume
+                .directory
+                .as_ref()
+                .filter(|directory| directory.root.peer_id == root.peer_id)
+                .map_or_else(Vec::new, |directory| directory.ancestors.clone());
             let mut remote_cursor = resume
                 .directory
                 .as_ref()
@@ -1042,7 +1104,7 @@ impl LiveAppActionsProvider {
                     &root_actor,
                     needle,
                     &remote_cursor,
-                    parent_resource,
+                    &current_parent,
                 );
                 let page = self
                     .directory_pages
@@ -1052,13 +1114,24 @@ impl LiveAppActionsProvider {
                         root_actor.clone(),
                         needle.to_string(),
                         remote_cursor.clone(),
+                        current_parent.clone(),
                     ))
                     .cloned();
-                let Some(page) = page else { break };
+                let Some(page) = page else {
+                    pending_directory.push(DirectoryContinuation {
+                        root: root.clone(),
+                        actor: root_actor.clone(),
+                        cursor: remote_cursor.clone(),
+                        row_offset,
+                        parent_resource: current_parent.clone(),
+                        ancestors: ancestors.clone(),
+                    });
+                    break;
+                };
                 let rows = page.rows;
                 let mut consumed = row_offset.min(rows.len());
                 for row in rows.into_iter().skip(row_offset) {
-                    if entries.len() >= root_limit {
+                    if entries.len() >= root_limit || inspected >= root_limit {
                         next_resume = Some(AuxiliaryResume {
                             root_after: resume.root_after,
                             directory: Some(DirectoryContinuation {
@@ -1066,11 +1139,14 @@ impl LiveAppActionsProvider {
                                 actor: root_actor.clone(),
                                 cursor: remote_cursor.clone(),
                                 row_offset: consumed,
+                                parent_resource: current_parent.clone(),
+                                ancestors: ancestors.clone(),
                             }),
                         });
                         break;
                     }
                     consumed = consumed.saturating_add(1);
+                    inspected = inspected.saturating_add(1);
                     if let Some(descriptor) = row.action.clone() {
                         if ctx.action_scope.is_some_and(|scope| {
                             descriptor.resource_kind != scope.semantic_family
@@ -1090,7 +1166,44 @@ impl LiveAppActionsProvider {
                             descriptor,
                             actor: root_actor.clone(),
                             cursor: remote_cursor.clone(),
+                            parent_resource: current_parent.clone(),
                         });
+                    } else if row.has_children && ctx.action_scope.is_some() {
+                        // The broker admitted this actual readable container. Its
+                        // kind need not equal the desired descendant's family.
+                        // Descend within this exact root; never return ancestor
+                        // labels as actions or guess a resource-id prefix.
+                        if row.resource.id == current_parent
+                            || ancestors
+                                .iter()
+                                .any(|ancestor| ancestor.parent_resource == row.resource.id)
+                        {
+                            continue;
+                        }
+                        if ancestors.len() >= MAX_DIRECTORY_ANCESTORS {
+                            // Explicit incomplete/refused discovery at the structural
+                            // bound; never park an unvisitable child indefinitely.
+                            structural_refusal = true;
+                        } else {
+                            let mut next_ancestors = ancestors.clone();
+                            next_ancestors.push(DirectoryAncestor {
+                                parent_resource: current_parent.clone(),
+                                cursor: remote_cursor.clone(),
+                                row_offset: consumed,
+                            });
+                            next_resume = Some(AuxiliaryResume {
+                                root_after: resume.root_after,
+                                directory: Some(DirectoryContinuation {
+                                    root: root.clone(),
+                                    actor: root_actor.clone(),
+                                    cursor: Vec::new(),
+                                    row_offset: 0,
+                                    parent_resource: row.resource.id.clone(),
+                                    ancestors: next_ancestors,
+                                }),
+                            });
+                        }
+                        break;
                     } else if row.has_children && ctx.action_scope.is_none() {
                         entries.push(AuxiliaryEntry::Resource {
                             root: root.clone(),
@@ -1098,10 +1211,26 @@ impl LiveAppActionsProvider {
                         });
                     }
                 }
-                if next_resume.is_some() {
+                if structural_refusal || next_resume.is_some() || !pending_directory.is_empty() {
                     break;
                 }
                 if page.exhausted || page.next_cursor.is_empty() {
+                    if let Some(ancestor) = ancestors.pop() {
+                        current_parent = ancestor.parent_resource;
+                        remote_cursor = ancestor.cursor;
+                        row_offset = ancestor.row_offset;
+                        next_resume = Some(AuxiliaryResume {
+                            root_after: resume.root_after,
+                            directory: Some(DirectoryContinuation {
+                                root: root.clone(),
+                                actor: root_actor.clone(),
+                                cursor: remote_cursor,
+                                row_offset,
+                                parent_resource: current_parent,
+                                ancestors,
+                            }),
+                        });
+                    }
                     break;
                 }
                 remote_cursor = page.next_cursor;
@@ -1111,6 +1240,7 @@ impl LiveAppActionsProvider {
                     root_actor.clone(),
                     needle.to_string(),
                     remote_cursor.clone(),
+                    current_parent.clone(),
                 );
                 if !self.directory_pages.borrow().contains_key(&next_key) {
                     pending_directory.push(DirectoryContinuation {
@@ -1118,11 +1248,13 @@ impl LiveAppActionsProvider {
                         actor: root_actor.clone(),
                         cursor: remote_cursor,
                         row_offset: 0,
+                        parent_resource: current_parent.clone(),
+                        ancestors: ancestors.clone(),
                     });
                     break;
                 }
             }
-            if next_resume.is_some() {
+            if structural_refusal || next_resume.is_some() || !pending_directory.is_empty() {
                 break;
             }
         }
@@ -1151,6 +1283,7 @@ impl LiveAppActionsProvider {
             entries,
             pending_directory,
             next_resume,
+            structural_refusal,
         });
     }
 
@@ -1347,6 +1480,10 @@ impl LiveAppActionsProvider {
                         .encode(directory.actor.as_bytes()),
                     cursor,
                     directory.row_offset.to_string(),
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .encode(directory.parent_resource.as_bytes()),
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .encode(serde_json::to_vec(&directory.ancestors).unwrap_or_default()),
                 ]
                 .join(",")
             });
@@ -1355,6 +1492,9 @@ impl LiveAppActionsProvider {
 
     fn decode_auxiliary_resume(encoded: &str) -> Option<AuxiliaryResume> {
         use base64::Engine as _;
+        if encoded.len() > 512 * 1024 {
+            return None;
+        }
         let (root_after, directory) = encoded.split_once(';')?;
         let root_after = (!root_after.is_empty())
             .then(|| root_after.parse::<u64>().ok())
@@ -1381,6 +1521,23 @@ impl LiveAppActionsProvider {
             .decode(fields.next()?)
             .ok()?;
         let row_offset = fields.next()?.parse().ok()?;
+        let parent_resource = match fields.next() {
+            Some(field) => decode(field)?,
+            None => String::new(),
+        };
+        let ancestors: Vec<DirectoryAncestor> = match fields.next() {
+            Some(field) => serde_json::from_slice(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(field)
+                    .ok()?,
+            )
+            .ok()?,
+            None => Vec::new(),
+        };
+        if ancestors.len() > MAX_DIRECTORY_ANCESTORS {
+            return None;
+        }
+
         fields.next().is_none().then_some(AuxiliaryResume {
             root_after,
             directory: Some(DirectoryContinuation {
@@ -1393,6 +1550,8 @@ impl LiveAppActionsProvider {
                 actor,
                 cursor,
                 row_offset,
+                parent_resource,
+                ancestors,
             }),
         })
     }
@@ -1411,10 +1570,14 @@ impl LiveAppActionsProvider {
             actor.to_string(),
             needle.to_string(),
             cursor.to_vec(),
+            parent_resource.to_owned(),
         );
         if self.directory_pages.borrow().contains_key(&key)
             || self.directory_pending.borrow().contains_key(&key)
         {
+            return;
+        }
+        if self.directory_pending.borrow().len() >= MAX_RETAINED_DIRECTORY_PAGES {
             return;
         }
         let query = CatalogueQuery {
@@ -1480,7 +1643,16 @@ impl LiveAppActionsProvider {
             let PendingPoll::Ready(Ok(page)) = providers.poll_ready() else {
                 continue;
             };
-            revision = page.revision;
+            // Every room contributes its admitted catalogue revision. A
+            // later workspace must not hide authority/root changes in an
+            // earlier one from the retained auxiliary projection.
+            let _ = write!(
+                revision,
+                "{}:{room}{}:{}",
+                room.len(),
+                page.revision.len(),
+                page.revision
+            );
             roots.extend(
                 page.providers
                     .into_iter()
@@ -1644,6 +1816,35 @@ impl LiveAppActionsProvider {
         params
     }
 
+    fn cached_directory_action(
+        &self,
+        peer_id: u64,
+        actor: &str,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> Option<(tilo_actions::ActionDescriptor, String, Vec<u8>, String)> {
+        self.directory_pages.borrow().iter().find_map(
+            |((cached_peer, cached_actor, needle, cursor, parent), page)| {
+                if *cached_peer != peer_id || cached_actor != actor || page.revision != revision {
+                    return None;
+                }
+                page.rows.iter().find_map(|row| {
+                    let descriptor = row.action.as_ref()?;
+                    (descriptor.address.resource == resource && descriptor.address.action == action)
+                        .then(|| {
+                            (
+                                descriptor.clone(),
+                                needle.clone(),
+                                cursor.clone(),
+                                parent.clone(),
+                            )
+                        })
+                })
+            },
+        )
+    }
+
     fn directory_action_result(
         &self,
         root: &ActionDirectoryRoot,
@@ -1652,6 +1853,7 @@ impl LiveAppActionsProvider {
         needle: &str,
         actor: &str,
         cursor: &[u8],
+        parent_resource: &str,
     ) -> SearchResult {
         // Exact addresses also materialize programmatic actions; browse
         // callers filter their visibility before reaching this shared path.
@@ -1671,7 +1873,13 @@ impl LiveAppActionsProvider {
         let address = descriptor.address.clone();
         let actor = actor.to_string();
         let invalidations = Rc::clone(&self.directory_invalidations);
-        let cache_key = (peer_id, actor.clone(), needle.to_string(), cursor.to_vec());
+        let cache_key = (
+            peer_id,
+            actor.clone(),
+            needle.to_string(),
+            cursor.to_vec(),
+            parent_resource.to_owned(),
+        );
         let application = root.app_id.clone();
         let typed = !descriptor.params.is_empty();
         let resource = address.resource.clone();
@@ -2018,21 +2226,39 @@ impl SearchProvider for LiveAppActionsProvider {
                 let page = self
                     .directory_pages
                     .borrow()
-                    .get(&(root.peer_id, root_actor.clone(), needle.clone(), Vec::new()))
+                    .get(&(
+                        root.peer_id,
+                        root_actor.clone(),
+                        needle.clone(),
+                        Vec::new(),
+                        ctx.chrome
+                            .search_resource_scope
+                            .as_ref()
+                            .filter(|_| ctx.action_scope.is_none())
+                            .map_or("", |scope| scope.resource.as_str())
+                            .to_owned(),
+                    ))
                     .cloned();
                 if let Some(page) = page {
                     for row in page.rows {
                         if let Some(descriptor) = row.action
                             && (ctx.include_programmatic || !descriptor.contract.is_programmatic())
                         {
-                            results.push(self.directory_action_result(
-                                &root,
-                                &page.revision,
-                                &descriptor,
-                                &needle,
-                                &root_actor,
-                                &[],
-                            ));
+                            results.push(
+                                self.directory_action_result(
+                                    &root,
+                                    &page.revision,
+                                    &descriptor,
+                                    &needle,
+                                    &root_actor,
+                                    &[],
+                                    ctx.chrome
+                                        .search_resource_scope
+                                        .as_ref()
+                                        .filter(|_| ctx.action_scope.is_none())
+                                        .map_or("", |scope| scope.resource.as_str()),
+                                ),
+                            );
                         }
                     }
                 }
@@ -2302,20 +2528,11 @@ impl SearchProvider for LiveAppActionsProvider {
             .iter()
             .find(|workspace| workspace.room.to_string() == root.cluster_id)
             .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room))?;
-        let cached = self.directory_pages.borrow().iter().find_map(
-            |((cached_peer, cached_actor, needle, cursor), page)| {
-                if *cached_peer != peer_id || cached_actor != &actor || page.revision != revision {
-                    return None;
-                }
-                page.rows.iter().find_map(|row| {
-                    let descriptor = row.action.as_ref()?;
-                    (descriptor.address.resource == resource && descriptor.address.action == action)
-                        .then(|| (descriptor.clone(), needle.clone(), cursor.clone()))
-                })
-            },
-        )?;
-        Some(self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2))
-            .filter(|result| result.id == id)
+        let cached = self.cached_directory_action(peer_id, &actor, revision, resource, action)?;
+        Some(self.directory_action_result(
+            &root, revision, &cached.0, &cached.1, &actor, &cached.2, &cached.3,
+        ))
+        .filter(|result| result.id == id)
     }
 
     fn refresh_search_index(&self, ctx: &SearchContext<'_>) {
@@ -2451,6 +2668,16 @@ impl SearchProvider for LiveAppActionsProvider {
             let Some(snapshot) = snapshot.as_ref() else {
                 return SearchPage::exhausted(revision, Vec::new());
             };
+            if snapshot.structural_refusal {
+                return SearchPage {
+                    revision,
+                    results: Vec::new(),
+                    next_cursor: None,
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: true,
+                };
+            }
             let mut position = after;
             while position < snapshot.entries.len()
                 && work < budget.max_work
@@ -2479,6 +2706,7 @@ impl SearchProvider for LiveAppActionsProvider {
                         descriptor,
                         actor,
                         cursor,
+                        parent_resource,
                     } => {
                         if (descriptor.contract.is_programmatic() && !ctx.include_programmatic)
                             || (!ctx.wanted.is_empty()
@@ -2489,7 +2717,13 @@ impl SearchProvider for LiveAppActionsProvider {
                             continue;
                         }
                         self.directory_action_result(
-                            root, revision, descriptor, &needle, actor, cursor,
+                            root,
+                            revision,
+                            descriptor,
+                            &needle,
+                            actor,
+                            cursor,
+                            parent_resource,
                         )
                     }
                     AuxiliaryEntry::Resource { root, row } => {
@@ -2535,11 +2769,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     &next.actor,
                     &needle,
                     &next.cursor,
-                    ctx.chrome
-                        .search_resource_scope
-                        .as_ref()
-                        .filter(|_| ctx.action_scope.is_none())
-                        .map_or("", |scope| scope.resource.as_str()),
+                    &next.parent_resource,
                 );
                 return Self::live_aux_page(
                     revision,
@@ -2675,10 +2905,10 @@ pub(crate) fn fixture_with_directory_page(
     page: CataloguePage,
 ) -> Rc<dyn SearchProvider> {
     let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
-    provider
-        .directory_pages
-        .borrow_mut()
-        .insert((peer, actor, String::new(), Vec::new()), page);
+    provider.directory_pages.borrow_mut().insert(
+        (peer, actor, String::new(), Vec::new(), String::new()),
+        page,
+    );
     provider
 }
 
@@ -2910,7 +3140,7 @@ mod tests {
             visibility: None,
         };
         provider.directory_pages.borrow_mut().insert(
-            (9, "actor".into(), String::new(), Vec::new()),
+            (9, "actor".into(), String::new(), Vec::new(), String::new()),
             page(vec![row.clone()], Vec::new()),
         );
         let id = ["directory", "9", "r1", "resource:open", "open"].join(&ID_SEPARATOR.to_string());
@@ -2929,7 +3159,13 @@ mod tests {
         conflicting.action.as_mut().unwrap().semantic_identity =
             tilo_actions::ResourceSemanticIdentity::new("store.app", "other");
         provider.directory_pages.borrow_mut().insert(
-            (9, "actor".into(), "another-query".into(), Vec::new()),
+            (
+                9,
+                "actor".into(),
+                "another-query".into(),
+                Vec::new(),
+                String::new(),
+            ),
             page(vec![conflicting], Vec::new()),
         );
         assert!(
@@ -3037,7 +3273,7 @@ mod tests {
         let provider = LiveAppActionsProvider::new(
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
         );
-        let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
+        let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new(), String::new());
         let (sender, receiver) = pending();
         let deadline = Instant::now();
         provider.directory_pending.borrow_mut().insert(
@@ -3070,7 +3306,7 @@ mod tests {
         let (sender, receiver) = pending();
         let deadline = Instant::now();
         provider.directory_pending.borrow_mut().insert(
-            (7, "actor".into(), "read".into(), Vec::new()),
+            (7, "actor".into(), "read".into(), Vec::new(), String::new()),
             PendingDirectoryPage {
                 receiver,
                 deadline,
@@ -3088,6 +3324,7 @@ mod tests {
             entries: Vec::new(),
             pending_directory: Vec::new(),
             next_resume: None,
+            structural_refusal: false,
         });
 
         provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
@@ -3148,7 +3385,8 @@ mod tests {
                         "changing a query must drop the prior palette receiver"
                     );
                 }
-                let key: DirectoryCacheKey = (7, "actor-a".into(), needle, Vec::new());
+                let key: DirectoryCacheKey =
+                    (7, "actor-a".into(), needle, Vec::new(), String::new());
                 provider
                     .directory_pages
                     .borrow_mut()
@@ -3176,7 +3414,13 @@ mod tests {
                 .unwrap_or_else(Instant::now);
             let (page_sender, page_receiver) = pending();
             provider.directory_pending.borrow_mut().insert(
-                (7, "actor-a".into(), "new-needle".into(), Vec::new()),
+                (
+                    7,
+                    "actor-a".into(),
+                    "new-needle".into(),
+                    Vec::new(),
+                    String::new(),
+                ),
                 PendingDirectoryPage {
                     receiver: page_receiver,
                     deadline: expired,
@@ -3193,7 +3437,13 @@ mod tests {
             let invalidations: Rc<RefCell<std::collections::HashSet<DirectoryCacheKey>>> =
                 Rc::new(RefCell::new(std::collections::HashSet::default()));
             let (start_sender, start_receiver) = pending();
-            let key = (7, "actor-a".into(), "new-needle".into(), Vec::new());
+            let key = (
+                7,
+                "actor-a".into(),
+                "new-needle".into(),
+                Vec::new(),
+                String::new(),
+            );
             let ticket = directory_start_ticket(
                 start_receiver,
                 Rc::clone(&invalidations),
@@ -3220,7 +3470,7 @@ mod tests {
             provider.set_directory_query("open");
             for actor in ["room-a-user", "room-b-user"] {
                 provider.directory_pages.borrow_mut().insert(
-                    (7, actor.into(), "open".into(), Vec::new()),
+                    (7, actor.into(), "open".into(), Vec::new(), String::new()),
                     page(Vec::new(), Vec::new()),
                 );
             }
@@ -3263,7 +3513,8 @@ mod tests {
                         &exported("Open one", "one"),
                         "open",
                         "fixture",
-                        &[]
+                        &[],
+                        ""
                     )
                     .id,
                 format!(
@@ -3286,10 +3537,12 @@ mod tests {
                         descriptor: exported(&format!("Open {suffix}"), suffix),
                         actor: "fixture".into(),
                         cursor: Vec::new(),
+                        parent_resource: String::new(),
                     })
                     .collect(),
                 pending_directory: Vec::new(),
                 next_resume: None,
+                structural_refusal: false,
             });
             let budget = SearchBudget {
                 max_results: 1,
@@ -3358,11 +3611,11 @@ mod tests {
                 visibility: None,
             };
             provider.directory_pages.borrow_mut().insert(
-                (9, actor.clone(), "open".into(), Vec::new()),
+                (9, actor.clone(), "open".into(), Vec::new(), String::new()),
                 page(vec![row("Open first", "first")], vec![1]),
             );
             provider.directory_pages.borrow_mut().insert(
-                (9, actor, "open".into(), vec![1]),
+                (9, actor, "open".into(), vec![1], String::new()),
                 page(vec![row("Open second", "second")], Vec::new()),
             );
             let doc = AutoCommit::new();
@@ -3418,6 +3671,8 @@ mod tests {
                     actor: "person:alice".into(),
                     cursor: vec![0, 255, 1, 2],
                     row_offset: 100_001,
+                    parent_resource: String::new(),
+                    ancestors: Vec::new(),
                 }),
             };
             let encoded = LiveAppActionsProvider::encode_auxiliary_resume(&resume);
@@ -3470,7 +3725,7 @@ mod tests {
         };
         provider.set_directory_query("read");
         provider.directory_pages.borrow_mut().insert(
-            (9, actor, "read".into(), Vec::new()),
+            (9, actor, "read".into(), Vec::new(), String::new()),
             page(vec![row], Vec::new()),
         );
         let doc = AutoCommit::new();
@@ -3697,6 +3952,295 @@ mod tests {
         );
     }
 
+    fn directory_test_row(
+        app: &str,
+        parent: &str,
+        resource: &str,
+        family: &str,
+        label: &str,
+        action: bool,
+    ) -> CatalogueRow {
+        let descriptor = action.then(|| {
+            let mut descriptor = exported(label, "read");
+            descriptor.address.resource = resource.into();
+            descriptor.resource_kind = family.into();
+            descriptor.semantic_identity =
+                tilo_actions::ResourceSemanticIdentity::new(family, resource);
+            descriptor
+        });
+        CatalogueRow {
+            provider: "9".into(),
+            app_id: app.into(),
+            parent_resource: parent.into(),
+            resource: CatalogueResource {
+                id: resource.into(),
+                kind: family.into(),
+                label: label.into(),
+                presentation: None,
+            },
+            action: descriptor,
+            has_children: !action,
+            visibility: None,
+        }
+    }
+
+    fn assert_pending_root(
+        provider: &LiveAppActionsProvider,
+        scope: &crate::shell::search::ActionDiscoveryScope,
+    ) {
+        let snapshot = provider.auxiliary_snapshot.borrow();
+        let retained = snapshot
+            .as_ref()
+            .unwrap()
+            .pending_directory
+            .first()
+            .expect("the first cold directory request must retain its original root");
+        assert_eq!(retained.root.peer_id, 9);
+        assert_eq!(retained.root.record_id, scope.record);
+        assert!(retained.cursor.is_empty());
+        assert!(
+            snapshot.as_ref().unwrap().next_resume.is_none(),
+            "a pending root must not be skipped by advancing after it"
+        );
+    }
+
+    fn pending_directory_reply(
+        provider: &LiveAppActionsProvider,
+        key: DirectoryCacheKey,
+    ) -> tilo_actions::remote::Completer<Result<CataloguePage, ActionHostError>> {
+        let (reply, receiver) = pending();
+        provider.directory_pending.borrow_mut().insert(
+            key,
+            PendingDirectoryPage {
+                receiver,
+                deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                initial_page: true,
+            },
+        );
+        reply
+    }
+
+    fn assert_scoped_query_empty<'a>(
+        provider: &LiveAppActionsProvider,
+        mut ctx: SearchContext<'a>,
+        scope: &'a crate::shell::search::ActionDiscoveryScope,
+    ) {
+        ctx.action_scope = Some(scope);
+        ctx.include_programmatic = true;
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn scoped_cold_directory_keeps_its_first_pending_page_until_the_real_reply() {
+        use crate::shell::search::ActionDiscoveryScope;
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let state = chrome.borrow();
+        let room = state.tree().desktop.workspaces[0].room;
+        let actor = state.local_user_for_room(&room);
+        let scope = ActionDiscoveryScope {
+            application: "so.tilo.notes".into(),
+            room: room.to_string(),
+            record: "derived:default@tab:f276000000000046".into(),
+            semantic_family: "notes.notebook".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: scope.application.clone(),
+            cluster_id: scope.room.clone(),
+            record_id: scope.record.clone(),
+        }]);
+        let doc = AutoCommit::new();
+        let mut ctx = context("", &state, &doc);
+        ctx.action_scope = Some(&scope);
+        ctx.include_programmatic = true;
+        // The authenticated directory reply is deliberately still in flight.
+        // Exercise the ordinary provider paging path before completing it.
+        let reply = pending_directory_reply(
+            &provider,
+            (9, actor, String::new(), Vec::new(), String::new()),
+        );
+        let first = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert!(first.results.is_empty());
+        assert!(
+            !first.exhausted,
+            "an unanswered first page is not an exhausted directory"
+        );
+        assert_pending_root(&provider, &scope);
+        reply.complete(Ok(page(
+            vec![directory_test_row(
+                &scope.application,
+                "",
+                "notebook-container",
+                "notes.notebook",
+                "Notebook",
+                false,
+            )],
+            Vec::new(),
+        )));
+        let mut ctx = context("", &state, &doc);
+        ctx.action_scope = Some(&scope);
+        ctx.include_programmatic = true;
+        let root_page = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert!(
+            root_page.results.is_empty(),
+            "containers are not action results"
+        );
+        assert!(!root_page.exhausted);
+        let cursor = root_page
+            .next_cursor
+            .expect("readable root must lead to its child");
+        let child_reply = pending_directory_reply(
+            &provider,
+            (
+                9,
+                state.local_user_for_room(&room),
+                String::new(),
+                Vec::new(),
+                "notebook-container".into(),
+            ),
+        );
+        let mut ctx = context("", &state, &doc);
+        ctx.action_scope = Some(&scope);
+        ctx.include_programmatic = true;
+        let child_pending = provider.query_page(ctx, Some(&cursor), SearchBudget::PALETTE);
+        assert!(child_pending.results.is_empty());
+        assert!(
+            !child_pending.exhausted,
+            "unanswered child is not exhausted"
+        );
+        child_reply.complete(Ok(page(
+            vec![directory_test_row(
+                &scope.application,
+                "notebook-container",
+                "notebook-container",
+                "notes.notebook",
+                "Read notebook",
+                true,
+            )],
+            Vec::new(),
+        )));
+        let mut ctx = context("", &state, &doc);
+        ctx.action_scope = Some(&scope);
+        ctx.include_programmatic = true;
+        let ready = provider.query_page(
+            ctx,
+            child_pending.next_cursor.as_ref(),
+            SearchBudget::PALETTE,
+        );
+        assert_eq!(ready.results.len(), 1);
+        assert_eq!(ready.results[0].title, "Read notebook");
+        let mut foreign = scope.clone();
+        foreign.record = "derived:default@tab:foreign".into();
+        assert_scoped_query_empty(&provider, context("", &state, &doc), &foreign);
+    }
+
+    #[test]
+    fn scoped_directory_walks_actual_ancestors_without_returning_other_families() {
+        use crate::shell::search::ActionDiscoveryScope;
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let state = chrome.borrow();
+        let room = state.tree().desktop.workspaces[0].room;
+        let actor = state.local_user_for_room(&room);
+        let mut scope = ActionDiscoveryScope {
+            application: "so.tilo.notes".into(),
+            room: room.to_string(),
+            record: "owned-notes".into(),
+            semantic_family: "notes.notebook".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: scope.application.clone(),
+            cluster_id: scope.room.clone(),
+            record_id: scope.record.clone(),
+        }]);
+        for (parent, rows) in [
+            (
+                "",
+                vec![directory_test_row(
+                    &scope.application,
+                    "",
+                    "notebook",
+                    "notes.notebook",
+                    "Notebook",
+                    false,
+                )],
+            ),
+            (
+                "notebook",
+                vec![
+                    directory_test_row(
+                        &scope.application,
+                        "notebook",
+                        "notebook",
+                        "notes.notebook",
+                        "Read notebook",
+                        true,
+                    ),
+                    directory_test_row(
+                        &scope.application,
+                        "notebook",
+                        "page",
+                        "notes.page",
+                        "Page",
+                        false,
+                    ),
+                ],
+            ),
+            (
+                "page",
+                vec![directory_test_row(
+                    &scope.application,
+                    "page",
+                    "page",
+                    "notes.page",
+                    "Read page",
+                    true,
+                )],
+            ),
+        ] {
+            provider.directory_pages.borrow_mut().insert(
+                (9, actor.clone(), String::new(), Vec::new(), parent.into()),
+                page(rows, Vec::new()),
+            );
+        }
+        let doc = AutoCommit::new();
+        for (family, title) in [
+            ("notes.notebook", "Read notebook"),
+            ("notes.page", "Read page"),
+        ] {
+            scope.semantic_family = family.into();
+            let mut cursor = None;
+            let mut found = Vec::new();
+            let mut exhausted = false;
+            for _ in 0..16 {
+                let mut ctx = context("", &state, &doc);
+                ctx.action_scope = Some(&scope);
+                ctx.include_programmatic = true;
+                let result = provider.query_page(ctx, cursor.as_ref(), SearchBudget::PALETTE);
+                assert!(!result.stale_cursor);
+                found.extend(result.results.into_iter().map(|row| row.title));
+                if result.exhausted {
+                    exhausted = true;
+                    break;
+                }
+                cursor = result.next_cursor;
+            }
+            assert!(exhausted, "bounded actual hierarchy must finish");
+            assert_eq!(found, vec![title.to_string()]);
+        }
+        broker.replace_action_directory_roots_for_test(Vec::new());
+        assert_scoped_query_empty(&provider, context("", &state, &doc), &scope);
+    }
+
     #[test]
     fn scoped_directory_discovery_ignores_palette_resource_navigation() {
         use crate::shell::search::ActionDiscoveryScope;
@@ -3740,7 +4284,7 @@ mod tests {
         descriptor.semantic_identity =
             tilo_actions::ResourceSemanticIdentity::new("store.catalog", "root");
         provider.directory_pages.borrow_mut().insert(
-            (9, actor, "inspect".into(), Vec::new()),
+            (9, actor, "inspect".into(), Vec::new(), String::new()),
             page(
                 vec![CatalogueRow {
                     provider: "9".into(),
@@ -4400,7 +4944,7 @@ mod tests {
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
             provider.directory_pages.borrow_mut().insert(
-                (9, actor, "book".into(), Vec::new()),
+                (9, actor, "book".into(), Vec::new(), String::new()),
                 page(
                     vec![CatalogueRow {
                         provider: "9".into(),
