@@ -328,7 +328,7 @@ suites = ["apps/imager/packaging/test_build_desktop_catalog.py"]
 [[group]]
 name = "ntfs-helper"
 inputs = ["crates/session/tilo-ntfs-helper/"]
-suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py"]
+suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/session/tilo-ntfs-helper/tests/test_source_artifact.py"]
 
 [[group]]
 name = "dist"
