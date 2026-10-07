@@ -14,6 +14,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import signal
 import select
 import shutil
@@ -72,8 +73,8 @@ class Fixture:
                "TILO_HEADLESS_SIZE": "1280x800",
                "TILO_LAUNCHER_BIN": str(self.binaries / "tilo-launcher"),
                "GST_PLUGIN_PATH": str(self.pipewire / "usr/lib64/gstreamer-1.0"),
-               "RUST_LOG": "warn,tilo_media::voice::gst=debug,shell::network::native_media=debug",
-               "GST_DEBUG": "pipewiresrc:5,pipewirecore:5,appsink:5,opusenc:5"}
+               "RUST_LOG": "warn,tilo_joined_room::voice=debug,tilo_media::voice::gst=debug,shell::network::native_media=debug,shell::shell::native_media=debug,tilo_action_broker::collab_broker_capnp::native_media=debug",
+               "GST_DEBUG": "pipewiresrc:6,pipewirecore:5,appsink:5,opusenc:5,basesink:5,basesrc:6"}
         for key in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
                     "PIPEWIRE_REMOTE", "PIPEWIRE_RUNTIME_DIR", "TILO_COLLAB_HOST",
                     "TILO_COLLAB_HOSTS", "TILO_APPS_SYSTEM_DIR"):
@@ -105,11 +106,19 @@ class Fixture:
 }
 ''')
         self.spawn(f"{name}-wireplumber", ["dbus-run-session", "--", "wireplumber"], env)
+        # A generated-only native stream follows the private graph's driver.
+        # The GStreamer provide-mode driver stalls after its initial buffer ring
+        # here, even in a standalone encoder; it cannot qualify native voice.
+        tone = profile / "generated-tone.raw"
+        second = array.array("h", (round(0.2 * 32767 * math.sin(math.tau * frequency * i / 48000))
+                                   for i in range(48000)))
+        tone.write_bytes(second.tobytes() * 300)
         source = self.spawn(f"{name}-tone", [
-            "gst-launch-1.0", "-q", "audiotestsrc", "is-live=true", "wave=sine",
-            f"freq={frequency}", "!", "audioconvert", "!",
-            "audio/x-raw,rate=48000,channels=1", "!", "pipewiresink", "mode=provide",
-            'stream-properties=props,media.class=(string)Audio/Source,node.name=(string)fixture-source,node.description=(string)Fixture-tone',
+            "pw-cat", "--playback", "--raw", "--rate=48000", "--channels=1",
+            "--format=s16", "--target=0", "--latency=20ms", "--properties",
+            json.dumps({"media.class": "Audio/Source", "node.name": "fixture-source",
+                        "node.description": "Fixture-tone", "node.virtual": True,
+                        "node.always-process": True, "node.pause-on-idle": False}), str(tone),
         ], env)
 
         def sources():
@@ -139,7 +148,7 @@ class Fixture:
             "gst-launch-1.0", "-q", "pipewiresrc",
             f"target-object={selected[0]['object.serial']}", "do-timestamp=true",
             "stream-properties=properties,node.dont-fallback=(boolean)true,node.dont-reconnect=(boolean)true,node.dont-move=(boolean)true,node.linger=(boolean)false",
-            "num-buffers=4", "!", "audioconvert", "!", "audioresample", "!",
+            "num-buffers=64", "!", "audioconvert", "!", "audioresample", "!",
             "audio/x-raw,rate=48000,channels=1,format=S16LE", "!", "opusenc",
             "frame-size=20", "!", "fakesink", "sync=false",
         ]
@@ -158,6 +167,15 @@ class Fixture:
                         pass_fds=(remote.fileno(),) if bound_fd else (),
                     )
                 except subprocess.TimeoutExpired as failure:
+                    diagnostic = re.sub(r"\x1b\[[0-9;]*m", "", (failure.stderr or b"").decode(errors="replace"))
+                    lines = [re.sub(r"0x[0-9a-fA-F]+", "<pointer>", line)
+                             for line in diagnostic.splitlines()
+                             if any(marker in line for marker in ("encoding 960 samples", "sync", "clock returned", "popped buffer", "pts "))]
+                    (self.output / f"{name}-{phase}-encoder-timeout.json").write_text(json.dumps({
+                        "bound_fd": bound_fd,
+                        "encoded_frames": diagnostic.count("encoding 960 samples"),
+                        "tail": [line.replace(str(self.root), "<fixture>") for line in lines[-12:]],
+                    }, indent=2))
                     raise RuntimeError(
                         f"generated-only encoder preflight exceeded startup deadline (fd={bound_fd})"
                     ) from failure
@@ -325,6 +343,63 @@ class Fixture:
                 require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-convergence.png")}))
             raise
         self.record("both-native-resource-catalogues-converged", channels=sorted(channels))
+        # Address each conversation through its own current native resource.
+        # Generated fixture messages must converge without crossing channels.
+        expected = {first: "Fixture Alice in the first conversation",
+                    second: "Fixture Bob in the second conversation"}
+        for session, logical in ((alice, first), (bob, second)):
+            self.act(session, room, "post", {"value": expected[logical]},
+                     resource=text_channels(session[0])[logical])
+        def readable_conversations():
+            for session in (alice, bob):
+                resources = text_channels(session[0])
+                for logical, text in expected.items():
+                    page = self.act(session, room, "read-messages", {"pageSize": 32},
+                                    resource=resources[logical])
+                    content = page.get("content", {}) if isinstance(page, dict) else {}
+                    messages = content.get("messages", [])
+                    if content.get("channel") != logical.removeprefix("chat.channel:"):
+                        raise RuntimeError("native history returned another conversation")
+                    if any(message.get("text") == other for other in expected.values()
+                           if other != text for message in messages):
+                        raise RuntimeError("native message crossed conversations")
+                    if sum(message.get("text") == text and message.get("complete") is True
+                           for message in messages) != 1:
+                        return False
+            return True
+        packaged.wait_for("each native conversation has its own readable message",
+                          readable_conversations, bob[1])
+        self.record("both-native-correct-conversation-messages-readable")
+        reference = {"kind": "chat.channel", "id": second,
+                     "label": "Fixture shared conversation", "span": None}
+        self.act(alice, room, "share-resource", {
+            "reference": reference, "text": "Fixture live resource address",
+            "sourceProvider": "record:so.tilo.chat:"}, resource=channels[first])
+        def shared_reference():
+            page = self.act(bob, room, "read-messages", {"pageSize": 32},
+                            resource=text_channels(bob[0])[first])
+            messages = page.get("content", {}).get("messages", [])
+            matches = [message for message in messages
+                       if message.get("text") == "Fixture live resource address"]
+            if len(matches) > 1:
+                raise RuntimeError("native resource share duplicated its message")
+            if not matches:
+                return None
+            logical = "chat.message:" + matches[0]["id"]
+            rows = [row for row in self.catalogue(bob[0])
+                    if row.get("application") == "so.tilo.chat" and row.get("room") == room
+                    and row.get("operation") == "read-message"
+                    and self.logical_resource(row["resource"]) == logical]
+            if len(rows) != 1:
+                return None
+            report = self.act(bob, room, "read-message", resource=rows[0]["resource"])
+            if report.get("channel") != first.removeprefix("chat.channel:"):
+                raise RuntimeError("native resource share crossed conversations")
+            return report if report.get("reference") == reference and report.get(
+                "sourceProvider") == "record:so.tilo.chat:" else None
+        packaged.wait_for("live resource address reaches admitted native reader",
+                          shared_reference, bob[1])
+        self.record("native-live-resource-reference-preserves-existing-access")
         self.act(alice, room, "open-channel", resource=channels[first])
         self.act(bob, room, "open-channel", resource=text_channels(bob[0])[second])
         require_ok(call(alice[0], {"op": "pointer_move", "x": 350, "y": 220}))
@@ -376,7 +451,33 @@ class Fixture:
                              for tab in group.get("tabs", [])]}
                     for workspace in tree.get("workspaces", [])]}, indent=2))
             expected = first.removeprefix("chat.channel:")
-            return report if report.get("following") is True and report.get("channel") == expected else None
+            if report.get("following") is not True or report.get("channel") != expected:
+                return None
+            # A different local Chat can report the followed conversation while
+            # shell focus is on an unavailable remote-tab placeholder. Require
+            # the exact admitted target to paint a real local signed app frame.
+            workspace = next((workspace for workspace in tree.get("workspaces", [])
+                              if workspace.get("room") == room), None)
+            if workspace is None:
+                return None
+            collaborator = next((row for row in workspace.get("collaborators", [])
+                                 if row.get("id") == presence_ids[0]), None)
+            target = next((tab for strip in workspace.get("strips", [])
+                           for group in strip.get("window_groups", [])
+                           for tab in group.get("tabs", [])
+                           if collaborator is not None and tab.get("id") == collaborator.get("active_tab")), None)
+            foreign = target.get("tile", {}).get("Foreign") if target is not None else None
+            surface = foreign.get("surface_id") if isinstance(foreign, dict) else None
+            frames = packaged.foreign_frames(call(bob[0], {"op": "foreign_frames"}))
+            presented = any(frame.get("surface_id") == surface and surface is not None
+                            and frame.get("app_id") == "so.tilo.chat"
+                            and frame.get("presented") is True and frame.get("frame_seq", 0) > 0
+                            and frame.get("last_error") is None for frame in frames)
+            (self.output / "bob-follow-presentation.json").write_text(json.dumps({
+                "target_tab": target.get("id") if target is not None else None,
+                "target_kind": next(iter(target.get("tile", {})), None) if target is not None else None,
+                "actual_local_frame_presented": presented}, indent=2))
+            return report if presented else None
 
         report = packaged.wait_for("native Chat follows the other native context", following, bob[1])
         self.record("native-context-follows-opt-in", report=report)
@@ -456,21 +557,54 @@ class Fixture:
             self.encoder_preflight(name, self.env(name), nodes, phase="muted-call-generated-only")
             self.unmute(name, session, room)
         for name, frequency in (("alice", 1100), ("bob", 700)):
-            self.measure(name, frequency)
+            self.measure(name, frequency, sessions[name], room)
+        self.mute_and_resume("bob", sessions["bob"], room)
+        self.measure("alice", 1100, sessions["alice"], room)
+        return call_channel
+
+    def mute_and_resume(self, name, session, room):
+        self.require_audio_streams(name, session, room)
+        self.act(session, room, "mute")
+
+        def muted():
+            report = self.act(session, room, "call-status")["reported"]
+            return report if report.get("state") == "live" and report.get("muted") is True and report.get("capture_active") is False else None
+
+        report = packaged.wait_for("explicit Mute stops native capture", muted, session[1])
+        packaged.wait_for("Mute retains only native playback", lambda: {
+            node["media.class"] for node in self.audio_streams(name, session)
+        } == {"Stream/Output/Audio"}, session[1])
+        if packaged.chrome_state(session[0]).get("pending_grants_count") != 0:
+            raise RuntimeError("Mute unexpectedly requested permission")
+        self.record(f"{name}-mute-releases-capture-and-retains-playback", report=report)
+        require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-muted.png")}))
+        self.unmute(name, session, room)
+        self.require_audio_streams(name, session, room)
+        self.record(f"{name}-unmute-requires-fresh-visible-consent")
 
     def unmute(self, name, session, room):
         socket, process = session
         if packaged.chrome_state(socket).get("pending_grants_count") != 0:
             raise RuntimeError("unrelated permission request precedes fixture consent")
-        self.act(session, room, "unmute")
+        # The preceding peer's unmute changes the governed publisher roster
+        # and may reconnect this carrier. The real user can request unmute
+        # again when live; no permission refusal is retried or approved here.
+        last_request = 0.0
         def consent_pending():
+            nonlocal last_request
             value = self.act(session, room, "call-status")
             pending = packaged.chrome_state(socket).get("pending_grants_count")
             (self.output / f"{name}-consent-observation.json").write_text(json.dumps({
                 "call": value, "pending_grants_count": pending,
             }, indent=2))
             if value["reported"].get("state") == "ended":
-                raise RuntimeError(f"native call ended before consent: {value['reported'].get('issue')}")
+                raise RuntimeError(f"native call ended before consent: {value['reported'].get('issue')}, client: {value.get('clientIssue')}")
+            if (pending == 0 and value["reported"].get("state") == "live"
+                    and value["reported"].get("issue") is None
+                    and value.get("clientIssue") is None
+                    and time.monotonic() - last_request >= 1):
+                self.act(session, room, "unmute")
+                last_request = time.monotonic()
             return pending == 1
 
         packaged.wait_for("fresh one-shot capture consent", consent_pending, process)
@@ -500,26 +634,53 @@ class Fixture:
             raise
         self.record(f"{name}-explicit-generated-source-consent", report=report)
 
-    def measure(self, name, frequency):
+    def measure(self, name, frequency, session, room):
         path = self.output / f"{name}-received.raw"
+        # pw-cat 1.6.9 exits nonzero at its recording sample limit because
+        # recording never marks playback drained. Observe this private sink
+        # through a bounded EOS pipeline instead; retain strict exit/count checks.
         result = subprocess.run([
-            "pw-cat", "--record", "--raw", "--target", "fixture-sink",
-            "--properties", "{ stream.capture.sink = true }", "--rate", "48000",
-            "--channels", "1", "--format", "s16", "--sample-count", "96000", str(path),
+            "gst-launch-1.0", "-q", "pipewiresrc", "target-object=fixture-sink",
+            "stream-properties=properties,stream.capture.sink=true", "!",
+            "audioconvert", "!", "audioresample", "!",
+            "audio/x-raw,format=S16LE,rate=48000,channels=1", "!",
+            "audiobuffersplit", "output-buffer-duration=1/50", "strict-buffer-size=true", "!",
+            "identity", "eos-after=101", "!", "filesink", f"location={path}",
         ], env=self.env(name), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=8)
+        diagnostic = result.stderr.decode(errors="replace").replace(
+            str(self.root), "<fixture>").replace(str(self.output), "<proof>")
+        diagnostic = re.sub(r"\x1b\[[0-9;]*m", "", diagnostic)
+        diagnostic = re.sub(r"0x[0-9a-fA-F]+", "<pointer>", diagnostic)
+        (self.output / f"{name}-playback-observation.json").write_text(json.dumps({
+            "returncode": result.returncode, "diagnostic": diagnostic[:512],
+            "call": self.act(session, room, "call-status"),
+            "owned_audio_streams": [{"media.class": node.get("media.class")}
+                                    for node in self.audio_streams(name, session)],
+        }, indent=2))
         if result.returncode:
             raise RuntimeError("isolated playback observation failed")
         samples = array.array("h", path.read_bytes())
         if len(samples) != 96000:
             raise RuntimeError("isolated playback observation is incomplete")
         coefficient = 2 * math.cos(math.tau * frequency / 48000)
-        s1 = s2 = energy = 0.0
-        for sample in samples:
-            value = sample / 32768
-            energy += value * value
-            s0 = value + coefficient * s1 - s2
-            s2, s1 = s1, s0
-        share = 0.0 if energy < 1e-4 else 2 * (s1*s1+s2*s2-coefficient*s1*s2) / (len(samples)*energy)
+        tone_energy = energy = 0.0
+        # Measure the exact expected tone in each 20ms output frame. Native
+        # drift correction/PLC changes phase; a global two-second coherent
+        # bin would mistake that intentional phase change for missing audio.
+        for offset in range(0, len(samples), 960):
+            s1 = s2 = 0.0
+            frame = samples[offset:offset + 960]
+            for sample in frame:
+                value = sample / 32768
+                energy += value * value
+                s0 = value + coefficient * s1 - s2
+                s2, s1 = s1, s0
+            tone_energy += 2 * (s1*s1+s2*s2-coefficient*s1*s2) / len(frame)
+        share = 0.0 if energy < 1e-4 else tone_energy / energy
+        (self.output / f"{name}-playback-analysis.json").write_text(json.dumps({
+            "samples": len(samples), "frequency_hz": frequency, "tone_share": share,
+            "rms": math.sqrt(energy / len(samples)),
+        }, indent=2))
         if share < 0.5:
             raise RuntimeError(f"{name} did not receive the other native peer's generated {frequency} Hz tone")
         self.record(f"{name}-decoded-remote-tone", frequency_hz=frequency, tone_share=share,
@@ -558,14 +719,23 @@ class Fixture:
     def no_audio_streams(self, name, session):
         return not self.audio_streams(name, session)
 
-    def require_audio_streams(self, name, session):
-        packaged.wait_for("owned capture and playback streams are observable", lambda: {
-            node["media.class"] for node in self.audio_streams(name, session)
-        } == {"Stream/Input/Audio", "Stream/Output/Audio"}, session[1])
+    def require_audio_streams(self, name, session, room):
+        try:
+            packaged.wait_for("owned capture and playback streams are observable", lambda: {
+                node["media.class"] for node in self.audio_streams(name, session)
+            } == {"Stream/Input/Audio", "Stream/Output/Audio"}, session[1])
+        except Exception:
+            observation = {
+                "call": self.act(session, room, "call-status"),
+                "owned_audio_streams": [{"media.class": node.get("media.class")}
+                                        for node in self.audio_streams(name, session)],
+            }
+            (self.output / f"{name}-leave-precondition-failure.json").write_text(json.dumps(observation, indent=2))
+            raise
 
-    def leave_and_revoke(self, sessions, room, host):
+    def leave_and_revoke(self, sessions, room, host, channel):
         for name, session in sessions.items():
-            self.require_audio_streams(name, session)
+            self.require_audio_streams(name, session, room)
             self.act(session, room, "leave-call")
             def left():
                 report = self.act(session, room, "call-status")["reported"]
@@ -576,12 +746,23 @@ class Fixture:
             require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-left.png")}))
         # Rejoin the same generated call with a new explicit one-shot consent.
         for name, session in sessions.items():
-            self.act(session, room, "join-call")
-            packaged.wait_for("new native call generation", lambda: self.act(session, room, "call-status")["reported"].get("state") == "live", session[1])
+            rows = [row for row in self.catalogue(session[0])
+                    if row.get("application") == "so.tilo.chat" and row.get("room") == room
+                    and row.get("operation") == "join-call"
+                    and self.logical_resource(row["resource"]) == f"chat.call:{channel}"]
+            if len(rows) != 1:
+                raise RuntimeError("same shared call is unobservable on rejoin")
+            self.act(session, room, "join-call", resource=rows[0]["resource"])
+            report = packaged.wait_for("new native call generation", lambda: (
+                report if (report := self.act(session, room, "call-status")["reported"]).get("state") == "live"
+                else None), session[1])
+            if report.get("muted") is not True or report.get("capture_active") is not False:
+                raise RuntimeError("rejoining reused microphone consent")
+            self.record(f"{name}-native-rejoined-listening-muted", report=report)
             self.unmute(name, session, room)
-        self.measure("alice", 1100)
-        self.measure("bob", 700)
-        self.require_audio_streams("bob", sessions["bob"])
+        self.measure("alice", 1100, sessions["alice"], room)
+        self.measure("bob", 700, sessions["bob"], room)
+        self.require_audio_streams("bob", sessions["bob"], room)
         host.stdin.write("revoke\n")
         host.stdin.flush()
         packaged.wait_for("host commits Bob removal", lambda: "revoked" in (self.output / "host.log").read_text(), host)
@@ -653,8 +834,8 @@ class Fixture:
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-chat.png")}))
         if not voice_only:
             self.context(sessions, bootstrap["room"], bootstrap["presence_ids"])
-        self.voice(sessions, bootstrap["room"])
-        self.leave_and_revoke(sessions, bootstrap["room"], host)
+        channel = self.voice(sessions, bootstrap["room"])
+        self.leave_and_revoke(sessions, bootstrap["room"], host, channel)
 
 
 def main():

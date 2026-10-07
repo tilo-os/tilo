@@ -415,12 +415,22 @@ impl VoiceAudio {
         for decoder in self.decoders.values_mut() {
             decoder.pull(now)?;
         }
-        if self
-            .last_output
-            .is_some_and(|last| now.saturating_duration_since(last) < FRAME_DURATION)
-        {
-            return Ok(());
-        }
+        let output_at = if let Some(last) = self.last_output {
+            let elapsed = now.saturating_duration_since(last);
+            if elapsed < FRAME_DURATION {
+                return Ok(());
+            }
+            // Preserve the sample clock across small polling delays. Reset
+            // after a missed whole frame instead of replaying outage backlog.
+            if elapsed < FRAME_DURATION.saturating_mul(2) {
+                last.checked_add(FRAME_DURATION)
+                    .ok_or(AudioError::InvalidFrame)?
+            } else {
+                now
+            }
+        } else {
+            now
+        };
         let frames: Vec<Vec<i16>> = self
             .decoders
             .values_mut()
@@ -445,7 +455,7 @@ impl VoiceAudio {
         self.output_source
             .push_buffer(buffer)
             .map_err(|_| AudioError::DeviceLost)?;
-        self.last_output = Some(now);
+        self.last_output = Some(output_at);
         Ok(())
     }
     pub fn remove_publisher(&mut self, publisher: &PublicationId) {
@@ -1699,6 +1709,36 @@ mod tests {
             "a retired lease cannot stop its replacement"
         );
         held.close();
+    }
+
+    #[test]
+    fn delayed_polls_preserve_playback_rate_and_skip_long_outages() {
+        let _device_test = device_test_lock();
+        let (mut audio, sink) = observed_output();
+        let base = Instant::now();
+        // A 12ms service poll must keep the 20ms audio cadence, instead of
+        // turning every poll delay into permanent sample-clock drift.
+        let due = [0, 24, 48, 60, 84, 108, 120, 144, 168, 180, 204];
+        for millis in (0..=204).step_by(12) {
+            audio.playout(base + Duration::from_millis(millis)).unwrap();
+            if due.contains(&millis) {
+                let sample = sink
+                    .try_pull_sample(gst::ClockTime::from_seconds(1))
+                    .unwrap_or_else(|| panic!("missing actual PCM at {millis}ms"));
+                assert_eq!(sample.buffer().unwrap().size(), FRAME_SAMPLES * 2);
+            } else {
+                assert!(sink.try_pull_sample(gst::ClockTime::ZERO).is_none());
+            }
+        }
+        // A long outage emits one current frame, with no catch-up burst.
+        audio.playout(base + Duration::from_secs(1)).unwrap();
+        assert!(
+            sink.try_pull_sample(gst::ClockTime::from_seconds(1))
+                .is_some()
+        );
+        audio.playout(base + Duration::from_millis(1001)).unwrap();
+        assert!(sink.try_pull_sample(gst::ClockTime::ZERO).is_none());
+        audio.close();
     }
 
     #[test]

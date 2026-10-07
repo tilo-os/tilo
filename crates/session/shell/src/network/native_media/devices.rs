@@ -38,8 +38,13 @@ impl Observation {
         );
     }
     pub fn current(&self) -> bool {
-        self.alive.load(Ordering::Acquire)
-            && self.base.elapsed().as_nanos() < u128::from(self.deadline.load(Ordering::Acquire))
+        let alive = self.alive.load(Ordering::Acquire);
+        let fresh =
+            self.base.elapsed().as_nanos() < u128::from(self.deadline.load(Ordering::Acquire));
+        if !alive || !fresh {
+            tracing::debug!(alive, fresh, "native audio observation fence closed");
+        }
+        alive && fresh
     }
 }
 #[derive(Default)]
@@ -202,12 +207,21 @@ impl Devices {
                 }
             }
         }
-        let output = observed.and_then(AudioGraph::default_sink);
+        let output = observed
+            .and_then(|observed| selected_output(observed, graph.output.as_deref(), cookie));
         if !graph.output.as_ref().is_some_and(|old| {
             cookie == Some(old.cookie)
                 && output.is_some_and(|new| old.node == new.id && old.serial == new.serial)
         }) {
             if let Some(old) = graph.output.take() {
+                tracing::debug!(
+                    observed = observed.is_some(),
+                    output_present = output.is_some(),
+                    cookie_current = cookie == Some(old.cookie),
+                    node_current = output.is_some_and(|new| old.node == new.id),
+                    serial_current = output.is_some_and(|new| old.serial == new.serial),
+                    "native audio output identity retired"
+                );
                 old.alive.store(false, Ordering::Release);
             }
             // An output exists only for an observed graph, which carries its cookie.
@@ -257,6 +271,24 @@ impl Devices {
         result
     }
 }
+// Default metadata may be withdrawn between policy updates while the exact
+// bound sink remains observed. Never choose another sink by label or node alone.
+fn selected_output<'a>(
+    observed: &'a AudioGraph,
+    current: Option<&Observation>,
+    cookie: Option<u32>,
+) -> Option<&'a media::AudioDevice> {
+    observed.default_sink().or_else(|| {
+        current
+            .filter(|old| cookie == Some(old.cookie))
+            .and_then(|old| {
+                observed
+                    .sinks
+                    .iter()
+                    .find(|sink| (sink.id, sink.serial) == (old.node, old.serial))
+            })
+    })
+}
 impl Drop for Devices {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
@@ -294,6 +326,52 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+    #[test]
+    fn output_metadata_gap_preserves_exact_sink_but_reuse_or_default_change_retires_it() {
+        let devices = Devices {
+            broker: Arc::new(std::sync::Mutex::new(CaptureBroker::new())),
+            graph: Mutex::new(Graph::default()),
+            base: Instant::now(),
+            stopped: AtomicBool::new(false),
+            next: AtomicU64::new(0),
+            task: Mutex::new(None),
+        };
+        let mut observed = graph(SERIAL);
+        observed.sinks = observed.sources.clone();
+        observed.sources.clear();
+        observed.sinks[0].is_default = true;
+        devices.update(devices.sequence().unwrap(), Some((11, &observed)));
+        let output = devices.output().unwrap();
+        observed.sinks[0].is_default = false;
+        devices.update(devices.sequence().unwrap(), Some((11, &observed)));
+        assert!(Arc::ptr_eq(&output, &devices.output().unwrap()));
+        assert!(output.current());
+        // Reusing the same node cannot preserve the retired socket authority.
+        observed.sinks[0].serial = NEXT_SERIAL;
+        devices.update(devices.sequence().unwrap(), Some((11, &observed)));
+        assert!(!output.current());
+        assert!(devices.output().is_none());
+        observed.sinks[0].is_default = true;
+        devices.update(devices.sequence().unwrap(), Some((11, &observed)));
+        let output = devices.output().unwrap();
+        let mut replacement = observed.sinks[0].clone();
+        replacement.id = 8;
+        replacement.serial = SERIAL;
+        observed.sinks[0].is_default = false;
+        observed.sinks.push(replacement);
+        devices.update(devices.sequence().unwrap(), Some((11, &observed)));
+        assert!(!output.current());
+        assert_eq!(devices.output().unwrap().node, 8);
+        let output = devices.output().unwrap();
+        devices.update(devices.sequence().unwrap(), Some((12, &observed)));
+        assert!(!output.current());
+        assert_eq!(devices.output().unwrap().cookie, 12);
+        let output = devices.output().unwrap();
+        observed.sinks.clear();
+        devices.update(devices.sequence().unwrap(), Some((12, &observed)));
+        assert!(!output.current());
+        assert!(devices.output().is_none());
     }
     #[test]
     fn unchanged_observation_preserves_lease_but_node_reuse_revokes_before_return() {

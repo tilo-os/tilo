@@ -68,11 +68,15 @@ impl MediaFactory for Factory {
                 drop(observed);
                 let opened = command(&commands, Operation::Open { owner, target })
                     .await
-                    .map_err(|_| Issue::Denied)?;
+                    .map_err(|_| {
+                        tracing::debug!("native voice open command refused");
+                        Issue::Denied
+                    })?;
                 let Reply::Opened(ticket) = opened else {
                     return Err(Issue::Unavailable);
                 };
                 if ticket.granted(OPEN_DEADLINE).await.is_err() {
+                    tracing::debug!("native voice first grant unavailable");
                     ticket.stop();
                     return Err(Issue::Denied);
                 }
@@ -90,7 +94,15 @@ impl MediaFactory for Factory {
                     let result = maintain(&commands, &controller).await;
                     if !controller.cancelled.load(Ordering::Acquire) {
                         if result.is_err() {
-                            tracing::warn!("native call carrier maintenance ended");
+                            let category = match result.as_ref().err().map(String::as_str) {
+                                Some("native carrier retry budget exhausted") => {
+                                    "carrier_retry_exhausted"
+                                }
+                                Some("native actor deadline") => "actor_deadline",
+                                Some("the participation ended") => "participation_ended",
+                                _ => "unavailable",
+                            };
+                            tracing::warn!(category, "native call carrier maintenance ended");
                         }
                         controller.ticket.stop();
                         *controller.state.lock() = result
@@ -106,6 +118,8 @@ impl MediaFactory for Factory {
                     audio,
                     capture: None,
                     decoded_generation: None,
+                    first_packet_diagnosed: false,
+                    next_audio_diagnostic: Instant::now(),
                     publishers: Vec::new(),
                 }) as Box<dyn MediaSession>)
             }));
@@ -130,12 +144,15 @@ struct Running {
 }
 impl Running {
     fn retire(&self) {
+        tracing::debug!("native carrier retirement started");
         self.ticket.clear_carrier();
+        tracing::debug!("native carrier participation paused");
         let client = self.client.lock().take();
         if let Some(client) = client {
             client.close();
         }
         *self.state.lock() = Ok(CallState::Reconnecting);
+        tracing::debug!("native carrier retirement completed");
     }
 }
 async fn command(commands: &mpsc::Sender<NetCmd>, operation: Operation) -> Result<Reply, String> {
@@ -293,7 +310,8 @@ impl StopSlot {
             Issue::PermissionDenied
         }
     }
-    fn pause(&self) {
+    fn pause(&self) -> u64 {
+        tracing::debug!("native capture slot pause started");
         let mut generation = self.generation.lock();
         // A timer or prepared FD from the previous start cannot affect a later
         // resume of the same explicit unmute intent.
@@ -306,6 +324,10 @@ impl StopSlot {
             }
             capture.stop();
         }
+        let idle = self.startup.load(Ordering::SeqCst);
+        drop(generation);
+        tracing::debug!("native capture slot pause completed");
+        idle
     }
     fn stop(&self) {
         self.current.store(false, Ordering::SeqCst);
@@ -392,6 +414,8 @@ struct Session {
     audio: VoiceAudio,
     capture: Option<CaptureIntent>,
     decoded_generation: Option<u64>,
+    first_packet_diagnosed: bool,
+    next_audio_diagnostic: Instant,
     publishers: Vec<voice::PublicationId>,
 }
 impl Session {
@@ -560,17 +584,36 @@ impl MediaSession for Session {
         if let Some(intent) = &self.capture {
             let installed = intent.slot.generation.lock().is_some();
             if installed {
-                for frame in self
+                let frames = self
                     .audio
                     .poll_capture(now)
-                    .map_err(|_| Issue::CaptureFailed)?
-                {
+                    .map_err(|_| Issue::CaptureFailed)?;
+                if now >= self.next_audio_diagnostic {
+                    tracing::debug!(
+                        frames = frames.len(),
+                        "native voice capture poll progressed"
+                    );
+                    self.next_audio_diagnostic = later(Duration::from_secs(1));
+                }
+                for frame in frames {
+                    let first_packet = !self.first_packet_diagnosed;
+                    self.first_packet_diagnosed = true;
+                    if first_packet {
+                        tracing::debug!("native voice first packet entering carrier");
+                    }
                     let result = client.try_send(client::CapturedOpus {
                         timestamp_48k: frame.timestamp_48k,
                         duration_samples: frame.duration_samples,
                         payload: frame.payload,
                         captured_at: frame.captured_at,
                     });
+                    if first_packet {
+                        tracing::debug!(
+                            accepted = result.is_ok(),
+                            expired = matches!(result, Err(client::ClientError::Expired)),
+                            "native voice first packet carrier returned"
+                        );
+                    }
                     if !matches!(result, Ok(()) | Err(client::ClientError::Expired)) {
                         self.pause_capture();
                         return Ok(CallState::Reconnecting);
@@ -592,6 +635,10 @@ impl MediaSession for Session {
             let Some(frame) = client.try_recv() else {
                 break;
             };
+            // Carrier arrivals are asynchronous: this frame can arrive after
+            // the tick began. Compare it with a fresh local clock observation,
+            // retaining its original arrival and expiry without clamping either.
+            let received_now = Instant::now();
             let publisher = voice::PublicationId {
                 namespace: frame.publisher.namespace,
                 carrier_generation: frame.publisher.carrier_generation,
@@ -610,11 +657,16 @@ impl MediaSession for Session {
                         received_at: frame.received_at,
                         expires_at: frame.expires_at,
                     },
-                    now,
+                    received_now,
                 )
-                .map_err(|_| Issue::TransportFailed)?;
+                .map_err(|error| {
+                    tracing::debug!(?error, "native voice receive admission failed");
+                    Issue::TransportFailed
+                })?;
         }
-        self.audio.playout(now).map_err(|_| Issue::Unavailable)?;
+        self.audio
+            .playout(Instant::now())
+            .map_err(|_| Issue::Unavailable)?;
         Ok(CallState::Live)
     }
     fn inventory(&self) -> Inventory {
@@ -732,7 +784,11 @@ impl MediaSession for Session {
     fn pause_capture(&mut self) {
         if let Some(intent) = &mut self.capture {
             intent.cancel_pending();
-            intent.slot.pause();
+            // Acknowledge the retired generation without starting capture.
+            // Otherwise a live replacement carrier keeps returning Reconnecting
+            // for this stale startup, while the service waits for Live before
+            // restarting under the existing current consent/source lease.
+            intent.startup = intent.slot.pause();
         }
         self.audio.stop_capture();
     }
@@ -786,6 +842,27 @@ mod tests {
         assert_eq!(slot.check_startup(first), Ok(false));
         slot.expire(first);
         let resumed = slot.begin().unwrap();
+        assert_eq!(slot.check_startup(resumed), Ok(true));
+        slot.stop();
+        assert_eq!(slot.check_startup(resumed), Err(Issue::PermissionDenied));
+        assert_eq!(slot.begin(), Err(Issue::PermissionDenied));
+    }
+
+    #[test]
+    fn acknowledged_idle_generation_is_not_ready_and_cannot_outlive_terminal_stop() {
+        let slot = StopSlot::new();
+        let old = slot.begin().unwrap();
+        slot.ready.store(true, Ordering::SeqCst);
+        let idle = slot.pause();
+        assert_eq!(slot.check_startup(old), Ok(false));
+        assert_eq!(slot.check_startup(idle), Ok(true));
+        assert!(!slot.ready.load(Ordering::SeqCst));
+        assert!(slot.generation.lock().is_none());
+        // The old watchdog cannot revoke idle recovery or a fresh startup.
+        slot.expire(old);
+        let resumed = slot.begin().unwrap();
+        assert_ne!(resumed, idle);
+        assert_eq!(slot.check_startup(idle), Ok(false));
         assert_eq!(slot.check_startup(resumed), Ok(true));
         slot.stop();
         assert_eq!(slot.check_startup(resumed), Err(Issue::PermissionDenied));

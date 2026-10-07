@@ -186,6 +186,119 @@ actual service errors terminal. Public call-effect and failure regressions pass;
 the next native run must establish whether this closes the observed boundary.
 Run 39 was interrupted during package assembly and produced no acceptance receipt.
 
+The voice-only run 42 observed Alice actively capturing and the first genuine
+encoded packet accepted by the carrier in about 0.2 ms. Bob still ended before
+consent with no reported issue. Query coalescing therefore does not qualify or
+establish the cause of this boundary. Run 41 separately ended with `source_lost`
+after its output observation became non-current. These receipts retain their failed
+status and completed cleanup. Chat's `call-status` now retains a fixed
+`clientIssue` category after automatic cleanup, clears it on a new explicit
+command and never exports private transport error text. The service's own
+`reported` snapshot remains separate. A public-effect regression covers cleanup,
+fresh Join and error redaction. Runs 43 and 44 retained `command_refused`
+after cleanup; run 44 identified the local service's `call_not_ready` response
+to Bob's unmute. Both runs observed Alice actively capturing and a promptly
+accepted carrier packet; neither qualified bidirectional audio.
+
+A further production regression covers unmute during a controlled reconnect.
+The service returns the current non-live snapshot instead of a terminal RPC
+error, queues no consent and remembers no future capture request. Recovery stays
+muted; a new explicit unmute still requires fresh consent. An expired lifecycle
+still refuses the command. The generated fixture requests unmute only while the
+observed call is live and retries no permission refusal. The next native run must
+validate this boundary; the complete voice journey remains outstanding.
+
+The sustained-source preflight exposed a fixture failure independent of Chat:
+the GStreamer provider stopped after 34 encoded frames. The fixture now uses
+PipeWire's `pw-cat` with a private generated PCM source, no automatic output
+link, and a 64-buffer preflight through both ordinary and fresh-FD paths. The
+source never reads hardware. Recording requires successful bounded EOS and
+exactly 96,000 samples. Tone energy is measured in native 20 ms frames, retaining
+the original threshold; coherent energy across an entire recording incorrectly
+rejected legitimate decoder phase correction. Correct-tone, wrong-tone and
+noise controls distinguish this measurement boundary.
+
+Production playback previously reset its sample clock to each delayed poll,
+reducing playback rate when polling did not divide 20 ms. It now preserves the
+20 ms schedule across small delays and resets after a missed whole frame,
+without replaying outage backlog or extending frame deadlines. A real GStreamer
+AppSrc/AppSink regression fails on the preceding path and passes on the fix.
+Receive admission also compares asynchronous arrivals against a fresh local
+clock observation, retaining the carrier's original arrival and expiry.
+
+Private native runs 58 and 59 decoded both opposite-frequency tones after two
+separate visible one-shot consents. Run 59 measured 99.917% and 99.929% frame
+energy, observed both actual capture/playback streams on each desktop, and
+proved Alice's Leave removed both streams. Bob then retained only playback
+while Chat's preceding snapshot still reported active capture; the next stream
+precondition timed out. This is an unresolved peer-leave recovery boundary,
+not successful Leave/rejoin/removal acceptance. Cleanup passed. Runs 60 and 61
+ended before capture with carrier retry exhaustion; rebuilding the host example
+alone did not rebuild the launched shell, so newly added teardown diagnostics
+were absent. Subsequent diagnosis must build the shell and host together. Run 62 did so
+and observed complete carrier retirement transitions, then an observation
+with no advertised default output. The follow-up preserves an already bound sink
+only while the same daemon cookie, node and serial remain observed; a new
+default, missing sink, reused node or changed daemon still retires it.
+
+Run 64 rebuilt the working signed-app path with the exact-output correction
+and reproduced bidirectional audio (99.558% and 99.575% tone energy), Alice's
+Leave, and Bob's missing capture precondition. Its finite diagnostics show the
+remaining carrier retired and capture pause completed. Source inspection found
+a recovery cycle: the backend kept treating the retired startup as reconnecting,
+while the service waited for Live before resuming the existing capture lease.
+The follow-up acknowledges an idle generation when pausing. It starts no device,
+sets no readiness, renews no lease and retains terminal/expiry fences; the
+service alone restarts under the original current consent, lifecycle and source.
+All 26 focused production media/fence regressions pass. Run 67 rebuilt the
+actual shell and completed the independent voice journey: both peers decoded
+the remote generated tone before and after rejoin (99.458%–99.893% tone energy),
+both Leave operations removed capture and playback, both rejoined the original
+call muted with inactive capture, fresh visible one-shot consent reopened each
+microphone, and governor removal closed Bob's streams. Cleanup passed. Its
+`mode: native-voice-proof` receipt has no error and remains `qualified: false`
+because Follow and the combined pair were not exercised. Runs 65 and 66 stopped
+before desktop launch because the direct builder command lacked the toolchain
+PATH or shared-cache wrapper; the successful run used `rcargo --on-builder run`.
+
+Run 68 added explicit semantic Mute: Bob's microphone stream disappeared while
+his playback stream remained, with no permission request. Unmute then required
+a fresh visible one-shot consent and restored real remote audio. Both Leave
+operations, muted rejoin, fresh consent, bidirectional decoding and governor
+removal passed again. Five complete 96,000-sample recordings contained
+98.156%–99.871% expected-tone energy. Cleanup passed; the independent receipt
+still cannot qualify Follow, the combined pair or physical devices.
+
+## Everyday Chat acceptance gaps
+
+The combined harness now also checks ordinary native posting into two different
+conversations, bounded readable history on both admitted peers, and convergence
+of a typed live resource address with its existing record provider. Sharing an
+address grants no access. Run 62 passed these assertions through the real signed native applications.
+It also passed semantic opt-in context navigation and both Stop controls, then timed out joining
+voice after an observation advertised no default output and retired the bound
+sink. The exact cause of that observation remains unconfirmed. The combined receipt remains unqualified. A retained headless screenshot then exposed a missing Follow presentation
+assertion: shell focus landed on an unavailable peer-window record while the
+other local Chat reported the followed conversation. The harness now requires
+the exact admitted target tab to paint an actual signed local app frame.
+A minimal routing experiment used the existing distinction between
+governor-committed documents and stewarded sealed channels. Run 63 reached
+the native SDK history-confirmation guard, where Bob stopped before presenting
+a frame (`native component history was not confirmed before its factory`).
+The unqualified routing experiment was reverted. Resolving the record/history
+handshake needs coordination with the SDK owner; no history confirmation or
+current admission check was bypassed. Run 69 repeated both native conversation/read and resource-reference checks, then failed the strengthened assertion: the exact followed tab had no actual signed local frame. Its bounded presentation receipt records `actual_local_frame_presented: false`; cleanup passed. Follow presentation remains undelivered.
+
+| Journey | Current evidence / remaining gap |
+| --- | --- |
+| Correct conversation and send | Runs 62/69: both native messages read in their intended conversations |
+| Retry and reconnect | Idempotent action tests exist; ordinary native outage/retry journey outstanding |
+| Presence and Follow | Certified roster and semantic navigation/Stop observed; exact followed frame was unavailable, run 69 failed the strengthened exact-frame presentation check |
+| Readable history | Runs 62/69: bounded native reads passed; history/catch-up UI remains with its separate owner |
+| Live resource access | Landed browser/native journey; runs 62/69 native reference/provider convergence passed |
+| Voice, mute and Leave | Runs 67/68: bidirectional native audio, explicit Mute/fresh Unmute consent, both Leave operations, muted rejoin and removal passed independently |
+| Physical devices | Yoga/Pi acceptance outstanding; no physical microphone or public access enabled |
+
 `journey.json` remains `qualified: false` until every step completes: presented
 native Chat on both peers; opt-in context navigation; Stop and explicit follow
 release; muted joining; visible fresh capture consent; decoded opposite-frequency
