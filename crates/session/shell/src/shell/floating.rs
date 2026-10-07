@@ -1,5 +1,14 @@
 //! Shared floating-surface presentation and lifecycle policy.
+use smithay::reexports::wayland_server::backend::ClientId;
 use std::sync::Arc;
+
+/// Immutable association with the actual source Wayland connection.
+/// A token never substitutes for this connection and room identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FloatingToplevelOwner {
+    pub client: ClientId,
+    pub room: Option<crate::shell::state::RoomId>,
+}
 pub const OSK_APP_ID: &str = "so.tilo.osk";
 /// Frozen pixels from the final app-owned frame. The shell moves this exact
 /// image under the pointer while the authenticated secondary surface warms,
@@ -21,6 +30,7 @@ pub struct FloatingTransferSource {
 
 #[derive(Clone, Debug)]
 pub struct PendingFloatingToplevel {
+    pub owner: Option<FloatingToplevelOwner>,
     pub token: String,
     pub connection: u64,
     pub public_id: String,
@@ -34,6 +44,7 @@ pub struct PendingFloatingToplevel {
 
 #[derive(Clone, Debug)]
 pub struct FloatingToplevel {
+    pub owner: Option<FloatingToplevelOwner>,
     pub surface_id: u64,
     pub token: String,
     pub connection: u64,
@@ -195,6 +206,7 @@ mod floating_lifecycle_tests {
 
     fn live_surface() -> FloatingToplevel {
         FloatingToplevel {
+            owner: None,
             surface_id: 41,
             token: "5e8f16a2a2e24bf7ad86758f2f28e316".into(),
             connection: 7,

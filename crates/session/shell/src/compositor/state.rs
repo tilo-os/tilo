@@ -855,6 +855,7 @@ impl State {
         let pending = self.pending_floating_toplevels.remove(index);
         self.client_input.promote_to_overlay(surface_id);
         let surface = FloatingToplevel {
+            owner: pending.owner,
             surface_id,
             token: pending.token,
             connection: pending.connection,
@@ -869,6 +870,73 @@ impl State {
         };
         self.floating_toplevels.push(surface);
         true
+    }
+
+    pub(crate) fn floating_owner_for_surface(
+        &self,
+        surface_id: u64,
+    ) -> Result<FloatingToplevelOwner, &'static str> {
+        let client = self
+            .surface_handles
+            .get(&surface_id)
+            .and_then(WlSurface::client)
+            .ok_or("floating source has no current Wayland connection")?;
+        let (_, room) = authenticated_toplevel_identity(client.get_data::<ClientState>(), None)?;
+        Ok(FloatingToplevelOwner {
+            client: client.id(),
+            room,
+        })
+    }
+
+    fn resolve_toplevel_identity(
+        &self,
+        surface_id: u64,
+        client: Option<&smithay::reexports::wayland_server::Client>,
+        announced: Option<String>,
+    ) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+        let owner = announced
+            .as_deref()
+            .and_then(floating_capability_token)
+            .and_then(|token| {
+                self.pending_floating_toplevels
+                    .iter()
+                    .find(|pending| pending.token == token)
+                    .map(|pending| (pending.owner.as_ref(), pending.app_id.as_str()))
+                    .or_else(|| {
+                        self.floating_toplevels
+                            .iter()
+                            .find(|surface| {
+                                surface.token == token && surface.surface_id == surface_id
+                            })
+                            .map(|surface| (surface.owner.as_ref(), surface.app_id.as_str()))
+                    })
+            });
+        authenticated_floating_toplevel_identity(client, announced, owner)
+    }
+
+    pub(crate) fn validate_floating_resume_owner(
+        &self,
+        connection: u64,
+        public_id: &str,
+        owner: Option<&FloatingToplevelOwner>,
+    ) -> Result<(), &'static str> {
+        let previous = self
+            .pending_floating_toplevels
+            .iter()
+            .find(|pending| pending.connection == connection && pending.public_id == public_id)
+            .map(|pending| pending.owner.as_ref())
+            .or_else(|| {
+                self.floating_toplevels
+                    .iter()
+                    .find(|surface| {
+                        surface.connection == connection && surface.public_id == public_id
+                    })
+                    .map(|surface| surface.owner.as_ref())
+            });
+        if owner.is_none() || previous.is_some_and(|previous| previous != owner) {
+            return Err("floating capability cannot change its source owner");
+        }
+        Ok(())
     }
 
     fn mark_floating_toplevel_presented(&mut self, surface_id: u64) {
@@ -4278,6 +4346,35 @@ fn launched_package(client: Option<&ClientState>) -> Option<String> {
     client.package_id.clone()
 }
 
+fn authenticated_floating_toplevel_identity(
+    client: Option<&smithay::reexports::wayland_server::Client>,
+    announced: Option<String>,
+    owner: Option<(Option<&FloatingToplevelOwner>, &str)>,
+) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+    let state = client.and_then(|client| client.get_data::<ClientState>());
+    if let Some((owner, app_id)) = owner {
+        let owner = owner.ok_or("floating capability has no source owner")?;
+        let client = client.ok_or("floating capability has no requesting client")?;
+        if client.id() != owner.client {
+            return Err("floating capability belongs to another Wayland connection");
+        }
+        let (canonical, room) = authenticated_toplevel_identity(state, None)?;
+        if room != owner.room
+            || state.is_some_and(|state| {
+                state.enforce_package_id && canonical.as_deref() != Some(app_id)
+            })
+        {
+            return Err("floating capability owner identity changed");
+        }
+        return Ok((announced, room));
+    }
+    authenticated_toplevel_identity(state, announced)
+}
+
+#[cfg(test)]
+#[path = "floating_identity_tests.rs"]
+mod floating_identity_tests;
+
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
     announced_app_id: Option<String>,
@@ -5464,12 +5561,12 @@ impl XdgShellHandler for State {
         let (identity, package) = if let Some(client) = surface.wl_surface().client() {
             let client_state = client.get_data::<ClientState>();
             (
-                authenticated_toplevel_identity(client_state, announced_app_id),
+                self.resolve_toplevel_identity(surface_id, Some(&client), announced_app_id),
                 launched_package(client_state),
             )
         } else {
             (
-                authenticated_toplevel_identity(None, announced_app_id),
+                self.resolve_toplevel_identity(surface_id, None, announced_app_id),
                 None,
             )
         };
@@ -5636,9 +5733,9 @@ impl XdgShellHandler for State {
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
         let identity = if let Some(client) = surface.wl_surface().client() {
-            authenticated_toplevel_identity(client.get_data::<ClientState>(), new_app_id)
+            self.resolve_toplevel_identity(surface_id, Some(&client), new_app_id)
         } else {
-            authenticated_toplevel_identity(None, new_app_id)
+            self.resolve_toplevel_identity(surface_id, None, new_app_id)
         };
         let Ok((Some(app_id), _)) = identity else {
             tracing::warn!(surface_id, "ignored unauthenticated Wayland app-id change");

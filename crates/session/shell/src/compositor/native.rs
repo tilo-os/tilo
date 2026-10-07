@@ -1624,6 +1624,17 @@ fn pump_floating_surface_service(
                                 frame_builder.foreign_surface_for_app(&app_id).ok_or_else(
                                     || format!("{app_id} has no visible foreign surface"),
                                 )?;
+                            let owner = request
+                                .role
+                                .uses_app_owned_host()
+                                .then(|| state.floating_owner_for_surface(source_surface_id))
+                                .transpose()
+                                .map_err(str::to_string)?;
+                            if request.role.uses_app_owned_host() {
+                                state
+                                    .validate_floating_resume_owner(connection, &public_id, owner.as_ref())
+                                    .map_err(str::to_string)?;
+                            }
                             let (transfer_frame, transfer_source) = if request.role.uses_app_owned_host() {
                                 validate_app_owned_source(&request.source, &app_id)?;
                                 let source = app_owned_transfer_region(
@@ -1666,10 +1677,11 @@ fn pump_floating_surface_service(
                                 transfer_frame,
                                 transfer_source,
                                 [app_rect.x0, app_rect.y0],
+                                owner,
                             ))
                         });
                     match result {
-                        Ok((request, transfer_frame, transfer_source, coordinate_offset)) => {
+                        Ok((request, transfer_frame, transfer_source, coordinate_offset, owner)) => {
                             if request.role.uses_app_owned_host() {
                                 let content_rect = request.initial_rect.unwrap_or_else(|| {
                                     Rect::from_center_size(desktop.center(), request.preferred_size)
@@ -1699,6 +1711,7 @@ fn pump_floating_surface_service(
                                         let token = uuid::Uuid::new_v4().simple().to_string();
                                         state.authorize_floating_toplevel(
                                             crate::compositor::state::PendingFloatingToplevel {
+                                                owner,
                                                 token: token.clone(),
                                                 connection,
                                                 public_id: public_id.clone(),
@@ -16099,6 +16112,7 @@ mod tests {
         store.forget(surface_id);
         seat.floating_toplevels
             .push(crate::shell::floating::FloatingToplevel {
+                owner: None,
                 surface_id,
                 token: "private-capability-must-not-be-exported".into(),
                 connection: 7,
