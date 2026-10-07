@@ -24,6 +24,48 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_physical_selection_observes_delivery_without_replaying_keys(self):
+        before = {"selection": None, "caret": 9, "draft_matches": True,
+                  "accessibility_focused": True}
+        after = dict(before, selection=[4, 9], caret=4)
+
+        def observe(_label, predicate, _process):
+            self.assertIsNone(predicate())
+            return predicate()
+
+        with patch.object(PROOF, "private_editor_observation", side_effect=[before, after]), \
+                patch.object(PROOF, "wait_for", side_effect=observe), \
+                patch.object(PROOF, "call") as calls:
+            result = PROOF.wait_for_private_selection(
+                "socket", {}, "test text", [4, 9], None, pathlib.Path("unused"))
+        self.assertEqual(result, after)
+        calls.assert_not_called()
+
+    def test_physical_selection_timeout_keeps_exact_assertion_and_closed_evidence(self):
+        timeout = PROOF.ProofTimeout("original selection timeout")
+        observed = {"selection": [5, 9], "caret": 5, "draft_matches": True,
+                    "accessibility_focused": True, "private": "secret model text"}
+
+        def expire(_label, predicate, _process):
+            self.assertIsNone(predicate())
+            raise timeout
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            with patch.object(PROOF, "private_editor_observation", return_value=observed), \
+                    patch.object(PROOF, "wait_for", side_effect=expire), \
+                    patch.object(PROOF, "call", return_value={"ok": True}) as calls, \
+                    patch.object(PROOF, "require_ok"), \
+                    self.assertRaises(PROOF.ProofTimeout) as raised:
+                PROOF.wait_for_private_selection("socket", {}, "test text", [4, 9], None, output)
+            self.assertIs(raised.exception, timeout)
+            evidence = json.loads((output / "physical-selection-refused.json").read_text())
+            self.assertEqual(evidence["expected_selection"], [4, 9])
+            self.assertEqual(evidence["observed_selection"], [5, 9])
+            self.assertNotIn("secret model text", json.dumps(evidence))
+            calls.assert_called_once_with("socket", {"op": "snapshot", "path": str(
+                output / "physical-selection-refused.png")})
+
     def test_terminal_timeout_diagnostic_is_closed_and_preserves_original_failure(self):
         original = "00000000-0000-0000-0000-000000000021"
         private = "private prompt result error and output"

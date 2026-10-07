@@ -540,6 +540,36 @@ def private_editor_value_matches(access, expected):
     return atspi.text_reply(reply) == expected
 
 
+def wait_for_private_selection(socket, access, expected, selection, process, output):
+    """Observe dispatched physical keys; never replay them or change the assertion."""
+    last = None
+
+    def selected():
+        nonlocal last
+        last = private_editor_observation(access, expected)
+        return last if last["selection"] == selection else None
+
+    try:
+        return wait_for("physical selection in the actual private editor", selected, process)
+    except RuntimeError:
+        # Only bounded offsets and boolean observations leave this scope.
+        # The fixture's draft and raw accessibility replies remain in memory.
+        (output / "physical-selection-refused.json").write_text(json.dumps({
+            "expected_selection": selection,
+            "observed_selection": last["selection"] if last else None,
+            "observed_caret": last["caret"] if last else None,
+            "draft_matches": last["draft_matches"] if last else False,
+            "accessibility_focused": last["accessibility_focused"] if last else False,
+            "private_content_recorded": False,
+        }, indent=2) + "\n")
+        try:
+            require_ok(call(socket, {"op": "snapshot", "path": str(
+                output / "physical-selection-refused.png")}))
+        except RuntimeError:
+            print("NOTE selection failure snapshot unavailable", flush=True)
+        raise
+
+
 def accessible_names(access):
     """Read only the bounded names in one already-matched Chat window."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
@@ -652,7 +682,8 @@ def native_float_return(socket, room, record, output, size, process):
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
     finally:
         set_physical_modifiers(socket)
-    selected = private_editor_observation(access, draft)
+    selected = wait_for_private_selection(
+        socket, access, draft, [len(draft) - 5, len(draft)], process, output)
     if selected["selection"] != [len(draft) - 5, len(draft)]:
         raise RuntimeError("physical Shift+ArrowLeft did not select the expected editor range")
     require_ok(call(socket, {"op": "key", "key": "ArrowRight"}))
@@ -676,7 +707,8 @@ def native_float_return(socket, room, record, output, size, process):
         require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
     finally:
         set_physical_modifiers(socket)
-    before = private_editor_observation(access, draft)
+    before = wait_for_private_selection(
+        socket, access, draft, [len(draft) - 1, len(draft)], process, output)
     if before["selection"] != [len(draft) - 1, len(draft)]:
         raise RuntimeError("the IME result could not be selected through physical input")
     if before["accessibility_focused"] is not True:
