@@ -15,7 +15,7 @@ ENTRY = Path(__file__).resolve().parents[2] / "crates/browser/tilo-web-desktop/s
 
 
 class SmokeShards(unittest.TestCase):
-    def run_driver(self, apps, shards="2", failing_app="", cleanup_failures=0):
+    def run_driver(self, apps, shards="2", failing_app="", orphan=False, cleanup_failures=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             browser = root / "chrome"
@@ -32,7 +32,12 @@ class SmokeShards(unittest.TestCase):
                 " else:(profile/'shutdown').write_text('flushed')\n"
                 " sys.exit(0)\n"
                 "signal.signal(signal.SIGTERM,stop)\n"
-                "while True:time.sleep(.01)\n"
+                "if os.environ['ORPHAN_WRITER']=='1':\n"
+                " child=os.fork()\n"
+                " if child:signal.signal(signal.SIGTERM,lambda *args:sys.exit(0))\n"
+                "deadline=time.monotonic()+2\n"
+                "while time.monotonic()<deadline:time.sleep(.01)\n"
+                "stop()\n"
             )
             curl = root / "curl"
             curl.write_text(
@@ -74,6 +79,7 @@ class SmokeShards(unittest.TestCase):
                 RUNNER_TEMP=directory,
                 FIXTURE_ROOT=directory,
                 FAILING_APP=failing_app,
+                ORPHAN_WRITER="1" if orphan else "0",
                 CLEANUP_FAILURES=str(cleanup_failures),
                 TILO_WEB_SMOKE_SHARDS=shards,
                 CDP_PORT="9333",
@@ -209,6 +215,12 @@ class SmokeShards(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(browsers), 1)
         self.assertEqual(workers[0]["args"][2:], ["calculator", "desktop"])
+
+    def test_browser_descendant_is_reaped_before_its_profile_is_removed(self):
+        result, workers, browsers = self.run_driver(["calculator"], orphan=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(workers), 1)
+        self.assertEqual(len(browsers), 1)
 
     def test_extra_parallelism_is_rejected(self):
         result, workers, browsers = self.run_driver(["calculator", "desktop"], shards="3")

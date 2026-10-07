@@ -344,6 +344,10 @@ pub enum MusicEffect {
     /// Results join the canonical search index after the worker answers.
     #[effect(job, device_only, permission = "read")]
     Search { query: String },
+    /// Inspect playback
+    /// Device-local transport observations, with no account or credential data.
+    #[effect(row, device_only, returns, idempotent, permission = "read")]
+    PlaybackStatus,
     /// Open audio file
     ///
     /// Plays a local audio file the person chooses on this device.
@@ -1376,6 +1380,7 @@ fn navigation_view_resource(id: &str, label: &str) -> Resource {
 /// The player's transport, bound to the player row: what is offered right
 /// now, and why the rest is not.
 fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Resource {
+    root = root.with_action(MusicEffect::PlaybackStatus.bound());
     if playback.current.is_some() {
         root = root.with_action(bound(
             &MusicEffect::PlayPause,
