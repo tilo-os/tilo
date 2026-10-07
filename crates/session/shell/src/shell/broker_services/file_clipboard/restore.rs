@@ -177,6 +177,8 @@ impl Info {
                 return Err("Trash metadata changed before retention".into());
             }
             rename_entry(&directory, name, &directory, &held)?;
+            #[cfg(test)]
+            interrupt_test_process("restore-info-retained");
             Some(file)
         } else {
             None
@@ -216,6 +218,26 @@ impl Info {
     ) -> Result<(), String> {
         let directory = self.parent.open(tree, context)?;
         let name = std::ffi::OsStr::from_bytes(&self.name);
+        let mut held = name.to_os_string();
+        held.push(".tilo-restore-held");
+        if present(&directory, &held)? {
+            if present(&directory, name)? {
+                return Err("Trash metadata has both an original and retained slot".into());
+            }
+            let (body, metadata) = read_info(&directory, &held)?;
+            if body != self.body || !self.seal.matches(&metadata) {
+                return Err("retained Trash metadata no longer matches this receipt".into());
+            }
+            // A crash after retention must return the same metadata object,
+            // not recreate a second slot that blocks the next Restore.
+            self.parent.open(tree, context)?;
+            rename_entry(&directory, &held, &directory, name)?;
+            let (body, metadata) = read_info(&directory, name)?;
+            if body != self.body || !self.seal.matches(&metadata) {
+                return Err("returned Trash metadata no longer matches this receipt".into());
+            }
+            self.seal = journal::Seal::of(&metadata);
+        }
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)

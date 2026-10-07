@@ -1597,10 +1597,18 @@ mod files_clipboard_tests {
 
     #[test]
     fn mounted_files_native_trash_restore_recovers_after_process_kill() {
-        use std::os::unix::ffi::OsStringExt as _;
-        use std::os::unix::process::ExitStatusExt as _;
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_trash_restore_recovers_after_process_kill";
-        let Some(profile) = isolated_session_root(TEST) else {
+        native_trash_restore_kill_journey(TEST, "cut-before-remove");
+    }
+
+    #[test]
+    fn mounted_files_native_trash_restore_recovers_held_metadata_after_process_kill() {
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_trash_restore_recovers_held_metadata_after_process_kill";
+        native_trash_restore_kill_journey(TEST, "restore-info-retained");
+    }
+
+    fn native_trash_restore_kill_journey(test: &str, phase: &str) {
+        let Some(profile) = isolated_session_root(test) else {
             return;
         };
         if let Some(receiving) = std::env::var_os("TILO_CLIPBOARD_TEST_CROSS_DEVICE") {
@@ -1637,13 +1645,22 @@ mod files_clipboard_tests {
             std::fs::metadata(&profile).unwrap().dev(),
             std::fs::metadata(remote_mount.path()).unwrap().dev()
         );
-        let root = profile.join("interrupted");
-        let receiving = remote_mount.path().join("receiving");
+        recover_killed_restore(
+            &profile.join("interrupted"),
+            &remote_mount.path().join("receiving"),
+            phase,
+            test,
+        );
+    }
+
+    fn recover_killed_restore(root: &Path, receiving: &Path, phase: &str, test: &str) {
+        use std::os::unix::ffi::OsStringExt as _;
+        use std::os::unix::process::ExitStatusExt as _;
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture"])
-            .env("TILO_IN_PROCESS_TEST_ROOT", &root)
-            .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", &receiving)
-            .env("TILO_CLIPBOARD_TEST_KILL_AT", "cut-before-remove")
+            .args(["--exact", test, "--nocapture"])
+            .env("TILO_IN_PROCESS_TEST_ROOT", root)
+            .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", receiving)
+            .env("TILO_CLIPBOARD_TEST_KILL_AT", phase)
             .status()
             .unwrap();
         assert_eq!(status.signal(), Some(libc::SIGKILL));
@@ -1651,7 +1668,19 @@ mod files_clipboard_tests {
             std::fs::read(root.join("restore-trash-path")).unwrap(),
         ));
         let info = native_trash_pair(&trash);
-        let mut fixture = Fixture::open_in(&root, false, [root.join("source"), receiving.clone()]);
+        let mut held = info.as_os_str().to_os_string();
+        held.push(".tilo-restore-held");
+        let held = PathBuf::from(held);
+        if phase == "restore-info-retained" {
+            assert!(!info.exists());
+            assert!(held.is_file());
+            assert_eq!(
+                std::fs::read(receiving.join("report")).unwrap(),
+                b"edited after Paste before Undo"
+            );
+        }
+        let mut fixture =
+            Fixture::open_in(root, false, [root.join("source"), receiving.to_path_buf()]);
         grant_native_trash(&fixture);
         assert_eq!(
             fixture.succeeds(1, "recover-clipboard-transfers")["completed"],
@@ -1665,6 +1694,10 @@ mod files_clipboard_tests {
         assert!(
             info.is_file(),
             "recovery must retain matching standard Trash metadata"
+        );
+        assert!(
+            !held.exists(),
+            "recovery must return its exact held metadata"
         );
         fixture.succeeds(1, "open-trash");
         assert!(matches!(
