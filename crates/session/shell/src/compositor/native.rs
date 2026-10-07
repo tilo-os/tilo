@@ -8345,6 +8345,9 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    let mut dictation_vocabulary =
+        crate::compositor::dictation::host::VocabularyBinding::new(Arc::clone(&session_wake));
+    dictation_vocabulary.refresh(&mut state);
     notif_bridge.set_wake(Arc::clone(&session_wake));
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
@@ -8839,6 +8842,7 @@ pub fn run() {
     let mut transition_hold_sleep = Duration::ZERO;
     let mut credit_transition_hold;
     while !close_requested {
+        dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
             break;
         }
@@ -10517,6 +10521,7 @@ pub fn run() {
             state.shell_field_active.then_some(shell_field).flatten(),
             state.text_input_active() && input_methods.osk_shown() && !deferred_field,
         );
+        dictation_vocabulary.refresh(&mut state);
         state.set_native_dictation_deferred(deferred_field && state.shell_field_active);
         let dictation_blocked =
             session.is_locked() || !frame_builder.host().dictation_input_available();

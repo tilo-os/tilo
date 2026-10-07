@@ -330,6 +330,7 @@ dependencies = [
  "uuid",
  "wire-frame",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

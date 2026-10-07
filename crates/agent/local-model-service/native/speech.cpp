@@ -1,4 +1,6 @@
 #include "whisper.h"
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -9,10 +11,33 @@
 // reaches diagnostics, and no closure or Rust userdata crosses a C callback.
 static void discard_log(enum ggml_log_level, const char *, void *) {}
 
+struct PrivateTokens {
+    std::array<whisper_token, 64> tokens{};
+    int count = 0;
+    void clear() noexcept {
+        volatile whisper_token * data = tokens.data();
+        for (size_t i = 0; i < tokens.size(); ++i) data[i] = 0;
+        count = 0;
+    }
+    ~PrivateTokens() { clear(); }
+};
+
+struct PrivateWord {
+    std::array<char, 514> text{};
+    std::array<whisper_token, 64> tokens{};
+    ~PrivateWord() {
+        volatile char * bytes = text.data();
+        for (size_t i = 0; i < text.size(); ++i) bytes[i] = 0;
+        volatile whisper_token * ids = tokens.data();
+        for (size_t i = 0; i < tokens.size(); ++i) ids[i] = 0;
+    }
+};
+
 struct SpeechContext {
     whisper_context * model;
     whisper_state * state;
     int threads;
+    PrivateTokens vocabulary{};
 };
 
 extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept try {
@@ -39,6 +64,42 @@ extern "C" bool tilo_speech_threads(void * context, int threads) noexcept {
     ctx->threads = threads;
     return true;
 }
+
+// Vocabulary is data on the existing private pipe, never a model prompt from
+// a page. Retain at most64 ordinary BPE tokens, ending at whole-word boundaries.
+// Every call clears the previous binding, including a failed replacement.
+extern "C" bool tilo_speech_vocabulary(void * context, const char * text, size_t length) noexcept try {
+    auto * ctx = static_cast<SpeechContext *>(context);
+    if (!ctx) return false;
+    ctx->vocabulary.clear();
+    if (!text || length > 16384) return false;
+    if (length == 0) return true;
+    const int budget = std::min(64, whisper_n_text_ctx(ctx->model)/2 - 1);
+    if (budget <= 0) return false;
+    PrivateTokens selected;
+    size_t offset = 0;
+    while (offset < length) {
+        size_t end = offset;
+        while (end < length && text[end] != '\n') ++end;
+        const size_t size = end - offset;
+        if (size == 0 || size > 512) return false;
+        PrivateWord word;
+        word.text[0] = ' ';
+        std::memcpy(word.text.data()+1, text+offset, size);
+        const int count = whisper_tokenize(ctx->model, word.text.data(), word.tokens.data(), 64);
+        if (count <= 0 || count > budget - selected.count) break;
+        for (int i = 0; i < count; ++i) {
+            const auto token = word.tokens[static_cast<size_t>(i)];
+            if (token < 0 || token >= whisper_token_eot(ctx->model)) return false;
+            selected.tokens[static_cast<size_t>(selected.count++)] = token;
+        }
+        offset = end + 1;
+    }
+    if (selected.count == 0) return false;
+    ctx->vocabulary.tokens = selected.tokens;
+    ctx->vocabulary.count = selected.count;
+    return true;
+} catch (...) { return false; }
 
 extern "C" bool tilo_speech_ready(void * context) noexcept try {
     auto * ctx = static_cast<SpeechContext *>(context);
@@ -104,6 +165,12 @@ extern "C" int tilo_speech_transcribe(void * context, const float * samples,
     params.suppress_blank = true;
     params.suppress_nst = true;
     params.language = language;
+    if (handle->vocabulary.count > 0) {
+        params.prompt_tokens = handle->vocabulary.tokens.data();
+        params.prompt_n_tokens = handle->vocabulary.count;
+        params.n_max_text_ctx = 65;
+        params.carry_initial_prompt = true;
+    }
     // FFT preprocessing allocates per thread. An allocation exception while a
     // worker is joinable terminates before this ABI catch can run. Compute mel
     // serially inside the catch, then retain two threads for recognition. The

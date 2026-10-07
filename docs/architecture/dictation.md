@@ -1212,3 +1212,84 @@ not retry that removal or bypass it. Catalogue publication and deployment were
 excluded by the earlier delegation; they were **not** separately denied by
 automatic review. They still require explicit authorization. This release
 boundary does not stop independent source engineering or synthetic acceptance.
+
+### Shared personal vocabulary consumer
+
+The authenticated session host supplies the dictionary owner's existing
+`settings_store::personal_dictionary::Vocabulary` reader through
+`State::set_dictation_vocabulary`. Replacing that binding cancels the current
+recognition/field session and discards private recovery before a successor can
+start. The host owns service lifetime, identity binding, migration and delivery;
+voice creates neither another store nor an app/room config-file discovery path.
+The native compositor obtains the service from the installed authenticated
+settings source and subscribes to its change signal. Its watch holds only a
+weak service reference and compares opaque reader binding epochs without
+reading dictionary contents on the frame thread. Word edits preserve the
+binding; account switching, including a coalesced same-person logout/login,
+replaces it before input/result handling. Service destruction also wakes the
+watch and revokes access. The shared service and its store remain the dictionary
+owner's implementation, landed through PR #3302.
+
+The actor captures accepted casing and exact language applicability off the
+compositor thread. Automatic language uses only untagged words. It retains at
+most 256 spellings / 16 KiB and rechecks revision and complete-content fingerprint
+before semantic controls and replies, plus every 250 ms while inference is busy.
+Any dictionary change, removal, read failure, revocation or service drop clears
+its hints and stops/reaps the owned worker. It never silently substitutes an
+empty dictionary for a failed authenticated reader. The themed status uses
+English/German Fluent keys and asks the user to start a fresh session.
+An ordinary edit is distinguished from losing the authenticated reader: it
+retains the last already-visible draft for explicit copying, with a warning
+that the draft may be incomplete. It never inserts a partial result or exports
+it automatically. Revocation/read failure does not retain that draft; replacing
+the person binding also erases any earlier recovery. New vocabulary applies to
+a fresh session, without reusing an old decoder prompt.
+
+The existing private worker configuration optionally carries accepted spellings
+(max 32 KiB JSON, with no added field for empty vocabulary). Native inference
+retains at most 64 ordinary BPE tokens at whole-word boundaries, within the pinned
+Whisper text context; trailing words that do not fit are omitted. Special tokens
+and control/whitespace-containing hints are refused. Hints affect decoder
+context, never substring replacements in the transcript or executable
+instructions. Configuration bytes/words, session hints and native token arrays
+are zeroized; failed replacement clears previous native vocabulary. Empty
+vocabulary keeps the decoder's previous parameters.
+
+Qualification uses the actual shared Service and private actor pipe: removal,
+rebinding to the same person, and service destruction stop a busy owned peer
+without microphone access. A frontend regression checks binding replacement
+retiring the original native delivery/recovery. The pinned Tiny/JFK worker probe
+runs as UID 65534 in private PID/network namespaces with an empty device tree,
+repeats final/cancel/restart, and refuses hallucinating an unspoken TiLo hint.
+It additionally checks special-token rejection and exact baseline restoration
+after failed vocabulary replacement. These are bounded integration proofs, not
+rare-name accuracy, multilingual high accuracy, physical older-device timing or
+a new full desktop journey. Model publication and release hold remain separate.
+
+### Native composition cancellation remains excluded
+
+The separate CEF experiment retains a stronger real controlled-form test: a
+`beforeinput` handler replaces the composing input's value with `newer`, selects
+that text and calls `preventDefault`. Native empty composition then erases it;
+the observed `insertCompositionText` event is trusted and non-cancelable.
+An earlier exact element/value/selection precheck fixes replacements made before
+dispatch, but cannot protect changes made inside this event. No failing
+assertion was removed and this recovery experiment is not in the candidate.
+
+The exact pinned Chromium 152.0.7977.83
+[renderer source](https://chromium.googlesource.com/chromium/src/+/refs/tags/152.0.7977.83/third_party/blink/renderer/core/editing/ime/input_method_controller.cc)
+confirms the relevant ordering: composition update and beforeinput run before
+the native deletion. Empty `SetComposition` also calls
+`SetEditableSelectionOffsets` after `ReplaceComposition`. A safe renderer fix
+must reject stale target/text/selection after event handlers and propagate that
+refusal so the caller does not subsequently move the new selection. This fix
+has not been implemented or qualified against the pinned CEF binary. An actual
+Undo probe restored the original selected text but emitted no compositionend,
+so it is not accepted as proof of native idle or as a cancellation substitute.
+Changing to CEF's direct cancel API does not remove this primitive: the pinned
+[offscreen CEF bridge](https://github.com/chromiumembedded/cef/blob/708dc14/libcef/browser/osr/render_widget_host_view_osr.cc)
+delegates to
+[RenderWidgetHostImpl::ImeCancelComposition](https://chromium.googlesource.com/chromium/src/+/refs/tags/152.0.7977.83/content/browser/renderer_host/render_widget_host_impl.cc),
+which sends an empty `ImeSetComposition` with an invalid replacement range and
+zero selection offsets. The guarded refusal must therefore live in the
+renderer operation, rather than substituting this browser-host API.
