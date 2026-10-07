@@ -2,7 +2,7 @@
 //! A drawn frame is not display completion: only matching presentation feedback
 //! can close the timeline. Missing IDs/state/feedback never qualify a measurement.
 use serde_json::Value;
-use winit::event::{ElementState, Ime, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, WindowEvent};
 
 #[derive(Default)]
 pub struct Trace {
@@ -19,6 +19,14 @@ impl Trace {
         matches!(event,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
         ) || matches!(event, WindowEvent::Ime(Ime::Commit(_)))
+            || matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
     }
 
     pub(crate) fn has_pending(&self) -> bool {
@@ -31,6 +39,16 @@ impl Trace {
                 "key_pressed"
             }
             WindowEvent::Ime(Ime::Commit(_)) => "ime_commit",
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if snapshot
+                .as_ref()
+                .is_some_and(|value| value["app"] == "so.tilo.chat") =>
+            {
+                "pointer_released"
+            }
             _ => return None,
         };
         let stamp = tilo_presentation::key_stamp(event);
@@ -68,7 +86,7 @@ impl Trace {
 }
 
 // Existing app snapshots may contain names or paths. This physical-input
-// observer carries only the declared content-free Notes state evidence.
+// observer carries only declared content-free Notes and Chat state evidence.
 fn safe_snapshot(snapshot: Option<Value>) -> Value {
     let Some(snapshot) = snapshot else {
         return Value::Null;
@@ -81,6 +99,10 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
         return serde_json::json!({
             "app": "so.tilo.chat",
             "agent_task": agent_task,
+            "agent_message_progress": snapshot.get("agent_message_progress")
+                .and_then(safe_chat_message_progress).unwrap_or(Value::Null),
+            "agent_message_submission": snapshot.get("agent_message_submission")
+                .and_then(safe_chat_message_submission).unwrap_or(Value::Null),
         });
     }
     if snapshot["app"] != "so.tilo.notes" {
@@ -157,9 +179,207 @@ fn safe_chat_agent_task(value: &Value) -> Option<Value> {
     }))
 }
 
+fn safe_chat_message_progress(value: &Value) -> Option<Value> {
+    let rows = value.as_array()?;
+    if rows.len() > 32 {
+        return None;
+    }
+    let mut originals = std::collections::BTreeSet::new();
+    let safe = rows
+        .iter()
+        .map(|row| {
+            let original = row.get("original_invocation")?.as_str()?;
+            let request_row = row.get("request_row")?.as_str()?;
+            runtime_collab::validate_agent_message_progress_query(original, request_row).ok()?;
+            if !originals.insert(original) {
+                return None;
+            }
+            let unavailable = row.get("unavailable")?.as_bool()?;
+            let phase = row.get("phase")?;
+            let generation = row.get("generation")?;
+            let mut result = serde_json::json!({
+                "original_invocation": original,
+                "request_row": request_row,
+                "unavailable": unavailable,
+                "phase": null,
+                "generation": null,
+            });
+            if phase.is_null() {
+                if !generation.is_null() || row.get("reply_row").is_some_and(|v| !v.is_null()) {
+                    return None;
+                }
+            } else {
+                let phase = phase.as_str()?;
+                let generation = generation.as_u64()?;
+                if generation == 0
+                    || !matches!(
+                        phase,
+                        "waiting_for_reply" | "publishing" | "needs_attention" | "committed"
+                    )
+                {
+                    return None;
+                }
+                if phase == "committed" {
+                    let reply_row = row.get("reply_row")?.as_str()?;
+                    runtime_collab::validate_agent_message_public_progress(
+                        &runtime_collab::AgentMessagePublicProgress {
+                            generation,
+                            phase: runtime_collab::AgentMessagePublicPhase::Committed {
+                                reply_row: reply_row.into(),
+                            },
+                        },
+                    )
+                    .ok()?;
+                    result["reply_row"] = Value::String(reply_row.into());
+                } else if row.get("reply_row").is_some_and(|v| !v.is_null()) {
+                    return None;
+                }
+                result["phase"] = Value::String(phase.into());
+                result["generation"] = Value::from(generation);
+            }
+            Some(result)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Value::Array(safe))
+}
+
+fn safe_chat_message_submission(value: &Value) -> Option<Value> {
+    Some(serde_json::json!({
+        "draft_revision": value.get("draft_revision")?.as_u64()?,
+        "current_revision": value.get("current_revision")?.as_u64()?,
+        "draft_empty": value.get("draft_empty")?.as_bool()?,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message_progress() -> Value {
+        serde_json::json!({
+            "original_invocation": "00000000-0000-4000-8000-000000000007",
+            "request_row": "m_00000000000040008000000000000007",
+            "generation": 1,
+            "phase": "waiting_for_reply",
+            "unavailable": false,
+            "private_output": "must never leave the app",
+        })
+    }
+
+    #[test]
+    fn pointer_observation_is_chat_only_and_uses_the_actual_release() {
+        let released = WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        assert!(Trace::observes(&released));
+        let mut trace = Trace::default();
+        assert!(
+            trace
+                .begin(&released, Some(serde_json::json!({"app": "so.tilo.notes"})))
+                .is_none()
+        );
+        assert!(trace.begin(&released, None).is_none());
+        let input = trace
+            .begin(&released, Some(serde_json::json!({"app": "so.tilo.chat"})))
+            .unwrap();
+        assert_eq!(input["kind"], "pointer_released");
+        assert!(input["wayland_serial"].is_null());
+        let effect = Trace::effect(
+            input,
+            Some(serde_json::json!({
+                "app": "so.tilo.chat", "agent_message_submission": {
+                    "draft_revision": 3, "current_revision": 3, "draft_empty": false,
+                }
+            })),
+        );
+        assert_eq!(
+            effect["after"]["agent_message_submission"]["draft_revision"],
+            3
+        );
+        assert!(trace.drawn(Some(1), None).is_some());
+        assert!(!trace.has_pending());
+        let pressed = WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        assert!(!Trace::observes(&pressed));
+    }
+
+    #[test]
+    fn chat_message_trace_reconstructs_only_closed_public_milestones() {
+        let safe = safe_snapshot(Some(serde_json::json!({
+            "app": "so.tilo.chat",
+            "agent_message_progress": [message_progress()],
+            "agent_message_submission": {
+                "draft_revision": 3, "current_revision": 4, "draft_empty": false,
+                "text": "private draft"
+            },
+        })));
+        let progress = &safe["agent_message_progress"][0];
+        assert_eq!(progress["phase"], "waiting_for_reply");
+        assert_eq!(progress["generation"], 1);
+        assert!(progress.get("private_output").is_none());
+        assert_eq!(safe["agent_message_submission"]["current_revision"], 4);
+        assert!(safe["agent_message_submission"].get("text").is_none());
+        let mut committed = message_progress();
+        committed["phase"] = Value::String("committed".into());
+        committed["reply_row"] = Value::String("m_00000000000040008000000000000008".into());
+        assert!(safe_chat_message_progress(&serde_json::json!([committed])).is_some());
+        let mut unknown = message_progress();
+        unknown["phase"] = Value::Null;
+        unknown["generation"] = Value::Null;
+        unknown["unavailable"] = Value::Bool(true);
+        assert!(safe_chat_message_progress(&serde_json::json!([unknown])).is_some());
+    }
+
+    #[test]
+    fn chat_message_trace_rejects_malformed_duplicate_or_unbounded_evidence() {
+        for (key, value) in [
+            ("original_invocation", serde_json::json!("private")),
+            (
+                "request_row",
+                serde_json::json!("m_00000000000040008000000000000008"),
+            ),
+            ("phase", serde_json::json!("thinking private output")),
+            ("generation", serde_json::json!(0)),
+            ("generation", Value::Null),
+            ("unavailable", serde_json::json!("false")),
+            ("reply_row", serde_json::json!("private output")),
+        ] {
+            let mut row = message_progress();
+            row[key] = value;
+            assert!(safe_chat_message_progress(&serde_json::json!([row])).is_none());
+        }
+        assert!(
+            safe_chat_message_progress(&serde_json::json!([
+                message_progress(),
+                message_progress()
+            ]))
+            .is_none()
+        );
+        let bounded: Vec<_> = (1..=33)
+            .map(|index| {
+                let original = uuid::Uuid::from_u128(index);
+                let mut row = message_progress();
+                row["original_invocation"] = serde_json::json!(original.to_string());
+                row["request_row"] = serde_json::json!(format!("m_{}", original.simple()));
+                row
+            })
+            .collect();
+        assert!(safe_chat_message_progress(&serde_json::json!(&bounded[..32])).is_some());
+        assert!(safe_chat_message_progress(&serde_json::json!(bounded)).is_none());
+        let mut committed = message_progress();
+        committed["phase"] = serde_json::json!("committed");
+        committed["reply_row"] = serde_json::json!("m_00000000000000000000000000000000");
+        assert!(safe_chat_message_progress(&serde_json::json!([committed])).is_none());
+        assert!(
+            safe_chat_message_submission(&serde_json::json!({"draft_revision": "private"}))
+                .is_none()
+        );
+    }
 
     #[test]
     fn observer_requires_the_exact_fixed_presentation_flag() {
