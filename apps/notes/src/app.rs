@@ -311,7 +311,6 @@ pub struct NotesApp {
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
     transfer_toasts: ui::widget::toast::ToastStack,
-    last_toast_tick: ui::time::Instant,
     /// Shot-only override for the real save progress/failure presentation.
     /// Notes opens its workspace synchronously, so this does not alter live
     /// loading behavior or introduce a second production state source.
@@ -589,7 +588,6 @@ impl NotesApp {
             save_surface: ui::SaveStatusSurface::new(),
             save_retry: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
-            last_toast_tick: ui::time::now(),
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
@@ -2450,10 +2448,6 @@ impl Widget for NotesApp {
         }
         // Transient floating status bubble (bottom-right).
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let now = ui::time::now();
-        self.transfer_toasts
-            .tick(now.saturating_duration_since(self.last_toast_tick));
-        self.last_toast_tick = now;
         // Toasts stand above the status bubble's corner.
         let gutter = f64::from(theme.tokens.spacing.s4);
         let lift = ui::status_bubble::pill_height(theme) + gutter;
@@ -2474,7 +2468,6 @@ impl Widget for NotesApp {
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
             || self.shell.needs_animation_frame()
-            || !self.transfer_toasts.is_empty()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

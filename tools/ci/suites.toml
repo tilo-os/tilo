@@ -1420,6 +1420,17 @@ reason = "explicit root private-mount-namespace integration entrypoint; run with
 package = "runtime-bundle"
 inputs = [
   "tools/apps/browser_runtime_release.py",
+  "tools/apps/signal_runtime_fixture.py",
+  "tools/apps/signal_provider_release.py",
+  "os/dev/cache-github-assets.sh",
+  "tools/apps/pack-signal-provider.sh",
+  "os/scripts/prepare-signal-provider.py",
+  "os/signal-provider/java/",
+  "tools/tests/SignalProviderIdentityFixture.java",
+  "tools/tests/SignalProviderProxyFixture.java",
+  "os/scripts/stage-signal-runtime.py",
+  "os/external-assets/signal-runtime.json",
+  "os/external-assets/github-assets.tsv",
   "tools/apps/pack-runtime-package.sh",
   "scripts/browser/",
   "apps/browser/chromium/",
@@ -1429,4 +1440,8 @@ inputs = [
   "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
   "os/Containerfile",
 ]
-readers = ["crates/packaging/runtime-bundle/examples/browser_runtime_release.rs"]
+readers = [
+  "crates/packaging/runtime-bundle/examples/browser_runtime_release.rs",
+  "crates/packaging/runtime-bundle/examples/signal_runtime_fixture.rs",
+  "crates/packaging/runtime-bundle/examples/signal_provider_release.rs",
+]

@@ -5813,6 +5813,14 @@ impl ShellOverlayHost {
             return;
         };
 
+        // A retired native/portal request cannot leave a stale grant sheet.
+        chrome_handle.borrow_mut().pending_grants.retain(|pending| {
+            pending
+                .reply
+                .as_ref()
+                .is_none_or(|reply| !reply.is_closed())
+        });
+
         // The widget and semantic actions answer the same exact pending request.
         let choice = self
             .permission_prompt
@@ -16891,6 +16899,15 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let (doc, path) = ui::doc::document_ref(doc, path);
+        if let Some(chrome) = &self.chrome
+            && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
+        {
+            let mut apps = apps.borrow_mut();
+            if let Some(prompts) = &self.portal_prompts {
+                apps.bind_messaging_network_prompts(prompts.clone());
+            }
+            apps.pump_messaging_records();
+        }
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
             // secrets) are raised by the system on behalf of the person in
