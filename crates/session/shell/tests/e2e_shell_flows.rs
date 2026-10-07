@@ -34,11 +34,13 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
-use shell::shell::build_tilo_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_inputs;
+use shell::shell::hosted_inputs::HostedTileInputs;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::room_activity::RoomActivityPane;
 use shell::shell::state::WorkspaceTree;
 use shell::shell::topbar_chrome::TopBarChrome;
+use tilo_desktop::chrome::ClockSnapshot;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -124,8 +126,6 @@ struct Harness {
     modifiers: Modifiers,
     focus: Option<NodeId>,
     chrome: shell::shell::chrome_state::Chrome,
-    // Pins the top-bar clock for as long as the harness renders frames.
-    _clock: tilo_test_env::ScopedEnv,
 }
 
 impl Harness {
@@ -134,15 +134,25 @@ impl Harness {
     }
 
     fn new_at(tree: &WorkspaceTree, width: f32, height: f32) -> Self {
-        // Pin the top-bar clock before the first sync — frames here are compared
-        // pixel-for-pixel and a live clock would fail once a minute.
-        let mut clock = tilo_test_env::ScopedEnv::new();
-        clock.set("TILO_CLOCK", "09:41");
+        // The production source consumes the fixture's owned clock rather than
+        // an ambient environment pin, which owned fixtures deliberately ignore.
+        let inputs = HostedTileInputs::fixture()
+            .expect("owned hosted inputs")
+            .with_fixture_clock(ClockSnapshot {
+                clock: "09:41".into(),
+                ..ClockSnapshot::default()
+            })
+            .expect("owned fixture clock");
         let mut owned = tree.clone();
         // Rooms need recorded access, or access-reporting surfaces assert against
         // a state no user has ever been in.
         owned.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&owned);
+        let (mut host, chrome) = build_tilo_overlay_host_with_inputs(
+            owned.clone().shared(),
+            false,
+            ui::record::RecordStore::in_memory(),
+            inputs,
+        );
         // Headless snapshots must not inherit the developer machine's persisted
         // seen-frontier. That changes the activity-glance headline while leaving
         // the UI under test untouched, producing a machine- and run-dependent
@@ -207,7 +217,6 @@ impl Harness {
             modifiers: Modifiers::default(),
             focus: None,
             chrome,
-            _clock: clock,
         }
     }
 
@@ -325,12 +334,13 @@ fn e2e_open_close_overview() {
     let tree = WorkspaceTree::bootstrap_demo();
 
     let theme = Theme::dark();
-    let mut renderer_opt = try_new_renderer(W_U32, H_U32);
+    let mut offscreen = try_new_renderer(W_U32, H_U32)
+        .expect("overview pixel oracle requires an offscreen adapter");
     let out_dir = screenshots_dir();
 
     let mut h = Harness::new(&tree);
     // Pre-click frame — also primes `overview_btn_rect` for the probe below.
-    h.draw_to(renderer_opt.as_mut(), &out_dir.join("e2e-01-desktop.png"));
+    h.draw_to(Some(&mut offscreen), &out_dir.join("e2e-01-desktop.png"));
 
     // The probe only computes the button's centre; the click flows through
     // `ShellOverlayHost::handle_event`, narrowed to the sidebar wheel's y-range.
@@ -365,7 +375,7 @@ fn e2e_open_close_overview() {
     }
 
     h.draw_to(
-        renderer_opt.as_mut(),
+        Some(&mut offscreen),
         &out_dir.join("e2e-02-overview-open.png"),
     );
 
@@ -391,38 +401,30 @@ fn e2e_open_close_overview() {
             .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
     }
     h.draw_to(
-        renderer_opt.as_mut(),
+        Some(&mut offscreen),
         &out_dir.join("e2e-03-overview-closed.png"),
     );
 
-    // With a renderer, decode every frame and prove the overview transition
-    // changed a meaningful region; without one, only state transitions above
-    // are asserted.
-    if renderer_opt.is_some() {
-        for name in [
-            "e2e-01-desktop.png",
-            "e2e-02-overview-open.png",
-            "e2e-03-overview-closed.png",
-        ] {
-            assert_png_nonempty(&out_dir.join(name));
-        }
-        assert_frames_visibly_differ(
-            &out_dir.join("e2e-01-desktop.png"),
-            &out_dir.join("e2e-02-overview-open.png"),
-        );
-        // Only the settled open-overview frame is pinned — pre-click and post-Esc
-        // are the same desktop steady state.
-        let rendered = out_dir.join("e2e-02-overview-open.png");
-        SnapshotAssertion::new(
-            rendered,
-            goldens_dir().join("e2e-open-close-overview-settled.png"),
-        )
-        .assert();
-    } else {
-        eprintln!(
-            "offscreen: no wgpu adapter — e2e_open_close_overview asserted state transitions only"
-        );
+    // The pixel oracle must observe the actual rendered production frames.
+    for name in [
+        "e2e-01-desktop.png",
+        "e2e-02-overview-open.png",
+        "e2e-03-overview-closed.png",
+    ] {
+        assert_png_nonempty(&out_dir.join(name));
     }
+    assert_frames_visibly_differ(
+        &out_dir.join("e2e-01-desktop.png"),
+        &out_dir.join("e2e-02-overview-open.png"),
+    );
+    // Only the settled open-overview frame is pinned — pre-click and post-Esc
+    // are the same desktop steady state.
+    let rendered = out_dir.join("e2e-02-overview-open.png");
+    SnapshotAssertion::new(
+        rendered,
+        goldens_dir().join("e2e-open-close-overview-settled.png"),
+    )
+    .assert();
 }
 
 /// Production notification-stack review seed for failed application opens.
