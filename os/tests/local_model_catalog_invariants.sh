@@ -41,12 +41,30 @@ jq -e --arg hash "$model_hash" --argjson size "$model_size" \
 
 grep -Fq 'pub const CATALOG_SIGNATURE_DOMAIN: &str = "tilo.local-model.catalog.v1";' "$catalog" \
     || bad 'catalog signature domain is not pinned in release tooling'
-grep -Fq 'CATALOG_SIGNATURE_DOMAIN.as_bytes().to_vec()' "$catalog" \
-    || bad 'canonical signing bytes do not use the pinned domain'
-grep -Fq 'let payload_bytes = catalog_signing_bytes(&payload)?;' "$tool" \
+grep -Fq 'pub const DEVELOPER_SIGNATURE_DOMAIN: &str = "tilo.local-model.developer-offline.v1";' "$catalog" \
+    || bad 'developer signature domain is not separately pinned'
+grep -Fq 'local_model_service::catalog::developer_signing_bytes(&payload)?' "$tool" \
+    || bad 'developer release tooling does not use its canonical signing path'
+grep -Fq 'signing_bytes_for_domain(payload, CATALOG_SIGNATURE_DOMAIN)' "$catalog" \
+    || bad 'production signing does not use its pinned domain'
+grep -Fq 'signing_bytes_for_domain(payload, DEVELOPER_SIGNATURE_DOMAIN)' "$catalog" \
+    || bad 'developer signing does not use its separate pinned domain'
+grep -Fq 'let mut bytes = domain.as_bytes().to_vec();' "$catalog" \
+    || bad 'canonical signing bytes do not start with the selected domain'
+grep -Fq 'bytes.push(0);' "$catalog" \
+    || bad 'canonical signing bytes lack the domain separator'
+grep -Fq 'bytes.extend(serde_json::to_vec(payload)' "$catalog" \
+    || bad 'canonical signing bytes do not include the payload'
+grep -Fq 'catalog_signing_bytes(&payload)?' "$tool" \
     || bad 'release tooling does not sign the canonical domain-separated payload'
-grep -Fq 'let payload = catalog_signing_bytes(&signed.payload)?;' "$catalog" \
+grep -Fq 'let payload = signing_bytes_for_domain(&signed.payload, domain)?;' "$catalog" \
     || bad 'catalog verification does not use the same domain-separated payload'
+grep -Fq 'load_catalog(path, keys, CATALOG_SIGNATURE_DOMAIN).map(Self)' "$catalog" \
+    || bad 'image consumer does not select the production signature domain'
+grep -Fq 'load_catalog(path, keys, DEVELOPER_SIGNATURE_DOMAIN).map(Self)' "$catalog" \
+    || bad 'developer consumer does not select the separate developer domain'
+grep -Fq 'if signed.signature_domain != domain {' "$catalog" \
+    || bad 'consumer does not reject cross-domain envelopes'
 grep -Fq 'signing_key.verifying_key()' "$tool" \
     || bad 'release tooling does not derive public image trust from the signer'
 if grep -R -Eiq 'private[_ -]?key|signing[_ -]?key|secret[_ -]?key' \
