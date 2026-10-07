@@ -29,6 +29,8 @@ use super::{
 // Worker-owned Cloud facilities: committed-document reads, the paged
 // directory client, managed sender attempts and the native media lane all
 // share this worker's queues, byte budgets and route handles.
+#[path = "audio_output.rs"]
+mod audio_output;
 #[path = "committed_document.rs"]
 pub(super) mod committed_document;
 #[path = "directory_client.rs"]
@@ -2591,6 +2593,12 @@ impl CollaborationManager {
 
     #[cfg(feature = "native")]
     pub(crate) fn for_native_launch(kind: &crate::record::RecordKind) -> Result<Self, String> {
+        if crate::host::environment()
+            .identity
+            .collab_service_configured
+        {
+            media::audio_output::require_governed();
+        }
         if runtime_portal::service_fd("collab").is_none() {
             if crate::host::environment()
                 .identity
@@ -2636,6 +2644,28 @@ impl CollaborationManager {
         history: Vec<u8>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
         tests::native_initial_fixture(app, room, history)
+    }
+
+    /// Socket-backed ordering fixture on an actual acknowledged named route.
+    /// This fixture does not establish native caller authority.
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_initial_named_fixture_for_test(
+        route: RouteSpec,
+        history: Vec<u8>,
+    ) -> Self {
+        let (mut manager, _) =
+            tests::native_initial_fixture(&route.app_id, route.cluster_id, history);
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
+            record: route.record,
+            record_kind: None,
+            handle: None,
+        }));
+        manager
+            .await_primary_route()
+            .expect("actual named route acknowledgement");
+        manager
     }
 
     /// A connected route whose document reads are not Required, as a
@@ -2933,6 +2963,24 @@ impl CollaborationManager {
     #[cfg(all(test, unix))]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
+    }
+
+    /// Retire the actual socket-backed capture generation, as a rejoin does.
+    #[cfg(all(test, unix))]
+    pub(crate) fn retire_document_capture_for_test(&self, route: &RouteSpec) {
+        let Backend::Transport(transport) = &self.backend else {
+            panic!("a broker transport");
+        };
+        let transport = transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .expect("a broker transport");
+        drop(
+            transport
+                .state
+                .document_reads
+                .close_for_test(&route.channel_id()),
+        );
     }
 
     /// Block until the broker worker has finished every command submitted so
@@ -3746,6 +3794,14 @@ async fn ensure_sdk_route(
     }
 
     media_routes.insert(channel_id.clone(), channel.clone());
+    if spec.record.is_none()
+        && participant_kind == "person"
+        && crate::host::environment()
+            .identity
+            .collab_service_configured
+    {
+        audio_output::install(channel.clone());
+    }
     routes.insert(
         channel_id,
         SdkRoute {

@@ -460,6 +460,11 @@ mod tests {
             &json!({"issue": "Opening the book failed; token=secret12345"}),
         )
         .expect("describe through public action");
+        frame.relayout();
+        assert!(
+            frame.capture_protected(),
+            "the actual private composer paint must protect its enclosing frame"
+        );
         assert!(
             call(&mut frame, "submit", &json!({})).is_err(),
             "sending before review must fail"
