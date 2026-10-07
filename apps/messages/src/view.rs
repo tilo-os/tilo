@@ -259,6 +259,8 @@ fn answer(
         | MessagesEffect::BeginFirstEnrollment { .. }
         | MessagesEffect::CompleteFirstEnrollment { .. }
         | MessagesEffect::ReviewFirstEnrollment { .. }
+        | MessagesEffect::ListSmsSims
+        | MessagesEffect::SelectSmsSim { .. }
         | MessagesEffect::BeginLink { .. }
         | MessagesEffect::CompleteLink { .. }
         | MessagesEffect::CancelLink

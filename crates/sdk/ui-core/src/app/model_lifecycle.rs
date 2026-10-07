@@ -77,6 +77,14 @@ impl super::App {
         self.native_input_snapshot()
     }
 
+    /// Observe the production guard for acknowledged private continuity.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_private_continuity_route_for_test(
+        &mut self,
+    ) -> Option<crate::collaboration::RouteSpec> {
+        self.private_continuity_route()
+    }
+
     /// `always_refresh` is the previous behaviour: synchronize, invalidate and
     /// republish unconditionally. Otherwise the pump is dirty-tracked like the
     /// window runner, whose redraw syncs only on `needs_sync`: a pass with no

@@ -2,7 +2,7 @@
 
 ```sh
 tilo-vm swap shell                        # your slot, built from this worktree
-tilo-vm swap shell --profile dev          # faster compile, slower binary
+tilo-vm --target review swap shell --profile dev          # faster compile, slower binary
 tilo-vm swap --slot my-slot launcher      # an explicit slot
 tilo-vm swap --slot vm fs                 # a VM-wide component into the vm slot
 tilo-vm swap app:notes                    # one app, installed into your slot's app store
@@ -190,6 +190,22 @@ what the restarted session printed.
 - Swapping the same layer twice does nothing. A failed apply leaves the slot
   on its old generation; rerun the swap.
 
+## Explicit targets and failed starts
+
+Use `--target <registered-name>` on any command to select a development VM or
+already-enrolled development machine for just that invocation. It overrides
+`TILO_VM`, `.tilo-vm` and the registry default without changing any of them.
+An unknown target or a conflicting positional VM name fails before connecting.
+For example: `tilo-vm --target review rollback --slot my-slot`.
+
+A runtime swap becomes current only after its restarted sessions pass the
+existing readiness checks. A failed activation restores the previous generation
+and checks it once. The error includes the original failure and whether recovery
+succeeded. If recovery also fails, inspect the journal and retry the named prior
+generation; the pending marker remains for diagnosis. Neither recovery path
+resets account identity or application data. Kernel changes retain their separate
+boot-confirmation lifecycle.
+
 ### Worktree apps and their matching runtime
 
 `tilo-vm swap apps+runtime --builder remote` builds every packaged native app and
@@ -213,3 +229,43 @@ prerequisites.
 runtime checks. A standalone package whose authored runtime is absent is refused;
 use the paired component above for an unpublished worktree toolkit rather than
 relabeling it as the VM's existing ABI.
+
+### Shell startup companions
+
+A source shell swap installs both `/usr/bin/shell` and the matching
+`/usr/libexec/tilo-session` from that source tree. The session wrapper is a
+mandatory input: an incomplete build fails before a layer can be imported.
+Published image swaps extract both paths from the same selected image.
+
+For a development slot, the normal swap restart opens a fresh PAM session and
+runs the matching wrapper, preserving its account and application data. The
+wrapper initializes that new login's recovery channel; an in-place compositor
+restart keeps the existing login's lock state. Never repair a locked session by
+writing a recovery record. An already-running owner login must use its normal
+logout/login flow when its wrapper needs updating.
+
+To repair a shell-only swap on an older development image, rebuild the paired
+component from the matching source in the existing worktree:
+
+```sh
+TILO_VM_CARGO="$CARGO" tilo-vm swap shell --slot my-slot --builder host --profile dev
+```
+
+Select the registered VM with `TILO_VM` (or `--target` on a current client).
+Set `CARGO` to your Cargo drop-in when using a remote builder. The host path
+packages and uploads its received binary
+and this worktree's mandatory startup companion. The slot restarts through its
+normal PAM unit; no OS image rebuild, account reset or lock override is needed.
+
+### Repeating a host-built component swap
+
+After assembly, `--builder host` computes the same content identity as the
+layer importer and asks the target for its existing layers. If it already
+holds the identical component, the command skips packing and uploading it.
+The receipt records `digest`, `layer_lookup`, `upload = "skipped"` and
+`layer_reused`. Existing layer provenance is retained, as on a duplicate import.
+Changes to file bytes, executable bits or link targets require an upload;
+timestamps alone do not. This is whole-layer reuse, not a binary delta, so a
+wrapper-only change still uploads its newly assembled layer. Imported content
+must match the local digest before it can proceed to swap. A cache hit uses
+the existing RPC protocol and works with older compatible daemons.

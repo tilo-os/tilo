@@ -793,7 +793,7 @@ jobs:
       - name: Prepare compiler cache
         run: bash tools/ci/sccache.sh prepare
       - name: Install build-only Java compiler
-        run: dnf install -y java-25-openjdk-devel
+        run: dnf install -y java-25-openjdk-devel libffi-devel alsa-lib-devel cups-devel
       - name: Compile only the owned provider and release tools without signing credentials
         run: |
           export PATH="/usr/lib/jvm/java-25-openjdk/bin:$PATH"

@@ -55,6 +55,12 @@ pub enum MessagesEffect {
     /// Link a first account without manufacturing a configured account row.
     #[effect(job, sensitive, cancellable, label = "messages-first-signal")]
     BeginFirstEnrollment { service: String },
+    /// Open the host's private SIM chooser without granting modem access.
+    #[effect(job, sensitive, cancellable, idempotent, label = "messages-first-sms")]
+    ListSmsSims,
+    /// Review one opaque host choice; bus paths and SIM identifiers are not inputs.
+    #[effect(job, sensitive, cancellable, label = "messages-select-sim")]
+    SelectSmsSim { selection: String },
     /// Verify the exact unpublished pairing and review its self identity.
     #[effect(job, sensitive, cancellable, label = "messages-finish-link")]
     CompleteFirstEnrollment {

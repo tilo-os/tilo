@@ -201,6 +201,50 @@ impl super::super::InProcessApps {
             .map_err(|_| LaunchError::BindingMismatch)
     }
 
+    pub(super) fn publish_native_sms_account(
+        &mut self,
+        identity: &NativeMessagingIdentity,
+        name: String,
+        scope: &str,
+    ) -> Result<(), LaunchError> {
+        identity.check().map_err(|_| LaunchError::BindingMismatch)?;
+        if identity.owner.service != tilo_messaging_protocol::Service::Sms
+            || identity.owner.principal != self.author.0
+            || identity.owner.device != self.device_id
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let action = PersonAccounts::PUBLISH_SMS_ACCOUNT
+            .with((
+                identity.owner.account.clone(),
+                name,
+                scope.to_owned(),
+                identity.owner.linking_generation,
+            ))
+            .build(tilo_resource::origin_now_ms())
+            .map_err(LaunchError::Operation)?;
+        let records = ui::record::person::PersonRecords::open(
+            &mut self.owners,
+            accounts::person::ACCOUNTS_OWNER,
+            self.author.clone(),
+        )
+        .map_err(LaunchError::Record)?;
+        let record = records
+            .open_original_record(ui::record::RecordKind::new(PersonAccounts::KIND), |doc| {
+                PersonAccounts::initialize(doc).map_err(|error| error.to_string())
+            })
+            .map_err(LaunchError::Record)?;
+        record
+            .edit(true, |doc| {
+                identity
+                    .check()
+                    .map_err(|_| "original native admission retired".to_owned())?;
+                action.apply(doc).map_err(|error| error.to_string())
+            })
+            .map_err(LaunchError::Operation)?;
+        records.flush().map_err(LaunchError::Operation)?;
+        identity.check().map_err(|_| LaunchError::BindingMismatch)
+    }
     /// Publish only after the confirmed self-identity review. This invokes the
     /// canonical Settings action through its original person-record owner;
     /// it creates no credential, permission, messaging loan or ready adapter.
