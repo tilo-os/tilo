@@ -7,8 +7,8 @@ use std::{
     ops::{Deref, DerefMut},
 };
 use tilo_desktop_model::{
-    DesktopTree, Workspace, WorkspaceId, WorkspaceTaskResource, WorkspaceTaskRoute,
-    WorkspaceTaskStatus,
+    DesktopTree, Workspace, WorkspaceId, WorkspaceTaskPendingFrontier, WorkspaceTaskResource,
+    WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 
 pub mod index;
@@ -192,9 +192,101 @@ pub trait ActivityHost {
     fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
         Err(crate::i18n::t("activity-agent-launch-unavailable"))
     }
+    /// Begin one public pending-task operation through the workspace action
+    /// catalogue. The host retains the certified Person/session and the
+    /// caller polls without blocking the compositor thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the certified action door is unavailable.
+    fn begin_pending_task_operation(
+        &self,
+        _expected_person: &str,
+        _operation: PendingTaskOperation,
+    ) -> Result<Box<dyn PendingTaskOperationHandle>, String> {
+        Err(crate::i18n::t("activity-task-pending-action-unavailable"))
+    }
 }
 pub struct UnavailableActivityHost;
 impl ActivityHost for UnavailableActivityHost {}
+
+/// Exact pending state returned by `read-pending-task`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingTaskDetail {
+    pub generation: u64,
+    pub task_id: String,
+    pub title: String,
+    pub instruction: String,
+    pub frontier: WorkspaceTaskPendingFrontier,
+    pub queue_ordinal: Option<u64>,
+}
+
+/// One user-requested operation on the selected pending task. Amendment and
+/// cancellation carry the exact frontier that was read, so a racing run
+/// admission is refused rather than edited or cancelled after the fact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingTaskOperation {
+    Read {
+        room: String,
+        task_id: String,
+    },
+    Amend {
+        room: String,
+        task_id: String,
+        frontier: WorkspaceTaskPendingFrontier,
+        title: String,
+        instruction: String,
+    },
+    Cancel {
+        room: String,
+        task_id: String,
+        frontier: WorkspaceTaskPendingFrontier,
+    },
+}
+
+impl PendingTaskOperation {
+    #[must_use]
+    pub fn room(&self) -> &str {
+        match self {
+            Self::Read { room, .. } | Self::Amend { room, .. } | Self::Cancel { room, .. } => room,
+        }
+    }
+
+    #[must_use]
+    pub fn task_id(&self) -> &str {
+        match self {
+            Self::Read { task_id, .. }
+            | Self::Amend { task_id, .. }
+            | Self::Cancel { task_id, .. } => task_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingTaskOperationResult {
+    Read(PendingTaskDetail),
+    Amended {
+        generation: u64,
+        task_id: String,
+        revision: u64,
+    },
+    Cancelled {
+        generation: u64,
+        task_id: String,
+        revision: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingTaskOperationPoll {
+    Pending,
+    Finished(Result<PendingTaskOperationResult, String>),
+}
+
+/// Object-safe retained operation polled by the shared pane.
+pub trait PendingTaskOperationHandle {
+    fn poll(&mut self) -> PendingTaskOperationPoll;
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityDeepLink {

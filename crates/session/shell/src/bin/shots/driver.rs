@@ -2141,6 +2141,46 @@ impl ShellDriver {
         let _ = self.fb.paint();
     }
 
+    pub fn seed_pending_task_inspector_for_shots(&mut self) {
+        self.scene_room_activity();
+        let handle = self.chrome_handle();
+        let state = handle.borrow();
+        let mut tree = state.tree_mut();
+        let workspace = tree.desktop.active;
+        let local = state.local_user_id.clone();
+        let task_id = tree.create_workspace_task(
+            workspace,
+            "Review launch readiness",
+            local,
+            Some("tide".into()),
+            tilo_desktop_model::WorkspaceTaskRoute::RulesOnly,
+            None,
+        );
+        assert!(task_id.is_some(), "shot task has a nonempty title");
+        let task_id = task_id.unwrap_or_default();
+        self.fb.host_mut().room_activity_mut().refresh(&mut *tree);
+        assert!(
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .prepare_pending_task_inspector_for_shots(
+                    &task_id,
+                    "Check every release gate, preserve the complete operator instruction, and report only owner-backed results.",
+                    false,
+                )
+        );
+        drop(tree);
+        drop(state);
+        self.fb.host_mut().force_room_activity_settled();
+    }
+
+    pub fn edit_pending_task_inspector_for_shots(&mut self) -> bool {
+        self.fb
+            .host_mut()
+            .room_activity_mut()
+            .set_pending_task_editing_for_shots(true)
+    }
+
     pub fn seed_automatic_work_sessions_for_shots(&mut self) {
         let handle = self.chrome_handle();
         {

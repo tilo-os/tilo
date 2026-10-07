@@ -16,7 +16,8 @@
 use super::replay::{ReplayPointer, WorkspaceReplayFrame};
 use super::{
     ActivityDeepLink, ActivityHost, ActivityTree, AgentLaunchEvent, AgentLaunchEventKind,
-    UnavailableActivityHost,
+    PendingTaskDetail, PendingTaskOperation, PendingTaskOperationHandle, PendingTaskOperationPoll,
+    PendingTaskOperationResult, UnavailableActivityHost,
 };
 
 use crate::i18n::{t, t_args};
@@ -36,7 +37,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{
     ArtifactKind, Button, Embedded, HistoryClassification, HistoryEntry, HistoryEntryId,
-    HistoryFilter, ScrollRegion,
+    HistoryFilter, ScrollRegion, TextInput,
 };
 use ui::{
     ActivityBrief, ActivityDigest, ActivityTimeline, AgentRun, AuthorDirectory, BandUndoRequest,
@@ -55,7 +56,8 @@ use super::index::{
     WorkspaceHistoryIndex, WorkspaceHistoryQuery, WorkspaceSeenFrontier,
 };
 use tilo_desktop_model::{
-    WorkspaceTask, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTask, WorkspaceTaskPendingFrontier, WorkspaceTaskResource, WorkspaceTaskRoute,
+    WorkspaceTaskStatus,
 };
 use ui::TextRole;
 use ui::widget::ButtonRole;
@@ -200,6 +202,10 @@ enum ActivityFocus {
     TaskInstruction(String),
     TaskInstructionClose,
     TaskInstructionScroll,
+    PendingTaskEditor,
+    PendingTaskSave,
+    PendingTaskCancelEdit,
+    PendingTaskCancel,
     TaskRoute(WorkspaceTaskRoute),
     TaskCreate,
     TaskCancelCompose,
@@ -235,6 +241,8 @@ enum TaskAction {
     Start,
     Complete,
     Cancel,
+    EditPending,
+    CancelPending,
 }
 
 impl TaskAction {
@@ -246,6 +254,8 @@ impl TaskAction {
             Self::Start => "activity-task-mark-started",
             Self::Complete => "activity-task-mark-done",
             Self::Cancel => "activity-task-cancel",
+            Self::EditPending => "activity-task-edit-pending",
+            Self::CancelPending => "activity-task-cancel-pending",
         })
     }
 }
@@ -721,6 +731,20 @@ pub struct RoomActivityPane {
     task_instruction_open_signal: Rc<Cell<bool>>,
     task_instruction_close_button: Embedded<Button>,
     task_instruction_close_signal: Rc<Cell<bool>>,
+    pending_task_detail: Option<PendingTaskDetail>,
+    pending_task_operation: Option<Box<dyn PendingTaskOperationHandle>>,
+    pending_task_operation_task: Option<String>,
+    pending_task_notice: Option<String>,
+    pending_task_editing: bool,
+    pending_task_submitted_amendment: Option<String>,
+    pending_task_amend_confirmation: Option<(String, u64, String)>,
+    pending_task_editor: Embedded<TextInput>,
+    pending_task_save_button: Embedded<Button>,
+    pending_task_save_signal: Rc<Cell<bool>>,
+    pending_task_cancel_edit_button: Embedded<Button>,
+    pending_task_cancel_edit_signal: Rc<Cell<bool>>,
+    pending_task_cancel_button: Embedded<Button>,
+    pending_task_cancel_signal: Rc<Cell<bool>>,
     task_list_scroll: ScrollRegion,
     task_list_theme: Option<Theme>,
     task_scroll_to_selected: bool,
@@ -832,12 +856,18 @@ impl RoomActivityPane {
         let clear_filters_intent = Rc::new(Cell::new(false));
         let task_instruction_open_signal = Rc::new(Cell::new(false));
         let task_instruction_close_signal = Rc::new(Cell::new(false));
+        let pending_task_save_signal = Rc::new(Cell::new(false));
+        let pending_task_cancel_edit_signal = Rc::new(Cell::new(false));
+        let pending_task_cancel_signal = Rc::new(Cell::new(false));
         let ri = Rc::clone(&revert_intent);
         let ni = Rc::clone(&name_intent);
         let ui = Rc::clone(&undo_intent);
         let ci = Rc::clone(&clear_filters_intent);
         let instruction_open = Rc::clone(&task_instruction_open_signal);
         let instruction_close = Rc::clone(&task_instruction_close_signal);
+        let pending_save = Rc::clone(&pending_task_save_signal);
+        let pending_cancel_edit = Rc::clone(&pending_task_cancel_edit_signal);
+        let pending_cancel = Rc::clone(&pending_task_cancel_signal);
         Self {
             explicit_local_user,
             timeline: {
@@ -932,6 +962,47 @@ impl RoomActivityPane {
                 .on_click(move || instruction_close.set(true)),
             ),
             task_instruction_close_signal,
+            pending_task_detail: None,
+            pending_task_operation: None,
+            pending_task_operation_task: None,
+            pending_task_notice: None,
+            pending_task_editing: false,
+            pending_task_submitted_amendment: None,
+            pending_task_amend_confirmation: None,
+            pending_task_editor: Embedded::new(
+                TextInput::local()
+                    .with_id("activity-pending-task-instruction")
+                    .with_accessible_name(t("activity-task-pending-instruction"))
+                    .with_placeholder(&t("activity-task-pending-instruction-placeholder"))
+                    .multiline(true)
+                    .with_min_lines(5),
+            )
+            .filling(),
+            pending_task_save_button: Embedded::new(
+                Button::new(
+                    "activity-pending-task-save",
+                    &t("activity-task-save-pending"),
+                )
+                .role(ButtonRole::Primary)
+                .on_click(move || pending_save.set(true)),
+            ),
+            pending_task_save_signal,
+            pending_task_cancel_edit_button: Embedded::new(
+                Button::new(
+                    "activity-pending-task-cancel-edit",
+                    &t("activity-task-cancel-edit"),
+                )
+                .on_click(move || pending_cancel_edit.set(true)),
+            ),
+            pending_task_cancel_edit_signal,
+            pending_task_cancel_button: Embedded::new(
+                Button::new(
+                    "activity-pending-task-cancel",
+                    &t("activity-task-cancel-pending"),
+                )
+                .on_click(move || pending_cancel.set(true)),
+            ),
+            pending_task_cancel_signal,
             task_list_scroll: ScrollRegion::vertical().with_edge_fade(),
             task_list_theme: None,
             task_scroll_to_selected: false,
@@ -1628,6 +1699,59 @@ impl RoomActivityPane {
         self.presence_workspace = Some(workspace);
         self.refresh(tree);
         self.prepare_away_view(workspace);
+    }
+
+    #[doc(hidden)]
+    /// Populate the owner-backed pending inspector's presentation for the
+    /// deterministic screenshot journey. Production interactions still enter
+    /// through `ActivityHost`; this only supplies stable already-read data.
+    pub fn prepare_pending_task_inspector_for_shots(
+        &mut self,
+        task_id: &str,
+        instruction: &str,
+        editing: bool,
+    ) -> bool {
+        let Some(task) = self.tasks.iter().find(|task| task.id == task_id) else {
+            return false;
+        };
+        self.view = ActivityView::Tasks;
+        self.selected_task = Some(task_id.to_owned());
+        self.task_instruction_detail = Some(task_id.to_owned());
+        self.pending_task_detail = Some(PendingTaskDetail {
+            generation: 7,
+            task_id: task_id.to_owned(),
+            title: task.title.clone(),
+            instruction: instruction.to_owned(),
+            frontier: WorkspaceTaskPendingFrontier {
+                status: WorkspaceTaskStatus::Queued,
+                run_epoch: 0,
+                revision: 3,
+            },
+            queue_ordinal: Some(1),
+        });
+        self.pending_task_editor.widget_mut().set_text(if editing {
+            "Preserve the complete revised instruction across an admission race."
+        } else {
+            instruction
+        });
+        self.pending_task_editing = editing;
+        self.pending_task_notice = editing.then(|| t("activity-task-pending-action-unavailable"));
+        true
+    }
+
+    #[doc(hidden)]
+    pub fn set_pending_task_editing_for_shots(&mut self, editing: bool) -> bool {
+        let Some(detail) = self.pending_task_detail.as_ref() else {
+            return false;
+        };
+        self.pending_task_editor.widget_mut().set_text(if editing {
+            "Preserve the complete revised instruction across an admission race."
+        } else {
+            &detail.instruction
+        });
+        self.pending_task_editing = editing;
+        self.pending_task_notice = editing.then(|| t("activity-task-pending-action-unavailable"));
+        true
     }
 
     pub fn expand_work_session_for_shots(&mut self, index: usize) -> bool {
@@ -4098,6 +4222,7 @@ impl RoomActivityPane {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.poll_pending_task_operation();
         self.task_rects.clear();
         self.task_action_rects.clear();
         self.task_route_rects.clear();
@@ -4114,12 +4239,18 @@ impl RoomActivityPane {
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
         if let Some(task_id) = self.task_instruction_detail.clone() {
             let detail = self
-                .tasks
-                .iter()
-                .find(|task| task.id == task_id)
-                .and_then(|task| {
-                    task_instruction(task)
-                        .map(|instruction| (task.title.clone(), instruction.to_string()))
+                .pending_task_detail
+                .as_ref()
+                .filter(|detail| detail.task_id == task_id)
+                .map(|detail| (detail.title.clone(), detail.instruction.clone()))
+                .or_else(|| {
+                    self.tasks
+                        .iter()
+                        .find(|task| task.id == task_id)
+                        .and_then(|task| {
+                            task_instruction(task)
+                                .map(|instruction| (task.title.clone(), instruction.to_string()))
+                        })
                 });
             if let Some((title, instruction)) = detail {
                 self.draw_task_instruction_detail(
@@ -4569,12 +4700,17 @@ impl RoomActivityPane {
             theme,
             tr,
         );
-        let text_scale = f64::from(theme.text_scale);
-        let label_height = f64::from(label_style.line_height_px()) * text_scale;
-        let heading_height = f64::from(heading_style.line_height_px()) * text_scale;
-        let body_height = f64::from(body_style.line_height_px()) * text_scale;
-        let show_section_label = rect.height()
-            >= 4.0 + label_height + heading_height + close_height + body_height * 2.0 + gap * 4.0;
+        let label_height = f64::from(label_style.line_height_px());
+        let heading_height = f64::from(heading_style.line_height_px());
+        let body_height = f64::from(body_style.line_height_px());
+        let show_section_label = !self.pending_task_editing
+            && rect.height()
+                >= 4.0
+                    + label_height
+                    + heading_height
+                    + close_height
+                    + body_height * 2.0
+                    + gap * 4.0;
         if show_section_label {
             tr.draw_style(
                 scene,
@@ -4602,10 +4738,19 @@ impl RoomActivityPane {
             .draw(scene, transform, tr, theme, presence);
         y += close_height + gap;
 
+        if self.pending_task_editing
+            && self.pending_task_detail.as_ref().is_some_and(|detail| {
+                self.task_instruction_detail.as_ref() == Some(&detail.task_id)
+            })
+        {
+            self.draw_pending_task_editor(scene, transform, tr, theme, presence, rect, y);
+            return;
+        }
+
         let viewport = Rect::new(rect.x0, y, rect.x1, rect.y1);
         self.task_instruction_scroll.set_viewport(viewport, theme);
         let style = body_style;
-        let line_height = f64::from(style.line_height_px()) * f64::from(theme.text_scale);
+        let line_height = f64::from(style.line_height_px());
         let content_width =
             (viewport.width() - f64::from(theme.tokens.metrics.scrollbar_gutter) - 16.0).max(1.0);
         let lines = tr.clamp_to_lines(instruction, &style, text_width(content_width), usize::MAX);
@@ -4634,6 +4779,121 @@ impl RoomActivityPane {
                     );
                 }
             });
+    }
+
+    fn pending_task_footer_metrics(
+        &mut self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        width: f64,
+    ) -> ([f64; 3], f64) {
+        let labels = [
+            t("activity-task-save-pending"),
+            t("activity-task-cancel-edit"),
+            t("activity-task-cancel-pending"),
+        ];
+        let widths = labels.each_ref().map(|label| {
+            let (label_width, _) = tr.measure_style(label, None, &theme.text(TextRole::Label));
+            (f64::from(label_width) + 32.0).max(MIN_TARGET).min(width)
+        });
+        let row_height = [
+            (&mut self.pending_task_save_button, widths[0]),
+            (&mut self.pending_task_cancel_edit_button, widths[1]),
+            (&mut self.pending_task_cancel_button, widths[2]),
+        ]
+        .into_iter()
+        .map(|(button, button_width)| {
+            button.layout(Rect::new(0.0, 0.0, button_width, 0.0), theme, tr)
+        })
+        .fold(0.0, f64::max);
+        let button_gap = f64::from(theme.tokens.spacing.s1);
+        let mut rows = 1_usize;
+        let mut row_width = 0.0;
+        for button_width in widths {
+            if row_width > 0.0 && row_width + button_width > width {
+                rows = rows.saturating_add(1);
+                row_width = 0.0;
+            }
+            row_width += button_width + button_gap;
+        }
+        let total_height = row_height * ui::num::f64_of_usize(rows)
+            + button_gap * ui::num::f64_of_usize(rows.saturating_sub(1));
+        (widths, total_height)
+    }
+
+    fn draw_pending_task_editor(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        rect: Rect,
+        mut y: f64,
+    ) {
+        let operation_idle = self.pending_task_operation.is_none();
+        for button in [
+            &mut self.pending_task_save_button,
+            &mut self.pending_task_cancel_edit_button,
+            &mut self.pending_task_cancel_button,
+        ] {
+            button.widget_mut().set_enabled(operation_idle);
+        }
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let button_gap = f64::from(theme.tokens.spacing.s1);
+        let (widths, footer_height) = self.pending_task_footer_metrics(tr, theme, rect.width());
+        let notice_height = self.pending_task_notice.as_deref().map_or(0.0, |notice| {
+            let style = theme.text(TextRole::Caption);
+            let lines =
+                tr.clamp_to_lines(notice, &style, text_width(rect.width() - 8.0), usize::MAX);
+            f64::from(style.line_height_px()) * ui::num::f64_of_usize(lines.len()) + gap
+        });
+        let body_height = f64::from(theme.text(TextRole::Body).line_height_px());
+        let editor_floor = MIN_TARGET.max(body_height + gap * 2.0);
+        let requested =
+            (rect.y1 - y - gap - footer_height - notice_height).clamp(editor_floor, 150.0);
+        let editor_height = self.pending_task_editor.layout(
+            Rect::new(rect.x0, y, rect.x1, y + requested),
+            theme,
+            tr,
+        );
+        self.pending_task_editor
+            .draw(scene, transform, tr, theme, presence);
+        y += editor_height + gap;
+        let mut button_x = rect.x0;
+        let mut button_y = y;
+        let mut button_bottom = y;
+        for (button, width) in [
+            &mut self.pending_task_save_button,
+            &mut self.pending_task_cancel_edit_button,
+            &mut self.pending_task_cancel_button,
+        ]
+        .into_iter()
+        .zip(widths)
+        {
+            if button_x > rect.x0 && button_x + width > rect.x1 {
+                button_x = rect.x0;
+                button_y = button_bottom + button_gap;
+            }
+            let height = button.layout(
+                Rect::new(button_x, button_y, button_x + width, button_y),
+                theme,
+                tr,
+            );
+            button.draw(scene, transform, tr, theme, presence);
+            button_bottom = button_bottom.max(button_y + height);
+            button_x += width + button_gap;
+        }
+        if let Some(notice) = self.pending_task_notice.as_deref() {
+            tr.draw_style(
+                scene,
+                notice,
+                theme.tokens.colors.text_dim,
+                at(transform, rect.x0 + 4.0, button_bottom + gap),
+                Some(text_width(rect.width() - 8.0)),
+                &theme.text(TextRole::Caption),
+            );
+        }
     }
 
     /// Paint the sheet's title, factual scope/count, and latest outcome.
@@ -5183,16 +5443,34 @@ impl RoomActivityPane {
         }
         if let Some(id) = hit_value(&self.task_rects, point) {
             self.keyboard_focus = Some(ActivityFocus::Task(id.clone()));
-            self.selected_task = (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
-            self.task_instruction_detail = None;
-            self.task_instruction_scroll
-                .set_offset(vello::kurbo::Vec2::ZERO);
+            self.toggle_task_selection(&id);
             return Some(handled_outcome());
         }
         None
     }
 
     fn apply_task_instruction_button_signals(&mut self, cursor: Option<Point>) -> bool {
+        if self.pending_task_save_signal.replace(false) {
+            self.submit_pending_task_amendment();
+            return true;
+        }
+        if self.pending_task_cancel_edit_signal.replace(false) {
+            if self.pending_task_operation.is_some() {
+                return true;
+            }
+            if let Some(detail) = &self.pending_task_detail {
+                self.pending_task_editor
+                    .widget_mut()
+                    .set_text(&detail.instruction);
+            }
+            self.pending_task_editing = false;
+            self.keyboard_focus = self.selected_task.clone().map(ActivityFocus::Task);
+            return true;
+        }
+        if self.pending_task_cancel_signal.replace(false) {
+            self.submit_pending_task_cancellation();
+            return true;
+        }
         if self.task_instruction_close_signal.replace(false) {
             let task = self.task_instruction_detail.take();
             self.task_instruction_scroll
@@ -5239,6 +5517,51 @@ impl RoomActivityPane {
             );
             if self.task_instruction_close_button.take_focus_request() {
                 self.keyboard_focus = Some(ActivityFocus::TaskInstructionClose);
+            }
+            if self.pending_task_editing {
+                self.pending_task_editor
+                    .widget_mut()
+                    .set_focus(self.keyboard_focus == Some(ActivityFocus::PendingTaskEditor));
+                self.pending_task_editor.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    &mut ui::widget::Edits::lend(tree.document_mut()),
+                    &root,
+                    &mut handled,
+                );
+                if self.pending_task_editor.take_focus_request() {
+                    self.keyboard_focus = Some(ActivityFocus::PendingTaskEditor);
+                }
+                for (focus, button) in [
+                    (
+                        ActivityFocus::PendingTaskCancelEdit,
+                        &mut self.pending_task_cancel_edit_button,
+                    ),
+                    (
+                        ActivityFocus::PendingTaskCancel,
+                        &mut self.pending_task_cancel_button,
+                    ),
+                    (
+                        ActivityFocus::PendingTaskSave,
+                        &mut self.pending_task_save_button,
+                    ),
+                ] {
+                    button
+                        .widget_mut()
+                        .set_focus(self.keyboard_focus == Some(focus.clone()));
+                    button.handle_event(
+                        event,
+                        scale_factor,
+                        &modifiers,
+                        &mut ui::widget::Edits::lend(tree.document_mut()),
+                        &root,
+                        &mut handled,
+                    );
+                    if button.take_focus_request() {
+                        self.keyboard_focus = Some(focus);
+                    }
+                }
             }
         } else if self.task_instruction_target.is_some() {
             let focused = matches!(self.keyboard_focus, Some(ActivityFocus::TaskInstruction(_)));
@@ -5374,6 +5697,193 @@ impl RoomActivityPane {
             .unwrap_or_else(|| self.host.local_user())
     }
 
+    fn set_pending_task_controls_enabled(&mut self, enabled: bool) {
+        self.pending_task_save_button
+            .widget_mut()
+            .set_enabled(enabled);
+        self.pending_task_cancel_edit_button
+            .widget_mut()
+            .set_enabled(enabled);
+        self.pending_task_cancel_button
+            .widget_mut()
+            .set_enabled(enabled);
+    }
+
+    fn begin_pending_task_read(&mut self, task_id: &str) {
+        self.pending_task_notice = None;
+        if self.pending_task_amend_confirmation.is_none() && !self.pending_task_editing {
+            self.pending_task_detail = None;
+        }
+        let operation = PendingTaskOperation::Read {
+            room: self.task_room.clone(),
+            task_id: task_id.to_owned(),
+        };
+        match self
+            .host
+            .begin_pending_task_operation(&self.local_user(), operation)
+        {
+            Ok(handle) => {
+                self.set_pending_task_controls_enabled(false);
+                self.pending_task_operation_task = Some(task_id.to_owned());
+                self.pending_task_operation = Some(handle);
+            }
+            Err(_error) => {
+                self.pending_task_notice = Some(t("activity-task-pending-action-unavailable"));
+            }
+        }
+    }
+
+    fn poll_pending_task_operation(&mut self) {
+        let Some(operation) = self.pending_task_operation.as_mut() else {
+            return;
+        };
+        let PendingTaskOperationPoll::Finished(result) = operation.poll() else {
+            return;
+        };
+        self.pending_task_operation = None;
+        let operation_task = self.pending_task_operation_task.take();
+        self.set_pending_task_controls_enabled(true);
+        match result {
+            Ok(PendingTaskOperationResult::Read(detail)) => {
+                if self.selected_task.as_deref() == Some(detail.task_id.as_str()) {
+                    self.task_instruction_detail = Some(detail.task_id.clone());
+                    let confirmation = self.pending_task_amend_confirmation.take();
+                    let confirmed = confirmation.as_ref().is_some_and(|(task_id, revision, _)| {
+                        task_id == &detail.task_id && *revision == detail.frontier.revision
+                    });
+                    let unchanged_draft = confirmation.as_ref().is_some_and(|(_, _, submitted)| {
+                        self.pending_task_editor.widget().value() == submitted
+                    });
+                    if (!self.pending_task_editing && confirmation.is_none())
+                        || (confirmed && unchanged_draft)
+                    {
+                        self.pending_task_editor
+                            .widget_mut()
+                            .set_text(&detail.instruction);
+                    }
+                    self.pending_task_detail = Some(detail);
+                    if confirmed && unchanged_draft {
+                        self.pending_task_editing = false;
+                    } else if confirmation.is_some() {
+                        self.pending_task_notice = Some(if confirmed {
+                            t_args(
+                                "activity-task-amend-saved",
+                                &[(
+                                    "revision",
+                                    self.pending_task_detail
+                                        .as_ref()
+                                        .map_or(0, |detail| detail.frontier.revision)
+                                        .into(),
+                                )],
+                            )
+                        } else {
+                            t("activity-task-pending-action-unavailable")
+                        });
+                    } else if self.pending_task_editing {
+                        self.pending_task_notice =
+                            Some(t("activity-task-pending-action-unavailable"));
+                    } else {
+                        self.pending_task_notice = None;
+                    }
+                }
+            }
+            Ok(PendingTaskOperationResult::Amended {
+                task_id, revision, ..
+            }) => {
+                let notice = t_args(
+                    "activity-task-amend-saved",
+                    &[("revision", revision.into())],
+                );
+                let submitted = self
+                    .pending_task_submitted_amendment
+                    .take()
+                    .unwrap_or_default();
+                self.pending_task_amend_confirmation = Some((task_id.clone(), revision, submitted));
+                self.begin_pending_task_read(&task_id);
+                self.pending_task_notice = Some(notice);
+            }
+            Ok(PendingTaskOperationResult::Cancelled { task_id, .. }) => {
+                if self.selected_task.as_deref() == Some(task_id.as_str()) {
+                    self.pending_task_notice = Some(t("activity-task-pending-cancelled"));
+                    self.pending_task_editing = false;
+                    self.pending_task_submitted_amendment = None;
+                    self.pending_task_amend_confirmation = None;
+                    self.selected_task = None;
+                    self.pending_task_detail = None;
+                }
+            }
+            Err(_error) => {
+                // A refusal or admission race never destroys the private draft.
+                self.pending_task_submitted_amendment = None;
+                if operation_task.as_deref() == self.selected_task.as_deref() {
+                    self.pending_task_notice = Some(t("activity-task-pending-action-unavailable"));
+                }
+            }
+        }
+    }
+
+    fn submit_pending_task_amendment(&mut self) {
+        if self.pending_task_operation.is_some() {
+            return;
+        }
+        let Some(detail) = self.pending_task_detail.clone() else {
+            return;
+        };
+        let task_id = detail.task_id.clone();
+        let instruction = self.pending_task_editor.widget().value().to_owned();
+        let operation = PendingTaskOperation::Amend {
+            room: self.task_room.clone(),
+            task_id: detail.task_id,
+            frontier: detail.frontier,
+            title: detail.title,
+            instruction: instruction.clone(),
+        };
+        match self
+            .host
+            .begin_pending_task_operation(&self.local_user(), operation)
+        {
+            Ok(handle) => {
+                self.set_pending_task_controls_enabled(false);
+                self.pending_task_notice = Some(t("activity-task-pending-saving"));
+                self.pending_task_submitted_amendment = Some(instruction);
+                self.pending_task_operation_task = Some(task_id);
+                self.pending_task_operation = Some(handle);
+            }
+            Err(_error) => {
+                self.pending_task_notice = Some(t("activity-task-pending-action-unavailable"));
+            }
+        }
+    }
+
+    fn submit_pending_task_cancellation(&mut self) {
+        if self.pending_task_operation.is_some() {
+            return;
+        }
+        let Some(detail) = self.pending_task_detail.clone() else {
+            return;
+        };
+        let task_id = detail.task_id.clone();
+        let operation = PendingTaskOperation::Cancel {
+            room: self.task_room.clone(),
+            task_id: detail.task_id,
+            frontier: detail.frontier,
+        };
+        match self
+            .host
+            .begin_pending_task_operation(&self.local_user(), operation)
+        {
+            Ok(handle) => {
+                self.set_pending_task_controls_enabled(false);
+                self.pending_task_notice = Some(t("activity-task-pending-cancelling"));
+                self.pending_task_operation_task = Some(task_id);
+                self.pending_task_operation = Some(handle);
+            }
+            Err(_error) => {
+                self.pending_task_notice = Some(t("activity-task-pending-action-unavailable"));
+            }
+        }
+    }
+
     fn create_task_from_draft(&mut self, tree: &mut impl ActivityTree) -> RoomActivityOutcome {
         if !self.host.mutations_available() || tree.document().pending_ops() > 0 {
             self.close_task_composer();
@@ -5501,11 +6011,37 @@ impl RoomActivityPane {
                 ..RoomActivityOutcome::default()
             };
         }
+        if action == TaskAction::EditPending {
+            let Some(detail) = self
+                .pending_task_detail
+                .as_ref()
+                .filter(|detail| detail.task_id == task_id)
+            else {
+                return handled_outcome();
+            };
+            if !self.pending_task_editing {
+                self.pending_task_editor
+                    .widget_mut()
+                    .set_text(&detail.instruction);
+            }
+            self.pending_task_editing = true;
+            self.task_instruction_detail = Some(task_id);
+            self.keyboard_focus = Some(ActivityFocus::PendingTaskEditor);
+            return handled_outcome();
+        }
+        if action == TaskAction::CancelPending {
+            self.submit_pending_task_cancellation();
+            return handled_outcome();
+        }
         let status = match action {
             TaskAction::Start => WorkspaceTaskStatus::InProgress,
             TaskAction::Complete => WorkspaceTaskStatus::Done,
             TaskAction::Cancel => WorkspaceTaskStatus::Cancelled,
-            TaskAction::OpenResource | TaskAction::StartAgent | TaskAction::Launch => {
+            TaskAction::OpenResource
+            | TaskAction::StartAgent
+            | TaskAction::Launch
+            | TaskAction::EditPending
+            | TaskAction::CancelPending => {
                 return handled_outcome();
             }
         };
@@ -5548,6 +6084,15 @@ impl RoomActivityPane {
             ) {
                 actions.insert(0, TaskAction::StartAgent);
             }
+        }
+        if task.status == WorkspaceTaskStatus::Queued
+            && self.pending_task_operation.is_none()
+            && self
+                .pending_task_detail
+                .as_ref()
+                .is_some_and(|detail| detail.task_id == task.id)
+        {
+            actions.extend([TaskAction::EditPending, TaskAction::CancelPending]);
         }
         actions
     }
@@ -6038,7 +6583,16 @@ impl RoomActivityPane {
                     {
                         order.push(ActivityFocus::TaskInstructionClose);
                     }
-                    order.push(ActivityFocus::TaskInstructionScroll);
+                    if self.pending_task_editing {
+                        order.extend([
+                            ActivityFocus::PendingTaskEditor,
+                            ActivityFocus::PendingTaskCancelEdit,
+                            ActivityFocus::PendingTaskCancel,
+                            ActivityFocus::PendingTaskSave,
+                        ]);
+                    } else {
+                        order.push(ActivityFocus::TaskInstructionScroll);
+                    }
                     return order;
                 }
                 if self.new_task_rect.is_some() {
@@ -6168,6 +6722,12 @@ impl RoomActivityPane {
             ActivityFocus::TaskInstructionScroll => {
                 Some(self.task_instruction_scroll.content_rect())
             }
+            ActivityFocus::PendingTaskEditor => Some(self.pending_task_editor.rect()),
+            ActivityFocus::PendingTaskSave => Some(self.pending_task_save_button.rect()),
+            ActivityFocus::PendingTaskCancelEdit => {
+                Some(self.pending_task_cancel_edit_button.rect())
+            }
+            ActivityFocus::PendingTaskCancel => Some(self.pending_task_cancel_button.rect()),
             ActivityFocus::TaskRoute(value) => self
                 .task_route_rects
                 .iter()
@@ -6242,7 +6802,12 @@ impl RoomActivityPane {
                 &mut self.task_instruction_open_button
             }
             ActivityFocus::TaskInstructionClose => &mut self.task_instruction_close_button,
-            ActivityFocus::TaskInstructionScroll | ActivityFocus::TaskInstruction(_) => {
+            ActivityFocus::PendingTaskSave => &mut self.pending_task_save_button,
+            ActivityFocus::PendingTaskCancelEdit => &mut self.pending_task_cancel_edit_button,
+            ActivityFocus::PendingTaskCancel => &mut self.pending_task_cancel_button,
+            ActivityFocus::TaskInstructionScroll
+            | ActivityFocus::TaskInstruction(_)
+            | ActivityFocus::PendingTaskEditor => {
                 return true;
             }
             _ => return false,
@@ -6257,8 +6822,26 @@ impl RoomActivityPane {
         true
     }
 
-    fn toggle_task_selection(&mut self, id: String) {
-        self.selected_task = (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
+    fn toggle_task_selection(&mut self, id: &str) {
+        let selecting = self.selected_task.as_deref() != Some(id);
+        self.selected_task = selecting.then(|| id.to_string());
+        self.pending_task_editing = false;
+        self.pending_task_submitted_amendment = None;
+        self.pending_task_amend_confirmation = None;
+        self.pending_task_detail = None;
+        self.pending_task_operation = None;
+        self.pending_task_notice = None;
+        if selecting
+            && self.tasks.iter().any(|task| {
+                task.id == id
+                    && matches!(
+                        task.status,
+                        WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
+                    )
+            })
+        {
+            self.begin_pending_task_read(id);
+        }
         self.task_instruction_detail = None;
         self.task_instruction_scroll
             .set_offset(vello::kurbo::Vec2::ZERO);
@@ -6277,6 +6860,10 @@ impl RoomActivityPane {
             ..RoomActivityOutcome::default()
         };
         if self.activate_task_instruction_focus(&focus, tree) {
+            return outcome;
+        }
+        if let ActivityFocus::Detail(action) = focus {
+            self.activate_detail_focus(action, tree, records, &mut outcome);
             return outcome;
         }
         match focus {
@@ -6299,10 +6886,14 @@ impl RoomActivityPane {
             }
             ActivityFocus::MoreBriefs => self.advance_briefs(),
             ActivityFocus::NewTask => self.open_task_composer(tree),
-            ActivityFocus::Task(id) => self.toggle_task_selection(id),
+            ActivityFocus::Task(id) => self.toggle_task_selection(&id),
             ActivityFocus::TaskInstruction(_)
             | ActivityFocus::TaskInstructionClose
-            | ActivityFocus::TaskInstructionScroll => return outcome,
+            | ActivityFocus::TaskInstructionScroll
+            | ActivityFocus::PendingTaskEditor
+            | ActivityFocus::PendingTaskSave
+            | ActivityFocus::PendingTaskCancelEdit
+            | ActivityFocus::PendingTaskCancel => return outcome,
             ActivityFocus::TaskRoute(route) => self.task_route = route,
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
@@ -6312,30 +6903,44 @@ impl RoomActivityPane {
                 self.reinstall_filter();
             }
             ActivityFocus::MoreLenses => self.advance_lenses(),
-            ActivityFocus::Detail(DetailAction::Open) => {
+            ActivityFocus::Detail(_) => {}
+            ActivityFocus::ExplorerPane(pane) => self.explorer_pane = pane,
+            ActivityFocus::Timeline => self.timeline.set_focus(true),
+            ActivityFocus::ReplayBack => self.step_replay(false),
+            ActivityFocus::ReplayPlay => self.toggle_replay(),
+            ActivityFocus::ReplayForward => self.step_replay(true),
+        }
+        outcome
+    }
+
+    fn activate_detail_focus(
+        &mut self,
+        action: DetailAction,
+        tree: &mut impl ActivityTree,
+        records: Option<&RecordStore>,
+        outcome: &mut RoomActivityOutcome,
+    ) {
+        match action {
+            DetailAction::Open => {
                 outcome.open_target = self
                     .selection_detail()
                     .and_then(|detail| detail.resources.into_iter().next());
             }
-            ActivityFocus::Detail(DetailAction::Compare) => {
+            DetailAction::Compare => {
                 self.comparison_attempted = true;
                 self.comparison = self.compare_selection(tree, records);
                 self.comparison_selection = self.selected_ids();
-                // Reading an `AutoCommit` comparison closes any pending
-                // transaction. That changes the observed heads without
-                // changing content; keep refresh from treating the next
-                // paint as an external edit and discarding the result.
                 self.last_heads = tree.document_mut().get_heads();
                 outcome.compared = self.comparison.is_some();
             }
-            ActivityFocus::Detail(DetailAction::Restore) => {
+            DetailAction::Restore => {
                 if let Some(id) = self.selected_ids().last().copied()
                     && self.revert_to_with_records(tree, records, &id)
                 {
                     outcome.reverted = true;
                 }
             }
-            ActivityFocus::Detail(DetailAction::Undo) => {
+            DetailAction::Undo => {
                 if let Some((start, end)) = self.timeline.selection()
                     && let (Some(first), Some(last)) = (
                         self.timeline.entries().get(start),
@@ -6353,24 +6958,14 @@ impl RoomActivityPane {
                     outcome.undo_partial = applied.partial;
                 }
             }
-            ActivityFocus::Detail(DetailAction::UndoTask) => {
+            DetailAction::UndoTask => {
                 let applied = self.undo_selected_agent_run(records);
                 outcome.reverted = applied.wrote;
                 outcome.undo_partial = applied.partial;
             }
-            ActivityFocus::Detail(DetailAction::Split) => {
-                outcome.named = self.split_selection_group(tree);
-            }
-            ActivityFocus::Detail(DetailAction::Merge) => {
-                outcome.named = self.merge_selection_groups(tree);
-            }
-            ActivityFocus::ExplorerPane(pane) => self.explorer_pane = pane,
-            ActivityFocus::Timeline => self.timeline.set_focus(true),
-            ActivityFocus::ReplayBack => self.step_replay(false),
-            ActivityFocus::ReplayPlay => self.toggle_replay(),
-            ActivityFocus::ReplayForward => self.step_replay(true),
+            DetailAction::Split => outcome.named = self.split_selection_group(tree),
+            DetailAction::Merge => outcome.named = self.merge_selection_groups(tree),
         }
-        outcome
     }
 
     fn handle_navigation_key(
@@ -6447,6 +7042,10 @@ impl RoomActivityPane {
             ActivityFocus::TaskInstruction(_) => Some(t("activity-task-read-instruction")),
             ActivityFocus::TaskInstructionClose => Some(t("activity-task-close-instruction")),
             ActivityFocus::TaskInstructionScroll => Some(t("activity-task-full-instruction")),
+            ActivityFocus::PendingTaskEditor => Some(t("activity-task-pending-instruction")),
+            ActivityFocus::PendingTaskSave => Some(t("activity-task-save-pending")),
+            ActivityFocus::PendingTaskCancelEdit => Some(t("activity-task-cancel-edit")),
+            ActivityFocus::PendingTaskCancel => Some(t("activity-task-cancel-pending")),
             ActivityFocus::TaskRoute(route) => Some(task_route_label(*route)),
             ActivityFocus::TaskCreate => Some(t("a11y-shell-activity-create-task")),
             ActivityFocus::TaskCancelCompose => Some(t("a11y-shell-activity-cancel-task")),
@@ -6637,6 +7236,21 @@ impl RoomActivityPane {
                     task_instruction(task).unwrap_or_default().to_string(),
                 )
             }
+            ActivityFocus::PendingTaskEditor => control(
+                Role::MultilineTextInput,
+                false,
+                None,
+                t("activity-task-pending-instruction-description"),
+            ),
+            ActivityFocus::PendingTaskSave
+            | ActivityFocus::PendingTaskCancelEdit
+            | ActivityFocus::PendingTaskCancel
+            | ActivityFocus::TaskAction(_) => control(
+                Role::Button,
+                false,
+                None,
+                t("a11y-shell-activity-task-action"),
+            ),
             ActivityFocus::TaskRoute(route) => control(
                 Role::RadioButton,
                 self.task_route == *route,
@@ -6648,12 +7262,6 @@ impl RoomActivityPane {
                 false,
                 None,
                 t("a11y-shell-activity-task-composer-action"),
-            ),
-            ActivityFocus::TaskAction(_) => control(
-                Role::Button,
-                false,
-                None,
-                t("a11y-shell-activity-task-action"),
             ),
             ActivityFocus::Lens(value) => control(
                 Role::RadioButton,
@@ -6716,6 +7324,30 @@ impl RoomActivityPane {
 
         if *focus == ActivityFocus::Timeline {
             return self.timeline.accessibility();
+        }
+
+        // These are retained shared controls hosted inside this immediate-mode
+        // overlay. Preserve their real value, selection and enabled state in
+        // the shell-published tree instead of reconstructing a partial node.
+        // In particular, an in-flight owner operation disables all three
+        // buttons visually and must disable the same controls for AT.
+        let retained = match focus {
+            ActivityFocus::PendingTaskEditor => self.pending_task_editor.widget().accessibility(),
+            ActivityFocus::PendingTaskSave => {
+                self.pending_task_save_button.widget().accessibility()
+            }
+            ActivityFocus::PendingTaskCancelEdit => self
+                .pending_task_cancel_edit_button
+                .widget()
+                .accessibility(),
+            ActivityFocus::PendingTaskCancel => {
+                self.pending_task_cancel_button.widget().accessibility()
+            }
+            _ => None,
+        };
+        if let Some(mut node) = retained {
+            node.state.focused = self.keyboard_focus.as_ref() == Some(focus);
+            return Some(node.with_position(index.saturating_add(1), set_size));
         }
 
         let label = self.focus_label(focus)?;
@@ -6939,6 +7571,12 @@ impl RoomActivityPane {
             ActivityFocus::TaskInstructionScroll => {
                 Some(self.task_instruction_scroll.content_rect())
             }
+            ActivityFocus::PendingTaskEditor => Some(self.pending_task_editor.rect()),
+            ActivityFocus::PendingTaskSave => Some(self.pending_task_save_button.rect()),
+            ActivityFocus::PendingTaskCancelEdit => {
+                Some(self.pending_task_cancel_edit_button.rect())
+            }
+            ActivityFocus::PendingTaskCancel => Some(self.pending_task_cancel_button.rect()),
             ActivityFocus::TaskRoute(value) => self
                 .task_route_rects
                 .iter()
@@ -7219,11 +7857,12 @@ fn task_actions(task: &WorkspaceTask) -> Vec<TaskAction> {
             if task.route == WorkspaceTaskRoute::Manual {
                 actions.push(TaskAction::Start);
             }
-            actions.push(TaskAction::Cancel);
         }
         WorkspaceTaskStatus::InProgress => {
             actions.push(TaskAction::Complete);
-            actions.push(TaskAction::Cancel);
+            if task.route == WorkspaceTaskRoute::Manual {
+                actions.push(TaskAction::Cancel);
+            }
         }
         WorkspaceTaskStatus::Done | WorkspaceTaskStatus::Cancelled => {}
     }

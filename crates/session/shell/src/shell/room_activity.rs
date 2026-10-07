@@ -12,7 +12,9 @@ use crate::shell::state::{
 };
 use std::{collections::HashMap, rc::Rc};
 use tilo_desktop::activity::{
-    ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier,
+    ActivityHost, ActivityTree, PendingTaskDetail, PendingTaskOperation,
+    PendingTaskOperationHandle, PendingTaskOperationPoll, PendingTaskOperationResult,
+    WorkspaceDeparture, WorkspaceSeenFrontier,
 };
 pub use tilo_desktop::activity::{ActivityView, Period, RoomActivityOutcome, RoomScope};
 
@@ -204,6 +206,293 @@ impl ActivityHost for NativeActivityHost {
             .map(|_| ())
             .map_err(|error| error.user_message())
     }
+    fn begin_pending_task_operation(
+        &self,
+        expected_person: &str,
+        operation: PendingTaskOperation,
+    ) -> Result<Box<dyn PendingTaskOperationHandle>, String> {
+        let broker = self
+            .broker
+            .clone()
+            .ok_or_else(|| "workspace task actions are unavailable".to_string())?;
+        let session = super::certified_action_session::ActionSessionSource::new(broker)
+            .open(operation.room(), Some(expected_person))?;
+        Ok(Box::new(NativePendingTaskOperation::new(
+            session, operation,
+        )))
+    }
+}
+
+enum NativePendingTaskPhase {
+    Catalogue(
+        tilo_actions::remote::Pending<
+            Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        >,
+    ),
+    Admission {
+        invocation: tilo_actions::InvocationId,
+        pending: tilo_actions::remote::Pending<
+            Result<
+                (u64, tilo_actions::remote::InvocationReceipt),
+                tilo_actions::remote::ActionHostError,
+            >,
+        >,
+    },
+    Observe(tilo_actions::InvocationId),
+    Finished,
+}
+
+struct NativePendingTaskOperation {
+    session: super::certified_action_session::DesktopActionSession,
+    operation: PendingTaskOperation,
+    phase: NativePendingTaskPhase,
+}
+
+impl NativePendingTaskOperation {
+    fn new(
+        session: super::certified_action_session::DesktopActionSession,
+        operation: PendingTaskOperation,
+    ) -> Self {
+        let address = pending_task_address(&operation);
+        let pending = session.query(tilo_actions::remote::CatalogueQuery {
+            provider: Some(tilo_actions::remote::workspace_provider(operation.room())),
+            target: Some(address),
+            max_results: 1,
+            ..tilo_actions::remote::CatalogueQuery::default()
+        });
+        Self {
+            session,
+            operation,
+            phase: NativePendingTaskPhase::Catalogue(pending),
+        }
+    }
+
+    fn begin_invocation(
+        &mut self,
+        page: tilo_actions::remote::CataloguePage,
+    ) -> Result<(), String> {
+        let wanted = pending_task_address(&self.operation);
+        let row = page
+            .rows
+            .into_iter()
+            .find(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| action.address == wanted)
+            })
+            .ok_or_else(|| "pending task action is no longer offered".to_string())?;
+        let target = row
+            .target()
+            .ok_or_else(|| "pending task action target is unavailable".to_string())?;
+        let invocation = tilo_actions::InvocationId::new();
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation,
+            target,
+            argument: pending_task_argument(&self.operation),
+            context: None,
+            confirmation: None,
+            revision: Some(page.revision),
+            on_behalf_of: None,
+        };
+        self.phase = NativePendingTaskPhase::Admission {
+            invocation,
+            pending: self.session.invoke_job(request),
+        };
+        Ok(())
+    }
+
+    fn finish_receipt(
+        &mut self,
+        receipt: tilo_actions::remote::InvocationReceipt,
+    ) -> PendingTaskOperationPoll {
+        use tilo_actions::remote::ReceiptStatus;
+        match receipt.status {
+            ReceiptStatus::Accepted => {
+                self.phase = NativePendingTaskPhase::Observe(receipt.invocation);
+                PendingTaskOperationPoll::Pending
+            }
+            ReceiptStatus::Completed { output } => {
+                self.phase = NativePendingTaskPhase::Finished;
+                PendingTaskOperationPoll::Finished(decode_pending_task_result(
+                    &self.operation,
+                    output.value,
+                ))
+            }
+            ReceiptStatus::Failed { error } => {
+                self.phase = NativePendingTaskPhase::Finished;
+                PendingTaskOperationPoll::Finished(Err(error.message))
+            }
+            ReceiptStatus::Rejected { error } => {
+                self.phase = NativePendingTaskPhase::Finished;
+                PendingTaskOperationPoll::Finished(Err(error.to_string()))
+            }
+            ReceiptStatus::Cancelled { message } => {
+                self.phase = NativePendingTaskPhase::Finished;
+                PendingTaskOperationPoll::Finished(Err(
+                    message.unwrap_or_else(|| "pending task operation was cancelled".into())
+                ))
+            }
+        }
+    }
+}
+
+impl PendingTaskOperationHandle for NativePendingTaskOperation {
+    fn poll(&mut self) -> PendingTaskOperationPoll {
+        use tilo_actions::remote::PendingPoll;
+        match &mut self.phase {
+            NativePendingTaskPhase::Catalogue(pending) => match pending.poll_ready() {
+                PendingPoll::Waiting => PendingTaskOperationPoll::Pending,
+                PendingPoll::Abandoned => PendingTaskOperationPoll::Finished(Err(
+                    "pending task catalogue request was interrupted".into(),
+                )),
+                PendingPoll::Ready(Err(error)) => {
+                    PendingTaskOperationPoll::Finished(Err(error.to_string()))
+                }
+                PendingPoll::Ready(Ok(page)) => match self.begin_invocation(page) {
+                    Ok(()) => PendingTaskOperationPoll::Pending,
+                    Err(error) => PendingTaskOperationPoll::Finished(Err(error)),
+                },
+            },
+            NativePendingTaskPhase::Admission {
+                invocation,
+                pending,
+            } => match pending.poll_ready() {
+                PendingPoll::Waiting => PendingTaskOperationPoll::Pending,
+                PendingPoll::Abandoned => PendingTaskOperationPoll::Finished(Err(
+                    "pending task admission was interrupted; outcome is unknown".into(),
+                )),
+                PendingPoll::Ready(Err(error)) => {
+                    PendingTaskOperationPoll::Finished(Err(error.to_string()))
+                }
+                PendingPoll::Ready(Ok((_job, receipt))) => {
+                    if *invocation != receipt.invocation {
+                        self.phase = NativePendingTaskPhase::Finished;
+                        return PendingTaskOperationPoll::Finished(Err(
+                            "pending task admission returned an unrelated receipt; outcome is unknown"
+                                .into(),
+                        ));
+                    }
+                    self.finish_receipt(receipt)
+                }
+            },
+            NativePendingTaskPhase::Observe(invocation) => {
+                let Some(state) = self.session.observe(invocation) else {
+                    return PendingTaskOperationPoll::Pending;
+                };
+                self.finish_receipt(state.receipt())
+            }
+            NativePendingTaskPhase::Finished => PendingTaskOperationPoll::Finished(Err(
+                "pending task operation was already consumed".into(),
+            )),
+        }
+    }
+}
+
+fn pending_task_address(operation: &PendingTaskOperation) -> tilo_actions::ActionAddress {
+    let action = match operation {
+        PendingTaskOperation::Read { .. } => "read-pending-task",
+        PendingTaskOperation::Amend { .. } => "amend-pending",
+        PendingTaskOperation::Cancel { .. } => "cancel-pending",
+    };
+    tilo_actions::ActionAddress::new(format!("desktop:task:{}", operation.task_id()), action)
+}
+
+fn pending_task_argument(operation: &PendingTaskOperation) -> tilo_actions::remote::InvokeArgument {
+    let frontier = match operation {
+        PendingTaskOperation::Read { .. } => return tilo_actions::remote::InvokeArgument::None,
+        PendingTaskOperation::Amend { frontier, .. }
+        | PendingTaskOperation::Cancel { frontier, .. } => frontier,
+    };
+    let mut object = serde_json::Map::from_iter([
+        (
+            "status".into(),
+            serde_json::to_value(frontier.status).unwrap_or(serde_json::Value::Null),
+        ),
+        ("run_epoch".into(), frontier.run_epoch.into()),
+        ("pending_revision".into(), frontier.revision.into()),
+    ]);
+    if let PendingTaskOperation::Amend {
+        title, instruction, ..
+    } = operation
+    {
+        object.insert("title".into(), title.clone().into());
+        object.insert("instruction".into(), instruction.clone().into());
+    }
+    tilo_actions::remote::InvokeArgument::Json(object)
+}
+
+fn decode_pending_task_result(
+    operation: &PendingTaskOperation,
+    value: Option<serde_json::Value>,
+) -> Result<PendingTaskOperationResult, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ReadResult {
+        generation: u64,
+        task_id: String,
+        title: String,
+        instruction: String,
+        frontier: tilo_desktop_model::WorkspaceTaskPendingFrontier,
+        queue_ordinal: Option<u64>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct MutationOutput {
+        generation: u64,
+        result: tilo_desktop_model::WorkspaceTaskMutationResult,
+        delivery: String,
+    }
+    let value = value.ok_or("pending task action returned no value")?;
+    match operation {
+        PendingTaskOperation::Read { task_id, .. } => {
+            let read: ReadResult =
+                serde_json::from_value(value).map_err(|_| "invalid pending task read result")?;
+            if read.task_id != *task_id {
+                return Err("pending task read returned another task".into());
+            }
+            Ok(PendingTaskOperationResult::Read(PendingTaskDetail {
+                generation: read.generation,
+                task_id: read.task_id,
+                title: read.title,
+                instruction: read.instruction,
+                frontier: read.frontier,
+                queue_ordinal: read.queue_ordinal,
+            }))
+        }
+        PendingTaskOperation::Amend { task_id, .. }
+        | PendingTaskOperation::Cancel { task_id, .. } => {
+            let result: MutationOutput = serde_json::from_value(value)
+                .map_err(|_| "invalid pending task mutation result")?;
+            if result.delivery != "saved" {
+                return Err("pending task mutation was not durably saved".into());
+            }
+            match (operation, result.result) {
+                (
+                    PendingTaskOperation::Amend { .. },
+                    tilo_desktop_model::WorkspaceTaskMutationResult::PendingAmended {
+                        task_id: returned,
+                        revision,
+                    },
+                ) if returned == *task_id => Ok(PendingTaskOperationResult::Amended {
+                    generation: result.generation,
+                    task_id: returned,
+                    revision,
+                }),
+                (
+                    PendingTaskOperation::Cancel { .. },
+                    tilo_desktop_model::WorkspaceTaskMutationResult::PendingCancelled {
+                        task_id: returned,
+                        revision,
+                    },
+                ) if returned == *task_id => Ok(PendingTaskOperationResult::Cancelled {
+                    generation: result.generation,
+                    task_id: returned,
+                    revision,
+                }),
+                _ => Err("pending task mutation returned an unexpected status".into()),
+            }
+        }
+    }
 }
 
 impl ActivityTree for WorkspaceTree {
@@ -360,6 +649,49 @@ mod tests {
     use super::*;
     use automerge::transaction::{CommitOptions, Transactable};
     use ui::record::{RecordId, RecordStore};
+
+    #[test]
+    fn pending_task_result_decoder_binds_exact_task_and_rejects_extra_fields() {
+        let room = uuid::Uuid::from_u128(7).to_string();
+        let read = PendingTaskOperation::Read {
+            room: room.clone(),
+            task_id: "task:one".into(),
+        };
+        let value = serde_json::json!({
+            "generation": 4,
+            "task_id": "task:one",
+            "title": "Review",
+            "instruction": "Keep every line\n",
+            "frontier": {"status":"queued", "run_epoch":0, "revision":2},
+            "queue_ordinal": 9,
+        });
+        assert!(matches!(
+            decode_pending_task_result(&read, Some(value.clone())),
+            Ok(PendingTaskOperationResult::Read(PendingTaskDetail {
+                frontier: tilo_desktop_model::WorkspaceTaskPendingFrontier { revision: 2, .. },
+                ..
+            }))
+        ));
+        let mut forged = value;
+        forged["instruction_private_copy"] = "must not be accepted".into();
+        assert!(decode_pending_task_result(&read, Some(forged)).is_err());
+        let other = PendingTaskOperation::Read {
+            room,
+            task_id: "task:other".into(),
+        };
+        assert!(
+            decode_pending_task_result(
+                &other,
+                Some(serde_json::json!({
+                    "generation": 4, "task_id": "task:one", "title": "Review",
+                    "instruction": "Keep every line", "frontier": {
+                        "status":"queued", "run_epoch":0, "revision":2
+                    }, "queue_ordinal": 9,
+                }))
+            )
+            .is_err()
+        );
+    }
 
     /// Leaving a workspace rewrites the history file and nothing else: a
     /// write to `settings.json` would make every settings reader re-apply

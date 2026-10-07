@@ -1048,6 +1048,460 @@ mod tests {
         assert_eq!(task.audit.len(), 1, "no synthetic start audit was added");
     }
 
+    #[derive(Clone)]
+    struct PendingInspectorHost {
+        operations: Rc<RefCell<Vec<PendingTaskOperation>>>,
+        responses: Rc<RefCell<Vec<PendingTaskOperationPoll>>>,
+    }
+
+    struct ReadyPendingOperation(Option<PendingTaskOperationPoll>);
+
+    impl PendingTaskOperationHandle for ReadyPendingOperation {
+        fn poll(&mut self) -> PendingTaskOperationPoll {
+            self.0.take().unwrap_or(PendingTaskOperationPoll::Pending)
+        }
+    }
+
+    impl ActivityHost for PendingInspectorHost {
+        fn local_user(&self) -> String {
+            "owner-person".into()
+        }
+
+        fn mutations_available(&self) -> bool {
+            true
+        }
+
+        fn begin_pending_task_operation(
+            &self,
+            _expected_person: &str,
+            operation: PendingTaskOperation,
+        ) -> Result<Box<dyn PendingTaskOperationHandle>, String> {
+            self.operations.borrow_mut().push(operation);
+            let response = self.responses.borrow_mut().remove(0);
+            Ok(Box::new(ReadyPendingOperation(Some(response))))
+        }
+    }
+
+    fn pending_race_responses(
+        task_id: &str,
+        task: &WorkspaceTask,
+    ) -> Vec<PendingTaskOperationPoll> {
+        vec![
+            PendingTaskOperationPoll::Finished(Ok(PendingTaskOperationResult::Read(
+                PendingTaskDetail {
+                    generation: 7,
+                    task_id: task_id.to_string(),
+                    title: task.title.clone(),
+                    instruction: "Original full instruction".into(),
+                    frontier: tilo_desktop_model::WorkspaceTaskPendingFrontier {
+                        status: WorkspaceTaskStatus::Queued,
+                        run_epoch: 0,
+                        revision: 3,
+                    },
+                    queue_ordinal: Some(11),
+                },
+            ))),
+            PendingTaskOperationPoll::Finished(Err("owner race".into())),
+            PendingTaskOperationPoll::Finished(Ok(PendingTaskOperationResult::Cancelled {
+                generation: 8,
+                task_id: task_id.to_string(),
+                revision: 4,
+            })),
+        ]
+    }
+
+    fn assert_pending_controls_in_accessibility(pane: &RoomActivityPane, disabled: bool) {
+        let access = pane.accessibility_snapshot();
+        for key in [
+            "activity-pending-task-save",
+            "activity-pending-task-cancel-edit",
+            "activity-pending-task-cancel",
+        ] {
+            let node = access
+                .children
+                .iter()
+                .find(|node| node.semantic_key.as_deref() == Some(key))
+                .expect("pending footer control is published by the pane");
+            assert_eq!(node.state.disabled, disabled, "published state for {key}");
+        }
+        let editor = access
+            .children
+            .iter()
+            .find(|node| node.semantic_key.as_deref() == Some("activity-pending-task-instruction"))
+            .expect("the shared instruction editor is published by the pane");
+        assert_eq!(editor.value.as_deref(), Some("Unsaved exact replacement"));
+    }
+
+    fn assert_pending_editor_layout(
+        pane: &mut RoomActivityPane,
+        tree: &mut crate::activity::testing::TestTree,
+    ) {
+        for (width, theme) in [
+            (560.0, Theme::light()),
+            (242.0, Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            pane.layout_window(Rect::new(0.0, 0.0, width, 560.0));
+            paint_with_theme(pane, &theme);
+            assert!(pane.pending_task_editor.rect().area() > 0.0);
+            assert!(pane.pending_task_save_button.rect().area() > 0.0);
+            assert!(pane.pending_task_cancel_edit_button.rect().area() > 0.0);
+            assert!(pane.pending_task_cancel_button.rect().area() > 0.0);
+            let access = format!("{:?}", pane.accessibility_snapshot());
+            assert!(access.contains("Full queued instruction"));
+            assert!(access.contains("Save"));
+            assert!(access.contains("Cancel queued task"));
+        }
+        let long_edit = (0..18)
+            .map(|line| format!("Retained instruction line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        pane.pending_task_editor.widget_mut().set_text(&long_edit);
+        pane.layout_window(Rect::new(0.0, 0.0, 242.0, 560.0));
+        paint_with_theme(pane, &Theme::high_contrast().with_text_scale(2.0));
+        pane.pending_task_editor.widget_mut().scroll_by(10_000.0);
+        assert!(pane.pending_task_editor.widget().scroll_y() > 0.0);
+        let home = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Home)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            tree,
+        );
+        assert!(home.handled);
+        assert_eq!(pane.pending_task_editor.widget().value(), long_edit);
+        pane.pending_task_editor
+            .widget_mut()
+            .set_text("Unsaved exact replacement");
+    }
+
+    fn assert_pending_action_policy(pane: &RoomActivityPane, mut task: WorkspaceTask) {
+        assert!(
+            pane.task_actions_for(&task)
+                .contains(&TaskAction::EditPending)
+        );
+        assert!(
+            pane.task_actions_for(&task)
+                .contains(&TaskAction::CancelPending)
+        );
+        task.status = WorkspaceTaskStatus::Waiting;
+        assert!(
+            !pane
+                .task_actions_for(&task)
+                .contains(&TaskAction::EditPending),
+            "Waiting work is inspectable history, not editable queued work"
+        );
+        assert!(
+            !pane
+                .task_actions_for(&task)
+                .contains(&TaskAction::CancelPending)
+        );
+    }
+
+    #[test]
+    fn queued_inspector_uses_revision_fenced_actions_and_keeps_draft_on_race() {
+        let (_, task_id, task) = long_instruction_task();
+        let operations = Rc::new(RefCell::new(Vec::new()));
+        let responses = Rc::new(RefCell::new(pending_race_responses(&task_id, &task)));
+        let mut pane = RoomActivityPane::with_local_user("owner-person".into());
+        pane.set_view(ActivityView::Tasks);
+        pane.set_host(Rc::new(PendingInspectorHost {
+            operations: Rc::clone(&operations),
+            responses,
+        }));
+        pane.task_room = uuid::Uuid::from_u128(9).to_string();
+        pane.tasks = vec![task.clone()];
+        pane.toggle_task_selection(&task_id);
+        pane.poll_pending_task_operation();
+
+        assert_eq!(
+            operations.borrow().first(),
+            Some(&PendingTaskOperation::Read {
+                room: pane.task_room.clone(),
+                task_id: task_id.clone(),
+            })
+        );
+        assert_pending_action_policy(&pane, task);
+        let mut tree = crate::activity::testing::TestTree::bootstrap_default();
+        let edited = pane.apply_task_action(TaskAction::EditPending, &mut tree);
+        assert!(edited.handled);
+        pane.pending_task_editor
+            .widget_mut()
+            .set_text("Unsaved exact replacement");
+        pane.submit_pending_task_amendment();
+        let operation_count = operations.borrow().len();
+        pane.pending_task_save_signal.set(true);
+        assert!(pane.apply_task_instruction_button_signals(None));
+        pane.pending_task_cancel_signal.set(true);
+        assert!(pane.apply_task_instruction_button_signals(None));
+        pane.pending_task_cancel_edit_signal.set(true);
+        assert!(pane.apply_task_instruction_button_signals(None));
+        assert_eq!(
+            operations.borrow().len(),
+            operation_count,
+            "rapid Save/Cancel input cannot replace the in-flight owner receipt"
+        );
+        assert!(pane.pending_task_operation.is_some());
+        assert_eq!(
+            (
+                pane.pending_task_save_button.widget().is_enabled(),
+                pane.pending_task_cancel_edit_button.widget().is_enabled(),
+                pane.pending_task_cancel_button.widget().is_enabled(),
+            ),
+            (false, false, false),
+            "all shared controls expose the disabled state their paint and accessibility use",
+        );
+        assert!(
+            pane.pending_task_save_button
+                .widget()
+                .accessibility()
+                .is_some_and(|node| node.state.disabled)
+        );
+        assert_pending_controls_in_accessibility(&pane, true);
+        pane.poll_pending_task_operation();
+        assert_pending_controls_in_accessibility(&pane, false);
+
+        let submitted = operations.borrow().last().cloned().unwrap();
+        assert!(matches!(
+            submitted,
+            PendingTaskOperation::Amend {
+                frontier: tilo_desktop_model::WorkspaceTaskPendingFrontier { revision: 3, .. },
+                ref instruction,
+                ..
+            } if instruction == "Unsaved exact replacement"
+        ));
+        assert_eq!(
+            pane.pending_task_editor.widget().value(),
+            "Unsaved exact replacement",
+            "an admission race must not destroy the private edit draft"
+        );
+        assert!(
+            pane.pending_task_notice
+                .as_deref()
+                .is_some_and(|notice| { notice.contains("Could not confirm the update") })
+        );
+        assert_pending_editor_layout(&mut pane, &mut tree);
+
+        pane.submit_pending_task_cancellation();
+        pane.poll_pending_task_operation();
+        assert!(matches!(
+            operations.borrow().last(),
+            Some(PendingTaskOperation::Cancel {
+                frontier: tilo_desktop_model::WorkspaceTaskPendingFrontier { revision: 3, .. },
+                ..
+            })
+        ));
+        assert_eq!(pane.selected_task, None);
+        assert_eq!(
+            pane.pending_task_editor.widget().value(),
+            "Unsaved exact replacement",
+            "terminal cancellation may close the inspector but must not rewrite its private buffer"
+        );
+    }
+
+    fn pending_confirmation_responses(
+        task_id: &str,
+        task: &WorkspaceTask,
+    ) -> Vec<PendingTaskOperationPoll> {
+        let frontier = tilo_desktop_model::WorkspaceTaskPendingFrontier {
+            status: WorkspaceTaskStatus::Queued,
+            run_epoch: 0,
+            revision: 3,
+        };
+        let amended_frontier = tilo_desktop_model::WorkspaceTaskPendingFrontier {
+            revision: 4,
+            ..frontier
+        };
+        let read = |generation, instruction: &str, frontier| {
+            PendingTaskOperationPoll::Finished(Ok(PendingTaskOperationResult::Read(
+                PendingTaskDetail {
+                    generation,
+                    task_id: task_id.to_string(),
+                    title: task.title.clone(),
+                    instruction: instruction.into(),
+                    frontier,
+                    queue_ordinal: Some(11),
+                },
+            )))
+        };
+        vec![
+            read(7, "Original full instruction", frontier),
+            read(7, "Original full instruction", frontier),
+            PendingTaskOperationPoll::Finished(Ok(PendingTaskOperationResult::Amended {
+                generation: 8,
+                task_id: task_id.to_string(),
+                revision: 4,
+            })),
+            read(8, "Confirmed replacement", amended_frontier),
+            PendingTaskOperationPoll::Finished(Ok(PendingTaskOperationResult::Amended {
+                generation: 9,
+                task_id: task_id.to_string(),
+                revision: 5,
+            })),
+            read(
+                9,
+                "Newer private draft",
+                tilo_desktop_model::WorkspaceTaskPendingFrontier {
+                    revision: 5,
+                    ..amended_frontier
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn queued_amendment_closes_only_after_the_owner_reread_confirms_it() {
+        let (_, task_id, task) = long_instruction_task();
+        let operations = Rc::new(RefCell::new(Vec::new()));
+        let responses = Rc::new(RefCell::new(pending_confirmation_responses(
+            &task_id, &task,
+        )));
+        let mut pane = RoomActivityPane::with_local_user("owner-person".into());
+        pane.set_host(Rc::new(PendingInspectorHost {
+            operations: Rc::clone(&operations),
+            responses,
+        }));
+        pane.task_room = uuid::Uuid::from_u128(9).to_string();
+        pane.tasks = vec![task];
+        pane.toggle_task_selection(&task_id);
+        pane.poll_pending_task_operation();
+        let mut tree = crate::activity::testing::TestTree::bootstrap_default();
+        pane.apply_task_action(TaskAction::EditPending, &mut tree);
+        pane.pending_task_editor
+            .widget_mut()
+            .set_text("Confirmed replacement");
+        let selected = pane
+            .selected_task
+            .clone()
+            .expect("the queued task remains selected");
+        pane.begin_pending_task_read(&selected);
+        assert_eq!(
+            pane.pending_task_detail
+                .as_ref()
+                .map(|detail| detail.frontier.revision),
+            Some(3),
+            "an explicit reread keeps the last confirmed owner detail visible while editing"
+        );
+        pane.poll_pending_task_operation();
+        assert_eq!(
+            pane.pending_task_editor.widget().value(),
+            "Confirmed replacement",
+            "an explicit owner reread must preserve a newer private draft"
+        );
+        pane.submit_pending_task_amendment();
+        pane.poll_pending_task_operation();
+
+        assert!(pane.pending_task_editing);
+        assert!(pane.pending_task_operation.is_some());
+        assert_eq!(
+            pane.pending_task_editor.widget().value(),
+            "Confirmed replacement"
+        );
+        pane.pending_task_editor
+            .widget_mut()
+            .set_text("Newer private draft");
+        pane.poll_pending_task_operation();
+
+        assert!(pane.pending_task_editing);
+        assert_eq!(
+            pane.pending_task_editor.widget().value(),
+            "Newer private draft",
+            "typing during the owner reread must not be overwritten"
+        );
+        assert_eq!(
+            pane.pending_task_detail
+                .as_ref()
+                .map(|detail| detail.frontier.revision),
+            Some(4)
+        );
+        pane.submit_pending_task_amendment();
+        pane.poll_pending_task_operation();
+        assert!(pane.pending_task_editing);
+        pane.poll_pending_task_operation();
+        assert!(!pane.pending_task_editing);
+        assert_eq!(
+            pane.pending_task_editor.widget().value(),
+            "Newer private draft"
+        );
+        assert_eq!(
+            pane.pending_task_detail
+                .as_ref()
+                .map(|detail| detail.frontier.revision),
+            Some(5)
+        );
+        assert_eq!(operations.borrow().len(), 6);
+    }
+
+    #[test]
+    fn delayed_pending_cancellation_never_clears_a_new_selection() {
+        let (_, task_id, task) = long_instruction_task();
+        let frontier = tilo_desktop_model::WorkspaceTaskPendingFrontier {
+            status: WorkspaceTaskStatus::Queued,
+            run_epoch: 0,
+            revision: 3,
+        };
+        let responses = Rc::new(RefCell::new(vec![
+            PendingTaskOperationPoll::Finished(Ok(PendingTaskOperationResult::Read(
+                PendingTaskDetail {
+                    generation: 7,
+                    task_id: task_id.clone(),
+                    title: task.title.clone(),
+                    instruction: "Original full instruction".into(),
+                    frontier,
+                    queue_ordinal: Some(11),
+                },
+            ))),
+            PendingTaskOperationPoll::Finished(Ok(PendingTaskOperationResult::Cancelled {
+                generation: 8,
+                task_id: task_id.clone(),
+                revision: 4,
+            })),
+            PendingTaskOperationPoll::Finished(Err("old task outcome is unknown".into())),
+        ]));
+        let mut pane = RoomActivityPane::with_local_user("owner-person".into());
+        pane.set_host(Rc::new(PendingInspectorHost {
+            operations: Rc::new(RefCell::new(Vec::new())),
+            responses,
+        }));
+        pane.task_room = uuid::Uuid::from_u128(9).to_string();
+        pane.tasks = vec![task];
+        pane.toggle_task_selection(&task_id);
+        pane.poll_pending_task_operation();
+        pane.submit_pending_task_cancellation();
+        pane.selected_task = Some("task:new-selection".into());
+        if let Some(detail) = pane.pending_task_detail.as_mut() {
+            detail.task_id = "task:new-selection".into();
+        }
+
+        pane.poll_pending_task_operation();
+
+        assert_eq!(pane.selected_task.as_deref(), Some("task:new-selection"));
+        assert_eq!(
+            pane.pending_task_detail
+                .as_ref()
+                .map(|detail| detail.task_id.as_str()),
+            Some("task:new-selection")
+        );
+
+        pane.selected_task = Some(task_id.clone());
+        pane.pending_task_detail = Some(PendingTaskDetail {
+            generation: 8,
+            task_id,
+            title: "Old task".into(),
+            instruction: "Old instruction".into(),
+            frontier,
+            queue_ordinal: Some(11),
+        });
+        pane.submit_pending_task_cancellation();
+        pane.selected_task = Some("task:newer-selection".into());
+        pane.pending_task_notice = Some("new selection status".into());
+        pane.poll_pending_task_operation();
+        assert_eq!(
+            pane.pending_task_notice.as_deref(),
+            Some("new selection status"),
+            "a late unknown outcome from the old task cannot annotate the new selection"
+        );
+    }
+
     #[test]
     fn offline_agent_start_is_deduplicated_and_failure_becomes_retry() {
         let (mut tree, workspace, _) = busy_room();

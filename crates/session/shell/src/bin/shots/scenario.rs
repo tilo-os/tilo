@@ -184,6 +184,10 @@ pub enum Action {
     SeedRoomActivity {
         explore: bool,
     },
+    /// Open Task Center on a selected owner-backed queued task.
+    SeedPendingTaskInspector,
+    /// Show the retained amendment draft and an admission-race refusal.
+    EditPendingTaskInspector,
     /// Focus a recap outcome already present in the responsive render. Enter
     /// remains the production activation path.
     FocusFirstRoomActivityWorkSession,
@@ -690,6 +694,13 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
+        Action::SeedPendingTaskInspector => {
+            driver.seed_pending_task_inspector_for_shots();
+        }
+        Action::EditPendingTaskInspector => assert!(
+            driver.edit_pending_task_inspector_for_shots(),
+            "scenario: selected pending task inspector must be editable"
+        ),
         Action::FocusFirstRoomActivityWorkSession => assert!(
             driver.focus_first_room_activity_work_session_for_shots(),
             "scenario: the settled recap must render a focusable work session"
@@ -3245,6 +3256,19 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Key(Key::Named(NamedKey::Enter)),
                 Action::Relayout,
                 Action::Snapshot("04-full-history"),
+            ],
+        },
+        Scenario {
+            name: "pending_task_inspector",
+            description: "Inspect an owner-backed queued task, then retain its full amendment draft across a revision race.",
+            actions: vec![
+                Action::SeedPendingTaskInspector,
+                Action::Relayout,
+                Action::Wait(20),
+                Action::Snapshot("01-pending-task"),
+                Action::EditPendingTaskInspector,
+                Action::Relayout,
+                Action::Snapshot("02-amendment-race"),
             ],
         },
         Scenario {
