@@ -1914,6 +1914,11 @@ impl MusicApp {
                 Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({
                         "track": self.pb.current,
+                        "queue": self.pb.queue,
+                        "queue_index": self.pb.queue_index,
+                        "volume": self.pb.volume,
+                        "shuffle": self.pb.shuffle,
+                        "repeat": self.pb.repeat.as_str(),
                         "requested_playing": self.pb.playing,
                         "confirmed_playing": self.audio.is_playing_real(),
                         "resolving": self.active_resolve_request.is_some(),
