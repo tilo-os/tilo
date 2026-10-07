@@ -12,6 +12,7 @@ markers = ("tilo-physical-input ", "tilo-physical-frame ",
            "tilo-native-send ", "tilo-native-main-stages ",
            "tilo-native-worker ", "tilo-native-worker-handoff ",
            "tilo-native-present-call ", "tilo-native-gpu-stages ")
+pointer_marker = "tilo-physical-pointer-delivery "
 phase_fields = set("serial event revision phase_timing queue_wait_us render_us total_us "
                    "inflight_at_enqueue input_age_at_enqueue_us encode_submit_us "
                    "gpu_completion_wait_us bump_settle_us backdrop_us kms_retirement_us "
@@ -71,7 +72,7 @@ for line in Path(sys.argv[1]).read_text().splitlines():
                 raise SystemExit("Invalid capture diagnostic field")
         diagnostics.append((marker, row, marker + json.dumps(row, sort_keys=True)))
         break
-    for marker in markers:
+    for marker in (*markers, pointer_marker):
         if marker in line:
             value = line[line.index(marker) + len(marker):]
             try:
@@ -80,13 +81,44 @@ for line in Path(sys.argv[1]).read_text().splitlines():
                 # A bounded flight log may begin in the middle of a record.
                 continue
             if isinstance(row, dict):
+                if marker == pointer_marker:
+                    allowed = {"pointer_id", "enter_serial", "motion_ordinal", "time_ms",
+                               "surface_id", "clock_id", "delivery_time_ns", "input_time_ns"}
+                    row = {key: field for key, field in row.items() if key in allowed}
+                    for key, field in row.items():
+                        if not ((field is None and key in ("time_ms", "input_time_ns"))
+                                or (type(field) is int and 0 <= field < 2**64)):
+                            raise SystemExit("Invalid pointer delivery field")
+                    value = json.dumps(row, sort_keys=True)
                 records.append((marker, row, marker + value))
             break
-inputs = [row for tag, row, _ in records
-          if tag == markers[0] and (row.get("before") or {}).get("selected_page") == sys.argv[2]][-32:]
+application = sys.argv[4] if len(sys.argv) > 4 else "so.tilo.notes"
+observer = sys.argv[3] if len(sys.argv) > 3 else None
+minimum = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+if application == "so.tilo.settings":
+    import uuid
+    if minimum < 0 or observer is None:
+        raise SystemExit("Settings hover requires explicit worker and input boundary")
+    try:
+        identity = uuid.UUID(observer)
+    except ValueError:
+        raise SystemExit("Invalid Settings worker identity") from None
+    if identity.version != 4 or str(identity) != observer or sys.argv[2] != "settings.nav":
+        raise SystemExit("Invalid Settings hover scope")
+    inputs = [row for tag, row, _ in records if tag == markers[0]
+              and row.get("observer_session") == observer
+              and (row.get("before") or {}).get("app") == application
+              and (type(row.get("id")) is not int or row["id"] > minimum)][-32:]
+elif application == "so.tilo.notes":
+    inputs = [row for tag, row, _ in records
+              if tag == markers[0] and (row.get("before") or {}).get("selected_page") == sys.argv[2]][-32:]
+else:
+    raise SystemExit("Unsupported physical trace application")
 workers = {(row.get("process_id"), row.get("observer_session")) for row in inputs}
 identities = {row.get("id") for row in inputs}
 serials = {row.get("wayland_serial") for row in inputs}
+pointer_keys = {(row.get("pointer_id"), row.get("pointer_enter_serial"),
+                 row.get("pointer_motion_ordinal"), row.get("pointer_time_ms")) for row in inputs}
 # The controller collects and validates each key before sending the next one.
 # Keep overlapping input metadata to detect conflicting identities, but transfer
 # the current key's complete witness family only: completed families are already
@@ -105,6 +137,8 @@ for tag, row, original in records:
     if ((tag == markers[0] and worker in workers and row.get("id") in identities)
             or (tag == markers[1] and worker + (row.get("cpu_frame_id"),) in frame_ids)
             or (tag == markers[2] and row.get("wayland_serial") in serials)
+            or (tag == pointer_marker and (row.get("pointer_id"), row.get("enter_serial"),
+                row.get("motion_ordinal"), row.get("time_ms")) in pointer_keys)
             or (tag == markers[3] and row.get("backend") == "wayland"
                 and worker + (row.get("cpu_frame_id"),) in frame_ids)
             or (tag in markers[4:]
@@ -151,6 +185,22 @@ print(result)
 def collect_trace(device, log_path, page, records):
     """Preserve overlap exactly; distinct duplicate identities still fail analysis."""
     raw = device.execute(["/usr/bin/python3", "-c", READ_TRACE_SCRIPT, log_path, page])
+    for line in raw.splitlines():
+        if line:
+            records.setdefault(line, None)
+    return list(records)
+
+
+def collect_settings_hover_trace(device, log_path, records, observer_session, after_input_id):
+    """Read one exact owned-worker cohort after an explicit preparation boundary.
+
+    The caller supplies an authenticated pinned Device adapter and revalidates
+    its surface/worker/runtime. No launch, focus, motion or screenshot occurs here.
+    """
+    if type(after_input_id) is not int or after_input_id < 0:
+        raise ValueError("An explicit Settings input boundary is required")
+    raw = device.execute(["/usr/bin/python3", "-c", READ_TRACE_SCRIPT, log_path,
+                          "settings.nav", observer_session, "so.tilo.settings", str(after_input_id)])
     for line in raw.splitlines():
         if line:
             records.setdefault(line, None)

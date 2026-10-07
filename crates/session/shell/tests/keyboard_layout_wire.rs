@@ -11,7 +11,7 @@ use shell::compositor::state::{ClientState, State};
 use shell::shell::state::TileContent;
 use smithay::input::keyboard::XkbConfig;
 use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
+use smithay::reexports::wayland_server::{Display, Resource};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop as ClientLoop};
@@ -88,9 +88,13 @@ struct WireChild {
 
 impl WireChild {
     fn spawn(socket: &Path, runtime: &Path) -> Self {
+        Self::spawn_for(socket, runtime, TEST, CHILD, "1")
+    }
+
+    fn spawn_for(socket: &Path, runtime: &Path, test: &str, variable: &str, mode: &str) -> Self {
         let mut process = Command::new(std::env::current_exe().unwrap())
-            .args([TEST, "--exact", "--nocapture"])
-            .env(CHILD, "1")
+            .args([test, "--exact", "--nocapture"])
+            .env(variable, mode)
             .env("WAYLAND_DISPLAY", socket)
             .env_remove("WAYLAND_SOCKET")
             .env("XDG_RUNTIME_DIR", runtime)
@@ -163,7 +167,9 @@ fn focused_seat_symbols_keep_queued_group_and_modifier_identity() {
         )
         .unwrap();
     let mut child = WireChild::spawn(&socket, runtime.path());
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(20))
+        .expect("native wire deadline");
     let mut transcript = Vec::new();
     let mut focused = false;
     let mut sent = false;
@@ -219,5 +225,160 @@ fn focused_seat_symbols_keep_queued_group_and_modifier_identity() {
     assert!(
         result.is_some_and(|status| status.success()),
         "native event wire proof failed or timed out"
+    );
+}
+
+const POINTER_CHILD: &str = "TILO_OBSERVED_POINTER_WIRE_CHILD";
+const POINTER_TEST: &str = "keyboard_layout_wire::observed_pointer_wire_preserves_immutable_origin_and_one_ordinary_delivery";
+
+#[derive(Default)]
+struct PointerClient {
+    window: Option<Window>,
+    observed: bool,
+    received: usize,
+    anchor: Option<(u32, u32)>,
+}
+
+impl ApplicationHandler for PointerClient {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        use winit::platform::wayland::WindowExtWayland;
+        let window = event_loop
+            .create_window(Window::default_attributes().with_name(APP, APP))
+            .unwrap();
+        if self.observed {
+            assert!(window.observe_pointer_motion(true));
+        }
+        self.window = Some(window);
+        println!("POINTER READY");
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        if let WindowEvent::CursorMovedObserved {
+            pointer_id,
+            enter_serial,
+            motion_ordinal,
+            time_ms,
+            ..
+        } = &event
+        {
+            assert!(self.observed);
+            assert_eq!(*motion_ordinal, u64::try_from(self.received).unwrap());
+            assert_eq!(time_ms.is_some(), self.received > 0);
+            let anchor = (*pointer_id, *enter_serial);
+            assert_eq!(*self.anchor.get_or_insert(anchor), anchor);
+        } else if matches!(event, WindowEvent::CursorMoved { .. }) {
+            assert!(
+                !self.observed,
+                "observed mode never duplicates ordinary delivery"
+            );
+        } else {
+            return;
+        }
+        let ordinary = ui::NativePhysicalInputTrace::ordinary_pointer_event(event);
+        let WindowEvent::CursorMoved { position, .. } = ordinary else {
+            panic!("each native observed event routes one ordinary cursor movement");
+        };
+        let expected = [(10.0, 10.0), (11.0, 12.0), (14.0, 15.0)];
+        assert_eq!((position.x, position.y), expected[self.received]);
+        self.received = self.received.checked_add(1).expect("bounded motion count");
+        println!("POINTER MOTION {}", self.received);
+        if self.received == expected.len() {
+            event_loop.exit();
+        }
+    }
+}
+
+#[test]
+fn observed_pointer_wire_preserves_immutable_origin_and_one_ordinary_delivery() {
+    if let Ok(mode) = std::env::var(POINTER_CHILD) {
+        let event_loop = ClientLoop::builder()
+            .with_wayland()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let mut client = PointerClient {
+            observed: mode == "observed",
+            ..Default::default()
+        };
+        event_loop.run_app(&mut client).unwrap();
+        assert_eq!(client.received, 3);
+        assert_eq!(client.anchor.is_some(), client.observed);
+        return;
+    }
+    for mode in ["ordinary", "observed"] {
+        pointer_wire_mode(mode);
+    }
+}
+
+fn pointer_wire_mode(mode: &str) {
+    let runtime = tempfile::tempdir().unwrap();
+    let socket = runtime.path().join("pointer-wire.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let event_loop = EventLoop::try_new().unwrap();
+    let mut display = Display::new().unwrap();
+    let mut state = State::new(event_loop.handle(), display.handle());
+    let mut child =
+        WireChild::spawn_for(&socket, runtime.path(), POINTER_TEST, POINTER_CHILD, mode);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(20))
+        .expect("native wire deadline");
+    let mut ready = false;
+    let mut sent = false;
+    let mut transcript = Vec::new();
+    let result = loop {
+        if let Ok((stream, _)) = listener.accept() {
+            display
+                .handle()
+                .insert_client(stream, Arc::new(ClientState::default()))
+                .unwrap();
+        }
+        display.dispatch_clients(&mut state).unwrap();
+        shell::compositor::foreign::flush_configures(&mut state);
+        display.flush_clients().unwrap();
+        for line in child.messages.try_iter() {
+            ready |= line.ends_with("POINTER READY");
+            if transcript.len() < 32 {
+                transcript.push(line);
+            }
+        }
+        if ready
+            && !sent
+            && let Some(surface_id) = foreign_id(&state)
+        {
+            let client = state
+                .client_input
+                .surface(surface_id)
+                .and_then(Resource::client);
+            if client.is_some_and(|client| {
+                state
+                    .seat
+                    .get_pointer()
+                    .unwrap()
+                    .client_pointers(&client)
+                    .next()
+                    .is_some()
+            }) {
+                for point in [(10.0, 10.0), (11.0, 12.0), (14.0, 15.0)] {
+                    state.forward_client_pointer_motion(point, Some((surface_id, (0.0, 0.0))));
+                }
+                sent = true;
+            }
+        }
+        if let Some(status) = child.process.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(
+        sent,
+        "the actual native pointer was not observable: {transcript:?}"
+    );
+    assert!(
+        result.is_some_and(|status| status.success()),
+        "native {mode} pointer wire failed: {transcript:?}"
     );
 }

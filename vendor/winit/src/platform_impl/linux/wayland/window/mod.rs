@@ -297,6 +297,10 @@ impl Window {
         }
     }
 
+    pub fn observe_pointer_motion(&self, enabled: bool) {
+        self.window_state.lock().unwrap().observe_pointer_motion = enabled;
+    }
+
     pub fn present_with_feedback(
         &self,
         observer: crate::platform::wayland::WaylandPresentationObserver,

@@ -125,7 +125,11 @@ impl PointerHandler for WinitState {
                     );
                 },
                 // Regular events on the main surface.
-                PointerEventKind::Enter { .. } => {
+                PointerEventKind::Enter { serial } => {
+                    {
+                        let mut data = pointer.winit_data().inner.lock().unwrap();
+                        data.observation.enter(serial);
+                    }
                     self.events_sink
                         .push_window_event(WindowEvent::CursorEntered { device_id }, window_id);
 
@@ -134,12 +138,18 @@ impl PointerHandler for WinitState {
                     // Set the currently focused surface.
                     pointer.winit_data().inner.lock().unwrap().surface = Some(window_id);
 
-                    self.events_sink.push_window_event(
-                        WindowEvent::CursorMoved { device_id, position },
-                        window_id,
-                    );
+                    let event = if window.observe_pointer_motion {
+                        WindowEvent::CursorMovedObserved {
+                            device_id, position, pointer_id: pointer.id().protocol_id(),
+                            enter_serial: serial, motion_ordinal: 0, time_ms: None,
+                        }
+                    } else {
+                        WindowEvent::CursorMoved { device_id, position }
+                    };
+                    self.events_sink.push_window_event(event, window_id);
                 },
                 PointerEventKind::Leave { .. } => {
+                    pointer.winit_data().inner.lock().unwrap().observation.leave();
                     window.pointer_left(Arc::downgrade(themed_pointer));
 
                     // Remove the active surface.
@@ -148,11 +158,19 @@ impl PointerHandler for WinitState {
                     self.events_sink
                         .push_window_event(WindowEvent::CursorLeft { device_id }, window_id);
                 },
-                PointerEventKind::Motion { .. } => {
-                    self.events_sink.push_window_event(
-                        WindowEvent::CursorMoved { device_id, position },
-                        window_id,
-                    );
+                PointerEventKind::Motion { time } => {
+                    let mut data = pointer.winit_data().inner.lock().unwrap();
+                    let stamp = data.observation.motion();
+                    let event = if let Some((enter_serial, motion_ordinal)) = stamp.filter(|_| window.observe_pointer_motion) {
+                        WindowEvent::CursorMovedObserved {
+                            device_id, position, pointer_id: pointer.id().protocol_id(),
+                            enter_serial, motion_ordinal, time_ms: Some(time),
+                        }
+                    } else {
+                        WindowEvent::CursorMoved { device_id, position }
+                    };
+                    drop(data);
+                    self.events_sink.push_window_event(event, window_id);
                 },
                 ref kind @ PointerEventKind::Press { button, serial, .. }
                 | ref kind @ PointerEventKind::Release { button, serial, .. } => {
@@ -355,6 +373,7 @@ pub struct WinitPointerDataInner {
 
     /// Serial of the last button event.
     latest_button_serial: u32,
+    observation: crate::platform::wayland::WaylandPointerMotion,
 
     /// Currently focused window.
     surface: Option<WindowId>,
@@ -382,6 +401,7 @@ impl Default for WinitPointerDataInner {
             locked_pointer: None,
             confined_pointer: None,
             latest_button_serial: 0,
+            observation: Default::default(),
             phase: TouchPhase::Ended,
         }
     }

@@ -3064,6 +3064,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window.request_redraw();
         tilo_startup_metrics::mark("primary-window-redraw-requested");
         crate::dnd::set_drag_window(&window);
+        tilo_presentation::observe_pointer_motion(&window, self.physical_input_trace.is_some());
         self.window = Some(window);
         tilo_startup_metrics::mark("primary-window-resumed-done");
     }
@@ -3150,6 +3151,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         } else {
             None
         };
+        let event = crate::physical_input_trace::Trace::ordinary_pointer_event(event);
         self.note_host_appearance_event(&event);
         self.replay_unsettled_pointer(event_loop, window_id, &event);
         let admitted = self.route_window_event(

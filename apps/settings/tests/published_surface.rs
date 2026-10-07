@@ -352,3 +352,86 @@ fn physical_navigation_observer_follows_mounted_keyboard_activation_and_actual_d
         assert!(!row.to_string().contains("document_actor"));
     }
 }
+
+#[test]
+fn physical_hover_observer_follows_mounted_pointer_and_actual_draw_without_selecting() {
+    let mut app = TestApp::<SettingsShell>::new().expect("mounted Settings");
+    app.settle();
+    let node = app
+        .harness()
+        .a11y_node_named(&Category::Bluetooth.label())
+        .expect("actual destination row");
+    let rect = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(id, node_info)| (id == node).then(|| node_info.bounds()).flatten())
+        .expect("actual sidebar row geometry");
+    let before = app
+        .harness()
+        .native_input_snapshot()
+        .expect("Settings snapshot");
+    assert_eq!(before["hover"], before["rendered_hover"]);
+    let (width, height) = app.harness().frame_output().device_size;
+    let mut renderer =
+        ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(width, height)
+            .expect("native stable-preprocessing GPU renderer");
+    let background = ui::Theme::dark().tokens.colors.surfaces.content;
+    let old_pixels = app.harness().render_rgba_with(&mut renderer, background);
+    let event = winit::event::WindowEvent::CursorMovedObserved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(
+            f64::midpoint(rect.x0, rect.x1),
+            f64::midpoint(rect.y0, rect.y1),
+        ),
+        pointer_id: 17,
+        enter_serial: 29,
+        motion_ordinal: 3,
+        time_ms: Some(31),
+    };
+    let mut trace = ui::NativePhysicalInputTrace::default();
+    let input = trace
+        .begin(&event, Some(before))
+        .expect("immutable motion observation");
+    let ordinary = ui::NativePhysicalInputTrace::ordinary_pointer_event(event);
+    assert!(matches!(
+        ordinary,
+        winit::event::WindowEvent::CursorMoved { .. }
+    ));
+    app.harness().send_host_event(&ordinary);
+    app.settle();
+    let after = app
+        .harness()
+        .native_input_snapshot()
+        .expect("actual hovered Settings");
+    let effect = ui::NativePhysicalInputTrace::effect(input, Some(after.clone()));
+    let drawn = trace
+        .drawn(Some(43), Some(after))
+        .expect("actual draw witness");
+    assert_eq!(effect["pointer_id"], 17);
+    assert_eq!(effect["pointer_motion_ordinal"], 3);
+    assert!(effect["wayland_serial"].is_null());
+    let state = &drawn["state"];
+    assert_eq!(state["navigation"]["selected_pane"], "network");
+    assert_eq!(state["hover"]["pane"], "bluetooth");
+    assert_eq!(state["hover"], state["rendered_hover"]);
+    let pixels = app.harness().render_rgba_with(&mut renderer, background);
+    assert_ne!(pixels, old_pixels, "ordinary pointer paints a real hover");
+    assert_eq!(
+        pixels,
+        app.harness().render_rgba_with(&mut renderer, background)
+    );
+    // This fixture supplies a wire identity, never a trusted physical origin/KMS.
+    assert!(effect.get("input_time_ns").is_none());
+    let leave = winit::event::WindowEvent::CursorLeft {
+        device_id: winit::event::DeviceId::dummy(),
+    };
+    app.harness().send_host_event(&leave);
+    app.settle();
+    let left = app
+        .harness()
+        .native_input_snapshot()
+        .expect("actual cleared hover");
+    assert!(left["hover"]["pane"].is_null());
+    assert_eq!(left["hover"], left["rendered_hover"]);
+}

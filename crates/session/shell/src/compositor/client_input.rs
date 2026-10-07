@@ -27,7 +27,7 @@ use smithay::input::touch::{
     DownEvent as TouchDownEvent, MotionEvent as TouchMotionEvent, UpEvent as TouchUpEvent,
 };
 use smithay::reexports::wayland_server::Resource;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::protocol::{wl_pointer::WlPointer, wl_surface::WlSurface};
 use smithay::utils::{Logical, Point as SmithayPoint, Serial};
 use vello::kurbo::Rect;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -61,6 +61,27 @@ struct PendingAdoption {
     app_id: Option<String>,
 }
 
+struct PointerDelivery {
+    focus: Option<WlSurface>,
+    entered: bool,
+    serial: smithay::utils::Serial,
+    time: u32,
+    delivery_time_ns: Option<u128>,
+}
+
+struct PointerObservation {
+    pointer: WlPointer,
+    enter_serial: u32,
+    motion_ordinal: u64,
+}
+
+#[derive(Default)]
+struct PointerObservations {
+    streams: HashMap<u32, PointerObservation>,
+    rows: u32,
+    enabled: bool,
+}
+
 /// Per-compositor state for routing local input into client surfaces — lives on [`State`] because the seat lives there; the run loop reaches it through the free functions at the bottom of this module.
 #[derive(Default)]
 pub struct ClientInput {
@@ -75,6 +96,9 @@ pub struct ClientInput {
     activated: Option<u64>,
     /// Surface the pointer is currently inside (and therefore focused on at the seat), or `None` when the pointer is over chrome.
     pointer_focus: Option<u64>,
+    /// Wire ordinals for pointer objects present at the last exact enter.
+    /// Late binds and ambiguous grabs cannot acquire a synthetic anchor.
+    pointer_observations: PointerObservations,
     /// Global origin of the pointer-focused surface, as the router placed it.
     pointer_focus_origin: Option<(f64, f64)>,
     /// Last known cursor position in global coordinates; `None` until
@@ -227,6 +251,16 @@ impl ClientInput {
 
     pub fn pointer_focus(&self) -> Option<u64> {
         self.pointer_focus
+    }
+
+    /// Exact enter/ordinal observed on this seat's current pointer wire stream.
+    /// Missing means late binding, no focus or an ambiguous grab; never authority.
+    pub fn pointer_motion_identity(&self, pointer_id: u32) -> Option<(u32, u64)> {
+        self.pointer_observations
+            .streams
+            .get(&pointer_id)
+            .filter(|stream| stream.pointer.is_alive())
+            .map(|stream| (stream.enter_serial, stream.motion_ordinal))
     }
 
     /// Whether `surface_id` is a live foreign toplevel this compositor can route input to.
@@ -550,6 +584,15 @@ impl State {
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
         let previous_focus = self.client_input.pointer_focus;
+        let observed_focus = focus.as_ref().map(|(surface, _)| surface.clone());
+        let unambiguous = !pointer.is_grabbed();
+        let observed =
+            crate::shell::launcher::LaunchSession::current().presentation_observer_enabled();
+        if observed && !self.client_input.pointer_observations.enabled {
+            self.client_input.pointer_observations.rows = 0;
+        }
+        self.client_input.pointer_observations.enabled = observed;
+        let delivery_time_ns = observed.then(monotonic_time_ns).flatten();
         self.client_input.pointer_focus = focus.as_ref().and_then(|_| target.map(|(id, _)| id));
         self.client_input.pointer_focus_origin = focus
             .as_ref()
@@ -566,6 +609,20 @@ impl State {
             },
         );
         pointer.frame(self);
+        if unambiguous {
+            self.observe_pointer_motion(
+                &pointer,
+                PointerDelivery {
+                    focus: observed_focus,
+                    entered: previous_focus != self.client_input.pointer_focus,
+                    serial,
+                    time,
+                    delivery_time_ns,
+                },
+            );
+        } else {
+            self.client_input.pointer_observations.streams.clear();
+        }
         // `wl_pointer.motion` itself has no serial. Smithay uses this serial
         // only when the motion changes focus and emits `wl_pointer.enter`, so
         // recording every motion would bless predictable numbers the client
@@ -574,6 +631,77 @@ impl State {
             && let Some(surface_id) = self.client_input.pointer_focus
         {
             record_activation_serial(self, serial, surface_id);
+        }
+    }
+
+    fn observe_pointer_motion(
+        &mut self,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+        observed: PointerDelivery,
+    ) {
+        // Smithay's normal ungrabbed dispatch emits one enter on a focus
+        // transition, otherwise one motion to each of the client's pointers.
+        // Track every event, even without logging, to preserve wire ordinals.
+        if observed.focus.as_ref() != pointer.current_focus().as_ref() || pointer.is_grabbed() {
+            self.client_input.pointer_observations.streams.clear();
+        } else if let Some(surface) = observed.focus {
+            let entered = observed.entered;
+            if entered {
+                self.client_input.pointer_observations.streams.clear();
+            }
+            if let Some(client) = surface.client() {
+                for resource in pointer.client_pointers(&client).take(65) {
+                    let pointer_id = resource.id().protocol_id();
+                    let stamp = if entered
+                        && self.client_input.pointer_observations.streams.len() < 64
+                    {
+                        self.client_input.pointer_observations.streams.insert(
+                            pointer_id,
+                            PointerObservation {
+                                pointer: resource.clone(),
+                                enter_serial: u32::from(observed.serial),
+                                motion_ordinal: 0,
+                            },
+                        );
+                        Some((u32::from(observed.serial), 0))
+                    } else {
+                        self.client_input
+                            .pointer_observations
+                            .streams
+                            .get_mut(&pointer_id)
+                            .filter(|stream| {
+                                stream.pointer.id() == resource.id() && stream.pointer.is_alive()
+                            })
+                            .and_then(|stream| {
+                                stream.motion_ordinal = stream.motion_ordinal.checked_add(1)?;
+                                Some((stream.enter_serial, stream.motion_ordinal))
+                            })
+                    };
+                    if let Some(((enter_serial, motion_ordinal), delivery_time_ns)) =
+                        stamp.zip(observed.delivery_time_ns)
+                        && self.client_input.pointer_observations.rows < 4096
+                    {
+                        self.client_input.pointer_observations.rows = self
+                            .client_input
+                            .pointer_observations
+                            .rows
+                            .saturating_add(1);
+                        eprintln!(
+                            "tilo-physical-pointer-delivery {}",
+                            serde_json::json!({
+                                "pointer_id": pointer_id, "enter_serial": enter_serial,
+                                "motion_ordinal": motion_ordinal, "time_ms": (!entered).then_some(observed.time),
+                                "surface_id": super::state::surface_id(&surface),
+                                "clock_id": libc::CLOCK_MONOTONIC, "delivery_time_ns": delivery_time_ns,
+                                "input_time_ns": self.physical_pointer_input_time_ns
+                                    .filter(|origin| u128::from(*origin) <= delivery_time_ns),
+                            })
+                        );
+                    }
+                }
+            }
+        } else {
+            self.client_input.pointer_observations.streams.clear();
         }
     }
 

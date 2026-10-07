@@ -196,5 +196,31 @@ class RollingCollection(unittest.TestCase):
             summarize_physical_notes_latency(list(captured), "new-scratch-page")
 
 
+class SettingsHoverCollection(unittest.TestCase):
+    def test_production_reader_scopes_worker_boundary_and_whitelists_pointer_metadata(self):
+        from device_notes_trace import collect_settings_hover_trace
+        from physical_notes_latency_test import PhysicalSettingsHoverLatency
+        rows = PhysicalSettingsHoverLatency().timeline()
+        rows[0][1]['private_value'] = 'do-not-export'
+        unknown = json.loads(json.dumps(rows[1][1]))
+        unknown['observer_session'] = '13d78136-4c17-4853-9d7c-7442274a7059'
+        slot = LocalSlot()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'flight.log'
+            path.write_text('\n'.join(prefix+json.dumps(row) for prefix,row in rows)
+                            +'\n'+'tilo-physical-input '+json.dumps(unknown))
+            captured = collect_settings_hover_trace(slot,str(path),{},rows[1][1]['observer_session'],0)
+            self.assertNotIn('do-not-export','\n'.join(captured))
+            self.assertNotIn(unknown['observer_session'],'\n'.join(captured))
+            self.assertTrue(PhysicalSettingsHoverLatency().report([
+                (line[:line.index(' ')+1],json.loads(line[line.index(' ')+1:])) for line in captured
+            ])['latency_complete'])
+            self.assertEqual(collect_settings_hover_trace(slot,str(path),{},rows[1][1]['observer_session'],1),[])
+            with self.assertRaises(ValueError):
+                collect_settings_hover_trace(slot,str(path),{},rows[1][1]['observer_session'],None)
+            with self.assertRaises(subprocess.CalledProcessError):
+                collect_settings_hover_trace(slot,str(path),{},'unrelated',0)
+
+
 if __name__ == "__main__":
     unittest.main()

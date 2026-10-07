@@ -81,6 +81,7 @@ pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
     last_drawn_navigation: Option<NavigationState>,
+    last_drawn_hover: Option<(bool, Option<Category>)>,
     /// `true` once a selection (or other composition-affecting change) has
     /// happened and the host must re-run `build_layout`. Drained by
     /// `take_structure_dirty`.
@@ -207,6 +208,7 @@ impl SettingsApp {
             network: panes::network::NetworkArea::new(&cx),
             selected: Category::DEFAULT,
             last_drawn_navigation: None,
+            last_drawn_hover: None,
             structure_dirty: false,
             cx,
             narrow_screen: NavPane::Content,
@@ -256,6 +258,33 @@ impl SettingsApp {
 
     /// The actual mounted navigation state. Readiness is local composition,
     /// never an assertion that this pane reached a display or that input is fast.
+    fn hover_state(&self) -> (bool, Option<Category>) {
+        fn visit(widget: &dyn Widget, found: &mut (bool, Option<Category>)) {
+            if widget.test_id() == Some(sidebar::NAV_ID)
+                && let Some(list) = widget
+                    .as_any()
+                    .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
+            {
+                let rect = widget.get_rect();
+                found.0 = rect.width() > 0.0 && rect.height() > 0.0;
+                found.1 = list.hovered_id().and_then(Category::from_slug);
+            }
+            widget.for_each_child(&mut |child| visit(child, found));
+        }
+        let mut found = (false, None);
+        if !self.is_narrow() || self.sidebar_open() {
+            visit(self, &mut found);
+        }
+        found
+    }
+
+    fn hover_snapshot((mounted, pane): (bool, Option<Category>)) -> serde_json::Value {
+        serde_json::json!({
+            "control": sidebar::NAV_ID, "mounted": mounted,
+            "pane": pane.map(Category::slug),
+        })
+    }
+
     fn navigation_state(&self) -> NavigationState {
         let pending = self.sidebar_selection.with(|request| *request);
         let content = self.shell.as_ref().and_then(|shell| {
@@ -809,6 +838,8 @@ impl Widget for SettingsApp {
             "selected_category": self.selected.slug(),
             "navigation": self.navigation_inspection(),
             "rendered_navigation": self.last_drawn_navigation.map(NavigationState::snapshot),
+            "hover": Self::hover_snapshot(self.hover_state()),
+            "rendered_hover": self.last_drawn_hover.map(Self::hover_snapshot),
             "rendered_result_count": categories.len(),
             "rendered_category_ids": categories,
             "narrow": self.is_narrow(),
@@ -943,6 +974,7 @@ impl Widget for SettingsApp {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
             self.last_drawn_navigation = Some(self.navigation_state());
+            self.last_drawn_hover = Some(self.hover_state());
         }
     }
 
@@ -965,6 +997,7 @@ impl Widget for SettingsApp {
                 permissions,
             );
             self.last_drawn_navigation = Some(self.navigation_state());
+            self.last_drawn_hover = Some(self.hover_state());
         }
     }
 

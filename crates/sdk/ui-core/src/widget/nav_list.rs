@@ -1323,6 +1323,13 @@ impl NavList {
         self.tree.model().key(id).map(str::to_owned)
     }
 
+    /// The actual pointer-hovered item; selection and keyboard focus do not
+    /// manufacture a hover. Section headers and unrealized slots return None.
+    #[must_use]
+    pub fn hovered_id(&self) -> Option<&str> {
+        self.tree.hovered().and_then(|id| self.tree.model().key(id))
+    }
+
     /// Open or fold item or section `id` without reporting it.
     pub fn set_expanded(&mut self, id: &str, open: bool) {
         let model = self.tree.model();

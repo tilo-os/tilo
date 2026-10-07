@@ -364,6 +364,12 @@ pub enum BackendEvent {
         event: WindowEvent,
         input_time_ns: u64,
     },
+    /// Absolute cursor motion from a real libinput event, preserving kernel
+    /// monotonic origin separately from synthetic/network/touch cursor input.
+    PhysicalPointerMotion {
+        event: WindowEvent,
+        input_time_ns: u64,
+    },
     /// Raw relative mouse motion, emitted by the direct backend alongside the
     /// clamped absolute cursor event. Spatial device control needs the delta
     /// after the local cursor reaches a display edge.

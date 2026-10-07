@@ -25,3 +25,13 @@ masks/group. It contains configuration for physical positions, never composed
 text or key history. Keymap, focus-enter and modifier events enqueue their exact
 snapshot before further state changes; unavailable keymaps revoke it. Other
 platforms do not invent a snapshot.
+
+The opt-in Wayland pointer-motion observation replaces a main-surface
+`CursorMoved` with `CursorMovedObserved`, retaining an immutable pointer object
+ID, the actual enter serial, an ordinal decoded from that pointer's delivered
+wire stream and the protocol motion time. Default delivery remains unchanged;
+CSD and drag/drop do not manufacture stamps. `WindowExtWayland::observe_pointer_motion`
+enables it per window. The native SDK observes the identity before normalizing
+it into exactly one ordinary cursor movement. The identity is diagnostic and
+never authorization or a physical timestamp: a matching compositor delivery
+with the original libinput clock and exact drawn/presented state is required.

@@ -172,11 +172,57 @@ def _verify_settings_change(event, frame, subject):
         raise ValueError('This key did not request and draw the exact intended changed Settings pane')
 
 
+def summarize_physical_settings_hover_latency(lines, expected_pane):
+    """An isolated physical motion changing an actual native sidebar hover."""
+    return _summarize_physical_state_latency(lines, expected_pane, _verify_settings_hover,
+        'Physical pointer motion to actual Settings sidebar hover hardware presentation', pointer=True)
+
+
+def _verify_settings_hover(event, frame, subject):
+    if event.get('input_route_admitted') is not True:
+        raise ValueError('Pointer motion was not admitted by the native route')
+    before, after, drawn = event.get('before', {}), event.get('after', {}), frame.get('state', {})
+    for state in (before, after, drawn):
+        if state.get('app') != 'so.tilo.settings':
+            raise ValueError('Hover is not scoped to the actual Settings app')
+        hover = state.get('hover', {})
+        if hover.get('control') != 'settings.nav' or hover.get('mounted') is not True:
+            raise ValueError('Actual Settings navigation hover is not mounted')
+        navigation = state.get('navigation', {})
+        if (navigation.get('ready') is not True or navigation.get('pending') is not False
+                or navigation.get('content_visible') is not True
+                or navigation.get('selected_pane') != navigation.get('requested_pane')
+                or navigation.get('path') != 'settings://' + str(navigation.get('selected_pane'))):
+            raise ValueError('Settings hover lacks a settled actual pane')
+    if (before.get('hover') != before.get('rendered_hover')
+            or drawn.get('hover') != drawn.get('rendered_hover')):
+        raise ValueError('Hover does not match the actual drawn composition')
+    if (drawn['hover'].get('pane') != subject or after.get('hover') != drawn['hover']
+            or before['hover'].get('pane') == subject):
+        raise ValueError('Motion did not produce the exact changed Settings hover')
+    selected = before['navigation']['selected_pane']
+    if (selected == subject or any(state['navigation']['selected_pane'] != selected
+                                  for state in (after, drawn))):
+        raise ValueError('Hover must not substitute selected-pane navigation')
+
+
+def _pointer_identity(value, delivery=False):
+    names = ('pointer_id', 'enter_serial', 'motion_ordinal', 'time_ms') if delivery else (
+        'pointer_id', 'pointer_enter_serial', 'pointer_motion_ordinal', 'pointer_time_ms')
+    identity = tuple(value.get(name) for name in names)
+    pointer, serial, ordinal, time = identity
+    if (type(pointer) is not int or not 0 < pointer < 2**32
+            or type(serial) is not int or not 0 <= serial < 2**32
+            or type(ordinal) is not int or not 0 <= ordinal < 2**64
+            or (time is not None if ordinal == 0 else type(time) is not int or not 0 <= time < 2**32)):
+        raise ValueError('Missing immutable pointer wire identity')
+    return identity
+
 def _summarize_physical_state_latency(lines, scratch_page, verify_change, metric,
-        missing_message='No physical native input or explicit expected subject'):
+        missing_message='No physical native input or explicit expected subject', pointer=False):
     inputs = rows(lines, 'tilo-physical-input ')
     mappings = rows(lines, 'tilo-physical-frame ')
-    deliveries = rows(lines, 'tilo-physical-delivery ')
+    deliveries = rows(lines, 'tilo-physical-pointer-delivery ' if pointer else 'tilo-physical-delivery ')
     displayed = rows(lines, 'tilo-display-frame ')
     if not inputs or not isinstance(scratch_page, str) or not scratch_page:
         raise ValueError(missing_message)
@@ -205,7 +251,15 @@ def _summarize_physical_state_latency(lines, scratch_page, verify_change, metric
                 raise ValueError('Missing or duplicate ' + key)
             out[identity] = value
         return out
-    physical = unique(deliveries, 'wayland_serial')
+    if pointer:
+        physical = {}
+        for delivery in deliveries:
+            identity = _pointer_identity(delivery, delivery=True)
+            if identity in physical:
+                raise ValueError('Duplicate pointer wire delivery identity')
+            physical[identity] = delivery
+    else:
+        physical = unique(deliveries, 'wayland_serial')
     frames = unique(mappings, 'cpu_frame_id')
     feedback = unique([r for r in displayed if r.get('backend') == 'wayland'
                        and r.get('observer_session') == session and r.get('process_id') == process_id], 'cpu_frame_id')
@@ -227,8 +281,11 @@ def _summarize_physical_state_latency(lines, scratch_page, verify_change, metric
         if type(identity) is not int or identity in seen:
             raise ValueError('Missing or duplicate physical input identity')
         seen.add(identity)
-        serial = event.get('wayland_serial')
-        if event.get('kind') != 'key_pressed' or type(serial) is not int or serial not in physical:
+        serial = _pointer_identity(event) if pointer else event.get('wayland_serial')
+        if pointer:
+            if event.get('kind') != 'pointer_motion' or event.get('wayland_serial') is not None or serial not in physical:
+                raise ValueError('Input lacks an exact trusted compositor pointer delivery')
+        elif event.get('kind') != 'key_pressed' or type(serial) is not int or serial not in physical:
             raise ValueError('Input lacks an exact trusted compositor key delivery')
         delivery = physical[serial]
         if (delivery.get('clock_id') != 1 or type(delivery.get('delivery_time_ns')) is not int
@@ -278,15 +335,20 @@ def _summarize_physical_state_latency(lines, scratch_page, verify_change, metric
         if previous_delivery is not None and start <= previous_delivery:
             raise ValueError('Physical delivery clock moved backwards')
         previous_presented, previous_delivery = end, start
-        samples.append({'input_id': identity, 'cpu_frame_id': frame['cpu_frame_id'],
-                        'wayland_serial': serial, 'latency_ms': (end - start) / 1e6,
-                        'delivery_to_present_ms': (end - delivered) / 1e6})
+        sample = {'input_id': identity, 'cpu_frame_id': frame['cpu_frame_id'],
+                  'latency_ms': (end - start) / 1e6, 'delivery_to_present_ms': (end - delivered) / 1e6}
+        if pointer:
+            sample.update(zip(('pointer_id', 'pointer_enter_serial', 'pointer_motion_ordinal', 'pointer_time_ms'), serial))
+        else:
+            sample['wayland_serial'] = serial
+        samples.append(sample)
     if set(by_input) != seen:
         raise ValueError('Extra or missing physical input mappings')
     measured = distribution([sample['latency_ms'] for sample in samples], scale=1)
     return {'latency_complete': True, 'metric': metric,
             'clock': 'CLOCK_MONOTONIC', 'samples': samples, 'latency': measured,
             'limitations': ['Excludes peripheral scan before the trusted kernel/libinput timestamp.',
-                            'Requires isolated native key presses, no coalesced or IME-only samples.',
+                            ('Requires isolated native pointer motions, no coalesced or unchanged-hover samples.' if pointer else
+                             'Requires isolated native key presses, no coalesced or IME-only samples.'),
                             'Includes opt-in content-free state and timing diagnostics; their overhead must be checked before normal-mode performance certification.',
                             'Hardware presentation timestamps do not measure panel pixel response.']}

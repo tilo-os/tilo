@@ -19,7 +19,9 @@ use shell::network::{Denial, InputEvent, ShellView, StreamingShare};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::{
+    wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_surface,
+};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
@@ -66,6 +68,12 @@ fn character(code: u32, shift: bool) -> Option<char> {
 #[derive(Default)]
 struct Client {
     globals: Vec<(u32, String, u32)>,
+    pointer_decoders: std::collections::HashMap<
+        wayland_client::backend::ObjectId,
+        winit::platform::wayland::WaylandPointerMotion,
+    >,
+    pointer_observations: Vec<(u32, u32, u64, Option<u32>)>,
+    unanchored_pointer_motions: Vec<u32>,
     presentation_clock: Option<u32>,
     presentation_seen: std::collections::HashMap<u32, PresentationSeen>,
     shift: bool,
@@ -90,6 +98,38 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
         } = event
         {
             state.globals.push((name, interface, version));
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for Client {
+    fn event(
+        state: &mut Self,
+        pointer: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let id = pointer.id().protocol_id();
+        let decoder = state.pointer_decoders.entry(pointer.id()).or_default();
+        let observed = match event {
+            wl_pointer::Event::Enter { serial, .. } => Some((decoder.enter(serial), None)),
+            wl_pointer::Event::Motion { time, .. } => {
+                let stamp = decoder.motion();
+                if stamp.is_none() {
+                    state.unanchored_pointer_motions.push(id);
+                }
+                stamp.map(|stamp| (stamp, Some(time)))
+            }
+            wl_pointer::Event::Leave { .. } => {
+                decoder.leave();
+                None
+            }
+            _ => None,
+        };
+        if let Some(((enter, ordinal), time)) = observed {
+            state.pointer_observations.push((id, enter, ordinal, time));
         }
     }
 }
@@ -1242,5 +1282,134 @@ fn native_window_provenance_rejects_numeric_surface_id_reuse_across_resource_lif
     assert_eq!(
         h.state.native_window_provenance_json()["windows"],
         serde_json::json!([])
+    );
+}
+
+fn replace_pointer_without_enter(
+    h: &mut Harness,
+    seat: &wl_seat::WlSeat,
+    pointer: &wl_pointer::WlPointer,
+    id: u64,
+) -> wl_pointer::WlPointer {
+    let retired_pointer_id = pointer.id().protocol_id();
+    pointer.release();
+    h.pump();
+    assert_eq!(
+        h.state
+            .client_input
+            .pointer_motion_identity(retired_pointer_id),
+        None,
+        "destroyed pointer cannot retain an authoritative enter anchor"
+    );
+    let pointer = seat.get_pointer(&h.queue.handle(), ());
+    h.pump();
+    assert_eq!(
+        pointer.id().protocol_id(),
+        retired_pointer_id,
+        "real wire allocator reuses the retired protocol ID"
+    );
+    h.state
+        .forward_client_pointer_motion((16.0, 17.0), Some((id, (0.0, 0.0))));
+    h.pump();
+    assert_eq!(
+        h.state
+            .client_input
+            .pointer_motion_identity(retired_pointer_id),
+        None
+    );
+    assert!(
+        h.client
+            .unanchored_pointer_motions
+            .contains(&retired_pointer_id),
+        "replacement resource has no enter in its own lifetime"
+    );
+    pointer
+}
+
+#[test]
+fn observed_pointer_motion_decodes_actual_enter_motion_leave_and_late_bind_wire() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let pointer = seat.get_pointer(&h.queue.handle(), ());
+    let surface = compositor.create_surface(&h.queue.handle(), ());
+    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
+    let top = xdg.get_toplevel(&h.queue.handle(), ());
+    top.set_app_id("org.example.Motion".into());
+    h.pump();
+    let id = foreign_id(&h.state, "org.example.Motion");
+    for point in [(10.0, 10.0), (11.0, 12.0), (11.0, 12.0)] {
+        h.state
+            .forward_client_pointer_motion(point, Some((id, (0.0, 0.0))));
+        h.pump();
+    }
+    let first = h.client.pointer_observations.clone();
+    assert_eq!(first.len(), 3);
+    assert_eq!(
+        first.iter().map(|row| row.2).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert!(
+        first
+            .iter()
+            .all(|row| row.0 == pointer.id().protocol_id() && row.1 == first[0].1)
+    );
+    assert!(first[0].3.is_none());
+    assert!(first[1..].iter().all(|row| row.3.is_some()));
+    assert_eq!(
+        h.state
+            .client_input
+            .pointer_motion_identity(pointer.id().protocol_id()),
+        Some((first[0].1, 2))
+    );
+    let late = seat.get_pointer(&h.queue.handle(), ());
+    h.pump();
+    h.state
+        .forward_client_pointer_motion((15.0, 16.0), Some((id, (0.0, 0.0))));
+    h.pump();
+    assert!(
+        !h.client
+            .pointer_observations
+            .iter()
+            .any(|row| row.0 == late.id().protocol_id()),
+        "late binding never manufactures an enter anchor"
+    );
+    assert_eq!(
+        h.client.unanchored_pointer_motions,
+        vec![late.id().protocol_id()]
+    );
+    assert_eq!(
+        h.state
+            .client_input
+            .pointer_motion_identity(late.id().protocol_id()),
+        None
+    );
+    let pointer = replace_pointer_without_enter(&mut h, &seat, &pointer, id);
+    h.state.forward_client_pointer_button(0x110, true);
+    h.state
+        .forward_client_pointer_motion((17.0, 18.0), Some((id, (0.0, 0.0))));
+    h.pump();
+    assert_eq!(
+        h.state
+            .client_input
+            .pointer_motion_identity(pointer.id().protocol_id()),
+        None
+    );
+    h.state.forward_client_pointer_button(0x110, false);
+    h.pump();
+    h.state.forward_client_pointer_motion((30.0, 30.0), None);
+    h.pump();
+    h.state
+        .forward_client_pointer_motion((20.0, 21.0), Some((id, (0.0, 0.0))));
+    h.pump();
+    let last = h.client.pointer_observations.last().unwrap();
+    assert_eq!(last.2, 0);
+    assert_ne!(last.1, first[0].1);
+    assert_eq!(
+        h.state.client_input.pointer_motion_identity(last.0),
+        Some((last.1, 0))
     );
 }

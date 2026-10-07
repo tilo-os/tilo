@@ -15,6 +15,12 @@ pub struct Trace {
 }
 
 impl Trace {
+    /// Normalize an observed event after reading its immutable origin.
+    /// Widgets receive exactly one ordinary motion, as without diagnostics.
+    pub fn ordinary_pointer_event(event: WindowEvent) -> WindowEvent {
+        tilo_presentation::ordinary_pointer_event(event)
+    }
+
     pub(crate) fn when_enabled(value: Option<&str>) -> Option<Self> {
         (value == Some("1")).then(Self::default)
     }
@@ -22,7 +28,10 @@ impl Trace {
     pub(crate) fn observes(event: &WindowEvent) -> bool {
         matches!(event,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
-        ) || matches!(event, WindowEvent::Ime(Ime::Commit(_)))
+        ) || matches!(
+            event,
+            WindowEvent::Ime(Ime::Commit(_)) | WindowEvent::CursorMovedObserved { .. }
+        )
     }
 
     pub(crate) fn has_pending(&self) -> bool {
@@ -39,6 +48,7 @@ impl Trace {
                 "key_pressed"
             }
             WindowEvent::Ime(Ime::Commit(_)) => "ime_commit",
+            WindowEvent::CursorMovedObserved { .. } => "pointer_motion",
             _ => return None,
         };
         let (key_category, text) = match event {
@@ -55,10 +65,12 @@ impl Trace {
                 (category, event.text.as_deref())
             }
             WindowEvent::Ime(Ime::Commit(text)) => ("other", Some(text.as_str())),
+            WindowEvent::CursorMovedObserved { .. } => ("other", None),
             _ => return None,
         };
         let scalar_count = text.map(|text| text.chars().take(4097).count());
         let stamp = tilo_presentation::key_stamp(event);
+        let pointer = tilo_presentation::pointer_stamp(event);
         self.next_id = self.next_id.checked_add(1)?;
         let id = self.next_id;
         if self.pending.is_empty() {
@@ -72,6 +84,10 @@ impl Trace {
             "id": id, "kind": kind, "process_id": std::process::id(), "observer_session": crate::native_scenario::observer_session_id(),
             "wayland_serial": stamp.map(|stamp| stamp.0),
             "wayland_time_ms": stamp.map(|stamp| stamp.1),
+            "pointer_id": pointer.map(|stamp| stamp.pointer_id),
+            "pointer_enter_serial": pointer.map(|stamp| stamp.enter_serial),
+            "pointer_motion_ordinal": pointer.map(|stamp| stamp.motion_ordinal),
+            "pointer_time_ms": pointer.and_then(|stamp| stamp.time_ms),
             "clock": crate::native_scenario::host_clock::CLOCK_NAME,
             "dispatch_lo_s": time.map(|time| time.lo_s),
             "dispatch_hi_s": time.map(|time| time.hi_s),
@@ -120,6 +136,11 @@ pub(crate) fn safe_snapshot(snapshot: Option<Value>) -> Value {
         safe.insert("app".into(), Value::String("so.tilo.settings".into()));
         for key in ["navigation", "rendered_navigation"] {
             if let Some(value) = snapshot.get(key).and_then(safe_navigation) {
+                safe.insert(key.into(), value);
+            }
+        }
+        for key in ["hover", "rendered_hover"] {
+            if let Some(value) = snapshot.get(key).and_then(safe_hover) {
                 safe.insert(key.into(), value);
             }
         }
@@ -176,6 +197,26 @@ pub(crate) fn safe_snapshot(snapshot: Option<Value>) -> Value {
         safe.insert("caret".into(), Value::Object(safe_caret));
     }
     Value::Object(safe)
+}
+
+fn safe_hover(value: &Value) -> Option<Value> {
+    if value.get("control")?.as_str()? != "settings.nav" {
+        return None;
+    }
+    let mounted = value.get("mounted")?.as_bool()?;
+    let pane = value.get("pane")?;
+    if !pane.is_null()
+        && !pane.as_str().is_some_and(|pane| {
+            !pane.is_empty()
+                && pane.len() <= 48
+                && pane
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || matches!(c, b'_' | b'-'))
+        })
+    {
+        return None;
+    }
+    Some(serde_json::json!({"control": "settings.nav", "mounted": mounted, "pane": pane}))
 }
 
 fn safe_navigation(value: &Value) -> Option<Value> {
@@ -288,6 +329,56 @@ mod tests {
         malformed["selected_pane"] = Value::String("private value".into());
         assert!(safe_navigation(&malformed).is_none());
         assert!(safe_snapshot(Some(serde_json::json!({"app":"unknown"}))).is_null());
+    }
+
+    #[test]
+    fn pointer_snapshot_preserves_immutable_origin_and_only_actual_hover() {
+        let event = WindowEvent::CursorMovedObserved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: (77.0, 88.0).into(),
+            pointer_id: 17,
+            enter_serial: 29,
+            motion_ordinal: 3,
+            time_ms: Some(31),
+        };
+        let hover = serde_json::json!({"control":"settings.nav", "mounted":true,
+            "pane":"bluetooth", "label":"private label", "pointer_position":[77,88]});
+        let mut trace = Trace::default();
+        let row = trace
+            .begin(
+                &event,
+                Some(serde_json::json!({
+                    "app":"so.tilo.settings", "hover":hover, "rendered_hover":null,
+                })),
+            )
+            .unwrap();
+        assert_eq!(row["kind"], "pointer_motion");
+        assert_eq!(row["pointer_id"], 17);
+        assert_eq!(row["pointer_enter_serial"], 29);
+        assert_eq!(row["pointer_motion_ordinal"], 3);
+        assert_eq!(row["pointer_time_ms"], 31);
+        assert!(row["wayland_serial"].is_null());
+        assert!(
+            row["text_present"]
+                .as_bool()
+                .is_some_and(|present| !present)
+        );
+        assert_eq!(row["before"]["hover"]["pane"], "bluetooth");
+        assert!(row["before"].get("rendered_hover").is_none());
+        assert!(!row.to_string().contains("private"));
+        assert!(!row.to_string().contains("pointer_position"));
+        let ordinary = Trace::ordinary_pointer_event(event);
+        assert!(
+            matches!(ordinary, WindowEvent::CursorMoved { position, .. } if position.x == 77.0 && position.y == 88.0)
+        );
+        assert!(trace.begin(&ordinary, None).is_none());
+        assert!(
+            safe_hover(
+                &serde_json::json!({"control":"foreign", "mounted":true,"pane":"bluetooth"})
+            )
+            .is_none()
+        );
+        assert!(safe_hover(&serde_json::json!({"control":"settings.nav", "mounted":true,"pane":"private value"})).is_none());
     }
 
     #[test]

@@ -271,6 +271,18 @@ pub enum WindowEvent {
         position: PhysicalPosition<f64>,
     },
 
+    /// An opt-in Wayland motion observation. Consumers must route its position
+    /// once as ordinary cursor motion; the immutable wire identity is diagnostic.
+    /// No other platform or synthetic event manufactures this identity.
+    CursorMovedObserved {
+        device_id: DeviceId,
+        position: PhysicalPosition<f64>,
+        pointer_id: u32,
+        enter_serial: u32,
+        motion_ordinal: u64,
+        time_ms: Option<u32>,
+    },
+
     /// The cursor has entered the window.
     ///
     /// ## Platform-specific

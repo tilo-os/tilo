@@ -152,5 +152,78 @@ class PhysicalSettingsLatency(unittest.TestCase):
             with self.subTest(mutation=mutation),self.assertRaises(ValueError):self.report(rows)
         with self.assertRaises(ValueError):self.report(self.timeline(),'displays')
 
+class PhysicalSettingsHoverLatency(unittest.TestCase):
+    def timeline(self):
+        result = PhysicalSettingsLatency().timeline()
+        for prefix, row in result:
+            if prefix == 'tilo-physical-delivery ':
+                row.pop('wayland_serial')
+                row.update(pointer_id=17, enter_serial=29, motion_ordinal=1, time_ms=31)
+            elif prefix == 'tilo-physical-input ':
+                row.update(kind='pointer_motion', wayland_serial=None, pointer_id=17,
+                           pointer_enter_serial=29, pointer_motion_ordinal=1, pointer_time_ms=31)
+                for name in ('before', 'after'):
+                    state = row[name]
+                    state['navigation']['selected_pane'] = 'network'
+                    state['navigation']['requested_pane'] = 'network'
+                    state['navigation']['path'] = 'settings://network'
+                    state['rendered_navigation'] = copy.deepcopy(state['navigation'])
+                    state['hover'] = dict(control='settings.nav',mounted=True,
+                                          pane=None if name=='before' else 'bluetooth')
+                    state['rendered_hover'] = copy.deepcopy(state['hover'])
+            elif prefix == 'tilo-physical-frame ':
+                state = row['state']
+                state['navigation'].update(selected_pane='network',requested_pane='network',path='settings://network')
+                state['rendered_navigation'] = copy.deepcopy(state['navigation'])
+                state['hover'] = dict(control='settings.nav',mounted=True,pane='bluetooth')
+                state['rendered_hover'] = copy.deepcopy(state['hover'])
+        result = [('tilo-physical-pointer-delivery ' if prefix=='tilo-physical-delivery ' else prefix,row)
+                  for prefix,row in result[:4]]
+        return result
+
+    def report(self, rows):
+        from input_latency import summarize_physical_settings_hover_latency
+        return summarize_physical_settings_hover_latency([prefix+json.dumps(row) for prefix,row in rows], 'bluetooth')
+
+    def test_exact_motion_and_enter_use_existing_trusted_frame_join(self):
+        report = self.report(self.timeline())
+        self.assertEqual(report['samples'][0]['latency_ms'],10)
+        self.assertNotIn('wayland_serial',report['samples'][0])
+        self.assertEqual(report['samples'][0]['pointer_motion_ordinal'],1)
+        enter = copy.deepcopy(self.timeline())
+        enter[0][1].update(motion_ordinal=0,time_ms=None)
+        enter[1][1].update(pointer_motion_ordinal=0,pointer_time_ms=None)
+        self.assertEqual(self.report(enter)['samples'][0]['latency_ms'],10)
+
+    def test_wrong_wire_identity_stale_state_missing_origin_or_feedback_refuse(self):
+        for mutation in ('wrong_pointer','wrong_enter','wrong_ordinal','wrong_time','late_bind',
+                         'duplicate','no_origin','bad_clock','synthetic','coalesced','stale',
+                         'unchanged','selection','hidden','wrong_control','denied','no_feedback',
+                         'other_worker','missing_delivery','missing_draw'):
+            rows = copy.deepcopy(self.timeline())
+            delivery,event,frame,feedback = [row for _,row in rows]
+            if mutation=='wrong_pointer':delivery['pointer_id']=18
+            elif mutation=='wrong_enter':delivery['enter_serial']=30
+            elif mutation=='wrong_ordinal':delivery['motion_ordinal']=2
+            elif mutation=='wrong_time':delivery['time_ms']=32
+            elif mutation=='late_bind':event['pointer_enter_serial']=None
+            elif mutation=='duplicate':rows.append(copy.deepcopy(rows[0]))
+            elif mutation=='no_origin':delivery['input_time_ns']=None
+            elif mutation=='bad_clock':delivery['clock_id']=0
+            elif mutation=='synthetic':event['kind']='key_pressed'
+            elif mutation=='coalesced':frame['input_ids']=[1,2]
+            elif mutation=='stale':frame['state']['rendered_hover']['pane']=None
+            elif mutation=='unchanged':event['before']['hover']['pane']='bluetooth'
+            elif mutation=='selection':frame['state']['navigation']['selected_pane']='bluetooth'
+            elif mutation=='hidden':frame['state']['hover']['mounted']=False
+            elif mutation=='wrong_control':frame['state']['hover']['control']='private'
+            elif mutation=='denied':event['input_route_admitted']=False
+            elif mutation=='no_feedback':feedback['discarded']=True
+            elif mutation=='other_worker':frame['observer_session']='13d78136-4c17-4853-9d7c-7442274a7059'
+            elif mutation=='missing_delivery':rows.pop(0)
+            elif mutation=='missing_draw':rows.pop(2)
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):self.report(rows)
+
+
 if __name__ == '__main__':
     unittest.main()

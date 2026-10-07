@@ -36,6 +36,63 @@ pub fn key_stamp(event: &WindowEvent) -> Option<(u32, u32)> {
     None
 }
 
+/// Immutable identity of a main-surface Wayland pointer event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PointerStamp {
+    pub pointer_id: u32,
+    pub enter_serial: u32,
+    pub motion_ordinal: u64,
+    pub time_ms: Option<u32>,
+}
+
+pub fn pointer_stamp(event: &WindowEvent) -> Option<PointerStamp> {
+    if let WindowEvent::CursorMovedObserved {
+        pointer_id,
+        enter_serial,
+        motion_ordinal,
+        time_ms,
+        ..
+    } = event
+    {
+        Some(PointerStamp {
+            pointer_id: *pointer_id,
+            enter_serial: *enter_serial,
+            motion_ordinal: *motion_ordinal,
+            time_ms: *time_ms,
+        })
+    } else {
+        None
+    }
+}
+
+/// Preserve the ordinary widget delivery exactly once after observing origin.
+pub fn ordinary_pointer_event(event: WindowEvent) -> WindowEvent {
+    match event {
+        WindowEvent::CursorMovedObserved {
+            device_id,
+            position,
+            ..
+        } => WindowEvent::CursorMoved {
+            device_id,
+            position,
+        },
+        event => event,
+    }
+}
+
+pub fn observe_pointer_motion(window: &Window, enabled: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::WindowExtWayland;
+        window.observe_pointer_motion(enabled)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, enabled);
+        false
+    }
+}
+
 pub fn present(
     window: &Window,
     observer: Box<dyn FnOnce(Feedback) + Send>,

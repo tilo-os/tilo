@@ -251,3 +251,36 @@ nor compositor palette hover is qualified by this increment. Those require their
 own exact origin and actually drawn state witness. No synthetic event, nearest
 timestamp, CLI RTT or headless GPU test is physical latency certification. No
 Yoga measurement is included here; opt-in diagnostic overhead remains a limit.
+
+Native Settings sidebar hover uses the same frame/presentation collector and
+strict hardware clock join as native keyboard input. Opt-in Wayland motion
+carries the actual pointer object ID, enter serial, per-enter delivered ordinal
+and protocol motion time. The compositor joins those exact fields to the
+original libinput monotonic timestamp; synthetic, remote, late-bound, grabbed
+or ambiguous motion has no qualifying physical witness. No coordinates are
+exported. The native runner reads the immutable stamp, then delivers exactly one
+ordinary cursor movement to the existing widgets. Observation is disabled by
+default.
+
+Prepare an exact fresh owned Settings worker with the verified selected runtime,
+startup physical observation, presentation diagnostics and a settled visible
+sidebar. Preserve and restore the original diagnostic options in the operator's
+scope. Record an explicit input-ID boundary after preparation. Use
+`device_notes_trace.collect_settings_hover_trace` with the authenticated pinned
+owner adapter, exact worker lifetime UUID and that boundary. This getter does
+not launch, focus, move a pointer or make a screenshot. The input being tested
+must come from the existing physical/kernel pointer machinery, with actual
+published target geometry; a synthetic control motion cannot qualify.
+
+Pass the collected lines and the explicit canonical destination pane to
+`input_latency.summarize_physical_settings_hover_latency`. It requires the actual
+mounted `settings.nav` hover to change to that destination, the same settled
+selected pane to remain selected, and the hover to match the actual draw. The
+exact worker, input ID and CPU frame must then receive positive standard KMS
+feedback. Missing, stale, coalesced, duplicate, foreign-worker or unchanged
+samples fail. Probe one isolated motion, then collect each subsequent probe only
+after the preceding changed hover was presented; retain every complete family.
+No hardware percentile or performance improvement is claimed by the native wire
+and offscreen pixel tests. Compositor palette hover and its presentation need a
+separate actual Shell witness; selected palette actions and keyboard receipts
+are not hover measurements.

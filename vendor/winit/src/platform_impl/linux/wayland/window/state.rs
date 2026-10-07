@@ -141,6 +141,7 @@ pub struct WindowState {
 
     /// The state of the frame callback.
     frame_callback_state: FrameCallbackState,
+    pub observe_pointer_motion: bool,
 
     viewport: Option<WpViewport>,
     fractional_scale: Option<WpFractionalScaleV1>,
@@ -198,6 +199,7 @@ impl WindowState {
             fractional_scale,
             frame: None,
             frame_callback_state: FrameCallbackState::None,
+            observe_pointer_motion: false,
             seat_focus: Default::default(),
             has_pending_move: None,
             ime_allowed: false,

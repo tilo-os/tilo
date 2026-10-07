@@ -1579,6 +1579,22 @@ impl<T, M: TreeModel> TreeView<T, M> {
         })
     }
 
+    /// The concrete row whose ordinary pointer hover is painted.
+    #[must_use]
+    pub fn hovered(&self) -> Option<NodeId> {
+        match self.hovered {
+            Some(TreeRowKey::Node(id))
+                if self
+                    .visible_index_of(id)
+                    .and_then(|index| self.visible_row_rect(index))
+                    .is_some() =>
+            {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn focused_row(&self) -> Option<TreeRowKey> {
         self.focused

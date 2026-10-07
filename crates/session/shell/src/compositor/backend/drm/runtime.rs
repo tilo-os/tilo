@@ -3118,7 +3118,14 @@ impl DrmDispatchState {
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
                 let (x, y) = self.confine_pointer(previous);
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                if let Some(input_time_ns) = event.time().checked_mul(1000) {
+                    self.push(BackendEvent::PhysicalPointerMotion {
+                        event: cursor_moved_event(x, y),
+                        input_time_ns,
+                    });
+                } else {
+                    self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                }
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
@@ -3139,7 +3146,14 @@ impl DrmDispatchState {
                 let previous = self.pointer;
                 self.move_pointer_by((event.delta_x(), event.delta_y()));
                 let (x, y) = self.confine_pointer(previous);
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                if let Some(input_time_ns) = event.time().checked_mul(1000) {
+                    self.push(BackendEvent::PhysicalPointerMotion {
+                        event: cursor_moved_event(x, y),
+                        input_time_ns,
+                    });
+                } else {
+                    self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                }
             }
             InputEvent::PointerButton { event } => {
                 if let Some(button) = map_mouse_button(event.button()) {

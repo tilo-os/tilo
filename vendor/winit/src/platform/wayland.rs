@@ -117,10 +117,41 @@ impl WaylandPresentation {
 /// One-shot observation of the next surface commit. No pixels or input text.
 pub type WaylandPresentationObserver = Box<dyn FnOnce(WaylandPresentation) + Send + 'static>;
 
+/// Ordinals decoded from one pointer's actual enter/motion/leave wire stream.
+/// Kept separate from timestamps: motion times can repeat within a millisecond.
+#[doc(hidden)]
+#[derive(Default, Debug)]
+pub struct WaylandPointerMotion {
+    enter_serial: Option<u32>,
+    ordinal: u64,
+}
+
+impl WaylandPointerMotion {
+    pub fn enter(&mut self, serial: u32) -> (u32, u64) {
+        self.enter_serial = Some(serial);
+        self.ordinal = 0;
+        (serial, 0)
+    }
+
+    pub fn motion(&mut self) -> Option<(u32, u64)> {
+        let ordinal = self.ordinal.checked_add(1)?;
+        self.ordinal = ordinal;
+        self.enter_serial.map(|serial| (serial, ordinal))
+    }
+
+    pub fn leave(&mut self) {
+        self.enter_serial = None;
+    }
+}
+
 /// Additional methods on [`Window`] that are specific to Wayland.
 ///
 /// [`Window`]: crate::window::Window
 pub trait WindowExtWayland {
+    /// Replace regular main-surface motion with immutable observed motion.
+    /// Disabled by default; decorations and drag/drop never receive a stamp.
+    fn observe_pointer_motion(&self, enabled: bool) -> bool;
+
     /// Observe the next committed buffer with the standard presentation protocol.
     /// Holds the native window state lock across the request and `present` so an
     /// IME/configure commit cannot take the feedback for an unrelated buffer.
@@ -160,6 +191,18 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
+    fn observe_pointer_motion(&self, enabled: bool) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => {
+                window.observe_pointer_motion(enabled);
+                true
+            }
+        }
+    }
+
     fn present_with_feedback(
         &self,
         observer: WaylandPresentationObserver,

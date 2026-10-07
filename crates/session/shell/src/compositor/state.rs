@@ -463,6 +463,7 @@ pub struct State {
     pub presentation_state: smithay::wayland::presentation::PresentationState,
     /// Original timestamp of the currently dispatched trusted physical key.
     pub physical_key_input_time_ns: Option<u64>,
+    pub physical_pointer_input_time_ns: Option<u64>,
     pub presentation_feedback: crate::compositor::presentation::PresentationFeedback,
 
     /// `xdg_wm_base` global state — toplevels and popups.
@@ -1249,6 +1250,7 @@ impl State {
             compositor_state,
             presentation_state,
             physical_key_input_time_ns: None,
+            physical_pointer_input_time_ns: None,
             presentation_feedback: crate::compositor::presentation::PresentationFeedback::default(),
             xdg_shell_state,
             xdg_activation_state,
