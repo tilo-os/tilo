@@ -2,9 +2,9 @@
 //!
 //! Durable resources and window-local presentation state live here as plain
 //! serde types. The typed CRDT schema (see [`crate::doc`]) persists only the
-//! collaborative subset: saved/accepted places, history, itineraries and
-//! offline regions. Camera, panel, selection, drafts and ranked caches remain
-//! per-window.
+//! collaborative subset: saved/accepted places, history and itineraries.
+//! Camera, panel, selection, drafts and ranked caches remain per-window, and
+//! the offline areas are this device's ([`crate::offline_areas`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +39,24 @@ pub enum Category {
 }
 
 impl Category {
+    /// The icon a marker and a place row show for the category.
+    pub fn icon(self) -> ui::icons::Icon {
+        use ui::icons::Icon;
+        match self {
+            Category::Landmark => Icon::Flag,
+            Category::Cafe => Icon::Coffee,
+            Category::Restaurant => Icon::Utensils,
+            Category::Bar => Icon::Beer,
+            Category::Museum => Icon::Landmark,
+            Category::Park => Icon::Trees,
+            Category::Transit => Icon::TrainFront,
+            Category::Hotel => Icon::BedDouble,
+            Category::Shop => Icon::ShoppingBag,
+            Category::Hospital => Icon::Hospital,
+            Category::Other => Icon::MapPin,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Category::Landmark => "Landmark",
@@ -52,23 +70,6 @@ impl Category {
             Category::Shop => "Shop",
             Category::Hospital => "Hospital",
             Category::Other => "Place",
-        }
-    }
-
-    /// A single glyph used as the marker's pictogram.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Category::Landmark => "★",
-            Category::Cafe => "☕",
-            Category::Restaurant => "🍴",
-            Category::Bar => "🍺",
-            Category::Museum => "🏛",
-            Category::Park => "🌳",
-            Category::Transit => "Ⓜ",
-            Category::Hotel => "🛏",
-            Category::Shop => "🛍",
-            Category::Hospital => "✚",
-            Category::Other => "•",
         }
     }
 
@@ -150,12 +151,22 @@ impl Poi {
             self.category.label().to_string()
         }
     }
+
+    /// What the place is, in sentence case: OpenStreetMap's finer kind
+    /// ("Beer garden" for `beer_garden`) when tagged, else the category.
+    pub fn kind_label(&self) -> String {
+        let Some(kind) = self.kind.as_deref().filter(|k| !k.trim().is_empty()) else {
+            return self.category.label().to_string();
+        };
+        ui::format::capitalize_first(&kind.trim().replace(['_', ';'], " "))
+    }
 }
 
 /// Travel mode for the directions engine. `Car`/`Bike`/`Foot` route on roads
 /// (OSRM); `Transit` plans a public-transport journey (MOTIS) instead — it is
 /// a mode of Directions, not a separate surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TravelMode {
     Car,
     Transit,
@@ -177,15 +188,6 @@ impl TravelMode {
             TravelMode::Transit => "Transit",
             TravelMode::Bike => "Cycle",
             TravelMode::Foot => "Walk",
-        }
-    }
-
-    pub fn glyph(self) -> &'static str {
-        match self {
-            TravelMode::Car => "🚗",
-            TravelMode::Transit => "🚆",
-            TravelMode::Bike => "🚲",
-            TravelMode::Foot => "🚶",
         }
     }
 
@@ -238,20 +240,21 @@ pub enum Maneuver {
 }
 
 impl Maneuver {
-    /// A directional arrow glyph for the step row.
-    pub fn glyph(self) -> &'static str {
+    /// The icon that shows this manoeuvre in a step row and the
+    /// navigation card.
+    pub fn icon(self) -> ui::icons::Icon {
+        use ui::icons::Icon;
         match self {
-            Maneuver::Depart => "◉",
-            Maneuver::Continue | Maneuver::Merge => "↑",
-            Maneuver::SlightLeft => "↖",
-            Maneuver::Left => "←",
-            Maneuver::SharpLeft => "↩",
-            Maneuver::SlightRight => "↗",
-            Maneuver::Right => "→",
-            Maneuver::SharpRight => "↪",
-            Maneuver::Uturn => "⇩",
-            Maneuver::Roundabout => "↻",
-            Maneuver::Arrive => "⚑",
+            Maneuver::Depart | Maneuver::Continue | Maneuver::Merge => Icon::ArrowUp,
+            Maneuver::SlightLeft => Icon::ArrowUpLeft,
+            Maneuver::Left => Icon::CornerUpLeft,
+            Maneuver::SharpLeft => Icon::ArrowDownLeft,
+            Maneuver::SlightRight => Icon::ArrowUpRight,
+            Maneuver::Right => Icon::CornerUpRight,
+            Maneuver::SharpRight => Icon::ArrowDownRight,
+            Maneuver::Uturn => Icon::Undo2,
+            Maneuver::Roundabout => Icon::RotateCw,
+            Maneuver::Arrive => Icon::Flag,
         }
     }
 
@@ -320,19 +323,7 @@ impl TransitMode {
         }
     }
 
-    pub fn glyph(self) -> &'static str {
-        match self {
-            TransitMode::Walk => "🚶",
-            TransitMode::Bus => "🚌",
-            TransitMode::Tram => "🚊",
-            TransitMode::Subway => "Ⓜ",
-            TransitMode::Rail => "🚆",
-            TransitMode::Ferry => "⛴",
-        }
-    }
-
-    /// Distinct branding hue index hint, resolved against the theme accent
-    /// ramp by the renderer. We avoid hard-coding RGB here.
+    /// The mode a MOTIS leg reports, by its mode name.
     pub fn from_motis(mode: &str) -> TransitMode {
         match mode.to_ascii_uppercase().as_str() {
             "WALK" => TransitMode::Walk,
@@ -523,8 +514,9 @@ pub struct MapModel {
     pub zoom: f64,
     /// One-line network/status message for the status bar.
     pub status: String,
-    /// Map areas saved for offline use. The tiles are persisted in the on-disk
-    /// cache; this is the manageable list of what has been downloaded.
+    /// Map areas this device saved for offline use, as its device-local
+    /// setting holds them. The tiles are persisted in the on-disk cache; this
+    /// is the manageable list of what has been downloaded.
     #[serde(default)]
     pub regions: Vec<DownloadedRegion>,
 }

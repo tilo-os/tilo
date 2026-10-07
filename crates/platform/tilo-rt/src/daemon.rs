@@ -63,6 +63,7 @@ impl Daemon {
     ///
     /// The OS error when the runtime's threads or drivers cannot start.
     pub fn build(&self) -> std::io::Result<Runtime> {
+        crate::panic_boundary::abort_outside_boundaries_in_release();
         let name = self.name;
         let workers = self.workers;
         let spawned = AtomicUsize::new(0);

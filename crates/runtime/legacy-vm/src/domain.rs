@@ -14,9 +14,13 @@ use thiserror::Error;
 
 use crate::config::VmConfig;
 use crate::grants::HostShare;
+use crate::transport::{QEMU_NAMESPACE, VsockBackend, hybrid_commandline_xml};
 
 /// Marks a domain as Tilo's; a same-named domain without it is not touched.
 pub const METADATA_ELEMENT: &str = "<tilo:legacy-vm";
+
+/// Empty PCI Express root ports for live-attached shares.
+const HOTPLUG_PORTS: usize = 8;
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum DomainError {
@@ -24,14 +28,30 @@ pub enum DomainError {
     NonUtf8Path,
 }
 
-pub fn render_domain_xml(config: &VmConfig) -> Result<String, DomainError> {
+pub fn render_domain_xml(config: &VmConfig, backend: VsockBackend) -> Result<String, DomainError> {
     let disk = xml_path(&config.paths.disk()).ok_or(DomainError::NonUtf8Path)?;
+    let console = xml_path(&config.paths.console_log()).ok_or(DomainError::NonUtf8Path)?;
     let name = xml_text(&config.domain_name);
     let guest = config.guest.as_str();
-    let vsock = vsock_device_xml(None);
+    let (namespace, vsock, commandline) = match backend {
+        VsockBackend::Kernel => (String::new(), vsock_device_xml(None), String::new()),
+        VsockBackend::Hybrid => (
+            format!(" xmlns:qemu='{QEMU_NAMESPACE}'"),
+            String::new(),
+            hybrid_commandline_xml(&config.paths.vsock_vhost_user()),
+        ),
+    };
     let memory = &config.memory;
+    // q35 hot-plugs only into empty root ports, and libvirt adds ports just
+    // for the devices it knows at definition time: shares need spares.
+    // Naming any PCI controller makes libvirt want the root complex named
+    // first.
+    let hotplug_ports = format!(
+        "<controller type='pci' index='0' model='pcie-root'/>{}",
+        "<controller type='pci' model='pcie-root-port'/>".repeat(HOTPLUG_PORTS)
+    );
     Ok(format!(
-        "<domain type='kvm'>\
+        "<domain type='kvm'{namespace}>\
 <name>{name}</name>\
 <metadata><tilo:legacy-vm xmlns:tilo='https://tilo.sh/vm/1' guest='{guest}'/></metadata>\
 <memory unit='MiB'>{max}</memory><currentMemory unit='MiB'>{base}</currentMemory>\
@@ -44,15 +64,16 @@ pub fn render_domain_xml(config: &VmConfig) -> Result<String, DomainError> {
 <on_poweroff>destroy</on_poweroff><on_reboot>restart</on_reboot><on_crash>destroy</on_crash>\
 <pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>\
 <devices>\
+{hotplug_ports}\
 <disk type='file' device='disk'><driver name='qemu' type='qcow2' discard='unmap'/>\
 <source file='{disk}'/><target dev='vda' bus='virtio'/></disk>\
 <interface type='user'><backend type='passt'/><model type='virtio'/></interface>\
 {vsock}\
 <memballoon model='virtio'><stats period='5'/></memballoon>\
 <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
-<serial type='pty'><target port='0'/></serial><console type='pty'><target type='serial' port='0'/></console>\
-<graphics type='none'/><video><model type='none'/></video>\
-</devices></domain>",
+<serial type='file'><source path='{console}'/><target port='0'/></serial>\
+<video><model type='none'/></video>\
+</devices>{commandline}</domain>",
         max = memory.max_mib,
         base = memory.base_mib,
         vcpus = config.vcpus,
@@ -72,8 +93,29 @@ pub fn filesystem_xml(share: &HostShare, socket: &Path) -> Result<String, Domain
 /// Whether a defined domain carries Tilo's marker.
 #[must_use]
 pub fn is_ours(domain_xml: &str, config: &VmConfig) -> bool {
+    // libvirt re-serialises metadata with double quotes.
+    let guest = config.guest.as_str();
     domain_xml.contains(METADATA_ELEMENT)
-        && domain_xml.contains(&format!("guest='{}'", config.guest.as_str()))
+        && (domain_xml.contains(&format!("guest='{guest}'"))
+            || domain_xml.contains(&format!("guest=\"{guest}\"")))
+}
+
+/// The `<uuid>` of a defined domain.
+#[must_use]
+pub fn domain_uuid(domain_xml: &str) -> Option<&str> {
+    let uuid = domain_xml
+        .split("<uuid>")
+        .nth(1)?
+        .split("</uuid>")
+        .next()?
+        .trim();
+    (uuid.len() == 36 && uuid.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')).then_some(uuid)
+}
+
+/// `domain_xml` naming `uuid`, placed right after the domain's name.
+#[must_use]
+pub fn with_uuid(domain_xml: &str, uuid: &str) -> String {
+    domain_xml.replacen("</name>", &format!("</name><uuid>{uuid}</uuid>"), 1)
 }
 
 /// The tags of virtio-fs shares attached to a live domain.
@@ -119,7 +161,7 @@ mod tests {
     #[test]
     fn the_domain_is_unprivileged_headless_and_shares_nothing_by_definition() {
         let config = config();
-        let xml = render_domain_xml(&config).unwrap();
+        let xml = render_domain_xml(&config, VsockBackend::Kernel).unwrap();
         // phase: the definition is session-safe and display-free
         {
             for required in [
@@ -130,14 +172,39 @@ mod tests {
                 "<cid auto='yes'/>",
                 "<memballoon model='virtio'>",
                 "<source file='/d/tilo/legacy/linux/disk.qcow2'/>",
-                "<graphics type='none'/>",
+                "<video><model type='none'/></video>",
             ] {
                 assert!(xml.contains(required), "missing {required}");
             }
-            for forbidden in ["<filesystem", "type='network'", "<hostdev", "spice"] {
+            for forbidden in [
+                "<filesystem",
+                "type='network'",
+                "<hostdev",
+                "spice",
+                "<graphics",
+            ] {
                 assert!(!xml.contains(forbidden), "unexpected {forbidden}");
             }
             assert!(is_ours(&xml, &config));
+            let hybrid = render_domain_xml(&config, VsockBackend::Hybrid).unwrap();
+            assert!(hybrid.starts_with("<domain type='kvm' xmlns:qemu="));
+            assert!(hybrid.contains("vhost-user-vsock-pci"));
+            assert!(!hybrid.contains("<vsock"));
+            assert!(is_ours(&hybrid, &config));
+            assert!(
+                is_ours(
+                    "<metadata><tilo:legacy-vm xmlns:tilo=\"https://tilo.sh/vm/1\" guest=\"linux\"/></metadata>",
+                    &config
+                ),
+                "libvirt's own serialisation is still ours"
+            );
+            let uuid = "b9a49084-2e51-412a-ae9c-c1f9d51b0863";
+            let live = format!("<domain><name>x</name>\n  <uuid>{uuid}</uuid></domain>");
+            assert_eq!(domain_uuid(&live), Some(uuid));
+            let redefined = with_uuid(&xml, uuid);
+            assert!(redefined.contains(&format!("</name><uuid>{uuid}</uuid>")));
+            assert_eq!(domain_uuid(&redefined), Some(uuid));
+            assert_eq!(domain_uuid("<domain/>"), None);
             assert!(!is_ours(
                 "<domain><name>tilo-legacy-linux</name></domain>",
                 &config

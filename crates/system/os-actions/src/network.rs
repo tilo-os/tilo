@@ -1,9 +1,15 @@
 //! Wi-Fi control via `nmcli`.
 
-use crate::process::{run, run_capture};
+use crate::process::{run, run_capture, run_capture_within};
 use zeroize::Zeroizing;
 
 pub const HOTSPOT_PROFILE: &str = "Tilo Hotspot";
+
+// Status queries stay at the shared fast deadline. A requested scan and a
+// connection activation are different operations; bound the native client's
+// advertised wait plus a small process-retirement margin.
+const WIFI_SCAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+const WIFI_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 
 // Six independently-meaningful named flags, not a bitset in disguise — each is read and
 // written by name across `shell` and `apps/settings`. Regrouping them (e.g. into a bitflags
@@ -388,17 +394,24 @@ fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
 ///
 /// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
-    let out = run_capture(
-        "nmcli",
-        &[
-            "-t",
-            "-f",
-            "IN-USE,SSID,SIGNAL,SECURITY",
-            "device",
-            "wifi",
-            "list",
-        ],
-    )?;
+    list_wifi_networks_via("nmcli", &[])
+}
+
+fn list_wifi_networks_via(cli: &str, prefix: &[&str]) -> Result<Vec<WifiNetworkInfo>, String> {
+    let mut args = prefix.to_vec();
+    args.extend_from_slice(&[
+        "--wait",
+        "10",
+        "-t",
+        "-f",
+        "IN-USE,SSID,SIGNAL,SECURITY",
+        "device",
+        "wifi",
+        "list",
+        "--rescan",
+        "yes",
+    ]);
+    let out = run_capture_within(cli, &args, WIFI_SCAN_TIMEOUT)?;
     Ok(parse_nmcli_wifi_list(&out))
 }
 
@@ -643,23 +656,27 @@ fn parse_proc_net_wireless(raw: &str) -> Option<u8> {
 /// Returns an error message if `password` contains a line break, `nmcli` is not installed, or
 /// the connect attempt fails or times out.
 pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
+    connect_wifi_via("nmcli", &[], ssid, password)
+}
+
+fn connect_wifi_via(
+    cli: &str,
+    prefix: &[&str],
+    ssid: &str,
+    password: Option<&str>,
+) -> Result<(), String> {
+    let mut args = prefix.to_vec();
     if let Some(password) = password {
         if password.chars().any(|c| matches!(c, '\n' | '\r')) {
             return Err("Wi-Fi password contains an invalid line break".into());
         }
         let input = Zeroizing::new(format!("{password}\n"));
-        crate::process::run_with_input(
-            "nmcli",
-            &["--ask", "--wait", "30", "device", "wifi", "connect", ssid],
-            input.as_bytes(),
-            std::time::Duration::from_secs(35),
-        )?;
+        args.extend_from_slice(&["--ask", "--wait", "30", "device", "wifi", "connect", ssid]);
+        crate::process::run_with_input(cli, &args, input.as_bytes(), WIFI_CONNECT_TIMEOUT)?;
         Ok(())
     } else {
-        run(
-            "nmcli",
-            &["--wait", "30", "device", "wifi", "connect", ssid],
-        )
+        args.extend_from_slice(&["--wait", "30", "device", "wifi", "connect", ssid]);
+        run_capture_within(cli, &args, WIFI_CONNECT_TIMEOUT).map(|_| ())
     }
 }
 
@@ -702,12 +719,32 @@ impl ConnectivityState {
     }
 }
 
+/// Ask `NetworkManager` to recheck connectivity, and fall back to its last
+/// verdict when this caller may not ask for a recheck (polkit refuses that
+/// to clients outside an active session, such as a sandboxed app behind a
+/// filtered bus).
+///
 /// # Errors
 ///
-/// Returns an error message if `nmcli` is not installed or the connectivity check fails.
+/// Returns the recheck's error message if neither the recheck nor the
+/// cached verdict could be read (e.g. `nmcli` is not installed).
 pub fn get_connectivity() -> Result<ConnectivityState, String> {
-    let out = run_capture("nmcli", &["-t", "networking", "connectivity", "check"])?;
-    Ok(parse_connectivity(&out))
+    connectivity_from(
+        run_capture("nmcli", &["-t", "networking", "connectivity", "check"]),
+        || run_capture("nmcli", &["-t", "networking", "connectivity"]),
+    )
+}
+
+fn connectivity_from(
+    check: Result<String, String>,
+    cached: impl FnOnce() -> Result<String, String>,
+) -> Result<ConnectivityState, String> {
+    match check {
+        Ok(out) => Ok(parse_connectivity(&out)),
+        Err(check_error) => cached()
+            .map(|out| parse_connectivity(&out))
+            .map_err(|_| check_error),
+    }
 }
 
 /// Return `NetworkManager`'s configured connectivity-check URI. Opening this
@@ -1502,6 +1539,23 @@ mod profile_tests {
             assert_eq!(parse_connectivity("limited\n"), ConnectivityState::Limited);
             assert_eq!(parse_connectivity("full\n"), ConnectivityState::Full);
         }
+        // Phase `a_refused_recheck_falls_back_to_the_cached_verdict`.
+        {
+            let refused =
+                || Err::<String, String>("Error: Not authorized to recheck connectivity.".into());
+            assert_eq!(
+                connectivity_from(refused(), || Ok("full\n".into())),
+                Ok(ConnectivityState::Full)
+            );
+            assert_eq!(
+                connectivity_from(Ok("portal\n".into()), || unreachable!()),
+                Ok(ConnectivityState::Portal)
+            );
+            assert_eq!(
+                connectivity_from(refused(), || Err("nmcli not installed".into())),
+                Err("Error: Not authorized to recheck connectivity.".into())
+            );
+        }
         // Phase `saved_profiles_preserve_escaped_colons_and_autoconnect`.
         {
             let parsed = parse_saved_profiles(
@@ -2209,5 +2263,78 @@ wlp2s0: 0000   49.  -61.  -256        0      0      0     55      0\n";
         }
         // 70% is bucket 3 on the shared signal scale.
         assert_eq!(signal_pct_to_bucket(70), 3);
+    }
+}
+
+#[cfg(test)]
+mod wifi_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn scan_transport_allows_the_real_cold_scan_to_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = tilo_test_env::script(
+            dir.path().join("scan"),
+            "sleep 3\nprintf ':Fixture network:70:--\\n'\n",
+        )
+        .unwrap();
+        let argv = script.exec_argv();
+        let networks =
+            list_wifi_networks_via(argv[0].to_str().unwrap(), &[argv[1].to_str().unwrap()])
+                .expect("a cold scan beyond the fast-status deadline must reach its result");
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].ssid, "Fixture network");
+        assert_eq!(networks[0].signal, 3);
+        assert!(!networks[0].secure);
+    }
+
+    #[test]
+    fn scan_requests_fresh_results_with_a_bounded_native_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = tilo_test_env::script(dir.path().join("scan-args"),
+            "test \"$*\" = '--wait 10 -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list --rescan yes' || exit 44\nprintf ':Fixture network:70:--\\n'\n").unwrap();
+        let argv = script.exec_argv();
+        let networks =
+            list_wifi_networks_via(argv[0].to_str().unwrap(), &[argv[1].to_str().unwrap()])
+                .unwrap();
+        assert_eq!(networks.len(), 1);
+    }
+
+    #[test]
+    fn failed_secret_activation_keeps_stdin_out_of_arguments_and_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = tilo_test_env::script(dir.path().join("secret"),
+            "test \"$*\" = '--ask --wait 30 device wifi connect Fixture network' || exit 44\nIFS= read -r secret\nprintf '%s' \"$secret\" >&2\nexit 14\n").unwrap();
+        let argv = script.exec_argv();
+        let error = connect_wifi_via(
+            argv[0].to_str().unwrap(),
+            &[argv[1].to_str().unwrap()],
+            "Fixture network",
+            Some("fixture-secret-value"),
+        )
+        .unwrap_err();
+        assert!(error.contains("rejected the request"));
+        assert!(!error.contains("fixture-secret-value"));
+        assert!(
+            error.contains("14"),
+            "the real client rejection must reach the caller"
+        );
+    }
+
+    #[test]
+    fn saved_or_open_connection_transport_gets_the_declared_activation_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let script =
+            tilo_test_env::script(dir.path().join("connect"), "sleep 3\nexit 0\n").unwrap();
+        let argv = script.exec_argv();
+        connect_wifi_via(
+            argv[0].to_str().unwrap(),
+            &[argv[1].to_str().unwrap()],
+            "Fixture network",
+            None,
+        )
+        .expect(
+            "a connection without a supplied secret still needs the normal activation deadline",
+        );
     }
 }

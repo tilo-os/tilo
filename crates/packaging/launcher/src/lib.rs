@@ -11,6 +11,8 @@
 //!   loader manifests and a device to expose.
 //! - [`landlock`] / [`landlock_shim`] — FS access planning plus fail-closed
 //!   restriction inside the completed bwrap mount namespace.
+//! - [`loader_preflight`] — whether the sandboxed loader will find every
+//!   library the app links against, checked before `bwrap` runs.
 //! - [`seccomp`] — baseline BPF policy.
 //! - [`services`] — well-known service socket resolution.
 //! - [`capabilities`] — workspace grants resolved into binds; the
@@ -51,9 +53,14 @@ pub mod host;
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;
+#[cfg(target_os = "linux")]
+pub mod loader_preflight;
 pub mod managed;
 pub mod manifest;
+pub mod mesa_seed;
 pub mod netgate;
+#[cfg(target_os = "linux")]
+pub mod owned_service;
 pub mod performance;
 pub mod profile;
 #[cfg(target_os = "linux")]
@@ -65,6 +72,8 @@ pub mod sandbox;
 pub mod scope;
 pub mod seccomp;
 pub mod services;
+#[cfg(target_os = "linux")]
+pub mod system_authority;
 
 #[cfg(test)]
 mod managed_tests;

@@ -175,6 +175,26 @@ pub fn read(catalog: &Catalog) -> Result<Vec<InstalledApp>, CatalogError> {
         .collect())
 }
 
+/// Resolve the exact signed package selected by an installed application
+/// operation. The logical identity and manifest must agree with that row;
+/// a concurrent upgrade must not substitute another package's bytes.
+///
+/// # Errors
+/// Returns a catalogue error when either installed store cannot be read.
+pub fn read_exact(
+    catalog: &Catalog,
+    app_id: &str,
+    root: tilo_app_package::PackageId,
+) -> Result<Option<InstalledApp>, CatalogError> {
+    Ok(catalog.list()?.iter().find_map(|entry| {
+        if entry.id != app_id || entry.package_id() != Some(root) {
+            return None;
+        }
+        let app = InstalledApp::from_package(entry)?;
+        (app.package_id == app_id).then_some(app)
+    }))
+}
+
 /// [`read`] over the stores the environment names.
 ///
 /// # Errors
@@ -211,6 +231,7 @@ mod tests {
             cli_commands: Vec::new(),
             runtime: String::new(),
             source: String::new(),
+            held: false,
             system: false,
         }
     }
@@ -262,6 +283,58 @@ mod tests {
             .unwrap();
         assert!(!tool.has_gui);
         assert_eq!(tool.display_name, "Tool");
+    }
+
+    #[test]
+    fn exact_launch_selection_preserves_root_and_rejects_manifest_identity_substitution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("store");
+        std::fs::create_dir_all(&user).unwrap();
+        let mut package = install(
+            tmp.path(),
+            "so.tilo.notes",
+            "[package]\nid = \"so.tilo.notes\"\nversion = \"2.0.0\"\nkind = \"app\"\n[entrypoint]\nbin = \"bin/notes\"\ntype = \"gui\"\n",
+        );
+        package.package_id_hex = "11".repeat(32);
+        let root = package.package_id().unwrap();
+        let row = format!(
+            "[[entry]]\nid = {:?}\npackage_id_hex = {:?}\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            package.id,
+            package.package_id_hex,
+            package.payload_root.display().to_string(),
+            package.manifest_path.display().to_string()
+        );
+        std::fs::write(package_store::Layout::new(&user).registry(), row).unwrap();
+        let catalog = Catalog::at(&user, None);
+        assert_eq!(
+            read_exact(&catalog, "so.tilo.notes", root)
+                .unwrap()
+                .unwrap()
+                .version,
+            "2.0.0"
+        );
+        assert!(
+            read_exact(
+                &catalog,
+                "so.tilo.notes",
+                "tapp:2222222222222222222222222222222222222222222222222222222222222222"
+                    .parse()
+                    .unwrap()
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            read_exact(&catalog, "so.tilo.browser", root)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::write(&package.manifest_path, "[package]\nid = \"so.tilo.browser\"\nversion = \"2.0.0\"\n[entrypoint]\nbin = \"bin/browser\"\ntype = \"gui\"\n").unwrap();
+        assert!(
+            read_exact(&catalog, "so.tilo.notes", root)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

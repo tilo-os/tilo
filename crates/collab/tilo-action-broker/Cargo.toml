@@ -7,6 +7,8 @@ publish.workspace = true
 [features]
 test-support = []
 [dependencies]
+# Kernel-authenticated custody of the executing native service peer.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Saves the launchable action catalogue across restarts.
@@ -17,6 +19,8 @@ parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }
 capnp-rpc.workspace = true
+# The broker thread is a panic boundary the session restarts.
+tilo-rt.workspace = true
 futures = { workspace = true, default-features = true }
 ed25519-dalek.workspace = true
 hex.workspace = true
@@ -52,10 +56,12 @@ tracing.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
+tilo-joined-room = { path = "../tilo-joined-room", features = ["test-support"] }
 iroh.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 word-processor = { path = "../../../apps/word-processor" }
+settings = { path = "../../../apps/settings" }
 ed25519-dalek.workspace = true
 tilo-automerge.workspace = true
 tilo-automerge-isolate.workspace = true

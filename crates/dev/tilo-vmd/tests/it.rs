@@ -3,7 +3,11 @@
 // in as modules (`pub`, so what each file exported stays exported). nextest
 // still runs each test in its own process.
 
+#[path = "device_account.rs"]
+pub mod device_account;
 #[path = "jobs.rs"]
 pub mod jobs;
+#[path = "peer_route.rs"]
+pub mod peer_route;
 #[path = "rpc.rs"]
 pub mod rpc;

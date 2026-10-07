@@ -66,6 +66,11 @@ pub struct ComponentInfo {
     pub scope: Scope,
     #[serde(default)]
     pub units: Vec<String>,
+    /// User units whose `ExecStart` runs these files. A slot's session
+    /// restarts its whole user manager; the owner's login on a laptop keeps
+    /// it and restarts only these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_units: Vec<String>,
     /// Takes effect at the next boot (`dev_swap = "reboot"`, the kernel):
     /// the daemon installs it as the VM's next boot entry and the client
     /// reboots the VM.
@@ -79,6 +84,7 @@ impl ComponentInfo {
         Self {
             scope,
             units,
+            user_units: Vec::new(),
             reboot: false,
         }
     }
@@ -97,7 +103,6 @@ pub struct Component {
     /// VM, relative to the repository root.
     pub dev_build: Option<String>,
     pub info: ComponentInfo,
-    pub user_units: Vec<String>,
     pub packages: Vec<String>,
     /// Only the manifest's installed binary targets, rather than every binary
     /// in each package (which can include heavyweight diagnostic tools).
@@ -328,10 +333,10 @@ fn component(name: &str, entry: &toml::Table) -> Component {
                 .as_deref()
                 .map_or(Scope::Session, Scope::parse),
             units: strings(entry, "units"),
+            user_units: strings(entry, "user_units"),
             reboot: boot && text("dev_swap").as_deref() == Some("reboot") && dev_build.is_some(),
         },
         dev_build,
-        user_units: strings(entry, "user_units"),
         packages: strings(entry, "packages"),
         bins: strings(entry, "bins"),
         features: strings(entry, "features"),
@@ -431,7 +436,7 @@ mod tests {
                 name = "browser"
                 scope = "session"
                 packages = ["browser"]
-                features = ["browser/wpe"]
+                features = ["browser/thin"]
                 [[component]]
                 name = "apps+runtime"
                 scope = "session"
@@ -458,10 +463,10 @@ mod tests {
             let fs = m.get("fs").unwrap();
             assert_eq!(fs.info.scope, Scope::Vm);
             assert_eq!(fs.info.units, ["fs.service", "tilo-fs-replica.service"]);
-            assert_eq!(fs.user_units, ["tilo-fs-recipient.service"]);
+            assert_eq!(fs.info.user_units, ["tilo-fs-recipient.service"]);
             assert!(!fs.boot);
             assert_eq!(fs.profile, "release");
-            assert_eq!(m.get("browser").unwrap().features, ["browser/wpe"]);
+            assert_eq!(m.get("browser").unwrap().features, ["browser/thin"]);
             assert_eq!(fs.paths, ["/usr/bin/fs"]);
             assert_eq!(m.get("apps+runtime").unwrap().profile, "thin-app");
             assert!(m.get("apps+runtime").unwrap().image_assembled);
@@ -518,13 +523,13 @@ mod tests {
         // Phase: cargo_and_installer_arguments.
         {
             let m = Manifest::parse(
-                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/wpe\"]\ndev_features = [\"browser/dev-overrides\"]\n",
+                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/thin\"]\ndev_features = [\"browser/dev-overrides\"]\n",
             )
             .unwrap();
             let browser = m.get("browser").unwrap();
             let extra = dev_override_features(
                 &serde_json::json!({"packages": [
-                    {"name": "browser", "features": {"wpe": [], "dev-overrides": []}},
+                    {"name": "browser", "features": {"thin": [], "dev-overrides": []}},
                     {"name": "helper", "features": {"dev-overrides": []}},
                 ]}),
                 &browser.packages,
@@ -532,7 +537,7 @@ mod tests {
             assert_eq!(extra, ["browser/dev-overrides", "helper/dev-overrides"]);
             assert_eq!(
                 browser.cargo_args(&extra).join(" "),
-                "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/wpe,browser/dev-overrides,helper/dev-overrides"
+                "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/thin,browser/dev-overrides,helper/dev-overrides"
             );
             assert_eq!(
                 browser

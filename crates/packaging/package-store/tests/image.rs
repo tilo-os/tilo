@@ -581,11 +581,13 @@ fn an_image_one_device_shelved_is_fetched_by_another_instead_of_rebuilt() {
     assert_eq!(shelved, shelf.path(&tool.meta.id));
     shelf.put(&laptop_store, tool.meta.id).unwrap();
 
-    // The relay reads the same shelf: no registry, no build.
+    // The relay reads the same shelf; its registry, asked only after the
+    // shelf, is offline and does not matter.
     let relay_root = scratch();
     let relay = Store::new(PackageStore::at(relay_root.path()))
         .with_trust(ImageTrust::new().with_fleet(ada.fleet))
-        .with_shelf(shelf.clone());
+        .with_shelf(shelf.clone())
+        .with_fetcher(Offline);
     let tree = materialized_tree(&relay, &tool.meta.id).unwrap();
     assert_eq!(
         std::fs::read(tree.join("usr/bin/pandoc")).unwrap(),
@@ -609,8 +611,135 @@ fn an_image_one_device_shelved_is_fetched_by_another_instead_of_rebuilt() {
         matches!(refused, MaterializeError::Fetch { .. }),
         "{refused}"
     );
+    // Missing everywhere: an unreachable source says so, rather than
+    // passing for "nobody has it".
+    let nowhere = PackageId::from_bytes([9; 32]);
+    let refused = materialized_tree(&relay, &nowhere).unwrap_err();
+    assert!(
+        matches!(&refused, MaterializeError::Fetch { detail, .. } if detail.starts_with("registry")),
+        "{refused}"
+    );
+    let shelf_only = Store::new(PackageStore::at(relay_root.path())).with_shelf(shelf);
     assert!(matches!(
-        materialized_tree(&relay, &PackageId::from_bytes([9; 32])),
+        materialized_tree(&shelf_only, &nowhere),
         Err(MaterializeError::NotFound(_))
     ));
+}
+
+/// A registry that cannot be reached.
+struct Offline;
+
+impl BlobFetcher for Offline {
+    fn fetch(&self, _hashes: &[BlobHash], _sink: &mut dyn BlobSink) -> std::io::Result<()> {
+        Err(std::io::Error::other("offline"))
+    }
+}
+
+impl PackageFetcher for Offline {
+    fn fetch_package(&self, _id: &PackageId) -> std::io::Result<Option<Vec<u8>>> {
+        Err(std::io::Error::other("offline"))
+    }
+}
+
+#[test]
+fn system_image_overlay_lowers_are_materialized_locally_with_current_trust_and_integrity() {
+    let ci = SigningIdentity::generate();
+    let (_source, runtime) = seal(
+        Kind::EnvRuntime,
+        "so.tilo.env-runtime",
+        None,
+        &ci,
+        runtime_tree,
+    );
+    let system = scratch();
+    PackageStore::at(system.path())
+        .install_image(
+            full_tapp(&runtime).as_slice(),
+            |_| Ok(Admission::default()),
+            None,
+        )
+        .unwrap();
+    let user = scratch();
+    let store = Store::new(PackageStore::at(user.path()))
+        .with_system(package_store::Layout::new(system.path()));
+    let source = materialized_tree(&store, &runtime.meta.id).unwrap();
+    let local = package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap();
+    assert!(local.starts_with(user.path()));
+    assert_ne!(local, source);
+    assert_eq!(
+        std::fs::read(local.join("usr/bin/bash")).unwrap(),
+        std::fs::read(source.join("usr/bin/bash")).unwrap()
+    );
+    assert_eq!(mode(&local.join("usr/bin/bash")), 0o555);
+    assert_eq!(mode(&local.join("etc/os-release")), 0o444);
+    assert_eq!(
+        std::fs::read_link(local.join("usr/bin/sh")).unwrap(),
+        Path::new("bash")
+    );
+    assert!(local.join("usr/share/empty").is_dir());
+    assert_eq!(
+        package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap(),
+        local
+    );
+
+    let revoked = RevocationList {
+        revoked: vec![RevokedKey {
+            pubkey_hex: hex::encode(ci.public_key_bytes()),
+            reason: "withdrawn".into(),
+        }],
+    };
+    let untrusted = store
+        .clone()
+        .with_trust(ImageTrust::new().with_revoked(revoked));
+    assert!(matches!(
+        package_store::local_materialized_tree(&untrusted, &runtime.meta.id),
+        Err(MaterializeError::Revoked { .. })
+    ));
+
+    std::fs::write(local.join("etc/unsigned"), b"injected config").unwrap();
+    assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
+    std::fs::remove_file(local.join("etc/unsigned")).unwrap();
+    std::fs::set_permissions(
+        local.join("etc/os-release"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    std::fs::write(local.join("etc/os-release"), b"corrupted cached bytes").unwrap();
+    assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
+    assert_eq!(
+        std::fs::read(source.join("etc/os-release")).unwrap(),
+        b"NAME=Fedora\n"
+    );
+}
+
+#[test]
+fn modified_system_image_is_not_imported_as_a_signed_overlay_lower() {
+    let ci = SigningIdentity::generate();
+    let (_source, runtime) = seal(
+        Kind::EnvRuntime,
+        "so.tilo.env-runtime",
+        None,
+        &ci,
+        runtime_tree,
+    );
+    let system = scratch();
+    PackageStore::at(system.path())
+        .install_image(
+            full_tapp(&runtime).as_slice(),
+            |_| Ok(Admission::default()),
+            None,
+        )
+        .unwrap();
+    let user = scratch();
+    let store = Store::new(PackageStore::at(user.path()))
+        .with_system(package_store::Layout::new(system.path()));
+    let source = materialized_tree(&store, &runtime.meta.id).unwrap();
+    std::fs::set_permissions(
+        source.join("usr/bin/bash"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(source.join("usr/bin/bash"), b"unsigned shell").unwrap();
+    assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
+    assert!(!store.user().layout().payload(runtime.meta.id).exists());
 }

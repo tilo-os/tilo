@@ -114,16 +114,37 @@ def memory(ctx, apps: list[str]) -> dict:
 
 
 def _open_several(ctx):
+    """Open the four apps; return the ones still open 8 s later.
+
+    An app whose window closed on its own in that time is recorded in
+    facts["apps_closed_after_open"], with what the session log and the user
+    journal said about it, rather than measured as if it were running."""
     ctx.reset()
-    opened = []
+    groups = {}
     for app in ("so.tilo.terminal", "so.tilo.file-explorer", "so.tilo.settings", "so.tilo.notes"):
         try:
-            ctx.open_app(app)
-            opened.append(app)
+            group, _ = ctx.open_app(app)
+            groups[app] = group["id"]
         except core.CheckFailed:
             pass
     time.sleep(8)
-    return opened
+    st = ctx.state()
+    closed = [app for app, gid in groups.items() if core.group_by_id(st, gid) is None]
+    if closed:
+        ctx.shot("R-apps-closed-after-open")
+        pattern = "|".join(a.replace(".", "\\.") for a in closed)
+        # The compositor's own lines and the apps' ends, not their start-up chatter.
+        ctx.write("R-apps-closed-after-open.log", ctx.vm.exec(
+            "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+            f"| grep -avE 'tilo-sandbox-exec|MESA|service socket connected|action contract validation' "
+            f"| grep -aE '^[^\\[]|{pattern}' | grep -aiE '{pattern}|exit|signal|panic|close|kill|fail|launch|surface' "
+            "| tail -n 150 | cut -c1-400; echo ---; "
+            f"journalctl --user -b --no-pager -o short-monotonic 2>/dev/null "
+            f"| grep -aE 'scope|{pattern}' | grep -aiE 'stop|deactivat|fail|exit|kill|signal|consumed|dump' "
+            "| tail -n 60 | cut -c1-400; echo ---; coredumpctl --no-pager list 2>/dev/null | tail -n 10; true",
+            check=False))
+    ctx.facts["apps_closed_after_open"] = closed
+    return [app for app in groups if app not in closed]
 
 
 def _budget_problems(m, budgets, prefix):
@@ -162,8 +183,12 @@ def idle_apps(ctx, res):
     ctx.write("R02-idle-apps.json", json.dumps(m, indent=1))
     ctx.facts["apps_open_for_memory"] = opened
     problems = _budget_problems(m, ctx.config["budgets"], "idle_apps")
-    if len(opened) < 4:
-        problems.append(f"only {len(opened)} of 4 apps opened ({opened})")
+    closed = ctx.facts.get("apps_closed_after_open") or []
+    if closed:
+        problems.append(f"{', '.join(closed)} closed on their own within 8 s of opening "
+                        "(see R-apps-closed-after-open.log)")
+    if len(opened) + len(closed) < 4:
+        problems.append(f"only {len(opened) + len(closed)} of 4 apps opened ({opened + closed})")
     expect(not problems, "; ".join(problems))
 
 
@@ -201,6 +226,10 @@ def mem(ctx, res):
                 problems.append(f"{app} cgroup anon {a['anon_mb']} MB > {b['app_anon_mb']} MB")
     if m["session_memory_mb"] is not None and m["session_memory_mb"] > b["session_memory_mb"]:
         problems.append(f"compositor and app cgroups {m['session_memory_mb']} MB > {b['session_memory_mb']} MB")
+    closed = ctx.facts.get("apps_closed_after_open") or []
+    if closed:
+        problems.append(f"{', '.join(closed)} closed on their own within 8 s of opening, so their "
+                        "memory was not measured (see R-apps-closed-after-open.log)")
     expect(not problems, "; ".join(problems + unobserved))
     if unobserved:
         raise core.Unobservable("; ".join(unobserved))

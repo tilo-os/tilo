@@ -21,7 +21,7 @@
 )]
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc};
+use automerge::{ROOT, ReadDoc};
 use tilo_ui::widget::{AppModel, ModelPath};
 
 use crate::support::typed_collab::TypedBroker;
@@ -50,16 +50,24 @@ impl AgentTarget {
 }
 
 impl Widget for AgentTarget {
-    fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
+    fn apply_room_action(
+        &mut self,
+        doc: &mut tilo_ui::widget::Edits<'_>,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
         if type_id != AGENT_ACTION {
             return false;
         }
-        doc.put(&ROOT, "agent", String::from_utf8_lossy(payload).to_string())
-            .expect("write the agent's edit");
+        crate::support::application::write_fixture_string(
+            doc,
+            "agent",
+            &String::from_utf8_lossy(payload),
+        );
         true
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
     fn build_layout(

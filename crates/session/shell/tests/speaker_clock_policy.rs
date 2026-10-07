@@ -98,6 +98,7 @@ impl Device {
                 },
                 online: true,
                 last_seen_unix_ms: self.counter,
+                wake_routes: Vec::new(),
                 stamp: stamp(self.name, self.counter),
             },
             media: Vec::new(),
@@ -105,6 +106,7 @@ impl Device {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            unlock: shell::shell::device_unlock::UnlockFabricState::default(),
             speakers: self
                 .core
                 .authored(endpoints, &stamp(self.name, self.counter)),

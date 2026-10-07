@@ -39,11 +39,15 @@ grep -q '^payload_root = "/usr/lib/tilo-apps/' /usr/share/tilo-apps/registry.tom
 test -d /usr/lib/tilo-apps/pkgs
 test ! -e /usr/share/tilo-apps/pkgs
 test ! -e /usr/lib/tilo-apps/content
-test -f /usr/lib/tilo-runtime/2026.07/bundle.toml
-test "$(stat -c %a /usr/lib/tilo-runtime/2026.07/bundle.toml)" = 644
+# One runtime build of the 2026.07 release, named by its ABI digest.
+runtime_dirs=(/usr/lib/tilo-runtime/2026.07+native.*)
+test "${#runtime_dirs[@]}" -eq 1
+runtime_dir=${runtime_dirs[0]}
+test -f "$runtime_dir/bundle.toml"
+test "$(stat -c %a "$runtime_dir/bundle.toml")" = 644
 grep -q '/usr/lib/tilo-apps/bin' /etc/profile.d/tilo-apps.sh
 test -s /etc/tilo/runtime-bundle-trusted-publishers.txt
-tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
+tilo-runtime-bundle verify "$runtime_dir" \
     --require-publisher "$(head -n 1 /etc/tilo/runtime-bundle-trusted-publishers.txt)"
 # The trust pin and signed runtime must remain one package-owned generation.
 # Merely verifying them independently missed an upgrade where `%config(noreplace)`
@@ -51,9 +55,18 @@ tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
 test "$(rpm -qf /etc/tilo/runtime-bundle-trusted-publishers.txt)" = \
     "$(rpm -q tilo-session-apps)"
 bundle_publisher=$(sed -n 's/^publisher_hex = "\([0-9a-fA-F]\{64\}\)"$/\1/p' \
-    /usr/lib/tilo-runtime/2026.07/bundle.toml)
+    "$runtime_dir/bundle.toml")
 test "${#bundle_publisher}" -eq 64
 grep -Fxiq "$bundle_publisher" /etc/tilo/runtime-bundle-trusted-publishers.txt
+# The ush supervisor runs these: a relay environment's pty bridge, the relay
+# picker's asker, and the legacy VM service behind app shims.
+for program in /usr/libexec/tilo-ush /usr/libexec/tilo-relay-environment \
+               /usr/libexec/tilo-relay-offers /usr/bin/tilo-legacy; do
+    test -x "$program"
+    test "$(rpm -qf "$program")" = "$(rpm -q tilo-session-apps)"
+done
+/usr/libexec/tilo-relay-environment --help >/dev/null
+/usr/libexec/tilo-relay-offers --help >/dev/null
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     test -f "/usr/lib/systemd/user/$unit.service"
     test -f "/usr/lib/systemd/user/$unit.socket"

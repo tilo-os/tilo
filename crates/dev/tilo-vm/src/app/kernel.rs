@@ -292,7 +292,7 @@ impl App {
     ) -> Result<String, CliError> {
         let provenance = provenance(worktree, built, &remote.hello.arch);
         let source = if remote.hello.tools.rsync && on_path("rsync") {
-            let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+            let endpoint = self.endpoint(vm)?;
             let id = vmbuild::worktree_id(worktree, crate::context::hostname().as_deref());
             let staging = vm_staging_dir(&id);
             let rsync = rsync_modules(built, &endpoint, vm.entry.key.as_deref(), &staging)?;

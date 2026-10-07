@@ -4,7 +4,7 @@
 //! graphing. Durable artifacts (history and plotted functions) live in an
 //! Automerge document so undo/redo and live collaboration use the same state;
 //! per-window expression, selection, angle unit, and camera state stay local.
-//! The panels are custom Vello-drawn widgets.
+//! The panels are painted by the app over the toolkit's controls and regions.
 //!
 //! [`CalculatorShell`] is the app: the binary runs it, `--shots` captures its
 //! scenarios, and [`definition`] is what other hosts mount.
@@ -40,6 +40,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod chrome;
 pub mod doc;
 pub mod draw;
 pub mod engine;
@@ -48,6 +49,7 @@ pub mod graph3d;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;
+pub mod plot_panel;
 pub mod resource;
 pub mod zoom;
 

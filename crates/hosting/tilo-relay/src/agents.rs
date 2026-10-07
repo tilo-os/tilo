@@ -81,6 +81,7 @@ impl AgentHostLink for RelayAgentLink {
                 can_act_as_host: false,
                 can_read_all_workspaces: false,
                 foreign: false,
+                can_administer_devices: false,
             },
             nonce,
             issued_at_ns: now,
@@ -124,11 +125,8 @@ pub struct AgentOptions {
     pub state_dir: PathBuf,
     /// The model natural-language tasks are planned with.
     pub model: ModelChoice,
-    /// Agents' apps use the host user's files and secret store instead of
-    /// a profile of their own (`--agent-host-profile`).
-    pub host_profile: bool,
     /// The apps agents may open, and whose records pages may act on through
-    /// the host; this machine's registry, theme and fonts when `None`.
+    /// the host; this machine's registry when `None`.
     pub catalogue: Option<CatalogueFactory>,
 }
 
@@ -150,6 +148,9 @@ impl crate::AppServingPlane for HostActionsPlane {
 struct RelayRecordsLink {
     user_public_key: [u8; 32],
     member: RoomMember,
+    rooms: Option<crate::rooms::Rooms>,
+    browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
+    browser_page: Option<String>,
 }
 
 impl RoomRecordsLink for RelayRecordsLink {
@@ -159,6 +160,49 @@ impl RoomRecordsLink for RelayRecordsLink {
 
     fn member(&self) -> RoomMember {
         self.member.clone()
+    }
+
+    fn view_read_policy(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        app: &str,
+        record: &str,
+    ) -> Option<tilo_agent_participant::room_actions::ViewReadPolicy> {
+        self.member.runtime.block_on(
+            self.rooms
+                .as_ref()?
+                .resource_view_policy(workspace, caller, app, record),
+        )
+    }
+
+    fn view_document(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        source: &tilo_browser_peer::DocumentRoute,
+    ) -> Result<tilo_agent_participant::room_actions::ViewDocument, String> {
+        self.member.runtime.block_on(
+            self.rooms
+                .as_ref()
+                .ok_or("governed rooms unavailable")?
+                .resource_view_document(workspace, caller, source),
+        )
+    }
+
+    fn view_locator(
+        &self,
+        room: &str,
+        provider: &str,
+    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
+        let origin = self.browser_origin.read().ok()?.clone()?;
+        Some(tilo_actions::remote::ResourceViewLocator {
+            origin: (*origin).clone(),
+            room: room.to_owned(),
+            host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
+            provider: provider.to_owned(),
+            browser_page: self.browser_page.clone(),
+        })
     }
 }
 
@@ -170,9 +214,31 @@ impl RoomRecordsLink for RelayRecordsLink {
 ///
 /// Returns why the relay did not start or the agent state could not be read.
 pub async fn start(
+    cfg: crate::RelayConfig,
+    identity: RelayIdentity,
+    options: AgentOptions,
+) -> Result<(Relay, AgentHost), RelayError> {
+    start_inner(cfg, identity, options, None).await
+}
+
+/// Start the app-serving host with an explicit transport relay policy.
+///
+/// # Errors
+/// The same as [`start`].
+pub async fn start_with_relay_mode(
+    cfg: crate::RelayConfig,
+    identity: RelayIdentity,
+    options: AgentOptions,
+    relay_mode: iroh::RelayMode,
+) -> Result<(Relay, AgentHost), RelayError> {
+    start_inner(cfg, identity, options, Some(relay_mode)).await
+}
+
+async fn start_inner(
     mut cfg: crate::RelayConfig,
     identity: RelayIdentity,
     options: AgentOptions,
+    relay_mode: Option<iroh::RelayMode>,
 ) -> Result<(Relay, AgentHost), RelayError> {
     let host_cert = identity.device_cert.clone();
     let catalogue = options
@@ -184,20 +250,27 @@ pub async fn start(
         options.model,
         Arc::clone(&catalogue),
     );
-    if options.host_profile {
-        agents.share_host_profile();
-    }
     cfg.services.app_serving = true;
     let plane = Arc::new(HostActionsPlane(HostActions {
         supervisor: SupervisorHost(agents.supervisor().clone()),
         rooms: RoomActions::new(catalogue),
     }));
-    let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
+    let browser_page = cfg.resource_browser_page.clone();
+    let relay = match relay_mode {
+        Some(mode) => {
+            Relay::start_with_app_serving_and_relay_mode(cfg, identity, Some(plane.clone()), mode)
+                .await?
+        }
+        None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
+    };
     plane
         .0
         .rooms
         .attach(Arc::new(RelayRecordsLink {
             user_public_key: relay.room_records().user_public_key(),
+            rooms: relay.rooms().cloned(),
+            browser_origin: Arc::clone(&relay.browser_origin),
+            browser_page,
             member: RoomMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.room_records().signing_key().clone(),

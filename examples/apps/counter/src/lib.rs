@@ -105,7 +105,7 @@ impl ResourceApp for App {
         // arguments, and each stays disabled while the action is forbidden.
         let actions = cx.actions();
         let step = |id: &str, label: &str, amount: i64| {
-            actions.bind_invocation(Button::new(id, label, None), Counter::ADD.with(amount))
+            actions.bind_invocation(Button::new(id, label), Counter::ADD.with(amount))
         };
         let reset = cx.button("counter-reset", Counter::RESET.invoke());
         Box::new(ui::column![

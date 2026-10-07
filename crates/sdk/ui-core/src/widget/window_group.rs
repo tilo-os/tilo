@@ -2,7 +2,6 @@ use crate::animation::Spring;
 use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -22,6 +21,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
+use crate::tokens::TextRole;
 /// Group widths are the desktop model's: a fraction of the strip, never
 /// pixels, with one set of tiers and clamps for every host.
 pub use tilo_desktop_model::width::{
@@ -147,6 +147,24 @@ impl RectSprings {
 }
 
 impl WindowGroup {
+    /// Move this group and the chrome laid out inside it. Used while a
+    /// retained strip is drawn, so the encoded scene stays in canvas
+    /// coordinates and a pan does not rewrite it. The caller puts the
+    /// rects back before hit testing.
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.rect = self.rect + shift;
+        self.restore_rect = self.restore_rect + shift;
+        self.close_rect = self.close_rect + shift;
+        self.bar.offset_layout(dx);
+        for (_, host) in &mut self.hosts {
+            host.offset_layout(dx);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn drawn_rect(&self) -> Rect {
         self.rect_spring
@@ -304,8 +322,8 @@ impl WindowGroup {
             scene,
             transform,
             self.rect,
-            f64::from(theme.tokens.radii.xl),
-            &theme.tokens.elevation.e4,
+            f64::from(theme.tokens.radii.tile),
+            &theme.tokens.elevation.floating,
         );
         if !self.maximized {
             scene.push_layer(
@@ -553,9 +571,14 @@ impl WindowGroup {
         let before = spring.value();
         spring.step(dt);
         self.last_width_step = Some(now);
-        if (spring.value() - before).abs() > 0.05 {
-            self.style_dirty = true;
+        if (spring.value() - before).abs() <= 0.05 {
+            // The spring is only stepped while the layout is rebuilt, and a
+            // step this small asks for no rebuild: the rest of the motion,
+            // well under a pixel, would never be taken and the group would
+            // ask for animation frames forever. Finish it now.
+            spring.snap(spring.target());
         }
+        self.style_dirty = true;
         if spring.is_settled() && !self.is_closing() {
             self.width_spring = None;
         }
@@ -622,20 +645,20 @@ impl WindowGroup {
     }
 
     pub fn begin_resize(&mut self, pointer_x: f32) {
-        self.resize_origin = Some((pointer_x, self.resolved_width_px()));
+        let visible_width = if self.rect.width() > 1.0 {
+            self.rect.width()
+        } else {
+            self.layout_width_px()
+        };
+        self.set_width_px(visible_width);
+        self.resize_origin = Some((pointer_x, visible_width));
     }
     pub fn update_resize(&mut self, pointer_x: f32) {
         if let Some((origin_x, origin_w)) = self.resize_origin {
             let delta = f64::from(pointer_x - origin_x);
             let usable = self.strip_usable_px;
             let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
-            let next = WindowWidth::from_px(clamped, usable);
-            if next != self.width {
-                self.width = next;
-                // Taffy bakes width as a fixed length; without this flag
-                // the drag updates the field but nothing moves on screen.
-                self.style_dirty = true;
-            }
+            self.set_width_px(clamped);
         }
     }
     pub fn end_resize(&mut self) {
@@ -672,12 +695,13 @@ impl WindowGroup {
     /// [`Self::set_width`] and springs.
     pub fn set_width_px(&mut self, px: f64) {
         let next = WindowWidth::from_px(px, self.strip_usable_px);
+        let animated = self.width_spring.take().is_some();
+        self.last_width_step = None;
         if next == self.width {
+            self.style_dirty |= animated;
             return;
         }
         self.width = next;
-        self.width_spring = None;
-        self.last_width_step = None;
         self.style_dirty = true;
     }
 
@@ -834,6 +858,11 @@ impl WindowGroup {
         host.set_focused(self.focused || self.search_active);
         host.draw_complete_content_capture(scene, transform, tr, theme, presence)?;
         Some(self.rect.union(capture_rect))
+    }
+
+    /// Cancel the tab bar's gesture while preserving every live tab host.
+    pub fn cancel_tab_drag(&mut self) -> bool {
+        self.bar.cancel_drag()
     }
 
     /// Returns `(tab_id, release_point)` if the user released a drag
@@ -1065,19 +1094,37 @@ impl WindowGroup {
         !self.tab_rects().iter().any(|r| r.contains(p))
     }
 
+    /// Where a finger can grab the whole group: anywhere on its tab bar,
+    /// tabs included, except the new-tab button and the resize edge.
+    pub fn touch_grab_hit(&self, p: Point) -> bool {
+        if self.external_navigation || !self.bar_rect().contains(p) {
+            return false;
+        }
+        if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
+            return false;
+        }
+        let plus = self.bar.new_tab_rect();
+        !(plus.area() > 0.0 && plus.contains(p))
+    }
+
     /// True when `p` is in the group's trailing-edge resize target.
     /// `GroupRow` uses this before arming a whole-group drag so the two
     /// gestures cannot race; this matters especially for a one-group strip,
     /// where this grip is the only resize affordance.
     pub fn resize_grab_hit(&self, p: Point) -> bool {
-        !self.maximized
-            && Rect::new(
+        self.resize_grab_rect().is_some_and(|rect| rect.contains(p))
+    }
+
+    /// Painted trailing-edge grip, shared with compositor input admission.
+    pub fn resize_grab_rect(&self) -> Option<Rect> {
+        (!self.maximized).then(|| {
+            Rect::new(
                 self.rect.x1 - RESIZE_HANDLE_PX,
                 self.rect.y0,
                 self.rect.x1,
                 self.rect.y1,
             )
-            .contains(p)
+        })
     }
 
     pub fn drop_index_for(&self, release_point: Point) -> usize {
@@ -1348,7 +1395,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.maximized && self.close_rect.contains(self.last_cursor) => {
+            } if !self.external_navigation
+                && self.maximized
+                && self.close_rect.contains(self.last_cursor) =>
+            {
                 // Route through the same deferred fade flow as the
                 // per-tab × click (`bar.start_closing` → `closing_hosts`
                 // → sweep) so the group shrinks coherently instead of
@@ -1374,7 +1424,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.maximized && self.restore_rect.contains(self.last_cursor) => {
+            } if !self.external_navigation
+                && self.maximized
+                && self.restore_rect.contains(self.last_cursor) =>
+            {
                 // Handled here (not via bar.pending_max) so the click
                 // never races with a tab selection under the pill's geometry.
                 self.begin_rect_spring_from_current();
@@ -1387,7 +1440,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if !self.maximized && self.hover_resize && !self.new_tab_hit(self.last_cursor) => {
+            } if !self.maximized
+                && self.hover_resize
+                && (self.external_navigation || !self.new_tab_hit(self.last_cursor)) =>
+            {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
@@ -1411,7 +1467,8 @@ impl WindowGroup {
                         ..
                     },
                 ..
-            } if m.state().control_key()
+            } if !self.external_navigation
+                && m.state().control_key()
                 && m.state().shift_key()
                 && matches!(logical_key, Key::Character(s) if s.eq_ignore_ascii_case("p")) =>
             {
@@ -1711,8 +1768,8 @@ impl WindowGroup {
             .find(|t| t.id == self.bar.active_id())
             .map(|t| t.title.clone())
             .unwrap_or_default();
-        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
-        let (tw, th) = tr.measure(&active_title, title_size, None);
+        let title_style = theme.text(TextRole::Caption);
+        let (tw, th) = tr.measure_style(&active_title, None, &title_style);
         // The label sits `spacing.s3` in from either end of its chip.
         let chip_pad = f64::from(theme.tokens.spacing.s3);
         let title_pill_w = (f64::from(tw) + 2.0 * chip_pad).max(MAXIMIZED_TITLE_CHIP_MIN_W);
@@ -1727,10 +1784,16 @@ impl WindowGroup {
             transform,
             title_pill,
             title_pill.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
-        let (chip_fill, chip_border) = crate::surface::chip_colors(theme, false);
-        crate::surface::pill(scene, transform, title_pill, chip_fill, chip_border, None);
+        crate::widget::chip::paint_pill_body(
+            scene,
+            transform,
+            title_pill,
+            crate::widget::ChipStyle::Neutral,
+            false,
+            theme,
+        );
         // Affine composition is floating-point matrix multiply — it
         // cannot overflow or panic the way integer arithmetic can.
         #[allow(
@@ -1742,13 +1805,13 @@ impl WindowGroup {
                 title_pill.center().x - f64::from(tw) / 2.0,
                 title_pill.center().y - f64::from(th) / 2.0,
             ));
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &active_title,
-            title_size,
             theme.tokens.colors.text_primary,
             title_text_transform,
             None,
+            &title_style,
         );
     }
 
@@ -1765,14 +1828,14 @@ impl WindowGroup {
         layout: ChromePillLayout,
     ) {
         let ChromePillLayout { pad, pill_h, y0 } = layout;
-        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
+        let title_style = theme.text(TextRole::Caption);
         // The close chip is a square of the row's height, so its × sits on
         // the same centre the title chip's text does.
         let close_w = pill_h;
         let close_x0 = self.rect.x1 - close_w - pad;
         self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
         let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
-        let (lw, lh) = tr.measure(&label, title_size, None);
+        let (lw, lh) = tr.measure_style(&label, None, &title_style);
         let icon_inset = f64::from(theme.tokens.spacing.s2);
         // Icon slot, gap, label, end pad: a longer translation widens the chip.
         let restore_w = MAXIMIZED_RESTORE_CHIP_W
@@ -1785,16 +1848,15 @@ impl WindowGroup {
             transform,
             self.restore_rect,
             self.restore_rect.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
-        let (restore_fill, restore_border) = crate::surface::chip_colors(theme, self.restore_hover);
-        crate::surface::pill(
+        crate::widget::chip::paint_pill_body(
             scene,
             transform,
             self.restore_rect,
-            restore_fill,
-            restore_border,
-            None,
+            crate::widget::ChipStyle::Neutral,
+            self.restore_hover,
+            theme,
         );
         // Text label kept (for screen readers/i18n), after a square icon
         // slot for the lucide `Minimize2` glyph: `spacing.s2` in from the
@@ -1825,13 +1887,13 @@ impl WindowGroup {
             reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
         )]
         let label_transform = transform * vello::kurbo::Affine::translate((lx, ly));
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &label,
-            title_size,
             theme.tokens.colors.text_primary,
             label_transform,
             None,
+            &title_style,
         );
 
         self.draw_maximized_close_button(scene, transform, theme);
@@ -1846,33 +1908,19 @@ impl WindowGroup {
             transform,
             self.close_rect,
             self.close_rect.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
-        let close_fill = if self.close_hover {
-            theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
-        } else {
-            crate::surface::chip_colors(theme, false).0
-        };
-        let close_border = if self.close_hover {
-            None
-        } else {
-            crate::surface::chip_colors(theme, false).1
-        };
-        crate::surface::pill(
+        // The quiet chip, lifted under the pointer. Closing a window is not
+        // an error, so it is never danger red.
+        crate::widget::chip::paint_pill_body(
             scene,
             transform,
             self.close_rect,
-            close_fill,
-            close_border,
-            None,
+            crate::widget::ChipStyle::Neutral,
+            self.close_hover,
+            theme,
         );
-        // On hover the glyph takes the ink that reads on the danger face —
-        // derived, so it stays legible on a light theme's danger red too.
-        let glyph_color = if self.close_hover {
-            theme.on_surface(theme.tokens.colors.semantic.danger).ink
-        } else {
-            theme.tokens.colors.text_primary
-        };
+        let glyph_color = theme.tokens.colors.text_primary;
         icons::draw_icon(
             scene,
             transform,
@@ -1899,10 +1947,16 @@ impl WindowGroup {
             return;
         };
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == visual.tab_id) else {
+            self.bar
+                .draw_drag_ghost(scene, transform, tr, theme, presence);
             return;
         };
         let source = host.get_rect();
         if source.width() <= 0.0 || source.height() <= 0.0 {
+            // Inactive hosts intentionally have no layout until selected.
+            // Keep the carried handle visible without waking/rendering them.
+            self.bar
+                .draw_drag_ghost(scene, transform, tr, theme, presence);
             return;
         }
 
@@ -1927,8 +1981,8 @@ impl WindowGroup {
             scene,
             preview_transform,
             source,
-            f64::from(theme.tokens.radii.xl),
-            &theme.tokens.elevation.e4,
+            f64::from(theme.tokens.radii.tile),
+            &theme.tokens.elevation.floating,
         );
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -1950,6 +2004,45 @@ impl WindowGroup {
 }
 
 impl FloatingSurfaceProvider for WindowGroup {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_focus_changed(host, id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_event_source(host, id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        self.hosts
+            .iter()
+            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_accessibility(host, id))
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        self.hosts.iter_mut().any(|(_, host)| {
+            FloatingSurfaceProvider::perform_floating_surface_accessibility_action(
+                host, id, target, action, state, path,
+            )
+        })
+    }
+
+    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+        self.hosts
+            .iter()
+            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(host, id))
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
@@ -2182,12 +2275,12 @@ impl Widget for WindowGroup {
         Ok(())
     }
 
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         if let Some(h) = self.active_host_mut() {
             h.sync(s, p);
         }
     }
-    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         self.active_host_mut().is_some_and(|h| h.update(s, p))
     }
     fn build_layout(
@@ -2398,10 +2491,7 @@ impl Widget for WindowGroup {
         // the window's own trailing edge, over its content, where it reads
         // as that app's scrollbar (and stays put when the app's panels go).
         // The east-west cursor already marks the band before it shows.
-        if !self.maximized
-            && !self.external_navigation
-            && (self.hover_resize || self.resize_origin.is_some())
-        {
+        if !self.maximized && (self.hover_resize || self.resize_origin.is_some()) {
             self.draw_resize_grip(scene, transform, theme);
         }
 
@@ -2433,9 +2523,7 @@ impl Widget for WindowGroup {
             self.rect.x1,
             self.rect.y1,
         );
-        if !self.external_navigation
-            && self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect)
-        {
+        if self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect) {
             *ctx.handled = true;
             return;
         }
@@ -2489,16 +2577,7 @@ impl Widget for WindowGroup {
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.external_navigation {
-            return None;
-        }
-        let band = Rect::new(
-            self.rect.x1 - RESIZE_HANDLE_PX,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        if self.resize_origin.is_some() || band.contains(point) {
+        if self.resize_origin.is_some() || self.resize_grab_hit(point) {
             Some(winit::window::CursorIcon::EwResize)
         } else {
             None
@@ -2511,21 +2590,21 @@ impl Widget for WindowGroup {
                 .is_some_and(super::Widget::wants_pointer_capture)
     }
     fn take_structure_dirty(&mut self) -> bool {
-        // `fold`, not `any`: every child's flag must be drained even if
-        // an earlier one already reported dirty.
+        // Every child's flag is drained, but only the active host's counts:
+        // inactive hosts have no layout nodes (see `is_layout_dirty`), and
+        // selecting one rebuilds through `active_switched` anyway.
         let bar = self.bar.take_structure_dirty();
-        #[allow(
-            clippy::unnecessary_fold,
-            reason = "all host dirty flags must be drained without short-circuiting"
-        )]
-        let hosts = self
-            .hosts
-            .iter_mut()
-            .map(|(_, h)| h.take_structure_dirty())
-            .fold(false, |acc, d| acc || d);
+        let active = self.bar.active_id();
+        let mut active_host = false;
+        for (id, host) in &mut self.hosts {
+            let dirty = host.take_structure_dirty();
+            if *id == active {
+                active_host = dirty;
+            }
+        }
         let style = std::mem::take(&mut self.style_dirty);
-        let active_switched = self.built_active != Some(self.bar.active_id());
-        bar || hosts || style || active_switched
+        let active_switched = self.built_active != Some(active);
+        bar || active_host || style || active_switched
     }
     fn needs_redraw(&self) -> bool {
         // Redraw follows the presentation tree. Retained inactive hosts still
@@ -2551,6 +2630,13 @@ impl Widget for WindowGroup {
     fn layout_needs_measure(&self) -> bool {
         (!self.external_navigation && self.bar.layout_needs_measure())
             || self.active_host().is_some_and(Widget::layout_needs_measure)
+    }
+    fn has_pending_visual_work(&self) -> bool {
+        // Inactive retained owners do not paint. Their record writes must not
+        // prevent a still of the active presentation from reaching rest.
+        self.children()
+            .into_iter()
+            .any(Widget::has_pending_visual_work)
     }
     fn needs_animation_frame(&self) -> bool {
         // Include group and inactive closing-host animations beyond the active presentation.
@@ -2874,6 +2960,12 @@ mod tests {
                 .set(self.hits.resources_mut.get() + 1);
             Ok(())
         }
+        fn has_pending_visual_work(&self) -> bool {
+            self.pending_control
+        }
+        fn has_transient_feedback(&self) -> bool {
+            self.pending_control
+        }
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -2999,6 +3091,24 @@ mod tests {
             )
             .unwrap();
 
+        assert!(
+            !group.has_pending_visual_work(),
+            "inactive work must not hold the active scene unsettled"
+        );
+        assert!(
+            !group.has_transient_feedback(),
+            "inactive feedback is not part of the presented scene"
+        );
+        group.bar.set_active(2);
+        assert!(
+            group.has_pending_visual_work(),
+            "the same work counts when its tab becomes visible"
+        );
+        assert!(
+            group.has_transient_feedback(),
+            "the same feedback counts when its tab becomes visible"
+        );
+
         for hits in [active, inactive] {
             assert_eq!(hits.unsaved.get(), 1);
             assert_eq!(hits.checkpoint.get(), 1);
@@ -3060,6 +3170,101 @@ mod tests {
         fn permission_hint(&self) -> Option<AppKind> {
             None
         }
+    }
+
+    /// An app that asks for a new layout tree every time it is asked.
+    struct Restructuring {
+        drained: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Widget for Restructuring {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &crate::theme::Theme,
+            _m: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.leaf_node(taffy::Style::default())
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &crate::theme::Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "Restructuring"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        fn take_structure_dirty(&mut self) -> bool {
+            self.drained.set(self.drained.get() + 1);
+            true
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for Restructuring {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &'static str {
+            "Restructuring"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("R")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    #[test]
+    fn an_inactive_tab_does_not_rebuild_the_group_layout() {
+        let drained = std::rc::Rc::new(std::cell::Cell::new(0));
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+            (
+                TabDescriptor::new(1, "Shown"),
+                TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: "shown".into(),
+                },
+            ),
+            (
+                TabDescriptor::new(2, "Behind"),
+                TileContent::App(Box::new(Restructuring {
+                    drained: drained.clone(),
+                })),
+            ),
+        ];
+        let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        for frame in 0..3 {
+            assert!(
+                !g.take_structure_dirty(),
+                "frame {frame}: a tab with no layout nodes rebuilt the group's layout"
+            );
+        }
+        assert_eq!(drained.get(), 3, "the inactive tab's flag is still drained");
+
+        assert!(g.cycle_active_tab(1));
+        assert!(
+            g.take_structure_dirty(),
+            "selecting the tab builds its layout"
+        );
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        assert!(
+            g.take_structure_dirty(),
+            "the active tab's own requests still reach the host"
+        );
     }
 
     fn group_opening(title: &str, presented: bool, opening: bool) -> WindowGroup {
@@ -3370,7 +3575,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state,
+                state: crate::widget::Edits::lend(state),
                 path: root_id,
                 handled: &mut handled,
                 focus_target,
@@ -3563,7 +3768,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3658,7 +3863,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3688,7 +3893,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3786,7 +3991,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3927,7 +4132,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &mods,
-                        state: &mut state,
+                        state: crate::widget::Edits::lend(&mut state),
                         path: &root_id,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -4139,7 +4344,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -4233,7 +4438,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut state,
+                        state: crate::widget::Edits::lend(&mut state),
                         path: &root_id,
                         handled: &mut handled,
                         focus_target: &mut focus_target,
@@ -4333,7 +4538,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4354,7 +4559,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4375,7 +4580,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &plain_mods,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4711,6 +4916,35 @@ mod tests {
             );
         }
 
+        // Case `an_opening_slot_settles_when_only_its_own_rebuilds_step_it`.
+        {
+            // The row steps the slot spring only while it rebuilds the
+            // layout, and rebuilds only when a group asks for it. Frames at
+            // 60 and at 20 a second must both end the motion.
+            for frame_ms in [16, 50] {
+                let mut g = group_opening("Files", true, false);
+                g.set_strip_usable_px(1200.0);
+                g.start_spawn_animation();
+                let mut rebuilds = 0;
+                while std::mem::take(&mut g.style_dirty) && rebuilds < 200 {
+                    g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(frame_ms));
+                    g.step_width_spring();
+                    rebuilds += 1;
+                }
+                assert!(
+                    g.width_spring.is_none(),
+                    "{frame_ms} ms frames: the slot spring stalled at {:?} after {rebuilds} rebuilds",
+                    g.width_spring
+                        .as_ref()
+                        .map(|s| (s.value(), s.target(), s.velocity())),
+                );
+                assert!(
+                    (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
+                    "{frame_ms} ms frames: the slot ends at its width",
+                );
+            }
+        }
+
         // Case `closing_collapses_the_slot_and_keeps_drawing`.
         {
             let mut g = group_opening("Files", false, false);
@@ -4772,6 +5006,32 @@ mod tests {
         }
     }
 
+    /// A host that lays out at ~12 fps (a headless session rendering in
+    /// software) steps the opening slot 50 ms at a time. The slot must
+    /// still settle at its width; it used to grow until the client was
+    /// configured `i32::MAX` wide.
+    #[test]
+    fn a_slow_host_opens_the_slot_to_its_width() {
+        let mut g = make_group();
+        g.set_strip_usable_px(996.0);
+        let target = g.resolved_width_px();
+        g.start_spawn_animation();
+        for frame in 0..40 {
+            g.last_width_step = g.width_spring.as_ref().map(|_| instant_ago_ms(80));
+            g.step_width_spring();
+            let width = g.layout_width_px();
+            assert!(
+                width <= target * 1.05,
+                "frame {frame}: slot at {width} past its {target} px width",
+            );
+        }
+        assert!(
+            g.width_spring.is_none() && (g.layout_width_px() - target).abs() < 0.5,
+            "the slot settles at {target}, got {}",
+            g.layout_width_px(),
+        );
+    }
+
     #[test]
     fn maximized_chrome_shows_near_the_top_with_tokenised_chips() {
         // Case `window_group_close_glyph_is_lucide_x`.
@@ -4788,9 +5048,8 @@ mod tests {
         }
 
         // Case `maximized_close_chip_uses_danger_token_on_hover`.
-        // Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80 %
-        // alpha — sampled from the **production paint path** on both presets.
-        // At rest the × chip is the quiet chip face (`chip_colors`: the raised
+        // Sampled from the **production paint path** on both presets.
+        // At rest the × chip is the quiet chip face (the raised
         // surface under a rest edge that registers against it), not a literal
         // white tint; on hover it turns to the danger token and the × glyph
         // stays legible on that face, where the old opaque white only happened
@@ -4826,7 +5085,13 @@ mod tests {
                 // inside the capsule and above the × glyph's box.
                 let (cx, top) = (chip.center().x, chip.y0);
                 let face = pixel(&idle, w, cx, top + 3.0);
-                let (quiet_fill, quiet_edge) = crate::surface::chip_colors(&theme, false);
+                let quiet = crate::widget::ChipStyle::Neutral.colors(
+                    &theme,
+                    theme.tokens.colors.surfaces.content,
+                    false,
+                    false,
+                );
+                let (quiet_fill, quiet_edge) = (quiet.fill, quiet.edge);
                 assert!(
                     contrast_ratio(face, quiet_fill) < 1.02,
                     "{}: idle × chip {chip:?} (group {:?}) paints the quiet chip face {quiet_fill:?}, got {face:?}",
@@ -4852,22 +5117,17 @@ mod tests {
                     write_png(&hover, w, h, &png);
                 }
                 let hot = pixel(&hover, w, cx, top + 3.0);
+                // Hover lifts the chip, as every quiet control: closing a
+                // window is not an error, so it is never danger red.
+                assert!(
+                    crate::chrome::lightness_step(hot, face) >= 0.04,
+                    "{}: hover must visibly lift the × chip ({face:?} -> {hot:?})",
+                    theme.name
+                );
                 let danger = theme.tokens.colors.semantic.danger;
                 assert!(
-                    contrast_ratio(hot, face) >= 1.5,
-                    "{}: hover must visibly recolour the × chip ({face:?} -> {hot:?})",
-                    theme.name
-                );
-                // The face is the danger token at 80 % over the card: red-led on
-                // every preset, and nearer the token than the rest face was.
-                assert!(
-                    hot.r() > hot.g() && hot.r() > hot.b(),
-                    "{}: hovered × chip {hot:?} is not the danger red",
-                    theme.name
-                );
-                assert!(
-                    contrast_ratio(hot, danger) < contrast_ratio(face, danger),
-                    "{}: hovered × chip {hot:?} did not move toward danger {danger:?}",
+                    contrast_ratio(hot, danger) > 1.2,
+                    "{}: the hovered × chip {hot:?} is not danger red",
                     theme.name
                 );
                 // The × glyph stays readable on the hot face: the darkest or
@@ -4941,7 +5201,10 @@ mod tests {
                     < 1e-9,
                 "restore and close sit one s1 apart"
             );
-            assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
+            assert!(
+                g.restore_rect.width() >= MAXIMIZED_RESTORE_CHIP_W,
+                "the restore chip never undercuts its authored width"
+            );
         }
         // Case `the_restore_chip_reads_in_the_desktops_language_and_fits_it`.
         {
@@ -4957,8 +5220,8 @@ mod tests {
                 let mut scene = Scene::new();
                 g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
                 let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
-                let size = renderer_type_size(&tr, theme.tokens.typography.scale.xs);
-                let (label_w, _) = tr.measure(&label, size, None);
+                let style = theme.text(TextRole::Caption);
+                let (label_w, _) = tr.measure_style(&label, None, &style);
                 let label_x0 = g.restore_rect.x0
                     + f64::from(theme.tokens.spacing.s2) * 2.0
                     + MAXIMIZED_ICON_PX;
@@ -5052,7 +5315,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5083,7 +5346,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled2,
                     focus_target: &mut focus_target,
@@ -5155,7 +5418,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5185,7 +5448,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled2,
                     focus_target: &mut focus_target,
@@ -5350,7 +5613,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5398,7 +5661,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled2,
                     focus_target: &mut focus_target,
@@ -5469,7 +5732,8 @@ mod tests {
             theme,
             &PresenceCtx::empty(),
         );
-        crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, theme.bg_app)
+        crate::offscreen::OffscreenRenderer::new(w, h)
+            .render(&scene, theme.tokens.colors.surfaces.base)
     }
 
     /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.

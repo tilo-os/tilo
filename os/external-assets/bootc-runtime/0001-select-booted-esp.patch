@@ -1,0 +1,236 @@
+composefs: use the ESP the system booted from
+
+On a disk shared with another operating system the first ESP is usually
+that system's: a laptop that came with Windows has Windows' ESP first.
+Booted-system operations took the first ESP among the root's backing disks,
+so `bootc status`, `upgrade` and `switch` read an ESP without this system's
+entries and failed:
+
+  error: Status: Prepending custom prefix to EFI and BLS entries: Getting
+  sorted Type1 boot entries: No such file or directory (os error 2)
+
+Use the ESP the boot loader names in LoaderDevicePartUUID (the Boot Loader
+Interface systemd-boot implements) when it backs the root, and the first
+ESP otherwise. Installation chooses its ESP as before.
+
+diff --git a/crates/blockdev/src/blockdev.rs b/crates/blockdev/src/blockdev.rs
+index 56f38ca804..7553dbe155 100644
+--- a/crates/blockdev/src/blockdev.rs
++++ b/crates/blockdev/src/blockdev.rs
+@@ -217,6 +217,58 @@ impl Device {
+             .ok_or_else(|| anyhow!("No ESP partition found among backing devices"))
+     }
+ 
++    /// Find the ESP the running system was booted from among all root
++    /// devices backing this device.
++    ///
++    /// A disk shared with another operating system usually carries that
++    /// system's ESP too, often as its first partition. The boot loader names
++    /// the partition it was started from in `LoaderDevicePartUUID` (the Boot
++    /// Loader Interface systemd-boot implements), and that is the ESP whose
++    /// entries describe this system. Without the variable, or when it names
++    /// no ESP backing this device, this is [`Self::find_first_colocated_esp`].
++    pub fn find_booted_colocated_esp(&self) -> Result<Device> {
++        let roots = self.find_all_roots()?;
++        select_colocated_esp(&roots, loader_device_partuuid().as_deref())?
++            .cloned()
++            .ok_or_else(|| anyhow!("No ESP partition found among backing devices"))
++    }
++
++    /// Find a descendant EFI System Partition with this partition UUID.
++    fn find_esp_by_partuuid(&self, partuuid: &str) -> Result<Option<&Device>> {
++        let Some(children) = self.children.as_ref() else {
++            return Ok(None);
++        };
++        let mbr = match self.pttype.as_deref() {
++            Some("dos") => true,
++            Some("gpt") | None => false,
++            Some(other) => return Err(anyhow!("Unsupported partition table type: {other}")),
++        };
++        for child in children {
++            let is_esp = child.parttype.as_deref().is_some_and(|pt| {
++                if mbr {
++                    let pt = pt.strip_prefix("0x").unwrap_or(pt);
++                    u8::from_str_radix(pt, 16).is_ok_and(|pt| ESP_ID_MBR.contains(&pt))
++                } else {
++                    pt.eq_ignore_ascii_case(ESP)
++                }
++            });
++            let matches = child
++                .partuuid
++                .as_deref()
++                .is_some_and(|u| u.eq_ignore_ascii_case(partuuid));
++            if is_esp && matches {
++                return Ok(Some(child));
++            }
++            // Firmware RAID: disk -> md array -> partitions.
++            if child.pttype.is_some()
++                && let Some(esp) = child.find_esp_by_partuuid(partuuid)?
++            {
++                return Ok(Some(esp));
++            }
++        }
++        Ok(None)
++    }
++
+     /// Find all BIOS boot partitions across all root devices backing this device.
+     /// Calls find_all_roots() to discover physical disks, then searches each for a BIOS boot partition.
+     /// Returns None if no BIOS boot partitions are found.
+@@ -456,6 +508,61 @@ impl Device {
+     }
+ }
+ 
++/// `LoaderDevicePartUUID` in the Boot Loader Interface vendor namespace.
++const LOADER_DEVICE_PARTUUID_EFIVAR: &str =
++    "/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
++
++/// The partition UUID of the ESP the boot loader was started from, if the
++/// loader recorded it.
++fn loader_device_partuuid() -> Option<String> {
++    let raw = match std::fs::read(LOADER_DEVICE_PARTUUID_EFIVAR) {
++        Ok(raw) => raw,
++        Err(e) => {
++            tracing::debug!("No LoaderDevicePartUUID: {e}");
++            return None;
++        }
++    };
++    let partuuid = parse_loader_device_partuuid(&raw);
++    tracing::debug!("LoaderDevicePartUUID: {partuuid:?}");
++    partuuid
++}
++
++/// Decode an efivarfs `LoaderDevicePartUUID`: four attribute bytes, then the
++/// UUID as NUL-terminated UTF-16LE.
++fn parse_loader_device_partuuid(raw: &[u8]) -> Option<String> {
++    let units: Vec<u16> = raw
++        .get(4..)?
++        .chunks_exact(2)
++        .map(|c| u16::from_le_bytes([c[0], c[1]]))
++        .take_while(|&u| u != 0)
++        .collect();
++    let value = String::from_utf16(&units).ok()?;
++    let value = value.trim().to_ascii_lowercase();
++    (!value.is_empty()).then_some(value)
++}
++
++/// Pick the ESP among the root devices: the one named by the loader's
++/// partition UUID when one of them carries it, otherwise the first.
++fn select_colocated_esp<'a>(
++    roots: &'a [Device],
++    loader_partuuid: Option<&str>,
++) -> Result<Option<&'a Device>> {
++    if let Some(partuuid) = loader_partuuid {
++        for root in roots {
++            if let Some(esp) = root.find_esp_by_partuuid(partuuid)? {
++                return Ok(Some(esp));
++            }
++        }
++        tracing::debug!("LoaderDevicePartUUID {partuuid} names no ESP backing this device");
++    }
++    for root in roots {
++        if let Some(esp) = root.find_partition_of_esp_optional()? {
++            return Ok(Some(esp));
++        }
++    }
++    Ok(None)
++}
++
+ #[context("Listing device {dev}")]
+ pub fn list_dev(dev: &Utf8Path) -> Result<Device> {
+     let mut devs: DevicesOutput = Command::new("lsblk")
+@@ -775,6 +882,60 @@ mod test {
+         }
+     }
+ 
++    /// A disk shared with Windows: Windows' ESP is the first partition, the
++    /// ESP this system booted from comes later.
++    fn shared_disk() -> Device {
++        let fixture = r#"{"blockdevices": [{
++            "name": "nvme0n1", "size": 1024209543168, "pttype": "gpt",
++            "children": [
++                {"name": "nvme0n1p1", "size": 272629760, "partn": 1,
++                 "parttype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
++                 "partuuid": "6e3c8d29-eefd-452f-a856-9bc30f84aace"},
++                {"name": "nvme0n1p3", "size": 970000000000, "partn": 3,
++                 "parttype": "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
++                 "partuuid": "fa6ad2c9-bd0e-4780-9d68-324b93376d01"},
++                {"name": "nvme0n1p4", "size": 2147483648, "partn": 4,
++                 "parttype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
++                 "partuuid": "2dbc5c51-a046-4266-a3ef-4256b25cdd1d"},
++                {"name": "nvme0n1p6", "size": 48318382080, "partn": 6,
++                 "parttype": "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab",
++                 "partuuid": "0c2fcfd9-4c7a-486f-b925-7755d92ecd41"}
++            ]}]}"#;
++        let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
++        devs.blockdevices.into_iter().next().unwrap()
++    }
++
++    #[test]
++    fn test_select_booted_esp_on_shared_disk() {
++        let roots = [shared_disk()];
++        let esp = select_colocated_esp(&roots, Some("2DBC5C51-A046-4266-A3EF-4256B25CDD1D"))
++            .unwrap()
++            .unwrap();
++        assert_eq!(esp.name, "nvme0n1p4");
++        // Without the loader variable: the first ESP, as before.
++        let esp = select_colocated_esp(&roots, None).unwrap().unwrap();
++        assert_eq!(esp.name, "nvme0n1p1");
++        // A loader partition UUID that is not an ESP here selects nothing by UUID.
++        let esp = select_colocated_esp(&roots, Some("fa6ad2c9-bd0e-4780-9d68-324b93376d01"))
++            .unwrap()
++            .unwrap();
++        assert_eq!(esp.name, "nvme0n1p1");
++    }
++
++    #[test]
++    fn test_parse_loader_device_partuuid() {
++        let mut raw = vec![0x06, 0, 0, 0];
++        for unit in "2DBC5C51-A046-4266-A3EF-4256B25CDD1D\0".encode_utf16() {
++            raw.extend_from_slice(&unit.to_le_bytes());
++        }
++        assert_eq!(
++            parse_loader_device_partuuid(&raw).as_deref(),
++            Some("2dbc5c51-a046-4266-a3ef-4256b25cdd1d")
++        );
++        assert_eq!(parse_loader_device_partuuid(&[0x06, 0, 0, 0]), None);
++        assert_eq!(parse_loader_device_partuuid(&[]), None);
++    }
++
+     #[test]
+     fn test_parse_lsblk() {
+         let fixture = include_str!("../tests/fixtures/lsblk.json");
+diff --git a/crates/lib/src/bootc_composefs/boot.rs b/crates/lib/src/bootc_composefs/boot.rs
+index 72ff812a8f..fdf5749c4b 100644
+--- a/crates/lib/src/bootc_composefs/boot.rs
++++ b/crates/lib/src/bootc_composefs/boot.rs
+@@ -743,7 +743,7 @@ pub(crate) fn setup_composefs_bls_boot(
+ 
+             // Locate ESP partition device by walking up to the root disk(s)
+             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
+-            let esp_dev = root_dev.find_first_colocated_esp()?;
++            let esp_dev = root_dev.find_booted_colocated_esp()?;
+ 
+             (
+                 Utf8PathBuf::from("/sysroot"),
+@@ -1299,7 +1299,7 @@ pub(crate) fn setup_composefs_uki_boot(
+ 
+             // Locate ESP partition device by walking up to the root disk(s)
+             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
+-            let esp_dev = root_dev.find_first_colocated_esp()?;
++            let esp_dev = root_dev.find_booted_colocated_esp()?;
+ 
+             (
+                 sysroot,
+diff --git a/crates/lib/src/store/mod.rs b/crates/lib/src/store/mod.rs
+index d417b17dec..84a976bb0b 100644
+--- a/crates/lib/src/store/mod.rs
++++ b/crates/lib/src/store/mod.rs
+@@ -382,7 +382,7 @@ impl BootedStorage {
+                 // present (e.g. auto-mounted at /boot ro via
+                 // `systemd.mount-extra` in the deployment cmdline).
+                 let root_dev = bootc_blockdev::list_dev_by_dir(&physical_root)?;
+-                let esp_dev = root_dev.find_first_colocated_esp()?;
++                let esp_dev = root_dev.find_booted_colocated_esp()?;
+                 let esp_path = esp_dev.path();
+                 let esp_mount = match esp_access {
+                     EspAccess::ReadOnly => mount_esp_readonly(&esp_path)?,

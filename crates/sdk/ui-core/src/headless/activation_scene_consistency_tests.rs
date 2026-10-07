@@ -192,8 +192,8 @@ impl Widget for Owner {
         let child = self.field.take_structure_dirty();
         self.seen.structure_dirty.replace(false) || child
     }
-    fn sync(&mut self, model: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        let (doc, root) = crate::doc::document(model, path);
+    fn sync(&mut self, model: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        let (doc, root) = crate::doc::document_ref(model, path);
         assert!(
             crate::record::identity(doc).is_some(),
             "original canonical owner admission"
@@ -322,7 +322,7 @@ fn prepared(
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
     component.mount_with_owner_queue(queue, |_| {}).unwrap();
-    (BoundAppWidget { component }, seen)
+    (BoundAppWidget::new(component), seen)
 }
 #[derive(Clone, Default)]
 struct Tail {

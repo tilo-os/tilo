@@ -105,8 +105,8 @@ impl Widget for Owner {
     fn take_structure_dirty(&mut self) -> bool {
         self.seen.fail_composition.get() || std::mem::take(&mut self.dirty)
     }
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        let (doc, _) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        let (doc, _) = crate::doc::document_ref(state, path);
         assert!(crate::record::identity(doc).is_some());
         if self.seen.replace.replace(false) {
             let body = doc
@@ -186,8 +186,8 @@ fn prepared(
         .unwrap();
     let id = component.record().id.clone();
     component.mount_with_owner_queue(queue, |_| {}).unwrap();
-    let mut bound = BoundAppWidget { component };
-    bound.sync(&mut AutoCommit::new(), &ROOT);
+    let mut bound = BoundAppWidget::new(component);
+    bound.sync(&AutoCommit::new(), &ROOT);
     (bound, seen, id)
 }
 fn frame(queue: &OwnerWakeQueue, owners: Vec<BoundAppWidget>) -> FrameHarness {

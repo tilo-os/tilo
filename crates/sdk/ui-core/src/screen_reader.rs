@@ -64,6 +64,7 @@ mod phrase {
             Role::RadioButton => ("sr-role-radio-button", "radio button"),
             Role::Switch => ("sr-role-switch", "switch"),
             Role::Slider => ("sr-role-slider", "slider"),
+            Role::Separator => ("sr-role-separator", "separator"),
             Role::SpinButton => ("sr-role-spin-button", "spin button"),
             Role::ComboBox => ("sr-role-combo-box", "combo box"),
             Role::TextInput => ("sr-role-text-input", "edit text"),
@@ -685,6 +686,7 @@ pub fn is_form_field(node: &AccessNode) -> bool {
             | Role::RadioButton
             | Role::Switch
             | Role::Slider
+            | Role::Separator
             | Role::SpinButton
             | Role::ComboBox
             | Role::TextInput

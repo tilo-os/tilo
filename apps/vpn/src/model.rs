@@ -3,7 +3,7 @@
 //! Everything here is plain Rust with no rendering or IO. The live
 //! source of truth is the Automerge document (see [`crate::doc`]); this
 //! module defines the in-memory shapes the UI reads/writes and the
-//! sample fleet used to populate the headless `--shots` screenshot.
+//! sample fleet the `--shots` scenarios show.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -161,13 +161,11 @@ pub fn draft_connection(name: &str, kind: ConnKind) -> Connection {
     c
 }
 
-/// The whole saved fleet plus UI selection + global toggles.
+/// The whole saved fleet plus this window's selection.
 #[derive(Clone, Debug, Default)]
 pub struct Vault {
     pub connections: Vec<Connection>,
     pub selected: Option<ConnId>,
-    /// Global "route everything over Tor" master toggle.
-    pub tor_global: bool,
 }
 
 impl Vault {
@@ -189,27 +187,33 @@ impl Vault {
     }
 }
 
-/// Build the demo fleet shown in `--shots` and on a fresh install.
-///
-/// Per the brief: a 'Home' `WireGuard` that is **connected** with
-/// live-looking throughput, and a 'Work' `OpenVPN` that is
-/// **disconnected**. A few extra entries make the list feel real.
+/// A sample profile with a fixed id, so a screenshot is the same every run.
+fn sample_connection(n: u128, name: &str, kind: ConnKind) -> Connection {
+    Connection {
+        id: Uuid::from_u128(0x5a3e_0000_0000_4000_8000_0000_0000_0000 | n),
+        ..Connection::new(name, kind)
+    }
+}
+
+/// The sample fleet the screenshots show: a 'Home' `WireGuard` that is
+/// **connected**, a 'Work' `OpenVPN` that is **disconnected**, and a few
+/// more so the list feels real.
 pub fn sample_vault() -> Vault {
-    let mut home = Connection::new("Home", ConnKind::WireGuard);
+    let mut home = sample_connection(1, "Home", ConnKind::WireGuard);
     home.status = ConnStatus::Connected;
     home.last_handshake_secs = Some(34);
     home.last_used = "Active now".to_string();
 
-    let mut work = Connection::new("Work", ConnKind::OpenVpn);
+    let mut work = sample_connection(2, "Work", ConnKind::OpenVpn);
     work.status = ConnStatus::Disconnected;
     work.last_used = "Yesterday".to_string();
 
-    let mut relay = Connection::new("Cloud Relay", ConnKind::WireGuard);
+    let mut relay = sample_connection(3, "Cloud Relay", ConnKind::WireGuard);
     relay.status = ConnStatus::Disconnected;
     relay.last_used = "3 days ago".to_string();
     relay.tor = true;
 
-    let mut lab = Connection::new("Lab", ConnKind::OpenVpn);
+    let mut lab = sample_connection(4, "Lab", ConnKind::OpenVpn);
     lab.status = ConnStatus::Disconnected;
     lab.last_used = "Last week".to_string();
 
@@ -217,7 +221,6 @@ pub fn sample_vault() -> Vault {
     Vault {
         connections: vec![home, work, relay, lab],
         selected,
-        tor_global: false,
     }
 }
 

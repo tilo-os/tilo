@@ -15,8 +15,20 @@ pub const ITEM_PREFIX: &str = "passwords:item:";
 
 /// What Passwords does with the vault.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "passwords.effect")]
+#[effect(operation = "passwords.effect", device_only)]
 pub enum PasswordsEffect {
+    /// Show the current private credential permissions.
+    #[effect(view, idempotent, permission = "read", label = "passwords-show-access")]
+    ShowAccess,
+    /// Revoke one current credential relationship by its opaque permission ID.
+    #[effect(destructive, idempotent, label = "passwords-revoke-access")]
+    RevokeAccess { grant: String },
+    /// Approve one exact native request after protected confirmation.
+    #[effect(privileged, label = "passwords-approve-access")]
+    ApproveAccess { proposal: String, lifetime: String },
+    /// Decline one pending request without granting access.
+    #[effect(idempotent, permission = "read", label = "passwords-deny-access")]
+    DenyAccess { proposal: String },
     /// New item.
     #[effect(permission = "read")]
     Add,
@@ -66,29 +78,66 @@ pub enum PasswordsEffect {
     /// Asks for confirmation, then writes every item unencrypted to a file
     /// the person chooses.
     Export,
-    /// Search vault.
-    #[effect(permission = "read")]
-    Search {
-        #[param("Text to find in titles, usernames, origins, or tags")]
-        query: Option<String>,
-    },
     /// Filter vault.
     #[effect(permission = "read")]
     Filter {
         #[param("all | favorites | login | api-key | note | wifi | other")]
         filter: String,
     },
-    /// Select item.
+    /// Open.
+    ///
+    /// Shows the item in the window, clearing a filter that hides it.
     #[effect(permission = "read")]
-    Select {
+    Open {
         #[param("Opaque id of the vault item")]
         item: String,
     },
 }
 
+pub(crate) const GRANT_PREFIX: &str = "passwords:grant:";
+pub(crate) const PROPOSAL_PREFIX: &str = "passwords:request:";
+pub(crate) fn proposal_row(proposal: &accounts::CredentialProposal) -> LiveRow {
+    LiveRow::new(
+        format!("{PROPOSAL_PREFIX}{}", proposal.id),
+        "passwords.credential-request",
+        crate::CATALOG.t("passwords-credential-request"),
+    )
+    .operation(
+        PasswordsEffect::ApproveAccess {
+            proposal: proposal.id.clone(),
+            lifetime: "session".into(),
+        }
+        .bound(),
+    )
+    .operation(
+        PasswordsEffect::DenyAccess {
+            proposal: proposal.id.clone(),
+        }
+        .bound(),
+    )
+}
+pub(crate) fn grant_row(grant: &accounts::CredentialGrant) -> LiveRow {
+    LiveRow::new(
+        format!("{GRANT_PREFIX}{}", grant.id()),
+        "passwords.credential-permission",
+        crate::CATALOG.t("passwords-credential-permission"),
+    )
+    .operation(
+        PasswordsEffect::RevokeAccess {
+            grant: grant.id().into(),
+        }
+        .bound(),
+    )
+}
+
 /// The published id of the vault item `id`.
 pub fn item_resource_id(id: &str) -> String {
     format!("{ITEM_PREFIX}{id}")
+}
+
+/// The action a search hit for `id` runs: show the item.
+pub fn open_item_address(id: &accounts::SecretId) -> ui::tilo_actions::ActionAddress {
+    ui::tilo_actions::ActionAddress::new(item_resource_id(&id.0), PasswordsEffect::OPEN.id)
 }
 
 /// One vault item as a live row. Rows feed system-wide search and
@@ -134,6 +183,7 @@ pub fn item_row(item: &SecretItem) -> LiveRow {
     let mut reveal_spec = PasswordsEffect::Reveal { item: id.clone() }.bound();
     reveal.clone_into(&mut reveal_spec.label);
     LiveRow::new(item_resource_id(&id), kind, name)
+        .operation(PasswordsEffect::Open { item: id.clone() }.bound())
         .operation(PasswordsEffect::Edit { item: id.clone() }.bound())
         .operation(copy_spec)
         .operation(reveal_spec)
@@ -167,7 +217,7 @@ mod tests {
             assert!(!public.contains(private), "resource leaked {private:?}");
         }
         let ids: Vec<&str> = resource.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["edit", "copy", "reveal", "delete"]);
+        assert_eq!(ids, ["open", "edit", "copy", "reveal", "delete"]);
         assert!(public.contains("Reveal password"));
         let delete = resource.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(

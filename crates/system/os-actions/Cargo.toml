@@ -33,6 +33,7 @@ tilo-crypto = { path = "../tilo-crypto" }
 tilo-bluez = { path = "../tilo-bluez" }
 tilo-power-mgmt = { path = "../power" }
 tilo-rt.workspace = true
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 

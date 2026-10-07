@@ -42,6 +42,29 @@ What a sandboxed app is actually presented with. It names none of this; the laun
 
 Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch (`launcher::capabilities`).
 
+### Application audio output
+
+Hosted apps submit output PCM through the launcher's attested collaboration channel;
+they receive no PipeWire/PulseAudio socket, device path or microphone grant. The
+output-only `audioOutputCommand` service is independent of Chat call membership and
+capture. The broker derives the app, workspace and record from the admitted route,
+checks its live kernel process custody and admission, and fences its output when
+the process disconnects or authority ends. The compositor also fences output on
+session lock, onboarding or the sound-output privacy policy.
+
+Each output has a host-issued generation and an eight-packet queue (160 ms of
+48 kHz stereo PCM). Sequence checks make exact packet retries safe and reject
+changed or reordered retries. Pause, flush, volume and close apply only to that
+app's generation. The host pins playback to the device serial and daemon cookie
+from its existing native device observer; a foreign link, removed output or lost
+link fails closed. Rendered-frame receipts count PCM consumed by the verified host
+device callback, rather than a decoder buffer, playhead or fake sink. Music keeps
+its existing resource actions as the user, accessibility and automation surface.
+
+The governed implementation uses the Linux host's PipeWire backend. An unavailable
+service or device is a playback error. It does not relax the app sandbox or use
+capture access as an output fallback.
+
 ## Seccomp-bpf blocklist
 
 `tilo-launcher` compiles the filter for every launch with the `seccompiler` crate (`sandbox_core::seccomp`) and hands it to `bwrap --seccomp <fd>`. It is a default-allow deny-list answering `EPERM`, derived from Flatpak's profile:
@@ -92,7 +115,7 @@ Replication semantics:
 
 - Grants replicate to peers as part of the room document.
 - **Only the owner can grant.** Non-owners see the grant rows in the Permissions tab but the Revoke button is disabled.
-- A grant revocation writes the removal to the CRDT; the next workspace start uses the updated profile.
+- A grant revocation writes the removal to the CRDT. After the normal durable writer accepts the new policy, the launch supervisor interrupts sandboxes retaining withdrawn app filesystem capabilities, including their open descriptors. New overlapping restrictions and expired grants use the same interruption path. The host binds this decision to the original process and durable room; another app or another room's instance is unaffected. Each launch retains its own private capability file, so another room launching the same package cannot replace its snapshot. Document opening queues its new grant through that writer. The launch worker waits for earlier publication and rechecks its snapshot before the launch gate opens; refused or superseded writes cannot authorize the child. Relaunch uses the reduced profile; revocation does not restart the app or grant background authority.
 - **Only the owner can grant over the wire either.** A room document's owner and capability list are accepted only from the peer entitled to write them, so a guest cannot project its own cache into the room and let automerge's last-writer-wins decide who administers it. See `docs/architecture/collaboration.md §4` — "Write authority on a room's governance" — for the record that decides it, why the invite's signature is what makes it checkable by the receiver, and what it does not yet cover (a relayed or delegated governance change, which needs the op signed rather than the hop authenticated).
 
 ### Inline prompt
@@ -192,7 +215,19 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 
 ## Host overrides
 
-- **Session lock.** While the lock surface is up, every remote event is refused. A locked machine has no driver.
+- **Session lock.** While the lock surface is up, every peer/workspace remote input event is refused. A locked machine has no driver. The existing local device-owner admin socket may submit a Secret password to the normal asynchronous PAM lock verifier; it cannot choose another account, inject app input, or clear the lock. Only the verifier’s ordinary success result unlocks the session.
+  Native compositor restarts retain this state within the authenticated PAM
+  login. `tilo-session` initializes `lock-state` in its new private logout-channel
+  directory; it does not import this channel into the user manager or D-Bus
+  activation environment. Before admitting input or painting, the compositor
+  validates the owner-only channel and arms a locked recovery record. TERM, INT
+  and HUP wake ordered teardown, which publishes the final lock state only after
+  presentation, clients and control endpoints stop. A crash, missing record,
+  corrupt record or incomplete teardown recovers locked; an invalid owner or
+  redirected channel refuses startup. A new authenticated login gets its own
+  directory. This is local session state, outside collaborative documents and
+  undo. Recovery uses the existing password verifier; there is no new unlock
+  action, environment switch, credential or sandbox permission.
 - **Physical priority.** Physical input from the host's seat causes a 500 ms block on all remote input — the user can always grab control. Stamped at the backend event funnel in `compositor/native.rs`, so branches that never reach the client router (the lock screen, the VT chord, the power key) still count as the host taking over.
 - **Kill switch (`Super+Esc`).** Stops every peer's input at once: the firewall
   latches, held remote keys are released, peer-seat attribution is dropped, every
@@ -243,3 +278,32 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 - `crates/session/shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
 - `crates/session/shell/src/network/invite.rs` — invite tokens.
 - `crates/session/shell/src/network/input_firewall.rs` — the remote-input checks, with each denial proven through `State::review_remote_input` in its `production_path` tests.
+
+### Native app action authority
+
+Record participation and app management are separate admissions. A native
+workspace launch remains `author` (Editor) or `read-only` (Viewer) for its
+records. The launcher additionally mounts one host-selected app/person action
+policy directory read-only at `/run/tilo/action-authority`; it never adds these
+person capabilities to the app's sandbox grant file or changes record roles.
+The SDK borrows this current person policy only for Admin operations on the
+bound app or its declared action. Other apps, record resources and other verbs
+retain the original participation. App, agent and token actors cannot borrow
+this person authority.
+
+Only accepted workspace-state publication exports policy. The export retains
+matching person/membership policy and exact-app/action scopes, excludes host
+paths, devices, network and other apps, and checks current native custody before
+renewal. The existing launch supervisor holds the projection lease; the normal
+idle deadline and durable writer renew it once per second while that supervisor
+is live. An expired, future-dated, missing, malformed or foreign binding denies
+Admin admission. The maximum lease is three seconds: host death or failed file
+replacement cannot preserve stale admission indefinitely. Atomic replacement
+is visible through the read-only directory mount, and ordinary hosted model
+pumps republish changed authority without forcing a redraw.
+
+This projection is action discovery/admission, not privileged backend proof.
+Host-mediated operations must independently authenticate the launcher-bound
+package and the current person/owner policy at execution. A self-described
+AppHost `app_id`, an SDK Owner string or possession of the projection cannot
+approve root pairing, disk enrollment, host-shell grants or arbitrary execution.

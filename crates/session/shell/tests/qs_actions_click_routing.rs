@@ -227,7 +227,7 @@ fn click_at(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: &mut state,
+            state: ui::widget::Edits::lend(&mut state),
             path: &root_id,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -249,7 +249,7 @@ fn click_at(
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root_id,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -293,7 +293,7 @@ fn press_key(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::from(modifiers),
-            state: &mut state,
+            state: ui::widget::Edits::lend(&mut state),
             path: &root_id,
             handled: &mut handled,
             focus_target: &mut focus_target,

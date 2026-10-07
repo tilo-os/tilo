@@ -36,6 +36,17 @@ impl Section {
         Section::Maintenance,
     ];
 
+    /// Stable identifier of the section in the navigation list.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Section::Connectivity => "connectivity",
+            Section::Devices => "devices",
+            Section::System => "system",
+            Section::Hubs => "accounts-permissions",
+            Section::Maintenance => "maintenance",
+        }
+    }
+
     /// The section header label.
     pub fn label(self) -> String {
         t(match self {
@@ -158,6 +169,15 @@ const DISPLAYS_KEYWORDS: &[&str] = &[
     "external",
 ];
 const MOUSE_KEYBOARD_KEYWORDS: &[&str] = &[
+    "keyboard",
+    "keyboard layout",
+    "input source",
+    "input method",
+    "language",
+    "qwerty",
+    "qwertz",
+    "azerty",
+    "dvorak",
     "pointer",
     "trackpad",
     "touchpad",
@@ -484,9 +504,12 @@ impl Category {
         match self {
             Category::Network => Icon::Wifi,
             Category::Bluetooth => Icon::Bluetooth,
-            Category::DeviceMesh | Category::ExternalAccounts => Icon::CloudDownload,
-            Category::AgentModels | Category::Appearance => Icon::Sparkles,
-            Category::Sound | Category::Speakers => Icon::Volume2,
+            Category::DeviceMesh => Icon::Cloud,
+            Category::ExternalAccounts => Icon::Mail,
+            Category::AgentModels => Icon::Sparkles,
+            Category::Appearance => Icon::Palette,
+            Category::Sound => Icon::Volume2,
+            Category::Speakers => Icon::Speaker,
             Category::Displays => Icon::Monitor,
             Category::MouseKeyboard => Icon::Mouse,
             Category::KeyboardShortcuts => Icon::Keyboard,
@@ -560,6 +583,14 @@ impl Category {
     }
 
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
+    /// The category whose [`Self::slug`] is `slug`.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|category| category.slug() == slug)
+    }
+
     pub fn slug(self) -> &'static str {
         match self {
             Category::Network => "network",
@@ -624,7 +655,7 @@ mod tests {
         // The device privacy destination does not claim workspace authority.
         assert_eq!(
             Category::Permissions.label(),
-            "Device Privacy & Security",
+            "Device privacy & security",
             "the navigation destination names its system-wide scope"
         );
         assert!(
@@ -653,6 +684,24 @@ mod tests {
                 "night light → Displays",
             ),
             (Category::Network, "vpn", true, "vpn → Network"),
+            (
+                Category::MouseKeyboard,
+                "keyboard layout",
+                true,
+                "keyboard layout → Mouse & Keyboard",
+            ),
+            (
+                Category::MouseKeyboard,
+                "qwertz",
+                true,
+                "qwertz → Mouse & Keyboard",
+            ),
+            (
+                Category::MouseKeyboard,
+                "language",
+                true,
+                "language → Mouse & Keyboard",
+            ),
             (Category::Power, "battery", true, "battery → Power"),
             (
                 Category::Appearance,

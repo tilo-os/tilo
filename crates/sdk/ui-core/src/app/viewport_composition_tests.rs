@@ -18,6 +18,13 @@ struct ResponsiveRoot {
     oscillate: Rc<Cell<bool>>,
     paints: Rc<Cell<usize>>,
 }
+/// An editor of the document's `body`.
+fn body_editor(path: Vec<crate::presence::PathSegment>, id: &str) -> Element {
+    Box::new(crate::testing::OwnedText::new(
+        "body",
+        crate::widget::TextInput::new(path).with_id(id),
+    ))
+}
 impl ResponsiveRoot {
     fn new(builds: Rc<Cell<usize>>) -> Self {
         Self {
@@ -59,20 +66,15 @@ impl Widget for ResponsiveRoot {
             1
         };
         self.children = (0..count)
-            .map(|index| {
-                Box::new(Button::new(&format!("action-{index}"), "Action", None)) as Element
-            })
+            .map(|index| Box::new(Button::new(&format!("action-{index}"), "Action")) as Element)
             .collect();
         if self.editing {
             self.children = vec![
-                Box::new(
-                    crate::widget::TextInput::new(vec![crate::presence::PathSegment::Field(
-                        "body".into(),
-                    )])
-                    .with_on_change_path("body")
-                    .with_id("editor"),
+                body_editor(
+                    vec![crate::presence::PathSegment::Field("body".into())],
+                    "editor",
                 ),
-                Box::new(Button::new("other", "Other", None)),
+                Box::new(Button::new("other", "Other")),
             ];
             if self.rect.width() < 1100.0 {
                 self.children.reverse();
@@ -100,14 +102,7 @@ impl Widget for ResponsiveRoot {
             }
             let mut modal = crate::widget::ModalDialog::new("Modal", body);
             modal.set_open(self.rect.width() < 1100.0);
-            self.children = vec![
-                Box::new(
-                    crate::widget::TextInput::new(vec![])
-                        .with_on_change_path("body")
-                        .with_id("outside"),
-                ),
-                Box::new(modal),
-            ];
+            self.children = vec![body_editor(vec![], "outside"), Box::new(modal)];
         }
         if let Some(calls) = &self.native_calls {
             self.children = vec![Box::new(crate::widget::NativeView::new(

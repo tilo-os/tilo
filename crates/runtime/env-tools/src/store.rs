@@ -82,6 +82,7 @@ impl ToolStore for PackageStoreTools {
                             pinned: false,
                             attested_by: String::new(),
                             source: "built on this device".into(),
+                            held: false,
                         })
                     },
                     None,

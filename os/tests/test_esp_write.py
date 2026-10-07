@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 import unittest
 
@@ -62,6 +63,120 @@ class EspWrite(unittest.TestCase):
         self.assertIn("caller=boot-entries", result.stdout)
         # The plan and its staged files are gone once applied.
         self.assertEqual(list(self.plan_dir.iterdir()), [])
+
+    def test_staged_counters_stay_in_the_same_directory(self):
+        staged = self.esp / "loader/entries.staged"
+        staged.mkdir()
+        source = staged / "bootc_fedora-44-1.conf"
+        source.write_text("incoming\n")
+        for src, dst in (
+            ("loader/entries.staged/bootc_fedora-44-1.conf", "loader/entries/bootc_fedora-44-1+3.conf"),
+            ("loader/entries/bootc_fedora-44-1.conf", "loader/entries.staged/bootc_fedora-44-1+3.conf"),
+        ):
+            self.assertRefused(self.run_plan([{"op": "rename", "src": src, "dst": dst}]), "may not rename")
+        result = self.run_plan([{"op": "rename",
+                                "src": "loader/entries.staged/bootc_fedora-44-1.conf",
+                                "dst": "loader/entries.staged/bootc_fedora-44-1+3.conf"}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((staged / "bootc_fedora-44-1+3.conf").read_text(), "incoming\n")
+        self.assertFalse(source.exists())
+
+    def make_uki(self, name, digest):
+        # Minimal PE fixture read by the shipped UKI parser, rather than a fake
+        # parser that could conceal a sealed-command-line mismatch.
+        payload = f"root=tilo-auto composefs={digest} tilo.mode=normal".encode() + b"\0"
+        image = bytearray(512 + len(payload))
+        struct.pack_into("<I", image, 0x3c, 128)
+        image[128:132] = b"PE\0\0"
+        struct.pack_into("<H", image, 134, 1)
+        image[152:160] = b".cmdline"
+        struct.pack_into("<IIII", image, 160, len(payload), 4096, len(payload), 512)
+        image[512:] = payload
+        directory = self.esp / "EFI/Linux/bootc"
+        directory.mkdir(exist_ok=True)
+        (directory / name).write_bytes(image)
+
+    def run_entries(self, source=None, fail_writer=False):
+        text = DEPLOYMENT.read_text()
+        helpers = text[text.index("esp_path() {"):text.index("# --- listing")]
+        counters = text[text.index("cmd_entries() {"):text.index("# Derive the repair-mode boot entry")]
+        script = helpers + counters + """
+id() { printf '0\n'; }
+findmnt() { printf '%s\n' "$FIXTURE_ROOT_SOURCE"; }
+bootctl() { printf 'Current Entry: bootc_fedora-44-1.conf\n'; }
+die() { echo "$*" >&2; exit 1; }
+log() { echo "$*"; }
+cmd_repair_entry() { :; }
+cmd_entries
+"""
+        env = self.env(TILO_ESP_PLAN_DIR=str(self.plan_dir),
+                       TILO_ESP_WRITE_CMD="false" if fail_writer else f"{HELPER} boot-entries",
+                       UKI_CMDLINE=str(REPO / "os/dev/uki-cmdline.py"), BOOT_TRIES="3",
+                       FIXTURE_ROOT_SOURCE=source or "composefs:" + "a" * 128)
+        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+
+    def bootc_entry(self, directory, name, uki):
+        path = self.esp / "loader" / directory
+        path.mkdir(exist_ok=True)
+        (path / name).write_text(f"title Tilo\nuki /EFI/Linux/bootc/{uki}\n")
+
+    def test_staging_counts_incoming_and_preserves_booted_identity(self):
+        self.make_uki("old.efi", "a" * 128)
+        self.make_uki("new.efi", "b" * 128)
+        self.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi")
+        self.bootc_entry("entries.staged", "bootc_fedora-44-0.conf", "old.efi")
+        self.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi")
+        result = self.run_entries()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.esp / "loader/entries/bootc_fedora-44-1.conf").exists())
+        self.assertTrue((self.esp / "loader/entries.staged/bootc_fedora-44-0.conf").exists())
+        counted = self.esp / "loader/entries.staged/bootc_fedora-44-1+3.conf"
+        self.assertTrue(counted.exists())
+        self.assertFalse((counted.parent / "bootc_fedora-44-1.conf").exists())
+        # A repeated maintenance pass must not reset tries already spent.
+        counted.rename(counted.with_name("bootc_fedora-44-1+2-1.conf"))
+        self.assertEqual(self.run_entries().returncode, 0)
+        self.assertTrue(counted.with_name("bootc_fedora-44-1+2-1.conf").exists())
+
+    def test_finalized_filename_collision_does_not_count_old_fallback(self):
+        self.make_uki("old.efi", "a" * 128)
+        self.make_uki("new.efi", "b" * 128)
+        self.bootc_entry("entries", "bootc_fedora-44-0.conf", "old.efi")
+        self.bootc_entry("entries", "bootc_fedora-44-1.conf", "new.efi")
+        result = self.run_entries()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.esp / "loader/entries/bootc_fedora-44-0.conf").exists())
+        self.assertTrue((self.esp / "loader/entries/bootc_fedora-44-1+3.conf").exists())
+
+    def test_unobserved_identity_cannot_change_the_esp(self):
+        self.make_uki("new.efi", "b" * 128)
+        self.bootc_entry("entries", "bootc_fedora-44-1.conf", "new.efi")
+        result = self.run_entries()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no retained entry matches", result.stderr)
+        self.assertTrue((self.esp / "loader/entries/bootc_fedora-44-1.conf").exists())
+        self.assertFalse((self.esp / "loader/entries/bootc_fedora-44-1+3.conf").exists())
+        (self.esp / "EFI/Linux/bootc/new.efi").write_bytes(b"unreadable UKI")
+        result = self.run_entries()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot read entry identity", result.stderr)
+        self.assertTrue((self.esp / "loader/entries/bootc_fedora-44-1.conf").exists())
+
+    def test_counter_writer_failure_is_fatal(self):
+        self.make_uki("old.efi", "a" * 128)
+        self.make_uki("new.efi", "b" * 128)
+        self.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi")
+        self.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi")
+        result = self.run_entries(fail_writer=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not apply the boot counters", result.stderr)
+
+    def test_non_composefs_keeps_bootloader_selected_entry(self):
+        self.bootc_entry("entries", "bootc_fedora-43-1.conf", "other.efi")
+        result = self.run_entries(source="/dev/mapper/root")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.esp / "loader/entries/bootc_fedora-44-1.conf").exists())
+        self.assertTrue((self.esp / "loader/entries/bootc_fedora-43-1+3.conf").exists())
 
     def test_only_the_callers_operations(self):
         digest = self.stage("x.efi", b"x")

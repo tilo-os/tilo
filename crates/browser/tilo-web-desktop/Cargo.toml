@@ -26,6 +26,7 @@ calendar = { path = "../../../apps/calendar" }
 camera = { path = "../../../apps/camera" }
 canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }
+chip-design = { path = "../../../apps/chip-design" }
 clocks = { path = "../../../apps/clocks" }
 contacts = { path = "../../../apps/contacts" }
 diffmerge = { path = "../../../apps/diffmerge" }
@@ -33,6 +34,7 @@ ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
 hex-editor = { path = "../../../apps/hex-editor" }
 maps = { path = "../../../apps/maps" }
+messages = { path = "../../../apps/messages" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
 notes = { path = "../../../apps/notes" }
 passwords = { path = "../../../apps/passwords" }

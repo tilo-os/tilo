@@ -11,7 +11,7 @@
 //! The outcome of the most recent edit is polled once via [`take_outcome`]
 //! (rising-edge, like [`TextInput::take_dirty`]).
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -21,14 +21,10 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
-
-/// Same ratio [`TextInput`] centres its own glyph band against, so text
-/// doesn't jump vertically when the field enters/leaves edit mode.
-const LINE_HEIGHT_RATIO: f32 = 1.25;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditOutcome {
@@ -48,8 +44,13 @@ pub struct EditableLabel {
     /// editing affordance.
     input: TextInput,
     editing: bool,
-    family: FontChoice,
-    size: f32,
+    /// An explicit family; otherwise the role's.
+    family: Option<FontChoice>,
+    /// What the label is; its idle text is set in the theme's style for it.
+    role: crate::tokens::TextRole,
+    /// The role resolved in the latest theme (stock before the first
+    /// layout): size, weight, line height and family, at the text scale.
+    style: TextStyle,
     idle_color: Option<vello::peniko::Color>,
     rect: Rect,
     /// Tracked so a press can be classified as inside (caret) vs. outside
@@ -64,6 +65,14 @@ pub struct EditableLabel {
     last_press: Option<crate::time::Instant>,
     /// Take the width the row leaves.
     grow: bool,
+    /// A single press on the idle label begins an edit, as a document's
+    /// title does.
+    edits_on_click: bool,
+    /// Shown, dimmed, while the value is empty and no edit is open.
+    placeholder: Option<String>,
+    /// Set by something else that offers a rename (a context menu's
+    /// "Rename"): the label begins an edit with the next event it sees.
+    edit_request: Option<crate::LocalState<bool>>,
 }
 
 impl EditableLabel {
@@ -75,8 +84,9 @@ impl EditableLabel {
             value: value.to_string(),
             input: TextInput::local().with_kind(TextInputKind::Name),
             editing: false,
-            family: FontChoice::SansSerif,
-            size: 16.0,
+            family: None,
+            role: crate::tokens::TextRole::Body,
+            style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
             idle_color: None,
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
@@ -85,7 +95,18 @@ impl EditableLabel {
             renames: false,
             last_press: None,
             grow: false,
+            edits_on_click: false,
+            placeholder: None,
+            edit_request: None,
         }
+    }
+
+    /// Begin an edit when `request` is set, as a rename offered elsewhere
+    /// (a context menu) asks; the label clears it once the edit is open.
+    #[must_use]
+    pub fn begins_editing_on(mut self, request: &crate::LocalState<bool>) -> Self {
+        self.edit_request = Some(request.clone());
+        self
     }
 
     /// Invoke `binding` with each committed value that differs from the one
@@ -104,6 +125,22 @@ impl EditableLabel {
         self
     }
 
+    /// Begin an edit on a single press, the way a document's title is
+    /// renamed in place. The edit still ends as every edit does: Enter or
+    /// a click away commits it once, Escape keeps the value.
+    #[must_use]
+    pub fn edits_on_click(mut self) -> Self {
+        self.edits_on_click = true;
+        self
+    }
+
+    /// What the idle label reads, dimmed, while its value is empty.
+    #[must_use]
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
     /// Take the width the row leaves, eliding a long value.
     #[must_use]
     pub fn filling(mut self) -> Self {
@@ -114,20 +151,38 @@ impl EditableLabel {
     #[must_use]
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
         self.input.set_font_family(Some(family.clone()));
-        self.family = family;
+        self.family = Some(family);
         self
     }
 
+    /// Set the label in `role` (default [`crate::tokens::TextRole::Body`]),
+    /// idle and while editing.
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.size = size;
-        self.input.set_font_size(size);
+    pub fn with_text_role(mut self, role: crate::tokens::TextRole) -> Self {
+        self.set_text_role(role);
         self
     }
 
-    pub fn set_font_size(&mut self, size: f32) {
-        self.size = size;
-        self.input.set_font_size(size);
+    /// Change the label's role; see [`Self::with_text_role`].
+    pub fn set_text_role(&mut self, role: crate::tokens::TextRole) {
+        self.role = role;
+        self.style = crate::tokens::typography::stock().style(role);
+        self.input.set_text_role(role);
+    }
+
+    /// The idle style: the theme's style for the role, in an explicit
+    /// family when one was given.
+    fn adopt_theme(&mut self, theme: &Theme) {
+        let mut style = theme.text(self.role);
+        if let Some(family) = &self.family {
+            style = style.with_family(family.clone());
+        }
+        self.style = style;
+    }
+
+    /// The label's band: the role's line, never under the minimum target.
+    fn band(&self) -> f32 {
+        self.style.line_height_px().max(28.0)
     }
 
     /// Hide the insertion caret beneath a modal without committing an edit.
@@ -169,6 +224,15 @@ impl EditableLabel {
             self.input.value()
         } else {
             &self.value
+        }
+    }
+
+    /// What the idle label shows: its value, or the placeholder while the
+    /// value is empty.
+    fn shown_text(&self) -> &str {
+        match &self.placeholder {
+            Some(placeholder) if !self.editing && self.value.is_empty() => placeholder,
+            _ => self.current_text(),
         }
     }
 
@@ -232,9 +296,10 @@ impl EditableLabel {
         self.input.apply_layout_external(rect);
     }
 
-    /// A second press on the idle label soon after the first begins an edit.
-    fn count_double_click(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if !self.renames
+    /// A press on the idle label that begins an edit: any press with
+    /// [`Self::edits_on_click`], else the second of a double click.
+    fn begin_on_press(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !(self.renames || self.edits_on_click)
             || !matches!(
                 event,
                 WindowEvent::MouseInput {
@@ -245,6 +310,12 @@ impl EditableLabel {
             )
             || !self.rect.contains(self.last_pointer)
         {
+            return;
+        }
+        if self.edits_on_click {
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
             return;
         }
         let now = crate::time::now();
@@ -259,9 +330,10 @@ impl EditableLabel {
         }
     }
 
-    /// Matches [`TextInput`]'s own centring so text doesn't shift on edit.
+    /// The idle text's line, centred in the rect as the editing field
+    /// centres its own.
     fn text_band(&self) -> (f64, f64) {
-        let line_height = f64::from(self.size * LINE_HEIGHT_RATIO);
+        let line_height = f64::from(self.style.line_height_px());
         let top = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (top, line_height)
     }
@@ -273,13 +345,14 @@ impl Widget for EditableLabel {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.adopt_theme(theme);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::auto(),
-                height: Dimension::length((self.size * LINE_HEIGHT_RATIO).max(28.0)),
+                height: Dimension::length(self.band()),
             },
             flex_shrink: 1.0,
             flex_grow: if self.grow { 1.0 } else { 0.0 },
@@ -299,17 +372,10 @@ impl Widget for EditableLabel {
         _available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let (w, _) = text_renderer.measure_font(
-            self.current_text(),
-            self.size,
-            None,
-            TextWeight::Regular,
-            false,
-            &self.family,
-        );
+        let (w, _) = text_renderer.measure_style(self.shown_text(), None, &self.style);
         taffy::Size {
             width: w + 4.0,
-            height: (self.size * LINE_HEIGHT_RATIO).max(28.0),
+            height: self.band(),
         }
     }
 
@@ -332,16 +398,24 @@ impl Widget for EditableLabel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.adopt_theme(theme);
         if self.editing {
             self.input.apply_layout_external(self.rect);
             self.input
                 .draw(scene, transform, text_renderer, theme, presence);
             return;
         }
-        if self.value.is_empty() {
-            return;
-        }
-        let color = self.idle_color.unwrap_or(theme.text_primary);
+        let (shown, color) = if self.value.is_empty() {
+            match &self.placeholder {
+                Some(placeholder) => (placeholder.as_str(), theme.text_tertiary),
+                None => return,
+            }
+        } else {
+            (
+                self.value.as_str(),
+                self.idle_color.unwrap_or(theme.text_primary),
+            )
+        };
         let (top, _lh) = self.text_band();
         #[allow(
             clippy::arithmetic_side_effects,
@@ -353,13 +427,14 @@ impl Widget for EditableLabel {
             reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
         )]
         let width = self.rect.width() as f32 + 1.0;
+        let shown = text_renderer.elide_to_width_style(shown, width, &self.style);
         text_renderer.draw_style(
             scene,
-            &self.value,
+            &shown,
             color,
             text_transform,
             Some(width),
-            &TextStyle::new(self.size).with_family(self.family.clone()),
+            &self.style,
         );
     }
 
@@ -368,8 +443,16 @@ impl Widget for EditableLabel {
             self.last_pointer =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
+        if !self.editing
+            && let Some(request) = &self.edit_request
+            && request.get()
+        {
+            request.set(false);
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
+        }
         if !self.editing {
-            self.count_double_click(event, ctx);
+            self.begin_on_press(event, ctx);
             return;
         }
         match event {
@@ -442,7 +525,7 @@ impl Widget for EditableLabel {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.editing && self.rect.contains(point) {
+        if (self.editing || self.edits_on_click) && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
             None
@@ -469,6 +552,11 @@ impl Widget for EditableLabel {
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
         Widget::ime_cursor_rect(&self.input)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.input.ime_edit_fingerprint(key)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
@@ -504,7 +592,7 @@ impl Widget for EditableLabel {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
@@ -513,7 +601,7 @@ impl Widget for EditableLabel {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -587,7 +675,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: crate::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -808,5 +896,21 @@ mod tests {
 
         modal_paint_suppression_retains_title_draft_and_selection();
         ctrl_a_selects_all_through_embedded_field();
+    }
+    #[test]
+    fn the_idle_label_sets_in_its_roles_style() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut label =
+            EditableLabel::new("Groceries").with_text_role(crate::tokens::TextRole::Title);
+        let mut tree = TaffyTree::new();
+        let node = label.build_layout(&mut tree, &theme, &mut HashMap::new());
+        let style = theme.text(crate::tokens::TextRole::Title);
+        assert_eq!(label.style, style, "weight, size and leading of the role");
+        let height = tree.style(node).unwrap().size.height;
+        assert_eq!(
+            height,
+            Dimension::length(style.line_height_px().max(28.0)),
+            "the band is the role's scaled line"
+        );
     }
 }

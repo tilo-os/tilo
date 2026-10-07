@@ -38,18 +38,80 @@ fn perform(driver: &mut Driver, route: &(String, Option<String>), action: &Actio
 }
 
 #[test]
+fn native_accessibility_new_note_creates_an_editable_document() {
+    struct Surface(u32);
+    impl ui::app::AppSurface for Surface {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(self.0, 672)
+        }
+        fn request_redraw(&self) {}
+        fn set_cursor(&self, _: winit::window::CursorIcon) {}
+    }
+    for (width, index, count) in [(664, 0, 1), (1000, 0, 2), (1000, 1, 2)] {
+        let f = NotebookFixture::rich();
+        let component = component(&f, 21, ui::application::LaunchTarget::New);
+        let checkout = component.record().clone();
+        let mut app = ui::App::from_component(component, runner_inputs()).unwrap();
+        let mut scene = vello::Scene::new();
+        app.surface_frame(&Surface(width), &mut scene);
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+                .unwrap(),
+            0,
+            "the native notebook starts empty"
+        );
+        let controls: Vec<_> = app
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .into_iter()
+            .filter(|(_, node)| node.label() == Some("New note"))
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            controls.len(),
+            count,
+            "native window exposes the controls reachable at this width"
+        );
+        assert_eq!(
+            app.dispatch_a11y_action(controls[index], &Action::Activate),
+            None
+        );
+        for _ in 0..3 {
+            app.surface_frame(&Surface(width), &mut scene);
+        }
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+                .unwrap(),
+            1
+        );
+        let tree = app.build_a11y_tree_update(1.0);
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Block text")
+                    && node.supports_action(ui::accesskit::Action::SetValue)),
+            "native activation must expose the editable body: {:?}",
+            tree.nodes
+        );
+        app.close_components();
+    }
+}
+
+#[test]
 fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
-    let f = LegacyFixture::rich();
+    let f = NotebookFixture::rich();
     let component = component(&f, 11, ui::application::LaunchTarget::New);
     let checkout = component.record().clone();
     let mut a = Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
-    let mut neighbor = driver(&f, 12, &imported(&f));
+    let mut neighbor = driver(&f, 12, &notebook(&f));
     let buttons = named(&a, "New note");
     assert_eq!(buttons.len(), 2);
-    let sidebar = buttons
-        .iter()
-        .find(|r| r.1.as_deref() == Some("heading-action"))
-        .unwrap();
+    let sidebar = buttons.iter().find(|r| r.1.is_none()).unwrap();
     perform(&mut a, sidebar, &Action::Activate);
     assert_eq!(
         f.records
@@ -90,14 +152,14 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     );
     close_driver(&mut a);
 }
-fn component_support_new(f: &LegacyFixture, id: u64) -> ui::application::AppComponent {
+fn component_support_new(f: &NotebookFixture, id: u64) -> ui::application::AppComponent {
     component(f, id, ui::application::LaunchTarget::New)
 }
 
 #[test]
 fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut a = driver(&f, 11, &checkout);
     let page = f.child;
     invoke(
@@ -193,8 +255,8 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
 
 #[test]
 fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut a = driver(&f, 11, &checkout);
     let mut b = driver(&f, 12, &checkout);
     let original = named(&a, "Page title")[0].clone();
@@ -263,7 +325,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
         .unwrap();
     let create = named(&a, "New note")[0].clone();
     perform(&mut a, &create, &Action::Activate);
-    let rect = semantic_rect(&a, "heading-action");
+    let rect = semantic_rect(&a, "new-note");
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
         f.records
@@ -278,7 +340,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
 
 #[test]
 fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
-    let f = LegacyFixture::rich();
+    let f = NotebookFixture::rich();
     let component = component(&f, 14, ui::application::LaunchTarget::New);
     let checkout = component.record().clone();
     let mut a = Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
@@ -290,7 +352,7 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     for route in named(&a, "New note") {
         perform(&mut a, &route, &Action::Activate);
     }
-    let rect = semantic_rect(&a, "heading-action");
+    let rect = semantic_rect(&a, "new-note");
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
         f.records

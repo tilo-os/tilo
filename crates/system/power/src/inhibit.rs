@@ -13,16 +13,36 @@
 //! *mirrors* the registry into a real `systemd-logind` block inhibitor (so
 //! logind's own idle/suspend handling is held off too) by watching the
 //! registry's held-count cross 0↔1 — see [`InhibitRegistry::is_inhibited`].
+//!
+//! A hold may also be a **lease**: [`InhibitRegistry::acquire_until`] takes one
+//! that stops counting at a deadline unless [`InhibitToken::renew_until`]
+//! moves it. A remote admin's hold therefore lapses by itself when the
+//! requests stop, with no timer and nobody having to remember to drop it.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+#[derive(Debug)]
+struct Hold {
+    reason: String,
+    flags: u32,
+    /// The moment a lease stops counting; `None` holds until dropped.
+    until: Option<Instant>,
+}
+
+impl Hold {
+    fn counts(&self, flags: u32, now: Instant) -> bool {
+        self.flags & flags != 0 && self.until.is_none_or(|until| now < until)
+    }
+}
 
 #[derive(Debug, Default)]
 struct RegistryInner {
-    /// `id -> human-readable reason`. A `BTreeMap` keeps `active_reasons`
-    /// deterministic for tests and logs.
-    held: BTreeMap<u64, (String, u32)>,
+    /// `id -> hold`. A `BTreeMap` keeps `active_reasons` deterministic for
+    /// tests and logs.
+    held: BTreeMap<u64, Hold>,
 }
 
 pub const INHIBIT_LOGOUT: u32 = 1;
@@ -66,14 +86,36 @@ impl InhibitRegistry {
     /// Hold only the named desktop operations. This keeps, for example, a
     /// logout-only portal inhibitor from accidentally preventing idle sleep.
     pub fn acquire_for(&self, reason: impl Into<String>, flags: u32) -> InhibitToken {
+        self.insert(reason.into(), flags, None)
+    }
+
+    /// Hold the named operations until `until`, a lease: past it the hold
+    /// stops counting even while the token lives, unless
+    /// [`InhibitToken::renew_until`] moved it.
+    pub fn acquire_until(
+        &self,
+        reason: impl Into<String>,
+        flags: u32,
+        until: Instant,
+    ) -> InhibitToken {
+        self.insert(reason.into(), flags, Some(until))
+    }
+
+    fn insert(&self, reason: String, flags: u32, until: Option<Instant>) -> InhibitToken {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let reason = reason.into();
         {
             let mut inner = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            inner.held.insert(id, (reason, flags));
+            inner.held.insert(
+                id,
+                Hold {
+                    reason,
+                    flags,
+                    until,
+                },
+            );
         }
         InhibitToken {
             id,
@@ -88,22 +130,30 @@ impl InhibitRegistry {
     }
 
     pub fn is_inhibited_for(&self, flags: u32) -> bool {
-        !self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .held
-            .values()
-            .all(|(_, held_flags)| held_flags & flags == 0)
+        self.is_inhibited_for_at(flags, Instant::now())
     }
 
-    /// How many inhibitors are held.
-    pub fn count(&self) -> usize {
+    /// [`Self::is_inhibited_for`] as of `now`: a lease past its deadline no
+    /// longer counts.
+    pub fn is_inhibited_for_at(&self, flags: u32, now: Instant) -> bool {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .held
-            .len()
+            .values()
+            .any(|hold| hold.counts(flags, now))
+    }
+
+    /// How many inhibitors are held, lapsed leases excluded.
+    pub fn count(&self) -> usize {
+        let now = Instant::now();
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .held
+            .values()
+            .filter(|hold| hold.until.is_none_or(|until| now < until))
+            .count()
     }
 
     /// The reasons currently holding the machine awake, sorted by acquisition
@@ -113,13 +163,14 @@ impl InhibitRegistry {
     }
 
     pub fn active_reasons_for(&self, flags: u32) -> Vec<String> {
+        let now = Instant::now();
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .held
             .values()
-            .filter(|(_, held_flags)| held_flags & flags != 0)
-            .map(|(reason, _)| reason.clone())
+            .filter(|hold| hold.counts(flags, now))
+            .map(|hold| hold.reason.clone())
             .collect()
     }
 }
@@ -139,6 +190,24 @@ impl InhibitToken {
     /// The registry-internal id of this hold (for diagnostics/tests).
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Move this hold's deadline to `until` and name it `reason`, making it
+    /// a lease if it was not one. Returns `false` when the registry is gone.
+    pub fn renew_until(&self, reason: impl Into<String>, until: Instant) -> bool {
+        let Some(inner) = self.inner.upgrade() else {
+            return false;
+        };
+        inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .held
+            .get_mut(&self.id)
+            .map(|hold| {
+                hold.reason = reason.into();
+                hold.until = Some(until);
+            })
+            .is_some()
     }
 }
 
@@ -223,5 +292,41 @@ mod tests {
             // fails and the drop is a no-op).
             drop(token);
         }
+    }
+
+    #[test]
+    fn a_lease_counts_until_its_deadline_and_renewal_moves_it() {
+        let registry = InhibitRegistry::new();
+        let start = Instant::now();
+        let minute = std::time::Duration::from_secs(60);
+        let lease = registry.acquire_until("remote use", INHIBIT_SUSPEND, start + minute);
+        assert!(registry.is_inhibited_for_at(INHIBIT_SUSPEND, start));
+        assert!(
+            !registry.is_inhibited_for_at(INHIBIT_IDLE, start),
+            "a suspend lease leaves the screen to blank and lock"
+        );
+        assert!(
+            !registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + minute),
+            "the lease lapses at its deadline though the token lives"
+        );
+        assert!(lease.renew_until("remote use again", start + 2 * minute));
+        assert!(registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + minute));
+        assert!(!registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + 2 * minute));
+        let _forever = registry.acquire_for("download", INHIBIT_SUSPEND);
+        assert!(
+            registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + 10 * minute),
+            "a plain hold has no deadline"
+        );
+        drop(lease);
+        assert_eq!(registry.count(), 1);
+        let gone;
+        {
+            let other = InhibitRegistry::new();
+            gone = other.acquire_until("x", INHIBIT_SUSPEND, start + minute);
+        }
+        assert!(
+            !gone.renew_until("x", start + minute),
+            "its registry is gone"
+        );
     }
 }

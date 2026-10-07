@@ -223,7 +223,7 @@ impl LiveHeader {
             &mut crate::widget::EventCtx {
                 scale_factor: window.scale_factor(),
                 modifiers: &app.input.modifiers,
-                state: &mut app.state.doc,
+                state: crate::widget::Edits::lend(&mut app.state.doc),
                 path: &app.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,

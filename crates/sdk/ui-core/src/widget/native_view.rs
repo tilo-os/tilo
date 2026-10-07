@@ -17,9 +17,9 @@ use winit::event::WindowEvent;
 
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{Element, NativeViewLifecycle, TaffyTreeExt, Widget};
 
 /// Live parent-window context supplied before a native view is shown.
@@ -350,13 +350,13 @@ impl Widget for NativeView {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(fallback) = &mut self.fallback {
             fallback.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.fallback
             .as_mut()
             .is_some_and(|fallback| fallback.update(state, path))
@@ -434,7 +434,7 @@ impl Widget for NativeView {
             return;
         }
 
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -454,13 +454,13 @@ impl Widget for NativeView {
             reason = "the native fallback width is bounded by the on-screen widget rectangle"
         )]
         let max_width = (self.rect.width() - 24.0).max(0.0) as f32;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             label,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             transform.pre_translate((self.rect.x0 + 12.0, self.rect.y0 + 12.0).into()),
             Some(max_width),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -793,7 +793,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -811,7 +811,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,

@@ -20,14 +20,12 @@ fn vertical_navigation_and_selection_keep_anchor_column_and_content() {
             0,
             3,
         );
-        fixture.editor.set_action_interception(true);
         fixture.editor.take_structure_dirty();
         fixture.editor.is_dirty();
         for shift in [false, true] {
             for key in [NamedKey::ArrowDown, NamedKey::ArrowDown, NamedKey::ArrowUp] {
-                fixture.editor.begin_action_intercept();
                 fixture.key(key, shift);
-                assert!(fixture.editor.take_intercepted_ops().is_empty());
+                assert!(fixture.editor.take_edit_ops().is_empty());
                 assert!(
                     !fixture.editor.is_dirty(),
                     "{key:?} must not report a content edit"

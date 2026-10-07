@@ -1,7 +1,7 @@
 //! Localized: every word the user reads comes from a Fluent catalog.
 //!
 //! Widgets take message ids, never prose: `Text::new("localized-title")`,
-//! `Button::new(id, "localized-add", None)`, placeholders and labels alike.
+//! `Button::new(id, "localized-add")`, placeholders and labels alike.
 //! Values that vary go in as Fluent arguments, and the catalog decides the
 //! words around them, including plural forms, which differ by language:
 //! see `locales/en-US.ftl` and `locales/de-DE.ftl`.
@@ -92,11 +92,11 @@ impl ResourceApp for App {
         let books = cx.value(|shelf| shelf.books);
         let actions = cx.actions();
         let add = actions.bind_invocation(
-            Button::new("add-book", "localized-add", None),
+            Button::new("add-book", "localized-add"),
             Shelf::ADD_BOOK.invoke(),
         );
         let remove = actions.bind_invocation(
-            Button::new("remove-book", "localized-remove", None),
+            Button::new("remove-book", "localized-remove"),
             Shelf::REMOVE_BOOK.invoke(),
         );
         Box::new(ui::column![

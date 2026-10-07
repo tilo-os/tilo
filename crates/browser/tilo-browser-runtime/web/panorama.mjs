@@ -69,19 +69,20 @@ export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>p
       if(!users||closed)return;
       try{
         if(!valid()||state.phase!=='presented')throw Error('source unavailable before presentation');
+        if(state.captureProtected!==false)throw Error('source capture protection is active or unknown');
         if(!app||app==='desktop'||typeof state.record!=='string'||!state.record)throw Error('capture requires an exact single-app record');
         dimensions(canvas.width,canvas.height,MAX_SOURCE_PIXELS);
         const size=state.logicalSize;
         if(!finite(size)||size.length!==2||size.some(v=>v<=0)||!same(state.surfaceSize,[canvas.width,canvas.height]))throw Error('incoherent source geometry');
         if(!Number.isSafeInteger(state.frames)||state.frames<1||!Number.isSafeInteger(state.gpuGeneration))throw Error('missing presentation generation');
-        const geometry=[state.record,size,state.surfaceSize];
+        const geometry=[state.record,size,state.surfaceSize,state.layoutGeneration];
         if(state.gpuGeneration<lastGeneration||(state.gpuGeneration===lastGeneration&&state.frames<lastFrame))throw Error('out-of-order source presentation');
         if(state.gpuGeneration===lastGeneration&&state.frames===lastFrame){
           if(!same(lastGeometry,geometry))throw Error('geometry changed without a new presentation');
           return;
         }
         const current=layer();watch(current);
-        const at=now();
+        const at=state.observedPresentedAtMs??now();
         if((current?.members().length??0)>MAX_PRESENCES)throw Error('presence capacity exceeded');
         const pointers=(current?.remoteState(at)??[]).filter(p=>epochs.has(p.publisher)&&!p.stale&&p.focus?.app===app&&p.focus?.record===state.record&&finite(p.pointer)&&p.pointer.length===2&&p.pointer[0]>=0&&p.pointer[1]>=0&&p.pointer[0]<size[0]&&p.pointer[1]<size[1]).map(p=>({publisher:p.publisher,seq:p.seq,receivedAtMs:p.receivedAtMs,pointer:[...p.pointer],participant:structuredClone(p.participant),epoch:epochs.get(p.publisher)}));
         if(pointers.length>MAX_PRESENCES)throw Error('presence capacity exceeded');
@@ -90,7 +91,7 @@ export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>p
         if(copy.height!==canvas.height)copy.height=canvas.height;
         const ctx=copy.getContext('2d');if(!ctx)throw Error('Canvas2D capture unavailable');
         ctx.clearRect(0,0,copy.width,copy.height);ctx.drawImage(canvas,0,0);
-        packet={image:copy,app,record:state.record,frame:state.frames,gpuGeneration:state.gpuGeneration,at,logical:[...size],pixels:[canvas.width,canvas.height],presenceAvailable:Boolean(current),pointers};
+        packet={image:copy,app,record:state.record,frame:state.frames,gpuGeneration:state.gpuGeneration,layoutGeneration:state.layoutGeneration,at,logical:[...size],pixels:[canvas.width,canvas.height],presenceAvailable:Boolean(current),pointers};
         lastGeneration=state.gpuGeneration;lastFrame=state.frames;lastGeometry=structuredClone(geometry);error=undefined;
       }catch(e){packet=undefined;error=e;}
     },
@@ -169,7 +170,7 @@ export function createPanorama({canvas,sources:inputs,width=1920,height=1080,now
             ctx.font='11px system-ui';ctx.fillText(markerText(p.publisher,p.participant).slice(0,120),point[0]+12,point[1]+13,240);
             pointers.push({publisher:p.publisher,sequence:p.seq,receivedAtMs:p.receivedAtMs,screen:point,kind:'observed-pointer'});
           }
-          panes.push({index:row.index,app:frame.app,record:frame.record,frame:frame.frame,gpuGeneration:frame.gpuGeneration,presentedAtMs:frame.at,logicalSize:[...frame.logical],pixels:[...frame.pixels],presenceAvailable:frame.presenceAvailable,transform,pointers});
+          panes.push({index:row.index,app:frame.app,record:frame.record,frame:frame.frame,gpuGeneration:frame.gpuGeneration,layoutGeneration:frame.layoutGeneration,presentedAtMs:frame.at,logicalSize:[...frame.logical],pixels:[...frame.pixels],presenceAvailable:frame.presenceAvailable,transform,pointers});
         }finally{ctx.restore();}
       }
     }catch(error){ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,width,height);throw error;}

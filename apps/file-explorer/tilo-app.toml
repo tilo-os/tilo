@@ -6,7 +6,8 @@
 # read+write on the directories the user opens — `$HOME`,
 # `/var/workspace` (override `TILO_WORKSPACE_ROOTS`), the freedesktop
 # trash dir — and read+exec on the host bin dirs, because it hands
-# files off to `terminal`, `word-processor` and the host opener.
+# files off to `word-processor` and the host opener. Terminal opens through
+# the shell's `tools` service.
 #
 
 
@@ -65,7 +66,7 @@ open-uri = "via-host"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
-spellcheck = "optional@1"
+tools = "optional@1"
 
 [entrypoint]
 bin             = "bin/file-explorer"

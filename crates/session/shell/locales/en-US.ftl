@@ -93,8 +93,6 @@ shortcut-new-window = New window
 shortcut-add-tab = Add tab here
 shortcut-duplicate-tab = Duplicate tab
 shortcut-open-terminal = Open terminal
-shortcut-global-search = Global search
-shortcut-lock = Lock
 shortcut-workspace-wheel = Workspace wheel
 shortcut-display-layout = Display layout
 shortcut-capture-screenshot = Capture screenshot
@@ -109,9 +107,9 @@ shortcut-vim-navigation = Vim navigation
 shortcut-dismiss = Dismiss
 
 # What each changeable desktop shortcut is called
-shortcut-name-search = Global search
+shortcut-name-search = Search everywhere
 shortcut-name-workspace-overview = Overview
-shortcut-name-lock = Lock
+shortcut-name-lock = Lock screen
 shortcut-name-quick-settings = Quick Settings
 shortcut-name-shortcut-help = Desktop help
 shortcut-name-focus-previous-window = Focus previous window
@@ -432,6 +430,8 @@ portal-email-attachments = { $count ->
    *[other] { $count } attachments will be available through the document portal.
 }
 portal-remember-device = Remember on this device
+portal-a11y-name = Name
+portal-a11y-answer = Answer
 portal-secret-required = Fill in every required field.
 portal-secret-wifi-length = A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.
 portal-network-heading = Network
@@ -512,6 +512,8 @@ host-session-action-blocked = Session action blocked
 host-action-started = Started “{ $title }”
 host-action-admitted = Action job { $job } was admitted
 host-action-cannot-run = Can't run “{ $title }”
+host-action-failed-status = Couldn't run
+launchpad-action-unanswered = The app never answered
 host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
 host-search-in-resource-fallback = resource
@@ -1065,11 +1067,16 @@ launch-error-no-workspace = Choose a workspace, then try again.
 launch-error-shell-owned-intent = Open this destination from the desktop controls.
 launch-error-identity-unavailable = The workspace identity could not be loaded. Try again.
 launch-error-registry-unreadable = The app list could not be read. Try again.
+launch-error-sandbox-supervision = The app's file permissions could not be supervised. Try again.
 launch-error-host-app-refused = This app's desktop entry cannot be started.
 launch-failed-launcher-unavailable = The app launcher is unavailable. Open Applications and try again.
 launch-failed-stopped = The app stopped before opening. Open Applications and try again.
 launch-failed-missing-library = The app needs a library this system doesn't have, so it stopped before opening.
+launch-failed-runtime-mismatch = This app was built for a different Tilo runtime. Update or reinstall it to get the runtime it needs.
 launch-failed-sandbox = The app's sandbox could not be set up, so it stopped before opening.
+launch-failed-collaboration = The app couldn't join this workspace's collaboration service, so it stopped before opening. The desktop log says why.
+launch-failed-window-lost = Its window stopped without being closed. Open it again from Applications; the desktop log says why.
+launch-window-lost-title = { $app } closed unexpectedly
 launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
 launch-failure-title = Couldn't open { $app }
@@ -1227,9 +1234,12 @@ search-opens-here = Opens here, as a tab
 # Search providers, as the search settings actions name them
 search-provider-now-playing = Now playing
 search-provider-records = Records
-search-provider-notes = Notes
-search-provider-editor = Editor
 search-provider-session = Session
+search-provider-permission-prompts = Permission requests
+permission-request-expired = Permission request is no longer pending
+permission-request-owner-required = Permission decisions require the current owner
+permission-request-permanent-owner-required = Permanent permission requires the current owner
+permission-request-confirm = Confirm this permission decision
 search-provider-shortcuts = Shortcuts
 search-provider-tray = Tray
 search-provider-files = Files
@@ -1360,6 +1370,8 @@ search-action-tab-close = Close this tab
 search-action-tab-close-subtitle = Close the focused tab; its window closes with it if it was the last
 search-action-tab-reopen = Reopen closed tab
 search-action-tab-reopen-subtitle = Bring back the tab closed most recently in this workspace, where it was
+search-action-tab-open-beside = Open an app in a new tab
+search-action-tab-open-beside-subtitle = Open another instance of an app, optionally at an address, as a tab right after the focused one
 search-action-tab-split-right = Split this tab to the right
 search-action-tab-split-right-subtitle = Move the focused tab into a new window group beside its current one
 search-action-tab-move-to-new-group = Move this tab to a new group
@@ -1434,8 +1446,6 @@ search-action-peer-invite-named = Name collaborator and open invite
 search-action-peer-invite-named-subtitle = Record the display name, then review their invite before creating it
 search-action-agent-invite = Invite agent to workspace
 search-action-agent-invite-subtitle = Start a scoped agent setup; choose every surface it may use
-search-action-text-insert = Insert text into the focused note
-search-action-text-insert-subtitle = Write into the focused Notes or Editor tab at a character offset
 search-action-record-bring = Add an item to this workspace
 search-action-record-bring-subtitle = Make it available here without moving the original
 search-action-quick-settings-brightness-set = Set display brightness
@@ -1524,6 +1534,14 @@ search-apps-opening-body = Loading…
 # Search: continuity actions across your certified devices
 search-continuity-certified-device = certified device
 search-continuity-play-on = Play { $source } on { $target }
+search-continuity-wake-device = Wake a device
+search-continuity-wake-device-subtitle = Sends a wake-up signal from a device on its network
+device-wake-app-name = Devices
+device-wake-rejoined = { $device } is awake
+device-wake-not-rejoined = { $device } did not wake up
+device-wake-not-rejoined-body = It got a wake-up signal but has not come back. It may be off or out of power.
+device-wake-failed = { $device } could not be woken
+device-wake-failed-body = No wake-up signal could be sent on its network.
 search-continuity-media-handoff-subtitle = Move this live media session to an exact certified device
 search-continuity-media-cancel = Cancel moving { $media }
 search-continuity-media-retry = Retry moving { $media }
@@ -1576,6 +1594,14 @@ search-continuity-calibration-revert = Revert placement for { $device }
 search-continuity-calibration-revert-subtitle = Restore the previous certified-display placement
 search-continuity-tether-request = Ask { $device } for tethering
 search-continuity-tether-request-subtitle = Request a short-lived, phone-approved connection
+search-continuity-unlock-approve = Unlock { $device } (code { $code })
+search-continuity-unlock-deny = Keep { $device } locked (code { $code })
+search-continuity-unlock-subtitle = It restarted and is asking to open its encrypted disk
+search-continuity-device-remove = Remove { $device } from your devices
+search-continuity-device-remove-subtitle = It can no longer act for you or unlock its disk through your devices
+device-unlock-error-not-pending = That unlock request is no longer waiting
+device-unlock-error-cannot-remove = This device cannot remove that device
+device-unlock-error-no-identity = This device does not hold your identity
 search-continuity-tether-allow = Allow tethering for { $device }
 search-continuity-tether-decline = Decline tethering for { $device }
 search-continuity-tether-consent-subtitle = Resolve this exact phone-side consent request
@@ -1605,12 +1631,15 @@ search-continuity-call-decline = Decline handoff for { $room }
 search-continuity-call-consent-subtitle = Resolve this exact call handoff consent
 
 # First-login identity setup: what the identity is
-onboarding-intro-title = Create your local Tilo identity
-onboarding-intro-body = Tilo will create a cryptographic identity that belongs to you, then certify a separate key for this device. Tilo uses that chain for collaboration and peer invitations. Individual app edits are not all cryptographically signed yet.
-onboarding-intro-point-collaboration = It gives collaboration a stable identity for you and certifies this device to peers.
-onboarding-intro-point-local = It is created here, on this machine. Nothing is uploaded and no server holds a copy.
-onboarding-intro-point-not-account = It is not an account and has no password — there is nothing to log in to.
-onboarding-intro-card-title = What it is for
+onboarding-intro-title = Set up your Tilo identity
+onboarding-intro-body = Tilo creates a cryptographic identity that belongs to you, then certifies a separate key for this device. Collaboration and peer invitations rely on it. Individual app edits are not all cryptographically signed yet.
+onboarding-intro-point-collaboration = Collaborators see one stable identity for you, and it certifies each of your devices.
+onboarding-intro-point-local = It is created on this computer. Nothing is uploaded and no server keeps a copy.
+onboarding-intro-point-not-account = It is not an account and has no password. There is nothing to sign in to.
+onboarding-choice-create = Create a new identity
+onboarding-choice-create-detail = Start fresh on this computer
+onboarding-choice-existing = Use my existing Tilo identity
+onboarding-choice-existing-detail = Bring it over from another device or a backup
 onboarding-host-intro-title = Set up your Tilo identity
 onboarding-host-intro-body = You are already signed in to this computer. Before the Tilo Desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.
 
@@ -1627,10 +1656,11 @@ onboarding-create-failed-message = Nothing was written and the desktop is still 
 
 # First-login identity setup: progress header
 onboarding-progress-eyebrow = Tilo identity setup
-onboarding-progress-stage = Step { $step } of { $total }  ·  { $stage }
+onboarding-progress-stage = Step { $step } of { $total }
 onboarding-progress-a11y = Identity setup, step { $step } of { $total }: { $stage }
 onboarding-stage-choose = Choose
 onboarding-stage-restore = Restore
+onboarding-stage-connect = Connect
 onboarding-stage-protect = Protect
 onboarding-stage-media = Media
 onboarding-stage-ready = Ready
@@ -1648,48 +1678,71 @@ onboarding-back = Back
 onboarding-cancel = Cancel
 onboarding-continue = Continue
 onboarding-done = Done
-onboarding-use-existing = Use existing
-onboarding-create-identity = Create identity
 onboarding-create-local-identity = Create local identity
-onboarding-restore-backup = Restore selected backup
+onboarding-restore-backup = Restore identity
+onboarding-existing-title = Use your existing identity
+onboarding-existing-body = Choose how to bring the identity you already use to this computer.
+onboarding-choice-nearby = Connect a nearby device
+onboarding-choice-nearby-detail = Approve this computer from a device that already has your identity
+onboarding-choice-restore = Restore from a backup
+onboarding-choice-restore-detail = Open an encrypted identity backup file
+onboarding-restore-title = Restore from a backup
+onboarding-restore-body = Choose the encrypted backup you saved from Tilo and enter its passphrase.
+onboarding-restore-file-label = Backup file
 
 # First-login identity setup: connecting an existing identity
-onboarding-connect-title = Connect an existing identity
 onboarding-connect-recovery-title = Your existing identity needs recovery
 onboarding-connect-recovery-message = Tilo could not verify your existing identity chain. Unlock the desktop keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.
 onboarding-connect-failed = That identity could not be connected
-onboarding-connect-nearby = Connect a nearby device
-onboarding-connect-nearby-instructions = On the other device, open Settings → Devices & Sync → Add a personal device, then compare the six-digit code shown on both screens.
 onboarding-connect-retry-keyring = Retry keyring
-onboarding-connect-browse = Browse…
+onboarding-connect-browse = Browse
 onboarding-connect-file = Identity backup file
 onboarding-connect-file-placeholder = Choose an encrypted backup or legacy identity JSON
 onboarding-connect-passphrase = Backup passphrase
 onboarding-connect-passphrase-placeholder = Passphrase (leave empty for legacy JSON)
-onboarding-connect-nearby-card = Nearby trusted device
-onboarding-connect-backup-card = Encrypted backup
 onboarding-connect-choose-file-first = Choose an encrypted backup or legacy identity file first.
 onboarding-keyring-unavailable = The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: { $error }
 onboarding-picker-import-title = Choose a Tilo identity
 onboarding-picker-import-filter = Tilo identity
+onboarding-nearby-title = Connect a nearby device
+onboarding-nearby-body = This computer is waiting for your other device to approve it. Keep both devices close together.
+onboarding-nearby-step-open = On your other device, open Settings and go to Devices & Sync.
+onboarding-nearby-step-add = Under Add a personal device, choose Add device.
+onboarding-nearby-step-compare = Compare the six-digit code on both screens, then approve it on your other device.
+onboarding-nearby-waiting = Waiting for your other device.
+onboarding-nearby-code-label = Verification code
+onboarding-nearby-try-again = Try again
 
 # First-login identity setup: pairing with a nearby device
-onboarding-nearby-searching = Looking for a trusted device nearby…
-onboarding-nearby-start-failed = Could not start nearby setup: { $error }
+onboarding-nearby-failed-title = Pairing did not finish
+onboarding-nearby-ended = The pairing window closed or approval was cancelled. Choose Try again.
+onboarding-nearby-unknown = Choose Try again.
+onboarding-nearby-detail = Details: { $detail }
+onboarding-nearby-permission-title = Permission denied: this computer was not allowed to save the pairing
+onboarding-nearby-permission = Tilo could not write where this computer keeps its device identity. Choose Try again once that is fixed.
+onboarding-nearby-storage-full-title = This computer's disk is full
+onboarding-nearby-storage-full = The pairing could not be saved. Free up some space, then choose Try again.
+onboarding-nearby-read-only-title = This computer's storage is read-only
+onboarding-nearby-read-only = The pairing could not be saved. Choose Try again once the storage can be written to.
+onboarding-nearby-unreachable-title = Your other device could not be reached
+onboarding-nearby-unreachable = Check that both devices are on the same network, then choose Try again.
+onboarding-nearby-timed-out-title = No trusted device approved this computer in time
+onboarding-nearby-timed-out = Choose Try again, then approve it on your other device.
+onboarding-nearby-invalid-identity-title = Your other device returned an invalid identity
+onboarding-nearby-invalid-identity = Choose Try again.
+onboarding-nearby-not-started-title = Nearby setup could not start
+onboarding-nearby-not-started = Choose Try again.
 onboarding-nearby-unavailable = Nearby setup is unavailable in this session
-onboarding-nearby-cancelled = Nearby setup cancelled. Choose Connect nearby to try again.
-onboarding-nearby-code = Code { $code } · waiting for approval on your trusted device
+onboarding-nearby-cancelled = Pairing cancelled. Choose Try again to start over.
+onboarding-nearby-code = Check that your other device shows the same code, then approve it there.
 onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
-onboarding-nearby-invalid-identity = The trusted device returned an invalid identity. Choose Connect nearby to retry.
-onboarding-nearby-failed = Nearby setup did not finish: the pairing window closed or approval was cancelled. Choose Connect nearby to retry.
-onboarding-nearby-failed-detail = Nearby setup did not finish: { $detail }. Choose Connect nearby to retry.
 
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity
 onboarding-backup-identity-created = Your local identity was created
 onboarding-backup-explanation = Save an encrypted copy somewhere else. Keep its file and passphrase separately; together they restore this identity.
 onboarding-backup-passphrase = New backup passphrase
-onboarding-backup-passphrase-placeholder = Long, unique passphrase — 12+ characters
+onboarding-backup-passphrase-placeholder = At least 12 characters, long and unique
 onboarding-backup-confirmation = Confirm new backup passphrase
 onboarding-backup-confirmation-placeholder = Confirm passphrase
 onboarding-backup-save = Choose location and save backup…
@@ -1735,7 +1788,7 @@ onboarding-codecs-enables-hardware = Hardware-accelerated video on AMD and Intel
 onboarding-codecs-enables-playback = H.264 and HEVC playback in videos you open.
 onboarding-codecs-enables-encoding = H.264 and HEVC encoding for screen sharing, recording and calls.
 onboarding-codecs-source-title = Where it comes from
-onboarding-codecs-source = This computer downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo does not host or distribute them. You can remove them at any time in Settings, Updates.
+onboarding-codecs-source = This computer downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo does not host or distribute them. You can remove them at any time in Settings, Updates. OpenH264 Video Codec provided by Cisco Systems, Inc. The complete Cisco binary license is in /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt and at https://www.openh264.org/BINARY_LICENSE.txt.
 onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when the codecs are ready.
 onboarding-codecs-progress = Progress: { $percent }%
 onboarding-codecs-starting = Starting…
@@ -1754,8 +1807,8 @@ onboarding-codecs-retry = Try again
 onboarding-codecs-install = Install media codecs
 
 # Desktop tour
-onboarding-tour-eyebrow = Tilo  •  DESKTOP TOUR
-onboarding-tour-stage = { $stage }  ·  { $step } of 4
+onboarding-tour-eyebrow = Desktop tour
+onboarding-tour-stage = Step { $step } of 4
 onboarding-tour-progress-a11y = Desktop tour, step { $step } of 4: { $stage }
 onboarding-tour-stage-move = Move
 onboarding-tour-stage-arrange = Arrange
@@ -1765,12 +1818,16 @@ onboarding-tour-skip = Skip tour
 onboarding-tour-enter = Enter Tilo
 onboarding-tour-navigate-title = Everything is close at hand
 onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.
-onboarding-tour-search-title = Search  ·  Super+K or Super+Space
-onboarding-tour-search-title-mac = Search  ·  Command+K or Option+Space
+onboarding-tour-search-title = Search
+onboarding-tour-search-title-mac = Search
+onboarding-tour-search-keys = Super+Space
+onboarding-tour-search-keys-mac = Command+K or Option+Space
 onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
-onboarding-tour-overview-title = Overview  ·  Super+Tab or pinch
+onboarding-tour-overview-title = Overview
+onboarding-tour-overview-keys = Super+Tab or pinch
 onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
-onboarding-tour-move-title = Move  ·  Super+arrow keys or three-finger swipe
+onboarding-tour-move-title = Move
+onboarding-tour-move-keys = Super+arrow keys or three-finger swipe
 onboarding-tour-move-body = Left and right step between tiled windows along the current strip. Up and down go to the strip above or below; Super+Page Up and Page Down, or a four-finger swipe, switch workspaces.
 onboarding-tour-organise-title = A place for each kind of work
 onboarding-tour-organise-intro = The layout is simple once its four levels have names. Tilo remembers the arrangement for you.
@@ -1792,13 +1849,13 @@ onboarding-tour-system-features-title = Undo and permissions are system features
 onboarding-tour-system-features-body = History follows authorship, and apps ask Tilo for capabilities instead of receiving ambient access.
 onboarding-tour-start-title = Your first five minutes
 onboarding-tour-start-intro = Start with one outcome, then let the workspace grow with the project. Find this again from Search as Desktop tour.
-onboarding-tour-name-title = 1  Name the workspace
+onboarding-tour-name-title = Name the workspace
 onboarding-tour-name-body = Open Workspace Settings from the title and choose a recognisable project name.
-onboarding-tour-open-title = 2  Open a shared starting point
+onboarding-tour-open-title = Open a shared starting point
 onboarding-tour-open-body = Choose Notes, Calendar, or Chat, then add other apps beside it.
-onboarding-tour-invite-title = 3  Invite the right people
+onboarding-tour-invite-title = Invite the right people
 onboarding-tour-invite-body = Choose Invite people in Workspace Settings and review each role before sharing.
-onboarding-tour-check-title = 4  Check work and recover mistakes
+onboarding-tour-check-title = Check work and recover mistakes
 onboarding-tour-check-body = Open Activity to catch up, compare versions, or undo only the change that went wrong.
 
 # Workspace invite card: inviting someone, joining with an invite, pending invites
@@ -2308,6 +2365,21 @@ nearby-error-folder-too-large = folder exceeds the size limit
 nearby-error-source-changed = nearby transfer source changed while staging
 nearby-error-name-not-portable = source name is not portable
 
+# AirDrop lab receiver verification
+airdrop-verify-title = Verify AirDrop receiver
+airdrop-verify-send-once = Send once
+airdrop-verify-detail = File: { $name }
+    Size: { $bytes } bytes
+    Receiver: { $endpoint }
+    Enter the receiver's SHA-256 certificate fingerprint as 64 hexadecimal digits from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
+airdrop-error-unavailable = AirDrop lab requires an unlocked local session, file-transfer permission and current Files access.
+airdrop-error-source = AirDrop lab accepts one readable regular file up to 16 MiB.
+airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
+airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
+airdrop-error-declined = AirDrop transfer was cancelled before sending.
+airdrop-error-verification = Fingerprint differs. Check the receiver; nothing sent.
+airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
+
 # A document a tab could not restore
 hosted-document-unavailable = { $path } is unavailable: { $error }
 
@@ -2325,3 +2397,89 @@ a11y-speaker-listener = { $group } can calibrate with this microphone
 a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
 speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
 speaker-error-listening-unavailable = choose a microphone that can listen where you sit
+lock-screen-unlock = Unlock session
+shortcut-name-dictation-toggle = Start or finish dictation
+shortcut-name-dictation-finish = Finish dictation
+shortcut-name-dictation-cancel = Cancel dictation
+dictation-title = Dictation
+dictation-consent = Record your microphone for this dictation? Audio stays on this device.
+dictation-preparing = Checking the focused editable field…
+dictation-loading = Loading local recognition. The microphone is off.
+dictation-listening = Microphone on · Speak, then finish to insert.
+dictation-finishing = Microphone off · Finishing your text…
+dictation-stopping = Stopping dictation…
+dictation-editable-required = Focus an editable field. Passwords cannot receive dictation.
+dictation-busy = The previous dictation is still stopping. Try again shortly.
+dictation-target-changed = The field changed. Dictation was canceled without inserting text.
+dictation-timeout = Dictation timed out. No text was inserted.
+dictation-unavailable = Local dictation is unavailable. No text was inserted.
+dictation-model-required = Install an approved local speech model before using dictation.
+dictation-language-unavailable = This speech model does not support the requested language.
+dictation-microphone-unavailable = Microphone access is unavailable. Check your input device.
+dictation-audio-interrupted = Microphone audio was interrupted. No text was inserted.
+dictation-action-start-detail = Request one-session microphone consent for the focused field, or finish the current recording.
+dictation-action-finish-detail = Stop the microphone and insert the final corrected text into its original field.
+dictation-action-cancel-detail = Stop dictation and discard its private draft.
+dictation-stopping-microphone = Stopping microphone…
+
+search-action-axis-enable = Enable experimental axis navigation
+search-action-axis-enable-subtitle = This session: step between groups and gather focus into view
+search-action-axis-disable = Disable experimental axis navigation
+search-action-axis-disable-subtitle = Restore ordinary window navigation for this session
+search-action-axis-gather = Gather the focused window into view
+search-action-axis-gather-subtitle = Experimental axis navigation: reveal focus without animation
+axis-navigation-disabled = Experimental axis navigation is disabled
+
+search-provider-device-shell = Device shell
+terminal-request-device-shell = Request this device's own shell
+terminal-device-shell-owner-required = Only the device owner can request its own shell
+
+terminal-inspect-device-shell = Inspect this device's shell session
+terminal-run-device-shell = Run a command in this device's shell
+terminal-read-device-shell = Read this device's shell output
+
+terminal-device-shell-session-param = Exact local session UUID from Inspect
+terminal-device-shell-command-param = One reviewed command in this device shell
+
+terminal-device-shell-confirm-param = Confirm this reviewed device-shell operation
+
+shortcut-name-tab-menu = Show tab menu
+search-action-tab-menu = Show tab menu
+search-action-tab-menu-subtitle = Actions for the focused tab
+search-action-tab-menu-unavailable = No focused tab is available
+
+dictation-transcript-retained = Microphone off · Text is too long to insert in one step. Kept privately for 10 minutes. Copy exports all text to your clipboard; discard removes it.
+dictation-transcript-copied = Complete transcript copied. Paste it into your chosen field. The private draft remains until you discard it or 10 minutes expire.
+dictation-copy-failed = Clipboard unavailable. Your complete transcript is still kept privately; retry copying or discard it.
+search-action-tab-drag-cancel = Cancel tab drag
+search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
+search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
+
+display-confirm-answer-pending = Saving the display answer…
+display-confirm-answer-failed = Could not save the display answer: { $reason }
+
+display-sheet-saving-layout = Saving display layout…
+
+session-diagnostics-title = Session timing diagnostics
+session-diagnostics-configure = Configure timing for subsequent app launches
+session-diagnostics-inspect = Inspect session timing diagnostics
+session-diagnostics-presentation = Record content-free input and presentation timing
+session-diagnostics-gpu_stages = Record GPU stage timing
+session-diagnostics-gpu_timestamps = Enable GPU timestamps
+session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
+session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
+
+device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
+search-action-activity-acknowledge = Acknowledge viewed activity
+search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
+search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
+search-action-activity-tasks = Review workspace goals and agent work
+search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
+search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
+
+task-review-inspect = Inspect task evidence
+task-review-steer = Change task instructions
+task-review-cancel = Cancel task run
+task-review-retry = Retry task
+task-review-status = Inspect task review availability
+task-review-provider = Task review

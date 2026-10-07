@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Why a folder could not be listed, as the error view says it.
+pub const UNREADABLE_FOLDER: &str =
+    "It was moved or removed, or you don’t have permission to open it.";
+
 /// Cheap cooperative cancellation shared with a background scanner.
 #[derive(Clone, Debug, Default)]
 pub struct ScanCancellation(Arc<AtomicBool>);
@@ -44,29 +48,37 @@ impl ScanResult {
     pub fn sample() -> Self {
         let path = PathBuf::from("/home/you");
         let entries: Vec<Entry> = [
-            ("Projects", 84_200_000_000),
-            ("Videos", 48_600_000_000),
-            ("Photos", 31_800_000_000),
-            ("Downloads", 19_400_000_000),
-            ("Documents", 8_700_000_000),
-            ("Other", 5_100_000_000),
+            ("Projects", 84_200_000_000, 48_310),
+            ("Videos", 48_600_000_000, 1_204),
+            ("Photos", 31_800_000_000, 9_870),
+            ("Downloads", 19_400_000_000, 2_615),
+            ("Documents", 8_700_000_000, 4_132),
+            ("Music", 5_100_000_000, 1_086),
+            (".cache", 3_900_000_000, 12_408),
+            (".local", 3_400_000_000, 6_121),
+            ("Desktop", 2_600_000_000, 214),
+            ("Applications", 2_100_000_000, 3_870),
+            (".config", 1_900_000_000, 1_950),
+            ("Public", 900_000_000, 18),
+            ("Templates", 400_000_000, 9),
         ]
         .into_iter()
-        .map(|(name, bytes)| Entry {
+        .map(|(name, bytes, files)| Entry {
             path: path.join(name.to_lowercase()),
             name: name.into(),
             bytes,
-            files: bytes / 1_000_000,
+            files,
             unreadable: 0,
         })
         .collect();
         let total = entries.iter().map(|entry| entry.bytes).sum();
+        let files = entries.iter().map(|entry| entry.files).sum();
         Self {
             path,
             entries,
             total,
-            files: 12_842,
-            unreadable: 0,
+            files,
+            unreadable: 3,
             error: None,
         }
     }
@@ -129,7 +141,7 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
         }
     } else {
         unreadable = 1;
-        error = Some("The folder is unavailable or access was not granted".into());
+        error = Some(UNREADABLE_FOLDER.into());
     }
 
     let next = AtomicUsize::new(0);

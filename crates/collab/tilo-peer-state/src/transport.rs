@@ -23,7 +23,6 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             envelope,
             ..
         } => {
-            let route = format!("app\0{app_id}\0{record_id}");
             // A host cannot tell a sealed snapshot from a sealed increment: it
             // keeps every sealed write after the record's last checkpoint.
             let retention = if envelope.encryption.is_some() {
@@ -34,7 +33,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
                     collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
                 }
             };
-            return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
+            return Some((app_document_channel(app_id, record_id), retention));
         }
         NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key, ..
@@ -47,4 +46,11 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         _ => return None,
     };
     Some((*blake3::hash(route).as_bytes(), kind))
+}
+
+/// The existing retained transport channel of an app record. Room isolation
+/// is supplied by the enclosing authenticated workspace, not by this digest.
+#[must_use]
+pub fn app_document_channel(app: &str, record: &str) -> [u8; 32] {
+    *blake3::hash(format!("app\0{app}\0{record}").as_bytes()).as_bytes()
 }

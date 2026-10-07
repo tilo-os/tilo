@@ -1287,6 +1287,7 @@ fn row(
             presentation: None,
         },
         action: Some(ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: kind.into(),
             resource_label: resource_label.into(),
@@ -1446,6 +1447,7 @@ mod tests {
         argument: InvokeArgument,
     ) -> InvokeRequest {
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),

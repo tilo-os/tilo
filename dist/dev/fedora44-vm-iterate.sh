@@ -388,9 +388,9 @@ cmd_deploy_apps() {
         if [ -e \"\$root\" ]; then mv \"\$root\" \"\$old\"; fi
         mv \"\$incoming\" \"\$root\"
         rm -rf -- \"\$old\"
-        cp \"\$HOME/$vm_root/apps/usr/lib/tilo-runtime/2026.07/bundle.toml\" /dev/null
+        cp \"\$HOME/$vm_root/apps/usr/lib/tilo-runtime/\"2026.07+native.*/bundle.toml /dev/null
         publisher=\$(sed -n 's/^publisher_hex = \"\\([0-9a-fA-F]\\{64\\}\\)\"$/\\1/p' \
-          \"\$root/usr/lib/tilo-runtime/2026.07/bundle.toml\")
+          \"\$root\"/usr/lib/tilo-runtime/2026.07+native.*/bundle.toml)
         test \"\${#publisher}\" -eq 64
         printf '%s\\n' \"\$publisher\" > \"\$root/usr/lib/tilo-runtime/trusted-publishers.txt\"
         chmod 600 \"\$root/usr/lib/tilo-runtime/trusted-publishers.txt\"

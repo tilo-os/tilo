@@ -70,13 +70,12 @@ pub struct OutputMode {
 }
 
 impl OutputMode {
+    /// How a person reads the mode: `1920 × 1080 at 60 Hz`, with the rate's
+    /// fraction only when it has one (`59.94 Hz`).
     pub fn label(self) -> String {
-        format!(
-            "{} × {} · {:.2} Hz",
-            self.width,
-            self.height,
-            f64::from(self.refresh_mhz) / 1000.0
-        )
+        let hz = format!("{:.2}", f64::from(self.refresh_mhz) / 1000.0);
+        let hz = hz.trim_end_matches('0').trim_end_matches('.');
+        format!("{} × {} at {hz} Hz", self.width, self.height)
     }
 }
 
@@ -317,7 +316,7 @@ pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !leases.iter().any(|(held, _)| *held == path) {
-        std::fs::create_dir_all(dir)?;
+        tilo_files::native::create_dir_all(dir)?;
         let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)
             .map_err(|error| match error {
                 advisory_lock::TryLockError::WouldBlock => {
@@ -411,18 +410,35 @@ impl DisplayTransaction {
     ///
     /// Returns an error if the transaction can't be serialised or written.
     pub fn request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
+        let transaction = Self::prepare_request(set, candidate)?;
+        transaction.save()?;
+        Ok(transaction)
+    }
+
+    /// Construct an admitted request without writing storage. Its identity
+    /// stays unique among requests in this process even within one clock tick.
+    /// The request becomes effective only after its normal durable save.
+    ///
+    /// # Errors
+    /// Returns an error if the request identity counter is exhausted.
+    pub fn prepare_request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_REQUEST: AtomicU64 = AtomicU64::new(0);
         let now = unix_now_ms();
-        let transaction = Self {
-            id: now,
+        let previous = LAST_REQUEST
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                previous.checked_add(1).map(|next| next.max(now))
+            })
+            .map_err(|_| std::io::Error::other("display request identities exhausted"))?;
+        Ok(Self {
+            id: previous.saturating_add(1).max(now),
             state: DisplayTransactionState::Requested,
             previous: DisplayConfig::load_for(&set),
             set,
             candidate,
             deadline_unix_ms: None,
             message: None,
-        };
-        transaction.save()?;
-        Ok(transaction)
+        })
     }
 
     pub fn load() -> Option<Self> {
@@ -1261,6 +1277,8 @@ pub struct RichInputConfig {
     pub keyboard_layout: String,
     /// Ordered source ids.
     pub keyboard_layouts: Vec<String>,
+    /// Explicit XKB physical model, bounded to the supported PC geometries.
+    pub keyboard_model: String,
     pub compose_key: Option<String>,
     /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
     /// `backspace` turn it into that key.
@@ -1298,6 +1316,7 @@ impl Default for RichInputConfig {
             key_repeat_rate_hz: None,
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
+            keyboard_model: "pc105".into(),
             compose_key: None,
             caps_lock: None,
             touchpad_gestures: true,
@@ -1513,6 +1532,12 @@ impl RichInputConfig {
             .get("caps_lock")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        section
+            .get("keyboard_model")
+            .and_then(serde_json::Value::as_str)
+            .filter(|model| matches!(*model, "pc104" | "pc105" | "jp106" | "kr106"))
+            .unwrap_or("pc105")
+            .clone_into(&mut config.keyboard_model);
         config.normalise_sources();
         config
     }
@@ -1672,6 +1697,8 @@ pub enum ShortcutAction {
     FocusNextWindow,
     PreviousTab,
     NextTab,
+    /// Show the focused tab's shell context menu.
+    TabMenu,
     PreviousStrip,
     NextStrip,
     PreviousWorkspace,
@@ -1719,6 +1746,9 @@ pub enum ShortcutAction {
     NextInputSource,
     /// Open the emoji picker over the focused text field.
     EmojiPicker,
+    DictationToggle,
+    DictationFinish,
+    DictationCancel,
 }
 
 impl ShortcutAction {
@@ -2120,6 +2150,7 @@ impl KeyChord {
             "space" => "Space",
             "delete" => "Delete",
             "f1" => "F1",
+            "f10" => "F10",
             other => other,
         };
         ["Super", "Ctrl", "Alt", "Shift"]
@@ -2244,7 +2275,7 @@ impl Default for ShortcutConfig {
             }
         }
         let bindings = [
-            (ShortcutAction::Search, super_chord("k")),
+            (ShortcutAction::Search, super_chord("space")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
@@ -2261,6 +2292,7 @@ impl Default for ShortcutConfig {
             // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
+            (ShortcutAction::TabMenu, super_chord("f10")),
             // Arrows move focus across the plane; Shift carries the focused
             // group the same way (docs/architecture/window-management.md).
             (ShortcutAction::PreviousStrip, super_chord("up")),
@@ -2293,9 +2325,9 @@ impl Default for ShortcutConfig {
             ),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
-            // Browsers' reopen-closed-tab chord, on the desktop's own
-            // modifier; plain Super+T keeps adding a tab.
-            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
+            // Restore the most recently closed frame in this workspace.
+            // Plain Super+T keeps adding a tab.
+            (ShortcutAction::ReopenClosedTab, ctrl_shift_chord("t")),
             (ShortcutAction::FocusGroup1, super_chord("1")),
             (ShortcutAction::FocusGroup2, super_chord("2")),
             (ShortcutAction::FocusGroup3, super_chord("3")),
@@ -2326,6 +2358,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::NextInputSource, super_alt_chord("space")),
             // Windows' emoji panel key; GNOME uses Super+. for the same.
             (ShortcutAction::EmojiPicker, super_chord(".")),
+            (ShortcutAction::DictationToggle, super_shift_chord("d")),
+            (ShortcutAction::DictationFinish, super_alt_chord("d")),
+            (ShortcutAction::DictationCancel, super_shift_chord("escape")),
         ]
         .into_iter()
         .collect();
@@ -2343,6 +2378,8 @@ const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
     (ShortcutAction::PreviousStrip, &["Shift", "Super"], "up"),
     (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
     (ShortcutAction::ToggleMaximize, &["Super"], "up"),
+    (ShortcutAction::Search, &["Super"], "k"),
+    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
 ];
 
 impl ShortcutConfig {
@@ -2351,17 +2388,11 @@ impl ShortcutConfig {
     /// caller cannot install ambiguous ownership in a running session.
     /// # Errors
     ///
-    /// Returns an error when a chord is invalid or reserved, when the lock
-    /// shortcut differs from its immutable safety binding, or when two
+    /// Returns an error when a chord is invalid or reserved, or when two
     /// actions claim the same chord.
     pub fn validate(&self) -> Result<(), ShortcutConfigError> {
-        let defaults = Self::default();
-        let default_lock = defaults.bindings.get(&ShortcutAction::Lock);
         let mut seen = BTreeMap::<&KeyChord, ShortcutAction>::new();
         for (action, chord) in &self.bindings {
-            if *action == ShortcutAction::Lock && Some(chord) != default_lock {
-                return Err(ShortcutConfigError::InvalidChord);
-            }
             if chord.is_reserved_system_key() {
                 return Err(ShortcutConfigError::ReservedSystemKey);
             }
@@ -2470,11 +2501,6 @@ impl ShortcutConfig {
         chord: KeyChord,
     ) -> Result<(), ShortcutConfigError> {
         let defaults = Self::default();
-        if action == ShortcutAction::Lock
-            && defaults.bindings.get(&ShortcutAction::Lock) != Some(&chord)
-        {
-            return Err(ShortcutConfigError::InvalidChord);
-        }
         if chord.is_reserved_system_key() {
             return Err(ShortcutConfigError::ReservedSystemKey);
         }
@@ -2510,7 +2536,9 @@ impl ShortcutConfig {
         Self::from_section(super::load_section_at(path, "shortcuts"))
     }
 
-    fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
+    /// The configuration a `shortcuts` section holds, repaired as
+    /// [`Self::normalise`] repairs it.
+    pub fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
         let loaded: Self =
             serde_json::from_value(serde_json::Value::Object(section)).unwrap_or_default();
         Self::normalise(loaded)
@@ -2530,9 +2558,6 @@ impl ShortcutConfig {
         let defaults = Self::default();
         let mut effective = defaults.clone();
         for (action, chord) in loaded.bindings {
-            if action == ShortcutAction::Lock {
-                continue;
-            }
             if RETIRED_DEFAULTS.iter().any(|(retired, modifiers, key)| {
                 *retired == action
                     && chord.key == *key
@@ -2591,7 +2616,12 @@ impl ShortcutConfig {
         super::update_section_at(path, "shortcuts", self.section()?)
     }
 
-    fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
+    /// The `shortcuts` section holding this configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised.
+    pub fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         Ok(value.as_object().cloned().unwrap_or_default())
     }
@@ -2820,13 +2850,34 @@ mod tests {
     }
 
     #[test]
-    fn reopen_closed_tab_defaults_to_super_shift_t_without_colliding() {
+    fn reopen_closed_tab_defaults_to_ctrl_shift_t_without_colliding() {
         let cfg = ShortcutConfig::default();
         assert_eq!(
             cfg.bindings[&ShortcutAction::ReopenClosedTab],
-            KeyChord::parse("Super+Shift+T").unwrap()
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
         );
         assert!(cfg.validate().is_ok(), "no other default claims the chord");
+    }
+
+    #[test]
+    fn saved_reopen_default_migrates_without_overwriting_a_custom_chord() {
+        let mut loaded = ShortcutConfig::default();
+        loaded.bindings.insert(
+            ShortcutAction::ReopenClosedTab,
+            KeyChord::parse("Super+Shift+T").unwrap(),
+        );
+        assert_eq!(
+            ShortcutConfig::normalise(loaded.clone()).bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
+        );
+        loaded.bindings.insert(
+            ShortcutAction::ReopenClosedTab,
+            KeyChord::parse("Alt+Shift+T").unwrap(),
+        );
+        assert_eq!(
+            ShortcutConfig::normalise(loaded).bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Alt+Shift+T").unwrap()
+        );
     }
 
     #[test]
@@ -2860,6 +2911,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
         assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
+        assert_eq!(shown(ShortcutAction::TabMenu), "Super+F10");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
     }
@@ -2931,8 +2983,11 @@ mod tests {
             let mut cfg = ShortcutConfig::default();
             let old = cfg.bindings[&ShortcutAction::Lock].clone();
             assert_eq!(
-                cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
-                Err(ShortcutConfigError::InvalidChord)
+                cfg.set(
+                    ShortcutAction::Lock,
+                    KeyChord::parse("Super+Space").unwrap()
+                ),
+                Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
             );
             assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
         }
@@ -2983,13 +3038,13 @@ mod tests {
             let repaired = ShortcutConfig::normalise(corrupt);
             assert_eq!(
                 repaired.bindings[&ShortcutAction::Search].display(),
-                "Super+k",
+                "Super+Space",
                 "reserved persisted keys revert to their action default"
             );
             assert_eq!(
                 repaired.bindings[&ShortcutAction::Lock].display(),
-                "Super+l",
-                "the native lock chord is immutable"
+                "Alt+l",
+                "the lock chord is rebindable like every other action"
             );
             assert_eq!(
                 repaired.bindings[&ShortcutAction::PreviousTab].display(),
@@ -3057,7 +3112,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 46);
+            assert_eq!(cfg.bindings.len(), 50);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -3113,7 +3168,7 @@ mod tests {
         );
         assert_eq!(
             cfg.set_action(
-                KeyChord::parse("Super+K").unwrap(),
+                KeyChord::parse("Super+Space").unwrap(),
                 target("shortcuts.shortcut:b"),
                 "Run B"
             ),

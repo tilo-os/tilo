@@ -69,7 +69,7 @@ fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
                     .with_id("editor"),
             )),
         ))
-        .push(Box::new(Button::new("footer", "Save", None)));
+        .push(Box::new(Button::new("footer", "Save")));
     let theme = Theme::dark().with_text_scale(scale);
     Driver::new_with_theme(State::new(), Box::new(root), (600, 400), theme)
 }
@@ -147,8 +147,15 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
                 let targets = driver.targets();
                 let editor = targets.get("editor").unwrap();
                 let footer = targets.get("footer").unwrap();
+                // The surface fills the viewport, up to the bar's gutter
+                // while the document overflows.
+                let gutter = if long {
+                    f64::from(Theme::dark().tokens.metrics.scrollbar_gutter)
+                } else {
+                    0.0
+                };
                 assert!(
-                    (editor.width() - f64::from(width)).abs() < 1.0,
+                    (editor.width() - (f64::from(width) - gutter)).abs() < 1.0,
                     "{editor:?}"
                 );
                 if long {
@@ -206,7 +213,7 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
             bindings.rebuild(&scroll, &tree, root, &nodes);
         }
         let mut renderer = TextRenderer::new();
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         for (width, height) in [(280.0, 180.0), (760.0, 420.0), (280.0, 300.0)] {
             let mut style = tree.style(root).unwrap().clone();
             style.size.height = Dimension::length(height);
@@ -218,7 +225,7 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
             ] {
                 let long = !body.is_empty();
                 text.set(body);
-                scroll.sync(&mut doc, &automerge::ROOT);
+                scroll.sync(&doc, &automerge::ROOT);
                 tree.mark_dirty(editor).unwrap();
                 // SAFETY: no widgets move or change topology during settlement.
                 unsafe {
@@ -263,7 +270,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
                 TextInput::local()
                     .with_id("fractional-editor")
                     .multiline(true)
-                    .with_font_size(18.1)
+                    .with_text_role(tilo_ui::TextRole::Reading)
                     .with_initial_value(&("A line of text.\n".repeat(46) + "Final line")),
             ));
         let mut driver = Driver::new(State::new(), Box::new(root), (416, 300));

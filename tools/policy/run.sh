@@ -16,6 +16,8 @@ run() {
   fi
 }
 
+run 'Source blobs are text and LF or explicitly pinned assets' \
+  python3 tools/policy/check_source_content.py
 run 'Workspace membership' ./scripts/check-workspace-complete.sh
 run 'Repository layout' python3 tools/policy/check_repository_layout.py
 run 'Integration tests are compiled by a test target' \
@@ -33,15 +35,17 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-app-cli .forgejo/workflows/app-sdk.yml
 run 'Developer docs pages and links' python3 tools/docs/developer_docs.py check
 run 'Repository policy unit tests' \
-  python3 -m unittest discover -s tools/tests -p 'test_*.py'
+  python3 -m unittest discover -s tools/tests -p 'test_*.py' --durations 20
 run 'Compiler-cache helper tests' bash tools/tests/ci_sccache.sh
 run 'Cargo shim tests' bash tools/tests/cargo_shim.sh
 run 'CI receipt tests' bash tools/tests/test_ci_receipt.sh
 run 'Builder candidate workflow tests' python3 os/tests/test_builder_candidate_workflow.py
+run 'Signed development board dispatch and policy tests' python3 os/tests/test_signed_development_board.py
 run 'Every test suite outside Cargo is gated or explained' python3 tools/ci/suites.py check
 run 'Codex hook manifest' bash -c 'python3 -m json.tool .codex/hooks.json >/dev/null'
 run 'Codex CI watcher tests' python3 -m unittest discover -s .codex/hooks -p 'test_*.py'
 run 'Application text-stack contract' python3 tools/policy/check_app_text_contract.py
+run 'Settings copy used by source is translated' python3 tools/policy/check_settings_i18n.py
 run 'Application resource/action contract' \
   python3 tools/policy/check_app_resource_action_contract.py
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
@@ -54,6 +58,8 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'Widgets never write the document' python3 tools/policy/check_widget_document_writes.py
+run 'App content store contract' python3 tools/policy/check_app_content_store.py
 run 'Apps and portable SDK crates hold no platform code' \
   python3 tools/policy/check_app_portability.py
 run 'Apps declare the capabilities their code uses' \

@@ -1,5 +1,30 @@
 # Patches against upstream
 
+## Cast transport
+
+`fcast-sender-sdk` 0.3.0 is the checksum-verified MIT registry release, moved to
+edition 2024. Its local patch verifies TLS handshake signatures with Rustls/ring
+and authenticates DeviceAuth before control or media messages on that connection.
+Dedicated Cast/Eureka identity and Cast CRL anchors are private protocol constants;
+Open Screen's BSD-3-Clause license and immutable revision/DER pins are retained.
+Fresh nonces, SHA-256 proofs, validated paths, screen capability, current signed
+revocation and bounded negotiation are required. Expiry tears down the session.
+No machine trust setting or persistent access grant changes. See its
+`PROVENANCE.md`, production-source TLS/authentication regression tests and
+`docs/architecture/continuity-interop.md`.
+
+## Spotify dependencies
+
+`librespot-core` 0.8.0 and `hyper-proxy2` 0.1.0 are checksum-verified MIT
+registry releases. The former moves to quick-xml 0.41 and invalidates a
+non-Premium session without exiting Music. The latter reuses the workspace's
+current Rustls/ring dependencies and Tilo's fixed-path native-root loader,
+removing the old certificate-validation and OpenSSL-probing chain. Their
+upstream TLS defaults remain untouched; Music explicitly selects Rustls.
+Both directories contain `PROVENANCE.md`, licences and focused regression
+tests. No insecure verifier, alternative trust loader or policy exception is
+introduced.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
@@ -146,7 +171,13 @@ included, at the device's largest storage binding. `CEILING` puts lines and
 segments at 8M x 24 bytes = 192 MiB and the lines floor grows with the path
 tag count, both past WebGPU's default 128 MiB; a bind group past the limit
 fails the device, where a clamped buffer drops geometry the shaders report
-through `BumpAllocators::failed`. `BudgetTracker::set_device_limits` sets it
+through `BumpAllocators::failed`.
+
+`segments` is reserved separately from `seg_counts` here, where upstream sizes
+them alike so its `seg_counts` check covered both. `coarse.wgsl` therefore
+checks its `segments` allocation against `segments_size` and reports an
+overflow as `STAGE_COARSE`; without it a frame whose segments outgrew their
+reservation reported `failed=0` and was presented with geometry missing. `BudgetTracker::set_device_limits` sets it
 from `device.limits()`, rounded down to a size class the engine's buffer pool
 allocates exactly, since the pool rounds requests up and binds whole buffers.
 
@@ -272,3 +303,36 @@ backend. wgpu-hal's GLES device holds its single context lock for every
 pipeline compile, so parallel initialisation gains nothing there, and on a
 slow driver a queued worker thread exceeds the context lock timeout and
 panics.
+
+## `vendor/vello/src/lib.rs`, `wgpu_engine.rs`: images without CPU pixels
+
+An image whose blob is empty is drawn, on a renderer without an
+`override_image` texture for it, from the process's `ExternalImageSource`
+(`set_external_image_source`, keyed by blob id) instead of panicking, and
+transparent when the source has nothing. The compositor keeps Wayland
+client frames on the GPU and draws them on its presenting renderer from
+their textures; screenshots, recordings and renderers on other devices
+reach the same frames through the source, which reads them back on demand.
+
+## zlink-macros
+
+`vendor/zlink-macros` is crates.io `zlink-macros` 0.7.0 (checksum
+`2fc623b8323797bf2d48333e7633e143077dd92cc66d9cca170014b66c43b1b5`) with one
+change in `src/service/codegen.rs`: the service macro's ReplyStreamParams enum
+emits its variants sorted by type instead of in `HashMap` order, which differs
+per process and made every build of a binary that expands the macro different.
+It is not part of the Tilo workspace. The OS image's bootc build uses it
+through `[patch.crates-io]` (os/external-assets/bootc-runtime/0002-*.patch), so
+bootc builds reproducibly.
+
+## `vendor/winit`: focused native keyboard configuration
+
+The ordinary Wayland seat publishes an immutable `KeyboardLayoutChanged`
+configuration at keymap, focus-enter and modifier transitions. It preserves the
+received XKB masks/group and resolves effective symbols using that exact state,
+with bounded keycode, symbol and string counts. This is keymap configuration,
+not entered text or compose history; unfocused clients receive no new snapshots.
+Settings uses it to label its foreground physical keyboard map independently
+from logical key events. A real Smithay-to-Winit wire regression covers initial
+keymap/focus and several queued modifier/group changes; no global capture or new
+protocol/socket is introduced.

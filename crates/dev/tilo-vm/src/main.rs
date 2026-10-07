@@ -34,6 +34,7 @@ fn main() -> ExitCode {
         registry_path: tilo_vm::config::registry_path(),
         receipt,
         warnings: Vec::new(),
+        peer: None,
     };
     let outcome = app.run(cli.command);
     let App {

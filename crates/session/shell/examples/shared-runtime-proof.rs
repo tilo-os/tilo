@@ -65,6 +65,7 @@ fn start_action(
     let receipt = shell::shell::remote_actions::BrokerActionHost::new(actions.clone()).invoke(
         &Caller::local_person(actor).in_room(&surface.route.cluster_id),
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: surface.peer_id.to_string(),

@@ -10,6 +10,7 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 | macOS arm64 | UTM (`utmctl`, Apple Virtualization) | UTM | VM only | none (llvmpipe) |
 | Windows x86_64 / arm64 with Hyper-V | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
+| any, with `ssh` | `device`: a real machine on a dev image (`vm add`) | its own display | on the device, or host with an aarch64 cargo | the device's |
 
 In-VM builds sync the worktree with rsync over SSH, so the host needs
 `rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native
@@ -52,6 +53,14 @@ The raw `qemu` adapter (`--hypervisor qemu`) drives `os/dev/vm.sh` with that
 script's own conventions. It is the headless adapter for CI and scenario
 tests: its VMs do not appear in virt-manager or Boxes, so it is never the
 default, and it runs only from a Tilo worktree.
+
+Its registered CPU count, memory, architecture and resolution are passed to
+the same harness. It uses the software 2D display unless `--gl` requests virgl;
+`--emulated` explicitly selects TCG. Without `--emulated`, the harness probes
+KVM and warns if it must fall back to TCG. Record the actual accelerator and
+renderer with performance results: TCG timings cannot establish KVM or physical
+machine budgets. `--resolution` and `--gl` work with this adapter; multiple
+display heads require libvirt.
 
 ## Windows ARM64 Home: QEMU with WHPX
 

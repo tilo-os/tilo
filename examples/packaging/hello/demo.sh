@@ -79,7 +79,6 @@ mode = "off"
 [sandbox.services]
 collab     = "optional@1"
 tilo-fs     = "optional@1"
-spellcheck = "optional@1"
 
 [entrypoint]
 bin             = "bin/tilo-hello"

@@ -27,10 +27,22 @@ struct Seen {
 struct OwnerProbe {
     seen: Seen,
     id: u64,
+    actions: crate::action_host::ActionHost,
+}
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct BackgroundWrite;
+impl tilo_actions::Action for BackgroundWrite {
+    fn apply(&self, doc: &mut AutoCommit) -> Result<(), tilo_actions::ActionError> {
+        doc.put(ROOT, "body", "background model write")?;
+        Ok(())
+    }
 }
 impl Widget for OwnerProbe {
-    crate::provides!(dyn crate::undo::UndoPoints);
-    fn update(&mut self, _: &mut crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+    crate::provides!(
+        dyn crate::undo::UndoPoints,
+        dyn crate::undo::CommittedActions
+    );
+    fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
         self.seen.updates.set(self.seen.updates.get() + 1);
         false
     }
@@ -41,8 +53,8 @@ impl Widget for OwnerProbe {
         get_rect,
         name = "shared-owner-probe"
     );
-    fn sync(&mut self, model: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        let (doc, _) = crate::doc::document(model, path);
+    fn sync(&mut self, model: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        let (doc, _) = crate::doc::document_ref(model, path);
         assert!(crate::record::identity(doc).is_some());
         self.seen.syncs.set(self.seen.syncs.get() + 1);
         self.seen.order.borrow_mut().push(self.id);
@@ -50,10 +62,6 @@ impl Widget for OwnerProbe {
             !self.seen.panic.replace(false),
             "real owner callback failed"
         );
-        if self.seen.write_next.replace(false) {
-            doc.put(ROOT, "body", "background model write").unwrap();
-            doc.commit();
-        }
         *self.seen.body.borrow_mut() = doc
             .get(ROOT, "body")
             .unwrap()
@@ -66,11 +74,27 @@ impl Widget for OwnerProbe {
             wake.wake();
         }
     }
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _: &automerge::ObjId) {
+        if self.seen.write_next.replace(false) {
+            edits
+                .apply(
+                    &mut self.actions,
+                    "probe.background",
+                    &BackgroundWrite,
+                    tilo_actions::ActionContext::default(),
+                )
+                .unwrap();
+        }
+    }
+}
+impl crate::undo::CommittedActions for OwnerProbe {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions
+            .take_committed()
+            .or_else(|| self.seen.drain_close_gate.borrow().is_some().then(Vec::new))
+    }
 }
 impl crate::undo::UndoPoints for OwnerProbe {
-    fn needs_commit(&self) -> bool {
-        self.seen.drain_close_gate.borrow().is_some()
-    }
     fn get_state(&self) -> Option<String> {
         if let Some(gate) = self.seen.drain_close_gate.borrow_mut().take() {
             self.seen.drained.set(true);
@@ -113,10 +137,16 @@ fn factory(
         .map_err(crate::launch::LaunchError::Record)?;
     let (seen, id, _declared) = NEXT.with_borrow_mut(|next| next.take().unwrap());
     *seen.wake.borrow_mut() = Some(context.wake_handle());
+    let mut registry = tilo_actions::ActionRegistry::new();
+    registry.register::<BackgroundWrite>("probe.background");
     Ok(AppComponent::new(
         context,
-        Box::new(OwnerProbe { seen, id }),
-        tilo_actions::ActionRegistry::new(),
+        Box::new(OwnerProbe {
+            seen,
+            id,
+            actions: crate::action_host::ActionHost::new(),
+        }),
+        registry,
     ))
 }
 fn prepared(
@@ -142,8 +172,8 @@ fn prepared(
             received.lock().unwrap().push(event.requires_sync())
         })
         .unwrap();
-    let mut bound = BoundAppWidget { component };
-    bound.sync(&mut AutoCommit::new(), &ROOT);
+    let mut bound = BoundAppWidget::new(component);
+    bound.sync(&AutoCommit::new(), &ROOT);
     assert_eq!(seen.syncs.get(), 1);
     (bound, seen, events)
 }
@@ -162,7 +192,7 @@ impl Widget for HiddenOwners {
         get_rect,
         name = "hidden-owner-host"
     );
-    fn sync(&mut self, _: &mut crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+    fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
     fn children(&self) -> Vec<&dyn Widget> {
         self.owners.iter().map(|o| o as &dyn Widget).collect()
     }

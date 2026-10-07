@@ -30,7 +30,7 @@ impl ExternalRawWidget {
 impl Widget for ExternalRawWidget {
     ui_core::provides!(dyn ui_core::widget::controls::ActionControls);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.content.sync(state, path);
     }
 

@@ -96,8 +96,6 @@ shortcut-new-window = Neues Fenster
 shortcut-add-tab = Tab hier hinzufügen
 shortcut-duplicate-tab = Tab duplizieren
 shortcut-open-terminal = Terminal öffnen
-shortcut-global-search = Globale Suche
-shortcut-lock = Sperren
 shortcut-workspace-wheel = Arbeitsbereichsrad
 shortcut-display-layout = Anzeigeanordnung
 shortcut-capture-screenshot = Bildschirmfoto aufnehmen
@@ -112,9 +110,9 @@ shortcut-vim-navigation = Vim-Navigation
 shortcut-dismiss = Schließen
 
 # Wie jedes änderbare Tastenkürzel des Desktops heißt
-shortcut-name-search = Globale Suche
+shortcut-name-search = Überall suchen
 shortcut-name-workspace-overview = Übersicht
-shortcut-name-lock = Sperren
+shortcut-name-lock = Bildschirm sperren
 shortcut-name-quick-settings = Schnelleinstellungen
 shortcut-name-shortcut-help = Desktop-Hilfe
 shortcut-name-focus-previous-window = Vorheriges Fenster fokussieren
@@ -435,6 +433,8 @@ portal-email-attachments = { $count ->
    *[other] { $count } Anhänge werden über das Dokumentportal verfügbar sein.
 }
 portal-remember-device = Auf diesem Gerät merken
+portal-a11y-name = Name
+portal-a11y-answer = Antwort
 portal-secret-required = Fülle alle Pflichtfelder aus.
 portal-secret-wifi-length = Ein WLAN-Passwort hat 8 bis 63 Zeichen oder 64 Hexadezimalziffern.
 portal-network-heading = Netzwerk
@@ -515,6 +515,8 @@ host-session-action-blocked = Sitzungsaktion blockiert
 host-action-started = „{ $title }“ gestartet
 host-action-admitted = Aktionsauftrag { $job } wurde angenommen
 host-action-cannot-run = „{ $title }“ kann nicht ausgeführt werden
+host-action-failed-status = Nicht ausgeführt
+launchpad-action-unanswered = Die App hat nicht geantwortet
 host-search-placeholder = Suchen …
 host-search-in = In { $scope } suchen …
 host-search-in-resource-fallback = Ressource
@@ -1068,11 +1070,16 @@ launch-error-no-workspace = Wähle einen Arbeitsbereich und versuche es dann ern
 launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerelemente.
 launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
+launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-runtime-mismatch = Diese App wurde für eine andere Tilo-Laufzeitumgebung gebaut. Aktualisiere sie oder installiere sie neu, um die passende Laufzeitumgebung zu erhalten.
 launch-failed-sandbox = Die Sandbox der App konnte nicht eingerichtet werden, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-collaboration = Die App konnte dem Zusammenarbeitsdienst dieses Arbeitsbereichs nicht beitreten und wurde daher beendet, bevor sie sich öffnete. Das Desktop-Protokoll nennt den Grund.
+launch-failed-window-lost = Ihr Fenster wurde beendet, ohne geschlossen zu werden. Öffne sie erneut über Anwendungen; das Desktop-Protokoll nennt den Grund.
+launch-window-lost-title = { $app } wurde unerwartet geschlossen
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
 launch-failure-title = { $app } konnte nicht geöffnet werden
@@ -1229,8 +1236,6 @@ search-opens-here = Öffnet sich hier als Tab
 # Suchquellen, wie die Aktionen der Sucheinstellungen sie nennen
 search-provider-now-playing = Aktuelle Wiedergabe
 search-provider-records = Einträge
-search-provider-notes = Notizen
-search-provider-editor = Editor
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
@@ -1362,6 +1367,8 @@ search-action-tab-close = Diesen Tab schließen
 search-action-tab-close-subtitle = Den fokussierten Tab schließen; war er der letzte, schließt sich auch sein Fenster
 search-action-tab-reopen = Geschlossenen Tab wieder öffnen
 search-action-tab-reopen-subtitle = Den zuletzt in diesem Arbeitsbereich geschlossenen Tab an seinem alten Platz zurückholen
+search-action-tab-open-beside = App in neuem Tab öffnen
+search-action-tab-open-beside-subtitle = Eine weitere Instanz einer App, auf Wunsch an einer Adresse, als Tab direkt nach dem fokussierten öffnen
 search-action-tab-split-right = Diesen Tab nach rechts teilen
 search-action-tab-split-right-subtitle = Den fokussierten Tab in eine neue Fenstergruppe neben der aktuellen verschieben
 search-action-tab-move-to-new-group = Diesen Tab in eine neue Gruppe verschieben
@@ -1436,8 +1443,6 @@ search-action-peer-invite-named = Mitwirkende benennen und Einladung öffnen
 search-action-peer-invite-named-subtitle = Den Anzeigenamen festhalten und dann die Einladung prüfen, bevor sie erstellt wird
 search-action-agent-invite = Agenten in den Arbeitsbereich einladen
 search-action-agent-invite-subtitle = Eine eingegrenzte Agenten-Einrichtung starten; jeden Bereich wählen, den er nutzen darf
-search-action-text-insert = Text in die fokussierte Notiz einfügen
-search-action-text-insert-subtitle = An einer Zeichenposition in den fokussierten Notizen- oder Editor-Tab schreiben
 search-action-record-bring = Element zu diesem Arbeitsbereich hinzufügen
 search-action-record-bring-subtitle = Hier verfügbar machen, ohne das Original zu verschieben
 search-action-quick-settings-brightness-set = Bildschirmhelligkeit festlegen
@@ -1526,6 +1531,14 @@ search-apps-opening-body = Wird geladen …
 # Suche: Kontinuitätsaktionen zwischen deinen zertifizierten Geräten
 search-continuity-certified-device = Zertifiziertes Gerät
 search-continuity-play-on = { $source } auf { $target } abspielen
+search-continuity-wake-device = Gerät aufwecken
+search-continuity-wake-device-subtitle = Sendet ein Wecksignal von einem Gerät in seinem Netzwerk
+device-wake-app-name = Geräte
+device-wake-rejoined = { $device } ist wach
+device-wake-not-rejoined = { $device } ist nicht aufgewacht
+device-wake-not-rejoined-body = Es hat ein Wecksignal erhalten, ist aber nicht zurückgekommen. Vielleicht ist es aus oder hat keinen Strom.
+device-wake-failed = { $device } konnte nicht geweckt werden
+device-wake-failed-body = In seinem Netzwerk konnte kein Wecksignal gesendet werden.
 search-continuity-media-handoff-subtitle = Diese laufende Mediensitzung auf ein bestimmtes zertifiziertes Gerät verschieben
 search-continuity-media-cancel = Verschieben von „{ $media }“ abbrechen
 search-continuity-media-retry = Verschieben von „{ $media }“ erneut versuchen
@@ -1578,6 +1591,14 @@ search-continuity-calibration-revert = Platzierung für { $device } zurücksetze
 search-continuity-calibration-revert-subtitle = Die vorherige Platzierung des zertifizierten Bildschirms wiederherstellen
 search-continuity-tether-request = { $device } um Tethering bitten
 search-continuity-tether-request-subtitle = Eine kurzlebige, auf dem Telefon bestätigte Verbindung anfragen
+search-continuity-unlock-approve = { $device } entsperren (Code { $code })
+search-continuity-unlock-deny = { $device } gesperrt lassen (Code { $code })
+search-continuity-unlock-subtitle = Es wurde neu gestartet und möchte seine verschlüsselte Festplatte öffnen
+search-continuity-device-remove = { $device } aus deinen Geräten entfernen
+search-continuity-device-remove-subtitle = Es kann nicht mehr für dich handeln und seine Festplatte nicht mehr über deine Geräte entsperren
+device-unlock-error-not-pending = Diese Entsperranfrage wartet nicht mehr
+device-unlock-error-cannot-remove = Dieses Gerät kann jenes Gerät nicht entfernen
+device-unlock-error-no-identity = Dieses Gerät hat deine Identität nicht
 search-continuity-tether-allow = Tethering für { $device } erlauben
 search-continuity-tether-decline = Tethering für { $device } ablehnen
 search-continuity-tether-consent-subtitle = Diese Freigabeanfrage auf dem Telefon beantworten
@@ -1607,12 +1628,15 @@ search-continuity-call-decline = Übergabe für { $room } ablehnen
 search-continuity-call-consent-subtitle = Diese Freigabe zur Anrufübergabe beantworten
 
 # Identitätseinrichtung bei der ersten Anmeldung: was die Identität ist
-onboarding-intro-title = Deine lokale Tilo-Identität erstellen
-onboarding-intro-body = Tilo erstellt eine kryptografische Identität, die dir gehört, und zertifiziert dann einen eigenen Schlüssel für dieses Gerät. Tilo nutzt diese Kette für die Zusammenarbeit und für Einladungen an andere Geräte. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
-onboarding-intro-point-collaboration = Sie gibt dir eine beständige Identität für die Zusammenarbeit und zertifiziert dieses Gerät gegenüber anderen.
-onboarding-intro-point-local = Sie wird hier auf diesem Rechner erstellt. Nichts wird hochgeladen, und kein Server bewahrt eine Kopie auf.
-onboarding-intro-point-not-account = Sie ist kein Konto und hat kein Passwort – es gibt nichts, bei dem du dich anmelden müsstest.
-onboarding-intro-card-title = Wofür sie da ist
+onboarding-intro-title = Deine Tilo-Identität einrichten
+onboarding-intro-body = Tilo erstellt eine kryptografische Identität, die dir gehört, und zertifiziert dann einen eigenen Schlüssel für dieses Gerät. Zusammenarbeit und Einladungen an andere Geräte beruhen darauf. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
+onboarding-intro-point-collaboration = Wer mit dir zusammenarbeitet, sieht eine beständige Identität, und sie zertifiziert jedes deiner Geräte.
+onboarding-intro-point-local = Sie wird auf diesem Rechner erstellt. Nichts wird hochgeladen, und kein Server bewahrt eine Kopie auf.
+onboarding-intro-point-not-account = Sie ist kein Konto und hat kein Passwort. Es gibt nichts, bei dem du dich anmelden müsstest.
+onboarding-choice-create = Neue Identität erstellen
+onboarding-choice-create-detail = Auf diesem Rechner neu beginnen
+onboarding-choice-existing = Meine vorhandene Tilo-Identität verwenden
+onboarding-choice-existing-detail = Von einem anderen Gerät oder einer Sicherung übernehmen
 onboarding-host-intro-title = Deine Tilo-Identität einrichten
 onboarding-host-intro-body = Du bist bereits an diesem Computer angemeldet. Bevor sich der Tilo Desktop öffnet, braucht er eine lokale kryptografische Identität für die Zusammenarbeit und für Einladungen an andere Geräte. Sie ersetzt weder deine Linux-Anmeldung, noch erstellt sie ein Online-Konto. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
 
@@ -1629,10 +1653,11 @@ onboarding-create-failed-message = Es wurde nichts geschrieben, und der Desktop 
 
 # Identitätseinrichtung: Fortschrittsanzeige
 onboarding-progress-eyebrow = Einrichtung der Tilo-Identität
-onboarding-progress-stage = Schritt { $step } von { $total }  ·  { $stage }
+onboarding-progress-stage = Schritt { $step } von { $total }
 onboarding-progress-a11y = Identitätseinrichtung, Schritt { $step } von { $total }: { $stage }
 onboarding-stage-choose = Auswählen
 onboarding-stage-restore = Wiederherstellen
+onboarding-stage-connect = Verbinden
 onboarding-stage-protect = Schützen
 onboarding-stage-media = Medien
 onboarding-stage-ready = Fertig
@@ -1650,48 +1675,71 @@ onboarding-back = Zurück
 onboarding-cancel = Abbrechen
 onboarding-continue = Weiter
 onboarding-done = Fertig
-onboarding-use-existing = Vorhandene verwenden
-onboarding-create-identity = Identität erstellen
 onboarding-create-local-identity = Lokale Identität erstellen
-onboarding-restore-backup = Ausgewählte Sicherung wiederherstellen
+onboarding-restore-backup = Identität wiederherstellen
+onboarding-existing-title = Deine vorhandene Identität verwenden
+onboarding-existing-body = Wähle, wie die Identität, die du bereits nutzt, auf diesen Rechner kommt.
+onboarding-choice-nearby = Mit einem Gerät in der Nähe verbinden
+onboarding-choice-nearby-detail = Diesen Rechner auf einem Gerät mit deiner Identität freigeben
+onboarding-choice-restore = Aus einer Sicherung wiederherstellen
+onboarding-choice-restore-detail = Eine verschlüsselte Identitätssicherung öffnen
+onboarding-restore-title = Aus einer Sicherung wiederherstellen
+onboarding-restore-body = Wähle die verschlüsselte Sicherung, die du aus Tilo gespeichert hast, und gib ihre Passphrase ein.
+onboarding-restore-file-label = Sicherungsdatei
 
 # Identitätseinrichtung: vorhandene Identität verbinden
-onboarding-connect-title = Eine vorhandene Identität verbinden
 onboarding-connect-recovery-title = Deine vorhandene Identität muss wiederhergestellt werden
 onboarding-connect-recovery-message = Tilo konnte die Kette deiner vorhandenen Identität nicht prüfen. Entsperre den Schlüsselbund des Desktops und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her. Tilo ersetzt diese Identität nicht automatisch.
 onboarding-connect-failed = Diese Identität konnte nicht verbunden werden
-onboarding-connect-nearby = Mit einem Gerät in der Nähe verbinden
-onboarding-connect-nearby-instructions = Öffne auf dem anderen Gerät Einstellungen → Geräte & Synchronisierung → Persönliches Gerät hinzufügen und vergleiche dann den sechsstelligen Code auf beiden Bildschirmen.
 onboarding-connect-retry-keyring = Schlüsselbund erneut versuchen
-onboarding-connect-browse = Durchsuchen …
+onboarding-connect-browse = Durchsuchen
 onboarding-connect-file = Sicherungsdatei der Identität
 onboarding-connect-file-placeholder = Verschlüsselte Sicherung oder ältere Identitäts-JSON auswählen
 onboarding-connect-passphrase = Passphrase der Sicherung
 onboarding-connect-passphrase-placeholder = Passphrase (bei älterer JSON leer lassen)
-onboarding-connect-nearby-card = Vertrauenswürdiges Gerät in der Nähe
-onboarding-connect-backup-card = Verschlüsselte Sicherung
 onboarding-connect-choose-file-first = Wähle zuerst eine verschlüsselte Sicherung oder eine ältere Identitätsdatei aus.
 onboarding-keyring-unavailable = Der Schlüsselbund des Desktops ist weiterhin nicht verfügbar. Entsperre ihn und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her: { $error }
 onboarding-picker-import-title = Eine Tilo-Identität auswählen
 onboarding-picker-import-filter = Tilo-Identität
+onboarding-nearby-title = Mit einem Gerät in der Nähe verbinden
+onboarding-nearby-body = Dieser Rechner wartet darauf, dass dein anderes Gerät ihn freigibt. Halte beide Geräte nah beieinander.
+onboarding-nearby-step-open = Öffne auf deinem anderen Gerät die Einstellungen und dort Geräte & Synchronisierung.
+onboarding-nearby-step-add = Wähle unter „Persönliches Gerät hinzufügen“ die Option „Gerät hinzufügen“.
+onboarding-nearby-step-compare = Vergleiche den sechsstelligen Code auf beiden Bildschirmen und gib ihn auf deinem anderen Gerät frei.
+onboarding-nearby-waiting = Wartet auf dein anderes Gerät.
+onboarding-nearby-code-label = Bestätigungscode
+onboarding-nearby-try-again = Erneut versuchen
 
 # Identitätseinrichtung: Koppeln mit einem Gerät in der Nähe
-onboarding-nearby-searching = Suche nach einem vertrauenswürdigen Gerät in der Nähe …
-onboarding-nearby-start-failed = Die Einrichtung über ein Gerät in der Nähe konnte nicht gestartet werden: { $error }
+onboarding-nearby-failed-title = Die Kopplung wurde nicht abgeschlossen
+onboarding-nearby-ended = Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
+onboarding-nearby-unknown = Wähle „Erneut versuchen“.
+onboarding-nearby-detail = Details: { $detail }
+onboarding-nearby-permission-title = Zugriff verweigert: Dieser Computer durfte die Kopplung nicht speichern
+onboarding-nearby-permission = Tilo konnte nicht dort schreiben, wo dieser Computer seine Geräteidentität ablegt. Wähle „Erneut versuchen“, sobald das behoben ist.
+onboarding-nearby-storage-full-title = Der Speicher dieses Computers ist voll
+onboarding-nearby-storage-full = Die Kopplung konnte nicht gespeichert werden. Gib etwas Speicherplatz frei und wähle dann „Erneut versuchen“.
+onboarding-nearby-read-only-title = Der Speicher dieses Computers ist schreibgeschützt
+onboarding-nearby-read-only = Die Kopplung konnte nicht gespeichert werden. Wähle „Erneut versuchen“, sobald der Speicher beschreibbar ist.
+onboarding-nearby-unreachable-title = Dein anderes Gerät war nicht erreichbar
+onboarding-nearby-unreachable = Prüfe, ob beide Geräte im selben Netzwerk sind, und wähle dann „Erneut versuchen“.
+onboarding-nearby-timed-out-title = Kein vertrauenswürdiges Gerät hat diesen Computer rechtzeitig freigegeben
+onboarding-nearby-timed-out = Wähle „Erneut versuchen“ und gib ihn dann auf deinem anderen Gerät frei.
+onboarding-nearby-invalid-identity-title = Dein anderes Gerät hat eine ungültige Identität geliefert
+onboarding-nearby-invalid-identity = Wähle „Erneut versuchen“.
+onboarding-nearby-not-started-title = Die Einrichtung über ein Gerät in der Nähe konnte nicht starten
+onboarding-nearby-not-started = Wähle „Erneut versuchen“.
 onboarding-nearby-unavailable = Die Einrichtung über ein Gerät in der Nähe ist in dieser Sitzung nicht verfügbar
-onboarding-nearby-cancelled = Einrichtung über ein Gerät in der Nähe abgebrochen. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
-onboarding-nearby-code = Code { $code } · wartet auf Freigabe auf deinem vertrauenswürdigen Gerät
+onboarding-nearby-cancelled = Kopplung abgebrochen. Wähle „Erneut versuchen“, um neu zu beginnen.
+onboarding-nearby-code = Prüfe, ob dein anderes Gerät denselben Code zeigt, und gib es dort frei.
 onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automatisch.
-onboarding-nearby-invalid-identity = Das vertrauenswürdige Gerät hat eine ungültige Identität geliefert. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
-onboarding-nearby-failed = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
-onboarding-nearby-failed-detail = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: { $detail }. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern
 onboarding-backup-identity-created = Deine lokale Identität wurde erstellt
 onboarding-backup-explanation = Speichere eine verschlüsselte Kopie an einem anderen Ort. Bewahre Datei und Passphrase getrennt auf; zusammen stellen sie diese Identität wieder her.
 onboarding-backup-passphrase = Neue Passphrase für die Sicherung
-onboarding-backup-passphrase-placeholder = Lange, einzigartige Passphrase – mindestens 12 Zeichen
+onboarding-backup-passphrase-placeholder = Mindestens 12 Zeichen, lang und einzigartig
 onboarding-backup-confirmation = Neue Passphrase für die Sicherung bestätigen
 onboarding-backup-confirmation-placeholder = Passphrase bestätigen
 onboarding-backup-save = Speicherort wählen und Sicherung speichern …
@@ -1737,7 +1785,7 @@ onboarding-codecs-enables-hardware = Hardwarebeschleunigtes Video auf AMD- und I
 onboarding-codecs-enables-playback = Wiedergabe von H.264 und HEVC in Videos, die du öffnest.
 onboarding-codecs-enables-encoding = Kodierung in H.264 und HEVC für Bildschirmfreigabe, Aufnahmen und Anrufe.
 onboarding-codecs-source-title = Woher sie kommen
-onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen.
+onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen. OpenH264 Video Codec provided by Cisco Systems, Inc. Die vollständige Cisco-Binärlizenz steht unter /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt und https://www.openh264.org/BINARY_LICENSE.txt.
 onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
 onboarding-codecs-progress = Fortschritt: { $percent } %
 onboarding-codecs-starting = Wird gestartet …
@@ -1756,8 +1804,8 @@ onboarding-codecs-retry = Erneut versuchen
 onboarding-codecs-install = Mediencodecs installieren
 
 # Desktop-Tour
-onboarding-tour-eyebrow = Tilo  •  DESKTOP-TOUR
-onboarding-tour-stage = { $stage }  ·  { $step } von 4
+onboarding-tour-eyebrow = Desktop-Tour
+onboarding-tour-stage = Schritt { $step } von 4
 onboarding-tour-progress-a11y = Desktop-Tour, Schritt { $step } von 4: { $stage }
 onboarding-tour-stage-move = Bewegen
 onboarding-tour-stage-arrange = Anordnen
@@ -1767,12 +1815,16 @@ onboarding-tour-skip = Tour überspringen
 onboarding-tour-enter = Tilo betreten
 onboarding-tour-navigate-title = Alles in Reichweite
 onboarding-tour-navigate-intro = Tilo hält den Desktop ruhig, bis du nach etwas fragst. Jede Geste hier hat auch einen Weg über die Tastatur.
-onboarding-tour-search-title = Suche  ·  Super+K oder Super+Leertaste
-onboarding-tour-search-title-mac = Suche  ·  Befehl+K oder Wahl+Leertaste
+onboarding-tour-search-title = Suche
+onboarding-tour-search-title-mac = Suche
+onboarding-tour-search-keys = Super+Leertaste
+onboarding-tour-search-keys-mac = Befehl+K oder Wahl+Leertaste
 onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
-onboarding-tour-overview-title = Übersicht  ·  Super+Tab oder Finger zusammenziehen
+onboarding-tour-overview-title = Übersicht
+onboarding-tour-overview-keys = Super+Tab oder Finger zusammenziehen
 onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
-onboarding-tour-move-title = Bewegen  ·  Super+Pfeiltasten oder Wischen mit drei Fingern
+onboarding-tour-move-title = Bewegen
+onboarding-tour-move-keys = Super+Pfeiltasten oder Wischen mit drei Fingern
 onboarding-tour-move-body = Links und Rechts springen zwischen gekachelten Fenstern entlang des aktuellen Streifens. Auf und Ab wechseln zum Streifen darüber oder darunter; Super+Bild auf und Bild ab oder Wischen mit vier Fingern wechseln den Arbeitsbereich.
 onboarding-tour-organise-title = Ein Ort für jede Art von Arbeit
 onboarding-tour-organise-intro = Die Anordnung ist einfach, sobald ihre vier Ebenen Namen haben. Tilo merkt sich die Anordnung für dich.
@@ -1794,13 +1846,13 @@ onboarding-tour-system-features-title = Rückgängig und Berechtigungen sind Sys
 onboarding-tour-system-features-body = Der Verlauf folgt der Urheberschaft, und Apps fragen Tilo nach Fähigkeiten, statt stillschweigend Zugriff zu erhalten.
 onboarding-tour-start-title = Deine ersten fünf Minuten
 onboarding-tour-start-intro = Beginne mit einem Ziel und lass den Arbeitsbereich dann mit dem Projekt wachsen. Du findest dies über die Suche unter „Desktop-Tour“ wieder.
-onboarding-tour-name-title = 1  Arbeitsbereich benennen
+onboarding-tour-name-title = Arbeitsbereich benennen
 onboarding-tour-name-body = Öffne die Arbeitsbereich-Einstellungen über den Titel und wähle einen gut erkennbaren Projektnamen.
-onboarding-tour-open-title = 2  Einen gemeinsamen Ausgangspunkt öffnen
+onboarding-tour-open-title = Einen gemeinsamen Ausgangspunkt öffnen
 onboarding-tour-open-body = Wähle Notizen, Kalender oder Chat und füge dann weitere Apps daneben hinzu.
-onboarding-tour-invite-title = 3  Die richtigen Personen einladen
+onboarding-tour-invite-title = Die richtigen Personen einladen
 onboarding-tour-invite-body = Wähle „Personen einladen“ in den Arbeitsbereich-Einstellungen und prüfe jede Rolle, bevor du teilst.
-onboarding-tour-check-title = 4  Arbeit prüfen und Fehler beheben
+onboarding-tour-check-title = Arbeit prüfen und Fehler beheben
 onboarding-tour-check-body = Öffne die Aktivität, um auf den neuesten Stand zu kommen, Versionen zu vergleichen oder nur die fehlerhafte Änderung rückgängig zu machen.
 
 # Einladungskarte für Arbeitsbereiche: jemanden einladen, mit einer Einladung beitreten, ausstehende Einladungen
@@ -2310,6 +2362,21 @@ nearby-error-folder-too-large = der Ordner überschreitet die Größenbegrenzung
 nearby-error-source-changed = die Quelle hat sich während der Vorbereitung geändert
 nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar
 
+# AirDrop lab receiver verification
+airdrop-verify-title = AirDrop-Empfänger überprüfen
+airdrop-verify-send-once = Einmal senden
+airdrop-verify-detail = Datei: { $name }
+    Größe: { $bytes } Bytes
+    Empfänger: { $endpoint }
+    Den SHA-256-Fingerabdruck des Empfängerzertifikats als 64 Hexadezimalzeichen von einer vertrauenswürdigen Konsole oder einem unabhängig bestätigten Kanal eingeben. Nur bei Übereinstimmung wird diese vorbereitete Datei einmal gesendet. Ohne Überprüfung abbrechen.
+airdrop-error-unavailable = Das AirDrop-Labor benötigt eine entsperrte lokale Sitzung, Dateiübertragungsrechte und aktuellen Dateizugriff.
+airdrop-error-source = Das AirDrop-Labor unterstützt eine lesbare reguläre Datei bis 16 MiB.
+airdrop-error-busy = Eine AirDrop-Übertragung läuft bereits. Vor einer weiteren Übertragung abbrechen.
+airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor einem neuen Versuch erneut prüfen.
+airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
+airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
+airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
+
 # Ein Dokument, das ein Tab nicht wiederherstellen konnte
 hosted-document-unavailable = { $path } ist nicht verfügbar: { $error }
 
@@ -2327,3 +2394,95 @@ a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
 a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
+lock-screen-unlock = Sitzung entsperren
+
+search-provider-permission-prompts = Berechtigungsanfragen
+permission-request-expired = Diese Berechtigungsanfrage ist nicht mehr offen
+permission-request-owner-required = Nur der aktuelle Eigentümer kann über Berechtigungen entscheiden
+permission-request-permanent-owner-required = Eine dauerhafte Berechtigung kann nur der aktuelle Eigentümer erteilen
+permission-request-confirm = Entscheidung über die Berechtigung bestätigen
+
+shortcut-name-dictation-toggle = Diktat starten oder beenden
+shortcut-name-dictation-finish = Diktat beenden
+shortcut-name-dictation-cancel = Diktat abbrechen
+dictation-title = Diktat
+dictation-consent = Mikrofon für dieses Diktat aufnehmen? Audio bleibt auf diesem Gerät.
+dictation-preparing = Aktives Eingabefeld wird geprüft…
+dictation-loading = Lokale Spracherkennung wird geladen. Das Mikrofon ist aus.
+dictation-listening = Mikrofon an · Sprechen und zum Einfügen beenden.
+dictation-finishing = Mikrofon aus · Text wird fertiggestellt…
+dictation-stopping = Diktat wird angehalten…
+dictation-editable-required = Ein Eingabefeld fokussieren. Passwörter erlauben kein Diktat.
+dictation-busy = Das vorherige Diktat wird noch angehalten. Gleich erneut versuchen.
+dictation-target-changed = Das Feld hat sich geändert. Diktat ohne Texteingabe abgebrochen.
+dictation-timeout = Zeitüberschreitung beim Diktat. Kein Text wurde eingefügt.
+dictation-unavailable = Lokales Diktat nicht verfügbar. Kein Text wurde eingefügt.
+dictation-model-required = Vor dem Diktat ein freigegebenes lokales Sprachmodell installieren.
+dictation-language-unavailable = Das Sprachmodell unterstützt die gewählte Sprache nicht.
+dictation-microphone-unavailable = Mikrofon nicht verfügbar. Eingabegerät prüfen.
+dictation-audio-interrupted = Mikrofonaufnahme unterbrochen. Kein Text wurde eingefügt.
+dictation-action-start-detail = Einmalige Mikrofonfreigabe für das aktive Feld anfragen oder die Aufnahme beenden.
+dictation-action-finish-detail = Mikrofon anhalten und den korrigierten Text ins ursprüngliche Feld einfügen.
+dictation-action-cancel-detail = Diktat anhalten und den privaten Entwurf verwerfen.
+dictation-stopping-microphone = Mikrofon wird angehalten…
+
+search-action-axis-enable = Experimentelle Achsennavigation aktivieren
+search-action-axis-enable-subtitle = In dieser Sitzung zwischen Gruppen wechseln und den Fokus sichtbar machen
+search-action-axis-disable = Experimentelle Achsennavigation deaktivieren
+search-action-axis-disable-subtitle = Die normale Fensternavigation für diese Sitzung wiederherstellen
+search-action-axis-gather = Fokussiertes Fenster sichtbar machen
+search-action-axis-gather-subtitle = Experimentelle Achsennavigation: Fokus ohne Animation anzeigen
+axis-navigation-disabled = Die experimentelle Achsennavigation ist deaktiviert
+
+search-provider-device-shell = Shell dieses Geräts
+terminal-request-device-shell = Eigene Shell dieses Geräts anfordern
+terminal-device-shell-owner-required = Nur der Gerätebesitzer darf die eigene Shell dieses Geräts anfordern
+
+terminal-inspect-device-shell = Shell-Sitzung dieses Geräts prüfen
+terminal-run-device-shell = Befehl in der Shell dieses Geräts ausführen
+terminal-read-device-shell = Ausgabe der Shell dieses Geräts lesen
+
+terminal-device-shell-session-param = Genaue lokale Sitzungs-UUID aus der Sitzungsprüfung
+terminal-device-shell-command-param = Ein geprüfter Befehl in der Shell dieses Geräts
+terminal-device-shell-confirm-param = Diesen geprüften Vorgang in der Geräte-Shell bestätigen
+
+shortcut-name-tab-menu = Tab-Menü öffnen
+search-action-tab-menu = Tab-Menü öffnen
+search-action-tab-menu-subtitle = Aktionen für den fokussierten Tab
+search-action-tab-menu-unavailable = Kein fokussierter Tab verfügbar
+
+dictation-transcript-retained = Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.
+dictation-transcript-copied = Gesamtes Transkript kopiert. Füge es im gewünschten Feld ein. Der private Entwurf bleibt bis zum Verwerfen oder Ablauf der 10 Minuten erhalten.
+dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkript bleibt privat aufbewahrt; versuche es erneut oder verwirf es.
+search-action-tab-drag-cancel = Tab-Ziehen abbrechen
+search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
+search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
+
+display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
+display-confirm-answer-failed = Die Antwort zur Anzeige konnte nicht gespeichert werden: { $reason }
+
+display-sheet-saving-layout = Anordnung wird gespeichert…
+
+session-diagnostics-title = Zeitdiagnose der Sitzung
+session-diagnostics-configure = Zeitdiagnose für folgende App-Starts konfigurieren
+session-diagnostics-inspect = Zeitdiagnose der Sitzung ansehen
+session-diagnostics-presentation = Inhaltsfreie Eingabe- und Präsentationszeiten erfassen
+session-diagnostics-gpu_stages = Zeiten der GPU-Verarbeitungsschritte erfassen
+session-diagnostics-gpu_timestamps = GPU-Zeitstempel aktivieren
+session-diagnostics-gpu_dispatch_timestamps = Zeitstempel der GPU-Aufträge aktivieren
+session-diagnostics-dispatch-requires-timestamps = Die Zeitdiagnose der GPU-Aufträge benötigt GPU-Zeitstempel.
+
+device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
+search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
+search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
+search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
+search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
+search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
+search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
+
+task-review-inspect = Aufgabennachweise prüfen
+task-review-steer = Aufgabenanweisungen ändern
+task-review-cancel = Aufgabenlauf abbrechen
+task-review-retry = Aufgabe erneut versuchen
+task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
+task-review-provider = Aufgabenprüfung

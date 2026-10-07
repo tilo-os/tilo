@@ -25,7 +25,8 @@ use crate::locale::locale_candidates;
 /// are matched against.
 pub const CURRENT_DESKTOP: &str = "tilo";
 /// Desktops Tilo is compatible with for menu visibility. GNOME-only
-/// applications would otherwise vanish because we do not *be* GNOME.
+/// applications would otherwise vanish because we do not *be* GNOME. Menus only:
+/// autostart matches Tilo's own name, see [`crate::autostart::AUTOSTART_DESKTOPS`].
 pub fn current_desktops() -> Vec<String> {
     vec![CURRENT_DESKTOP.to_string(), "GNOME".to_string()]
 }

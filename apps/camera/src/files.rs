@@ -26,13 +26,6 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     blocking::write_atomic(&dir, &name, bytes).map_err(io::Error::other)
 }
 
-/// Save a document the user chose a destination for, keeping an existing
-/// file's link and mode.
-pub(crate) fn save(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let (dir, name) = at(path)?;
-    blocking::save_document(&dir, &name, bytes).map_err(io::Error::other)
-}
-
 /// Delete the file; a missing file is not an error worth reporting.
 pub(crate) fn remove(path: &Path) {
     if let Ok((dir, name)) = at(path) {

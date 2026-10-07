@@ -133,15 +133,14 @@ fn preparation_tracks_unwitnessed_text_marks_theme_ime_and_renderer() {
                 ]));
             }
             3 => {
-                input.preedit = "漢字".into();
-                input.cursor_pos = 7;
-                input.preedit_cursor = Some((0, 0));
+                input.core.set_caret(7);
+                input.core.set_preedit("漢字", Some((0, 0)));
             }
             4 => {
-                input.cursor_pos = 0;
+                input.core.set_caret(0);
             }
             5 => {
-                input.preedit.clear();
+                input.core.clear_preedit();
                 input.set_rich_spans(None);
                 input.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
             }
@@ -184,7 +183,7 @@ fn measure_keeps_warm_attributed_preparation() {
     input.set_rich_spans(Some(vec![RichSpan::new(&input.text).bold(true)]));
     let style = input.multiline_style(theme.text_scale);
     let width = 300.0;
-    let content_width = (f64::from(width) - input.ml_left() - ML_PAD_X) as f32;
+    let content_width = (f64::from(width) - input.ml_left() - input.ml_pad_x()) as f32;
     input.ensure_shaped_layout(&mut tr, &theme, &style, content_width);
     let before = input.single_layout.as_ref().unwrap().height();
     let ((), stats) = measure_test_allocations(|| {

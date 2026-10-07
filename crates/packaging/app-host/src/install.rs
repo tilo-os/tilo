@@ -38,6 +38,7 @@ fn admission(pinning: Pinning, source: &str) -> Admission {
         pinned: pinning == Pinning::Pinned,
         attested_by: String::new(),
         source: source.to_string(),
+        held: false,
     }
 }
 

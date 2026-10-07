@@ -135,6 +135,7 @@ mod tests {
 
     fn action(name: &str, contract: tilo_actions::ActionContract) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: "files.entry:/tmp/report".into(),
             action: name.into(),
             resource_kind: "files.entry".into(),
@@ -211,6 +212,7 @@ mod tests {
 
     fn refresh(invocation: tilo_actions::InvocationId) -> InvokeRequest {
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: "7".into(),
@@ -295,6 +297,7 @@ mod tests {
                 description: None,
                 open_action: "open".into(),
                 primary: true,
+                range: None,
                 mount: None,
             };
             open.view = Some(view.clone());
@@ -386,6 +389,7 @@ mod tests {
                 .expect("the workspace is offered");
             let caller = Caller::local_person("a1".repeat(32)).in_room(&room);
             let open = InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: tilo_actions::remote::workspace_provider(&room),

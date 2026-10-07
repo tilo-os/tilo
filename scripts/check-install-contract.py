@@ -144,8 +144,11 @@ assert "amd64_runner=runner-large" in session_workflow
 assert "arm64_runner=runner-large-arm64" in session_workflow
 assert '{arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}' in session_workflow
 assert '{arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}' in session_workflow
-assert "docker.io/menci/archlinuxarm@sha256:" in session_workflow
-assert "docker.io/gomasy/archlinuxarm@sha256:" in session_workflow
+package_targets = (ROOT / "dist/ci/package-targets.txt").read_text()
+assert "amd64|arch|docker.io/menci/archlinuxarm@sha256:" in package_targets
+assert "arm64|arch|docker.io/gomasy/archlinuxarm@sha256:" in package_targets
+assert "amd64_targets=$(dist/ci/package-targets.sh amd64)" in session_workflow
+assert "arm64_targets=$(dist/ci/package-targets.sh arm64)" in session_workflow
 assert "release_arches=amd64,arm64" in session_workflow
 assert "release_arches: ${{ steps.lanes.outputs.release_arches }}" in session_workflow
 assert "RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}" in session_workflow

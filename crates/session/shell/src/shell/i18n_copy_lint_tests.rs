@@ -12,9 +12,6 @@ const ALLOWED: &[(&str, &str)] = &[
     ("shell/state.rs", "Files"),
     ("shell/state.rs", "Notes"),
     ("shell/state.rs", "Terminal"),
-    // Fixed app names.
-    ("shell/editor_app.rs", "Editor"),
-    ("shell/notes_app.rs", "Note"),
     // wlr-output-management head description; display tools match on it.
     ("compositor/output_heads.rs", "Virtual display"),
     // The developer window backend's title.

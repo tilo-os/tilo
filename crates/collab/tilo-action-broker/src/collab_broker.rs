@@ -226,6 +226,13 @@ impl FanoutState {
             .filter(|state| state.is_accepting())
     }
 
+    /// Ask the local apps holding records in `cluster_id` to publish their
+    /// snapshots; see [`CapnpBrokerState::request_room_snapshots`].
+    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+        self.capnp_state()
+            .map_or(0, |state| state.request_room_snapshots(cluster_id))
+    }
+
     /// Deliver `event` to every typed or in-process subscriber addressed by
     /// `route`, skipping the originating typed peer id.
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
@@ -300,7 +307,61 @@ pub struct AppActionBroker {
     state: Arc<CapnpBrokerState>,
 }
 
+/// Session-owned broker discovery, without retaining its mutex/journal/process graph.
+/// Pending desktop launch chrome upgrades only while performing an admitted request.
+#[derive(Clone)]
+pub struct WeakAppActionBroker(Arc<dyn BrokerDiscovery>);
+
+// Desktop discovery does not expose the server's mutex-bearing graph. The
+// session owns that graph; this concrete discovery implementation owns only Weak.
+trait BrokerDiscovery: Send + Sync {
+    fn current(&self) -> Result<AppActionBroker, String>;
+}
+struct WeakBrokerDiscovery(std::sync::Weak<CapnpBrokerState>);
+impl BrokerDiscovery for WeakBrokerDiscovery {
+    fn current(&self) -> Result<AppActionBroker, String> {
+        let state = self
+            .0
+            .upgrade()
+            .ok_or("native app opening broker retired")?;
+        state.while_live_fenced(|_| Ok(()))?;
+        Ok(AppActionBroker { state })
+    }
+}
+
+impl WeakAppActionBroker {
+    /// Acquire a temporary facade only while the owning session still accepts work.
+    ///
+    /// # Errors
+    /// The session has dropped or stopped its actual broker.
+    pub fn upgrade(&self) -> Result<AppActionBroker, String> {
+        self.0.current()
+    }
+}
+
 impl AppActionBroker {
+    /// Retain discovery without extending the owning session's lifetime.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakAppActionBroker {
+        WeakAppActionBroker(Arc::new(WeakBrokerDiscovery(Arc::downgrade(&self.state))))
+    }
+    /// Invoke one closed native workspace-membership command as the retained
+    /// certified person. The owner still rechecks current Admin authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker, published action, or caller custody
+    /// is unavailable.
+    pub fn change_workspace_membership(
+        &self,
+        room: &str,
+        command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
+        self.state
+            .while_live(|state| state.invoke_workspace_membership(room, command, certificate))
+    }
+
     /// Construct the shell-facing facade around a real broker state for
     /// `LocalSet` integration tests. Production hosts construct this facade
     /// through `BrokerHandle`; arbitrary state injection is test-only.
@@ -346,6 +407,32 @@ impl AppActionBroker {
             })
     }
 
+    /// A local action door bound to an already-issued signed room admission and
+    /// one host-issued execution. No device is enrolled and no grant is minted.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable/currently invalid admission, a missing registered
+    /// policy clock, or any mismatch with the transport-owned caller.
+    pub fn certified_local_action_host(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+    ) -> Result<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
+        self.state.certified_local_action_host(caller, presentation)
+    }
+
+    /// Reuse the checked signed person-room admission for native owner checks.
+    /// # Errors
+    /// Refuses non-person, foreign, stale or unadmitted execution; grants none.
+    pub fn certified_person_context(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+    ) -> Result<crate::services::CertifiedPersonContext, String> {
+        self.state.certified_person_context(caller, presentation)
+    }
+
     /// Reusable native broker attachment for an ordinary standalone peer.
     ///
     /// # Errors
@@ -362,6 +449,22 @@ impl AppActionBroker {
         self.state
             .while_live(|state| Ok(state.published_surfaces()))
             .unwrap_or_default()
+    }
+
+    /// Read one current advertised action without cloning the whole inventory.
+    pub fn published_action(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(
+        crate::collab_broker_capnp::PublishedSurface,
+        crate::collab_broker_capnp::PublishedAction,
+    )> {
+        self.state
+            .while_live(|state| Ok(state.published_action(route, resource, action)))
+            .ok()
+            .flatten()
     }
 
     /// Generation of the retained published-surface source.  Palette query
@@ -986,4 +1089,23 @@ pub fn spawn_native_peer_with_services(
         Arc::new(Mutex::new(BrokerChannels::default())),
         Arc::new(FanoutState::new()),
     )
+}
+
+#[cfg(test)]
+mod weak_facade_tests {
+    use super::*;
+
+    #[test]
+    fn weak_native_discovery_does_not_retain_broker_or_accept_after_stop() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let weak = broker.downgrade();
+        assert_eq!(Arc::strong_count(&broker.state), 1);
+        let temporary = weak.upgrade().unwrap();
+        assert_eq!(Arc::strong_count(&broker.state), 2);
+        drop(temporary);
+        broker.state.stop();
+        assert!(weak.upgrade().is_err());
+        drop(broker);
+        assert!(weak.upgrade().is_err());
+    }
 }

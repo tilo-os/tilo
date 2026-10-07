@@ -30,7 +30,7 @@ sys.path.insert(0, str(HERE))
 
 from acceptance import core, report  # noqa: E402
 from acceptance.checks import (apps, basics, daily_apps, provenance, resources, search,  # noqa: E402,F401
-                               ui, window)
+                               startup, ui, window)
 from acceptance.context import Context  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
@@ -54,21 +54,28 @@ BUDGETS = {
     # Transitions, the display's side (painted-to-painted, and first to last frame, which
     # a held transition stretches while the display is slow), judged on real hardware only.
     "paint_period_ms_p95": 33.4, "paint_gap_ms_max": 100.0, "transition_ms_max": 1000.0,
+    # Files, process start to first presented frame. On real hardware the GPU draws it
+    # within 300 ms. A VM renders on a CPU rasterizer (lavapipe) or through virgl to the
+    # host's GPU, both of which compile every render pipeline on the first frame: a cold
+    # launch there is judged against a generous ceiling that still catches a stall of seconds.
+    "files_first_frame_s": 3.0, "files_first_frame_hw_s": 0.3,
 }
 
 # Run in a German session (a second slot), after the main pass.
 DE_PASS = ("U03", "U04", "S03")
-ORDER = ["P01", "P02", "R01", "R02", "R03", "R04",
+# A14 runs before anything else opens Files, so it times the session's first launch. R05
+# runs last but P03, so the adapter lines of every app the run opened are in the log.
+ORDER = ["P01", "P02", "R01", "A14", "R02", "R03", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
-         "W13", "W14", "W15", "W16", "W17",
+         "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
-         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "P03"]
+         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R05", "P03"]
 
 
-def git(*args: str) -> str:
-    return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True).stdout.strip()
+def git(*args: str, repo: Path = REPO) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True).stdout.strip()
 
 
 def find_tilo_vm(arg: str | None) -> str:
@@ -178,6 +185,54 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
         vm.run(*args, timeout=300, slot=False)
 
 
+def whole_json(text: str) -> dict:
+    """`tilo-vm --json`'s one object, which it may print across lines; {} if there is none."""
+    start = text.find("{")
+    try:
+        return json.JSONDecoder().raw_decode(text[start:])[0] if start >= 0 else {}
+    except ValueError:
+        return {}
+
+
+def component_scopes(source: Path) -> dict[str, str]:
+    manifest = tomllib.loads((source / "os/components.toml").read_text())
+    return {c["name"]: c.get("scope", "session") for c in manifest.get("component", [])}
+
+
+def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path) -> dict:
+    """Build each component from the worktree `source` on the host and swap it into the VM:
+    session components and apps into the run's slot, VM-wide ones into `vm`. Then read back the
+    layer each slot runs, so P01 states what was tested: the base image plus these, from `ref`."""
+    scopes = component_scopes(source)
+    head = git("rev-parse", "HEAD", repo=source)
+    swapped, slots = [], set()
+    for component in components:
+        slot = "vm" if scopes.get(component) == "vm" else vm.slot
+        entry = {"component": component, "slot": slot}
+        started = time.monotonic()
+        try:
+            out = vm.run("--json", "swap", component, "--slot", slot, "--builder", "host",
+                         timeout=5400, slot=False, cwd=source)
+            entry["seconds"] = round(time.monotonic() - started)
+            entry["result"] = whole_json(out)
+            slots.add(slot)
+        except VmError as exc:
+            entry["error"] = exc.reason()
+        print(f"swap {component} into {slot}: " + entry.get("error", f"done in {entry.get('seconds')}s"),
+              flush=True)
+        swapped.append(entry)
+    layers = {}
+    for slot in sorted(slots):
+        try:
+            shown = whole_json(vm.run("--json", "slot", "show", slot, timeout=120, slot=False))
+            layers[slot] = (shown.get("slot") or {}).get("components") or {}
+        except VmError as exc:
+            layers[slot] = {"error": exc.reason()}
+    for entry in swapped:
+        entry["layer"] = layers.get(entry["slot"], {}).get(entry["component"])
+    return {"ref": ref, "commit": head, "components": swapped, "slot_layers": layers}
+
+
 def switch_locale(vm: TiloVm, lang: str) -> None:
     """Set the system locale as the installer seeds it (/etc/locale.conf, which the
     session's PAM login inherits from systemd) and restart the slot's session in it."""
@@ -207,11 +262,19 @@ def main() -> int:
     ap.add_argument("--gl", action="store_true", help="create the VM with virgl (--disk only)")
     ap.add_argument("--keep", action="store_true", help="leave the VM running (and a created VM registered)")
     ap.add_argument("--tilo-vm")
+    ap.add_argument("--swap", help="comma-separated components (os/components.toml) or app:<dir> to build "
+                    "from this worktree on the host and swap in before the checks; the disk is then the base")
+    ap.add_argument("--swap-from", type=Path, help="the worktree --swap builds from (default: this one)")
+    ap.add_argument("--swap-ref", help="the ref the swapped components are built from, for the report "
+                    "(default: the --swap-from worktree's HEAD)")
     ap.add_argument("--owners", help="area=owner,... to name who each area routes to")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
     binary = find_tilo_vm(args.tilo_vm)
+    swaps = [c.strip() for c in (args.swap or "").split(",") if c.strip()]
+    swap_from = (args.swap_from or REPO).resolve()
+    swap_ref = args.swap_ref or git("rev-parse", "HEAD", repo=swap_from)
     want_commit = git("rev-parse", args.commit) if args.commit else None
     if args.commit and not want_commit:
         want_commit = args.commit
@@ -264,6 +327,8 @@ def main() -> int:
         facts = {"provenance": provenance_of(vm, disk, want_commit)}
         meta["provenance"] = facts["provenance"]
         slot_create(vm, outputs, None)
+        if swaps:
+            facts["provenance"]["swap"] = swap_components(vm, swaps, swap_ref, swap_from)
         time.sleep(5)
         facts["renderer"], facts["display"] = renderer(vm)
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]

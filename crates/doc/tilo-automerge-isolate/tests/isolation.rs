@@ -268,6 +268,99 @@ fn missing_dependencies_are_refused_without_a_change_or_queued() {
 }
 
 #[test]
+fn blank_document_retains_only_strictly_valid_orphans() {
+    let isolate = isolate();
+    let mut remote = seeded_doc();
+    let dependency = remote.get_heads();
+    let committed = remote.save();
+    remote.put(ROOT, "later", "pending").unwrap();
+    remote.commit();
+    let orphan = remote.save_after(&dependency);
+    let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x72; 16]));
+    let actor = doc.get_actor().clone();
+    let before = doc.save();
+    assert_eq!(
+        isolate.apply(&mut doc, &orphan, Dependencies::RequireComplete),
+        Ok(Applied::MissingDependencies)
+    );
+    assert_eq!(doc.save(), before);
+    let mut corrupt = orphan.clone();
+    let mut bad = orphan.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 0x55;
+    corrupt.extend(bad);
+    assert!(
+        isolate
+            .apply(&mut doc, &corrupt, Dependencies::RetainOrphans)
+            .is_err()
+    );
+    assert_eq!(
+        doc.save(),
+        before,
+        "a malformed tail cannot become an orphan"
+    );
+    assert_eq!(
+        isolate.apply(&mut doc, &orphan, Dependencies::RetainOrphans),
+        Ok(Applied::Changed(false))
+    );
+    assert_eq!(doc.get_missing_deps(&[]), dependency);
+    assert_eq!(doc.get_actor(), &actor);
+    assert_eq!(
+        isolate.apply(&mut doc, &committed, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(doc.get_heads(), remote.get_heads());
+    assert_eq!(doc.get_actor(), &actor);
+    still_admits(&isolate);
+}
+
+#[test]
+fn distinct_orphan_queues_rebuild_their_exact_state() {
+    let isolate = Isolate::new(Limits {
+        workers: 1,
+        ..Limits::default()
+    });
+    let mut seed = seeded_doc();
+    let dependency = seed.get_heads();
+    let committed = seed.save();
+    let mut a = seed.fork();
+    a.put(ROOT, "only-a", "first").unwrap();
+    a.commit();
+    let orphan_a = a.save_after(&dependency);
+    let a_heads = a.get_heads();
+    a.put(ROOT, "a-tail", "second").unwrap();
+    a.commit();
+    let tail_a = a.save_after(&a_heads);
+    let mut b = seed.fork();
+    b.put(ROOT, "only-b", "other queue").unwrap();
+    b.commit();
+    let orphan_b = b.save_after(&dependency);
+    let mut local_a = AutoCommit::new();
+    let mut local_b = AutoCommit::new();
+    for (doc, bytes) in [(&mut local_a, &orphan_a), (&mut local_b, &orphan_b)] {
+        assert_eq!(
+            isolate.apply(doc, bytes, Dependencies::RetainOrphans),
+            Ok(Applied::Changed(false))
+        );
+        assert_eq!(doc.get_missing_deps(&[]), dependency);
+    }
+    let mut finish_a = committed.clone();
+    finish_a.extend(tail_a);
+    assert_eq!(
+        isolate.apply(&mut local_a, &finish_a, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(local_a.get_heads(), a.get_heads());
+    assert!(local_a.get(ROOT, "only-b").unwrap().is_none());
+    assert_eq!(
+        isolate.apply(&mut local_b, &committed, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(local_b.get_heads(), b.get_heads());
+    assert!(local_b.get(ROOT, "only-a").unwrap().is_none());
+}
+
+#[test]
 fn a_malformed_tail_refuses_the_whole_input() {
     let isolate = isolate();
     let mut doc = seeded_doc();

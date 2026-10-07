@@ -141,6 +141,25 @@ impl WakeScope {
         ))
     }
 
+    /// Drain the owner's coalesced wake flags, including wakes delivered to
+    /// its event sink. An embedded application uses these flags to distinguish
+    /// presentation frames from model changes. Sink delivery and receiver-side
+    /// authorization still run normally. A closed scope returns `None`.
+    pub fn take_pending(&self) -> Option<(bool, bool)> {
+        let mut destination = self
+            .route
+            .destination
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.route.open.load(Ordering::Acquire) {
+            return None;
+        }
+        Some((
+            std::mem::take(&mut destination.pending),
+            std::mem::take(&mut destination.pending_sync),
+        ))
+    }
+
     /// Receiver-side validation remains mandatory after sender-side checks.
     pub fn accepts(&self, event: &WakeEvent) -> bool {
         self.route.open.load(Ordering::Acquire)
@@ -255,6 +274,21 @@ impl WakeHandle {
         }
     }
 
+    /// Compare two original scoped routes while that route is open.
+    /// Detached handles never match. This is transient scheduling metadata,
+    /// not registration, document, callback, or publication authorization.
+    /// A successful comparison does not prevent a concurrent close.
+    #[doc(hidden)]
+    pub fn same_open_scope(&self, other: &Self) -> bool {
+        let (Some(route), Some(other_route)) = (&self.route, &other.route) else {
+            return false;
+        };
+        Weak::ptr_eq(route, other_route)
+            && route
+                .upgrade()
+                .is_some_and(|route| route.open.load(Ordering::Acquire))
+    }
+
     /// Authorize one publication. A prior freshness check is not authorization.
     #[doc(hidden)]
     pub fn authorize_publication(&self) -> bool {
@@ -298,13 +332,9 @@ impl WakeHandle {
             if !route.open.load(Ordering::Acquire) {
                 return;
             }
-            if let Some(sink) = &destination.sink {
-                Some(Arc::clone(sink))
-            } else {
-                destination.pending = true;
-                destination.pending_sync |= requires_sync;
-                None
-            }
+            destination.pending = true;
+            destination.pending_sync |= requires_sync;
+            destination.sink.as_ref().map(Arc::clone)
         };
         if let Some(sink) = sink {
             sink(WakeEvent {
@@ -349,6 +379,26 @@ impl<T> Reply<T> {
 mod tests {
     use super::*;
     use std::sync::mpsc::{self, Receiver, TryRecvError};
+
+    #[test]
+    fn a_bound_owner_observes_model_wakes_without_losing_sink_delivery() {
+        let (mut scope, rx) = bound_scope();
+        assert_eq!(scope.take_pending(), Some((false, false)));
+        scope.handle().notify_events();
+        assert!(!rx.recv().unwrap().requires_sync());
+        assert_eq!(scope.take_pending(), Some((true, false)));
+        scope.handle().wake();
+        scope.handle().notify_events();
+        assert!(rx.recv().unwrap().requires_sync());
+        assert!(!rx.recv().unwrap().requires_sync());
+        assert_eq!(scope.take_pending(), Some((true, true)));
+        assert_eq!(scope.take_pending(), Some((false, false)));
+        assert_eq!(scope.take_unbound(), None);
+        scope.close();
+        scope.handle().wake();
+        assert_eq!(scope.take_pending(), None);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
 
     #[test]
     fn wakes_coalesce_before_binding_and_bind_only_once() {
@@ -494,6 +544,118 @@ mod tests {
             assert!(!handle.authorize_publication());
             let replacement = WakeScope::new();
             assert!(!replacement.accepts(&event));
+        }
+    }
+
+    #[test]
+    fn same_open_scope_matches_only_the_original_open_scoped_route() {
+        // Clones and independent captures in the same actual scope match;
+        // another scope does not, and comparisons do not deliver wakes.
+        {
+            let (scope, rx) = bound_scope();
+            let (other_scope, other_rx) = bound_scope();
+            let captured = {
+                let _entry = scope.enter();
+                WakeHandle::new()
+            };
+            let clone = captured.clone();
+            let same_scope = {
+                let _entry = scope.enter();
+                WakeHandle::new()
+            };
+            let other = {
+                let _entry = other_scope.enter();
+                WakeHandle::new()
+            };
+            assert!(captured.same_open_scope(&clone));
+            assert!(clone.same_open_scope(&captured));
+            assert!(captured.same_open_scope(&same_scope));
+            assert!(!captured.same_open_scope(&other));
+            assert!(!other.same_open_scope(&captured));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
+
+            // Nested construction captures the inner route, then restores outer.
+            let outer = {
+                let _entry = scope.enter();
+                let outer = WakeHandle::new();
+                let inner = {
+                    let _nested = other_scope.enter();
+                    WakeHandle::new()
+                };
+                let restored_outer = WakeHandle::new();
+                assert!(outer.same_open_scope(&restored_outer));
+                assert!(!inner.same_open_scope(&outer));
+                outer
+            };
+            assert!(outer.same_open_scope(&captured));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        // Detached handles retain their existing publication behavior but
+        // never correlate, including when captured under detached entry.
+        {
+            let explicit = WakeHandle::detached();
+            let (scope, rx) = bound_scope();
+            let detached = {
+                let _entry = scope.enter();
+                let _mask = WakeScope::enter_detached();
+                WakeHandle::new()
+            };
+            let scoped = {
+                let _entry = scope.enter();
+                WakeHandle::new()
+            };
+            for handle in [&explicit, &detached] {
+                assert!(handle.is_active());
+                assert!(handle.authorize_publication());
+                assert!(!handle.same_open_scope(handle));
+                assert!(!handle.same_open_scope(&handle.clone()));
+                assert!(!handle.same_open_scope(&scoped));
+            }
+            assert!(!explicit.same_open_scope(&detached));
+            assert!(!scoped.same_open_scope(&explicit));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        // Closing invalidates correlation immediately and idempotently. A
+        // replacement scope is a distinct route even while both are alive.
+        {
+            let (mut scope, _) = bound_scope();
+            let old = scope.handle();
+            let old_clone = old.clone();
+            assert!(old.same_open_scope(&old_clone));
+            scope.close();
+            assert!(!old.same_open_scope(&old_clone));
+            scope.close();
+            assert!(!old.same_open_scope(&old_clone));
+            let (replacement, _) = bound_scope();
+            let fresh = replacement.handle();
+            assert!(!old.same_open_scope(&fresh));
+            assert!(!fresh.same_open_scope(&old));
+        }
+
+        // A comparison does not retain the route or its sink-captured resource.
+        {
+            let resource = Arc::new(());
+            let weak_resource = Arc::downgrade(&resource);
+            let (tx, _rx) = mpsc::channel();
+            let mut scope = WakeScope::new();
+            scope
+                .bind(move |event| {
+                    std::hint::black_box(&resource);
+                    tx.send(event).unwrap();
+                })
+                .unwrap();
+            let handle = scope.handle();
+            let clone = handle.clone();
+            assert!(handle.same_open_scope(&clone));
+            drop(scope);
+            assert!(weak_resource.upgrade().is_none());
+            assert!(!handle.same_open_scope(&clone));
+            let (replacement, _) = bound_scope();
+            assert!(!handle.same_open_scope(&replacement.handle()));
         }
     }
 

@@ -83,6 +83,7 @@ pub struct GamepadAuthorizationView {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceFabricView {
+    pub displays: Vec<settings_store::device_displays::DeviceDisplay>,
     pub bluetooth_authorizations: Vec<BluetoothHandoffAuthorizationView>,
     pub bluetooth_handoffs: Vec<crate::shell::device_fabric_runtime::BluetoothHandoffStatusView>,
     pub gamepad_authorizations: Vec<GamepadAuthorizationView>,
@@ -100,13 +101,22 @@ pub struct DeviceFabricView {
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
+    /// Boots of the person's devices waiting for `device.unlock` here.
+    pub device_unlocks: Vec<crate::shell::device_unlock_runtime::DeviceUnlockConsentView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceFabricUiAction {
+    /// Move a peer's native screens from an exact observed revision.
+    MoveDisplay(settings_store::device_displays::DeviceDisplayMove),
     Snapshot,
     /// Bypass presentation caching for semantic action revalidation.
     SnapshotFresh,
+    /// Wake the sleeping device `device` names (its label or id) through a
+    /// device awake on its LAN.
+    WakeDevice {
+        device: String,
+    },
     HandoffMedia {
         session_id: String,
         target: crate::shell::personal_continuity::DeviceId,
@@ -213,6 +223,15 @@ pub enum DeviceFabricUiAction {
     },
     DisconnectPhoneTethering {
         request_id: [u8; 16],
+    },
+    /// The owner's `device.unlock` decision for a waiting boot.
+    AuthorizeDeviceUnlock {
+        request_digest: [u8; 32],
+        approved: bool,
+    },
+    /// Remove a device from the person's fleet.
+    RemoveDevice {
+        device: crate::shell::personal_continuity::DeviceId,
     },
     Place {
         device: crate::shell::personal_continuity::DeviceId,

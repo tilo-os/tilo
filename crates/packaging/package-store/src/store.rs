@@ -71,6 +71,16 @@ pub struct Admission {
     pub attested_by: String,
     /// Where the bytes came from, recorded for provenance.
     pub source: String,
+    /// Keep this version in front of a newer one the system image ships;
+    /// see [`InstalledPackage::held`].
+    pub held: bool,
+}
+
+/// The outcome of a development install that preserves explicit version holds.
+#[derive(Clone, Debug)]
+pub enum InstallSelection {
+    Installed(Box<Installed>),
+    Preserved(Box<InstalledPackage>),
 }
 
 /// The result of an install.
@@ -455,6 +465,47 @@ impl PackageStore {
         })
     }
 
+    /// Install an explicitly selected development package while preserving a
+    /// user's held version. The admission policy still runs first; the held
+    /// decision reads the current registry under the normal installation lock.
+    /// Existing pins are retained by the same commit path as ordinary installs.
+    /// `Preserved` carries the held row observed under the canonical lock.
+    ///
+    /// # Errors
+    /// Returns the same verification, admission and storage errors as [`Self::install`].
+    pub fn install_preserving_hold<F>(
+        &self,
+        tapp: impl Read + Send,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+    ) -> Result<InstallSelection, StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+    {
+        let mut preserved = None;
+        let result = self.install(
+            tapp,
+            |meta| {
+                let admission = admit(meta)?;
+                let registry = self.registry().map_err(|error| error.to_string())?;
+                if let Some(row) = registry.find(&meta.manifest.package.id)
+                    && row.held
+                {
+                    preserved = Some(row.clone());
+                    return Err("the explicitly held package is preserved".into());
+                }
+                Ok(admission)
+            },
+            fetcher,
+        );
+        match (result, preserved) {
+            (Err(StoreError::Refused(_)), Some(row)) => {
+                Ok(InstallSelection::Preserved(Box::new(row)))
+            }
+            (result, _) => result.map(|installed| InstallSelection::Installed(Box::new(installed))),
+        }
+    }
+
     /// Decode `tapp`, admit it, store its payload and materialise it.
     /// With `keep_present`, a package already materialised in full is left
     /// exactly as it is. Returns the package, its admission, how many blobs
@@ -716,6 +767,7 @@ impl PackageStore {
                 .unwrap_or_default(),
             runtime: meta.manifest.package.runtime.clone().unwrap_or_default(),
             source: admission.source,
+            held: admission.held,
             system: false,
         }
     }

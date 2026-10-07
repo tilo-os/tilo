@@ -167,6 +167,25 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
         );
     }
 
+    // A launcher launch hands over only the services it has: an app that
+    // declares no collaboration service gets just its identity broker, and
+    // that is a complete inherited attachment, not a reason to start a host.
+    for service in ["TILO_SVC_IDENTITY_FD", "TILO_SVC_COLLAB_FD"] {
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let fd = socket.as_raw_fd();
+        let mut command = child();
+        command
+            .env(service, fd.to_string())
+            .env("TILO_RUNTIME_BINARY", "/must-not-run");
+        inherit(&mut command, vec![fd]);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "case only {service}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     // Bootstrap exec preserves the original arguments and working directory.
     {
         let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));

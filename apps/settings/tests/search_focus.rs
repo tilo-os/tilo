@@ -64,7 +64,7 @@ fn char_key_event(s: &str) -> WindowEvent {
 /// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
 /// cycle. Owns the app, its live taffy tree + node map, and the focus state.
 struct Harness {
-    app: SettingsApp,
+    app: Box<SettingsApp>,
     doc: AutoCommit,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
@@ -80,7 +80,7 @@ impl Harness {
     fn new() -> Self {
         let config = crate::support::ScratchConfig::new();
         let mut h = Harness {
-            app: config.app(),
+            app: Box::new(config.app()),
             doc: AutoCommit::new(),
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -98,7 +98,7 @@ impl Harness {
     /// the focusable order. Mirrors `shots::render_to_path` + `App::init_layout`.
     fn layout(&mut self) {
         let theme = ui::Theme::dark();
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let app_node = self.app.build_layout(&mut taffy, &theme, &mut node_map);
@@ -114,30 +114,31 @@ impl Harness {
                 &[app_node],
             )
             .unwrap();
-        self.app.sync(&mut self.doc, &root());
-        let measure_map = node_map.clone();
+        self.app.sync(&self.doc, &root());
         let mut tr = TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
+        let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: this harness exclusively owns this unchanged app and its
+        // exact live layout pointers for both admission and measurement.
+        unsafe {
+            bindings.rebuild(&*self.app, &taffy, outer, &node_map);
+            ui::widget::compute_widget_layout(
+                &mut taffy,
                 outer,
                 taffy::Size {
                     width: taffy::AvailableSpace::Definite(W),
                     height: taffy::AvailableSpace::Definite(H),
                 },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
+                &node_map,
+                &bindings,
+                &mut tr,
             )
             .unwrap();
+        }
         self.app.apply_layout(&taffy, app_node, Point::ORIGIN);
         // Settling sync — the just-built leaf controls (search field, rows)
         // read back their bound CRDT values (this is what the shots harness
         // and the live app do after a structural rebuild).
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
 
         self.taffy = taffy;
         self.node_map = node_map;
@@ -163,7 +164,7 @@ impl Harness {
             }
         }
         let mut order = Vec::new();
-        walk(self.app_node, &self.app, &self.taffy, &mut order);
+        walk(self.app_node, &*self.app, &self.taffy, &mut order);
         self.focus_order = order;
     }
 
@@ -213,7 +214,7 @@ impl Harness {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut self.doc,
+                    state: ui::widget::Edits::lend(&mut self.doc),
                     path: &root(),
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -240,7 +241,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &root(),
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -253,8 +254,8 @@ impl Harness {
         }
         // Frame: sync consumes the field's SEARCH_KEY write; a changed query
         // flags a structure rebuild, which we run preserving focus by ordinal.
-        self.app.sync(&mut self.doc, &root());
-        if Widget::take_structure_dirty(&mut self.app) {
+        self.app.sync(&self.doc, &root());
+        if Widget::take_structure_dirty(&mut *self.app) {
             self.rebuild();
         }
     }
@@ -293,7 +294,7 @@ impl Harness {
             if out.is_some() {
                 return;
             }
-            if w.name() == "TextInput" {
+            if w.test_id() == Some("settings.search") {
                 *out = Some(w);
                 return;
             }
@@ -302,7 +303,7 @@ impl Harness {
             }
         }
         let mut out = None;
-        walk(&self.app, &mut out);
+        walk(&*self.app, &mut out);
         out
     }
 
@@ -314,15 +315,18 @@ impl Harness {
 
     fn sidebar_row_count(&self) -> usize {
         fn walk(w: &dyn Widget, n: &mut usize) {
-            if w.name() == "SidebarRow" {
-                *n = n.saturating_add(1);
+            if let Some(list) = w
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
+            {
+                *n = n.saturating_add(list.visible_item_ids().len());
             }
             for c in w.children() {
                 walk(c, n);
             }
         }
         let mut n = 0;
-        walk(&self.app, &mut n);
+        walk(&*self.app, &mut n);
         n
     }
 }

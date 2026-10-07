@@ -22,8 +22,13 @@ pub(crate) fn palette() -> (Color, Color) {
     (colors.text_primary, colors.surfaces.base)
 }
 
-/// Largest legacy KMS cursor plane supported by every backend we target.
+/// Largest legacy KMS cursor plane supported by every backend we target,
+/// and the largest logical cursor size the accessibility setting offers.
 pub const PLANE_SIZE: u32 = 64;
+/// Largest cursor, in pixels, the compositor rasterises: a large
+/// accessibility cursor on a high-density panel, on a cursor plane that
+/// takes it.
+pub const MAX_PIXEL_SIZE: u32 = 256;
 /// Side of the square grid the cursor outlines are authored on.
 const DESIGN_SIZE: u32 = 24;
 const SUPERSAMPLE: u32 = 4;
@@ -351,10 +356,23 @@ fn source_coordinate(out: u32, factor: f64, limit: u32) -> u32 {
 
 type Cache = Vec<((CursorShape, u32), Arc<CursorBitmap>)>;
 
-/// Rasterise once per shape/size. Size is clamped to the KMS plane contract.
+/// The cursor's side in output pixels: its logical `size` at the output's
+/// `scale`, so a pointer is as big on a 2x panel as on a 1x monitor and is
+/// drawn sharp at that density rather than enlarged or left tiny.
+pub fn pixel_size(size: u32, scale: f64) -> u32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    clamp_to_u32((f64::from(size) * scale).round()).clamp(1, MAX_PIXEL_SIZE)
+}
+
+/// Rasterise once per shape/size from the vector outlines; `size` is in
+/// output pixels (see [`pixel_size`]).
 pub fn bitmap(shape: CursorShape, size: u32) -> Arc<CursorBitmap> {
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-    let size = size.clamp(24, PLANE_SIZE);
+    let size = size.clamp(16, MAX_PIXEL_SIZE);
     let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
     let mut cache = cache
         .lock()
@@ -730,7 +748,10 @@ fn rasterise_cpu(shape: CursorShape, size: u32) -> Vec<u8> {
         .into_iter()
         .map(|part| part.map(|(x, y)| (x * scale, y * scale)))
         .collect();
-    let stroke_radius = (f64::from(SUPERSAMPLE) * 0.85).max(1.0);
+    // The outline is part of the drawing: it grows with the cursor, so a
+    // pointer at 2x is the 1x one at twice the density, not a thinner one.
+    let stroke_radius =
+        (f64::from(SUPERSAMPLE) * 0.85 * (scale / f64::from(SUPERSAMPLE)).max(1.0)).max(1.0);
     let (fill, outline_color) = palette();
     for y in 0..size {
         for x in 0..size {
@@ -1161,6 +1182,65 @@ mod tests {
         assert_eq!(CursorShape::from_icon(I::ColResize), CursorShape::ResizeEw);
         assert_eq!(CursorShape::from_icon(I::NoDrop), CursorShape::NotAllowed);
         assert_eq!(CursorShape::from_icon(I::Alias), CursorShape::Default);
+    }
+
+    #[test]
+    fn drawn_cursors_are_rasterised_at_the_output_density() {
+        assert_eq!(pixel_size(24, 1.0), 24);
+        assert_eq!(pixel_size(24, 2.0), 48);
+        assert_eq!(pixel_size(24, 1.5), 36);
+        assert_eq!(pixel_size(24, 1.25), 30);
+        assert_eq!(pixel_size(48, 2.0), 96);
+        assert_eq!(pixel_size(24, f64::NAN), 24);
+        assert_eq!(pixel_size(64, 8.0), MAX_PIXEL_SIZE);
+
+        // The same vector arrow at 2x: twice the pixels, the hotspot on the
+        // same point of the drawing, and an outline that grew with it rather
+        // than a 1x hairline around a bigger fill.
+        let one = bitmap(CursorShape::Pointer, 24);
+        let two = bitmap(CursorShape::Pointer, 48);
+        assert_eq!((two.width, two.height), (48, 48));
+        for (at_two, at_one) in [
+            (two.hotspot.0, one.hotspot.0),
+            (two.hotspot.1, one.hotspot.1),
+        ] {
+            assert!(
+                at_two.abs_diff(at_one.saturating_mul(2)) <= 1,
+                "hotspot {:?} at 2x for {:?} at 1x",
+                two.hotspot,
+                one.hotspot
+            );
+        }
+        let opaque = |cursor: &CursorBitmap| {
+            cursor
+                .rgba()
+                .chunks_exact(4)
+                .filter(|pixel| pixel[3] > 200)
+                .count()
+        };
+        let dark = |cursor: &CursorBitmap| {
+            cursor
+                .rgba()
+                .chunks_exact(4)
+                .filter(|pixel| pixel[3] > 200 && pixel[0] < 96 && pixel[1] < 96 && pixel[2] < 96)
+                .count()
+        };
+        let ratio = |a: usize, b: usize| {
+            f64::from(u32::try_from(a).unwrap_or(u32::MAX))
+                / f64::from(u32::try_from(b).unwrap_or(u32::MAX).max(1))
+        };
+        let area_ratio = ratio(opaque(&two), opaque(&one));
+        assert!(
+            (3.4..=4.6).contains(&area_ratio),
+            "2x covers four times the pixels, got {area_ratio}"
+        );
+        let outline_ratio = ratio(dark(&two), dark(&one));
+        assert!(
+            outline_ratio > 3.0,
+            "the outline scales with the drawing, got {outline_ratio}"
+        );
+        // Fractional densities rasterise exactly, not the nearest integer.
+        assert_eq!(bitmap(CursorShape::Default, pixel_size(24, 1.25)).width, 30);
     }
 
     #[test]

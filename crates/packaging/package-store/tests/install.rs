@@ -389,3 +389,59 @@ fn removal_evicts_unreferenced_blobs_and_honours_pins() {
         assert!(store.registry().unwrap().is_empty());
     }
 }
+
+#[test]
+fn explicit_cohort_install_preserves_held_packages_and_existing_pins() {
+    let identity = SigningIdentity::generate();
+    let (_first_tree, first) = package(&identity, "so.tilo.demo", "0.1.73018", &v1_files());
+    let (_next_tree, next) = package(&identity, "so.tilo.demo", "0.1.0", &v2_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(
+            full_tapp(&first).as_slice(),
+            |_| {
+                Ok(Admission {
+                    held: true,
+                    pinned: true,
+                    ..Admission::default()
+                })
+            },
+            None,
+        )
+        .unwrap();
+    let original_registry = std::fs::read(store.layout().registry()).unwrap();
+    let result = store
+        .install_preserving_hold(full_tapp(&next).as_slice(), admit_all, None)
+        .unwrap();
+    assert!(
+        matches!(result, package_store::InstallSelection::Preserved(ref row) if row.package_id() == Some(first.id())),
+        "an automatic cohort update must preserve an explicitly held package"
+    );
+    assert_eq!(
+        std::fs::read(store.layout().registry()).unwrap(),
+        original_registry
+    );
+    assert_eq!(
+        store
+            .registry()
+            .unwrap()
+            .find("so.tilo.demo")
+            .unwrap()
+            .package_id(),
+        Some(first.id())
+    );
+    store
+        .update_row("so.tilo.demo", |row| row.held = false)
+        .unwrap();
+    let installed = store
+        .install_preserving_hold(full_tapp(&next).as_slice(), admit_all, None)
+        .unwrap();
+    let package_store::InstallSelection::Installed(installed) = installed else {
+        panic!("the nonheld signed cohort package must be installed");
+    };
+    assert_eq!(installed.package.package_id(), Some(next.id()));
+    assert!(installed.package.pinned);
+    assert!(!installed.package.held);
+    assert_eq!(installed.replaced.unwrap().package_id(), Some(first.id()));
+}

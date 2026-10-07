@@ -12,7 +12,10 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
 /// Draws the root widget, its overlay, the action palette, and any visible
 /// tooltip into `scene`. Returns the transform and logical window rect the
 /// rest of the frame (legacy cursors, remote presence, debug outlines, HUD)
-/// draws with, plus the draw-pass duration for the perf log line.
+/// draws with, the draw-pass duration for the perf log line, and whether
+/// anything was painted outside the widgets' layout boxes (an overlay,
+/// history chrome, a dialog, the palette or a tooltip), which their damage
+/// does not cover.
 #[allow(
     clippy::too_many_lines,
     reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
@@ -25,7 +28,8 @@ fn draw_frame_content(
     height: u32,
     scale_factor: f32,
     t_draw_start: Option<crate::time::Instant>,
-) -> (Affine, KurboRect, u128) {
+) -> (Affine, KurboRect, u128, bool) {
+    app.restore_physical_configuration();
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     app.refresh_control_action_availability();
     if let Some(p) = app.profiler.as_mut() {
@@ -44,6 +48,7 @@ fn draw_frame_content(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| crate::time::now());
+    let secrets = crate::secret_paint::SecretPaint::begin();
     if let Some(history) = &mut app.history {
         history.draw(
             scene,
@@ -69,24 +74,12 @@ fn draw_frame_content(
             &app.permission_ctx,
         );
     }
+    // Everything from here on paints outside the widgets' layout boxes, where
+    // their damage cannot describe it.
+    let layer_start = scene.encoding().draw_tags.len();
+    // The overlay pass sees the whole window too: what escapes a scrolled
+    // list's box (a menu opened in it) may go anywhere in the window.
     app.presence_ctx.pop_viewport(prev_vp);
-    // Widgets whose visual extent escapes their layout box (an open
-    // `Dropdown`, a popover) composite above every later-drawn sibling here.
-    // No-op by default.
-    if app
-        .history
-        .as_ref()
-        .is_none_or(|history| history.live_visible())
-        && app.history_layout.is_none_or(|layout| layout.app_visible)
-    {
-        app.root_widget.draw_overlay(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
-    }
     if app.history_chrome_enabled {
         let context = crate::standalone_history::HistoryReadContext {
             document: &app.state.doc,
@@ -111,8 +104,17 @@ fn draw_frame_content(
             app.layout.layout_dirty = true;
         }
     }
-    if let Some(dialog) = app.close_admission.dialog.as_mut() {
-        dialog.draw(
+    // The window's top layer, after the app and the window's own chrome:
+    // open menus, popovers and modals composite above everything drawn so
+    // far, so a modal's scrim covers the History bar and every region. The
+    // window stays the presence viewport: a modal covers all of it.
+    if app
+        .history
+        .as_ref()
+        .is_none_or(|history| history.live_visible())
+        && app.history_layout.is_none_or(|layout| layout.app_visible)
+    {
+        app.root_widget.draw_overlay(
             scene,
             transform,
             &mut app.text_renderer,
@@ -120,6 +122,34 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
+    if let Some(history) = &mut app.history {
+        history.draw_overlay(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
+    if app.history_chrome_enabled {
+        app.document_history.draw_overlay(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
+    if let Some(dialog) = app.close_admission.dialog.as_mut() {
+        dialog.draw_overlay(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
+    app.presence_ctx.pop_viewport(prev_vp);
     if let Some(ap) = app
         .actions
         .action_palette
@@ -148,12 +178,19 @@ fn draw_frame_content(
         );
     }
     draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
+    let top_layer = scene.encoding().draw_tags.len() != layer_start;
+    app.set_secret_on_screen(secrets.finish());
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
-    (transform, window_rect, t_draw_us)
+    (
+        transform,
+        window_rect,
+        t_draw_us,
+        top_layer || app.history.is_some(),
+    )
 }
 
 #[cfg(feature = "native")]
@@ -169,9 +206,15 @@ fn draw_visible_tooltip(
     // The widget under a shown tooltip may have been rebuilt since the
     // pointer settled (a toggle that now reads "Show" instead of "Hide"):
     // read its tooltip again rather than showing the old one.
+    let mut side = crate::widget::tooltip::TooltipSide::Below;
     if let Some((_, anchor)) = app.input.tooltip_host.visible() {
-        let current = app.tooltip_target_at(anchor.center());
-        app.input.tooltip_host.refresh(current);
+        let current = app.tooltip_placed_at(anchor.center());
+        if let Some((_, _, placed)) = &current {
+            side = *placed;
+        }
+        app.input
+            .tooltip_host
+            .refresh(current.map(|(rect, label, _)| (rect, label)));
     }
     let Some((text, anchor)) = app
         .input
@@ -187,12 +230,12 @@ fn draw_visible_tooltip(
         f64::from(width) / f64::from(scale_factor),
         f64::from(height) / f64::from(scale_factor),
     );
-    crate::widget::tooltip::draw_hover_tooltip(
+    crate::widget::tooltip::draw_hover_tooltip_on(
         scene,
         transform,
         &mut app.text_renderer,
         &app.theme,
-        anchor,
+        (anchor, side),
         &text,
         viewport,
     );
@@ -246,12 +289,20 @@ fn run_layout_pass(
         }
         app.history_viewport_width = logical.0;
         let _ = app.history_local_resources();
-        app.document_history
-            .sync(&mut app.state.doc, &app.state.root);
+        app.document_history.sync(&app.state.doc, &app.state.root);
     }
     if !app.layout.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));
     }
+    // A relayout that moves nothing leaves every pixel outside the dirty
+    // widgets as it was, so their damage is the whole change. Typing into a
+    // fixed-size field relayouts on every key; repainting the whole window
+    // for it made per-key work scale with the display instead of the field.
+    let geometry_before = (!structure_rebuilt
+        && !app.layout.structure_dirty
+        && app.history.is_none()
+        && app.history_layout.is_none())
+    .then(|| widget_geometry(app.root_widget.as_ref()));
     let mut t_compute_us = 0u128;
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
@@ -386,6 +437,7 @@ fn run_layout_pass(
         app.update_focusable_order();
     }
     app.restore_history_focus();
+    app.restore_ordinary_palette_focus();
     if app
         .focused_node
         .is_some_and(|node| !app.focusable_order.contains(&node))
@@ -407,7 +459,23 @@ fn run_layout_pass(
     // as input. Publish only after the retained control tree has settled;
     // the publisher diffs the surface and checks broker connectivity.
     app.publish_action_surface();
-    Some((true, t_compute_us, t_apply_us))
+    let geometry_changed = recomposed
+        || viewport_changed
+        || geometry_before.is_none_or(|before| before != widget_geometry(app.root_widget.as_ref()));
+    Some((geometry_changed, t_compute_us, t_apply_us))
+}
+
+/// Every widget's layout box in tree order. Two snapshots of one unchanged
+/// tree are equal exactly when no widget moved or resized.
+#[cfg(feature = "native")]
+fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<KurboRect> {
+    fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<KurboRect>) {
+        out.push(widget.get_rect());
+        widget.for_each_child(&mut |child| walk(child, out));
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out
 }
 
 #[cfg(test)]
@@ -470,6 +538,10 @@ mod fullscreen_tests;
 #[cfg(test)]
 #[path = "action_palette_tests.rs"]
 mod action_palette_tests;
+
+#[cfg(test)]
+#[path = "search_open_tests.rs"]
+mod search_open_tests;
 
 // See `crate::view` for the (de)serialize-as-a-whole design this implements.
 impl crate::view::FreezeThaw for App {
@@ -574,6 +646,10 @@ pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
 #[cfg(test)]
 #[path = "prepared_runner_tests.rs"]
 mod prepared_runner_tests;
+
+#[cfg(test)]
+#[path = "secret_capture_tests.rs"]
+mod secret_capture_tests;
 
 #[cfg(test)]
 #[path = "card_grid_host_tests.rs"]

@@ -12,6 +12,10 @@ description = "Portable content-addressed storage and the default Tilo filesyste
 name = "fs"
 path = "src/lib.rs"
 
+[[example]]
+name = "android_hydration_fixture"
+required-features = ["filesystem"]
+
 # The content plane is portable. Filesystem projection, mounting and service
 # protocols remain enabled by default for the OS; app-only consumers opt out.
 [features]

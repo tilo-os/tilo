@@ -20,6 +20,7 @@ struct Client {
     keyboard_enter: Option<wl_surface::WlSurface>,
     toplevel_configures: Vec<(u32, i32, i32)>,
     closed: Vec<u32>,
+    pressed_keys: Vec<u32>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -51,8 +52,14 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_keyboard::Event::Enter { surface, .. } = event {
-            state.keyboard_enter = Some(surface);
+        match event {
+            wl_keyboard::Event::Enter { surface, .. } => state.keyboard_enter = Some(surface),
+            wl_keyboard::Event::Key {
+                key,
+                state: wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed),
+                ..
+            } => state.pressed_keys.push(key),
+            _ => {}
         }
     }
 }
@@ -307,6 +314,63 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
         h.client.keyboard_enter.as_ref().map(Proxy::id),
         Some(child.id()),
         "the client saw keyboard enter on the dialog"
+    );
+
+    // A remote viewer addresses the streamed parent, while the seat enters
+    // its modal child. Publish the real frame's view and deliver a key through
+    // the production firewall: the parent share must still reach its sheet.
+    let mut fb = shell::compositor::frame::FrameBuilder::with_tree(
+        h.state.workspace_tree.read().clone(),
+        (1000, 800),
+    );
+    fb.relayout();
+    shell::compositor::client_input::publish_remote_input_view(&mut h.state, &fb, false);
+    drop(fb);
+    assert!(
+        h.state
+            .remote_input_firewall
+            .view()
+            .rect(parent_id)
+            .is_some(),
+        "the published view must observe the parent tile"
+    );
+    h.state
+        .share_registry
+        .insert(9, parent_id, shell::network::StreamingShare::new());
+    assert!(h.state.apply_remote_input(
+        9,
+        parent_id,
+        shell::network::InputEvent::KeyboardFocus {
+            surface: parent_id,
+            focused: true
+        }
+    ));
+    assert!(
+        h.state.apply_remote_input(
+            9,
+            parent_id,
+            shell::network::InputEvent::Key {
+                keysym: 30,
+                pressed: true,
+                modifiers: 0
+            }
+        ),
+        "the focused modal child accepts a key addressed to its streamed parent"
+    );
+    assert!(h.state.apply_remote_input(
+        9,
+        parent_id,
+        shell::network::InputEvent::Key {
+            keysym: 30,
+            pressed: false,
+            modifiers: 0
+        }
+    ));
+    h.pump();
+    assert_eq!(h.client.pressed_keys, vec![30]);
+    assert_eq!(
+        h.client.keyboard_enter.as_ref().map(Proxy::id),
+        Some(child.id())
     );
 
     // Dropping the modal hint gives the parent its pointer back.

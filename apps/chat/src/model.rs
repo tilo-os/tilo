@@ -46,11 +46,12 @@ impl ChannelKind {
             ChannelKind::Text => "text",
         }
     }
-    /// Channel-list glyph: `#` for text, a speaker for voice.
-    pub fn glyph(self) -> &'static str {
+    /// How a channel of this kind is named in a label: `#name` for a text
+    /// channel, "name, voice channel" for a voice channel.
+    pub fn label(self, name: &str) -> String {
         match self {
-            ChannelKind::Text => "#",
-            ChannelKind::Voice => "\u{1F50A}",
+            ChannelKind::Text => format!("#{name}"),
+            ChannelKind::Voice => format!("{name}, voice channel"),
         }
     }
 }
@@ -110,7 +111,9 @@ pub struct Category {
     pub name: String,
     pub order: u32,
     /// Collapsed categories hide their channels in the sidebar (the
-    /// active channel still shows so you never lose your place).
+    /// active channel still shows so you never lose your place). Each
+    /// person's own ([`crate::preferences::ChatPreferences`]), not the
+    /// document's.
     pub collapsed: bool,
 }
 
@@ -239,9 +242,8 @@ pub enum Attachment {
     },
     /// A video addressed by its content hash. Rendered inline as a
     /// poster/preview card with a play affordance and the real resolution; the
-    /// bytes are read from the content store on demand (a full
-    /// frame decode needs the media engine's decoder — see [`crate::media`] —
-    /// available only in the `live-media` build), never copied into the CRDT.
+    /// bytes are read from the content store on demand, never copied into
+    /// the CRDT.
     /// `w`/`h` are the pixel dimensions when known (0 when the container header
     /// wasn't probed).
     Video {
@@ -329,6 +331,8 @@ pub struct Message {
     /// the file the author had selected without reading `text` and without
     /// ever needing a screen position. `None` for an ordinary message.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// Host-resolved existing record provider for this reference.
+    pub source_provider: Option<String>,
     pub attachment: Option<Attachment>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
@@ -735,6 +739,7 @@ mod tests {
             reactions: vec![],
             mentions: vec![],
             reference: None,
+            source_provider: None,
             attachment: None,
             pinned: false,
             work: None,

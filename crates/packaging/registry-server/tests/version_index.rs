@@ -41,6 +41,7 @@ fn version(number: &str) -> RegistryVersion {
             architecture: "x86_64".into(),
             isa: "x86_64-v3".into(),
             runtime: None,
+            interfaces: Vec::new(),
         },
     }
 }

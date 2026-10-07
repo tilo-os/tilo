@@ -37,6 +37,9 @@ pub enum Placement {
     /// this instead of [`Self::TabIn`] so landing left or right of a particular
     /// tab remains stable even if focus changes while the app is starting.
     TabAt(GroupId, usize),
+    /// [`Self::TabAt`] without taking focus: the group keeps showing the tab
+    /// it showed. What a link opened in a background tab gets.
+    BackgroundTabAt(GroupId, usize),
     /// Its own window group, right of the group named here. Unlike [`Placement::NewGroup`] ("beside
     /// whatever has focus"), names a specific group, so the answer survives focus moving between launch and arrival. Falls back to [`Placement::NewGroup`] when gone, as [`Placement::TabIn`] does.
     RightOf(GroupId),
@@ -250,21 +253,23 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         return false;
     };
     let destination = match placement {
-        Placement::TabAt(group, index) => tree.desktop.workspaces.iter().find_map(|workspace| {
-            workspace.strips.iter().find_map(|strip| {
-                strip
-                    .window_groups
-                    .iter()
-                    .any(|candidate| candidate.id == group)
-                    .then_some((
-                        strip.id,
-                        ui::widget::TabDropTarget::ExistingGroup {
-                            group_id: group,
-                            tab_index: index,
-                        },
-                    ))
+        Placement::TabAt(group, index) | Placement::BackgroundTabAt(group, index) => {
+            tree.desktop.workspaces.iter().find_map(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|candidate| candidate.id == group)
+                        .then_some((
+                            strip.id,
+                            ui::widget::TabDropTarget::ExistingGroup {
+                                group_id: group,
+                                tab_index: index,
+                            },
+                        ))
+                })
             })
-        }),
+        }
         Placement::TabIn(group) => tree.desktop.workspaces.iter().find_map(|workspace| {
             workspace.strips.iter().find_map(|strip| {
                 strip.window_groups.iter().find_map(|candidate| {
@@ -482,6 +487,21 @@ pub fn focused_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, 
     Some((strip_id, group_id, tab.id))
 }
 
+/// Where a tab placed in `group` goes: the exact index a placement names,
+/// else right of the tab the user was on, not at the end of the bar.
+fn tab_insert_index(group: &WindowGroup, placement: Placement) -> usize {
+    match placement {
+        Placement::TabAt(_, index) | Placement::BackgroundTabAt(_, index) => {
+            index.min(group.tabs.len())
+        }
+        _ => group
+            .tabs
+            .iter()
+            .position(|t| t.id == group.active_tab)
+            .map_or(group.tabs.len(), |i| i.saturating_add(1)),
+    }
+}
+
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
 /// Placement and tree decide where a window lands, not what's inside it, so both foreign and
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
@@ -526,13 +546,14 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     // focused-strip placement rule rather than landing in a random strip.
     let explicit_strip = match placement {
         Placement::GroupAt(strip, _) => ws.strips.iter().position(|s| s.id == strip),
-        Placement::TabAt(group, _) | Placement::TabIn(group) | Placement::RightOf(group) => {
-            ws.strips.iter().position(|s| {
-                s.window_groups
-                    .iter()
-                    .any(|candidate| candidate.id == group)
-            })
-        }
+        Placement::TabAt(group, _)
+        | Placement::BackgroundTabAt(group, _)
+        | Placement::TabIn(group)
+        | Placement::RightOf(group) => ws.strips.iter().position(|s| {
+            s.window_groups
+                .iter()
+                .any(|candidate| candidate.id == group)
+        }),
         Placement::NewGroup | Placement::IntoTab(_) => None,
     };
     // Target strip: explicit destination, then focused one, else the first.
@@ -550,7 +571,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     // A tab target whose group is gone degrades to a new group rather than
     // silently landing somewhere arbitrary.
     let tab_target = match placement {
-        Placement::TabIn(g) | Placement::TabAt(g, _) => {
+        Placement::TabIn(g) | Placement::TabAt(g, _) | Placement::BackgroundTabAt(g, _) => {
             strip.window_groups.iter().position(|w| w.id == g)
         }
         // `IntoTab` only reaches here when its tab has gone; it degrades to a new group, as the variant's own documentation says.
@@ -565,16 +586,13 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         let Some(group) = strip.window_groups.get_mut(idx) else {
             return tab_id;
         };
-        let insert_at = match placement {
-            Placement::TabAt(_, index) => index.min(group.tabs.len()),
-            // Right of the tab the user was on, not at the end of the bar.
-            _ => group
-                .tabs
-                .iter()
-                .position(|t| t.id == group.active_tab)
-                .map_or(group.tabs.len(), |i| i.saturating_add(1)),
-        };
-        group.tabs.insert(insert_at, new_tab);
+        group
+            .tabs
+            .insert(tab_insert_index(group, placement), new_tab);
+        if matches!(placement, Placement::BackgroundTabAt(..)) {
+            // Behind the tab the person is reading: nothing moves.
+            return tab_id;
+        }
         group.active_tab = tab_id;
         let group_id = group.id;
         tree.desktop.active_strip.insert(ws_id, strip_id);
@@ -727,27 +745,68 @@ pub fn relocate_foreign_toplevel(
         return rename_tab_for_app_id(tree, surface_id, &app_id)
             && rename_tab_for_title(tree, surface_id, title);
     }
+    // The window keeps its identity through the move: the replacement tab
+    // takes the old tab's id, and when the window had a group of its own and
+    // gets one again, that group keeps its id too. A launch that activates
+    // its token a few seconds after mapping (Chromium) otherwise saw its
+    // window's group vanish and a new one appear in its place. A window bound
+    // into an existing tab takes that tab, and with it that tab's id.
+    let previous = if matches!(placement, Placement::IntoTab(_)) {
+        None
+    } else {
+        tree.desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .find(|tab| {
+                        matches!(&tab.tile, TileContent::Foreign { surface_id: id, .. } if *id == surface_id)
+                    })
+                    .map(|tab| (tab.id, group.id, group.tabs.len() == 1))
+            })
+    };
     if !close_tab_for_destroyed_surface(tree, surface_id) {
         return false;
     }
     let tab_id = adopt_toplevel_at(tree, surface_id, Some(app_id), placement);
+    let mut regrouped = None;
+    let mut titled = false;
     for workspace in &mut tree.desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
-                let titled = if let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    tab.title = title.to_string();
-                    true
-                } else {
-                    false
+                let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
+                    continue;
                 };
-                if titled {
-                    mark_tree_changed(tree);
-                    return true;
+                tab.title = title.to_string();
+                titled = true;
+                if let Some((old_tab, old_group, was_alone)) = previous {
+                    tab.id = old_tab;
+                    if group.active_tab == tab_id {
+                        group.active_tab = old_tab;
+                    }
+                    if was_alone && group.tabs.len() == 1 && group.id != old_group {
+                        regrouped = Some((group.id, old_group));
+                        group.id = old_group;
+                    }
                 }
             }
         }
     }
-    false
+    if let Some((minted, kept)) = regrouped {
+        for active in tree.desktop.active_group.values_mut() {
+            if *active == minted {
+                *active = kept;
+            }
+        }
+    }
+    if titled {
+        mark_tree_changed(tree);
+    }
+    titled
 }
 
 /// Rewrite only a foreign tab's client-provided visible title.  App identity
@@ -1397,6 +1456,60 @@ mod tests {
                     "a later matching window must not replace the token-bound surface"
                 );
                 crate::shell::launcher::clear_pending_placements();
+            }
+
+            // Phase `a_late_activation_moves_the_window_without_replacing_its_group`.
+            // Chromium maps its window, then activates its launch token seconds
+            // later. The move to the launch's placement keeps the window's tab
+            // and group ids: a group that vanished and reappeared under a new
+            // id lost every reference to it (A08).
+            {
+                crate::shell::launcher::clear_pending_placements();
+                let mut tree = WorkspaceTree::bootstrap_demo();
+                let first = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+                let tab = adopt_toplevel_at(
+                    &mut tree,
+                    0xc0de,
+                    Some("chromium-browser".into()),
+                    Placement::NewGroup,
+                );
+                let group = group_of(&tree, 0xc0de).id;
+                let groups_before = tree.desktop.workspaces[0].strips[0].window_groups.len();
+
+                assert!(relocate_foreign_toplevel(
+                    &mut tree,
+                    0xc0de,
+                    Placement::RightOf(first),
+                    "Chromium",
+                ));
+                let strip = &tree.desktop.workspaces[0].strips[0];
+                assert_eq!(
+                    group_of(&tree, 0xc0de).id,
+                    group,
+                    "the window keeps its group"
+                );
+                assert_eq!(tab_of(&tree, 0xc0de).id, tab, "and its tab");
+                assert_eq!(group_of(&tree, 0xc0de).active_tab, tab);
+                assert_eq!(tab_of(&tree, 0xc0de).title, "Chromium");
+                assert_eq!(
+                    strip.window_groups.len(),
+                    groups_before,
+                    "no group is added"
+                );
+                assert_eq!(
+                    strip.window_groups.iter().position(|g| g.id == group),
+                    strip
+                        .window_groups
+                        .iter()
+                        .position(|g| g.id == first)
+                        .map(|i| i + 1),
+                    "it moved where the launch asked for it"
+                );
+                assert_eq!(
+                    tree.desktop.active_group_for(strip.id),
+                    Some(group),
+                    "and stays the focused group"
+                );
             }
 
             // Phase `a_window_whose_tab_vanished_is_still_placed`.

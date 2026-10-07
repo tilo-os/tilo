@@ -54,7 +54,7 @@ fn deferred_palette_final_local_dispatch_mints_once_per_new_activation() {
         SearchField::with_language("en_US")
     });
     palette.load_open_resources(&[resource]);
-    let mut doc = AutoCommit::new();
+    let mut doc = automerge::AutoCommit::new();
     let mut tx = LocalTransport::new();
     for expected in 0..2 {
         palette.open();
@@ -62,7 +62,11 @@ fn deferred_palette_final_local_dispatch_mints_once_per_new_activation() {
         assert_eq!(calls.load(Ordering::SeqCst), expected);
         assert!(matches!(
             palette
-                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx
+                )
                 .unwrap()
                 .unwrap(),
             Dispatched::AppliedLocal(_)

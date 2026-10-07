@@ -42,7 +42,7 @@ use crate::widget::identity_flow::{
 };
 #[cfg(test)]
 use crate::widget::identity_flow::{compute_pairing_mac, derive_pairing_mac_key};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::qr::QrWidget;
 
 const TITLE: &str = "Pair another device";
@@ -523,49 +523,53 @@ impl Widget for AddDeviceHostScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: TITLE,
+                max_width: FORM_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        if let Some(qr) = &self.qr {
-            paint_qr(scene, transform, text_renderer, theme, qr, plan.qr);
-        } else {
-            paint_cell(scene, transform, theme, plan.qr, false);
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
+            if let Some(qr) = &self.qr {
+                paint_qr(scene, transform, text_renderer, theme, qr, plan.qr);
+            } else {
+                paint_cell(scene, transform, theme, plan.qr, false);
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    plan.qr,
+                    QR_PLACEHOLDER,
+                    Role::Caption,
+                    Align::Center,
+                    true,
+                );
+            }
             paint_text(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.qr,
-                QR_PLACEHOLDER,
+                plan.code,
+                &self.code_text(),
+                Role::Code,
+                Align::Center,
+                false,
+            );
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                plan.status,
+                &self.status,
                 Role::Caption,
                 Align::Center,
                 true,
             );
-        }
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.code,
-            &self.code_text(),
-            Role::Code,
-            Align::Center,
-            false,
-        );
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.status,
-            &self.status,
-            Role::Caption,
-            Align::Center,
-            true,
-        );
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {

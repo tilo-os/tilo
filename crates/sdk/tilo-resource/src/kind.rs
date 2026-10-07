@@ -37,7 +37,7 @@ use std::any::Any;
 use tilo_actions::{ActionRegistry, EncodedAction};
 
 use crate::model::{Doc, ModelError};
-use crate::resource::{self, Resource, SearchEntry};
+use crate::resource::{self, Place, Resource, SearchEntry};
 
 /// One resource type with its type erased: what [`Resource`] offers, reached
 /// by the kind a record names. See the [module docs](self).
@@ -51,9 +51,11 @@ pub struct ResourceKind {
     name: fn(&dyn Any) -> Option<String>,
     publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::Resource>,
     search: fn(&dyn Any) -> Option<Vec<SearchEntry>>,
+    child: fn(&dyn Any, &str) -> Option<tilo_actions::Resource>,
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
     encode: fn(serde_json::Value) -> Result<EncodedAction, String>,
+    lands: fn(&Doc, &EncodedAction) -> Option<Place>,
 }
 
 impl std::fmt::Debug for ResourceKind {
@@ -81,8 +83,26 @@ fn publish<R: Resource>(id: &str, label: &str, state: &dyn Any) -> Option<tilo_a
         .map(|state| resource::publish::<R>(id, label, state))
 }
 
+fn child<R: Resource>(state: &dyn Any, id: &str) -> Option<tilo_actions::Resource> {
+    R::child(state.downcast_ref::<R::State>()?, id)
+}
+
 fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
     state.downcast_ref::<R::State>().map(R::search)
+}
+
+fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
+    let action: R::Action = if action.type_id == R::ACTION_TYPE {
+        serde_json::from_slice(&action.payload).ok()?
+    } else if action.type_id == crate::group::group_type::<R>() {
+        serde_json::from_slice::<crate::group::ActionGroup<R::Action>>(&action.payload)
+            .ok()?
+            .actions
+            .pop()?
+    } else {
+        return None;
+    };
+    R::lands(&R::read(doc).ok()?, &action)
 }
 
 fn encode<R: Resource>(action: serde_json::Value) -> Result<EncodedAction, String> {
@@ -106,9 +126,11 @@ impl ResourceKind {
             name: resource_label::<R>,
             publish: publish::<R>,
             search: search::<R>,
+            child: child::<R>,
             register: crate::group::register::<R>,
             initialize: R::initialize,
             encode: encode::<R>,
+            lands: lands::<R>,
         }
     }
 
@@ -142,6 +164,14 @@ impl ResourceKind {
     /// The registry type id its actions replay under.
     pub fn action_type(&self) -> &'static str {
         self.action_type
+    }
+
+    /// Where `action` of this kind, just applied to `doc`, leaves the
+    /// participant who took it ([`Resource::lands`]); `None` for an action
+    /// of another type or one that lands nowhere in particular. A group
+    /// lands where its last member does.
+    pub fn lands(&self, doc: &Doc, action: &EncodedAction) -> Option<Place> {
+        (self.lands)(doc, action)
     }
 
     /// The id of the app hosting it, when one registered it.
@@ -197,6 +227,16 @@ impl ResourceKind {
     pub fn publish(&self, id: &str, doc: &Doc) -> Result<tilo_actions::Resource, ModelError> {
         let state = self.read(doc)?;
         self.publish_state(id, state.as_ref())
+    }
+
+    /// Read one existing lazy child from the publishing resource's own resolver.
+    /// This returns metadata only and never creates or invokes the child.
+    ///
+    /// # Errors
+    /// Returns why this document does not hold the publishing resource.
+    pub fn child(&self, doc: &Doc, id: &str) -> Result<Option<tilo_actions::Resource>, ModelError> {
+        let state = self.read(doc)?;
+        Ok((self.child)(state.as_ref(), id))
     }
 
     /// [`Self::publish`] from a state [`Self::read`] returned.
@@ -257,8 +297,8 @@ pub struct Kinds {
 impl Kinds {
     /// No types.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self { kinds: Vec::new() }
     }
 
     /// These and `kind`. A kind registered again replaces the earlier entry.

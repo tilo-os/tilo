@@ -69,14 +69,34 @@ impl CapnpBrokerState {
         self: &Arc<Self>,
         directories: Rc<LocalActionDirectoryRegistry>,
     ) -> Option<tokio::task::JoinHandle<()>> {
-        let mut receiver = self
+        /// Hands the queue back when the bridge task is dropped with its
+        /// broker thread's runtime, so a restarted thread bridges again.
+        struct Lent {
+            state: Arc<CapnpBrokerState>,
+            receiver: Option<tokio::sync::mpsc::Receiver<crate::peer_actions::Request>>,
+        }
+        impl Drop for Lent {
+            fn drop(&mut self) {
+                if let Ok(mut slot) = self.state.peer_action_rx.lock() {
+                    *slot = self.receiver.take();
+                }
+            }
+        }
+        let receiver = self
             .peer_action_rx
             .lock()
             .ok()
             .and_then(|mut rx| rx.take())?;
+        let mut lent = Lent {
+            state: self.clone(),
+            receiver: Some(receiver),
+        };
         let state = self.clone();
         Some(tokio::task::spawn_local(async move {
-            while let Some(request) = receiver.recv().await {
+            while let Some(receiver) = lent.receiver.as_mut() {
+                let Some(request) = receiver.recv().await else {
+                    break;
+                };
                 let state = state.clone();
                 let directories = directories.clone();
                 tokio::task::spawn_local(async move {
@@ -147,7 +167,7 @@ impl CapnpBrokerState {
         let caller = self.verify_network_action_caller_with_policy_time(evidence, policy_time)?;
         let host = self.invocation_host()?;
         if let Some(invocation) = poll {
-            let mut observation = self.peer_observation(&caller, invocation)?;
+            let mut observation = self.peer_observation(&caller, invocation).await?;
             if let Some(update) = notification {
                 if update.invocation() != invocation {
                     return Err("notification identity mismatch".into());
@@ -173,7 +193,9 @@ impl CapnpBrokerState {
                 .map_err(|_| "catalogue unavailable")?;
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue })
             }
-            ActionMessage::Status { invocation } => self.peer_observation(&caller, *invocation),
+            ActionMessage::Status { invocation } => {
+                self.peer_observation(&caller, *invocation).await
+            }
             ActionMessage::Cancel { invocation } => {
                 self.cancel_verified_invocation(&caller, *invocation)?;
                 Ok(ActionMessage::CancellationRequested {
@@ -224,7 +246,7 @@ impl CapnpBrokerState {
                     {
                         return Err("changed invocation intent".into());
                     }
-                    return self.peer_observation(&caller, *invocation);
+                    return self.peer_observation(&caller, *invocation).await;
                 }
                 let actor = caller.admitted.broker_actor();
                 let resolved_offer = if let Some(revision) = revision {
@@ -291,7 +313,8 @@ impl CapnpBrokerState {
                     {
                         return Err("changed invocation intent".into());
                     }
-                    return self.peer_observation(&caller, *invocation);
+                    drop(admission);
+                    return self.peer_observation(&caller, *invocation).await;
                 }
                 let confirmation = confirmation.as_ref().map(|c| match c {
                     Confirmation::Confirm => DirectoryActionConfirmation::Confirmed,
@@ -312,6 +335,9 @@ impl CapnpBrokerState {
                     request.peer_id,
                     offered,
                     InvocationInputs {
+                        requested: None,
+                        caller: None,
+                        execution: None,
                         argument: request.argument.as_deref(),
                         actor: &actor,
                         confirmation_token: token.as_deref(),
@@ -320,19 +346,27 @@ impl CapnpBrokerState {
                     Some((&caller, &request)),
                     revision.as_deref(),
                 )?;
-                let observation = self.peer_observation(&caller, *invocation);
                 drop(admission);
-                observation
+                self.peer_observation(&caller, *invocation).await
             }
             _ => Err("unsupported action request".into()),
         }
     }
-    fn peer_observation(
+    async fn peer_observation(
         &self,
         caller: &VerifiedActionCaller,
         invocation: tilo_actions::InvocationId,
     ) -> Result<ActionMessage, String> {
-        let record = self.verified_invocation_status(caller, invocation)?;
+        let mut record = self.verified_invocation_status(caller, invocation)?;
+        if let Some(retained) = record {
+            record = Some(
+                self.reconcile_prepared_effect(retained, || {
+                    self.verified_invocation_status(caller, invocation)?;
+                    Ok(())
+                })
+                .await?,
+            );
+        }
         Ok(ActionMessage::Observation {
             host: self.invocation_host()?,
             invocation,

@@ -29,14 +29,14 @@ use std::any::Any;
     clippy::panic,
     reason = "a document host lends its document; any other model is a host bug"
 )]
-pub fn document<'a>(model: &'a mut dyn Any, path: &'a dyn Any) -> (&'a mut AutoCommit, &'a ObjId) {
-    let (Some(doc), Some(path)) = (
-        model.downcast_mut::<AutoCommit>(),
-        path.downcast_ref::<ObjId>(),
-    ) else {
-        panic!("the host lent a model that is not an Automerge document");
+pub fn document<'a, 'doc>(
+    model: &'a mut crate::widget::Edits<'doc>,
+    path: &'a dyn Any,
+) -> (&'a mut crate::widget::Edits<'doc>, &'a ObjId) {
+    let Some(path) = path.downcast_ref::<ObjId>() else {
+        panic!("the host lent a path that is not an Automerge object");
     };
-    (doc, path)
+    (model, path)
 }
 
 /// Read-only [`document`].

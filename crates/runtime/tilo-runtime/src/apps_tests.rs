@@ -97,6 +97,7 @@ impl Store {
             cli_commands: Vec::new(),
             runtime: String::new(),
             source: String::new(),
+            held: false,
             system: false,
         };
         self.registry.push_str(&registry_row(&package));

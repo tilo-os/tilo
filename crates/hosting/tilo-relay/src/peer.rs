@@ -1758,6 +1758,10 @@ async fn handle_envelope(
             frame,
         )
         .await),
+        env @ Envelope::RecordContent { .. } => {
+            route_record_content(peer, session, subscribed, env).await;
+            Ok(None)
+        }
         env @ Envelope::Commit { .. } => handle_commit(peer, session, subscribed, env).await,
         Envelope::LiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
@@ -5529,7 +5533,7 @@ fn checkpoint_prefix_recovery_allowed(
 }
 
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
-/// Ephemeral — no author-forgery check, no persistence.
+/// Ephemeral, with device attribution stamped from the authenticated session.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
@@ -5538,7 +5542,7 @@ async fn handle_presence(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
-    env: Envelope,
+    mut env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
     let Envelope::Presence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
@@ -5550,6 +5554,18 @@ async fn handle_presence(
         return Err(PeerError::Protocol(
             "presence sent before subscribing to workspace".into(),
         ));
+    }
+    if peer.role == crate::auth::PeerRole::Device
+        && let Envelope::Presence { payload, .. } = &mut env
+        && let Some(mut attributed) = crate::AttributedPresence::decode(payload)
+    {
+        // Co-edit receivers recover the author from this opaque wrapper.
+        // A sender's claim is not transport evidence, even if that other
+        // device has a valid certificate in the same workspace.
+        attributed.author = peer.device_public_key;
+        *payload = attributed
+            .encode()
+            .map_err(|error| PeerError::Protocol(error.to_string()))?;
     }
     let ws = {
         let map = session.workspaces.lock().await;
@@ -5675,6 +5691,42 @@ async fn handle_remote_action(
     } else {
         undeliverable("addressed device is not connected to the workspace")
     }
+}
+
+/// Hand a piece of a record's content to the one device it is addressed
+/// to, stamped with the authenticated sender. Never stored, never fanned
+/// out, never answered: a piece that cannot be delivered is dropped, and
+/// the device that wanted it asks again.
+async fn route_record_content(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    envelope: Envelope,
+) {
+    let Envelope::RecordContent {
+        workspace_id,
+        to_device_public_key: to,
+        frame,
+        ..
+    } = envelope
+    else {
+        return;
+    };
+    if !subscribed.contains(&workspace_id)
+        || frame.len() > crate::transport::MAX_RECORD_CONTENT_FRAME_BYTES
+    {
+        return;
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return;
+    };
+    let stamped = Envelope::RecordContent {
+        workspace_id,
+        to_device_public_key: to,
+        from_device_public_key: peer.device_public_key,
+        frame,
+    };
+    ws.lock().await.route_lossy(&to, stamped);
 }
 
 /// Answer a frame addressed to this relay through its app-serving plane,
@@ -10219,6 +10271,37 @@ mod private_transport_tests {
             .fanout_delta(&native.device_public_key, native.role, &env3, &raw, 3)
             .unwrap();
         assert!(brx.try_recv().is_err(), "satisfied by one checkpoint");
+
+        let (native_tx, mut native_rx) = mpsc::channel(4);
+        let (native_disconnect, _native_disconnect_rx) = mpsc::channel(1);
+        wr.lock().await.add_subscriber(Subscriber {
+            device_public_key: native.device_public_key,
+            role: native.role,
+            tx: native_tx,
+            disconnect: native_disconnect,
+        });
+        // The browser claims another admitted device's author identity.
+        let forged = crate::AttributedPresence {
+            author: native.device_public_key,
+            body: b"fixture presence".to_vec(),
+        };
+        handle_presence(
+            &browser,
+            &session,
+            &[id],
+            Envelope::Presence {
+                workspace_id: id,
+                payload: forged.encode().unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+        let Envelope::Presence { payload, .. } = native_rx.try_recv().unwrap() else {
+            panic!("expected forwarded presence");
+        };
+        let observed = crate::AttributedPresence::decode(&payload).unwrap();
+        assert_eq!(observed.author, browser.device_public_key);
+        assert_eq!(observed.body, forged.body);
     }
 }
 

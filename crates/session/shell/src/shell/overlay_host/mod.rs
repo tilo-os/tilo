@@ -10,6 +10,8 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
+mod axis_navigation;
+
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
@@ -30,14 +32,17 @@ use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::quick_settings::actions::QsActions as _;
+use ui::TextRole;
 
 mod controller;
 mod device_fabric;
+pub(crate) mod dictation_layer;
 mod displays;
 mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
+mod sheet_accessibility;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
@@ -125,7 +130,7 @@ use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, Collabor
 use tilo_desktop::drill_in as qs;
 use tilo_desktop::drill_in::{DrillInList, DrillInOutcome};
 use tilo_desktop::notifications::{
-    CenterLayout, CenterOutcome, NotificationCenter, NotificationStack,
+    CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationStack,
 };
 use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
@@ -133,6 +138,7 @@ use tilo_desktop::workspace_settings::overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
 use tilo_desktop::workspace_settings::{CapEdit, EXPIRY_CHOICES};
+use ui::widget::ButtonRole;
 
 #[derive(Debug)]
 struct SessionActionResult {
@@ -155,6 +161,14 @@ mod clipboard_manager_tests;
 )]
 #[path = "device_fabric_ui_tests.rs"]
 mod device_fabric_ui_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each test reads one host and chrome borrow through to its last assertion"
+)]
+#[path = "launcher_action_coverage_tests.rs"]
+mod launcher_action_coverage_tests;
 
 #[cfg(test)]
 #[allow(
@@ -369,6 +383,35 @@ struct OverlayInputs {
     now_playing: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
 }
 
+/// How long a launchpad app card waits for the Applications index to take
+/// in the installed apps after boot before falling back to the launcher.
+const LAUNCHPAD_APP_RESOLVE_WINDOW: Duration = Duration::from_secs(5);
+/// How often a waiting launchpad app card asks the index again.
+const LAUNCHPAD_APP_RETRY: Duration = Duration::from_millis(25);
+
+/// A launchpad app card chosen before its app resolved.
+struct PendingLaunchpadApp {
+    app_id: &'static str,
+    display_name: &'static str,
+    give_up_at: Instant,
+}
+
+/// How often a launchpad card's app action, delivered once its app is up,
+/// is asked whether it was admitted.
+const LAUNCHPAD_ACTION_POLL: Duration = Duration::from_millis(100);
+
+/// A launchpad card's app action awaiting admission: the app may be
+/// launching first. The card's title names it if it is refused.
+struct PendingLaunchpadAction {
+    title: String,
+    admission: tilo_actions::remote::Pending<
+        Result<
+            (u64, tilo_actions::remote::InvocationReceipt),
+            tilo_actions::remote::ActionHostError,
+        >,
+    >,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -439,6 +482,9 @@ pub struct ShellOverlayHost {
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
     search_registry: crate::shell::search::SearchRegistry,
+    /// The live application directory, kept to narrow search to one part of
+    /// an app when the app asks (`AppHostIntent::OpenSearch`).
+    app_actions: Option<std::rc::Rc<crate::shell::search::providers::LiveAppActionsProvider>>,
     /// Starts an installed desktop app through the session launcher. Kept as
     /// an explicit service so fixture hosts can remain process-free.
     app_launcher: AppLauncher,
@@ -453,6 +499,12 @@ pub struct ShellOverlayHost {
     /// user presses Enter. Their tickets are polled at frame refresh without
     /// ever blocking the compositor on a broker RPC.
     pending_action_admissions: Vec<(String, crate::shell::search::PendingInvocation)>,
+    /// A launchpad app card awaiting the Applications index; see
+    /// [`Self::retry_pending_launchpad_app`].
+    pending_launchpad_app: Option<PendingLaunchpadApp>,
+    /// Launchpad cards' app actions awaiting admission; see
+    /// [`Self::poll_pending_launchpad_actions`].
+    pending_launchpad_actions: Vec<PendingLaunchpadAction>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
     last_search_query: String,
@@ -503,7 +555,9 @@ pub struct ShellOverlayHost {
     /// The window in the current room's preview row the keyboard is on:
     /// Left and Right walk it, Enter goes there. `None` while the keyboard
     /// is on the room list.
-    overview_window_selection: Option<usize>,
+    overview_window_selection: Option<crate::shell::state::TabId>,
+    /// One interrupted activation is consumed after its target disappears.
+    overview_window_interrupted: bool,
     /// A press on the overview until it is let go: a click or tap on a
     /// window preview goes to that window, a drag carries it to another
     /// room.
@@ -525,6 +579,9 @@ pub struct ShellOverlayHost {
     /// helpers hit-testing calls (no theme in hand) read the same numbers
     /// paint does.
     overview_metrics: OverviewMetrics,
+    /// Layout-only theme snapshot for the shared compact-modal rule.
+    overview_layout_theme: Theme,
+    overview_layout_viewport: Rect,
     /// Interruptible open/close driver for quick-settings, so it fades +
     /// slides out on close instead of vanishing.
     qs_transition: ui::Transition,
@@ -548,7 +605,7 @@ pub struct ShellOverlayHost {
     /// the notification-history geometry — resolved before a frame has a
     /// theme, like the root's — measures the type it actually draws, with
     /// the ui scale and the text scale both included.
-    qs_type_px: (f32, f32),
+    qs_type_lines: CenterMetrics,
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -603,6 +660,8 @@ pub struct ShellOverlayHost {
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
+    /// A rename submit owns its held Enter repeats and release after the draft closes.
+    workspace_rename_submit_held: bool,
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::Transition,
@@ -633,6 +692,7 @@ pub struct ShellOverlayHost {
     /// The focused `(strip, group)` last recorded in the display partition,
     /// so a focus change is noted once.
     last_noted_focus: Option<(StripId, GroupId)>,
+    axis_gather_pending: Option<axis_navigation::Gather>,
     /// Hit rect for the "+ Add workspace" affordance at the tail of the
     /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
@@ -644,12 +704,15 @@ pub struct ShellOverlayHost {
     /// `pump_permission_prompt` from the front of
     /// `chrome.pending_grants`. `None` when the queue is empty.
     permission_prompt: Option<PermissionPrompt>,
+    permission_prompt_id: Option<uuid::Uuid>,
     /// The portal's prompt queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
     /// Terminal tabs waiting for the person's answer about the device's own
     /// shell.
     host_shell_allows: Vec<crate::shell::host_shell_allow::PendingHostShellAllow>,
+    terminal_device_shell:
+        Option<crate::shell::search::providers::terminal_device_shell::TerminalDeviceShellProvider>,
     /// Owns the portal file chooser's queue, modal state, rendering and
     /// exclusive input routing. Keeping those together prevents the host
     /// from growing another set of loosely-coupled modal fields.
@@ -771,6 +834,8 @@ pub struct ShellOverlayHost {
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
+    followed_tab: Option<u64>,
+    followed_session: Option<u64>,
     /// Room the active Follow command was sent to. Keeping this separate
     /// from the live workspace prevents a later workspace switch from
     /// releasing the wrong set of local app views.
@@ -845,10 +910,61 @@ pub struct ShellSceneSections {
     pub backdrop: Scene,
     pub topbar: Scene,
     pub workspace: Scene,
+    /// Desktop content over the strips that stays where it is on screen
+    /// (notices, the permission prompt, the overview) while the strips are
+    /// drawn in canvas coordinates ([`ui::retained_present::unbake_scroll`]);
+    /// in `workspace` otherwise. Drawn right after `workspace`.
+    pub workspace_overlays: Scene,
     pub topbar_bounds: Option<Rect>,
     pub quick_settings: Scene,
     pub above_quick_settings: Scene,
     pub quick_settings_bounds: Option<Rect>,
+}
+
+/// Backdrop layers ([`ui::backdrop::layer_scene`]) of the sections
+/// [`ShellOverlayHost::draw_scene_sections`] draws, one per section. The
+/// sections are composed in this order, so a floating surface's layer names
+/// which of them lie below it.
+mod backdrop_layer {
+    pub const BACKDROP: u32 = 0;
+    pub const WORKSPACE: u32 = 1;
+    pub const WORKSPACE_OVERLAYS: u32 = 2;
+    pub const TOPBAR: u32 = 3;
+    pub const QUICK_SETTINGS: u32 = 4;
+    pub const ABOVE_QUICK_SETTINGS: u32 = 5;
+}
+
+impl ShellSceneSections {
+    /// Name each section's backdrop layer for the active recording. The
+    /// sections must stay where they are while floating surfaces are drawn
+    /// into them.
+    pub fn register_backdrop_layers(&self) {
+        ui::backdrop::layer_scene(&self.backdrop, backdrop_layer::BACKDROP);
+        ui::backdrop::layer_scene(&self.workspace, backdrop_layer::WORKSPACE);
+        ui::backdrop::layer_scene(&self.workspace_overlays, backdrop_layer::WORKSPACE_OVERLAYS);
+        ui::backdrop::layer_scene(&self.topbar, backdrop_layer::TOPBAR);
+        ui::backdrop::layer_scene(&self.quick_settings, backdrop_layer::QUICK_SETTINGS);
+        ui::backdrop::layer_scene(
+            &self.above_quick_settings,
+            backdrop_layer::ABOVE_QUICK_SETTINGS,
+        );
+    }
+
+    /// The sections composed below a floating surface drawn into backdrop
+    /// `layer`'s section, bottom to top.
+    pub fn below_layer(&self, layer: u32) -> Option<Vec<&Scene>> {
+        let order = [
+            &self.backdrop,
+            &self.workspace,
+            &self.workspace_overlays,
+            &self.topbar,
+            &self.quick_settings,
+            &self.above_quick_settings,
+        ];
+        order
+            .get(..usize::try_from(layer).ok()?)
+            .map(<[&Scene]>::to_vec)
+    }
 }
 
 /// Action emitted by a search-provider callback into `ChromeState` when the
@@ -1399,33 +1515,6 @@ fn prepare_status_evidence(
     (fallback, newest_first)
 }
 
-// Surface and scrim alphas. The pinned Vello has no backdrop filter, so
-// chrome surfaces are opaque and scrims carry the depth instead.
-// Centralised so `shell_chrome_test` can pin the numeric values.
-
-/// Alpha of the collaborator and `QuickSettings` popover surfaces.
-/// Opaque, deferring to the toolkit's chrome constant so a popover can't
-/// drift from the bar it hangs off — the pinned Vello has no backdrop
-/// filter, so a translucent tint here would just lose contrast.
-pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
-
-/// Alpha of the search palette and Workspace-Settings modal
-/// surfaces. Paints solid rather than the design's translucent tint,
-/// since translucency drops legibility of long rows; the scrim beneath
-/// sells the depth instead.
-pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
-
-/// Alpha of the scrim beneath the `WorkspaceSettings` modal. The design
-/// calls for a blurred `0.30`; the pinned Vello has no blur layer, so
-/// `0.45` is the empirical alpha at which an un-blurred scrim reads the
-/// same. Pinned by `tests::palette_scrim_alpha_matches_concept`.
-pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
-
-/// Alpha of the scrim beneath the search palette and Overview
-/// view. Same value and same reasoning as [`MODAL_SCRIM_ALPHA`]. Pinned
-/// by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
-pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
-
 /// What the palette's filter band shows: each registered kind with its
 /// label, the chosen kinds, and each scope with its label.
 #[derive(Clone, Debug, PartialEq)]
@@ -1516,56 +1605,94 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-    ) -> ShellSceneSections {
-        let mut backdrop = Scene::new();
-        let mut topbar = Scene::new();
-        let mut workspace = Scene::new();
-        let mut quick_settings = Scene::new();
-        let mut above_quick_settings = Scene::new();
+    ) -> Box<ShellSceneSections> {
+        // Boxed so each section keeps its address while the caller draws
+        // into it too: a floating surface's backdrop layer is found by the
+        // scene it is drawn into.
+        let mut sections = Box::new(ShellSceneSections {
+            backdrop: Scene::new(),
+            topbar: Scene::new(),
+            workspace: Scene::new(),
+            workspace_overlays: Scene::new(),
+            topbar_bounds: None,
+            quick_settings: Scene::new(),
+            above_quick_settings: Scene::new(),
+            quick_settings_bounds: None,
+        });
+        sections.register_backdrop_layers();
+        let ShellSceneSections {
+            backdrop,
+            topbar,
+            workspace,
+            workspace_overlays,
+            quick_settings,
+            above_quick_settings,
+            ..
+        } = &mut *sections;
         let contextual_tour = self
             .onboarding
             .as_ref()
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
-            onboarding.draw(&mut backdrop, transform, text_renderer, theme, presence);
-            return ShellSceneSections {
-                backdrop,
-                topbar,
-                workspace,
-                topbar_bounds: None,
-                quick_settings,
-                above_quick_settings,
-                quick_settings_bounds: None,
-            };
+            onboarding.draw(backdrop, transform, text_renderer, theme, presence);
+            return sections;
         }
 
         let flags = self.overlay_flags();
         let topbar_bounds = self.draw_workspace_sections(
-            &mut backdrop,
-            &mut topbar,
-            &mut workspace,
+            backdrop,
+            topbar,
+            workspace,
             transform,
             text_renderer,
             theme,
             presence,
         );
-        self.draw_desktop_extras(&mut workspace, transform, text_renderer, theme, presence);
+        if ui::retained_present::unbake_scroll() {
+            self.draw_real_peers(
+                workspace_overlays,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+            self.draw_docked_wheel(workspace, transform, text_renderer, theme, presence);
+            self.draw_desktop_notices(
+                workspace_overlays,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        } else {
+            self.draw_desktop_extras(workspace, transform, text_renderer, theme, presence);
+        }
         let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
         for row in rows {
+            // A strip drawn in canvas coordinates is panned by the presenter;
+            // surfaces floating over its windows move with it.
+            // SAFETY: identical sequential traversal to `Widget::draw` above.
+            let shift = unsafe { (&*row).canvas_shift() };
+            let row_transform = transform.pre_translate(vello::kurbo::Vec2::new(shift, 0.0));
             // SAFETY: identical sequential traversal to `Widget::draw` above.
             unsafe {
                 ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
                     &mut *row,
-                    &mut workspace,
-                    transform,
+                    workspace,
+                    row_transform,
                     text_renderer,
                     theme,
                     presence,
                 );
             }
         }
+        let overview_scene = if ui::retained_present::unbake_scroll() {
+            &mut *workspace_overlays
+        } else {
+            &mut *workspace
+        };
         self.draw_overview_and_ws_settings_overlays(
-            &mut workspace,
+            overview_scene,
             transform,
             text_renderer,
             theme,
@@ -1574,13 +1701,13 @@ impl ShellOverlayHost {
         self.prepare_quick_settings_transition(theme, flags);
         let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
         let quick_settings_bounds =
-            self.draw_quick_settings_dropdown(&mut quick_settings, transform, text_renderer, theme);
+            self.draw_quick_settings_dropdown(quick_settings, transform, text_renderer, theme);
         // Keep the strip in the retained QS section even while the dropdown
         // is closed. Opening QS then changes one bounded section rather than
         // removing chrome from the opaque workspace section, which preserves
         // sparse damage eligibility without changing the final scene order.
         self.draw_strip_chrome(
-            &mut quick_settings,
+            quick_settings,
             transform,
             theme,
             flags,
@@ -1594,7 +1721,7 @@ impl ShellOverlayHost {
         self.layers.draw(
             LayerId::PowerMenu,
             &mut LayerPaint {
-                scene: &mut above_quick_settings,
+                scene: above_quick_settings,
                 transform,
                 text_renderer,
                 theme,
@@ -1604,7 +1731,7 @@ impl ShellOverlayHost {
             },
         );
         self.draw_collaborators_dropdown(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1612,7 +1739,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_room_activity_sheet(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1620,7 +1747,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_projection_sheet(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1628,7 +1755,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_top_overlays(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1636,36 +1763,31 @@ impl ShellOverlayHost {
         );
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(
-                &mut above_quick_settings,
+                above_quick_settings,
                 transform,
                 text_renderer,
                 theme,
                 presence,
             );
+            self.draw_portal_dialog_sheet(above_quick_settings, transform, text_renderer, theme);
         }
         self.pairing.draw(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
             presence,
         );
         self.capture_studio.draw(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
             presence,
         );
-        ShellSceneSections {
-            backdrop,
-            topbar,
-            workspace,
-            topbar_bounds,
-            quick_settings,
-            above_quick_settings,
-            quick_settings_bounds,
-        }
+        sections.topbar_bounds = topbar_bounds;
+        sections.quick_settings_bounds = quick_settings_bounds;
+        sections
     }
 
     /// The open overlays, topmost first — the order the synthetic
@@ -1704,18 +1826,9 @@ impl ShellOverlayHost {
                 crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
                     .is_some()
             }),
-            LayerId::QuickSettings => {
-                flags.quick_settings
-                    && self.chrome.as_ref().is_some_and(|chrome| {
-                        matches!(
-                            chrome.borrow().quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Root
-                                | crate::shell::quick_settings::QsLevel::Notifications
-                                | crate::shell::quick_settings::QsLevel::Clipboard
-                                | crate::shell::quick_settings::QsLevel::Devices
-                        )
-                    })
-            }
+            // Every page publishes: the root, each drill-in, and the Wi-Fi
+            // password prompt that replaces the network list.
+            LayerId::QuickSettings => flags.quick_settings && self.chrome.is_some(),
             LayerId::NowPlaying => self.now_playing_published(),
             LayerId::ShortcutHelp => flags.shortcut_help,
             // Stacked; answered above.
@@ -1723,7 +1836,8 @@ impl ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => false,
+            | LayerId::PowerMenu
+            | LayerId::Dictation => false,
         }
     }
 
@@ -1734,15 +1848,32 @@ impl ShellOverlayHost {
         &mut self,
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
+        if let Some(chrome) = &self.chrome {
+            chrome.borrow_mut().native_app_opening =
+                Some(crate::shell::launcher::NativeAppOpening(broker.downgrade()));
+        }
         self.room_activity.attach_task_broker(broker.clone());
         self.attach_shortcut_trigger_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
         ));
-        self.search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::LiveAppActionsProvider::new(broker),
-        ));
+        let app_actions =
+            std::rc::Rc::new(crate::shell::search::providers::LiveAppActionsProvider::new(broker));
+        self.search_registry
+            .register(std::rc::Rc::clone(&app_actions)
+                as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
+        self.app_actions = Some(app_actions);
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
+    }
+
+    pub(crate) fn attach_task_review(
+        &mut self,
+        review: crate::shell::task_review::NativeTaskReview,
+    ) {
+        self.room_activity.attach_task_review(review.clone());
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::task_review::TaskReviewProvider::new(review),
+        ));
     }
 
     /// Registers every built-in search provider and hands back the shared
@@ -1781,6 +1912,10 @@ impl ShellOverlayHost {
             ),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::permission_prompts::PermissionPromptsProvider::default(
+            ),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::DesktopWindowsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -1810,12 +1945,6 @@ impl ShellOverlayHost {
         // from the one above.
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::HostApplicationsProvider::new(),
-        ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::NotesProvider::new(),
-        ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::EditorProvider::new(),
         ));
         let records = crate::shell::search::providers::RecordsProvider::new();
         let room_records = records.index();
@@ -1897,12 +2026,6 @@ impl ShellOverlayHost {
             crate::shell::search::providers::ActionsProvider::with_shared_qs_actions(
                 qs_action_slot.clone(),
             ),
-        ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::NotesProvider::new(),
-        ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::EditorProvider::new(),
         ));
         let records = crate::shell::search::providers::RecordsProvider::new();
         let room_records = records.index();
@@ -1986,12 +2109,15 @@ impl ShellOverlayHost {
             sidebar: None,
             outputs: Vec::new(),
             palette,
+            app_actions: None,
             palette_visible: false,
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,
             search_results: Vec::new(),
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
+            pending_launchpad_app: None,
+            pending_launchpad_actions: Vec::new(),
             last_search_query: String::new(),
             last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
@@ -2010,12 +2136,15 @@ impl ShellOverlayHost {
             overview_scroll_y: 0.0,
             overview_selection: None,
             overview_window_selection: None,
+            overview_window_interrupted: false,
             overview_press: None,
             overview_panel_cache: None,
             overview_panel_cache_fills: 0,
             overview_generation: 0,
             overview_fast_patch: None,
             overview_metrics: OverviewMetrics::default(),
+            overview_layout_theme: Theme::default(),
+            overview_layout_viewport: Rect::ZERO,
             transition_started: None,
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
@@ -2024,10 +2153,7 @@ impl ShellOverlayHost {
             content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
-            qs_type_px: (
-                ui::tokens::TypeScale::default().xs,
-                ui::tokens::TypeScale::default().sm,
-            ),
+            qs_type_lines: CenterLayout::metrics(&Theme::dark(), &mut TextRenderer::new()),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -2047,6 +2173,7 @@ impl ShellOverlayHost {
             strip_rail_hover: None,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
+            workspace_rename_submit_held: false,
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
@@ -2054,11 +2181,14 @@ impl ShellOverlayHost {
             content_built_empty: None,
             workspace_content_layout_dirty: false,
             last_noted_focus: None,
+            axis_gather_pending: None,
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
+            permission_prompt_id: None,
             portal_prompts: None,
             host_shell_allows: Vec::new(),
+            terminal_device_shell: None,
             file_picker_overlay: FilePickerOverlay::default(),
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
@@ -2115,6 +2245,8 @@ impl ShellOverlayHost {
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             followed_peer: None,
+            followed_tab: None,
+            followed_session: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
             follow_visual: None,
@@ -2361,6 +2493,13 @@ impl ShellOverlayHost {
     /// hit-testing would otherwise consume Restore/Close presses before the
     /// `WindowGroup` which draws those controls can see them.
     pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
+        // Local input controls are above window chrome and preserve its seat.
+        if self
+            .last_cursor
+            .is_some_and(|point| self.dictation_pointer_at((point.x, point.y)))
+        {
+            return false;
+        }
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
@@ -2887,49 +3026,13 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The chrome as the shell narrator reads it: the overlay semantics
-    /// published to AT-SPI, the notification stack's live region, and the
-    /// hardware-key readout as a polite live status.
+    /// The chrome as the shell narrator reads it: the same semantics
+    /// published to AT-SPI, whose live regions carry the notification
+    /// banner, the hardware-key readout and a held pad's mapping.
     pub fn chrome_narration_snapshot(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, Politeness, Role};
-        let mut root = Widget::accessibility(self)
-            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")));
-        if let Some(chrome) = self.chrome.as_ref()
-            && let Some(node) = self
-                .notification_stack
-                .accessibility(&ChromeNotifications::new(chrome))
-        {
-            root.children.push(node);
-        }
-        let readout = self.chrome.as_ref().and_then(|chrome| {
-            chrome
-                .borrow()
-                .osd
-                .filter(|osd| osd.is_live(Instant::now()))
-                .map(|osd| osd.caption())
-        });
-        root.children.push(
-            AccessNode::new(Role::StaticText)
-                .with_name(t("a11y-status-readout"))
-                .with_live(Politeness::Polite)
-                .with_value(readout.unwrap_or_default()),
-        );
-        let pad_map = self.chrome.as_ref().and_then(|chrome| {
-            chrome
-                .borrow()
-                .pad_map
-                .as_ref()
-                .map(|map| (map.name.clone(), map.narration()))
-        });
-        if let Some((name, narration)) = pad_map {
-            root.children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(name)
-                    .with_live(Politeness::Polite)
-                    .with_value(narration),
-            );
-        }
-        root
+        use ui::a11y::{AccessNode, Role};
+        Widget::accessibility(self)
+            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")))
     }
 
     /// Paint what a held pad's controls do, if a pad map is up.
@@ -3092,6 +3195,15 @@ impl ShellOverlayHost {
         scene_damage_rect(Rect::new(x0, primary.scene.y0, x1, primary.scene.y1))
     }
 
+    /// Keyboard overview navigation lands in the requested state before the
+    /// next input or animation-demand sample. Pointer transitions still use
+    /// `latch_overview_transition`; this reuses the reduced-motion settle path
+    /// without changing the user's motion preference.
+    fn settle_keyboard_overview(&mut self) {
+        let open = self.overlay_flags().overview;
+        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, true);
+    }
+
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
     /// second slide implementation. Reduced motion still runs the frames:
@@ -3207,6 +3319,11 @@ impl ShellOverlayHost {
     /// Headless and screenshot hosts keep an empty private registry.
     pub fn set_session_inhibitors(&mut self, registry: tilo_power_mgmt::InhibitRegistry) {
         self.session_action_policy.attach(registry);
+    }
+
+    /// The registry the session's idle loop consults before suspending.
+    pub fn session_inhibitors(&self) -> tilo_power_mgmt::InhibitRegistry {
+        self.session_action_policy.inhibitors()
     }
 
     pub fn set_power_bridge(&mut self, bridge: tilo_power_mgmt::PowerBridge) {
@@ -3914,7 +4031,8 @@ impl ShellOverlayHost {
     }
 
     /// Shell chrome on screen that holds a secret: the administrator
-    /// authentication and network-secrets sheets, the quick-settings pane
+    /// authentication and network-secrets sheets, a shortcut step that asks
+    /// for a secret answer, the quick-settings pane
     /// while it asks for a Wi-Fi passphrase, the display sheet while it asks
     /// for an `AirPlay` PIN or password, a Bluetooth pairing dialog, and the
     /// setup steps that restore or back up the identity (passphrases and a
@@ -3930,13 +4048,8 @@ impl ShellOverlayHost {
         {
             rects.push(rect);
         }
-        if self.portal_dialogs.view().is_some_and(|view| {
-            matches!(
-                view,
-                crate::shell::portal_dialog::DialogView::Authentication { .. }
-                    | crate::shell::portal_dialog::DialogView::NetworkSecrets { .. }
-            )
-        }) && let Some(layout) = self.portal_dialogs.layout(self.rect)
+        if self.portal_dialogs.holds_secret()
+            && let Some(layout) = self.portal_dialogs.layout(self.rect)
         {
             rects.push(layout.sheet);
         }
@@ -4243,6 +4356,97 @@ impl ShellOverlayHost {
     /// Drain app-owned requests for shell chrome after the app's event path
     /// has run. The request carries stable resource identity, so opening
     /// Activity does not depend on a file's current path or display label.
+    pub fn connect_native_terminal(
+        &mut self,
+        connection: u64,
+        writer: std::sync::mpsc::Sender<Vec<u8>>,
+    ) {
+        if self.terminal_device_shell.is_none() {
+            let provider = crate::shell::search::providers::terminal_device_shell::TerminalDeviceShellProvider::default();
+            self.search_registry
+                .register(std::rc::Rc::new(provider.clone()));
+            self.terminal_device_shell = Some(provider);
+        }
+        if let Some(provider) = &self.terminal_device_shell {
+            provider.connect(connection, writer);
+        }
+    }
+
+    pub fn complete_native_terminal(
+        &mut self,
+        connection: u64,
+        request: u64,
+        result: Result<serde_json::Value, String>,
+    ) {
+        if let Some(provider) = &self.terminal_device_shell {
+            provider.complete(connection, request, result);
+        }
+    }
+
+    pub fn disconnect_native_terminal(&mut self, connection: u64) {
+        if let Some(provider) = &self.terminal_device_shell {
+            provider.disconnect(connection);
+        }
+    }
+
+    pub fn request_native_host_shell_allow(&mut self, writer: std::sync::mpsc::Sender<Vec<u8>>) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let (prompt, pending) = crate::shell::host_shell_allow::native_prompt(writer);
+        let mut chrome = chrome.borrow_mut();
+        chrome.pending_grants.push_back(prompt);
+        chrome.bump();
+        self.host_shell_allows.push(pending);
+    }
+
+    /// Settings may request topology through the same admitted app-host channel.
+    /// Same identity and topology observations never mint an input lease.
+    /// # Errors
+    /// Rejects non-Settings callers, locked or non-owner sessions, and unavailable peers.
+    pub fn request_device_display_move(
+        &self,
+        app_id: &str,
+        request: settings_store::device_displays::DeviceDisplayMove,
+    ) -> Result<(), String> {
+        let admitted = app_id == "so.tilo.settings"
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                let state = chrome.borrow();
+                !state.session_locked() && is_active_workspace_owner(&state)
+            });
+        if !admitted {
+            return Err(t("device-fabric-error-layout-changed"));
+        }
+        let bridge = self
+            .device_fabric_bridge
+            .as_ref()
+            .ok_or_else(|| t("device-fabric-error-no-identity"))?;
+        bridge(DeviceFabricUiAction::MoveDisplay(request)).map(|_| ())
+    }
+
+    fn active_tab_app_id(
+        chrome: &crate::shell::chrome_state::Chrome,
+        source_tab: crate::shell::state::TabId,
+    ) -> Option<String> {
+        let state = chrome.borrow();
+        state
+            .tree()
+            .desktop
+            .active_workspace()
+            .and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .any(|tab| tab.id == source_tab)
+                            .then(|| state.tab_app_id(strip.id, group.id, source_tab))
+                            .flatten()
+                    })
+                })
+            })
+    }
+
     fn drain_app_host_intents(&mut self) {
         self.host_shell_allows.retain_mut(|pending| !pending.poll());
         let mut intents = Vec::new();
@@ -4267,6 +4471,16 @@ impl ShellOverlayHost {
         };
         for (source_tab, intent) in intents {
             match intent {
+                ui::widget::AppHostIntent::MoveDeviceDisplay { request, reply } => {
+                    let Some(reply) = reply.upgrade() else {
+                        continue;
+                    };
+                    let app_id = Self::active_tab_app_id(&chrome, source_tab);
+                    reply.borrow_mut().result = Some(self.request_device_display_move(
+                        app_id.as_deref().unwrap_or_default(),
+                        request,
+                    ));
+                }
                 ui::widget::AppHostIntent::ShowWorkspaceActivity {
                     resource_id,
                     version_id,
@@ -4284,6 +4498,9 @@ impl ShellOverlayHost {
                             ..crate::shell::chrome_state::ActivityFocus::default()
                         },
                     ));
+                }
+                ui::widget::AppHostIntent::OpenSearch(request) => {
+                    self.open_app_search(source_tab, &request);
                 }
                 ui::widget::AppHostIntent::AllowHostShell { reply } => {
                     let (prompt, pending) = crate::shell::host_shell_allow::prompt(reply);
@@ -4663,7 +4880,6 @@ impl ShellOverlayHost {
                         }
                         if let Some(group) =
                             strip.window_groups.iter_mut().find(|g| g.id == w.group)
-                            && group.active_tab != w.tab
                         {
                             // A stale `bar.active_id` (mid-detach
                             // frame) would write a phantom active-tab
@@ -4672,8 +4888,8 @@ impl ShellOverlayHost {
                             if !tab_exists {
                                 continue;
                             }
+                            selection_changed |= group.active_tab != w.tab;
                             group.active_tab = w.tab;
-                            selection_changed = true;
                             if ws.id == active_workspace {
                                 focus_writes.push((ws.id, w.strip, w.group));
                                 activated_file_tabs.push(w.tab);
@@ -4683,11 +4899,19 @@ impl ShellOverlayHost {
                 }
             }
         }
-        if selection_changed {
+        // Activating a group's already-selected tab is still a focus edge.
+        if selection_changed || !focus_writes.is_empty() {
             let mut tree = st.tree_mut();
             for (ws_id, strip_id, group_id) in focus_writes {
+                selection_changed |= tree.desktop.active_strip.get(&ws_id) != Some(&strip_id)
+                    || tree.desktop.active_group.get(&strip_id) != Some(&group_id);
                 tree.desktop.active_strip.insert(ws_id, strip_id);
                 tree.desktop.active_group.insert(strip_id, group_id);
+                // Assistive activation has no pointer event to choose its display.
+                if let Some(display) = tree.desktop.outputs.display_of(group_id) {
+                    selection_changed |= tree.desktop.outputs.focused_display() != Some(display);
+                    tree.desktop.outputs.set_focused(display);
+                }
             }
             let activated_file_tabs: Vec<_> = activated_file_tabs
                 .into_iter()
@@ -4696,7 +4920,9 @@ impl ShellOverlayHost {
             // Selection is session state, not merely paint state. Persist it
             // in the same input/frame boundary that accepted the click so a
             // compositor crash cannot restore the previously visible tab.
-            tree.queue_save();
+            if selection_changed {
+                tree.queue_save();
+            }
             drop(tree);
             drop(st);
             for tab in activated_file_tabs {
@@ -5389,6 +5615,19 @@ impl ShellOverlayHost {
             posted = true;
         }
         for event in events {
+            // A window that went away without being closed was lost, however
+            // the process then exited; a new start forgets an older loss.
+            let lost = match event.kind {
+                LaunchEventKind::Exited | LaunchEventKind::Failed { .. } => {
+                    crate::shell::launcher::take_launch_vanished(&event.package_id)
+                }
+                LaunchEventKind::Started { .. } => {
+                    crate::shell::launcher::note_launch_restarted(&event.package_id);
+                    false
+                }
+                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::WindowLost { .. } => false,
+            };
+            let event = event.with_window_lost(lost);
             if self.room_activity.observe_agent_launch_event(&event) {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
@@ -5436,7 +5675,10 @@ impl ShellOverlayHost {
                     posted = true;
                 }
             }
-            if matches!(event.kind, LaunchEventKind::Exited) {
+            if matches!(
+                event.kind,
+                LaunchEventKind::Exited | LaunchEventKind::WindowLost { .. }
+            ) {
                 // A successful launcher parent may have daemonised. Its GUI
                 // child still owns this launch for a short bounded interval,
                 // so dismiss the loading card now but keep placement until a
@@ -5452,13 +5694,18 @@ impl ShellOverlayHost {
                 }
             }
             match &event.kind {
-                LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {
+                LaunchEventKind::Started { .. }
+                | LaunchEventKind::Exited
+                | LaunchEventKind::WindowLost { .. } => {
                     let _ = crate::shell::launcher::take_launch_presented(&event.package_id);
                 }
                 // Its window was up, so it did open; the window, and its
                 // tab, are already gone.
-                LaunchEventKind::Failed { code, .. }
-                    if crate::shell::launcher::take_launch_presented(&event.package_id) =>
+                // A window that stopped on its own is never an ending the
+                // person asked for, shown or not.
+                LaunchEventKind::Failed { code, stderr_tail }
+                    if !stderr_tail.contains(ui::app::WINDOW_LOST)
+                        && crate::shell::launcher::take_launch_presented(&event.package_id) =>
                 {
                     tracing::info!(
                         target: "shell::launcher",
@@ -5481,6 +5728,7 @@ impl ShellOverlayHost {
                         display_name = %event.display_name,
                         "session helper exited without a window the user asked to open"
                     );
+                    crate::shell::launcher::restart_session_helper(&event.package_id);
                     continue;
                 }
                 LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. } => {}
@@ -5505,7 +5753,9 @@ impl ShellOverlayHost {
                     );
                     continue;
                 }
-                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. } => {}
+                LaunchEventKind::SpawnFailed { .. }
+                | LaunchEventKind::Failed { .. }
+                | LaunchEventKind::WindowLost { .. } => {}
             }
             event.log_failure();
             let Some(notice) = event.failure_notice() else {
@@ -5636,34 +5886,34 @@ impl ShellOverlayHost {
             return;
         };
 
-        // Step 1 — drain choice + maybe persist grant.
-        let drain_payload = self
+        // A retired native/portal request cannot leave a stale grant sheet.
+        chrome_handle.borrow_mut().pending_grants.retain(|pending| {
+            pending
+                .reply
+                .as_ref()
+                .is_none_or(|reply| !reply.is_closed())
+        });
+
+        // The widget and semantic actions answer the same exact pending request.
+        let choice = self
             .permission_prompt
-            .as_mut()
-            .and_then(|p| p.pending_choice.map(|c| (p.app_id.clone(), c)));
-        if let Some((widget_app_id, choice)) = drain_payload {
-            let mut st = chrome_handle.borrow_mut();
-            // Pop only if the head still belongs to the prompt clicked —
-            // a mid-frame portal push could otherwise apply the grant to
-            // the wrong app.
-            let head_matches = st
-                .pending_grants
-                .front()
-                .is_some_and(|p| p.app_id == widget_app_id);
-            if head_matches && let Some(mut pending) = st.pending_grants.pop_front() {
-                // The async portal flow owns persistence after receiving this
-                // answer. Keeping that state in its private consent store is
-                // essential: a personal portal decision must never become a
-                // replicated workspace capability visible to collaborators.
-                // Release the blocked portal call — otherwise the D-Bus
-                // method awaiting the oneshot never returns and the app
-                // hangs on its own Open dialog.
-                pending.answer(prompt_choice_to_outcome(choice));
-                st.bump();
+            .as_ref()
+            .and_then(|p| p.pending_choice);
+        if let Some(choice) = choice {
+            if let Some(id) = self.permission_prompt_id {
+                let _ = crate::shell::search::providers::permission_prompts::answer_pending_prompt(
+                    &mut chrome_handle.borrow_mut(),
+                    id,
+                    choice,
+                );
             }
-            // Discharged either way — drop it so the next frame latches
-            // fresh or paints nothing.
             self.permission_prompt = None;
+            self.permission_prompt_id = None;
+        }
+        let head_id = chrome_handle.borrow().pending_grants.front().map(|p| p.id);
+        if self.permission_prompt_id != head_id {
+            self.permission_prompt = None;
+            self.permission_prompt_id = None;
         }
 
         // Step 2 — latch a new prompt when the queue's front needs
@@ -5671,6 +5921,7 @@ impl ShellOverlayHost {
         if self.permission_prompt.is_none() {
             let st = chrome_handle.borrow();
             if let Some(pending) = st.pending_grants.front() {
+                self.permission_prompt_id = Some(pending.id);
                 let label = capability_label(&pending.capability);
                 let is_owner = is_active_workspace_owner(&st);
                 self.permission_prompt = Some(PermissionPrompt::new(
@@ -5795,7 +6046,20 @@ impl ShellOverlayHost {
                 crate::shell::trusted_ui::seal_band(
                     surface,
                     thickness,
-                    f64::from(theme.tokens.radii.md),
+                    f64::from(theme.tokens.radii.control),
+                ),
+            ));
+        }
+        if self.layers.dictation.is_consent() {
+            let outputs = self.layer_outputs();
+            let surface =
+                dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs));
+            targets.push((
+                crate::shell::trusted_ui::DICTATION_PROMPT_TARGET,
+                crate::shell::trusted_ui::seal_band(
+                    surface,
+                    thickness,
+                    f64::from(theme.tokens.radii.control),
                 ),
             ));
         }
@@ -5807,6 +6071,19 @@ impl ShellOverlayHost {
             ));
         }
         targets
+    }
+
+    /// Named hit targets for the visible prompt’s existing one-shot consent choices.
+    #[cfg(any(test, debug_assertions))]
+    pub fn permission_prompt_choice_rects_for_tests(&self) -> Vec<(&'static str, Rect)> {
+        self.permission_prompt
+            .as_ref()
+            .map_or_else(Vec::new, |prompt| {
+                vec![
+                    ("permission_prompt_allow_once", prompt.allow_rect()),
+                    ("permission_prompt_deny", prompt.deny_rect()),
+                ]
+            })
     }
 
     /// Test-only accessor for the held [`PermissionPrompt`].
@@ -6020,6 +6297,13 @@ impl ShellOverlayHost {
     pub fn step_focus_along_strip(&mut self, steps: i32) -> bool {
         if steps == 0 {
             return false;
+        }
+        if self
+            .chrome
+            .as_ref()
+            .is_some_and(|c| c.borrow().axis_navigation_enabled())
+        {
+            return self.step_axis_navigation(steps);
         }
         if let Some(moved) = self.step_focus_across_displays(steps) {
             return moved;
@@ -6709,8 +6993,8 @@ impl ShellOverlayHost {
     }
 
     /// Keep local focus attached to the followed participant's current tab.
-    /// Missing location is not guessed: the existing view stays put until a
-    /// fresh live target arrives.
+    /// A missing participant or closed target releases every app in the room.
+    /// Until a first live location arrives, the existing view stays in place.
     fn reconcile_followed_peer(&mut self) -> bool {
         let Some(peer_id) = self.followed_peer.as_deref() else {
             return false;
@@ -6718,26 +7002,28 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let room_changed = {
+        let context_changed = {
             let state = chrome.borrow();
-            state
-                .tree()
-                .desktop
-                .active_workspace()
-                .is_none_or(|workspace| {
-                    self.followed_room
-                        .as_ref()
-                        .is_some_and(|room| room != &workspace.room)
-                })
+            self.followed_tab
+                .is_some_and(|tab| state.active_tab_id() != Some(tab))
+                || state
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .is_none_or(|workspace| {
+                        self.followed_room
+                            .as_ref()
+                            .is_some_and(|room| room != &workspace.room)
+                    })
         };
-        if room_changed {
-            // Follow is an attached local view, never a cross-workspace
-            // navigation command. Stop it before the next room receives any
-            // input, releasing the apps that were actually following.
+        if context_changed {
+            // A semantic focus command takes control just like a pointer or
+            // key. Release the original room before reconciliation can undo
+            // local navigation or attach its apps to a different workspace.
             self.set_followed_peer(None);
             return true;
         }
-        let target = {
+        let (target, unavailable) = {
             let state = chrome.borrow();
             let tree = state.tree();
             let roster: &[crate::shell::state::Collaborator] = match tree.desktop.active_workspace()
@@ -6745,10 +7031,10 @@ impl ShellOverlayHost {
                 Some(workspace) if !workspace.collaborators.is_empty() => &workspace.collaborators,
                 _ => &tree.desktop.collaborators,
             };
-            let tab = roster
+            let participant = roster
                 .iter()
-                .find(|participant| participant.id == peer_id && !participant.invited)
-                .and_then(|participant| participant.active_tab);
+                .find(|participant| participant.id == peer_id && !participant.invited);
+            let tab = participant.and_then(|participant| participant.active_tab);
             let target = tab.and_then(|tab| {
                 tree.desktop
                     .active_workspace()?
@@ -6764,13 +7050,24 @@ impl ShellOverlayHost {
                         })
                     })
             });
+            let unavailable = participant.is_none()
+                || (tab.is_some() && target.is_none())
+                || (self.followed_tab.is_some() && tab.is_none())
+                || self.followed_session.is_some_and(|session| {
+                    participant.is_none_or(|participant| participant.session != Some(session))
+                });
             drop(tree);
             drop(state);
-            target
+            (target, unavailable)
         };
+        if unavailable {
+            self.set_followed_peer(None);
+            return true;
+        }
         let Some((strip, group, tab)) = target else {
             return false;
         };
+        self.followed_tab = Some(tab);
         self.focus_window_on_strip(strip, group, tab)
     }
 
@@ -6784,6 +7081,8 @@ impl ShellOverlayHost {
         }
         let previous_room = self.followed_room.take();
         self.followed_peer = peer_id;
+        self.followed_tab = None;
+        self.followed_session = None;
         if self.followed_peer.is_some() {
             self.follow_visual = self.followed_roster_row();
             self.follow_transition
@@ -6797,13 +7096,14 @@ impl ShellOverlayHost {
                 let state = chrome.borrow();
                 let tree = state.tree();
                 let command = tree.desktop.active_workspace().map(|workspace| {
-                    let target = workspace
+                    let session = workspace
                         .collaborators
                         .iter()
                         .find(|participant| participant.id == id)
-                        .and_then(|participant| participant.session)
-                        .map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
-                    (workspace.room, Some(target))
+                        .and_then(|participant| participant.session);
+                    let target =
+                        session.map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
+                    (workspace.room, Some(target), session)
                 });
                 drop(tree);
                 drop(state);
@@ -6811,24 +7111,27 @@ impl ShellOverlayHost {
             }
             _ => None,
         };
-        if let Some((room, _)) = &active_command {
+        if let Some((room, _, session)) = &active_command {
             self.followed_room = Some(*room);
+            self.followed_session = *session;
         }
-        let command = active_command.or_else(|| {
-            previous_room.map(|room| (room, None)).or_else(|| {
-                self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    let tree = state.tree();
-                    let command = tree
-                        .desktop
-                        .active_workspace()
-                        .map(|workspace| (workspace.room, None));
-                    drop(tree);
-                    drop(state);
-                    command
+        let command = active_command
+            .map(|(room, target, _)| (room, target))
+            .or_else(|| {
+                previous_room.map(|room| (room, None)).or_else(|| {
+                    self.chrome.as_ref().and_then(|chrome| {
+                        let state = chrome.borrow();
+                        let tree = state.tree();
+                        let command = tree
+                            .desktop
+                            .active_workspace()
+                            .map(|workspace| (workspace.room, None));
+                        drop(tree);
+                        drop(state);
+                        command
+                    })
                 })
-            })
-        });
+            });
         if let Some((room, target)) = command {
             if let Some(bridge) = self.follow_bridge.as_ref() {
                 bridge(room, target.clone());
@@ -6894,7 +7197,20 @@ impl ShellOverlayHost {
         if !self.overlay_flags().overview {
             return Rect::ZERO;
         }
-        self.overview_add_workspace_rect_for(self.overview_cards().len())
+        let content = self.overview_content_rect();
+        let top = self.overview_list_top().max(content.y0);
+        if top >= content.y1 {
+            return Rect::ZERO;
+        }
+        let band = Rect::new(content.x0, top, content.x1, content.y1);
+        let row = self
+            .overview_add_workspace_rect_for(self.overview_cards().len())
+            .intersect(band);
+        if row.width() > 0.0 && row.height() > 0.0 {
+            row
+        } else {
+            Rect::ZERO
+        }
     }
 
     /// Test-only: a strip's `GroupRow` rect in screen-space. `None` if no
@@ -6926,6 +7242,22 @@ impl ShellOverlayHost {
             }
         }
         None
+    }
+
+    /// The shared window grip overlays client content. Resolve it in laid-out
+    /// screen coordinates, after strip panning, before forwarding client input.
+    pub fn group_resize_hit(&self, group_id: u64, point: (f64, f64)) -> bool {
+        self.group_resize_rect(group_id)
+            .is_some_and(|rect| rect.contains(Point::new(point.0, point.1)))
+    }
+
+    /// Visible grip geometry shared by local routing and remote admission.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.group_resize_rect(group_id)
+        })
     }
 
     /// Every tile laid out on this device, with the tab it shows, in
@@ -7064,6 +7396,71 @@ impl ShellOverlayHost {
         self.workspace_settings_overlay.member_sheet_is_open()
     }
 
+    /// Open search the way an app asked (`AppHostIntent::OpenSearch`): focus
+    /// the app's tab, open the palette scoped to that app — or drilled into
+    /// the part of it the request names — and start with its query. Unlike
+    /// the shortcut, a repeated request never closes the palette.
+    pub(crate) fn open_app_search(
+        &mut self,
+        source_tab: crate::shell::state::TabId,
+        request: &ui::search::SearchRequest,
+    ) {
+        use crate::shell::chrome_state::SearchScope;
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let location = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .find(|group| group.tabs.iter().any(|tab| tab.id == source_tab))
+                        .map(|group| (workspace.id, strip.id, group.id))
+                })
+            })
+        };
+        // A tab outside the workspace in front asks for nothing the person
+        // can see; drop the request rather than switch workspaces.
+        let Some((workspace, strip, group)) = location else {
+            return;
+        };
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, strip, group, source_tab);
+        let resource_scope = request.resource_scope().and_then(|scope| {
+            let state = chrome.borrow();
+            let app_id = state.tab_app_id(strip, group, source_tab)?;
+            self.app_actions.as_ref()?.resource_scope_for(
+                &state,
+                &app_id,
+                &scope.anchor,
+                &scope.label,
+            )
+        });
+        if !self.palette_visible || chrome.borrow().search_scope != SearchScope::ActiveApp {
+            self.open_palette_with_scope(SearchScope::ActiveApp);
+        }
+        let query = request.query.clone().unwrap_or_default();
+        if let Some(scope) = resource_scope {
+            let label = scope.label.clone();
+            {
+                let mut state = chrome.borrow_mut();
+                state.search_resource_scope = Some(scope);
+                state.bump();
+            }
+            self.palette.set_query_placeholder(t_args(
+                "host-search-in",
+                &[("scope", label.as_str().into())],
+            ));
+            self.last_search_query = "\0resource-scope-enter\0".into();
+        }
+        self.palette.set_query(&query);
+        self.palette_visible = true;
+    }
+
     /// Open the palette in `scope`, or close it if the same scope fires
     /// twice (mirrors the old second-press-dismisses chord behaviour). A
     /// different scope while open just swaps scope without losing the
@@ -7111,7 +7508,11 @@ impl ShellOverlayHost {
     /// App cards resolve through the production Applications provider so an
     /// available-but-not-yet-installed app follows the same acquisition path
     /// as the command palette. Chrome cards use their existing overlays.
-    fn harvest_empty_workspace_launchpad(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
+    fn harvest_empty_workspace_launchpad(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &ObjId,
+    ) -> bool {
         use tilo_desktop::launchpad::LaunchpadAction;
 
         if tilo_desktop::launchpad::take_open_app(doc, root) {
@@ -7121,6 +7522,10 @@ impl ShellOverlayHost {
         let Some(action) = LaunchpadAction::take(doc, root) else {
             return false;
         };
+        if let Some(target) = action.app_action() {
+            self.invoke_launchpad_app_action(doc, root, target, action.label());
+            return true;
+        }
         if let Some((app_id, display_name)) = action.app_target() {
             self.open_launchpad_app(doc, root, app_id, display_name);
             return true;
@@ -7156,56 +7561,195 @@ impl ShellOverlayHost {
         self.refresh_search_results(doc, root);
     }
 
+    /// Open `app_id` from its launchpad card through the Applications
+    /// provider's typed `applications/<package id>` action, the same row the
+    /// launcher's Enter fires. A card chosen before that provider's index has
+    /// taken in the installed apps is retried each tick rather than handing
+    /// the person a pre-filled launcher to confirm.
     fn open_launchpad_app(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
-        app_id: &str,
-        display_name: &str,
+        app_id: &'static str,
+        display_name: &'static str,
     ) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Ask the same provider as the palette, including its catalogue
-        // fallback, rather than assuming the default image has every app.
         chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
-        self.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
-        self.palette.set_query(display_name);
-        self.last_search_query = "\u{0}launchpad-refresh\u{0}".to_string();
-        self.refresh_search_results(doc, root);
-        let result = self
-            .search_results
-            .iter()
-            .find(|result| {
-                result.provider_id == "applications"
-                    && result.id.eq_ignore_ascii_case(app_id)
-                    && result.params.is_empty()
-            })
-            .cloned();
-        let Some(result) = result else {
-            // Keep a useful, filtered recovery route visible if the current
-            // catalogue genuinely has no exact app.
-            self.palette_visible = true;
-            self.palette.set_focus(true);
+        self.pending_launchpad_app = None;
+        if !self.invoke_launchpad_app(doc, root, app_id, display_name) {
+            self.pending_launchpad_app = Some(PendingLaunchpadApp {
+                app_id,
+                display_name,
+                give_up_at: Instant::now()
+                    .checked_add(LAUNCHPAD_APP_RESOLVE_WINDOW)
+                    .unwrap_or_else(Instant::now),
+            });
+        }
+    }
+
+    /// Invoke the typed action a launchpad card names in its app, as the
+    /// person this device acts for in the active workspace. The action host
+    /// delivers it to the running app or launches the app into the workspace
+    /// first, so the card itself does what it names (starts the call, say)
+    /// rather than leaving the person to find it in the app. A session without
+    /// an action host still opens the app.
+    fn invoke_launchpad_app_action(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &ObjId,
+        target: tilo_desktop::launchpad::LaunchpadAppAction,
+        title: String,
+    ) {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
+        let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        if let Err(error) = (result.on_open)(
-            doc,
-            root,
-            &chrome,
-            &crate::shell::search::action_api::ActionArgs::none(),
-        ) {
+        let Some(broker) = self.shortcut_triggers.broker() else {
+            self.open_launchpad_app(doc, root, target.app_id, target.display_name);
+            return;
+        };
+        let caller = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let caller = tree.desktop.active_workspace().map(|workspace| {
+                let workspace_room = workspace.room.to_string();
+                (
+                    tilo_actions::remote::Caller::local_person(
+                        state.local_user_for_room(&workspace.room),
+                    )
+                    .in_room(&workspace_room),
+                    workspace_room,
+                )
+            });
+            drop(tree);
+            caller
+        };
+        let Some((caller, workspace_room)) = caller else {
+            return;
+        };
+        chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
+        let admission = crate::shell::remote_actions::BrokerActionHost::new(broker).invoke_job(
+            &caller,
+            InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: application_action_target(
+                    &workspace_room,
+                    target.app_id,
+                    target.resource,
+                    target.action,
+                ),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+            },
+        );
+        self.pending_launchpad_actions
+            .push(PendingLaunchpadAction { title, admission });
+        self.poll_pending_launchpad_actions();
+    }
+
+    /// Settle launchpad card actions whose admission arrived. One that was
+    /// refused names its card and the reason, so a card never fails silently.
+    fn poll_pending_launchpad_actions(&mut self) {
+        use tilo_actions::remote::PendingPoll;
+        let chrome = self.chrome.clone();
+        self.pending_launchpad_actions.retain_mut(|pending| {
+            let refusal = match pending.admission.poll_ready() {
+                PendingPoll::Waiting => return true,
+                PendingPoll::Ready(Ok(_)) => None,
+                PendingPoll::Ready(Err(error)) => Some(error.to_string()),
+                PendingPoll::Abandoned => Some(t("launchpad-action-unanswered")),
+            };
+            if let (Some(reason), Some(chrome)) = (refusal, chrome.as_ref()) {
+                tracing::warn!(
+                    target: "tilo::app_launch",
+                    card = %pending.title,
+                    %reason,
+                    "launchpad card action was refused"
+                );
+                chrome.borrow_mut().push_warning_notification(
+                    t_args(
+                        "host-action-cannot-run",
+                        &[("title", pending.title.as_str().into())],
+                    ),
+                    reason,
+                );
+            }
+            false
+        });
+    }
+
+    /// Retry a launchpad app card the Applications index could not resolve
+    /// yet. Past [`LAUNCHPAD_APP_RESOLVE_WINDOW`] the app is genuinely absent
+    /// from this catalogue, so the launcher opens filtered to it instead.
+    fn retry_pending_launchpad_app(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        let Some(pending) = self.pending_launchpad_app.take() else {
+            return;
+        };
+        if self.invoke_launchpad_app(doc, root, pending.app_id, pending.display_name) {
+            return;
+        }
+        if Instant::now() < pending.give_up_at {
+            self.pending_launchpad_app = Some(pending);
+            return;
+        }
+        self.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
+        self.palette.set_query(pending.display_name);
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.last_search_query = "\u{0}launchpad-refresh\u{0}".to_string();
+        self.refresh_search_results(doc, root);
+    }
+
+    /// Invoke the app's own action when the Applications provider resolves
+    /// it: the installed app, or the catalogue offer for one not installed.
+    /// `false` while neither address resolves.
+    fn invoke_launchpad_app(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &ObjId,
+        app_id: &str,
+        display_name: &str,
+    ) -> bool {
+        use crate::shell::search::action_api::{AllVisible, ResourceRef};
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let catalogue_id = format!("app:{app_id}");
+        let resolved = [app_id, catalogue_id.as_str()].into_iter().find_map(|id| {
+            let resource = ResourceRef::new("applications", id);
+            let catalog = {
+                let state = chrome.borrow();
+                self.action_catalog_for_resource(&resource, &state, doc, root, &AllVisible)
+            };
+            catalog.contains(&resource).then_some((catalog, resource))
+        });
+        let Some(action) = resolved
+            .as_ref()
+            .and_then(|(catalog, resource)| catalog.select(resource))
+        else {
+            return false;
+        };
+        match action.invoke_nullary(doc, root, &chrome) {
             // Application actions own their user-facing launch notice (the
             // callback has already translated any typed LaunchError into a
             // bounded, actionable card). Keep this outer launchpad adapter
             // from adding a second raw ActionError card, which used to put
             // paths/backend details into the fixed top-right toast and leave
             // the user with two conflicting errors.
-            Self::report_launchpad_action_failure(display_name, &error);
-        } else {
-            self.palette_visible = false;
-            self.palette.close();
+            Err(error) => Self::report_launchpad_action_failure(display_name, &error),
+            Ok(_) => {
+                if self.palette_visible {
+                    self.palette_visible = false;
+                    self.palette.close();
+                }
+            }
         }
+        true
     }
 
     /// The application action callback owns the user-facing notice for a
@@ -7229,12 +7773,22 @@ impl ShellOverlayHost {
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; the first open pays for the files provider's deferred home walk
     /// and content index open (kept off the `OverlayHost` constructor on purpose).
+    fn selected_search_identity(&self) -> Option<(String, String)> {
+        self.palette
+            .selected_id()
+            .and_then(|id| id.strip_prefix("result:"))
+            .and_then(|id| id.parse::<usize>().ok())
+            .and_then(|index| self.search_results.get(index))
+            .map(|result| (result.provider_id.clone(), result.id.clone()))
+    }
+
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let current_query = self.palette.query().to_string();
+        let preserve_selection = current_query == self.last_search_query;
         let (scope, active_provider) = {
             let st = chrome.borrow();
             let scope = st.search_scope;
@@ -7263,6 +7817,14 @@ impl ShellOverlayHost {
             self.last_search_revision = revision;
             self.search_registry
                 .query_grouped(&args, PALETTE_ROW_BUDGET)
+        };
+
+        // Provider revisions may insert/re-rank rows without a query edit.
+        // Keep the chosen resource, never its old callback or row index.
+        let previous_selection = if preserve_selection {
+            self.selected_search_identity()
+        } else {
+            None
         };
 
         // Kind travels as the row's section and glyph, not a `[Files]`
@@ -7316,7 +7878,23 @@ impl ShellOverlayHost {
 
         // Peer-sync rows are ordinary `ActionsProvider` results, ranked
         // against everything else rather than appended below every hit.
+        let selected_id = previous_selection
+            .and_then(|(provider, id)| {
+                results
+                    .iter()
+                    .position(|result| result.provider_id == provider && result.id == id)
+            })
+            .map(|index| format!("result:{index}"));
         self.palette.set_entries(entries);
+        if let Some(id) = selected_id
+            && let Some(cursor) = self
+                .palette
+                .visible_entries()
+                .iter()
+                .position(|entry| entry.id == id)
+        {
+            self.palette.set_cursor(cursor);
+        }
         self.search_results = results;
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
@@ -7898,7 +8476,7 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "Argument validation, action dispatch, and one Automerge transaction must stay in their visible order to keep palette actions atomic."
     )]
-    fn activate_selected_result(&mut self, doc: &mut automerge::AutoCommit, root: &ObjId) {
+    fn activate_selected_result(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
         if let Some(result) = self.pending_palette_action.take() {
             let parsed = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
                 self.palette.query(),
@@ -7983,6 +8561,11 @@ impl ShellOverlayHost {
                     return;
                 }
                 let args = crate::shell::search::action_api::ActionArgs::none();
+                let previous_notice = chrome
+                    .borrow()
+                    .notifications()
+                    .last()
+                    .map(|notice| notice.id);
                 let outcome = if let Some(begin) = &result.on_begin_invoke {
                     begin(doc, root, &chrome, &args).map(|disposition| match disposition {
                         crate::shell::search::InvocationDisposition::Accepted(_) => (),
@@ -7999,10 +8582,31 @@ impl ShellOverlayHost {
                 let entered_resource_scope =
                     outcome.is_ok() && result.id.starts_with("directory-resource\u{1f}");
                 if let Err(err) = outcome {
-                    chrome.borrow_mut().push_warning_notification(
-                        t_args("host-action-cannot-run", &[("title", result.title.into())]),
-                        err.to_string(),
-                    );
+                    let reported_detail = chrome
+                        .borrow()
+                        .notifications()
+                        .last()
+                        .filter(|notice| {
+                            Some(notice.id) != previous_notice
+                                && matches!(
+                                    notice.severity,
+                                    tilo_desktop::notifications::NotificationSeverity::Warning
+                                        | tilo_desktop::notifications::NotificationSeverity::Error
+                                )
+                        })
+                        .map(|notice| notice.body.clone());
+                    let detail = reported_detail.unwrap_or_else(|| {
+                        let detail = err.to_string();
+                        chrome.borrow_mut().push_warning_notification(
+                            t_args("host-action-cannot-run", &[("title", result.title.into())]),
+                            detail.clone(),
+                        );
+                        detail
+                    });
+                    self.palette
+                        .set_selected_status(t("host-action-failed-status"), detail);
+                    self.palette_layout_dirty = true;
+                    return;
                 }
                 if entered_resource_scope {
                     let label = chrome.borrow().search_resource_scope.as_ref().map_or_else(
@@ -8121,6 +8725,58 @@ impl ShellOverlayHost {
             .collect()
     }
 
+    /// The strip the docked wheel rides: the topmost strip of the active
+    /// workspace.
+    fn docked_strip(&self) -> Option<StripId> {
+        let top_strip = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.first().map(|strip| strip.id))
+        });
+        top_strip
+            .filter(|id| self.group_row_ptrs.contains_key(id))
+            .or_else(|| self.group_row_ptrs.keys().next().copied())
+    }
+
+    /// A summoned wheel places itself around the pointer in screen space,
+    /// and a promoted group is drawn unpanned: the wheel then does not ride
+    /// the strip.
+    fn docked_wheel_pinned(&self) -> bool {
+        self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.wheel_summon().is_some() || state.is_fullscreen()
+        })
+    }
+
+    /// [`GroupRow::canvas_shift`] of the strip the docked wheel rides.
+    fn docked_strip_canvas_shift(&self) -> f64 {
+        self.docked_strip()
+            .and_then(|id| self.group_row_ptrs.get(&id).copied())
+            // SAFETY: same contract as every other `group_row_ptrs` accessor:
+            // the pointer is captured from a `Box<GroupRow>` owned through the
+            // content tree, and the host outlives it.
+            .map_or(0.0, |ptr| unsafe { (&*ptr).canvas_shift() })
+    }
+
+    /// Where on screen `strip` pans when it is drawn in canvas coordinates:
+    /// its row with the shadows drawn past it, as tall as the docked wheel
+    /// when the wheel rides this strip.
+    pub fn strip_pan_rect(&self, strip: StripId) -> Option<vello::kurbo::Rect> {
+        let mut rect = GroupRow::drawn_bounds(self.strip_row_rect(strip)?);
+        if self.docked_strip() == Some(strip)
+            && !self.docked_wheel_pinned()
+            && !self.overlay_flags().overview
+            && let Some(wheel) = self.sidebar.as_ref().map(|sidebar| sidebar.get_rect())
+            && wheel.area() > 0.0
+        {
+            rect.y0 = rect.y0.min(wheel.y0);
+            rect.y1 = rect.y1.max(wheel.y1);
+        }
+        Some(rect)
+    }
+
     /// Every strip's horizontal pan, keyed by strip id, paired with its
     /// max — on a strip whose content fits the display the pan is pinned
     /// at zero, so "the viewport didn't move" needs the bound to mean
@@ -8139,6 +8795,20 @@ impl ShellOverlayHost {
             .collect();
         out.sort_by_key(|(sid, _, _)| *sid);
         out
+    }
+
+    /// Pan every strip to `scroll` layout pixels.
+    #[cfg(test)]
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the rows are written through pointers this host owns; `&mut self` keeps the write exclusive"
+    )]
+    pub(crate) fn set_strip_scroll_for_test(&mut self, scroll: f64) {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: as in `strip_row_rect`, and `&mut self` makes the
+            // access exclusive.
+            unsafe { (&mut *ptr).set_scroll_x_for_test(scroll) };
+        }
     }
 
     /// Where `strip` is drawn on screen, as laid out last. `None` while the
@@ -8170,6 +8840,18 @@ impl ShellOverlayHost {
     /// capture the unfocused field.
     pub fn set_palette_focus(&mut self, focused: bool) {
         self.palette.set_focus(focused);
+    }
+
+    /// The palette owns text input while open, including when its host
+    /// routes keys directly without changing the native widget focus.
+    pub fn palette_ime_field(&self) -> Option<ui::ime::ImeWindowState> {
+        (self.palette_visible && self.palette.is_focused())
+            .then(|| ui::ime::ImeWindowState::from_widget(&self.palette))
+            .flatten()
+    }
+
+    pub(crate) fn palette_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.palette.ime_edit_fingerprint(key)
     }
 
     /// Force-set the palette visibility, so headless harnesses can drive
@@ -8220,17 +8902,33 @@ impl ShellOverlayHost {
         root: &ObjId,
         visibility: &dyn crate::shell::search::action_api::ActionVisibility,
     ) -> crate::shell::search::action_api::ActionCatalog {
-        let scope = chrome.search_scope;
-        let active_provider = active_tab_provider_id(chrome, &self.search_registry);
+        // A caller that cannot see the screen cannot see the palette's scope
+        // pills either: whichever pill a person last left selected must not
+        // narrow what an agent or script is told exists. Visibility is the
+        // capability gate's alone.
         crate::shell::search::action_api::ActionCatalog::build(
             &self.search_registry,
             query,
-            scope,
-            active_provider.as_deref(),
+            crate::shell::chrome_state::SearchScope::All,
+            None,
             chrome,
             doc,
             root,
             visibility,
+        )
+    }
+
+    pub fn action_catalog_query(
+        &self,
+        args: &crate::shell::search::QueryArgs<'_>,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+        include_programmatic: bool,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        crate::shell::search::action_api::ActionCatalog::build_query(
+            &self.search_registry,
+            args,
+            visibility,
+            include_programmatic,
         )
     }
 
@@ -8319,6 +9017,7 @@ impl ShellOverlayHost {
             None
         };
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         self.overview_press = None;
     }
 
@@ -8396,18 +9095,25 @@ impl ShellOverlayHost {
     /// a shell-out on the paint path froze the desktop. Each field
     /// applies only if actually read, so a missing daemon leaves the
     /// previous value rather than blanking it.
-    fn apply_quick_settings_readings(&mut self) {
+    /// Bind the owning native session's existing event-loop wake.
+    pub fn set_quick_settings_wake(&mut self, wake: crate::session_runtime::Wake) {
+        self.qs_action_slot.set_radio_wake(Arc::clone(&wake));
+        self.qs_refresh.set_host_wake(wake);
+    }
+
+    fn apply_quick_settings_readings(&mut self) -> bool {
         let readings = self.qs_refresh.drain();
         if readings.is_empty() {
-            return;
+            return false;
         }
         let Some(chrome) = self.chrome.clone() else {
-            return;
+            return false;
         };
         for reading in readings {
             let mut st = chrome.borrow_mut();
             self.apply_one_qs_reading(&mut st, reading);
         }
+        true
     }
 
     /// Unpacks a [`QsReading::Fast`] payload, writing its non-scalar fields
@@ -8427,12 +9133,25 @@ impl ShellOverlayHost {
             bluetooth,
             bluetooth_available,
             power,
+            power_profiles,
             wired,
             battery,
             radios,
             privacy,
             vpns,
         } = *reading;
+        if let Some(profiles) = power_profiles {
+            use crate::shell::quick_settings::PowerProfile as UiPP;
+            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
+            st.quick_settings.power_profiles = profiles
+                .into_iter()
+                .map(|profile| match profile {
+                    ActPP::Saver => UiPP::Saver,
+                    ActPP::Balanced => UiPP::Balanced,
+                    ActPP::Performance => UiPP::Performance,
+                })
+                .collect();
+        }
         st.quick_settings.brightness_available = brightness.is_some() || !displays.is_empty();
         let brightness = brightness.or_else(|| displays.first().map(|display| display.level));
         if st.quick_settings.displays != displays {
@@ -8472,6 +9191,9 @@ impl ShellOverlayHost {
         let (brightness, volume, wifi, bluetooth, power, wired, battery, wifi_nets, bt_devices) =
             match reading {
                 QsReading::Fast(reading) => {
+                    if let Some(radios) = reading.radios.as_ref() {
+                        self.qs_action_slot.observe_radio_availability(radios);
+                    }
                     let (brightness, volume, wifi, bluetooth, power, wired, battery) =
                         Self::apply_fast_qs_reading(st, reading);
                     (
@@ -8743,7 +9465,7 @@ impl ShellOverlayHost {
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
-        tokens.typography.scale.x3l
+        tokens.typography.size(TextRole::Display)
     }
 
     fn overlay_flags(&self) -> crate::shell::chrome_state::OverlayFlags {
@@ -8857,7 +9579,7 @@ impl ShellOverlayHost {
             }
             QsLevel::Notifications => self
                 .notification_center
-                .preferred_height(state.notification_log(), self.qs_type_px),
+                .preferred_height(state.notification_log(), self.qs_type_lines),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -8891,7 +9613,7 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), self.qs_type_px)
+        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines)
     }
 
     /// Scroll the notification centre from a pointer wheel over the open
@@ -8973,15 +9695,25 @@ impl ShellOverlayHost {
 
     /// Keyboard navigation for the notification centre, available without
     /// pointer hover. Returns whether the centre consumed the key.
+    #[cfg(test)]
     fn handle_qs_notification_keyboard(&mut self, logical_key: &Key) -> bool {
+        self.handle_qs_notification_keyboard_with_shift(logical_key, false)
+    }
+
+    fn handle_qs_notification_keyboard_with_shift(
+        &mut self,
+        logical_key: &Key,
+        backwards: bool,
+    ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         let layout = self.qs_notification_layout();
-        let outcome = self.notification_center.key(
+        let outcome = self.notification_center.key_with_shift(
             &ChromeNotifications::new(&chrome).with_agents(&self.room_activity),
             &layout,
             logical_key,
+            backwards,
         );
         self.apply_notification_center_outcome(outcome)
     }
@@ -9101,7 +9833,9 @@ impl ShellOverlayHost {
                 );
                 Some(self.qs_clipboard_query.len() != before)
             }
-            Key::Named(NamedKey::Backspace) => Some(self.qs_clipboard_query.pop().is_some()),
+            Key::Named(NamedKey::Backspace) => {
+                Some(ui::delete_last_grapheme(&mut self.qs_clipboard_query))
+            }
             Key::Named(NamedKey::Escape) if !self.qs_clipboard_query.is_empty() => {
                 self.qs_clipboard_query.clear();
                 Some(true)
@@ -9674,6 +10408,7 @@ impl ShellOverlayHost {
                 .briefs
                 .first()
                 .map(|brief| crate::shell::chrome_state::ActivityFocus {
+                    task_id: None,
                     author: brief.authors.first().map(|author| author.name.clone()),
                     group_id: brief.group_id.clone(),
                     entry_id: None,
@@ -9973,11 +10708,58 @@ impl ShellOverlayHost {
     /// across the content width, each a 16:10 well over a title line.
     fn overview_window_tile_size(&self) -> (f64, f64) {
         let m = self.overview_metrics;
-        let panel_w = OVERVIEW_PANEL_WIDTH_PX.min(self.overlay_area().width() - m.margin * 2.0);
+        let panel_w = self.overview_panel_width();
         let content_w = (panel_w - m.pad * 2.0).max(0.0);
         let columns = usize_to_f64_lossy(OVERVIEW_WINDOWS_MAX);
         let tile_w = ((content_w - (columns - 1.0) * m.window_gap) / columns).max(0.0);
         (tile_w, tile_w * 10.0 / 16.0)
+    }
+
+    fn overview_window_list_rect(&self) -> Option<Rect> {
+        (0..self.overview_row_windows().len())
+            .map(|index| self.overview_window_tile_rect(index))
+            .reduce(|left, right| left.union(right))
+    }
+
+    fn overview_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let count = self.overview_cards().len();
+        let windows = self.overview_row_windows().len();
+        let create = count.saturating_add(usize::from(windows > 0));
+        match path {
+            [] => Some(self.overview_panel_rect()),
+            [index] if *index < count => Some(self.overview_row_rect(*index)),
+            [index] if *index == count && windows > 0 => self.overview_window_list_rect(),
+            [index, window] if *index == count && *window < windows => {
+                Some(self.overview_window_tile_rect(*window))
+            }
+            [index] if *index == create => Some(self.overview_add_workspace_rect_for(count)),
+            _ => None,
+        }
+    }
+
+    fn focus_overview_accessibility(&mut self, path: &[usize]) -> bool {
+        if !self.overlay_flags().overview || self.palette_visible {
+            return false;
+        }
+        let count = self.overview_cards().len();
+        let windows = self.overview_row_windows().len();
+        let create = count.saturating_add(usize::from(windows > 0));
+        match path {
+            [index, window] if *index == count && *window < windows => {
+                self.select_overview_window(*window);
+                return true;
+            }
+            [index] if *index < count => self.overview_selection = Some(*index),
+            [index] if *index == create => self.overview_selection = Some(count),
+            _ => return false,
+        }
+        self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
+        self.scroll_overview_selection_into_view();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        true
     }
 
     /// Height the window row adds to the "you are here" block.
@@ -10025,6 +10807,9 @@ impl ShellOverlayHost {
 
     /// The preview tile under `p`, by its place in the row.
     fn hit_test_overview_window(&self, p: Point) -> Option<usize> {
+        if !self.overview_content_rect().contains(p) {
+            return None;
+        }
         let count = self.overview_row_windows().len();
         (0..count).find(|index| self.overview_window_tile_rect(*index).contains(p))
     }
@@ -10066,6 +10851,7 @@ impl ShellOverlayHost {
         };
         let closed = crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), tab).is_ok();
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         closed
     }
 
@@ -10090,6 +10876,7 @@ impl ShellOverlayHost {
             Ok(_) => {
                 drop(state);
                 self.overview_window_selection = None;
+                self.overview_window_interrupted = false;
                 true
             }
             Err(err) => {
@@ -10117,13 +10904,69 @@ impl ShellOverlayHost {
         (k * (m.room_row_h + m.room_row_gap) - m.room_row_gap).max(0.0)
     }
 
+    fn overview_uses_full_window(&self) -> bool {
+        ui::widget::modal_dialog::uses_full_window(self.overlay_area(), &self.overview_layout_theme)
+    }
+
+    fn overview_panel_width(&self) -> f64 {
+        let area = self.overlay_area();
+        if self.overview_uses_full_window() {
+            area.width().max(0.0)
+        } else {
+            OVERVIEW_PANEL_WIDTH_PX
+                .min(area.width() - self.overview_metrics.margin * 2.0)
+                .max(0.0)
+        }
+    }
+
+    fn resolve_overview_layout(&mut self, theme: &Theme) {
+        let metrics = OverviewMetrics::for_theme(theme);
+        let viewport = self.overlay_area();
+        if metrics == self.overview_metrics && viewport == self.overview_layout_viewport {
+            return;
+        }
+        let had_layout = self.overview_layout_viewport.area() > 0.0;
+        self.overview_layout_theme.clone_from(theme);
+        self.overview_layout_viewport = viewport;
+        self.overview_metrics = metrics;
+        self.overview_scroll_y = self
+            .overview_scroll_y
+            .clamp(0.0, self.overview_max_scroll_y());
+        if had_layout {
+            self.scroll_overview_selection_into_view();
+        }
+    }
+
+    /// On a constrained output the whole body scrolls. A pinned header must
+    /// never consume the list's last reachable action row.
+    fn overview_scrolls_whole_panel(&self) -> bool {
+        self.overview_uses_full_window()
+            || self.overview_content_rect().height()
+                - self.overview_here_block_height()
+                - self.overview_metrics.section_gap
+                - self.overview_metrics.caption_h
+                < self.overview_metrics.room_row_h
+    }
+
+    fn overview_content_top(&self) -> f64 {
+        self.overview_content_rect().y0
+            - if self.overview_scrolls_whole_panel() {
+                self.overview_scroll_y
+            } else {
+                0.0
+            }
+    }
+
     /// The panel: a floating surface centred in the viewport, sized to what
     /// it has to say and capped so it never runs off screen. Same width and
     /// centring as the workspace-settings modal — the same kind of object.
     fn overview_panel_rect(&self) -> Rect {
         let m = self.overview_metrics;
         let area = self.overlay_area();
-        let w = OVERVIEW_PANEL_WIDTH_PX.min(area.width() - m.margin * 2.0);
+        if self.overview_uses_full_window() {
+            return area;
+        }
+        let w = self.overview_panel_width();
         let natural = m.pad * 2.0
             + self.overview_here_block_height()
             + m.section_gap
@@ -10147,9 +10990,11 @@ impl ShellOverlayHost {
         let c = self.overview_content_rect();
         Rect::new(
             c.x0,
-            c.y0,
+            self.overview_content_top(),
             c.x1,
-            c.y0 + self.overview_metrics.here_h + self.overview_windows_row_height(),
+            self.overview_content_top()
+                + self.overview_metrics.here_h
+                + self.overview_windows_row_height(),
         )
     }
 
@@ -10160,7 +11005,7 @@ impl ShellOverlayHost {
 
     /// Y of the "Go to" caption above the room list.
     fn overview_list_caption_top(&self) -> f64 {
-        self.overview_content_rect().y0
+        self.overview_content_top()
             + self.overview_here_block_height()
             + self.overview_metrics.section_gap
     }
@@ -10172,20 +11017,36 @@ impl ShellOverlayHost {
 
     /// Height of the band the room list scrolls inside.
     fn overview_viewport_height(&self) -> f64 {
-        (self.overview_content_rect().y1 - self.overview_list_top()).max(0.0)
+        if self.overview_scrolls_whole_panel() {
+            self.overview_content_rect().height().max(0.0)
+        } else {
+            (self.overview_content_rect().y1 - self.overview_list_top()).max(0.0)
+        }
     }
 
     /// Maximum legal `overview_scroll_y` — the list's overflow below the
     /// visible band. Zero when every room fits.
     fn overview_max_scroll_y(&self) -> f64 {
-        (self.overview_content_height() - self.overview_viewport_height()).max(0.0)
+        let header = if self.overview_scrolls_whole_panel() {
+            self.overview_here_block_height()
+                + self.overview_metrics.section_gap
+                + self.overview_metrics.caption_h
+        } else {
+            0.0
+        };
+        (header + self.overview_content_height() - self.overview_viewport_height()).max(0.0)
     }
 
     /// Rect of list slot `slot`, panned by `overview_scroll_y`.
     fn overview_list_slot_rect(&self, slot: usize) -> Rect {
         let c = self.overview_content_rect();
         let m = self.overview_metrics;
-        let y0 = self.overview_list_top() - self.overview_scroll_y
+        let scroll = if self.overview_scrolls_whole_panel() {
+            0.0
+        } else {
+            self.overview_scroll_y
+        };
+        let y0 = self.overview_list_top() - scroll
             + usize_to_f64_lossy(slot) * (m.room_row_h + m.room_row_gap);
         Rect::new(c.x0, y0, c.x1, y0 + m.room_row_h)
     }
@@ -10224,14 +11085,24 @@ impl ShellOverlayHost {
         let Some(idx) = self.overview_selection else {
             return;
         };
-        let Some(slot) = self.overview_slot_of(idx) else {
-            // The room you are in is the pinned block, never in the list.
-            return;
-        };
         let m = self.overview_metrics;
-        let step = m.room_row_h + m.room_row_gap;
-        let top = usize_to_f64_lossy(slot) * step;
-        let bottom = top + m.room_row_h;
+        let whole = self.overview_scrolls_whole_panel();
+        let (top, height) = match self.overview_slot_of(idx) {
+            Some(slot) => {
+                let header = if whole {
+                    self.overview_here_block_height() + m.section_gap + m.caption_h
+                } else {
+                    0.0
+                };
+                (
+                    header + usize_to_f64_lossy(slot) * (m.room_row_h + m.room_row_gap),
+                    m.room_row_h,
+                )
+            }
+            None if whole => (0.0, m.here_h + self.overview_windows_row_height()),
+            None => return,
+        };
+        let bottom = top + height;
         let view = self.overview_viewport_height();
         let max = self.overview_max_scroll_y();
         let mut y = self.overview_scroll_y;
@@ -10248,6 +11119,9 @@ impl ShellOverlayHost {
     /// list's band is not hittable, so a click never lands on a room the
     /// user cannot see.
     fn hit_test_overview(&self, p: Point) -> Option<usize> {
+        if !self.overview_content_rect().contains(p) {
+            return None;
+        }
         let chrome = self.chrome.as_ref()?;
         let count = {
             let state = chrome.borrow();
@@ -10256,7 +11130,8 @@ impl ShellOverlayHost {
         };
         let band = Rect::new(
             self.overview_content_rect().x0,
-            self.overview_list_top(),
+            self.overview_list_top()
+                .max(self.overview_content_rect().y0),
             self.overview_content_rect().x1,
             self.overview_content_rect().y1,
         );
@@ -10277,7 +11152,8 @@ impl ShellOverlayHost {
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
-        (self.palette_visible && self.palette.get_rect().contains(p))
+        self.dictation_pointer_at((p.x, p.y))
+            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -10741,11 +11617,23 @@ impl ShellOverlayHost {
         }
     }
 
+    fn notification_history_covers_pointer(&self, point: Point) -> bool {
+        self.chrome.as_ref().is_some_and(|chrome| {
+            let st = chrome.borrow();
+            st.overlays.quick_settings
+                && matches!(
+                    st.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Notifications
+                )
+                && self.quick_settings_rect().contains(point)
+        })
+    }
+
     /// Absorbs every non-`Pressed` pointer event over an open overlay so
     /// a hover/drag can't continue underneath it (`Pressed` is excluded
     /// so the per-overlay branches later still get clicks), and a
-    /// left-click on a toast dismisses it before the permission prompt
-    /// or any other overlay sees the press.
+    /// left-click on an uncovered toast dismisses it. Foreground notification
+    /// history receives its own presses rather than dismissing a covered toast.
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
@@ -10777,6 +11665,7 @@ impl ShellOverlayHost {
             },
         ) = (self.chrome.as_ref(), event)
             && let Some(p) = self.last_cursor
+            && !self.notification_history_covers_pointer(p)
             && self
                 .notification_stack
                 .click_at(&ChromeNotifications::new(chrome), p)
@@ -11215,7 +12104,14 @@ impl ShellOverlayHost {
         // Workspace naming is a text-field modal.  It must arbitrate before
         // every shell chord: otherwise Super+W/K/T can close a tab or open a
         // palette while the field is visibly active.
+        let rename_submit = matches!(logical_key, Key::Named(NamedKey::Enter))
+            && !self.palette_visible
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().editing_workspace_name.is_some());
         if self.handle_workspace_rename_key(logical_key, modifiers, handled) {
+            self.workspace_rename_submit_held |= rename_submit;
             return true;
         }
         if self.status_editing {
@@ -11257,21 +12153,7 @@ impl ShellOverlayHost {
                         );
                     }
                 }
-                tilo_desktop::text_entry::Edit::Changed => {
-                    let char_count = self.status_draft.chars().count();
-                    if char_count > ui::MAX_STATUS_CHARS {
-                        let mut byte_cap = self.status_draft.len();
-                        for (seen, (byte, _)) in self.status_draft.char_indices().enumerate() {
-                            if seen == ui::MAX_STATUS_CHARS {
-                                byte_cap = byte;
-                                break;
-                            }
-                        }
-                        self.status_draft.truncate(byte_cap);
-                        self.status_selection.anchor = self.status_selection.anchor.min(byte_cap);
-                        self.status_selection.cursor = self.status_selection.cursor.min(byte_cap);
-                    }
-                }
+                tilo_desktop::text_entry::Edit::Changed => self.cap_status_draft(),
                 tilo_desktop::text_entry::Edit::Ignored
                 | tilo_desktop::text_entry::Edit::ConsumedQuiet => {}
             }
@@ -11427,7 +12309,7 @@ impl ShellOverlayHost {
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
                 drop(st);
-                self.latch_overview_transition();
+                self.settle_keyboard_overview();
             }
             *handled = true;
             return true;
@@ -11612,18 +12494,7 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Super+Space remains an immutable, hardware-neutral global-search
-        // escape hatch. Alt+Space is configurable-free application input.
-        let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
-        if is_space && super_down {
-            if !repeat {
-                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.refresh_search_results(state, path);
-            }
-            *handled = true;
-            return true;
-        }
-        if self.handle_overview_keyboard_nav(logical_key, handled) {
+        if self.handle_overview_keyboard_nav(logical_key, shift_down, handled) {
             return true;
         }
         if super_down
@@ -11748,12 +12619,57 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Intercept only local input controls without withdrawing text-input focus.
+    pub(crate) fn dictation_owns_key(&self, key: &winit::keyboard::Key) -> bool {
+        self.layers.dictation.owns_key(key)
+    }
+
+    /// Local microphone controls cannot be operated through a shared seat.
+    /// This does not withdraw the original editable field's local IME focus.
+    pub(crate) fn dictation_mutes_remote_input(&self) -> bool {
+        self.layers.dictation.is_open()
+    }
+
+    pub(crate) fn dictation_pointer_at(&self, point: (f64, f64)) -> bool {
+        let outputs = self.layer_outputs();
+        self.layers.dictation.is_open()
+            && dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs))
+                .contains(Point::new(point.0, point.1))
+    }
+
+    pub(crate) fn dictation_input_available(&self) -> bool {
+        self.onboarding.is_none()
+            && self.permission_prompt.is_none()
+            && self.portal_dialogs.layout(self.rect).is_none()
+            && !self.display_confirmation_visible()
+            && !self.window_switcher_active()
+    }
+
+    pub(crate) fn dictation_surface_mut(&mut self) -> &mut dictation_layer::DictationSurface {
+        &mut self.layers.dictation
+    }
+
     /// Run every window operation the action door queued on the chrome
     /// ([`ChromeState::request_shortcut_action`]), in order. The shell
     /// runs this each update, before splicing tree changes into the rows.
     ///
     /// [`ChromeState::request_shortcut_action`]: crate::shell::chrome_state::ChromeState::request_shortcut_action
     pub fn run_requested_shortcut_actions(&mut self) {
+        let cancel = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow_mut().take_tab_drag_cancel_request());
+        if cancel {
+            self.cancel_tab_drags();
+        }
+
+        let gather = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow_mut().take_axis_gather_request());
+        if gather {
+            self.request_axis_gather();
+        }
         let requested = self
             .chrome
             .as_ref()
@@ -11797,6 +12713,29 @@ impl ShellOverlayHost {
             // Zooming is a step, so a held zoom key keeps zooming; the toggle is an edge.
             if !(repeat && step == MagnifierStep::Toggle) {
                 self.step_magnifier(step);
+            }
+            return true;
+        }
+        if matches!(
+            action,
+            A::DictationToggle | A::DictationFinish | A::DictationCancel
+        ) {
+            if !repeat {
+                match action {
+                    A::DictationToggle => self.layers.dictation.request_toggle(),
+                    A::DictationFinish => self.layers.dictation.request_finish(),
+                    A::DictationCancel => self.layers.dictation.request_cancel(),
+                    _ => {}
+                }
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+            }
+            return true;
+        }
+        if action == A::TabMenu {
+            if !repeat {
+                let _ = self.open_focused_tab_context_menu();
             }
             return true;
         }
@@ -11898,6 +12837,19 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
+    fn reconcile_overview_window_selection(&mut self) {
+        if let Some(tab) = self.overview_window_selection
+            && !self
+                .overview_row_windows()
+                .iter()
+                .any(|window| window.address.tab == tab)
+        {
+            self.overview_window_selection = None;
+            self.overview_window_interrupted = true;
+            self.overview_selection = self.overview_here_index();
+        }
+    }
+
     /// Left and Right walk the current room's preview row, a ring like
     /// the room list; Enter on a selected window goes there. Returns
     /// whether the key was taken.
@@ -11906,18 +12858,20 @@ impl ShellOverlayHost {
         let count = windows.len();
         if count == 0 {
             self.overview_window_selection = None;
+            self.overview_window_interrupted = false;
             return false;
         }
         let current = self
             .overview_window_selection
-            .filter(|index| *index < count);
+            .and_then(|tab| windows.iter().position(|window| window.address.tab == tab));
         match logical_key {
-            Key::Named(NamedKey::Enter) => {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 let Some(window) = current.and_then(|index| windows.get(index)) else {
                     return false;
                 };
                 let tab = window.address.tab;
                 self.activate_overview_window(tab);
+                self.settle_keyboard_overview();
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
@@ -11940,34 +12894,55 @@ impl ShellOverlayHost {
     /// Put the keyboard on window `index` of the preview row; the row is
     /// part of the current room's block, so the room is selected with it.
     fn select_overview_window(&mut self, index: usize) {
-        self.overview_window_selection = Some(index);
+        let Some(tab) = self
+            .overview_row_windows()
+            .get(index)
+            .map(|window| window.address.tab)
+        else {
+            return;
+        };
+        self.overview_window_selection = Some(tab);
+        self.overview_window_interrupted = false;
         self.overview_selection = self.overview_here_index();
+        self.scroll_overview_selection_into_view();
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
     }
 
-    /// Arrow/Enter navigation of the room overview list, unmodified so
-    /// it runs ahead of the modifier chords and of the content — the
-    /// desktop must not scroll under an open panel. Returns `false`
-    /// (falling through to the modifier chords) when the overview isn't
-    /// showing, the palette is up, a different key was pressed, or
-    /// there are no rooms to navigate.
-    fn handle_overview_keyboard_nav(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
-        if !(self.overlay_flags().overview
-            && !self.palette_visible
-            && matches!(
-                logical_key,
-                Key::Named(
-                    NamedKey::ArrowDown
-                        | NamedKey::ArrowUp
-                        | NamedKey::ArrowLeft
-                        | NamedKey::ArrowRight
-                        | NamedKey::Enter
-                )
-            ))
-        {
+    /// Navigate the overview before input reaches content. Arrows keep the
+    /// workspace ring; Tab includes creation, and Home/End reach its ends.
+    fn handle_overview_keyboard_nav(
+        &mut self,
+        logical_key: &Key,
+        shift: bool,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.overlay_flags().overview || self.palette_visible {
             return false;
+        }
+        if !matches!(
+            logical_key,
+            Key::Named(
+                NamedKey::ArrowDown
+                    | NamedKey::ArrowUp
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::Tab
+                    | NamedKey::Home
+                    | NamedKey::End
+                    | NamedKey::Enter
+                    | NamedKey::Space
+            )
+        ) {
+            return false;
+        }
+        self.reconcile_overview_window_selection();
+        if std::mem::take(&mut self.overview_window_interrupted)
+            && matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space))
+        {
+            *handled = true;
+            return true;
         }
         if self.handle_overview_window_keys(logical_key) {
             *handled = true;
@@ -11979,57 +12954,79 @@ impl ShellOverlayHost {
         ) {
             return false;
         }
-        // Up and Down go back to the rooms.
         self.overview_window_selection = None;
-        let count = self
-            .chrome
-            .as_ref()
-            .map_or(0, |c| c.borrow().tree().desktop.workspaces.len());
+        self.overview_window_interrupted = false;
+        let count = self.overview_cards().len();
         if count == 0 {
             return false;
         }
-        if matches!(logical_key, Key::Named(NamedKey::Enter)) {
-            // Commits: go there and leave, no mouse required.
-            let target = self
-                .overview_selection
-                .or_else(|| self.overview_here_index());
-            if let (Some(idx), Some(chrome)) = (target, self.chrome.clone()) {
-                let mut st = chrome.borrow_mut();
-                {
-                    let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.desktop.workspaces.get(idx) {
-                        let id = ws.id;
-                        tree.set_active(id);
-                    }
-                }
-                st.overlays.overview = false;
-                st.bump();
+        match logical_key {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                self.activate_overview_selection(count);
             }
-        } else {
-            let step: isize = if matches!(logical_key, Key::Named(NamedKey::ArrowDown)) {
-                1
-            } else {
-                -1
-            };
-            let cur = usize_to_isize_lossy(
-                self.overview_selection
-                    .or_else(|| self.overview_here_index())
-                    .unwrap_or(0),
-            );
-            // A ring: the room after the last one is the first.
-            // `count > 0` is checked above, so the divisor is
-            // never zero; `wrapping_add` means an (unreachable
-            // in practice) isize overflow still lands on some
-            // in-range selection instead of panicking.
-            let next = isize_to_usize_lossy(
-                cur.wrapping_add(step)
-                    .rem_euclid(usize_to_isize_lossy(count)),
-            );
-            self.overview_selection = Some(next);
-            self.scroll_overview_selection_into_view();
+            Key::Named(NamedKey::Home) => self.overview_selection = self.overview_here_index(),
+            Key::Named(NamedKey::End) => self.overview_selection = Some(count),
+            _ => self.step_overview_selection(logical_key, shift, count),
+        }
+        self.scroll_overview_selection_into_view();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
         }
         *handled = true;
         true
+    }
+
+    fn step_overview_selection(&mut self, key: &Key, shift: bool, count: usize) {
+        let tab = matches!(key, Key::Named(NamedKey::Tab));
+        let back = matches!(key, Key::Named(NamedKey::ArrowUp)) || (tab && shift);
+        let focus_count = if tab { count.saturating_add(1) } else { count };
+        let mut current = self
+            .overview_selection
+            .or_else(|| self.overview_here_index())
+            .unwrap_or(0);
+        // Creation is outside the arrow-only workspace ring.
+        if !tab && current >= count {
+            current = if back { 0 } else { count.saturating_sub(1) };
+        }
+        let next = usize_to_isize_lossy(current)
+            .wrapping_add(if back { -1 } else { 1 })
+            .rem_euclid(usize_to_isize_lossy(focus_count));
+        self.overview_selection = Some(isize_to_usize_lossy(next));
+    }
+
+    fn activate_overview_selection(&mut self, count: usize) {
+        let target = self
+            .overview_selection
+            .or_else(|| self.overview_here_index());
+        if target == Some(count) {
+            self.create_overview_workspace();
+            self.settle_keyboard_overview();
+            return;
+        }
+        if let (Some(index), Some(chrome)) = (target, self.chrome.clone()) {
+            let mut state = chrome.borrow_mut();
+            {
+                let mut tree = state.tree_mut();
+                if let Some(workspace) = tree.desktop.workspaces.get(index) {
+                    let id = workspace.id;
+                    tree.set_active(id);
+                }
+            }
+            state.overlays.overview = false;
+            state.bump();
+            drop(state);
+            self.settle_keyboard_overview();
+        }
+    }
+
+    /// The pointer and keyboard release the overview in the same creation
+    /// transaction, through the existing workspace model.
+    fn create_overview_workspace(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            state.overlays.overview = false;
+            state.add_workspace("Untitled");
+        }
     }
 
     /// Immutable Super-key shell chords: projection/capture actions,
@@ -12291,7 +13288,29 @@ impl ShellOverlayHost {
 
     /// The Escape dismissal ladder. Priority matches z-order: palette >
     /// overview > ws settings > quick settings.
+    fn finish_notification_reading(
+        &mut self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+    ) -> bool {
+        if st.overlays.quick_settings
+            && matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Notifications
+            )
+            && self.notification_center.close_reader()
+        {
+            st.bump();
+            true
+        } else {
+            false
+        }
+    }
+
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
+        if self.cancel_tab_drags() {
+            *handled = true;
+            return true;
+        }
         if self.palette_visible {
             if let Some(chrome) = self.chrome.clone() {
                 let mut state = chrome.borrow_mut();
@@ -12334,7 +13353,7 @@ impl ShellOverlayHost {
             st.overlays.overview = false;
             st.bump();
             drop(st);
-            self.latch_overview_transition();
+            self.settle_keyboard_overview();
             *handled = true;
             return true;
         }
@@ -12353,6 +13372,10 @@ impl ShellOverlayHost {
         if st.overlays.collaborators {
             st.overlays.collaborators = false;
             st.bump();
+            *handled = true;
+            return true;
+        }
+        if self.finish_notification_reading(&mut st) {
             *handled = true;
             return true;
         }
@@ -12389,6 +13412,31 @@ impl ShellOverlayHost {
             st.dismiss_notification(id);
             *handled = true;
             return true;
+        }
+        false
+    }
+
+    /// Finish the key sequence the rename field started, even after commit
+    /// removes the draft. A fresh press belongs to normal contextual routing.
+    fn consume_workspace_rename_submit_edge(&mut self, event: &WindowEvent) -> bool {
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.workspace_rename_submit_held = false;
+        }
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if !matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
+            return false;
+        }
+        if self.workspace_rename_submit_held && (key.repeat || key.state == ElementState::Released)
+        {
+            if key.state == ElementState::Released {
+                self.workspace_rename_submit_held = false;
+            }
+            return true;
+        }
+        if key.state == ElementState::Pressed {
+            self.workspace_rename_submit_held = false;
         }
         false
     }
@@ -12453,12 +13501,47 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Keep a typed status within [`ui::MAX_STATUS_CHARS`].
+    fn cap_status_draft(&mut self) {
+        let Some((byte_cap, _)) = self.status_draft.char_indices().nth(ui::MAX_STATUS_CHARS) else {
+            return;
+        };
+        self.status_draft.truncate(byte_cap);
+        self.status_selection.anchor = self.status_selection.anchor.min(byte_cap);
+        self.status_selection.cursor = self.status_selection.cursor.min(byte_cap);
+    }
+
+    /// An input method's text for whichever chrome field holds the keyboard
+    /// (the workspace name, the status), typed at its caret as keys are.
+    /// `false` when no such field is open.
+    fn commit_into_chrome_field(&mut self, text: &str) -> bool {
+        use tilo_desktop::text_entry::{Edit, commit};
+        if !self.palette_visible
+            && let Some(chrome) = self.chrome.clone()
+        {
+            let mut st = chrome.borrow_mut();
+            let mut sel = st.editing_workspace_name_selection;
+            if let Some(buf) = st.editing_workspace_name.as_mut() {
+                if commit(text, buf, &mut sel) == Edit::Changed {
+                    st.editing_workspace_name_selection = sel;
+                    st.bump();
+                }
+                return true;
+            }
+        }
+        if self.status_editing {
+            if commit(text, &mut self.status_draft, &mut self.status_selection) == Edit::Changed {
+                self.cap_status_draft();
+            }
+            return true;
+        }
+        false
+    }
+
     /// Every workspace-rename chord but `Enter`, applied to `buf`/`sel` in
-    /// place and returned as `(consumed, needs_bump, selection)`. `Enter`
-    /// is special-cased by the caller, which needs to drop the borrow this
-    /// only holds a `&mut` into. Split out of
-    /// [`Self::handle_workspace_rename_key`] to keep it under
-    /// `too_many_lines`.
+    /// place through the chrome's shared field editing and returned as
+    /// `(consumed, needs_bump, selection)`. `Enter` is special-cased by the
+    /// caller, which needs to drop the borrow this only holds a `&mut` into.
     fn apply_workspace_rename_key(
         logical_key: &Key,
         ctrl: bool,
@@ -12466,155 +13549,12 @@ impl ShellOverlayHost {
         buf: &mut String,
         mut sel: ui::text_selection::Selection,
     ) -> (bool, bool, ui::text_selection::Selection) {
-        use ui::text_selection::{
-            Selection, next_char_boundary, next_word_boundary, prev_char_boundary,
-            prev_word_boundary,
+        use tilo_desktop::text_entry::{Edit, Mods, apply};
+        let (consumed, needs_bump) = match apply(logical_key, Mods { shift, ctrl }, buf, &mut sel) {
+            Edit::Changed => (true, true),
+            Edit::ConsumedQuiet | Edit::Submit | Edit::Cancel => (true, false),
+            Edit::Ignored => (false, false),
         };
-        let mut consumed = true;
-        let mut needs_bump = true;
-        match logical_key {
-            Key::Named(NamedKey::ArrowLeft) => {
-                let new_pos = if !ctrl && !shift && !sel.is_collapsed() {
-                    sel.range().start
-                } else if ctrl {
-                    prev_word_boundary(buf, sel.cursor)
-                } else {
-                    prev_char_boundary(buf, sel.cursor)
-                };
-                sel.cursor = new_pos;
-                if !shift {
-                    sel.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                let new_pos = if !ctrl && !shift && !sel.is_collapsed() {
-                    sel.range().end
-                } else if ctrl {
-                    next_word_boundary(buf, sel.cursor)
-                } else {
-                    next_char_boundary(buf, sel.cursor)
-                };
-                sel.cursor = new_pos;
-                if !shift {
-                    sel.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::Home) => {
-                sel.cursor = 0;
-                if !shift {
-                    sel.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::End) => {
-                sel.cursor = buf.len();
-                if !shift {
-                    sel.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if sel.is_collapsed() {
-                    if sel.cursor > 0 {
-                        let prev = prev_char_boundary(buf, sel.cursor);
-                        buf.replace_range(prev..sel.cursor, "");
-                        sel = Selection::collapsed(prev);
-                    }
-                } else {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), "");
-                    sel = Selection::collapsed(r.start);
-                }
-            }
-            Key::Named(NamedKey::Delete) => {
-                if sel.is_collapsed() {
-                    if sel.cursor < buf.len() {
-                        let next = next_char_boundary(buf, sel.cursor);
-                        buf.replace_range(sel.cursor..next, "");
-                    }
-                } else {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), "");
-                    sel = Selection::collapsed(r.start);
-                }
-            }
-            Key::Named(NamedKey::Space) => {
-                let r = sel.range();
-                buf.replace_range(r.clone(), " ");
-                sel = Selection::collapsed(r.start.saturating_add(1));
-            }
-            Key::Character(s) if ctrl => {
-                let (c, n, new_sel) = Self::apply_workspace_rename_ctrl_chord(s.as_str(), buf, sel);
-                consumed = c;
-                needs_bump = n;
-                sel = new_sel;
-            }
-            Key::Character(s) => {
-                let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-                if filtered.is_empty() {
-                    consumed = false;
-                    needs_bump = false;
-                } else {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), &filtered);
-                    sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
-                }
-            }
-            _ => {
-                consumed = false;
-                needs_bump = false;
-            }
-        }
-        (consumed, needs_bump, sel)
-    }
-
-    /// The `Ctrl`-chord half of [`Self::apply_workspace_rename_key`]:
-    /// select-all, copy, cut, paste. Split out to keep the caller under
-    /// `too_many_lines`.
-    fn apply_workspace_rename_ctrl_chord(
-        s: &str,
-        buf: &mut String,
-        mut sel: ui::text_selection::Selection,
-    ) -> (bool, bool, ui::text_selection::Selection) {
-        use ui::text_selection::{Selection, clipboard_copy, clipboard_paste};
-        let mut consumed = true;
-        let mut needs_bump = true;
-        match s {
-            "a" | "A" => {
-                sel.anchor = 0;
-                sel.cursor = buf.len();
-            }
-            "c" | "C" => {
-                let r = sel.range();
-                if let Some(selected) = buf.get(r) {
-                    clipboard_copy(selected);
-                }
-                needs_bump = false;
-            }
-            "x" | "X" => {
-                let r = sel.range();
-                if r.is_empty() {
-                    needs_bump = false;
-                } else if let Some(selected) = buf.get(r.clone()) {
-                    clipboard_copy(selected);
-                    buf.replace_range(r.clone(), "");
-                    sel = Selection::collapsed(r.start);
-                } else {
-                    needs_bump = false;
-                }
-            }
-            "v" | "V" => {
-                if let Some(paste) = clipboard_paste() {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), &paste);
-                    sel = Selection::collapsed(r.start.saturating_add(paste.len()));
-                } else {
-                    needs_bump = false;
-                }
-            }
-            _ => {
-                consumed = false;
-                needs_bump = false;
-            }
-        }
         (consumed, needs_bump, sel)
     }
 
@@ -13225,19 +14165,22 @@ impl ShellOverlayHost {
         outcome: crate::shell::quick_settings::wifi::WifiPaneOutcome,
     ) {
         match outcome {
+            crate::shell::quick_settings::wifi::WifiPaneOutcome::RequestWifi(enabled) => {
+                self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(enabled));
+            }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::DrillIn(outcome) => {
                 Self::finish_quick_settings_drill_in_click(chrome, outcome);
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::Reconcile => {
                 chrome.borrow_mut().bump();
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::ActionFailed { action, error } => {
                 chrome.borrow_mut().push_notification(
                     t_args("qs-action-failed", &[("action", action.into())]),
                     t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::JoinOpen(ssid) => {
                 let mut state = chrome.borrow_mut();
@@ -13314,14 +14257,14 @@ impl ShellOverlayHost {
             }
             VpnPaneOutcome::Reconcile => {
                 chrome.borrow_mut().bump();
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
             VpnPaneOutcome::ActionFailed { profile, error } => {
                 chrome.borrow_mut().push_notification(
                     t_args("qs-vpn-change-failed", &[("profile", profile.into())]),
                     t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
         }
     }
@@ -14310,7 +15253,7 @@ impl ShellOverlayHost {
             history_level,
             Some(crate::shell::quick_settings::QsLevel::Notifications)
         ) {
-            let consumed = self.handle_qs_notification_keyboard(logical_key);
+            let consumed = self.handle_qs_notification_keyboard_with_shift(logical_key, backwards);
             *handled = consumed;
             return consumed;
         }
@@ -14576,6 +15519,9 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().show_osd(osd);
                 }
+                // A read sampled before this commit must not snap the
+                // slider back to where it was.
+                self.qs_refresh.kick_fast_after_write();
             }
             Err(error) => {
                 tracing::warn!(target: "tilo::os_actions", op = label, %error, "quick setting failed");
@@ -14591,7 +15537,7 @@ impl ShellOverlayHost {
                 }
                 // Reconcile the optimistic slider with authoritative device
                 // state. Worker completion wakes the idle compositor.
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
         }
     }
@@ -14694,14 +15640,7 @@ impl ShellOverlayHost {
         pending: crate::shell::quick_settings::root::PendingRootActions,
     ) {
         if let Some(v) = pending.wifi {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_wifi(v);
-            self.finish_quick_settings_action("set_wifi", t("host-qs-change-failed-wifi"), result);
-            if v {
-                self.qs_refresh.kick_wifi_networks();
-            }
+            self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(v));
         }
         if let Some(v) = pending.bluetooth {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
@@ -14726,15 +15665,7 @@ impl ShellOverlayHost {
             );
         }
         if let Some(v) = pending.airplane {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_airplane_mode(v);
-            self.finish_quick_settings_action(
-                "set_airplane_mode",
-                t("host-qs-change-failed-airplane"),
-                result,
-            );
+            self.dispatch_quick_settings_radio(os_actions::RadioChange::Airplane(v));
         }
         if let Some(v) = pending.hotspot {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
@@ -14785,6 +15716,57 @@ impl ShellOverlayHost {
         }
     }
 
+    fn dispatch_quick_settings_radio(&mut self, change: os_actions::RadioChange) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        match self.qs_action_slot.start_radio(change, &chrome) {
+            Ok(Some(_)) => {}
+            Ok(None) => self.reconcile_quick_settings_radio(change),
+            Err(error) => {
+                self.finish_quick_settings_action(
+                    match change {
+                        os_actions::RadioChange::Wifi(_) => "set_wifi",
+                        os_actions::RadioChange::Airplane(_) => "set_airplane_mode",
+                    },
+                    t(match change {
+                        os_actions::RadioChange::Wifi(_) => "host-qs-change-failed-wifi",
+                        os_actions::RadioChange::Airplane(_) => "host-qs-change-failed-airplane",
+                    }),
+                    Err(error),
+                );
+            }
+        }
+    }
+
+    fn reconcile_quick_settings_radio(&mut self, change: os_actions::RadioChange) {
+        self.qs_refresh.kick_fast_after_write();
+        if change == os_actions::RadioChange::Wifi(true) && self.qs_refresh.os_reads_enabled() {
+            if let Some(chrome) = &self.chrome {
+                let mut state = chrome.borrow_mut();
+                state.quick_settings.wifi_scanning = true;
+                state.quick_settings.wifi_scan_error = None;
+                state.bump();
+            }
+            self.qs_refresh.kick_wifi_networks();
+        }
+    }
+
+    fn poll_quick_settings_radio(&mut self) -> bool {
+        let Some(job) = self.qs_action_slot.take_radio_completion() else {
+            return false;
+        };
+        if let Some(chrome) = &self.chrome {
+            job.apply(chrome);
+        }
+        if job.result().is_some_and(|result| result.is_ok()) {
+            self.reconcile_quick_settings_radio(job.change);
+        } else {
+            self.qs_refresh.kick_fast_after_write();
+        }
+        true
+    }
+
     /// Reconcile every optimistic device toggle after the OS accepts or
     /// rejects it. Failures must not leave a switch claiming a state the
     /// machine never entered.
@@ -14804,7 +15786,7 @@ impl ShellOverlayHost {
         }
         // Even a successful daemon request can be normalized by hardware or
         // policy. Read back the authoritative state; completion wakes paint.
-        self.qs_refresh.kick_fast();
+        self.qs_refresh.kick_fast_after_write();
     }
 
     /// Apply the typed hit produced by [`WorkspaceSettingsOverlay`]. Policy
@@ -15161,16 +16143,7 @@ impl ShellOverlayHost {
         // clears that cache.
         let add = self.add_workspace_hit_rect();
         if add.area() > 0.0 && add.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                // Creation switches to the new workspace. Release the
-                // overview's input grab in the same transaction so the
-                // first navigation gesture reaches that workspace.
-                st.overlays.overview = false;
-                // Mirrors the wheel-disc slot: both create
-                // affordances seed "Untitled".
-                st.add_workspace("Untitled");
-            }
+            self.create_overview_workspace();
             return;
         }
         let hit = self.hit_test_overview(p);
@@ -15337,7 +16310,7 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
         palette_child: Option<NodeId>,
     ) -> bool {
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         if !self.palette_visible {
             return false;
         }
@@ -15398,18 +16371,22 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return true;
         }
-        // Keyboard Enter: fire the cursor-selected action.
+        // One activation per press. A held Enter must not repeat a failed
+        // invocation while its recovery context stays open.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
                     logical_key: Key::Named(NamedKey::Enter),
                     state: ElementState::Pressed,
+                    repeat,
                     ..
                 },
             ..
         } = event
         {
-            self.activate_selected_result(state, ctx.path);
+            if !repeat {
+                self.activate_selected_result(state, ctx.path);
+            }
             *ctx.handled = true;
             return true;
         }
@@ -15421,7 +16398,7 @@ impl ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -15450,7 +16427,7 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
         children: &[NodeId],
     ) {
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         // First dibs so wheel-content precedes the desktop underneath.
         // Gated on the sidebar's rect for pointer events — otherwise it can
         // overlap the topbar band and swallow the overview-toggle click.
@@ -15470,7 +16447,7 @@ impl ShellOverlayHost {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: ctx.modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -15519,7 +16496,7 @@ impl ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -15535,8 +16512,33 @@ impl ShellOverlayHost {
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.
             self.harvest_pending_tab_context_menus();
+            // `/` the app did not type opens search of that app, as Ctrl+K
+            // does. A focused field or terminal takes `/` as text.
+            if !*ctx.handled
+                && !self.palette_visible
+                && is_plain_slash(event, ctx.modifiers.state())
+                && self.content.ime_cursor_rect().is_none()
+            {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
+                *ctx.handled = true;
+            }
         }
     }
+}
+
+/// An unmodified `/` press (Shift allowed: some layouts type `/` with it).
+fn is_plain_slash(event: &WindowEvent, modifiers: winit::keyboard::ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput {
+            event: winit::event::KeyEvent {
+                logical_key: winit::keyboard::Key::Character(character),
+                state: ElementState::Pressed,
+                ..
+            },
+            ..
+        } if character.as_str() == "/"
+    ) && !(modifiers.control_key() || modifiers.alt_key() || modifiers.super_key())
 }
 
 /// The tab right-click menu: request harvest, routing, actions, semantics
@@ -15592,6 +16594,97 @@ impl ShellOverlayHost {
         self.layers
             .tab_menu
             .open(target, tab_count, point, title, self.rect);
+    }
+
+    /// Open the shell menu at the focused tab, independent of the pointer.
+    /// Resolve the durable focus first; a stale or unlaid-out tab cannot open
+    /// a menu at a made-up location. The menu is local presentation only.
+    pub fn open_focused_tab_context_menu(&mut self) -> bool {
+        if self.onboarding.is_some() || self.content.wants_pointer_capture() {
+            return false;
+        }
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let target = {
+            let st = chrome.borrow();
+            if st.session_locked() {
+                return false;
+            }
+            let tree = st.tree();
+            let Some(strip) = tree.desktop.active_strip.get(&tree.desktop.active).copied() else {
+                return false;
+            };
+            let Some(group) = tree.desktop.active_group_for(strip) else {
+                return false;
+            };
+            drop(tree);
+            let Some(tab) = crate::shell::window_actions::active_tab_id(&st) else {
+                return false;
+            };
+            drop(st);
+            TabMenuTarget { strip, group, tab }
+        };
+        let Some(&ptr) = self.group_row_ptrs.get(&target.strip) else {
+            return false;
+        };
+        // SAFETY: see field doc on `group_row_ptrs`; only read the live row.
+        let row: &GroupRow = unsafe { &*ptr };
+        let Some(group) = row.groups.iter().find(|group| group.id == target.group) else {
+            return false;
+        };
+        let Some((index, tab)) = group
+            .tabs()
+            .iter()
+            .enumerate()
+            .find(|(_, tab)| tab.id == target.tab)
+        else {
+            return false;
+        };
+        let Some(rect) = group.tab_rects().get(index).copied() else {
+            return false;
+        };
+        // Compact bars may collapse an inactive pill, and keyboard focus can
+        // change before the next layout expands it. Its laid-out bar remains
+        // a real anchor; do not discard that opening key between frames.
+        let rect = if rect.area() > 0.0 {
+            rect
+        } else {
+            group.bar_rect()
+        };
+        if rect.area() <= 0.0 {
+            return false;
+        }
+        let title = tab.title.clone();
+        let tab_count = group.tab_count();
+        let outputs = self.layer_outputs();
+        let viewport = self.layer_geometry(&outputs).display_for(None);
+        self.layers.tab_menu.open(
+            target,
+            tab_count,
+            Point::new(rect.x0, rect.y1),
+            title,
+            viewport,
+        );
+        self.layers.tab_menu.focus_first_action();
+        true
+    }
+
+    /// Abandon tab gestures and cross-strip feedback, preserving durable state.
+    pub fn cancel_tab_drags(&mut self) -> bool {
+        let mut cancelled = false;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: live rows are visited sequentially under the field's
+            // stable-pointer contract, without retaining a borrowed row.
+            cancelled |= unsafe { &mut *ptr }.cancel_tab_drag();
+        }
+        if cancelled {
+            for &ptr in self.group_row_ptrs.values() {
+                // SAFETY: the same sequential stable-row contract as above.
+                unsafe { &mut *ptr }.set_cross_strip_tab_drag_hover(None);
+            }
+        }
+        cancelled
     }
 
     /// A menu whose tab or group has gone has nothing left to act on.
@@ -15718,10 +16811,18 @@ impl ShellOverlayHost {
                 performed
             }
             LayerIntent::Session(action) => {
+                self.layers.power_menu.close();
                 self.execute_session_action(action);
                 true
             }
             LayerIntent::FocusWindow(address) => self.focus_switcher_window(address),
+            LayerIntent::Dictation(request) => {
+                self.layers.dictation.enqueue(request);
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
             LayerIntent::Repaint => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
@@ -15774,10 +16875,10 @@ struct OverviewMetrics {
     pad: f64,
     /// Gap between the "you are here" block and the room list (§9.6: `s4`).
     section_gap: f64,
-    /// Corner radius of the panel (Panel role, `radii.xl`).
+    /// Corner radius of the panel (Panel role, `radii.panel`).
     panel_radius: f64,
     /// Corner radius of a room row and the selection frame (Control role,
-    /// `radii.lg`).
+    /// `radii.control`).
     row_radius: f64,
     /// Line height of the current room's name (`x3l`); the face stack is
     /// centred on it.
@@ -15806,7 +16907,7 @@ struct OverviewMetrics {
     window_title_gap: f64,
     /// Line height of a preview tile's `sm` title.
     window_title_lh: f64,
-    /// Corner radius of a preview well (`radii.md`).
+    /// Corner radius of a preview well (`radii.control`).
     window_radius: f64,
     /// The air closing the "you are here" block (`s6`); the preview row
     /// takes its place.
@@ -15817,28 +16918,26 @@ impl OverviewMetrics {
     fn for_theme(theme: &Theme) -> Self {
         let tokens = &theme.tokens;
         let spacing = &tokens.spacing;
-        let scale = &tokens.typography.scale;
-        // The single-line height the renderer will measure for this size:
-        // `TextStyle::new` is the style every `measure`/`draw_text` call
-        // in this panel resolves to.
-        let lh = |size: f32| f64::from(ui::TextStyle::new(size).line_height_px());
+        // The single-line height of a role: the resolved style every
+        // `measure_style`/`draw_style` call in this panel paints with.
+        let lh = |role| f64::from(tokens.typography.style(role).line_height_px());
         let s1 = f64::from(spacing.s1);
         let s2 = f64::from(spacing.s2);
         let s3 = f64::from(spacing.s3);
         let s4 = f64::from(spacing.s4);
         let s6 = f64::from(spacing.s6);
-        let name_lh = lh(scale.x3l);
-        let access_lh = lh(scale.base);
-        let caption_lh = lh(scale.sm);
-        let body_lh = lh(scale.base);
-        let row_name_lh = lh(scale.lg);
-        let row_sub_lh = lh(scale.sm);
+        let name_lh = lh(TextRole::Display);
+        let access_lh = lh(TextRole::Body);
+        let caption_lh = lh(TextRole::Caption);
+        let body_lh = lh(TextRole::Body);
+        let row_name_lh = lh(TextRole::Heading);
+        let row_sub_lh = lh(TextRole::Caption);
         Self {
             margin: f64::from(spacing.s12),
             pad: s4,
             section_gap: s4,
-            panel_radius: f64::from(tokens.radii.xl),
-            row_radius: f64::from(tokens.radii.lg),
+            panel_radius: f64::from(tokens.radii.panel),
+            row_radius: f64::from(tokens.radii.control),
             name_lh,
             here_h: name_lh + s1 + access_lh + s6,
             caption_h: s2 + caption_lh + s1,
@@ -15847,11 +16946,11 @@ impl OverviewMetrics {
             room_row_h: row_name_lh + s1 + row_sub_lh + 2.0 * s3,
             room_row_gap: s2,
             row_pad: s4,
-            chip_h: lh(scale.sm) + s2,
+            chip_h: lh(TextRole::Caption) + s2,
             window_gap: s3,
             window_title_gap: s1,
-            window_title_lh: lh(scale.sm),
-            window_radius: f64::from(tokens.radii.md),
+            window_title_lh: lh(TextRole::Caption),
+            window_radius: f64::from(tokens.radii.control),
             here_air: s6,
         }
     }
@@ -15940,6 +17039,10 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
         .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
 }
 
+/// The semantic target of the open palette's query field, as the palette
+/// widget publishes it.
+const PALETTE_QUERY_TARGET: &str = "command-palette:query";
+
 impl Widget for ShellOverlayHost {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
@@ -15954,8 +17057,8 @@ impl Widget for ShellOverlayHost {
         }
     }
 
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
-        let (s, p) = ui::doc::document(s, p);
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
+        let (s, p) = ui::doc::document_ref(s, p);
         let open_desktop_tour = self.onboarding.is_none()
             && self
                 .chrome
@@ -15987,7 +17090,6 @@ impl Widget for ShellOverlayHost {
             return;
         }
         self.content.sync(s, p);
-        self.harvest_empty_workspace_launchpad(s, p);
         if let Some(sidebar) = self.sidebar.as_mut() {
             sidebar.sync(s, p);
         }
@@ -16001,16 +17103,48 @@ impl Widget for ShellOverlayHost {
         }
     }
 
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+        if self.onboarding.is_none() {
+            self.harvest_empty_workspace_launchpad(edits, path);
+            self.retry_pending_launchpad_app(edits, path);
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the compositor tick is deliberately ordered in one place so source refreshes precede palette input and every frame-side effect remains visible"
     )]
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
-        let (doc, path) = ui::doc::document(doc, path);
-        if let Some(onboarding) = self.onboarding.as_mut() {
-            return onboarding.update(doc, path);
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        let (doc, path) = ui::doc::document_ref(doc, path);
+        if let Some(chrome) = &self.chrome
+            && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
+        {
+            let mut apps = apps.borrow_mut();
+            if let Some(prompts) = &self.portal_prompts {
+                apps.bind_messaging_network_prompts(prompts.clone());
+            }
+            apps.pump_messaging_records();
+        }
+        if self.onboarding.is_some() {
+            // Compositor-owned sheets (polkit administrator prompts, network
+            // secrets) are raised by the system on behalf of the person in
+            // front of the screen, including while first-use setup is still
+            // running. Their requesters block until the sheet is answered,
+            // so the queue must keep moving under onboarding too.
+            let dialog_dirty = self.pump_portal_dialogs();
+            let onboarding_dirty = self
+                .onboarding
+                .as_mut()
+                .is_some_and(|onboarding| onboarding.update(doc, path));
+            return onboarding_dirty || dialog_dirty;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
+        let radio_dirty = self.poll_quick_settings_radio();
+        let quick_settings_dirty = self.apply_quick_settings_readings();
+        let display_storage_dirty = self.projection_overlay.poll_storage();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -16049,6 +17183,7 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
+        self.poll_pending_launchpad_actions();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.latch_overview_transition();
@@ -16161,6 +17296,9 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         content_dirty
+            || quick_settings_dirty
+            || radio_dirty
+            || display_storage_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty
@@ -16219,7 +17357,7 @@ impl Widget for ShellOverlayHost {
         // The overview's row heights follow the theme's type sizes; resolve
         // them here, where the theme is in hand, so this pass's hit-testing
         // and paint share one answer.
-        self.overview_metrics = OverviewMetrics::for_theme(theme);
+        self.resolve_overview_layout(theme);
         self.onboarding_node = None;
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
@@ -16572,6 +17710,7 @@ impl Widget for ShellOverlayHost {
         }
         self.pairing
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
+        self.finish_axis_gather();
         self.publish_strip_viewport();
     }
 
@@ -16589,6 +17728,7 @@ impl Widget for ShellOverlayHost {
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
             self.capture_studio
                 .draw(scene, transform, text_renderer, theme, presence);
             return;
@@ -16598,10 +17738,7 @@ impl Widget for ShellOverlayHost {
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
         self.qs_root.set_layout_text_scale(theme.text_scale);
-        self.qs_type_px = (
-            theme.tokens.typography.scale.xs,
-            theme.tokens.typography.scale.sm,
-        );
+        self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
             // contents never reach the room.
@@ -16645,9 +17782,40 @@ impl Widget for ShellOverlayHost {
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
         }
         self.capture_studio
             .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        let st = self.chrome.as_ref()?.borrow();
+        if st.overlays.quick_settings
+            && matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Notifications
+            )
+        {
+            self.notification_center.reading_scroll()
+        } else {
+            None
+        }
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        if self.primary_vertical_scroll().is_none() {
+            return ui::widget::PrimaryScrollResult::Unsupported;
+        }
+        let result = self.notification_center.apply_reading_scroll(action);
+        if matches!(result, ui::widget::PrimaryScrollResult::Changed(_))
+            && let Some(chrome) = &self.chrome
+        {
+            chrome.borrow_mut().bump();
+        }
+        result
     }
 
     #[allow(
@@ -16655,7 +17823,7 @@ impl Widget for ShellOverlayHost {
         reason = "event routing stays linear so modal gates retain their security-sensitive order"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         // MouseInput carries no coordinates. Keep the host's pointer cache
         // current before any modal can return early, because onboarding and
         // the other compositor-owned gates hit-test the following button edge
@@ -16664,6 +17832,10 @@ impl Widget for ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
+        if self.consume_workspace_rename_submit_edge(event) {
+            *ctx.handled = true;
+            return;
+        }
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed
@@ -16681,7 +17853,7 @@ impl Widget for ShellOverlayHost {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: ctx.modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -16708,7 +17880,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -16730,7 +17902,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -16738,6 +17910,29 @@ impl Widget for ShellOverlayHost {
                 taffy: ctx.taffy,
             },
         ) {
+            return;
+        }
+        // A compositor-owned sheet raised during first-use setup (an
+        // administrator prompt, a network secret) is drawn above onboarding
+        // and is modal over it: its keys and clicks must reach the sheet,
+        // not the setup control that still holds focus underneath. Focus is
+        // left untouched, so onboarding resumes where it was once the sheet
+        // is answered or dismissed.
+        if self.onboarding.is_some()
+            && self.route_portal_dialog_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: &mut *ctx.handled,
+                    focus_target: &mut *ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
+        {
             return;
         }
         if let Some(onboarding) = self.onboarding.as_mut() {
@@ -16753,7 +17948,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -16891,7 +18086,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -16914,7 +18109,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
@@ -16931,7 +18126,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -16948,7 +18143,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -16970,7 +18165,7 @@ impl Widget for ShellOverlayHost {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: ctx.modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -16991,7 +18186,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17010,7 +18205,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17025,7 +18220,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17034,6 +18229,37 @@ impl Widget for ShellOverlayHost {
             },
         ) {
             return;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let reading = {
+                let st = chrome.borrow();
+                st.overlays.quick_settings
+                    && matches!(
+                        st.quick_settings.current_level(),
+                        crate::shell::quick_settings::QsLevel::Notifications
+                    )
+                    && self.notification_center.is_reading()
+            };
+            if reading
+                && self.notification_center.reader_event(
+                    event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state: state.reborrow(),
+                        path: ctx.path,
+                        handled: &mut *ctx.handled,
+                        focus_target: &mut *ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
+                )
+            {
+                chrome.borrow_mut().bump();
+            }
+            if *ctx.handled {
+                return;
+            }
         }
         if self.route_qs_slider_drag(event, ctx.handled) {
             return;
@@ -17056,7 +18282,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
@@ -17075,7 +18301,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17127,7 +18353,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
@@ -17136,6 +18362,12 @@ impl Widget for ShellOverlayHost {
                 },
             )
         {
+            return;
+        }
+        if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event
+            && self.commit_into_chrome_field(text)
+        {
+            *ctx.handled = true;
             return;
         }
         if let WindowEvent::KeyboardInput {
@@ -17203,7 +18435,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17225,7 +18457,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17261,7 +18493,8 @@ impl Widget for ShellOverlayHost {
                 | LayerId::WindowSwitcher
                 | LayerId::EmojiPicker
                 | LayerId::TabContextMenu
-                | LayerId::PowerMenu => {}
+                | LayerId::PowerMenu
+                | LayerId::Dictation => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
                         // The filter band is the host's, painted over the
@@ -17296,6 +18529,10 @@ impl Widget for ShellOverlayHost {
                             AccessNode::new(Role::Button)
                                 .with_name(card.name.clone())
                                 .with_bounds(self.overview_row_rect(index))
+                                .with_state(AccessState::new().focusable(true).focused(
+                                    self.overview_selection == Some(index)
+                                        && self.overview_window_selection.is_none(),
+                                ))
                         }));
                     let windows = self.overview_row_windows();
                     if !windows.is_empty() {
@@ -17304,8 +18541,13 @@ impl Widget for ShellOverlayHost {
                             .iter()
                             .enumerate()
                             .map(|(index, window)| {
-                                let selected = self.overview_window_selection == Some(index);
+                                let selected =
+                                    self.overview_window_selection == Some(window.address.tab);
                                 AccessNode::new(Role::ListItem)
+                                    .with_semantic_key(format!(
+                                        "overview-window:{}",
+                                        window.address.tab
+                                    ))
                                     .with_name(window.title.clone())
                                     .with_position(index.saturating_add(1), total)
                                     .with_bounds(self.overview_window_tile_rect(index))
@@ -17319,6 +18561,7 @@ impl Widget for ShellOverlayHost {
                             .collect();
                         overview.children.push(
                             AccessNode::new(Role::List)
+                                .with_bounds(self.overview_window_list_rect().unwrap_or(Rect::ZERO))
                                 .with_name(crate::shell::i18n::t("overview-windows-title"))
                                 .with_description(crate::shell::i18n::t(
                                     "overview-windows-description",
@@ -17329,7 +18572,11 @@ impl Widget for ShellOverlayHost {
                     overview.children.push(
                         AccessNode::new(Role::Button)
                             .with_name(t("a11y-new-workspace"))
-                            .with_bounds(self.overview_add_workspace_rect_for(cards.len())),
+                            .with_bounds(self.overview_add_workspace_rect_for(cards.len()))
+                            .with_state(AccessState::new().focusable(true).focused(
+                                self.overview_selection == Some(cards.len())
+                                    && self.overview_window_selection.is_none(),
+                            )),
                     );
                     root.children.push(overview);
                 }
@@ -17579,10 +18826,15 @@ impl Widget for ShellOverlayHost {
                         } else if matches!(
                             state.quick_settings.current_level(),
                             crate::shell::quick_settings::QsLevel::Wifi
+                                | crate::shell::quick_settings::QsLevel::WifiDetails(_)
                         ) {
                             root.children.push(
-                                self.qs_wifi_pane
-                                    .accessibility_snapshot(&state.quick_settings),
+                                if let Some(prompt) = state.quick_settings.wifi_password.as_ref() {
+                                    self.wifi_password_accessibility(prompt)
+                                } else {
+                                    self.qs_wifi_pane
+                                        .accessibility_snapshot(&state.quick_settings)
+                                },
                             );
                         } else if matches!(
                             state.quick_settings.current_level(),
@@ -18111,6 +19363,8 @@ impl Widget for ShellOverlayHost {
                 }
             }
         }
+        self.append_modal_sheet_accessibility(&mut root);
+        root.children.extend(self.live_status_accessibility());
         Some(root)
     }
 
@@ -18121,9 +19375,32 @@ impl Widget for ShellOverlayHost {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
+        // The palette is published inside this host's tree (see
+        // `accessibility_represents_child`), so its query's semantic target
+        // arrives here, not at the palette widget. Setting it is typing it:
+        // the results are recomputed for the new text.
+        if target == PALETTE_QUERY_TARGET && self.palette_visible {
+            let before = self.palette.query().to_string();
+            let handled = self
+                .palette
+                .perform_semantic_action(target, action, state, path);
+            if handled && self.palette.query() != before && self.pending_palette_action.is_none() {
+                let (doc, root) = ui::doc::document(state, path);
+                self.refresh_search_results(doc.doc(), root);
+            }
+            return handled;
+        }
+        if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
+            // A sheet's target never falls back to a pointer click: a stale
+            // one must not press whatever is now under its old bounds.
+            if !handled {
+                tracing::debug!(target, ?action, "a11y: sheet action not applied");
+            }
+            return true;
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -18230,16 +19507,7 @@ impl Widget for ShellOverlayHost {
                     _ => None,
                 }
             }
-            LayerId::Overview => match child_path {
-                [] => Some(self.overview_panel_rect()),
-                [index] if *index < self.overview_cards().len() => {
-                    Some(self.overview_row_rect(*index))
-                }
-                [index] if *index == self.overview_cards().len() => {
-                    Some(self.overview_add_workspace_rect_for(*index))
-                }
-                _ => None,
-            },
+            LayerId::Overview => self.overview_accessibility_rect(child_path),
             LayerId::NowPlaying => self.now_playing_accessibility_rect(child_path),
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
@@ -18249,7 +19517,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => None,
+            | LayerId::PowerMenu | LayerId::Dictation => None,
         }
     }
 
@@ -18287,8 +19555,8 @@ impl Widget for ShellOverlayHost {
             LayerId::WorkspaceSettings => {
                 !child_path.is_empty() && self.synthetic_accessibility_rect(path).is_some()
             }
-            LayerId::Overview
-            | LayerId::MemberSheet
+            LayerId::Overview => self.focus_overview_accessibility(child_path),
+            LayerId::MemberSheet
             | LayerId::ShortcutHelp
             | LayerId::DisplayLayouts
             // Stacked; answered above.
@@ -18296,7 +19564,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => false,
+            | LayerId::PowerMenu | LayerId::Dictation => false,
         }
     }
 
@@ -18435,7 +19703,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -18469,6 +19737,18 @@ impl ShellOverlayHost {
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
             ("window-previews", self.window_previews_wake_deadline(now)),
+            (
+                "launchpad-app",
+                self.pending_launchpad_app
+                    .as_ref()
+                    .and_then(|_| now.checked_add(LAUNCHPAD_APP_RETRY)),
+            ),
+            (
+                "launchpad-action",
+                (!self.pending_launchpad_actions.is_empty())
+                    .then(|| now.checked_add(LAUNCHPAD_ACTION_POLL))
+                    .flatten(),
+            ),
         ]
     }
 
@@ -18599,7 +19879,7 @@ fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
 /// Map the prompt widget's choice onto the portal's outcome vocabulary.
 /// Two enums for one decision because they belong to different layers;
 /// keeping the mapping in one place stops them drifting.
-fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
+pub(crate) fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
     use crate::portal::PromptOutcome;
     match choice {
         PromptChoice::Allow => PromptOutcome::AllowOnce,
@@ -18611,7 +19891,7 @@ fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcom
 
 /// Human-readable label for the inline permission prompt from a
 /// [`Capability`] payload.
-fn capability_label(cap: &Capability) -> String {
+pub(crate) fn capability_label(cap: &Capability) -> String {
     match cap {
         Capability::Filesystem { path, mode, .. } => {
             let path = path.display().to_string();
@@ -18646,7 +19926,7 @@ fn capability_label(cap: &Capability) -> String {
 /// anyone given `Admin`). No recorded owner means no administrators
 /// (fail-closed) — [`crate::shell::state::WorkspaceTree::adopt_ownerless_workspaces`]
 /// keeps the local user's own workspaces out of that state.
-fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
+pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
     if let Some(forced) = state.test_only_owner_override {
         return forced;
     }
@@ -18766,18 +20046,6 @@ fn app_kind_filter() -> Vec<crate::shell::search::ResourceKind> {
     vec![ResourceKind::Application, ResourceKind::HostApplication]
 }
 
-/// [`draw_scrim`] scaled by `openness` so the palette/overview scrim
-/// fades with its surface.
-fn draw_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
-    fill_scrim(
-        scene,
-        transform,
-        rect,
-        PALETTE_SCRIM_ALPHA * openness,
-        theme,
-    );
-}
-
 /// The modal scrim, scaled by `openness` in `0.0..=1.0` so it fades in
 /// with the modal opening and out with it closing.
 fn draw_modal_scrim_at(
@@ -18787,31 +20055,7 @@ fn draw_modal_scrim_at(
     openness: f32,
     theme: &Theme,
 ) {
-    fill_scrim(scene, transform, rect, MODAL_SCRIM_ALPHA * openness, theme);
-}
-
-/// Paint `rect` in the theme's scrim hue at `strength`. Uses
-/// `surfaces.scrim` rather than a literal black, since a light theme's
-/// scrim is a different colour from a dark theme's.
-pub(crate) fn fill_scrim(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    strength: f32,
-    theme: &Theme,
-) {
-    let alpha = f32_to_u8_saturating((strength.clamp(0.0, 1.0) * 255.0).round());
-    if alpha == 0 {
-        return;
-    }
-    let c = theme.tokens.colors.surfaces.scrim.to_rgba8();
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        Color::from_rgba8(c.r, c.g, c.b, alpha),
-        None,
-        &rect,
-    );
+    ui::overlay::scrim::modal(scene, transform, rect, openness, theme);
 }
 
 /// Synthesises a persisted [`crate::shell::state::WindowGroup`] from a
@@ -18883,14 +20127,6 @@ fn mix_toward(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
 }
 
-/// The surface every floating chrome panel is painted on — quick
-/// settings, the collaborators popover, workspace-settings, peer-sync.
-/// Uses the theme's own popover tier (not a raw colour ramp slot) so
-/// panels stay the same material as the bar they hang off (HIG §9.2).
-fn panel_surface(theme: &Theme, alpha: f32) -> Color {
-    ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
-}
-
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
 /// currently focused tab, if any. Seeds `active_provider_id` for
 /// [`crate::shell::search::SearchRegistry::query`] under
@@ -18908,13 +20144,13 @@ fn active_tab_provider_id(
     None
 }
 
-/// Clones `theme` with `surfaces.raised` re-tinted to a translucent glass
-/// slate-900 — how `CommandPalette` (which paints from `surfaces.raised`)
-/// gets a translucent fill without a per-draw override plumbed into a
-/// shared widget. The stroke keeps `border_standard` from the original.
-fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
+/// Clones `theme` with `surfaces.raised` set to the panel ground, so the
+/// fields and wells `CommandPalette` paints from `surfaces.raised` sit on
+/// its panel rather than reading as raised cards. The palette's own body is
+/// the floating material.
+fn palette_surface_theme(theme: &Theme) -> Theme {
     let mut themed = theme.clone();
-    themed.tokens.colors.surfaces.raised = panel_surface(theme, alpha);
+    themed.tokens.colors.surfaces.raised = ui::chrome::shell::panel_ground(theme);
     themed
 }
 
@@ -18922,7 +20158,7 @@ fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
 struct OverviewPanelCacheKey {
     scroll_bits: u64,
     selection: Option<usize>,
-    window_selection: Option<usize>,
+    window_selection: Option<crate::shell::state::TabId>,
     press: Option<(u64, u8, u64, u64)>,
     panel: (u64, u64, u64, u64),
     chrome_revision: u64,
@@ -18977,7 +20213,7 @@ fn scene_damage_rect(rect: Rect) -> Option<vello::FineDamageRect> {
 }
 
 fn scrim_rgba(theme: &Theme, openness: f32) -> [u8; 4] {
-    let strength = (MODAL_SCRIM_ALPHA * openness).clamp(0.0, 1.0);
+    let strength = (theme.tokens.colors.surfaces.scrim_strength * openness).clamp(0.0, 1.0);
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -19019,18 +20255,80 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
+        self.draw_docked_wheel(scene, transform, text_renderer, theme, presence);
+        self.draw_desktop_notices(scene, transform, text_renderer, theme, presence);
+    }
 
+    /// The sidebar wheel docked beside the strips.
+    fn draw_docked_wheel(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         // Sidebar wheel: above desktop content, below every overlay
         // (including scrims) — it's part of the desktop, so it dims with it.
         // The wheel and overview are two ways to navigate the same workspace
         // set. Showing both under one modal creates competing destinations;
         // the wheel returns as soon as the overview closes.
+        // Layout parks the docked wheel at `x - scroll` so it rides the
+        // strip. A strip drawn in canvas coordinates is panned by the
+        // presenter, so the wheel is drawn at the same canvas x, or the scene
+        // would change with every pan.
+        let shift = if self.docked_wheel_pinned() {
+            0.0
+        } else {
+            self.docked_strip_canvas_shift()
+        };
         if !self.overlay_flags().overview
             && let Some(sidebar) = self.sidebar.as_mut()
         {
+            fn wheel(
+                sidebar: &mut Box<dyn Widget>,
+            ) -> Option<&mut tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc> {
+                sidebar.as_any_mut().and_then(|value| {
+                    value.downcast_mut::<tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc>()
+                })
+            }
+            let hits_before = wheel(sidebar).map(|wheel| {
+                wheel.rect.x0 += shift;
+                wheel.rect.x1 += shift;
+                (wheel.plus_rect, wheel.spoke_hit_rects.clone())
+            });
             sidebar.draw(scene, transform, text_renderer, theme, presence);
+            // Hit rects the draw recomputed are in canvas coordinates too.
+            if let Some(wheel) = wheel(sidebar) {
+                wheel.rect.x0 -= shift;
+                wheel.rect.x1 -= shift;
+                if let Some((plus_before, spokes_before)) = hits_before {
+                    if wheel.plus_rect != plus_before {
+                        wheel.plus_rect.x0 -= shift;
+                        wheel.plus_rect.x1 -= shift;
+                    }
+                    if wheel.spoke_hit_rects != spokes_before {
+                        for spoke in &mut wheel.spoke_hit_rects {
+                            spoke.x0 -= shift;
+                            spoke.x1 -= shift;
+                        }
+                    }
+                }
+            }
         }
+    }
 
+    /// What the desktop shows over its windows where it is on screen: the
+    /// follow chip, the permission prompt, notifications and the visual
+    /// alert.
+    fn draw_desktop_notices(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         self.draw_follow_chip(scene, transform, text_renderer, theme);
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
@@ -19048,7 +20346,7 @@ impl ShellOverlayHost {
                 transform,
                 surface,
                 theme,
-                f64::from(theme.tokens.radii.md),
+                f64::from(theme.tokens.radii.control),
             );
         }
 
@@ -19090,7 +20388,7 @@ impl ShellOverlayHost {
             scene.stroke(
                 &vello::kurbo::Stroke::new(7.0),
                 transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &edge,
             );
@@ -19157,7 +20455,7 @@ impl ShellOverlayHost {
     /// Shadow falloff plus the rise, so one dirty rectangle covers every
     /// frame of the fade without leaving the previous position behind.
     fn overview_shadow_outset(theme: &Theme) -> f64 {
-        let token = &theme.tokens.elevation.e4;
+        let token = &theme.tokens.elevation.floating;
         ui::surface::std_dev_for(token.blur) * 2.5 + f64::from(token.offset_y) + 2.0
     }
 
@@ -19338,6 +20636,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         overview_open: bool,
     ) {
+        self.reconcile_overview_window_selection();
         let target = if overview_open { 1.0 } else { 0.0 };
         let t = self.tick_overview_transition(target, theme.reduce_motion);
         // The overview is a panel over the desk, not a place you travel
@@ -19727,7 +21026,8 @@ impl ShellOverlayHost {
                 .next()
                 .unwrap_or('\u{2022}')
                 .to_ascii_uppercase();
-            let (red, green, blue) = ui::presence::user_color(&own_id);
+            let (red, green, blue) =
+                ui::presence::identity_rgb(crate::shell::state::local_presence_hue());
             self.collaborators_overlay.draw(
                 scene,
                 transform,
@@ -19737,7 +21037,7 @@ impl ShellOverlayHost {
                     host: self.rect,
                     rows: &rows,
                     own_initial,
-                    own_color: Color::from_rgb8(red, green, blue),
+                    own_color: theme.tokens.colors.presence.of_rgb((red, green, blue)),
                     unavailable: unavailable.as_deref(),
                     followed_id: self.followed_peer.as_deref(),
                     following_pairs: &following_pairs,
@@ -19851,18 +21151,19 @@ impl ShellOverlayHost {
                 transform
             };
             // A Panel casts `e4` (HIG §9.1), following the outline the
-            // sheet paints itself with (`radii.lg` in `room_activity.rs`);
+            // sheet paints itself with (`radii.control` in `room_activity.rs`);
             // the token's own colour, not a ramp slot, and its strength
             // fades in with the sheet.
-            let mut sheet_shadow = theme.tokens.elevation.e4;
+            let mut sheet_shadow = theme.tokens.elevation.floating;
             sheet_shadow.color = sheet_shadow.color.with_alpha_factor(alpha);
             ui::surface::shadow(
                 scene,
                 sheet_xform,
                 sheet,
-                f64::from(theme.tokens.radii.lg),
+                f64::from(theme.tokens.radii.control),
                 &sheet_shadow,
             );
+            self.room_activity.set_review_clip(self.rect);
             self.room_activity
                 .draw(scene, transform, text_renderer, theme, presence);
         }
@@ -19898,6 +21199,11 @@ impl ShellOverlayHost {
         if open && !self.qs_was_open {
             self.qs_refresh.kick_fast();
             self.qs_refresh.kick_firmware();
+            // The Wi-Fi and Bluetooth tiles name what is connected, which
+            // only these lists know; without them both read "Not connected"
+            // until a drill-in.
+            self.qs_refresh.kick_wifi_networks();
+            self.qs_refresh.kick_bt_devices();
             self.qs_root.reset_focus();
             self.refresh_quick_settings_summaries();
         }
@@ -19976,7 +21282,7 @@ impl ShellOverlayHost {
             // (`ChromeRole::Panel.radius`, the radius
             // `draw_quick_settings_card_background` paints), fading in
             // with the panel.
-            let mut qs_shadow = theme.tokens.elevation.e4;
+            let mut qs_shadow = theme.tokens.elevation.floating;
             qs_shadow.color = qs_shadow.color.with_alpha_factor(openness);
             ui::surface::shadow(
                 scene,
@@ -20068,10 +21374,10 @@ impl ShellOverlayHost {
         if self.shortcut_help_button_is_suppressed() {
             return;
         }
-        let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
+        let style = theme.text(TextRole::Label).strong();
         let label = t("help-pill");
         let label = label.as_str();
-        let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
+        let (w, h) = text_renderer.measure_style(label, None, &style);
         // Label padding `s6` across / `s3` down, `s4` off the display
         // corner (the same pixels as before, now the theme's steps). The
         // pill is at least the §9.6 pointer floor plus `s1` tall (36 at
@@ -20106,10 +21412,9 @@ impl ShellOverlayHost {
             None,
             &pill,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             label,
-            size,
             colors.ink_on(
                 surface,
                 colors.text_primary,
@@ -20123,7 +21428,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &style,
         );
     }
 
@@ -20193,7 +21498,7 @@ impl ShellOverlayHost {
         draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
         let panel = self.shortcut_help_panel_rect();
         let colors = &theme.tokens.colors;
-        // The guide is a Panel (HIG §9.1): `radii.xl`, the panel ground
+        // The guide is a Panel (HIG §9.1): `radii.panel`, the panel ground
         // from the semantic surface tier (never `neutral[0]`, §9.2), a
         // derived hairline edge, and an `e4` shadow along that outline.
         // Was an 18 px radius — off the 4/8/12/24 scale — on a ramp slot
@@ -20206,7 +21511,7 @@ impl ShellOverlayHost {
             transform,
             panel,
             panel_radius,
-            &theme.tokens.elevation.e4,
+            &theme.tokens.elevation.floating,
         );
         scene.fill(
             Fill::NonZero,
@@ -20222,18 +21527,17 @@ impl ShellOverlayHost {
             None,
             &panel_shape,
         );
-        let title_size = theme.tokens.typography.scale.xl;
+        let title_style = theme.text(TextRole::Title);
         let title = t("guide-title");
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             colors.text_primary,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 20.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 140.0)),
-            TextWeight::Semibold,
+            &title_style,
         );
-        let (title_width, _) = text_renderer.measure(&title, title_size, None);
+        let (title_width, _) = text_renderer.measure_style(&title, None, &title_style);
         let f1_hint = Rect::new(
             panel.x0 + 34.0 + f64::from(title_width),
             panel.y0 + 22.0,
@@ -20247,12 +21551,11 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(f1_hint, 7.0),
         );
-        let f1_size = theme.tokens.typography.scale.xs;
-        let (f1_width, f1_height) = text_renderer.measure("F1", f1_size, None);
-        text_renderer.draw_text_weighted(
+        let f1_style = theme.text(TextRole::Caption);
+        let (f1_width, f1_height) = text_renderer.measure_style("F1", None, &f1_style);
+        text_renderer.draw_style(
             scene,
             "F1",
-            f1_size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -20262,22 +21565,22 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &f1_style.clone().with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("guide-reopen-hint"),
-            theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 54.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 56.0)),
+            &theme.text(TextRole::Caption),
         );
 
         let done = self.shortcut_help_done_rect();
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            colors.intent.inverted,
             None,
             &RoundedRect::from_rect(done, 10.0),
         );
@@ -20290,13 +21593,12 @@ impl ShellOverlayHost {
                 &RoundedRect::from_rect(done.inflate(3.0, 3.0), 12.0),
             );
         }
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_style = theme.text(TextRole::Caption);
         let done_label = t("guide-done");
-        let (done_w, done_h) = text_renderer.measure(&done_label, label_size, None);
-        text_renderer.draw_text_weighted(
+        let (done_w, done_h) = text_renderer.measure_style(&done_label, None, &label_style);
+        text_renderer.draw_style(
             scene,
             &done_label,
-            label_size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -20306,7 +21608,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &label_style.clone().with_weight(TextWeight::Semibold),
         );
 
         use crate::compositor::controller_nav::{FaceRole, face_button};
@@ -20346,13 +21648,13 @@ impl ShellOverlayHost {
                 self.shortcut_rebind_message.clone()
             };
             if let Some(feedback) = feedback {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &feedback,
-                    theme.tokens.typography.scale.sm,
                     colors.text_primary,
                     transform.pre_translate((body.x0, panel.y0 + 76.0).into()),
                     Some(f64_to_f32_lossy(body.width())),
+                    &theme.text(TextRole::Caption),
                 );
             }
         }
@@ -20367,13 +21669,13 @@ impl ShellOverlayHost {
                     theme,
                 );
                 let guide = ControllerButton::Guide.label(family);
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &t_args("guide-controller-intro", &[("guide", guide.into())]),
-                    theme.tokens.typography.scale.sm,
                     colors.text_primary,
                     transform.pre_translate((body.x0 + 104.0, body.y0 + 8.0).into()),
                     Some(f64_to_f32_lossy(body.width() - 104.0)),
+                    &theme.text(TextRole::Caption),
                 );
                 let one = |button| (vec![button], vec![button]);
                 let chord = |first, second| {
@@ -20441,13 +21743,13 @@ impl ShellOverlayHost {
                     let row = index.checked_rem(per_column).unwrap_or(index);
                     let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
                     let y = body.y0 + 66.0 + usize_to_f64_lossy(row) * row_step;
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     InputHint::paint_controller_choice_at(
                         &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -20463,13 +21765,13 @@ impl ShellOverlayHost {
                 }
             }
             ui::InputModality::Touch => {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-touch-intro"),
-                    theme.tokens.typography.scale.sm,
                     colors.text_dim,
                     transform.pre_translate((body.x0, body.y0).into()),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
                 let gestures = [
                     (
@@ -20507,13 +21809,13 @@ impl ShellOverlayHost {
                     let y = body.y0
                         + if narrow { 36.0 } else { 52.0 }
                         + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     InputHint::paint_at(
                         &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -20561,14 +21863,15 @@ impl ShellOverlayHost {
                     None,
                     &RoundedRect::from_rect(navigation_surface, 14.0),
                 );
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-navigation-heading"),
-                    theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0 + 14.0, body.y0 + 11.0).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
@@ -20579,13 +21882,13 @@ impl ShellOverlayHost {
                         + usize_to_f64_lossy(column) * (column_width + 8.0);
                     let y =
                         navigation_surface.y0 + 31.0 + usize_to_f64_lossy(row) * navigation_step;
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     let actions = [*previous, *next];
                     let hit_rects = InputHint::paint_keyboard_choice_at(
@@ -20610,7 +21913,7 @@ impl ShellOverlayHost {
                             scene.stroke(
                                 &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
                                 transform,
-                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                colors.intent.inverted,
                                 None,
                                 &RoundedRect::from_rect(hit, 8.0),
                             );
@@ -20647,17 +21950,17 @@ impl ShellOverlayHost {
                             scene.stroke(
                                 &Stroke::new(2.0),
                                 transform,
-                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                colors.intent.inverted,
                                 None,
                                 &RoundedRect::from_rect(reset.inflate(2.0, 2.0), 8.0),
                             );
                         }
-                        let reset_size = theme.tokens.typography.scale.base;
-                        let (reset_w, reset_h) = text_renderer.measure("↶", reset_size, None);
-                        text_renderer.draw_text(
+                        let reset_style = theme.text(TextRole::Body);
+                        let (reset_w, reset_h) =
+                            text_renderer.measure_style("↶", None, &reset_style);
+                        text_renderer.draw_style(
                             scene,
                             "↶",
-                            reset_size,
                             colors.text_primary,
                             transform.pre_translate(
                                 (
@@ -20667,19 +21970,21 @@ impl ShellOverlayHost {
                                     .into(),
                             ),
                             None,
+                            &reset_style,
                         );
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
                 let essentials_y = navigation_surface.y1 + 12.0;
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-essentials-heading"),
-                    theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0, essentials_y).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
                 let references = shortcut_reference_rows(shortcuts);
                 let reference_columns = shortcut_reference_columns(body.width());
@@ -20704,13 +22009,13 @@ impl ShellOverlayHost {
                         x + reference_width,
                         reference_top + reference_height,
                     );
-                    // A keycap is a detail inside the guide (`radii.sm`) on
+                    // A keycap is a detail inside the guide (`radii.detail`) on
                     // the Control floor with its derived edge (HIG §9.5).
                     ui::surface::card(
                         scene,
                         transform,
                         group,
-                        f64::from(theme.tokens.radii.sm),
+                        f64::from(theme.tokens.radii.detail),
                         qs::control_fill(theme, false),
                     );
                     #[expect(
@@ -20718,21 +22023,22 @@ impl ShellOverlayHost {
                         reason = "shortcut_reference_rows yields 18 rows, so chunks(6) gives exactly one group per title (pinned by shortcut_reference_columns_stay_semantically_grouped)"
                     )]
                     let group_title = group_titles[group_index];
-                    text_renderer.draw_text_weighted(
+                    text_renderer.draw_style(
                         scene,
                         &t(group_title),
-                        theme.tokens.typography.scale.xs,
                         colors.text_dim,
                         transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
                         Some(f64_to_f32_lossy(group.width() - 24.0)),
-                        TextWeight::Semibold,
+                        &theme
+                            .text(TextRole::Caption)
+                            .with_weight(TextWeight::Semibold),
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
                         let entry_y =
                             group.y0 + 29.0 + usize_to_f64_lossy(row_index) * reference_step;
-                        let chord_size = theme.tokens.typography.scale.xs;
+                        let chord_style = theme.text(TextRole::Caption);
                         let (chord_width, chord_height) =
-                            text_renderer.measure(chord, chord_size, None);
+                            text_renderer.measure_style(chord, None, &chord_style);
                         let pill_height = f64::from(chord_height) + 6.0;
                         let pill = Rect::new(
                             group.x0 + 12.0,
@@ -20740,13 +22046,13 @@ impl ShellOverlayHost {
                             (group.x0 + 28.0 + f64::from(chord_width)).min(group.x1 - 12.0),
                             entry_y + 13.0 + pill_height,
                         );
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             label,
-                            chord_size,
                             colors.text_primary,
                             transform.pre_translate((group.x0 + 12.0, entry_y).into()),
                             Some(f64_to_f32_lossy(group.width() - 24.0)),
+                            &chord_style,
                         );
                         scene.fill(
                             Fill::NonZero,
@@ -20755,14 +22061,13 @@ impl ShellOverlayHost {
                             None,
                             &RoundedRect::from_rect(pill, 5.0),
                         );
-                        text_renderer.draw_text_weighted(
+                        text_renderer.draw_style(
                             scene,
                             chord,
-                            chord_size,
                             colors.text_primary,
                             transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
                             Some(f64_to_f32_lossy((pill.width() - 12.0).max(0.0))),
-                            TextWeight::Semibold,
+                            &chord_style.clone().with_weight(TextWeight::Semibold),
                         );
                     }
                 }
@@ -20777,34 +22082,34 @@ impl ShellOverlayHost {
                         0.0,
                         ui::chrome::ChromeRole::Panel.surface(theme),
                     );
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t("guide-pointer"),
-                        theme.tokens.typography.scale.xs,
                         colors.text_primary,
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
+                        &theme.text(TextRole::Caption),
                     );
                     if let Some(summary) = shortcut_action_summary(shortcuts)
                         && pointer_y + 40.0 < body.y1
                     {
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             &summary,
-                            theme.tokens.typography.scale.xs,
                             colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 32.0).into()),
                             Some(f64_to_f32_lossy(body.width())),
+                            &theme.text(TextRole::Caption),
                         );
                     }
                     if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             &t("guide-vim-mode"),
-                            theme.tokens.typography.scale.xs,
                             colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 50.0).into()),
                             None,
+                            &theme.text(TextRole::Caption),
                         );
                     }
                 }
@@ -20825,6 +22130,18 @@ impl ShellOverlayHost {
     ) {
         self.draw_top_overlays_below_switcher(scene, transform, text_renderer, theme, presence);
         let outputs = self.layer_outputs();
+        self.layers.draw(
+            LayerId::Dictation,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            },
+        );
         self.layers.draw(
             LayerId::WindowSwitcher,
             &mut LayerPaint {
@@ -20862,7 +22179,7 @@ impl ShellOverlayHost {
         let palette_now = Instant::now();
         if self.palette_transition.is_visible(palette_now) {
             let openness = self.palette_transition.value(palette_now);
-            draw_scrim_at(scene, transform, self.rect, openness, theme);
+            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
             let (alpha, dy, scale) = self.palette_transition.modal_curve(palette_now, 0.96);
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
@@ -20888,19 +22205,19 @@ impl ShellOverlayHost {
             // A Panel casts `e4` (HIG §9.1): the token's own offset, blur
             // and strength, following the card's rounded outline. While
             // the palette is still arriving the shadow fades in with it.
-            let mut shadow = theme.tokens.elevation.e4;
+            let mut shadow = theme.tokens.elevation.floating;
             shadow.color = shadow.color.with_alpha_factor(alpha);
             ui::surface::shadow(
                 scene,
                 palette_xform,
                 palette_rect,
-                self.palette.surface_radius_px(),
+                ui::widget::command_palette::CommandPalette::surface_radius_px(theme),
                 &shadow,
             );
             // A cloned theme with `surfaces.raised` pre-tinted, since
             // `CommandPalette` (in `quick-ui`) paints its own surface from
             // there and has no override plumbed in.
-            let palette_theme = palette_surface_theme(theme, MODAL_SURFACE_ALPHA);
+            let palette_theme = palette_surface_theme(theme);
             self.palette.draw(
                 scene,
                 palette_xform,
@@ -20947,7 +22264,11 @@ impl ShellOverlayHost {
         self.file_picker_overlay
             .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
-        self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+        // The contextual tour paints after this pass; it draws the sheet
+        // itself, above the tour, so the sheet is never covered.
+        if self.onboarding.is_none() {
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+        }
 
         // A held pad button works over modals too, like the keys below.
         self.draw_pad_map(scene, transform, text_renderer, theme);
@@ -20971,239 +22292,251 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(view) = self.portal_dialogs.view() else {
-            return;
-        };
-        let Some(layout) = self.portal_dialogs.layout(self.rect) else {
-            return;
-        };
-        draw_scrim_at(scene, transform, self.rect, 1.0, theme);
-        // A review sheet is a Panel (HIG §9.1): `radii.xl` and an `e4`
-        // shadow along that outline, painted before the surface so the
-        // sheet sits on its shadow rather than under it. Was a 16 px
-        // radius (off the scale) with a sprite shadow on a ramp slot until
-        // 2026-09-17 (S1-26); the sheet's other literals (title 20 px,
-        // `surfaces.raised` body) belong to the portal owner (S2).
-        let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
-        let sheet = RoundedRect::from_rect(layout.sheet, sheet_radius);
-        ui::surface::shadow(
-            scene,
-            transform,
-            layout.sheet,
-            sheet_radius,
-            &theme.tokens.elevation.e4,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &sheet,
-        );
-        crate::shell::trusted_ui::paint_seal(scene, transform, layout.sheet, theme, sheet_radius);
-        text_renderer.draw_text(
-            scene,
-            &view.title(),
-            20.0,
-            theme.tokens.colors.text_primary,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &view.app_name(),
-            14.0,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &view.detail(),
-            14.0,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
-            None,
-        );
-        for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
-            let selected = index == self.portal_dialogs.selected();
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                *rect,
-                choice,
-                theme.tokens.typography.scale.base,
-                ui::chrome::SelectionState::active(selected),
-            );
-        }
-        // USB is intentionally a real multi-select sheet, rather than a
-        // generic all-or-nothing permission prompt.  A row click or Space
-        // toggles only that device; Enter commits the resulting subset.
-        let usb_start = self.portal_dialogs.visible_selection_start();
-        for (visible_index, (device, rect)) in view
-            .usb_devices()
-            .iter()
-            .skip(usb_start)
-            .zip(&layout.choices)
-            .enumerate()
-        {
-            let index = usb_start.saturating_add(visible_index);
-            let access_key = if device.writable {
-                "portal-usb-row-read-write"
-            } else {
-                "portal-usb-row-read-only"
+        // A review sheet is a security surface: the app, the files and the
+        // devices it names are read letter by letter.
+        text_renderer.security_surface(|text_renderer| {
+            let Some(view) = self.portal_dialogs.view() else {
+                return;
             };
-            let label = format!(
-                "[{}] {}",
-                if device.selected { "✓" } else { " " },
-                crate::shell::i18n::t_args(access_key, &[("device", device.label.as_str().into())])
-            );
-            let focused = index == self.portal_dialogs.selected();
-            draw_filter_chip(
+            let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+                return;
+            };
+            draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
+            // A review sheet is a Panel (HIG §9.1): `radii.panel` and an `e4`
+            // shadow along that outline, painted before the surface so the
+            // sheet sits on its shadow rather than under it. Was a 16 px
+            // radius (off the scale) with a sprite shadow on a ramp slot until
+            // 2026-09-17 (S1-26); the sheet's other literals (title 20 px,
+            // `surfaces.raised` body) belong to the portal owner (S2).
+            let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
+            let sheet = RoundedRect::from_rect(layout.sheet, sheet_radius);
+            ui::surface::shadow(
                 scene,
                 transform,
-                text_renderer,
-                theme,
-                *rect,
-                &label,
-                theme.tokens.typography.scale.base,
-                ui::chrome::SelectionState::active(focused),
+                layout.sheet,
+                sheet_radius,
+                &theme.tokens.elevation.floating,
             );
-        }
-        if let Some(editor) = view.launcher_editor() {
-            // A shortcut step's answer is a real text field, painted below.
-            if let Some(name_rect) = layout.launcher_name
-                && !matches!(
-                    view,
-                    crate::shell::portal_dialog::DialogView::ShortcutStep { .. }
-                )
-            {
-                let focused = self.portal_dialogs.launcher_name_focused();
-                draw_filter_chip(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    name_rect,
-                    self.portal_dialogs.launcher_name().unwrap_or(editor.name),
-                    theme.tokens.typography.scale.base,
-                    ui::chrome::SelectionState::active(focused),
-                );
-            }
-            for (index, (label, rect)) in editor
-                .icon_choices
-                .iter()
-                .zip(&layout.launcher_icons)
-                .enumerate()
-            {
-                let selected = self.portal_dialogs.launcher_icon() == Some(index);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &sheet,
+            );
+            crate::shell::trusted_ui::paint_seal(
+                scene,
+                transform,
+                layout.sheet,
+                theme,
+                sheet_radius,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.title(),
+                20.0,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.app_name(),
+                14.0,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.detail(),
+                14.0,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
+                None,
+            );
+            for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
+                let selected = index == self.portal_dialogs.selected();
                 draw_filter_chip(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     *rect,
-                    label,
-                    theme.tokens.typography.scale.base,
+                    choice,
+                    &theme.text(TextRole::Body),
                     ui::chrome::SelectionState::active(selected),
                 );
             }
-        }
-        // The sheet's text fields: an authentication answer, a shortcut
-        // step's, or one row per network secret labelled by its
-        // placeholder. Secret ones stay hidden until their own show/hide
-        // control is used.
-        let presence = PresenceCtx::default();
-        for field in self.portal_dialogs.place_fields(&layout) {
-            field.draw(scene, transform, text_renderer, theme, &presence);
-        }
-        if let (Some(rect), Some((remember, focused))) =
-            (layout.remember, self.portal_dialogs.remember_display())
-        {
-            let label = format!(
-                "[{}] {}",
-                if remember { "✓" } else { " " },
-                crate::shell::i18n::t("portal-remember-device")
-            );
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                &label,
-                theme.tokens.typography.scale.base,
-                ui::chrome::SelectionState::active(focused),
-            );
-        }
-        if let Some(error) = self.portal_dialogs.entry_error() {
-            text_renderer.draw_text(
-                scene,
-                error,
-                12.0,
-                theme.tokens.colors.semantic.warning,
-                transform.pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
-                None,
-            );
-        }
-        for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
-            let accelerator = row.accelerator.as_deref().map_or_else(
-                || crate::shell::i18n::t("portal-shortcut-not-set"),
-                crate::portal::global_shortcuts::display_accelerator,
-            );
-            let label = if row.description.is_empty() {
-                format!("{}  —  {accelerator}", row.id)
-            } else {
-                format!("{}  —  {accelerator}", row.description)
-            };
-            let selected = index == self.portal_dialogs.selected();
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                *rect,
-                &label,
-                theme.tokens.typography.scale.base,
-                ui::chrome::SelectionState::active(selected),
-            );
-            if let Some(status) = &row.status {
+            // USB is intentionally a real multi-select sheet, rather than a
+            // generic all-or-nothing permission prompt.  A row click or Space
+            // toggles only that device; Enter commits the resulting subset.
+            let usb_start = self.portal_dialogs.visible_selection_start();
+            for (visible_index, (device, rect)) in view
+                .usb_devices()
+                .iter()
+                .skip(usb_start)
+                .zip(&layout.choices)
+                .enumerate()
+            {
+                let index = usb_start.saturating_add(visible_index);
+                let access_key = if device.writable {
+                    "portal-usb-row-read-write"
+                } else {
+                    "portal-usb-row-read-only"
+                };
+                let label = format!(
+                    "[{}] {}",
+                    if device.selected { "✓" } else { " " },
+                    crate::shell::i18n::t_args(
+                        access_key,
+                        &[("device", device.label.as_str().into())]
+                    )
+                );
+                let focused = index == self.portal_dialogs.selected();
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(focused),
+                );
+            }
+            if let Some(editor) = view.launcher_editor() {
+                // A shortcut step's answer is a real text field, painted below.
+                if let Some(name_rect) = layout.launcher_name
+                    && !matches!(
+                        view,
+                        crate::shell::portal_dialog::DialogView::ShortcutStep { .. }
+                    )
+                {
+                    let focused = self.portal_dialogs.launcher_name_focused();
+                    draw_filter_chip(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        name_rect,
+                        self.portal_dialogs.launcher_name().unwrap_or(editor.name),
+                        &theme.text(TextRole::Body),
+                        ui::chrome::SelectionState::active(focused),
+                    );
+                }
+                for (index, (label, rect)) in editor
+                    .icon_choices
+                    .iter()
+                    .zip(&layout.launcher_icons)
+                    .enumerate()
+                {
+                    let selected = self.portal_dialogs.launcher_icon() == Some(index);
+                    draw_filter_chip(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        *rect,
+                        label,
+                        &theme.text(TextRole::Body),
+                        ui::chrome::SelectionState::active(selected),
+                    );
+                }
+            }
+            // The sheet's text fields: an authentication answer, a shortcut
+            // step's, or one row per network secret labelled by its
+            // placeholder. Secret ones stay hidden until their own show/hide
+            // control is used.
+            let presence = PresenceCtx::default();
+            for field in self.portal_dialogs.place_fields(&layout) {
+                field.draw(scene, transform, text_renderer, theme, &presence);
+            }
+            if let (Some(rect), Some((remember, focused))) =
+                (layout.remember, self.portal_dialogs.remember_display())
+            {
+                let label = format!(
+                    "[{}] {}",
+                    if remember { "✓" } else { " " },
+                    crate::shell::i18n::t("portal-remember-device")
+                );
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(focused),
+                );
+            }
+            if let Some(error) = self.portal_dialogs.entry_error() {
                 text_renderer.draw_text(
                     scene,
-                    status,
-                    11.0,
+                    error,
+                    12.0,
                     theme.tokens.colors.semantic.warning,
-                    transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
+                    transform
+                        .pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
                     None,
                 );
             }
-        }
-        // The sheet's two buttons are the shared `Button` (never a chip
-        // painter wearing button colours): Cancel neutral, the commit
-        // primary, both at the Control radius. Was `surfaces.base` /
-        // `accent[5]` pills at a literal 14 px until 2026-09-17 (S1-26).
-        let button_radius = ui::chrome::ChromeRole::Control.radius(theme, layout.cancel.height());
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(layout.cancel, &view.cancel_label())
-                .radius(button_radius)
-                .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
-        );
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(layout.confirm, &view.confirm_label())
-                .primary()
-                .radius(button_radius)
-                .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
-        );
+            for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate()
+            {
+                let accelerator = row.accelerator.as_deref().map_or_else(
+                    || crate::shell::i18n::t("portal-shortcut-not-set"),
+                    crate::portal::global_shortcuts::display_accelerator,
+                );
+                let label = if row.description.is_empty() {
+                    format!("{}  —  {accelerator}", row.id)
+                } else {
+                    format!("{}  —  {accelerator}", row.description)
+                };
+                let selected = index == self.portal_dialogs.selected();
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(selected),
+                );
+                if let Some(status) = &row.status {
+                    text_renderer.draw_text(
+                        scene,
+                        status,
+                        11.0,
+                        theme.tokens.colors.semantic.warning,
+                        transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
+                        None,
+                    );
+                }
+            }
+            // The sheet's two buttons are the shared `Button` (never a chip
+            // painter wearing button colours): Cancel neutral, the commit
+            // primary, both at the Control radius. Was `surfaces.base` /
+            // `accent[5]` pills at a literal 14 px until 2026-09-17 (S1-26).
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(layout.cancel, &view.cancel_label())
+                    .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(layout.confirm, &view.confirm_label())
+                    .role(ButtonRole::Primary)
+                    .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
+            );
+        });
     }
 
     /// Paints an overlapping stack of member faces, right-aligned at
@@ -21250,27 +22583,18 @@ impl ShellOverlayHost {
                 .unwrap_or('?')
                 .to_ascii_uppercase()
                 .to_string();
-            ui::widget::Avatar::draw_ringed_at(
-                ctx,
-                Rect::new(cx - r, cy - r, cx + r, cy + r),
-                &initial,
-                fill,
-                ui::widget::AvatarRing {
-                    color: ground,
-                    width: 2.0,
-                },
-            );
+            ui::widget::AvatarFace::new(&initial, "")
+                .presence(fill)
+                .ringed_on(ground)
+                .paint(ctx, Rect::new(cx - r, cy - r, cx + r, cy + r));
         }
         if overflow > 0 {
             let cx = right;
-            ui::widget::Avatar::draw_overflow_at(
+            ui::widget::AvatarFace::paint_overflow(
                 ctx,
                 Rect::new(cx - r, cy - r, cx + r, cy + r),
                 overflow,
-                ui::widget::AvatarRing {
-                    color: ground,
-                    width: 2.0,
-                },
+                Some(ground),
             );
         }
         right - usize_to_f64_lossy(slots.saturating_sub(1)) * step - r
@@ -21312,7 +22636,7 @@ impl ShellOverlayHost {
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let ground = ui::chrome::shell::panel_ground(theme);
         let hover = self.last_cursor.is_some_and(|c| rect.contains(c));
         let m = self.overview_metrics;
 
@@ -21382,16 +22706,11 @@ impl ShellOverlayHost {
             Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
         let text_w = (marks_left - s3 - x0).max(40.0);
 
-        let name_size = tokens.typography.scale.lg;
-        let name = text_renderer.elide_to_width_weighted(
-            &card.name,
-            name_size,
-            f64_to_f32_lossy(text_w),
-            TextWeight::Semibold,
-        );
-        let (_, name_h) =
-            text_renderer.measure_weighted(&name, name_size, None, TextWeight::Semibold);
-        let sub_size = tokens.typography.scale.sm;
+        let name_style = tokens.typography.style(TextRole::Heading);
+        let name =
+            text_renderer.elide_to_width_style(&card.name, f64_to_f32_lossy(text_w), &name_style);
+        let (_, name_h) = text_renderer.measure_style(&name, None, &name_style);
+        let sub_style = tokens.typography.style(TextRole::Caption);
         // Who's in the room now outranks who could be; access is what
         // the line says when it's empty.
         let mut sub = tilo_desktop::overview::room_presence_label(card)
@@ -21399,29 +22718,37 @@ impl ShellOverlayHost {
         if let Some(shares) = tilo_desktop::overview::room_shares_label(card) {
             sub = format!("{sub} · {shares}");
         }
-        let sub = text_renderer.elide_to_width(&sub, sub_size, f64_to_f32_lossy(text_w));
-        let (_, sub_h) = text_renderer.measure(&sub, sub_size, None);
+        let sub = text_renderer.elide_to_width_style(&sub, f64_to_f32_lossy(text_w), &sub_style);
+        let (_, sub_h) = text_renderer.measure_style(&sub, None, &sub_style);
         // Name and sub-line are one stack, `s1` apart, centred on the row.
         let line_gap = f64::from(tokens.spacing.s1);
         let stack_h = f64::from(name_h) + line_gap + f64::from(sub_h);
         let top = rect.center().y - stack_h / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &name,
-            name_size,
             colors.text_primary,
             transform.pre_translate((x0, top).into()),
             None,
-            TextWeight::Semibold,
+            &name_style,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &sub,
-            sub_size,
             colors.text_dim,
             transform.pre_translate((x0, top + f64::from(name_h) + line_gap).into()),
             None,
+            &sub_style,
         );
+        if self.overview_selection == Some(idx) && self.overview_window_selection.is_none() {
+            ui::widget::paint_focus_ring(
+                scene,
+                transform,
+                rect.inset(-2.0),
+                (m.row_radius - 2.0).max(0.0),
+                theme,
+            );
+        }
     }
 
     /// Marks of the apps open in a room, ending at `right` and centred on
@@ -21460,8 +22787,8 @@ impl ShellOverlayHost {
     }
 
     /// The workspace overview: a switcher for rooms, so it's a floating
-    /// panel like the palette and workspace-settings modal, not a
-    /// full-screen grid. Reading order follows the questions asked: where
+    /// panel like the palette and workspace-settings modal, filling a
+    /// constrained window as a compact page. Reading order follows: where
     /// you are, what's shared, where else to go.
     fn draw_overview(
         &mut self,
@@ -21473,6 +22800,7 @@ impl ShellOverlayHost {
         if self.chrome.is_none() {
             return;
         }
+        self.resolve_overview_layout(theme);
         let cards = self.overview_cards();
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -21480,33 +22808,24 @@ impl ShellOverlayHost {
         // Same fill/hairline/lift as the workspace-settings modal: one
         // floating-surface language across the shell's overlays.
         let panel = self.overview_panel_rect();
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
         let m = self.overview_metrics;
-        // A Panel (HIG §9.1): `radii.xl`, and a shadow that follows its own
-        // rounded outline rather than a square field.
-        ui::surface::shadow(
-            scene,
-            transform,
-            panel,
-            m.panel_radius,
-            &tokens.elevation.e4,
-        );
-        let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
-        scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
-        // A Panel's edge is derived (HIG §9.5), never `border_standard`.
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(panel, m.panel_radius),
-        );
+        self.draw_overview_backdrop(scene, transform, theme, panel);
 
         let content = self.overview_content_rect();
         let here_idx = self.overview_here_index();
         let here_rect = self.overview_here_rect();
-        let caption_size = tokens.typography.scale.sm;
+        let caption_style = tokens.typography.style(TextRole::Caption);
 
+        let whole = self.overview_scrolls_whole_panel();
+        if whole {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &Rect::new(panel.x0, content.y0, panel.x1, content.y1),
+            );
+        }
         self.draw_overview_here_section(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             content,
@@ -21526,10 +22845,9 @@ impl ShellOverlayHost {
         );
 
         // -- Where else you can go ----------------------------------------
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-go-to"),
-            caption_size,
             colors.text_tertiary,
             transform.pre_translate(
                 (
@@ -21539,11 +22857,12 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &caption_style,
         );
 
         let band = Rect::new(
             content.x0 - 2.0,
-            self.overview_list_top(),
+            self.overview_list_top().max(content.y0),
             content.x1 + 2.0,
             content.y1,
         );
@@ -21557,10 +22876,53 @@ impl ShellOverlayHost {
 
         self.draw_overview_go_to_list(scene, transform, text_renderer, theme, &cards, band);
         self.draw_overview_add_room_row(scene, transform, text_renderer, theme, cards.len());
-        self.draw_overview_scroll_fade(scene, transform, theme, band);
+        self.draw_overview_scroll_fade(scene, transform, theme, if whole { content } else { band });
 
         scene.pop_layer();
+        if whole {
+            scene.pop_layer();
+        }
         self.draw_overview_carried_window(scene, transform, theme);
+    }
+
+    fn draw_overview_backdrop(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        panel: Rect,
+    ) {
+        let m = self.overview_metrics;
+        let ground = ui::chrome::shell::panel_ground(theme);
+        // A Panel (HIG §9.1): `radii.panel`, and a shadow that follows its own
+        // rounded outline rather than a square field.
+        if self.overview_uses_full_window() {
+            ui::floating_surface::paint_material(
+                scene,
+                transform,
+                &panel,
+                ui::floating_surface::Material::Opaque,
+                theme,
+            );
+        } else {
+            ui::surface::shadow(
+                scene,
+                transform,
+                panel,
+                m.panel_radius,
+                &theme.tokens.elevation.floating,
+            );
+            let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
+            scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
+            // A Panel's edge is derived (HIG §9.5), never `border_standard`.
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                ui::chrome::shell::panel_border(theme),
+                None,
+                &ui::surface::edge_outline(panel, m.panel_radius),
+            );
+        }
     }
 
     /// The current room's windows, most recently used first: each one's
@@ -21579,7 +22941,7 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let m = self.overview_metrics;
-        let title_size = tokens.typography.scale.sm;
+        let title_style = tokens.typography.style(TextRole::Caption);
         let mark = f64::from(tokens.metrics.icon_lg);
         let s1 = f64::from(tokens.spacing.s1);
         let carried = self
@@ -21597,7 +22959,7 @@ impl ShellOverlayHost {
             );
             let is_carried = carried == Some(window.address.tab);
             let state = ui::chrome::SelectionState::new(
-                self.overview_window_selection == Some(index),
+                self.overview_window_selection == Some(window.address.tab),
                 self.last_cursor.is_some_and(|c| bounds.contains(c)),
                 pressed == Some(window.address.tab),
             );
@@ -21616,6 +22978,15 @@ impl ShellOverlayHost {
                         &frame,
                     );
                 }
+            }
+            if state.active && !is_carried {
+                ui::widget::paint_focus_ring(
+                    scene,
+                    transform,
+                    bounds.inflate(s1, s1),
+                    m.window_radius + s1,
+                    theme,
+                );
             }
             if is_carried {
                 scene.push_layer(
@@ -21638,15 +23009,14 @@ impl ShellOverlayHost {
                 window,
                 &mut self.window_previews,
             );
-            let title = text_renderer.elide_to_width(
+            let title = text_renderer.elide_to_width_style(
                 &window.title,
-                title_size,
                 f64_to_f32_lossy(bounds.width()),
+                &title_style,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                title_size,
                 if state.active {
                     colors.text_primary
                 } else {
@@ -21654,6 +23024,7 @@ impl ShellOverlayHost {
                 },
                 transform.pre_translate((well.x0, well.y1 + m.window_title_gap).into()),
                 None,
+                &title_style,
             );
             if is_carried {
                 scene.pop_layer();
@@ -21697,7 +23068,7 @@ impl ShellOverlayHost {
             transform,
             well,
             m.window_radius,
-            &theme.tokens.elevation.e3,
+            &theme.tokens.elevation.floating,
         );
         let _ = tilo_desktop::window_switcher::draw_preview_well(
             scene,
@@ -21765,20 +23136,19 @@ impl ShellOverlayHost {
         card: &tilo_desktop::overview::RoomCard,
         name_size: f32,
     ) {
-        use ui::widget::{Chip, ChipLead, ChipStyle};
+        use ui::widget::{ChipFace, ChipLead, ChipStyle, Tone};
 
         let (scene, transform, text_renderer, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
 
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.overview_metrics;
         let s3 = f64::from(tokens.spacing.s3);
         let s4 = f64::from(tokens.spacing.s4);
 
-        self.draw_overview_here_selection(scene, transform, theme, content, here_rect, hi, accent);
+        self.draw_overview_here_selection(scene, transform, theme, content, here_rect, hi, ground);
 
         // Faces claim the right edge, centred on the name line; the name
         // is elided against the room they leave rather than sliding under
@@ -21792,13 +23162,12 @@ impl ShellOverlayHost {
             ground,
         );
 
-        // "You are here" states which of these rooms you are in, in
-        // the same tinted-chip language every other current-state
-        // marker in the shell uses.
+        // "You are here" states which of these rooms you are in: a chip
+        // tinted with your own colour, the colour your presence has.
         let chip_h = m.chip_h;
         let here_label = t("overview-you-are-here");
         let chip_w =
-            Chip::natural_width_at(&here_label, chip_h, ChipLead::None, theme, text_renderer);
+            ChipFace::intrinsic_width(&here_label, ChipLead::None, false, text_renderer, theme);
         let anchor = (faces_left - s4, here_rect.y0 + m.name_lh / 2.0);
         let marks_left =
             Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
@@ -21821,9 +23190,7 @@ impl ShellOverlayHost {
             TextWeight::Bold,
         );
         let chip_x0 = content.x0 + f64::from(name_w) + s3;
-        Chip::draw_at(
-            scene,
-            transform,
+        ChipFace::new(
             Rect::new(
                 chip_x0,
                 here_rect.y0 + f64::from(name_h) / 2.0 - chip_h / 2.0,
@@ -21831,17 +23198,14 @@ impl ShellOverlayHost {
                 here_rect.y0 + f64::from(name_h) / 2.0 + chip_h / 2.0,
             ),
             &here_label,
-            ChipLead::None,
-            ChipStyle::tinted(accent),
-            theme,
-            text_renderer,
-        );
+        )
+        .style(ChipStyle::Tinted(Tone::Presence(colors.you)))
+        .paint(scene, transform, text_renderer, theme);
 
         let access = tilo_desktop::overview::room_access_label(card);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &access,
-            tokens.typography.scale.base,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -21851,6 +23215,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
     }
 
@@ -21865,7 +23230,7 @@ impl ShellOverlayHost {
         content: Rect,
         here_rect: Rect,
         hi: usize,
-        accent: Color,
+        ground: Color,
     ) {
         if self.overview_selection != Some(hi) {
             return;
@@ -21880,21 +23245,31 @@ impl ShellOverlayHost {
             content.x1 + s2,
             here_rect.y1 - s2,
         );
+        // The keyboard's choice is a lift of the panel, with its edge.
         let sel_rr = RoundedRect::from_rect(sel, self.overview_metrics.row_radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            accent.with_alpha_factor(0.10),
-            None,
-            &sel_rr,
-        );
+        let fill = theme.tokens.colors.lift_on(ground, 1.0);
+        scene.fill(Fill::NonZero, transform, fill, None, &sel_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            accent.with_alpha_factor(0.55),
+            ui::surface::edge_on(fill),
             None,
             &sel_rr,
         );
+        if self.overview_window_selection.is_none() {
+            let focus = if self.overview_scrolls_whole_panel() {
+                sel.intersect(content)
+            } else {
+                sel
+            };
+            ui::widget::paint_focus_ring(
+                scene,
+                transform,
+                focus.inset(-2.0),
+                (self.overview_metrics.row_radius - 2.0).max(0.0),
+                theme,
+            );
+        }
     }
 
     /// "What leaves this room": the share list, or an honest zero-state
@@ -21911,17 +23286,17 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let caption_size = tokens.typography.scale.sm;
+        let caption_style = tokens.typography.style(TextRole::Caption);
 
         let m = self.overview_metrics;
         let shares_top = self.overview_shares_top();
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-shared-out"),
-            caption_size,
             colors.text_tertiary,
             transform.pre_translate((content.x0, shares_top + m.caption_text_dy).into()),
             None,
+            &caption_style,
         );
         let row_h = m.share_row_h;
         let sy = shares_top + m.caption_h;
@@ -21970,9 +23345,9 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let body_size = tokens.typography.scale.base;
+        let body_style = tokens.typography.style(TextRole::Body);
         let glyph = 14.0_f64;
-        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let (_, body_h) = text_renderer.measure_style("Ag", None, &body_style);
         let cy = sy + row_h / 2.0;
         let glyph_rect = Rect::new(
             content.x0,
@@ -21988,10 +23363,9 @@ impl ShellOverlayHost {
             colors.text_tertiary,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-nothing-shared"),
-            body_size,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -22001,6 +23375,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &body_style,
         );
     }
 
@@ -22034,11 +23409,14 @@ impl ShellOverlayHost {
         let hidden = here_card.shares.len().saturating_sub(shown);
         if hidden > 0 {
             let more = t_args("overview-more-shares", &[("count", hidden.into())]);
-            let (_, more_h) = text_renderer.measure(&more, tokens.typography.scale.sm, None);
-            text_renderer.draw_text(
+            let (_, more_h) = text_renderer.measure_style(
+                &more,
+                None,
+                &tokens.typography.style(TextRole::Caption),
+            );
+            text_renderer.draw_style(
                 scene,
                 &more,
-                tokens.typography.scale.sm,
                 colors.text_tertiary,
                 transform.pre_translate(
                     (
@@ -22048,6 +23426,7 @@ impl ShellOverlayHost {
                         .into(),
                 ),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
     }
@@ -22064,8 +23443,8 @@ impl ShellOverlayHost {
         let (content, sy, row_h) = (row, row.y0, row.height());
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let body_size = tokens.typography.scale.base;
-        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let body_style = tokens.typography.style(TextRole::Body);
+        let (_, body_h) = text_renderer.measure_style("Ag", None, &body_style);
         let body_top = sy + (row_h - f64::from(body_h)) / 2.0;
         let cy = sy + row_h / 2.0;
         let glyph_rect = Rect::new(
@@ -22109,12 +23488,11 @@ impl ShellOverlayHost {
         } else {
             with
         };
-        let with_size = tokens.typography.scale.sm;
-        let (with_w, with_h) = text_renderer.measure(&with, with_size, None);
-        text_renderer.draw_text(
+        let with_style = tokens.typography.style(TextRole::Caption);
+        let (with_w, with_h) = text_renderer.measure_style(&with, None, &with_style);
+        text_renderer.draw_style(
             scene,
             &with,
-            with_size,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -22124,19 +23502,23 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &with_style,
         );
         let what_x = content.x0 + glyph + f64::from(tokens.spacing.s2);
         let what_avail =
             (content.x1 - f64::from(with_w) - f64::from(tokens.spacing.s3) - what_x).max(40.0);
-        let what =
-            text_renderer.elide_to_width(&share.what, body_size, f64_to_f32_lossy(what_avail));
-        text_renderer.draw_text(
+        let what = text_renderer.elide_to_width_style(
+            &share.what,
+            f64_to_f32_lossy(what_avail),
+            &body_style,
+        );
+        text_renderer.draw_style(
             scene,
             &what,
-            body_size,
             colors.text_primary,
             transform.pre_translate((what_x, body_top).into()),
             None,
+            &body_style,
         );
     }
 
@@ -22181,48 +23563,25 @@ impl ShellOverlayHost {
         theme: &Theme,
         cards_len: usize,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-
-        let m = self.overview_metrics;
+        use ui::widget::{Interaction, ListRowFace, RowLeading};
         let add_rect = self.overview_add_workspace_rect_for(cards_len);
-        let add_hover = self.last_cursor.is_some_and(|c| add_rect.contains(c));
-        let add_rr = RoundedRect::from_rect(add_rect, m.row_radius);
-        if add_hover {
-            scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &add_rr);
-        }
-        let add_color = if add_hover { accent } else { colors.text_dim };
-        let glyph = 18.0_f64;
-        // Same inner padding as a room row, so the plus sits on the rows'
-        // text edge.
-        let gx = add_rect.x0 + m.row_pad;
-        let gcy = add_rect.center().y;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(gx, gcy - glyph / 2.0, gx + glyph, gcy + glyph / 2.0),
-            ui::icons::Icon::Plus,
-            add_color,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let add_size = tokens.typography.scale.base;
-        let add_label = t("overview-new-workspace");
-        let (_, add_h) = text_renderer.measure(&add_label, add_size, None);
-        text_renderer.draw_text(
-            scene,
-            &add_label,
-            add_size,
-            add_color,
-            transform.pre_translate(
-                (
-                    gx + glyph + f64::from(tokens.spacing.s3),
-                    gcy - f64::from(add_h) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-        );
+        let focused =
+            self.overview_selection == Some(cards_len) && self.overview_window_selection.is_none();
+        let label = t("overview-new-workspace");
+        ListRowFace::new(&label)
+            .leading(RowLeading::Icon(ui::icons::Icon::Plus))
+            .selected(focused)
+            .interaction(Interaction {
+                hovered: self
+                    .last_cursor
+                    .is_some_and(|cursor| add_rect.contains(cursor)),
+                focused,
+                ..Interaction::default()
+            })
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                add_rect,
+            );
         self.add_workspace_rect = add_rect;
     }
 
@@ -22235,10 +23594,10 @@ impl ShellOverlayHost {
         theme: &Theme,
         band: Rect,
     ) {
-        if self.overview_max_scroll_y() > 0.5 {
+        if self.overview_scroll_y + 0.5 < self.overview_max_scroll_y() {
             let fade_y1 = band.y1;
             let fade_y0 = fade_y1 - OVERVIEW_SCROLL_FADE_PX;
-            let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+            let ground = ui::chrome::shell::panel_ground(theme);
             let grad = vello::peniko::Gradient::new_linear(
                 Point::new(band.x0, fade_y0),
                 Point::new(band.x0, fade_y1),
@@ -22354,43 +23713,42 @@ impl ShellOverlayHost {
             self.follow_chip_rect.x0 + 38.0,
             self.follow_chip_rect.y1 - 10.0,
         );
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
-            avatar_rect,
-            &row.initial.to_string(),
-            row.color,
-            theme,
-            text_renderer,
-        );
+        ui::widget::AvatarFace::new(&row.initial.to_string(), "")
+            .presence(row.color)
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                avatar_rect,
+            );
         let label_x = self.follow_chip_rect.x0 + 48.0;
         let label_budget = (detach_rect.x0 - label_x - 8.0).max(0.0);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "the follow banner is a few hundred logical pixels wide"
         )]
-        let label = text_renderer.elide_to_width_weighted(
+        let label = text_renderer.elide_to_width_style(
             &label,
-            theme.tokens.typography.scale.sm,
             label_budget as f32,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &label,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             transform.pre_translate((label_x, y0 + 8.0).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             detail,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((self.follow_chip_rect.x0 + 48.0, y0 + 27.0).into()),
             None,
+            &theme.text(TextRole::Caption),
         );
         if self.followed_peer.is_some() {
             Button::paint(
@@ -22399,7 +23757,6 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 &ButtonFace::new(detach_rect, &t("follow-stop"))
-                    .radius(f64::from(theme.tokens.radii.sm))
                     .hovered(self.last_cursor.is_some_and(|p| detach_rect.contains(p))),
             );
             // The cross is the primary detach affordance; the word keeps the
@@ -22818,12 +24175,12 @@ impl ShellOverlayHost {
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
         let card = RoundedRect::from_rect(rect, radius);
         ui::chrome::shell::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
+        ui::floating_surface::paint_material(
+            scene,
             transform,
-            panel_surface(theme, POPOVER_SURFACE_ALPHA),
-            None,
             &card,
+            ui::floating_surface::Material::Floating,
+            theme,
         );
         // The Panel edge is derived (HIG §9.5): `border_standard` sat three
         // shades off the ground on dark and vanished. Stroked half a pixel
@@ -22836,6 +24193,7 @@ impl ShellOverlayHost {
             None,
             &ui::surface::edge_outline(rect, radius),
         );
+        ui::surface::floating_edge(scene, transform, rect, radius, theme);
     }
 
     /// Root level renders the action row + sliders + toggles below;
@@ -23178,13 +24536,13 @@ impl ShellOverlayHost {
             &t_args("a11y-bluetooth-move", &[("accessory", name.into())]),
         );
         let panel = self.quick_settings_rect();
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("qs-bluetooth-move-note"),
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            &theme.text(TextRole::Caption),
         );
         let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
             self.draw_qs_drill_in_empty(
@@ -23246,27 +24604,26 @@ impl ShellOverlayHost {
                 theme.tokens.colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0)),
+                &theme.text(TextRole::Caption),
             );
         }
         if rows.len() > visible_rows {
             let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &t_args(
                     "qs-devices-showing",
@@ -23282,10 +24639,10 @@ impl ShellOverlayHost {
                         ("total", rows.len().into()),
                     ],
                 ),
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((panel.x0 + 12.0, panel.y1 - 14.0).into()),
                 Some(f64_to_f32_lossy(panel.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
         }
     }
@@ -23325,13 +24682,13 @@ impl ShellOverlayHost {
                 .iter()
                 .find(|media| &media.session_id == id)
         });
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("qs-devices-note"),
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            &theme.text(TextRole::Caption),
         );
         let realtime = self
             .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
@@ -23939,7 +25296,7 @@ impl ShellOverlayHost {
                 .disabled(!enabled)
                 .accessible_name(&accessible);
             if selected_row {
-                face = face.primary();
+                face = face.role(ButtonRole::Primary);
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
             let tethering_consent = matches!(
@@ -23973,37 +25330,36 @@ impl ShellOverlayHost {
                 Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
                 icon,
                 if selected_row {
-                    theme.tokens.colors.on_accent(4.5)
+                    theme.tokens.colors.intent.on_inverted
                 } else {
                     theme.tokens.colors.text_primary
                 },
                 1.5,
             );
             let text_color = if selected_row {
-                theme.tokens.colors.on_accent(4.5)
+                theme.tokens.colors.intent.on_inverted
             } else {
                 theme.tokens.colors.text_primary
             };
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                theme.tokens.typography.scale.sm,
                 text_color,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 if selected_row {
-                    theme.tokens.colors.on_accent(4.5)
+                    theme.tokens.colors.intent.on_inverted
                 } else {
                     theme.tokens.colors.text_dim
                 },
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
+                &theme.text(TextRole::Caption),
             );
             if tethering_consent
                 || matches!(
@@ -24023,7 +25379,7 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     &ButtonFace::new(allow, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .icon(ui::icons::Icon::Check)
                         .hovered(self.last_cursor.is_some_and(|point| allow.contains(point)))
                         .accessible_name(&match item {
@@ -24050,7 +25406,7 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     &ButtonFace::new(decline, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .icon(ui::icons::Icon::X)
                         .hovered(
                             self.last_cursor
@@ -24086,7 +25442,7 @@ impl ShellOverlayHost {
                         text_renderer,
                         theme,
                         &ButtonFace::new(rect, "")
-                            .ghost()
+                            .role(ButtonRole::Plain)
                             .icon(icon)
                             .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
                             .accessible_name(&name),
@@ -24122,7 +25478,7 @@ impl ShellOverlayHost {
                         text_renderer,
                         theme,
                         &ButtonFace::new(rect, "")
-                            .ghost()
+                            .role(ButtonRole::Plain)
                             .icon(icon)
                             .hovered(
                                 device.online
@@ -24139,7 +25495,7 @@ impl ShellOverlayHost {
                     t("a11y-control-allow")
                 };
                 let mut control_face = ButtonFace::new(control, "")
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .icon(ui::icons::Icon::Mouse)
                     .hovered(
                         device.online
@@ -24150,7 +25506,7 @@ impl ShellOverlayHost {
                     .disabled(device.is_local || !device.online)
                     .accessible_name(&control_name);
                 if device.controls_local {
-                    control_face = control_face.primary();
+                    control_face = control_face.role(ButtonRole::Primary);
                 }
                 Button::paint(scene, transform, text_renderer, theme, &control_face);
             }
@@ -24171,13 +25527,13 @@ impl ShellOverlayHost {
                     ("total", rows.len().into()),
                 ],
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &position,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((panel.x0 + 12.0, panel.y1 - 22.0).into()),
                 Some(f64_to_f32_lossy(panel.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
         }
     }
@@ -24212,10 +25568,9 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(search, 7.0),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             label,
-            theme.tokens.typography.scale.xs,
             if self.qs_clipboard_query.is_empty() {
                 theme.tokens.colors.text_dim
             } else {
@@ -24223,6 +25578,7 @@ impl ShellOverlayHost {
             },
             transform.pre_translate((search.x0 + 9.0, search.y0 + 5.0).into()),
             Some(f64_to_f32_lossy(search.width() - 18.0)),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -24305,8 +25661,7 @@ impl ShellOverlayHost {
             theme,
             &ButtonFace::new(clear, &t("qs-clipboard-clear"))
                 .hovered(self.last_cursor.is_some_and(|point| clear.contains(point)))
-                .accessible_name(&t("qs-clipboard-clear-a11y"))
-                .text_size(theme.tokens.typography.scale.xs),
+                .accessible_name(&t("qs-clipboard-clear-a11y")),
         );
         for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
             let row = self.qs_clipboard_row_rect(visible_index);
@@ -24341,14 +25696,13 @@ impl ShellOverlayHost {
                 },
                 |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &preview,
-                theme.tokens.typography.scale.sm,
                 colors.text_primary,
                 transform.pre_translate((body.x0 + 12.0, body.y0 + 14.0).into()),
                 Some(f64_to_f32_lossy(body.width() - 24.0)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
             let source = clipboard_history_source_label(item, fabric.as_ref());
             let age = clipboard_history_relative_time(item.created_unix_ms, now_unix_ms);
@@ -24360,13 +25714,13 @@ impl ShellOverlayHost {
                     ("bytes", item.byte_len.to_string().into()),
                 ],
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((body.x0 + 12.0, body.y0 + 40.0).into()),
                 Some(f64_to_f32_lossy(body.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
             Button::paint(
                 scene,
@@ -24706,14 +26060,16 @@ impl ShellOverlayHost {
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("qs-wifi-protected"),
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((lock_box.x1 + 8.0, sub_y + 1.0).into()),
             None,
-            TextWeight::Medium,
+            &tokens
+                .typography
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
 
         let field =
@@ -24773,24 +26129,28 @@ impl ShellOverlayHost {
         // A failed attempt says so where the eye already is, rather than
         // as a toast that would outlive the prompt.
         if let Some(err) = prompt.error.as_ref() {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 err,
-                tokens.typography.scale.xs,
                 colors.semantic.danger,
                 transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &tokens
+                    .typography
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         } else if prompt.connecting {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t("qs-connecting"),
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &tokens
+                    .typography
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         }
     }
@@ -24811,7 +26171,6 @@ impl ShellOverlayHost {
             text_renderer,
             theme,
             &ButtonFace::new(cancel, &t("portal-cancel"))
-                .radius(10.0)
                 .hovered(self.last_cursor.is_some_and(|point| cancel.contains(point))),
         );
         Button::paint(
@@ -24827,8 +26186,7 @@ impl ShellOverlayHost {
                     t("portal-connect")
                 },
             )
-            .primary()
-            .radius(10.0)
+            .role(ButtonRole::Primary)
             .disabled(!prompt.can_submit(self.wifi_password_input.value()))
             .hovered(
                 self.last_cursor
@@ -24882,8 +26240,8 @@ impl ShellOverlayHost {
 /// token's own — the same `ui::surface::shadow` call paints it — so this
 /// is derived from the token rather than restating a sprite's spread.
 fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -> Rect {
-    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.e4.blur) * 3.0
-        + f64::from(theme.tokens.elevation.e4.offset_y)
+    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.floating.blur) * 3.0
+        + f64::from(theme.tokens.elevation.floating.offset_y)
         + 0.5;
     transform.transform_rect_bbox(rect.inflate(panel_reach, panel_reach))
 }

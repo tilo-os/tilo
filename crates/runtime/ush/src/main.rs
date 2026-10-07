@@ -262,7 +262,7 @@ mod guest {
         let show_progress = std::io::stderr().is_terminal();
         let mut stdout = std::io::stdout().lock();
         let mut stderr = std::io::stderr().lock();
-        let mut response = ush::broker::ask_streaming_with_progress(
+        ush::broker::ask_streaming_with_progress(
             &broker_socket(),
             req,
             &mut stdout,
@@ -275,15 +275,7 @@ mod guest {
                  work inside a guest — run `ush` first.",
                 broker_socket().display()
             )
-        })?;
-        // Command output was already copied live. Keep `broker::ask`'s fully
-        // buffered response compatible for library callers, but do not replay
-        // it in the guest CLI.
-        if let Response::Command { stdout, stderr, .. } = &mut response {
-            stdout.clear();
-            stderr.clear();
-        }
-        Ok(response)
+        })
     }
 
     fn report(resp: Response) -> i32 {
@@ -349,7 +341,12 @@ explain when the host does not offer them.\n";
             cwd,
         };
         match ask(&request)? {
-            Response::Command { code, .. } => Ok(code),
+            Response::Command { code } => Ok(code),
+            // A relay worker took the launch; the app runs there.
+            Response::Applied { detail } => {
+                println!("{detail}");
+                Ok(0)
+            }
             Response::Denied { reason } => anyhow::bail!("{reason}"),
             other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
         }
@@ -373,16 +370,8 @@ explain when the host does not offer them.\n";
             }
         }
         match ask(&request)? {
-            Response::Command {
-                code,
-                stdout,
-                stderr,
-            } => {
-                use std::io::Write as _;
-                std::io::stdout().write_all(stdout.as_bytes())?;
-                std::io::stderr().write_all(stderr.as_bytes())?;
-                Ok(code)
-            }
+            // The output already reached the terminal as it was produced.
+            Response::Command { code } => Ok(code),
             Response::Denied { reason } => anyhow::bail!("{reason}"),
             other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
         }

@@ -13,12 +13,21 @@
  * pointer, wheel, keys and pasted text on its canvas to the host, which
  * forwards them to the session; anyone else's canvas takes no input.
  *
+ * A stream whose codec is `tilo-paint` is a page the session's browser
+ * shares as a display list (`tilo_paint_stream::wire`): its reassembled
+ * frames go to the runtime (`paintFrame`), which draws the page inside the
+ * desktop with the toolkit, and the input the person gives that window comes
+ * back from the runtime (`takePaintInput`) instead of from a canvas.
+ *
  * Frames: `0xF1 | kind u8 | payload`; kind 1 index (JSON streams), 2 start
  * (JSON stream, first frame of every group), 3 chunk (`flags u8 | seq u32 |
  * ts_us u64 | total u32 | bytes`, big endian), 4 end.
  */
 
 export const LEGACY_APP = 'so.tilo.legacy-window';
+/** Codec of a page shared as a display list rather than as video. */
+export const PAINT_CODEC = 'tilo-paint';
+const CODECS = new Set(['h264', PAINT_CODEC]);
 export const INDEX_RECORD = Object.freeze({app: LEGACY_APP, record: '@tilo:legacy-windows'});
 const FRAME_TAG = 0xf1;
 const KIND_INDEX = 1;
@@ -34,7 +43,9 @@ const MAX_FRAME_BYTES = 64 * 1024;
 const MAX_STREAMS = 32;
 const MAX_ROOM_STREAMS = 64;
 const MAX_ROOM_PIXELS = 32 * 1024 * 1024;
-const MAX_INPUT_BACKLOG = 128;
+// Four seconds of physical mixed-case typing can exceed 128 events while an
+// HTTPS send is pending. Keep eight wire batches, still bounded by 128 KiB.
+const MAX_INPUT_BACKLOG = 512;
 const MAX_INPUT_BACKLOG_BYTES = 128 * 1024;
 /** The host re-sends a live index every second: a silent publisher's streams are gone. */
 export const INDEX_EXPIRE_MS = 5000;
@@ -42,6 +53,10 @@ export const INDEX_EXPIRE_MS = 5000;
 const MAX_DECODE_QUEUE = 6;
 /** Most events one input request carries (`legacy_window::MAX_INPUT_EVENTS`). */
 const MAX_INPUT_EVENTS = 64;
+// Native input permits 120 offered events per second. A 32-event burst plus
+// 80 events/second of catch-up stays below that fence, with room for focus.
+const INPUT_SEND_BATCH = MAX_INPUT_EVENTS / 2;
+const INPUT_EVENTS_PER_SECOND = 80;
 /** Pasted text one event carries (`legacy_window::MAX_CLIPBOARD_BYTES`). */
 const MAX_CLIPBOARD_BYTES = 64 * 1024;
 /** Pixels one wheel line scrolls. */
@@ -54,7 +69,7 @@ function validStream(value) {
   if (!value || typeof value !== 'object') return null;
   const {surface, app, codec, width, height, record} = value;
   if (!HEX16.test(surface) || typeof app !== 'string' || !app || app.length > 128
-    || codec !== 'h264' || record !== `@tilo:legacy-window:${surface}`
+    || !CODECS.has(codec) || record !== `@tilo:legacy-window:${surface}`
     || !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 || width > 8192 || height > 8192) return null;
   return {surface, app, codec, width, height, record};
 }
@@ -195,6 +210,8 @@ const KEYS = {
   PageUp: 104, ArrowLeft: 105, ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109, Insert: 110, Delete: 111,
   MetaLeft: 125, MetaRight: 126,
 };
+/** Control, Shift, Alt and Meta, which never repeat. */
+const MODIFIERS = new Set([KEYS.ControlLeft, KEYS.ControlRight, KEYS.ShiftLeft, KEYS.ShiftRight, KEYS.AltLeft, KEYS.AltRight, KEYS.MetaLeft, KEYS.MetaRight]);
 
 /**
  * The Linux evdev keycode of a `KeyboardEvent.code`, or null. With `mac`,
@@ -249,8 +266,13 @@ function defaultCancelFrame(handle) {
  * Bind the legacy-window layer to a mounted desktop surface.
  *
  * - `live()`: the room's live layer (`peer.mjs`), or undefined.
- * - `windows()`: `[{key, rect: [x0, y0, x1, y1]}]`, where the desktop shows
- *   each stream's window (`desktop_peer_windows`), or undefined.
+ * - `windows()`: `[{key, rect: [x0, y0, x1, y1], focused}]`, where the
+ *   desktop shows each stream's window and whether it is the focused one
+ *   (`desktop_peer_windows`), or undefined. A window the desktop focuses
+ *   (opening it, or its tab chosen) takes the keyboard; one it stops
+ *   focusing gives it back to `focusDesktop()`.
+ * - `focusWindow(key)`: the person clicked into the window; the desktop
+ *   focuses it too (`desktop_focus_peer_window`).
  * - `setWindows(list)`: show exactly `[{key, app, title}]` as windows
  *   (`desktop_set_peer_windows`).
  * - `sendInput(publisher, surface, events)`: resolves whether the host took
@@ -258,6 +280,10 @@ function defaultCancelFrame(handle) {
  * - `dismissed()`: the keys of windows the person closed since the last
  *   call (`desktop_dismissed_peer_windows`); each is asked to close at its
  *   source, when this member drives it.
+ * - `paintFrame(key, bytes)`: one reassembled frame of a `tilo-paint`
+ *   stream, for the runtime to draw (`desktop_peer_window_paint`).
+ * - `takePaintInput()`: `[{key, events}]` the person gave painted windows
+ *   since the last call (`desktop_take_peer_window_input`).
  */
 export function createLegacyWindows({
   surface,
@@ -266,11 +292,16 @@ export function createLegacyWindows({
   setWindows,
   sendInput,
   dismissed = () => [],
+  paintFrame = () => false,
+  takePaintInput = () => [],
+  focusWindow = () => {},
+  focusDesktop = () => {},
   mac = /Mac/.test(globalThis.navigator?.platform ?? ''),
   document: doc = globalThis.document,
   VideoDecoder = globalThis.VideoDecoder,
   EncodedVideoChunk = globalThis.EncodedVideoChunk,
   now = () => performance.now(),
+  inputPause = ms => new Promise(resolve => globalThis.setTimeout(resolve, ms)),
   requestFrame = defaultRequestFrame,
   cancelFrame = defaultCancelFrame,
   setInterval: every = (callback, ms) => globalThis.setInterval(callback, ms),
@@ -283,6 +314,7 @@ export function createLegacyWindows({
   layer.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden;contain:strict;z-index:1';
   surface.append(layer);
   const streams = new Map(); // `${publisher}:${surface}` -> entry
+  const inputSenders = new Map(); // One native rate budget across a publisher's windows.
   const indexed = new Map(); // publisher -> last index time
   const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0};
   let api;
@@ -297,7 +329,7 @@ export function createLegacyWindows({
     frame = requestFrame(tick);
   }
   function publishWindows() {
-    const list = [...streams].map(([key, entry]) => ({key, app: entry.stream.app, title: windowTitle(entry.stream.app)}));
+    const list = [...streams].map(([key, entry]) => ({key, app: entry.stream.app, title: windowTitle(entry.stream.app), codec: entry.stream.codec}));
     const next = JSON.stringify(list);
     if (next === shown) return;
     shown = next;
@@ -312,8 +344,8 @@ export function createLegacyWindows({
     entry.input.length = 0;
     entry.reassembler.reset();
     try { entry.unsubscribe(); } catch {}
-    entry.decoder.close();
-    entry.canvas.remove();
+    entry.decoder?.close();
+    entry.canvas?.remove();
   }
   function addStream(publisher, stream) {
     const key = streamKey(publisher, stream);
@@ -321,6 +353,15 @@ export function createLegacyWindows({
     if (existing) { existing.stream = stream; return; }
     const pixels = [...streams.values()].reduce((sum, entry) => sum + entry.stream.width * entry.stream.height, 0);
     if (streams.size >= MAX_ROOM_STREAMS || pixels + stream.width * stream.height > MAX_ROOM_PIXELS) return;
+    if (stream.codec === PAINT_CODEC) {
+      // Drawn by the runtime inside the desktop: no canvas, no decoder.
+      const entry = {publisher, stream, paint: true, reassembler: createReassembler(), visible: false, rect: '', control: false,
+        input: [], focused: false, keys: new Set(), buttons: new Set()};
+      entry.unsubscribe = api.subscribeMemberRecord(publisher, {app: LEGACY_APP, record: stream.record}, bytes => onStreamFrame(entry, bytes));
+      streams.set(key, entry);
+      probeControl(entry);
+      return;
+    }
     const canvas = doc.createElement('canvas');
     canvas.className = 'tilo-legacy-window';
     canvas.dataset.app = stream.app;
@@ -339,6 +380,27 @@ export function createLegacyWindows({
     bindInput(entry);
     streams.set(key, entry);
     probeControl(entry);
+  }
+  function pacedInput(entry, events) {
+    let sender = inputSenders.get(entry.publisher);
+    if (!sender) {
+      sender = {tail: Promise.resolve(), next: 0};
+      inputSenders.set(entry.publisher, sender);
+    }
+    const operation = sender.tail.then(async () => {
+      const delay = sender.next - now();
+      if (delay > 0) await inputPause(delay);
+      if (closed || streams.get(streamKey(entry.publisher, entry.stream)) !== entry) return false;
+      try {
+        return await sendInput(entry.publisher, entry.stream.surface, events);
+      } finally {
+        // Start the quiet period after acknowledgement: a delayed request must
+        // not spend its wait time buying an immediate catch-up burst.
+        sender.next = now() + events.length * 1000 / INPUT_EVENTS_PER_SECOND;
+      }
+    });
+    sender.tail = operation.catch(() => {});
+    return operation;
   }
   async function probeControl(entry) {
     try {
@@ -371,8 +433,8 @@ export function createLegacyWindows({
     entry.flushing = true;
     try {
       while (entry.input.length && entry.control && !closed) {
-        const events = entry.input.splice(0, MAX_INPUT_EVENTS);
-        const sent = await sendInput(entry.publisher, entry.stream.surface, events);
+        const events = entry.input.splice(0, INPUT_SEND_BATCH);
+        const sent = await pacedInput(entry, events);
         if (sent) stats.inputSent += events.length;
         else { stats.inputRefused += events.length; entry.control = false; schedule(); }
       }
@@ -383,9 +445,9 @@ export function createLegacyWindows({
       entry.release = undefined;
       if (release?.length) {
         try {
-          for (let offset = 0; offset < release.length; offset += MAX_INPUT_EVENTS) {
-            const events = release.slice(offset, offset + MAX_INPUT_EVENTS);
-            if (await sendInput(entry.publisher, entry.stream.surface, events)) stats.inputSent += events.length;
+          for (let offset = 0; offset < release.length; offset += INPUT_SEND_BATCH) {
+            const events = release.slice(offset, offset + INPUT_SEND_BATCH);
+            if (await pacedInput(entry, events)) stats.inputSent += events.length;
           }
         } catch (error) { report(error); }
       }
@@ -403,6 +465,11 @@ export function createLegacyWindows({
     entry.buttons.clear();
     entry.pasteKey = false;
     if (!entry.flushing) void flushInput(entry);
+  }
+  /** Keys typed on the page go to `entry`'s window. */
+  function takeKeyboard(entry) {
+    entry.canvas.focus?.({preventScroll: true});
+    if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: 0, focused: true}}); }
   }
   function bindInput(entry) {
     const {canvas} = entry;
@@ -426,8 +493,8 @@ export function createLegacyWindows({
     on('pointerdown', event => {
       if (!entry.control) return;
       event.preventDefault();
-      canvas.focus?.({preventScroll: true});
-      if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: target, focused: true}}); }
+      takeKeyboard(entry);
+      try { focusWindow(canvas.dataset.key); } catch (error) { report(error); }
       if (motion(event) && BUTTONS[event.button] !== undefined) {
         const button = BUTTONS[event.button];
         entry.buttons.add(button);
@@ -453,9 +520,45 @@ export function createLegacyWindows({
       if (dx || dy) queueInput(entry, {PointerAxis: {dx, dy}});
     }, {passive: false});
     on('contextmenu', event => { if (entry.control) event.preventDefault(); });
+    // A modifier may already be held when this window gains focus. Browser
+    // typing also supplies its state on each character without a separate
+    // modifier edge. Wayland needs those edges before the character's keycode.
+    const syncModifiers = event => {
+      const ctrl = mac && (typeof event.ctrlKey === 'boolean' || typeof event.metaKey === 'boolean')
+        ? Boolean(event.ctrlKey || event.metaKey) : event.ctrlKey;
+      const groups = [
+        [event.shiftKey, [KEYS.ShiftLeft, KEYS.ShiftRight]],
+        [ctrl, [KEYS.ControlLeft, KEYS.ControlRight]],
+        [event.altKey, [KEYS.AltLeft, KEYS.AltRight]],
+        ...mac ? [] : [[event.metaKey, [KEYS.MetaLeft, KEYS.MetaRight]]],
+      ];
+      for (const [held, keys] of groups) {
+        if (typeof held !== 'boolean') continue;
+        const down = keys.filter(keysym => entry.keys.has(keysym));
+        if (held && !down.length) {
+          entry.keys.add(keys[0]);
+          queueInput(entry, {Key: {keysym: keys[0], pressed: true, modifiers: 0}});
+        } else if (!held) {
+          for (const keysym of down) {
+            entry.keys.delete(keysym);
+            queueInput(entry, {Key: {keysym, pressed: false, modifiers: 0}});
+          }
+        }
+      }
+    };
     const key = pressed => event => {
       const keysym = evdevKey(event.code, {mac});
-      if (!entry.control || keysym === null || (pressed && event.repeat)) return;
+      if (!entry.control || keysym === null) return;
+      if (pressed && event.repeat && !entry.keys.has(keysym)) return;
+      if (!MODIFIERS.has(keysym)) syncModifiers(event);
+      // The window repeats a held key only as the browser does: one more
+      // press of it. Modifiers do not repeat.
+      if (pressed && event.repeat) {
+        if (!entry.keys.has(keysym)) return;
+        event.preventDefault();
+        if (!MODIFIERS.has(keysym)) queueInput(entry, {Key: {keysym, pressed: true, modifiers: 0}});
+        return;
+      }
       // Paste: the browser's clipboard reaches the window first (the
       // `paste` event), then the key, so the window pastes this text.
       if (event.code === 'KeyV' && (event.ctrlKey || event.metaKey)) {
@@ -487,7 +590,7 @@ export function createLegacyWindows({
     try {
       if (streams.get(streamKey(entry.publisher, entry.stream)) !== entry) return;
       const {canvas} = entry;
-      const pixels = [...streams.values()].reduce((sum, other) => sum + (other === entry ? 0 : other.canvas.width * other.canvas.height), 0);
+      const pixels = [...streams.values()].reduce((sum, other) => sum + (other === entry || !other.canvas ? 0 : other.canvas.width * other.canvas.height), 0);
       if (picture.displayWidth <= 0 || picture.displayHeight <= 0 || picture.displayWidth > 8192 || picture.displayHeight > 8192
         || pixels + picture.displayWidth * picture.displayHeight > MAX_ROOM_PIXELS) return;
       if (canvas.width !== picture.displayWidth || canvas.height !== picture.displayHeight) {
@@ -506,15 +609,19 @@ export function createLegacyWindows({
     if (!value) return;
     stats.frames++;
     if (value.kind === 'start') {
-      if (value.stream.surface !== entry.stream.surface || value.stream.record !== entry.stream.record) return;
+      if (value.stream.surface !== entry.stream.surface || value.stream.record !== entry.stream.record
+        || value.stream.codec !== entry.stream.codec) return;
       entry.stream = value.stream;
-      entry.decoder.reset();
+      entry.decoder?.reset();
       entry.reassembler.reset();
     } else if (value.kind === 'chunk') {
       const encoded = entry.reassembler.push(value);
-      if (encoded) entry.decoder.decode(encoded);
+      if (!encoded) return;
+      if (entry.paint) {
+        try { if (paintFrame(streamKey(entry.publisher, entry.stream), encoded.data)) stats.drawn++; } catch (error) { report(error); }
+      } else entry.decoder.decode(encoded);
     } else if (value.kind === 'end') {
-      entry.decoder.reset();
+      entry.decoder?.reset();
       entry.reassembler.reset();
     }
   }
@@ -560,11 +667,13 @@ export function createLegacyWindows({
   function layout() {
     let placed = [];
     try { placed = windows() ?? []; } catch (error) { report(error); }
-    const rects = new Map(placed.map(window => [window.key, window.rect]));
+    const byKey = new Map(placed.map(window => [window.key, window]));
     stats.placed = 0;
     for (const [key, entry] of streams) {
-      const rect = rects.get(key);
+      if (entry.paint) continue;
+      const rect = byKey.get(key)?.rect;
       if (!rect) {
+        followDesktopFocus(entry, false);
         if (entry.visible) { releaseInput(entry); entry.canvas.blur?.(); entry.canvas.style.display = 'none'; entry.visible = false; }
         continue;
       }
@@ -580,7 +689,16 @@ export function createLegacyWindows({
       const events = entry.control ? 'auto' : 'none';
       if (entry.canvas.style.pointerEvents !== events) entry.canvas.style.pointerEvents = events;
       if (!entry.visible) { entry.canvas.style.display = 'block'; entry.visible = true; }
+      followDesktopFocus(entry, Boolean(byKey.get(key).focused && entry.control));
     }
+  }
+  /** The desktop's focus moving onto a window (opened, or its tab chosen)
+   * hands it the keyboard; moving off, back to the desktop. */
+  function followDesktopFocus(entry, focus) {
+    if (focus === Boolean(entry.desktopFocus)) return;
+    entry.desktopFocus = focus;
+    if (focus) takeKeyboard(entry);
+    else if (doc.activeElement === entry.canvas) { try { focusDesktop(); } catch (error) { report(error); } }
   }
   /** Ask the source of each window the person closed to close it. */
   function closeDismissed() {
@@ -588,15 +706,27 @@ export function createLegacyWindows({
     try { keys = dismissed() ?? []; } catch (error) { report(error); }
     for (const key of keys) {
       const entry = streams.get(key);
-      if (!entry?.control) continue;
+      if (!entry?.control || entry.closeRequested) continue;
+      entry.closeRequested = true;
       releaseInput(entry);
-      sendInput(entry.publisher, entry.stream.surface, ['Close']).catch(report);
+      pacedInput(entry, ['Close']).catch(report);
+    }
+  }
+  /** Send what the person did on painted windows to their hosts. */
+  function forwardPaintInput() {
+    let batches = [];
+    try { batches = takePaintInput() ?? []; } catch (error) { report(error); }
+    for (const {key, events} of batches) {
+      const entry = streams.get(key);
+      if (!entry?.paint || !Array.isArray(events)) continue;
+      for (const event of events) queueInput(entry, event);
     }
   }
   function tick() {
     frame = undefined;
     if (closed) return;
     closeDismissed();
+    forwardPaintInput();
     layout();
     // Windows move with every presented frame (scrolls, drags, resizes).
     if (streams.size) schedule();
@@ -607,7 +737,7 @@ export function createLegacyWindows({
   return {
     layer,
     stats: () => ({...stats, streams: streams.size, visible: [...streams.values()].filter(entry => entry.visible).length,
-      decoded: [...streams.values()].reduce((sum, entry) => sum + entry.decoder.stats.decoded, 0)}),
+      decoded: [...streams.values()].reduce((sum, entry) => sum + (entry.decoder?.stats.decoded ?? 0), 0)}),
     /** Streams by key, with whether this member drives them and whether they are on screen. */
     streams: () => [...streams].map(([key, entry]) => ({key, publisher: entry.publisher, ...entry.stream, control: entry.control, visible: entry.visible})),
     wake() { schedule(); },
@@ -620,6 +750,7 @@ export function createLegacyWindows({
       for (const key of [...streams.keys()]) removeStream(key);
       try { setWindows([]); } catch {}
       indexed.clear();
+      inputSenders.clear();
       api = undefined;
       layer.remove();
     },

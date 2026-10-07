@@ -10,7 +10,7 @@ use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::{Ref, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
@@ -404,6 +404,32 @@ impl ApplicationsProvider {
             });
         if spawned.is_ok() {
             *self.build.borrow_mut() = Some(receiver);
+        }
+    }
+
+    /// Wait, at most `bound`, for the index build [`Self::refresh_snapshot`]
+    /// starts. An invocation by address may be a session's first request,
+    /// with no earlier search whose build it could take in; refusing it while
+    /// a worker still reads the app list would make an address valid only
+    /// after some unrelated listing ran first.
+    fn settle_snapshot(&self, bound: std::time::Duration) {
+        let started = std::time::Instant::now();
+        loop {
+            self.refresh_snapshot();
+            if self.snapshot().is_some() {
+                return;
+            }
+            let Some(receiver) = self.build.borrow_mut().take() else {
+                return;
+            };
+            match receiver.recv_timeout(bound.saturating_sub(started.elapsed())) {
+                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
+                Err(RecvTimeoutError::Timeout) => {
+                    *self.build.borrow_mut() = Some(receiver);
+                    return;
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
         }
     }
 
@@ -853,7 +879,7 @@ pub(crate) fn grant_file_manager_home(
     ) {
         return false;
     }
-    ws.grant_app(
+    let ids = ws.grant_app(
         package_id,
         &Capability::Filesystem {
             path: home,
@@ -861,6 +887,14 @@ pub(crate) fn grant_file_manager_home(
             scope: GRANT_SESSION,
         },
     );
+    let remembered = tree.native_runtime.remember_files_home_consent(ws, &ids);
+    if !remembered && tree.native_authority.requires(ws.room) {
+        // Native session consent must have exact live local provenance. A
+        // missing identity or full ledger must not leave an unbound home row.
+        ws.capabilities
+            .retain(|capability| !ids.contains(&capability.id));
+        return false;
+    }
     true
 }
 
@@ -900,6 +934,10 @@ pub(crate) fn launch_installed_app(
         )),
     }
 }
+
+/// The device's control panel: one window per machine, so opening it again,
+/// from Quick Settings, the palette or anywhere else, focuses that window.
+const SETTINGS_PACKAGE_ID: &str = "so.tilo.settings";
 
 /// Surface a launch that failed before spawn: retire its opening card, post
 /// the failure notification, and describe it for callers that cannot see
@@ -955,10 +993,26 @@ fn launch_resolved_installed_app(
         let st = chrome.borrow();
         let tree = st.tree();
         let salt = tree.local_salt();
-        tree.desktop.active_workspace().and_then(|ws| {
-            crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
-                .map(|(strip, group, tab)| (ws.id, strip, group, tab))
-        })
+        tree.desktop
+            .active_workspace()
+            .and_then(|ws| {
+                crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
+                    .or_else(|| {
+                        (package_id == "so.tilo.terminal")
+                            .then(|| {
+                                crate::shell::peer_windows::opened_locally_in_workspace(
+                                    ws, package_id, salt,
+                                )
+                            })
+                            .flatten()
+                    })
+                    .map(|(strip, group, tab)| (ws.id, strip, group, tab))
+            })
+            .or_else(|| {
+                (package_id == SETTINGS_PACKAGE_ID)
+                    .then(|| crate::shell::peer_windows::opened_here(&tree, package_id))
+                    .flatten()
+            })
     };
     if let Some((ws_id, strip, group, tab)) = already {
         chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);
@@ -1005,8 +1059,23 @@ fn launch_resolved_installed_app(
     let launched = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        tree.workspace_after_opening_app(package_id)
-            .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
+        let native_room = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+            .filter(|room| tree.requires_native_owner(*room));
+        if let Some(room) = native_room {
+            drop(tree);
+            Some(launcher::queue_native_authoring_launch(
+                app.clone(),
+                st.tree_handle(),
+                room,
+                st.native_app_opening.clone(),
+            ))
+        } else {
+            tree.workspace_after_opening_app(package_id)
+                .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
+        }
     };
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.
@@ -1060,6 +1129,9 @@ impl SearchProvider for ApplicationsProvider {
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         if !ctx.wanted.contains(&ResourceKind::Application) {
             return None;
+        }
+        if self.snapshot().is_none() {
+            self.settle_snapshot(crate::shell::search::RESOLVE_INDEX_WAIT);
         }
         let snapshot = self.snapshot()?;
         snapshot
@@ -1316,6 +1388,65 @@ mod tests {
         ChromeState::new_with_handle(handle)
     }
 
+    #[test]
+    fn opening_a_live_local_terminal_focuses_without_another_record_writer() {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            next_id,
+        };
+        let tab_id = next_id();
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let mut strip = Strip::new(StripId::from(next_id()), "Main");
+        let group_id = next_id();
+        strip.window_groups.push(WindowGroup {
+            id: group_id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: "Terminal".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.terminal".into(),
+                    surface_id: 7,
+                },
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips.push(strip);
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces = vec![workspace];
+        let handle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        let provider = ApplicationsProvider::new();
+        let rows = provider.results_for(
+            "terminal",
+            vec![app("so.tilo.terminal", "Terminal")],
+            OpenTarget::Beside,
+        );
+        let row = rows.first().expect("installed Terminal action");
+        let mut doc = AutoCommit::new();
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("Open must focus the existing local Terminal");
+        assert_eq!(chrome.borrow().active_tab_id(), Some(tab_id));
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "focus must not queue a second launcher or opening notice"
+        );
+        assert_eq!(
+            handle.read().desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            1
+        );
+    }
+
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
         let deadline = std::time::Instant::now()
             .checked_add(HANG_BOUND)
@@ -1402,7 +1533,12 @@ mod tests {
             );
             let row = out.first().expect("a row for the offered app");
             assert!(c.borrow().notifications().is_empty());
-            let opened = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
+            let opened = (row.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &c,
+                &ActionArgs::none(),
+            );
             assert!(
                 opened.is_err(),
                 "no active workspace is no room to launch into — the caller must be told, \
@@ -1443,7 +1579,7 @@ mod tests {
             let row = out.first().expect("a row for the ghost app");
             assert!(c.borrow().notifications().is_empty());
             let outcome = (row.on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &c,
                 &crate::shell::search::action_api::ActionArgs::none(),
@@ -1637,6 +1773,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "hello",
                 wanted: &[ResourceKind::File],
                 chrome: &cs,
@@ -1940,6 +2078,8 @@ mod tests {
             let state = c.borrow();
             let doc = AutoCommit::new();
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "sheets",
                 wanted: &[ResourceKind::Application],
                 chrome: &state,
@@ -1978,6 +2118,8 @@ mod tests {
         let doc = AutoCommit::new();
         for needle in ["Dateien", "dateien", "Files"] {
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Application],
                 chrome: &state,
@@ -2105,6 +2247,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "unique-tail",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2153,6 +2297,8 @@ mod tests {
         });
         let page = provider.query_page(
             SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "unique-tail",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome,
@@ -2180,6 +2326,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "anything",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2243,6 +2391,8 @@ mod tests {
         {
             let chrome = chrome.borrow();
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome,
@@ -2310,32 +2460,20 @@ mod tests {
         let chrome = chrome_rc();
         let doc = AutoCommit::new();
         let resource = ResourceRef::new("applications", "so.tilo.calculator");
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        loop {
-            let opened = ActionCatalog::build_for_resource(
-                &registry,
-                &resource,
-                SearchScope::All,
-                None,
-                &chrome.borrow(),
-                &doc,
-                &automerge::ROOT,
-                &AllVisible,
-            )
-            .select(&resource)
-            .map(|action| action.title().to_string());
-            if let Some(title) = opened {
-                assert_eq!(title, "Open Calculator");
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "invoking by address alone never takes in the finished index"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // The first request resolves: no listing beforehand, no retry.
+        let opened = ActionCatalog::build_for_resource(
+            &registry,
+            &resource,
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        )
+        .select(&resource)
+        .map(|action| action.title().to_string());
+        assert_eq!(opened.as_deref(), Some("Open Calculator"));
     }
 
     #[test]
@@ -2365,6 +2503,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "unique-source-tail",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2528,9 +2668,11 @@ mod native_application_tests {
             let directory = tempfile::tempdir().unwrap();
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
             chrome.borrow_mut().hosted_inputs =
-                HostedTileInputs::for_host_directory(directory.path()).unwrap();
+                HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),
@@ -2539,7 +2681,13 @@ mod native_application_tests {
             });
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].id, crate::shell::hosted_inputs::FILES_PACKAGE_ID);
-            (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            (results[0].on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
             assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
             assert!(
                 chrome
@@ -2562,8 +2710,13 @@ mod native_application_tests {
             );
             chrome.borrow_mut().hosted_inputs = HostedTileInputs::default();
             assert!(
-                (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none())
-                    .is_err()
+                (results[0].on_open)(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &chrome,
+                    &ActionArgs::none()
+                )
+                .is_err()
             );
         }
 
@@ -2591,7 +2744,7 @@ mod native_application_tests {
             {
                 let mut state = chrome.borrow_mut();
                 state.hosted_inputs =
-                    HostedTileInputs::for_host_directory(directory.path()).unwrap();
+                    HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
                 state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
                     strip: strip_id,
                     groups: ids
@@ -2614,13 +2767,21 @@ mod native_application_tests {
 
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),
                 doc: &doc,
                 doc_root: &automerge::ROOT,
             });
-            (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            (results[0].on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
 
             let state = chrome.borrow();
             let tree = state.tree();

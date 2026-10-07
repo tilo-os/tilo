@@ -136,13 +136,40 @@ Declared dependencies on Tilo system services. Each value parses as
 [sandbox.services]
 collab     = "optional@1"
 tilo-fs     = "optional@1"
-spellcheck = "optional@1"
 ```
 
 At launch, the launcher opens a connected Unix socket to every declared
 service and passes the fd in as `TILO_SVC_<NAME>_FD`. If a `required` service
 can't be reached the launcher aborts; if an `optional` service is missing
 the app sees `NotAvailable::ServiceFdMissing` and is expected to degrade.
+
+The `required` entries are also the package's **system interface
+requirements**: the versioned contracts with the OS it cannot work without.
+An OS image declares every version it serves of each interface in
+`/usr/share/tilo/system-interfaces.toml` (source:
+`os/usr/share/tilo/system-interfaces.toml`). A registry version records its
+build's requirements as `target.interfaces` (`["system@1"]`), which the
+registry checks against the signed manifest; `app update`, `app install` and
+the App Store offer a device only builds its OS serves, `tilo-install`
+refuses the rest, and the launcher refuses to run one (see
+[installation.md](./installation.md#the-system-store)). A host with no
+declaration judges nothing.
+
+`system` is the interface of the system services the device's control
+panel drives — network, Bluetooth, power, accounts, date and time,
+updates — reached through the image-owned grant in
+`crates/packaging/launcher/src/system_authority.rs`. It has no socket. Only
+the packages the image names as its control panel receive the grant, and
+only when they declare it:
+
+```toml
+[sandbox.services]
+system = "required@1"
+```
+
+A change to that grant (or to any service protocol) that an existing
+client could not work with is a new version: the image serves the old one
+beside it for as long as published builds use it.
 
 #### `[entrypoint]`
 

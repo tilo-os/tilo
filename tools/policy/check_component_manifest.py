@@ -336,7 +336,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                for i in install_runs):
         report.error(f"{relative}", f"no `{INSTALL_STAGE}` stage runs install-components.py --by-layer --all",
                      f"restore the stage: FROM ${{BASE_REF}} AS {INSTALL_STAGE}, then RUN "
-                     "python3 .../install-components.py --from /out --from /out/optional --dest /image "
+                     "python3 .../install-components.py --from /out --dest /image "
                      "--by-layer --all")
 
     # Build/stage drift: what the builder compiles and stages versus the manifest.

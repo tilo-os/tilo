@@ -15,7 +15,7 @@ fn counted_control_app(
         counts: counts.clone(),
         visible: visible.clone(),
         duplicate,
-        button: Button::new("flip", "Flip", None)
+        button: Button::new("flip", "Flip")
             .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
     };
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
@@ -146,7 +146,7 @@ impl Widget for SemanticCountingPublisher {
         dyn crate::resources::PublishesResources
     );
 
-    fn sync(&mut self, _s: &mut AppModel, _p: &ModelPath) {}
+    fn sync(&mut self, _s: &AppModel, _p: &ModelPath) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -227,7 +227,7 @@ fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
             counts: std::rc::Rc::new([Cell::new(0), Cell::new(0)]),
             visible: std::rc::Rc::new(Cell::new(true)),
             duplicate: false,
-            button: Button::new("custom-flip", "Flip", None)
+            button: Button::new("custom-flip", "Flip")
                 .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
             enabled: enabled.clone(),
         }),
@@ -246,10 +246,11 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0 => root,
                 1 => Box::new(crate::widget::Column::new().push(root)),
                 2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(root)),
-                _ => Box::new(crate::widget::NavShell::sidebar_over_content(
-                    Box::new(crate::widget::Text::new("sidebar")),
-                    root,
-                )),
+                _ => Box::new(
+                    crate::widget::NavShell::new()
+                        .sidebar(Box::new(crate::widget::Text::new("sidebar")))
+                        .content(root),
+                ),
             };
             assert!(crate::widget::controls::has_action_control_bindings(
                 root.as_ref()
@@ -303,17 +304,18 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 visible: std::rc::Rc::new(Cell::new(true)),
                 duplicate: false,
                 enabled: std::rc::Rc::new(Cell::new(false)),
-                button: Button::new("fast-flip", "Flip", None)
+                button: Button::new("fast-flip", "Flip")
                     .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
             };
             let root: Box<dyn Widget> = match wrapper {
                 0 => Box::new(root),
                 1 => Box::new(crate::widget::Column::new().push(Box::new(root))),
                 2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(root))),
-                _ => Box::new(crate::widget::NavShell::sidebar_over_content(
-                    Box::new(crate::widget::Text::new("sidebar")),
-                    Box::new(root),
-                )),
+                _ => Box::new(
+                    crate::widget::NavShell::new()
+                        .sidebar(Box::new(crate::widget::Text::new("sidebar")))
+                        .content(Box::new(root)),
+                ),
             };
             let mut app = App::new_with_controlled_inputs(State::new(), root);
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
@@ -324,7 +326,10 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0,
                 "presence refresh must not inventory controls"
             );
-            assert_eq!(app.control_action_coverage().len(), 1);
+            // A shell with a sidebar adds its own action control: the
+            // sidebar toggle.
+            let expected = if wrapper == 3 { 2 } else { 1 };
+            assert_eq!(app.control_action_coverage().len(), expected);
             assert!(
                 counts[1].get() > 0,
                 "explicit coverage still inventories controls"

@@ -30,8 +30,8 @@ impl Widget for Root {
     fn name(&self) -> &'static str {
         "RetainedModelOwner"
     }
-    fn sync(&mut self, model: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
-        let (doc, _) = ui::doc::document(model, path);
+    fn sync(&mut self, model: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        let (doc, _) = ui::doc::document_ref(model, path);
         assert!(ui::record::identity(doc).is_some());
         self.0.syncs.set(
             self.0
@@ -123,6 +123,7 @@ impl TileSource for Source {
             title: "Retained owner",
             icon: IconDescriptor::Glyph("R"),
             record_kind: ui::record::RecordKind::new("retained-owner"),
+            room_record: false,
             required: vec![],
             optional: vec![],
             opens: &[],

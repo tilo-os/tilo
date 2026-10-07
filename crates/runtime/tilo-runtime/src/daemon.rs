@@ -671,6 +671,13 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         S::start_reporting(profile, &mut stage)?
     };
     let host = session.action_host()?;
+    let mcp = crate::mcp_http::Config::from_env()?
+        .map(|config| {
+            session
+                .mcp_room(config.room.as_deref())
+                .map(|room| (config, room))
+        })
+        .transpose()?;
     let search = crate::os_search::start(host.clone(), session.room(), session.actor())?;
     let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
     let path = profile.join("native.sock");
@@ -690,18 +697,28 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
     stages.enter("binding the native endpoint");
     let listener = UnixListener::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    if let Some(config) = crate::mcp_http::Config::from_env()? {
+    if let Some((config, room)) = mcp {
         stages.enter("binding the MCP HTTP endpoint");
-        let viewer = crate::viewer::start_from_env(profile)?;
+        // Computer, viewer and media are scoped to this profile's private
+        // desktop. A shared-room endpoint has only the semantic action door.
+        let private = room == session.room();
+        let viewer = if private {
+            crate::viewer::start_from_env(profile)?
+        } else {
+            None
+        };
         let endpoint = crate::mcp_http::Endpoint::with_viewer(
-            host.clone(),
-            session.room().to_owned(),
+            host,
+            room.clone(),
             session.actor().to_owned(),
             config.token.clone(),
-            computer.clone(),
+            private.then(|| computer.clone()).flatten(),
             viewer,
         );
-        endpoint.serve_media(session.media());
+        endpoint.serve_sessions(session.mcp_session_factory(&room)?)?;
+        if private {
+            endpoint.serve_media(session.media());
+        }
         let bound = crate::mcp_http::spawn(&config, endpoint)?;
         tracing::info!(%bound, "MCP HTTP endpoint listening");
     }
@@ -713,9 +730,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         room: session.room().to_owned(),
     };
     let endpoint = Endpoint {
-        host,
-        room: session.room().to_owned(),
-        actor: session.actor().to_owned(),
+        session_factory: session.mcp_session_factory(session.room())?,
         status,
         computer,
         joiner: session.joiner(),
@@ -727,9 +742,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
 
 /// What every native connection is served with.
 struct Endpoint<H> {
-    host: H,
-    room: String,
-    actor: String,
+    session_factory: crate::mcp::SessionFactory<H>,
     status: Status,
     computer: Option<Arc<crate::computer::Computer>>,
     joiner: Option<crate::Joiner>,
@@ -749,9 +762,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 drop(stream);
                 continue;
             }
-            let host = self.host.clone();
-            let room = self.room.clone();
-            let actor = self.actor.clone();
+            let factory = Arc::clone(&self.session_factory);
             let status = self.status.clone();
             let computer = self.computer.clone();
             let joiner = self.joiner.clone();
@@ -764,9 +775,13 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .name("tilo-native-mcp".into())
                 .spawn(move || {
                     let _slot = slot;
-                    let mut server = McpServer::new(host, room, actor)
-                        .with_computer(computer)
-                        .with_media(media);
+                    let mut server = match factory() {
+                        Ok(server) => server.with_computer(computer).with_media(media),
+                        Err(error) => {
+                            tracing::debug!(%error, "native MCP session admission unavailable");
+                            return;
+                        }
+                    };
                     if let Err(error) =
                         serve_connection(stream, &mut server, &status, joiner.as_ref(), &search)
                     {

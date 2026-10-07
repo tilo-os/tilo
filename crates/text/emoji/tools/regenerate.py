@@ -352,7 +352,9 @@ def main() -> None:
         else:
             # English is complete: every group and emoji has a name, taken
             # from emoji-test.txt where CLDR has none.
-            labels = {slug(label): label for label, _ in groups}
+            # Unicode titles its groups ("Smileys & Emotion"); Tilo labels
+            # are sentence case, like every other label.
+            labels = {slug(label): label[:1] + label[1:].lower() for label, _ in groups}
             names = test_names
         loc = locale_lines(header, groups, base_list, labels, names, tts, keywords)
         (DATA / f"{locale}.txt").write_text("\n".join(loc) + "\n", encoding="utf-8")

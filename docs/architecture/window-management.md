@@ -78,6 +78,17 @@ unless marked fixed.
 | Workspace wheel | `workspace-wheel.toggle` | Super+S (fixed), then ↑ / ↓, Enter | tap the disc | the disc | chord today |
 | Recent windows | — (a held modal) | Alt+Tab, Alt+` (fixed) | — | — | today |
 
+### Discover tab operations
+
+`tab.menu` (shell provider), or the rebindable Super+F10 chord, opens the
+focused tab's context menu at its tab pill. The first action is focused
+immediately; Up/Down choose a row, Enter invokes it, and Escape cancels.
+Right-click still targets the tab under the pointer. A single-tab group offers
+Close only; multi-tab groups also offer Split Right and Move to New Group.
+The menu uses the existing action dispatch, permissions and close history.
+Settings and the shortcut guide publish the same binding. App Context Menu
+and Shift+F10 keys continue to reach the app's resource menu.
+
 ### Carry the focused group
 
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
@@ -101,7 +112,7 @@ would show it; a chord opens the sheet and never bypasses it.
 | Previous / next tab | `tab.previous` / `-next` | Ctrl+Shift+Tab / Ctrl+Tab | click a tab | today |
 | Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | today |
 | Tab into a new group | `tab.move-to-new-group` | Super+Shift+Enter | drag the tab into a gap | today |
-| New tab, close, reopen, duplicate | `tab.new.terminal.here`, `tab.close`, `tab.reopen`, `tab.duplicate` | Super+T, Super+W, Super+Shift+T, Super+D | `+` and × in the tab strip | today |
+| New tab, close, reopen, duplicate | `tab.new.terminal.here`, `tab.close`, `tab.reopen`, `tab.duplicate` | Super+T, Super+W, Ctrl+Shift+T, Super+D | `+` and × in the tab strip | today |
 
 **Maximize** makes the group fill its display's work area. The top bar and the
 workspace wheel stay, because they say where you are; the group's title,

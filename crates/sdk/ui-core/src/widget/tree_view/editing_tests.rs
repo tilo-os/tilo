@@ -45,7 +45,7 @@ fn dispatch_with<T: 'static, M: TreeModel + 'static>(
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::from(modifiers),
-            state: &mut doc,
+            state: crate::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -83,7 +83,13 @@ fn typed(text: &str) -> WindowEvent {
 
 fn semantic(view: &mut TreeView<()>, target: &str, action: &Action) -> bool {
     let mut doc = AutoCommit::new();
-    Widget::perform_semantic_action(view, target, action, &mut doc, &automerge::ROOT)
+    Widget::perform_semantic_action(
+        view,
+        target,
+        action,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    )
 }
 
 /// Visible `(id, depth)` pairs.
@@ -487,8 +493,8 @@ fn pointer_drops_target_leaves_and_seams_with_a_lifted_scrolling_preview() {
         );
         let before = view.scroll_offset();
         view.last_tick = Some(crate::time::now() - Duration::from_millis(50));
-        let mut doc = AutoCommit::new();
-        view.update(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        view.update(&doc, &automerge::ROOT);
         assert!(
             view.scroll_offset() > before,
             "holding a drag at the bottom edge reveals rows below"
@@ -1003,5 +1009,77 @@ fn a_reveal_before_the_first_layout_waits_for_a_viewport() {
     assert!(
         view.row_rect(40).is_some(),
         "the far row is brought into view"
+    );
+}
+
+// --- scrolling -------------------------------------------------------------
+
+#[test]
+fn a_filled_tree_hides_its_bar_at_rest_and_shows_it_while_scrolling() {
+    let children = (1_u64..=40)
+        .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+        .collect();
+    let mut view = TreeView::new(TreeNode::branch(100, "root", (), children))
+        .hide_root()
+        .fill();
+    view.place_at(Rect::new(0.0, 0.0, 240.0, 200.0));
+    view.transitions.clear();
+    let paint = |view: &mut TreeView<()>| {
+        let mut scene = Scene::new();
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+    };
+    paint(&mut view);
+    assert!(view.bar_fade.get().is_idle(), "no bar at rest");
+    assert!(view.next_wake_deadline().is_none());
+
+    view.set_scroll_offset(120.0);
+    paint(&mut view);
+    let now = crate::time::now();
+    assert!(
+        view.bar_fade.get().opacity_at(now, false) > 0.99,
+        "the bar shows while the rows scroll"
+    );
+    assert!(
+        view.next_wake_deadline().is_some(),
+        "and the tree wakes to fade it out"
+    );
+}
+
+#[test]
+fn hosted_affordance_focus_refuses_disabled_moves_and_expires_after_model_changes() {
+    use crate::headless::FrameHarness;
+    use crate::state::State;
+    let view = flat_list().with_id("tree");
+    let mut h = FrameHarness::for_root(State::new(), view, (280, 360), Theme::dark());
+    h.relayout();
+    assert!(
+        h.perform_semantic_named("tree", Some("move:up:1"), &Action::Focus)
+            .is_err(),
+        "a disabled published move cannot receive focus"
+    );
+    h.perform_semantic_named("tree", Some("move:down:1"), &Action::Focus)
+        .expect("available move takes focus");
+    h.key("Enter");
+    assert_eq!(ids(h.root::<TreeView<()>>().model()), [2, 1, 3]);
+    h.key("Enter");
+    assert_eq!(
+        ids(h.root::<TreeView<()>>().model()),
+        [2, 1, 3],
+        "the changed model invalidates the old affordance focus"
+    );
+    h.perform_semantic_named("tree", Some("move:down:1"), &Action::Focus)
+        .expect("current move may be explicitly focused anew");
+    h.key("ArrowUp");
+    h.key("Enter");
+    assert_eq!(
+        ids(h.root::<TreeView<()>>().model()),
+        [2, 1, 3],
+        "ordinary row navigation clears button focus"
     );
 }
