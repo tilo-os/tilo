@@ -1016,8 +1016,8 @@ impl Action {
         ),
         chrome(
             "topbar.editor.open",
-            "topbar-editor-title",
-            "topbar-editor-hint",
+            "search-action-topbar-editor",
+            "search-action-topbar-editor-subtitle",
             |st, _| {
                 st.request_topbar_editor();
                 Ok(())
@@ -4423,13 +4423,38 @@ mod tests {
     /// cannot see through the table; every one must resolve in every locale.
     #[test]
     fn every_action_row_resolves_to_real_copy() {
-        for action in Action::ALL {
-            for key in [action.label, action.subtitle] {
-                let copy = t(key);
-                assert_ne!(copy, key, "{key} has no entry in the catalogue");
-                assert!(!copy.trim().is_empty(), "{key} resolves to nothing");
+        crate::shell::i18n::ensure();
+        for (locale, title, subtitle) in [
+            (
+                "en-US",
+                "Edit top bar",
+                "Reorder, add or remove top-bar widgets",
+            ),
+            (
+                "de-DE",
+                "Obere Leiste bearbeiten",
+                "Widgets der oberen Leiste neu anordnen, hinzufügen oder entfernen",
+            ),
+        ] {
+            ui::i18n::I18nManager::set_locale(locale);
+            let editor = Action::ALL
+                .iter()
+                .find(|action| action.id == "topbar.editor.open")
+                .expect("top-bar editor action");
+            assert_eq!(t(editor.label), title);
+            assert_eq!(t(editor.subtitle), subtitle);
+            for action in Action::ALL {
+                for key in [action.label, action.subtitle] {
+                    let copy = t(key);
+                    assert_ne!(copy, key, "{locale}: {key} has no entry in the catalogue");
+                    assert!(
+                        !copy.trim().is_empty(),
+                        "{locale}: {key} resolves to nothing"
+                    );
+                }
             }
         }
+        ui::i18n::I18nManager::set_locale("en-US");
     }
 
     #[test]

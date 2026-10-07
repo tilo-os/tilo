@@ -129,3 +129,9 @@ release activation, stable keyboard focus and submit ownership; theme changes
 invalidate the retained scene. [Qualification](evidence/topbar-editor/README.md).
 Primary chrome at 320px still collides above the editor and remains the next
 independent increment alongside status/device/offline and live window states.
+
+The action catalogue uses dedicated shell English/German Fluent entries; CI's
+all-action catalogue regression is retained and strengthened across both locales.
+The locale files overlap Dictation #2974 only at file level in independent hunks;
+the top-bar entries are beside overview, and Dictation owns its later namespace.
+Messages #2881 and Files #3009 still have no edited-path overlap.
