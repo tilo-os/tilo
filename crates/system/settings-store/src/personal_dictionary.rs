@@ -18,7 +18,7 @@ use unicode_normalization::UnicodeNormalization;
 pub mod host;
 
 const MAX_WORDS: usize = 1_024;
-const MAX_FILE_BYTES: u64 = 512 * 1_024;
+const MAX_FILE_BYTES: usize = 512 * 1_024;
 const VERSION: u32 = 1;
 
 /// An explicit user addition. Display spelling is retained, including casing.
@@ -422,7 +422,7 @@ impl Service {
                 return Err(denied());
             }
             if !doc.legacy_imported && self.claim_legacy(doc.owner, "file")? {
-                if text.len() as u64 > MAX_FILE_BYTES {
+                if text.len() > MAX_FILE_BYTES {
                     return Err(invalid("legacy dictionary is too large"));
                 }
                 for line in text.lines().filter(|line| !line.trim().is_empty()) {
@@ -472,7 +472,7 @@ impl Service {
             .checked_add(1)
             .ok_or_else(|| invalid("dictionary revision exhausted"))?;
         let bytes = serde_json::to_vec(&doc).map_err(io::Error::other)?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
+        if bytes.len() > MAX_FILE_BYTES {
             return Err(invalid("dictionary is too large"));
         }
         tilo_files::native::atomic::write_private(&path, &bytes)?;
@@ -493,18 +493,14 @@ impl Service {
             &path.with_extension("lock"),
             advisory_lock::LockMode::Exclusive,
         )?;
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                Ok(serde_json::from_slice::<[u8; 32]>(&bytes).map_err(io::Error::other)? == owner)
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                tilo_files::native::atomic::write_private(
-                    &path,
-                    &serde_json::to_vec(&owner).map_err(io::Error::other)?,
-                )?;
-                Ok(true)
-            }
-            Err(error) => Err(error),
+        if let Some(bytes) = tilo_files::native::bounded::read(&path, 512)? {
+            Ok(serde_json::from_slice::<[u8; 32]>(&bytes).map_err(io::Error::other)? == owner)
+        } else {
+            tilo_files::native::atomic::write_private(
+                &path,
+                &serde_json::to_vec(&owner).map_err(io::Error::other)?,
+            )?;
+            Ok(true)
         }
     }
 }
@@ -561,17 +557,9 @@ fn insert(words: &mut Vec<Word>, word: Word) -> io::Result<()> {
 }
 
 fn read(path: &Path, owner: [u8; 32]) -> io::Result<Document> {
-    use std::io::Read;
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Document::empty(owner)),
-        Err(error) => return Err(error),
+    let Some(bytes) = tilo_files::native::bounded::read(path, MAX_FILE_BYTES)? else {
+        return Ok(Document::empty(owner));
     };
-    let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(invalid("dictionary is too large"));
-    }
     let doc: Document = serde_json::from_slice(&bytes).map_err(|e| invalid(&e.to_string()))?;
     if doc.version != VERSION || doc.owner != owner || doc.words.len() > MAX_WORDS {
         return Err(invalid("invalid dictionary version, owner or size"));
@@ -590,17 +578,7 @@ fn read(path: &Path, owner: [u8; 32]) -> io::Result<Document> {
 }
 
 fn create_private_directory(root: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(root)?;
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
-    }
-    #[cfg(not(unix))]
-    std::fs::create_dir_all(root)
+    tilo_files::native::atomic::create_private_directory(root)
 }
 
 fn invalid(message: &str) -> io::Error {

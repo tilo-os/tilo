@@ -21737,6 +21737,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tempfile",
  "tilo-actions",

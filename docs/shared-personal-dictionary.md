@@ -108,6 +108,7 @@ rcargo --no-fallback test --locked -p settings-store personal_dictionary --lib
 rcargo --no-fallback test --locked -p osk personal_vocabulary_tests --lib
 rcargo --no-fallback test --locked -p tilo-ui --lib collaboration::channel_settings::tests
 rcargo --no-fallback test --locked -p tilo-action-broker --lib app_settings_tests
+rcargo --no-fallback test --locked -p word-processor --test it framework_host::the_persons_own_words_are_spelled_right_in_every_window -- --exact
 rcargo --no-fallback check --locked -p shell --tests -p settings -p osk -p word-processor --all-targets
 ```
 
