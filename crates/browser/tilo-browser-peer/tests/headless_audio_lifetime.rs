@@ -32,6 +32,12 @@ fn completed_audio_commands_reap_their_private_daemon_and_preserve_status() {
             .args(["python3", "-c", OBSERVE_ENDPOINT, &status.to_string()])
             .output()
             .expect("run the production wrapper with its real PulseAudio daemon");
+        assert_eq!(
+            output.status.code(),
+            Some(status),
+            "production audio command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let stdout = String::from_utf8(output.stdout).unwrap();
         let mut lines = stdout.lines();
         let pid: u32 = lines.next().expect("actual daemon PID").parse().unwrap();
@@ -52,7 +58,6 @@ fn completed_audio_commands_reap_their_private_daemon_and_preserve_status() {
                 .status()
                 .expect("clean the leaked daemon after recording the failure");
         }
-        assert_eq!(output.status.code(), Some(status), "{:?}", output.stderr);
         assert!(
             !same_process,
             "private audio daemon {pid} survived command exit"
