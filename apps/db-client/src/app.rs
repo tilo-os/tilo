@@ -1390,6 +1390,14 @@ mod tests {
             harness.click_at(rect.x0 + rect.width() / 2.0, rect.center().y);
             harness.relayout();
             assert_eq!(app(&harness).session.tab, MainTab::Data);
+            assert!(
+                harness.wait_until(tilo_test_env::hang_bound(), |harness| {
+                    let targets = harness.targets();
+                    targets.contains_key("db.data.table")
+                        || targets.contains_key("db.data.previous")
+                }),
+                "the selected Data tab finishes loading its rows"
+            );
             let targets = harness.targets();
             assert!(
                 targets.contains_key("db.data.table") || targets.contains_key("db.data.previous")

@@ -624,6 +624,13 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
+        if self.collaboration.manager.is_connected() {
+            self.refresh_document_routes();
+        }
+        self.publish_action_surface_after_refresh();
+    }
+
+    fn publish_action_surface_after_refresh(&mut self) {
         #[cfg(test)]
         {
             self.actions.action_surface_publication_attempts = self
@@ -631,7 +638,9 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
-        if !self.collaboration.manager.is_connected() {
+        if !self.collaboration.manager.is_connected()
+            || !self.published_action_history_ready_after_refresh()
+        {
             return;
         }
         if self.collaboration.manager.take_action_surface_failed() {
@@ -1664,11 +1673,42 @@ impl App {
             })
     }
 
+    fn published_action_directory_page(
+        &mut self,
+        query: runtime_collab::ActionDirectoryQuery,
+    ) -> runtime_collab::ActionDirectoryPage {
+        if self.published_action_history_ready() {
+            self.action_directory_page(query)
+        } else {
+            runtime_collab::ActionDirectoryPage {
+                revision: String::new(),
+                rows: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: false,
+                stale_cursor: !query.revision.is_empty(),
+                budget_exhausted: true,
+            }
+        }
+    }
+
+    fn published_action_directory_resolution(
+        &mut self,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> runtime_collab::ActionDirectoryResolution {
+        if self.published_action_history_ready() {
+            self.resolve_action_directory(revision, resource, action)
+        } else {
+            runtime_collab::ActionDirectoryResolution::Unavailable
+        }
+    }
+
     fn pump_action_directory_requests(&mut self) {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.action_directory_page(query));
+                    let _ = reply.send(self.published_action_directory_page(query));
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,
@@ -1676,8 +1716,9 @@ impl App {
                     action,
                     reply,
                 } => {
-                    let _ =
-                        reply.send(self.resolve_action_directory(&revision, &resource, &action));
+                    let _ = reply.send(
+                        self.published_action_directory_resolution(&revision, &resource, &action),
+                    );
                 }
             }
         }
@@ -1693,6 +1734,15 @@ impl App {
         ambient_context: Option<&tilo_actions::ActionContext>,
     ) {
         if self.action_publication_failure.is_some() {
+            return;
+        }
+        if !self.published_action_history_ready() {
+            // An already accepted delivery lost its original owner-history
+            // custody. Run no handler; disconnect retains admitted uncertainty.
+            self.action_publication_failure = Some(
+                "Original document history is unavailable; action outcome unknown. Reconnect and reconcile before retrying.".into(),
+            );
+            self.collaboration.manager.stop_after_publication_failure();
             return;
         }
         let address = tilo_actions::ActionAddress::new(resource, action);
@@ -1936,6 +1986,56 @@ impl App {
         crate::bound_dispatch::encode_resource_action(resources, address, typed_arguments, argument)
     }
 
+    /// Route keyboard history through the bound resource's declared action
+    /// so compensation receives fresh admission under current permissions.
+    pub(super) fn invoke_bound_history(
+        &mut self,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        request: crate::undo::UndoRequest,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.require_bound_broker_route(binding)?;
+        let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &self.actions.bound_resource_cache,
+            self.actions.resource_generation.get(),
+        )
+        .map_err(tilo_actions::DoorError::Failed)?;
+        let action = match request {
+            crate::undo::UndoRequest::Undo => "undo",
+            crate::undo::UndoRequest::Redo => "redo",
+        };
+        let mut candidates = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.binding.same_component(binding))
+            .flat_map(|snapshot| &snapshot.resources)
+            .filter(|resource| {
+                resource.actions.iter().any(|spec| {
+                    spec.id == action && spec.kind == tilo_actions::OperationKind::Document
+                })
+            });
+        let resource = candidates
+            .next()
+            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                code: "history_action_unavailable".into(),
+                reason: "the current document does not publish its history action".into(),
+            })?;
+        if candidates.next().is_some() {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "history_action_ambiguous".into(),
+                reason: "the current document publishes more than one history target".into(),
+            });
+        }
+        let alias = self
+            .actions
+            .bound_publication
+            .alias(binding, resource.id.as_str())
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        let address = tilo_actions::ActionAddress::new(alias, action);
+        self.publish_action_surface();
+        self.invoke_via_broker(&address, Some(&serde_json::Map::new()), None, None)
+    }
+
     /// Admit a locally initiated operation at the session broker before the
     /// application performs it. The broker records the invocation first,
     /// re-resolves the live published surface and current permissions, then
@@ -2177,7 +2277,9 @@ impl App {
         has_delivery: bool,
         connected: bool,
     ) -> bool {
-        (kind == tilo_actions::OperationKind::Effect
+        ((kind == tilo_actions::OperationKind::Effect
+            || (kind == tilo_actions::OperationKind::Document
+                && spec.contract.execution != tilo_actions::ExecutionMode::Immediate))
             && invocation.is_none()
             && (has_delivery || connected))
             || (kind == tilo_actions::OperationKind::Document
@@ -2318,6 +2420,9 @@ impl App {
         self.layout.layout_dirty = true;
         self.invalidate_widget_resource_cache();
         let started = started?;
+        if actor == self.collaboration.local_author.0 {
+            self.take_over_owner_view();
+        }
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.actions.bound_invocations.insert(id, target.clone());
             if invocation.is_none() {
@@ -2333,29 +2438,38 @@ impl App {
         &mut self,
         request: ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        use crate::bound_dispatch::legacy_document::{LocalResourceTarget, select_local_target};
-        let address = request.address;
-        if let Some(target) = self
-            .actions
-            .bound_publication
-            .target(address)
-            .map_err(crate::bound_dispatch::BoundActionError::into_door)?
-        {
-            self.require_bound_broker_route(&target.binding)?;
-            return self.invoke_bound_target_with_broker(&target, &request, None);
+        let local = request.actor == self.collaboration.local_author.0;
+        let started = (|| {
+            use crate::bound_dispatch::legacy_document::{
+                LocalResourceTarget, select_local_target,
+            };
+            let address = request.address;
+            if let Some(target) = self
+                .actions
+                .bound_publication
+                .target(address)
+                .map_err(crate::bound_dispatch::BoundActionError::into_door)?
+            {
+                self.require_bound_broker_route(&target.binding)?;
+                return self.invoke_bound_target_with_broker(&target, &request, None);
+            }
+            match select_local_target(self.root_widget.as_ref(), &self.state.doc, address) {
+                Ok(LocalResourceTarget::Component(target)) => {
+                    self.invoke_bound_target_with_broker(&target, &request, None)
+                }
+                Ok(LocalResourceTarget::Legacy(target)) => {
+                    self.invoke_legacy_resource_action(&target, &request)
+                }
+                Ok(LocalResourceTarget::Outer) | Err(tilo_actions::DoorError::Unknown(_)) => {
+                    self.invoke_unbound_resource_action(&request, None)
+                }
+                Err(error) => Err(error),
+            }
+        })()?;
+        if local {
+            self.take_over_owner_view();
         }
-        match select_local_target(self.root_widget.as_ref(), &self.state.doc, address) {
-            Ok(LocalResourceTarget::Component(target)) => {
-                self.invoke_bound_target_with_broker(&target, &request, None)
-            }
-            Ok(LocalResourceTarget::Legacy(target)) => {
-                self.invoke_legacy_resource_action(&target, &request)
-            }
-            Ok(LocalResourceTarget::Outer) | Err(tilo_actions::DoorError::Unknown(_)) => {
-                self.invoke_unbound_resource_action(&request, None)
-            }
-            Err(error) => Err(error),
-        }
+        Ok(started)
     }
 
     /// The legacy `target` names the action; `request.address` is not consulted.
@@ -2557,13 +2671,16 @@ impl App {
                 reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
             });
         }
-        // Every locally initiated external effect crosses the same broker
+        // Every locally initiated external effect or asynchronous document job
+        // crosses the same broker
         // admission as an agent invocation before the handler touches the
         // outside world. Directed invocations carry a real id and
         // `broker_admitted=true`, so they execute exactly once when routed
         // back here. Standalone development runs retain the existing local
         // fallback below; installed Tilo apps always have the session broker.
-        if kind == tilo_actions::OperationKind::Effect
+        if (kind == tilo_actions::OperationKind::Effect
+            || (kind == tilo_actions::OperationKind::Document
+                && resolved.contract.execution != tilo_actions::ExecutionMode::Immediate))
             && invocation.is_none()
             && !broker_admitted
             && self.collaboration.manager.is_connected()

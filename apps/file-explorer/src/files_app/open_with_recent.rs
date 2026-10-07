@@ -478,6 +478,7 @@ impl FileExplorerWidget {
                     share: None,
                     history: None,
                     rich_metadata: None,
+                    observed: host_fs::ObservedObject::from_metadata(&meta),
                 })
             })
             .collect()
@@ -495,6 +496,7 @@ impl FileExplorerWidget {
             .position(|entry| entry.path == path)
         {
             self.selection.select_only(index);
+            self.retain_shown_selection();
         }
         true
     }

@@ -292,8 +292,7 @@ fn component_mount_in_room(
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
     let checkout = component.record().clone();
-    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/sdk/ui-core/assets/fonts");
+    let font_root = ui::font_catalog::checkout_root();
     let fonts = ui::font_catalog::FontCatalog::controlled_fixture(&font_root, "en-US");
     let frame = ui::headless::FrameHarness::from_component(
         component,

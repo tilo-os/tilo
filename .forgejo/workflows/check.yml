@@ -212,6 +212,14 @@ jobs:
         with:
           main: ${{ needs.select.outputs.main }}
 
+      - name: Prepare fonts for offline suites
+        uses: ./.forgejo/actions/prepare-font-assets
+
+      - name: Prepare pinned NTFS source for offline suites
+        run: |
+          python3 crates/session/tilo-ntfs-helper/source_artifact.py
+          printf 'TILO_NTFS_SOURCE_CACHE=%s/target/ntfs-source\nTILO_NTFS_SOURCE_OFFLINE=1\n' "$PWD" >> "$GITHUB_ENV"
+
       - name: Run selected suites
         id: suites-run
         env:

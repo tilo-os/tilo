@@ -29,6 +29,10 @@ use crate::history_mode::HistoryOwner;
 use crate::history_mode::owner::LegacyHistoryLifetime;
 use crate::permissions::UserId;
 
+#[cfg(test)]
+#[path = "person_owner_tests.rs"]
+mod owner_tests;
+
 /// The scope of a person's records on a device that knows no root
 /// identity: kept here, never routed (it is not a room id).
 const DEVICE_ONLY: &str = "personal";
@@ -53,6 +57,7 @@ pub fn record_id(kind: &RecordKind) -> RecordId {
 #[derive(Clone)]
 pub struct PersonRecords {
     store: RecordStore,
+    owners: RecordOwners,
     /// Another window of this app holds the stored records: these are a
     /// replica that syncs with it and stores nothing.
     replica: bool,
@@ -71,6 +76,7 @@ impl PersonRecords {
     ) -> Result<Self, RecordOpenError> {
         Ok(Self {
             store: owners.open_person(package_id, &scope_of(&author))?,
+            owners: owners.clone(),
             replica: false,
             author,
         })
@@ -86,26 +92,29 @@ impl PersonRecords {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         Ok(Self {
             store: owners.open_person(package_id, &scope_of(&author))?,
+            owners,
             replica: true,
             author,
         })
     }
 
     /// The person's records `package_id` keeps, held in this app's store
-    /// beside its own: a copy of another app's record the person shares
-    /// across their apps (their accounts), kept here across launches and
-    /// converging with the keeper's over the record's route. A store with
-    /// nowhere to keep it (a test host's memory) holds a replica instead.
+    /// beside its own. In one host, these use the original profile-scoped
+    /// owner registry; another mounted app never opens a second writer or
+    /// empty fallback replica for the same record. Separate hosts/devices
+    /// still converge over the record's route. Sharing an owner adds no
+    /// editor permission; the framework enforces the resource's editor list.
     ///
     /// # Errors
     /// Rejects an invalid package.
     pub fn of_package(&self, package_id: &str) -> Result<Self, RecordOpenError> {
-        let Some(backend) = self.store.backend() else {
+        if self.store.backend().is_none() {
             return Self::replica(package_id, self.author.clone());
-        };
-        let mut owners = RecordOwners::with_store(backend);
+        }
+        let mut owners = self.owners.clone();
         Ok(Self {
             store: owners.open_person(package_id, &scope_of(&self.author))?,
+            owners,
             replica: self.replica,
             author: self.author.clone(),
         })
@@ -166,6 +175,28 @@ impl PersonRecords {
                 self.author.clone(),
             )),
         }
+    }
+
+    /// Open the original writer for a host-owned canonical edit. Unlike the
+    /// readable replica path, this must observe and edit the actual owner:
+    /// a busy/missing writer is never replaced by an empty local replica.
+    /// # Errors
+    /// Refuses a replica owner and propagates the original writer's errors.
+    pub fn open_original_record(
+        &self,
+        kind: RecordKind,
+        initialize: impl Fn(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<PersonRecord, RecordOpenError> {
+        if self.replica {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        let checkout = RecordCheckout::new(record_id(&kind), kind);
+        open_in(&self.store, &checkout, &initialize)?;
+        Ok(PersonRecord::new(
+            self.store.clone(),
+            checkout,
+            self.author.clone(),
+        ))
     }
 }
 

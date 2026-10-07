@@ -37,6 +37,10 @@ class NextestPolicyTests(unittest.TestCase):
         self.assertEqual(ci.get("retries", 0), 0)
         self.assertNotIn("overrides", ci)
 
+    def test_ci_names_leaks_without_printing_ordinary_passes(self) -> None:
+        ci = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))["profile"]["ci"]
+        self.assertEqual(ci["status-level"], "leak")
+
     def test_every_native_4k_test_gets_an_exclusive_cpu_budget(self) -> None:
         config = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))
         expected = native_4k_tests()

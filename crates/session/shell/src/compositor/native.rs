@@ -1264,6 +1264,16 @@ fn pump_floating_surface_service(
                     }
                     changed = true;
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::MoveDeviceDisplay {
+                    request,
+                    placement,
+                } => {
+                    let result = frame_builder
+                        .host_mut()
+                        .request_device_display_move(&app_id, placement);
+                    service.send(connection, &ui::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult { request, result });
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
                     if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
                         if let Some(writer) = service.reply_writer(connection) {
@@ -6317,6 +6327,12 @@ fn install_device_fabric_bridge(
                 return Ok(view.clone());
             }
             match action {
+                DeviceFabricUiAction::MoveDisplay(request) => {
+                    crate::shell::device_fabric_runtime::move_device_display(
+                        &fabric_net,
+                        &request,
+                    )?;
+                }
                 DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
                 DeviceFabricUiAction::WakeDevice { device } => {
                     crate::shell::device_wake::request_wake(&fabric_net, &device)?;
@@ -6836,6 +6852,9 @@ fn attach_collab_broker_bridges(
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
+    }
+    if let Some(review) = broker.task_review() {
+        frame_builder.host_mut().attach_task_review(review);
     }
     if let Some(realtime) = broker.realtime_fabric_bridge() {
         frame_builder
@@ -8333,6 +8352,12 @@ pub fn run() {
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_messaging_record_wake(Arc::clone(&session_wake));
+        }
+    });
     let chooser_attended = Arc::new(AtomicBool::new(false));
     let mut published_room = PublishedRoom::new();
     let chooser_service = start_chooser_service(
@@ -10305,6 +10330,14 @@ pub fn run() {
                     .collect(),
             );
             st.pump_dbus_notifications();
+            for request in st.take_notification_launch_requests() {
+                if let Err(error) = crate::shell::notification::launch_scheduled_notification(
+                    request,
+                    &st.tree_handle(),
+                ) {
+                    tracing::warn!(%error, "scheduled notification activation failed");
+                }
+            }
         });
         if let Some(network) = peer_sync.as_ref()
             && continuity_feed_polled
@@ -10329,6 +10362,9 @@ pub fn run() {
             // the normal desktop way; it is not a process kill.
             let mut close_requests = Vec::new();
             frame_builder.with_chrome(|chrome| {
+                if let Some(apps) = chrome.hosted_inputs.in_process() {
+                    apps.borrow_mut().pump_messaging_records();
+                }
                 for request in app_closes.drain() {
                     let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
                     eprintln!(

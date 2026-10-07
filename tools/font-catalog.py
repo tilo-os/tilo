@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify and stage Tilo fonts. Requires Python 3.11+; no third-party modules."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -85,6 +86,8 @@ def stage(source, dest, scope):
     dest.mkdir(parents=True, exist_ok=False)
     files = [f["file"] for f in selected(data, scope) + data["license"]]
     files += ["manifest.toml", "PROVENANCE.md"]
+    if (source / "LICENSES/UPSTREAM.md").is_file():
+        files.append("LICENSES/UPSTREAM.md")
     for name in files:
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -135,6 +138,11 @@ def cached_font(entry, cache, offline):
     if path.exists() or path.is_symlink():
         verify_artifact(path, entry)
         return path
+    supplied = os.environ.get("TILO_FONT_CATALOG_ROOT")
+    if supplied:
+        provided = Path(supplied) / entry["file"]
+        verify_artifact(provided, entry)
+        return provided
     if offline:
         raise ValueError(f"font artifact unavailable offline: {entry['file']}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,12 +181,69 @@ def prepare(source, dest, scope, cache, offline):
         root.mkdir()
         for entry in selected(data, scope):
             shutil.copyfile(cached_font(entries[entry["file"]], cache, offline), root / entry["file"])
-        for name in [row["file"] for row in data["license"]] + ["manifest.toml", "PROVENANCE.md"]:
+        notices = [row["file"] for row in data["license"]] + ["manifest.toml", "PROVENANCE.md"]
+        if (source / "LICENSES/UPSTREAM.md").is_file():
+            notices.append("LICENSES/UPSTREAM.md")
+        for name in notices:
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(checked_path(source, name), target)
         verify(root, scope)
         root.rename(dest)
+
+
+def verify_prepared(root, source, scope):
+    verify(root, scope)
+    for name in ("PROVENANCE.md", "LICENSES/UPSTREAM.md"):
+        expected = source / name
+        if expected.is_file() and checked_path(root, name).read_bytes() != expected.read_bytes():
+            raise ValueError(f"prepared font provenance differs: {name}")
+
+
+def prepared_root(source, scope, cache=None, offline=None):
+    """Return a verified materialized catalog, without changing the source."""
+    source = Path(source)
+    supplied = os.environ.get("TILO_FONT_CATALOG_ROOT")
+    if supplied:
+        root = Path(supplied).resolve(strict=True)
+        verify_prepared(root, source, scope)
+        return root
+    if not (source / "artifacts.json").is_file():
+        verify(source, scope)
+        return source
+    artifact_entries(source)
+    cache = Path(cache or os.environ.get(
+        "TILO_FONT_ASSET_CACHE", AUTHORITATIVE.parents[5] / "target/font-artifacts"))
+    if offline is None:
+        offline = os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1"
+    identity = hashlib.sha256()
+    for name in ("manifest.toml", "PROVENANCE.md", "LICENSES/UPSTREAM.md"):
+        path = source / name
+        if path.is_file():
+            identity.update(name.encode())
+            identity.update(path.read_bytes())
+    dest = cache / "catalogs" / (identity.hexdigest() + "-" + scope)
+    if dest.exists() or dest.is_symlink():
+        if dest.is_symlink():
+            raise ValueError("prepared font catalog symlink is forbidden")
+        verify_prepared(dest, source, scope)
+    else:
+        try:
+            prepare(source, dest, scope, cache, offline)
+        except ValueError as error:
+            if str(error) != f"font destination already exists: {dest}":
+                raise
+            if dest.is_symlink():
+                raise ValueError("prepared font catalog symlink is forbidden") from error
+            verify_prepared(dest, source, scope)
+        except OSError as error:
+            if error.errno not in (errno.EEXIST, errno.ENOTEMPTY) and not isinstance(error, FileExistsError):
+                raise
+            if dest.is_symlink():
+                raise ValueError("prepared font catalog symlink is forbidden") from error
+            verify_prepared(dest, source, scope)
+    verify_prepared(dest, source, scope)
+    return dest.resolve(strict=True)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -195,16 +260,23 @@ def main():
     prepared.add_argument("dest", type=Path)
     prepared.add_argument("--scope", choices=list(SCOPES), required=True)
     prepared.add_argument("--cache", type=Path, default=Path(os.environ.get(
-        "TILO_FONT_ASSET_CACHE", AUTHORITATIVE.parents[4] / "target/font-artifacts")))
+        "TILO_FONT_ASSET_CACHE", AUTHORITATIVE.parents[5] / "target/font-artifacts")))
     prepared.add_argument("--offline", action="store_true", default=os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1")
+    locate = commands.add_parser("root", help="print a verified catalog root for build consumers")
+    locate.add_argument("source", type=Path)
+    locate.add_argument("--scope", choices=list(SCOPES), required=True)
+    locate.add_argument("--cache", type=Path)
+    locate.add_argument("--offline", action="store_true", default=os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1")
     args = parser.parse_args()
     try:
         if args.command == "verify":
             print(verify(args.root, args.scope))
         elif args.command == "stage":
             stage(args.source, args.dest, args.scope)
-        else:
+        elif args.command == "prepare":
             prepare(args.source, args.dest, args.scope, args.cache, args.offline)
+        else:
+            print(prepared_root(args.source, args.scope, args.cache, args.offline))
     except (ValueError, OSError) as error:
         parser.exit(1, f"Tilo font catalog: {error}\n")
 

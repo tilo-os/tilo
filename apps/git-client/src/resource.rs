@@ -535,6 +535,70 @@ mod tests {
         assert!(repo.find_branch("topic", git2::BranchType::Local).is_err());
     }
 
+    /// The published job creates a real checkout and the graphical surface
+    /// and live resource collection reflect the resulting branch and path.
+    #[test]
+    fn linked_worktree_effect_reaches_disk_and_the_graphical_surface() {
+        let (dir, path) = scratch_repository("worktree-repo");
+        let destination = dir.path().join("agent-worktree");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let surface = app.agent_surface();
+        assert!(
+            surface
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["action"] == "create-worktree")
+        );
+        app.effect(&GitClientEffect::CreateWorktree {
+            path: destination.to_str().unwrap().into(),
+            branch: "codex/experiment".into(),
+            start: "HEAD".into(),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(
+            git2::Repository::open(&destination)
+                .unwrap()
+                .head()
+                .unwrap()
+                .shorthand()
+                .unwrap(),
+            "codex/experiment"
+        );
+        app.effect(&GitClientEffect::ShowBranches).unwrap();
+        let shown = app.harness().inspection_json().unwrap();
+        assert!(
+            shown.contains("codex/experiment"),
+            "the branch is shown: {shown}"
+        );
+        assert!(
+            shown.contains("New worktree branch"),
+            "the creation form is reachable: {shown}"
+        );
+        assert!(
+            shown.contains(destination.to_str().unwrap()),
+            "the actual checkout path is shown: {shown}"
+        );
+        // Device paths stay out of the shared repository projection.
+        assert!(app.state().repo.worktrees.is_empty());
+        assert!(
+            app.effect(&GitClientEffect::CreateWorktree {
+                path: destination.to_str().unwrap().into(),
+                branch: "codex/another".into(),
+                start: "HEAD".into(),
+            })
+            .is_err()
+        );
+        assert!(
+            git2::Repository::open(&path)
+                .unwrap()
+                .find_branch("codex/another", git2::BranchType::Local)
+                .is_err()
+        );
+    }
+
     /// The app-bar layout control and the palette's effect switch the
     /// person's diff preference: kept beside the document, changing no
     /// document and on nobody's undo stack.

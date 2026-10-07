@@ -699,7 +699,10 @@ fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_st
     assert_eq!(
         h.state.client_input.keyboard_focus(),
         Some(app),
-        "touching down focuses the window, as a click does"
+        "touching down focuses the window, as a click does; mapped={}, active={:?}, cursor={:?}",
+        shell::compositor::foreign::store().is_mapped(app),
+        shell::shell::input_policy::active_foreign_surface(&h.state.workspace_tree.read()),
+        h.state.client_input.cursor(),
     );
 
     // Off the window's edge mid-stroke, the stroke stays with the app.

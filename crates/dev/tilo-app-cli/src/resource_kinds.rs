@@ -272,6 +272,7 @@ mod tests {
             [
                 "music.library",
                 "tilo.accounts",
+                "tilo.feedback-draft",
                 "tilo.text",
                 "tilo.workbook"
             ],

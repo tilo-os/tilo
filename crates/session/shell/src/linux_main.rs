@@ -332,6 +332,21 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
 /// settings document. Readers and writers in this process go through them;
 /// `settings.json` becomes the copy other processes read and write, which
 /// the session keeps current and takes their writes in from.
+fn dictionary_identity_owner() -> Option<[u8; 32]> {
+    let store = identity_provisioning::DiskIdentityStore::from_env().ok()?;
+    runtime_identity::load_metadata_from_path(store.path())
+        .ok()
+        .map(|identity| identity.group_public_key)
+}
+
+fn legacy_dictionary_owner() -> Option<[u8; 32]> {
+    let store = identity_provisioning::DiskIdentityStore::from_env().ok()?;
+    let path = store.path().parent()?.join("primary.json");
+    runtime_identity::load_metadata_from_path(&path)
+        .ok()
+        .map(|identity| identity.group_public_key)
+}
+
 fn install_session_settings() {
     let Some(paths) = settings_store::SessionPaths::configured() else {
         tracing::warn!("no config directory; settings are not kept this session");
@@ -359,7 +374,73 @@ fn install_session_settings() {
                     "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
                 ),
             }
-            settings_store::install_source(Some(session));
+            let source: std::sync::Arc<dyn settings_store::SettingsSource> = session;
+            let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
+            let source = match dictionary_root
+                .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())
+            {
+                Some(service) => {
+                    use settings_store::personal_dictionary::Vocabulary as _;
+                    // The legacy global file has no account identity. Claim it
+                    // once for the verified local person, never for an app or
+                    // a room's XDG directory and never again after reset.
+                    let legacy_owner = legacy_dictionary_owner();
+                    if let Some(owner) = dictionary_identity_owner()
+                        && Some(owner) == legacy_owner
+                        && let Some(reader) = service.bind(Some(owner))
+                        && let Some(path) = copy.parent().map(|root| root.join("userdict.txt"))
+                        && let Ok(metadata) = std::fs::symlink_metadata(&path)
+                        && metadata.file_type().is_file()
+                        && metadata.len() <= 512 * 1024
+                    {
+                        use std::io::Read;
+                        use std::os::unix::fs::OpenOptionsExt;
+                        let mut text = String::new();
+                        if let Ok(file) = std::fs::OpenOptions::new()
+                            .read(true)
+                            .custom_flags(libc::O_NOFOLLOW)
+                            .open(&path)
+                            && file.take(512 * 1024 + 1).read_to_string(&mut text).is_ok()
+                            && let Ok(snapshot) = reader.snapshot()
+                            && let Err(error) =
+                                service.import_legacy(&reader, snapshot.revision, owner, &text)
+                        {
+                            tracing::warn!(%error, "legacy personal dictionary import unavailable");
+                        }
+                    }
+                    let host = std::sync::Arc::new(
+                        settings_store::personal_dictionary::host::Host::new(
+                            source,
+                            std::sync::Arc::new(service),
+                            std::sync::Arc::new(dictionary_identity_owner),
+                        )
+                        .with_legacy_owner(legacy_owner),
+                    );
+                    if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
+                        && let Some(directory) =
+                            store.path().parent().filter(|directory| directory.is_dir())
+                    {
+                        let weak = std::sync::Arc::downgrade(&host);
+                        if let Ok(watch) =
+                            settings_store::watch::watch_identity_at(directory, move || {
+                                if let Some(host) = weak.upgrade() {
+                                    settings_store::SettingsSource::dictionary_service(
+                                        host.as_ref(),
+                                    );
+                                }
+                            })
+                        {
+                            static IDENTITY_WATCH: std::sync::OnceLock<
+                                settings_store::watch::SettingsWatch,
+                            > = std::sync::OnceLock::new();
+                            let _ = IDENTITY_WATCH.set(watch);
+                        }
+                    }
+                    host as std::sync::Arc<dyn settings_store::SettingsSource>
+                }
+                None => source,
+            };
+            settings_store::install_source(Some(source));
         }
         Err(error) => tracing::error!(
             %error,
@@ -378,11 +459,27 @@ pub fn run() -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
+    let early_args: Vec<String> = std::env::args().collect();
+    if let Some(code) = shell::shader_seed::dispatch(&early_args) {
+        return code;
+    }
     // Answered before identity, GPU or session setup, so asking a host what
     // it has installed touches none of them.
     if let Some(version) = version_request(std::env::args().skip(1)) {
         println!("{version}");
         return std::process::ExitCode::SUCCESS;
+    }
+    if !early_args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--portal-server-only"
+                | "--firstboot-only"
+                | "--provision-identity"
+                | "--verify-collaboration-identity"
+        )
+    }) && let Err(error) = shell::shader_seed::prepare_session()
+    {
+        eprintln!("session shader seed unavailable ({error}); compiling normally");
     }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
