@@ -286,7 +286,7 @@ impl StreamWorker {
     }
 }
 
-fn valid_native_track(id: &str) -> bool {
+pub(crate) fn valid_native_track(id: &str) -> bool {
     id.strip_prefix("spotify:track:")
         .is_some_and(|id| id.len() == 22 && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
