@@ -445,3 +445,224 @@ fn explicit_cohort_install_preserves_held_packages_and_existing_pins() {
     assert!(!installed.package.held);
     assert_eq!(installed.replaced.unwrap().package_id(), Some(first.id()));
 }
+
+#[test]
+fn retained_signed_inverse_survives_replacement_and_conditional_restore() {
+    let identity = SigningIdentity::generate();
+    let trusted_publisher = identity.public_key_bytes();
+    let (old_tree, old) = package(&identity, "so.tilo.demo", "73018.0.0", &v1_files());
+    let (_new_tree, new) = package(&identity, "so.tilo.demo", "0.1.0", &v2_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    let original = store
+        .install(full_tapp(&old).as_slice(), admit_all, None)
+        .unwrap();
+    let (captured, archive) = store.export_current("so.tilo.demo", Vec::new()).unwrap();
+    assert_eq!(captured, original.package);
+    let selected = store
+        .install_if_current(full_tapp(&new).as_slice(), Some(&captured), admit_all, None)
+        .unwrap();
+    let package_store::InstallSelection::Installed(selected) = selected else {
+        panic!("the unheld captured row must be replaced");
+    };
+    assert!(
+        !original.package.payload_root.exists(),
+        "normal retirement still runs"
+    );
+    assert_eq!(store.collect_garbage().unwrap(), 0, "normal GC already ran");
+    store.set_pinned("so.tilo.demo", true).unwrap();
+    let restored = store
+        .install_if_current(
+            archive.as_slice(),
+            Some(&selected.package),
+            |meta| {
+                assert_eq!(meta.id, old.id());
+                assert!(matches!(
+                    tilo_app_package::verify(meta, &[trusted_publisher]),
+                    tilo_app_package::Verification::Trusted { .. }
+                ));
+                Ok(Admission::default())
+            },
+            None,
+        )
+        .unwrap();
+    let package_store::InstallSelection::Installed(restored) = restored else {
+        panic!("the owned current selection must restore");
+    };
+    assert_eq!(restored.package.package_id(), Some(old.id()));
+    assert!(
+        restored.package.pinned,
+        "an intervening explicit pin is preserved"
+    );
+    assert!(
+        package_store::integrity::verify(&restored.package, &restored.package.payload_root)
+            .unwrap()
+            .is_intact()
+    );
+    assert_eq!(tree(&restored.package.payload_root), tree(old_tree.path()));
+}
+
+#[test]
+fn conditional_inverse_refuses_intervening_updates_and_preserves_holds() {
+    let identity = SigningIdentity::generate();
+    let (_old_tree, old) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+    let (_new_tree, new) = package(&identity, "so.tilo.demo", "2.0.0", &v2_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    let original = store
+        .install(full_tapp(&old).as_slice(), admit_all, None)
+        .unwrap();
+    let selected = store
+        .install(full_tapp(&new).as_slice(), admit_all, None)
+        .unwrap();
+    let before = std::fs::read(store.layout().registry()).unwrap();
+    let stale = store.install_if_current(
+        full_tapp(&old).as_slice(),
+        Some(&original.package),
+        admit_all,
+        None,
+    );
+    assert!(matches!(stale, Err(StoreError::Refused(_))));
+    assert_eq!(std::fs::read(store.layout().registry()).unwrap(), before);
+    let explicit = store
+        .install(
+            full_tapp(&new).as_slice(),
+            |_| {
+                Ok(Admission {
+                    source: "explicit-user-update".into(),
+                    ..Admission::default()
+                })
+            },
+            None,
+        )
+        .unwrap();
+    let same_root_update = store.install_if_current(
+        full_tapp(&old).as_slice(),
+        Some(&selected.package),
+        admit_all,
+        None,
+    );
+    assert!(matches!(same_root_update, Err(StoreError::Refused(_))));
+    store
+        .update_row("so.tilo.demo", |row| row.held = true)
+        .unwrap();
+    let held = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.demo")
+        .unwrap()
+        .clone();
+    let preserved = store
+        .install_if_current(
+            full_tapp(&old).as_slice(),
+            Some(&explicit.package),
+            admit_all,
+            None,
+        )
+        .unwrap();
+    let package_store::InstallSelection::Preserved(preserved) = preserved else {
+        panic!("explicit hold must block restoration");
+    };
+    assert_eq!(*preserved, held);
+    let absent = store.install_if_current(full_tapp(&old).as_slice(), None, admit_all, None);
+    assert!(matches!(absent, Err(StoreError::Refused(_))));
+}
+
+#[test]
+fn inverse_export_refuses_corrupt_evidence_and_restore_keeps_admission() {
+    let identity = SigningIdentity::generate();
+    let (_tree, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    let original = store
+        .install(full_tapp(&packed).as_slice(), admit_all, None)
+        .unwrap();
+    let before = std::fs::read(store.layout().registry()).unwrap();
+    let denied = store.install_if_current(
+        full_tapp(&packed).as_slice(),
+        Some(&original.package),
+        |_| Err("publisher no longer admitted".into()),
+        None,
+    );
+    assert!(matches!(denied, Err(StoreError::Refused(_))));
+    assert_eq!(std::fs::read(store.layout().registry()).unwrap(), before);
+    store
+        .update_row("so.tilo.demo", |row| row.version = "forged-version".into())
+        .unwrap();
+    assert!(matches!(
+        store.export_current("so.tilo.demo", Vec::new()),
+        Err(StoreError::CorruptPackage(_, _))
+    ));
+    store
+        .update_row("so.tilo.demo", |row| row.version = "1.0.0".into())
+        .unwrap();
+    let record = package_store::integrity::record_dir(&original.package);
+    std::fs::write(
+        record.join(package_store::layout::SIGNED_ROOT_FILE),
+        b"not signed evidence",
+    )
+    .unwrap();
+    assert!(matches!(
+        store.export_current("so.tilo.demo", Vec::new()),
+        Err(StoreError::CorruptPackage(_, _))
+    ));
+}
+
+#[test]
+fn conditional_inverse_removes_only_unpinned_unheld_owned_new_selection() {
+    let identity = SigningIdentity::generate();
+    let (_tree, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    let selected = store
+        .install(full_tapp(&packed).as_slice(), admit_all, None)
+        .unwrap();
+    store.set_pinned("so.tilo.demo", true).unwrap();
+    assert!(
+        store
+            .remove_if_current(&selected.package)
+            .unwrap()
+            .is_none()
+    );
+    store.set_pinned("so.tilo.demo", false).unwrap();
+    store
+        .update_row("so.tilo.demo", |row| row.held = true)
+        .unwrap();
+    assert!(
+        store
+            .remove_if_current(&selected.package)
+            .unwrap()
+            .is_none()
+    );
+    store
+        .update_row("so.tilo.demo", |row| row.held = false)
+        .unwrap();
+    let explicit = store
+        .install(
+            full_tapp(&packed).as_slice(),
+            |_| {
+                Ok(Admission {
+                    source: "explicit-user-update".into(),
+                    ..Admission::default()
+                })
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        store
+            .remove_if_current(&selected.package)
+            .unwrap()
+            .is_none()
+    );
+    let removed = store.remove_if_current(&explicit.package).unwrap().unwrap();
+    assert_eq!(removed.package.unwrap(), explicit.package);
+    assert!(store.registry().unwrap().find("so.tilo.demo").is_none());
+    assert!(!selected.package.payload_root.exists());
+    assert!(
+        store
+            .remove_if_current(&explicit.package)
+            .unwrap()
+            .is_none()
+    );
+}

@@ -19,6 +19,9 @@
     )
 )]
 
+mod cohort;
+mod cohort_runtime;
+
 use std::fs;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -81,6 +84,9 @@ enum Cmd {
         /// Preserve an explicitly held user version during a development cohort update.
         #[arg(long, requires = "force")]
         preserve_held: bool,
+        /// Associate this selection with a previously prepared inverse ticket.
+        #[arg(long, requires = "preserve_held", conflicts_with = "payload_from")]
+        cohort: Option<String>,
         #[command(flatten)]
         trust: TrustFlags,
         #[command(flatten)]
@@ -93,6 +99,22 @@ enum Cmd {
         /// payload is already in the content store.
         #[arg(long)]
         payload_from: Option<String>,
+    },
+    /// Retain signed prior user selections before a maintained cohort activation.
+    CohortPrepare {
+        #[arg(long)]
+        ticket: String,
+        #[arg(required = true)]
+        apps: Vec<String>,
+    },
+    /// Conditionally restore only selections still owned by a prepared cohort.
+    CohortRestore {
+        #[arg(long)]
+        ticket: String,
+        #[arg(required = true)]
+        apps: Vec<String>,
+        #[command(flatten)]
+        trust: TrustFlags,
     },
     /// Fetch a newer version of an installed package and swap it in,
     /// keeping the user's per-room state.
@@ -916,6 +938,7 @@ struct InstallOptions {
     dry_run: bool,
     /// Where payload blobs the archive does not carry come from.
     payload_from: Option<app_registry::HttpBlobs>,
+    cohort: Option<String>,
 }
 
 fn install(
@@ -929,6 +952,7 @@ fn install(
         replacement,
         dry_run,
         payload_from,
+        cohort,
     } = options;
     let force = replacement != Replacement::Refuse;
     let preserve_held = replacement == Replacement::PreserveHeld;
@@ -973,13 +997,14 @@ fn install(
         .map(|source| source as &dyn BlobFetcher);
     let held = held_below_image(&layers, checked.version());
     let installed = if preserve_held {
-        let selected = store
-            .install_preserving_hold(
-                candidate.reader()?,
-                checked_admission(&checked, pinned, held, tapp.display().to_string()),
-                payload,
-            )
-            .map_err(store_error)?;
+        let admission = checked_admission(&checked, pinned, held, tapp.display().to_string());
+        let selected = if let Some(ticket) = &cohort {
+            cohort::select(&store, ticket, &checked, &candidate, admission)?
+        } else {
+            store
+                .install_preserving_hold(candidate.reader()?, admission, payload)
+                .map_err(store_error)?
+        };
         match selected {
             package_store::InstallSelection::Installed(installed) => *installed,
             package_store::InstallSelection::Preserved(row) => {
@@ -2255,6 +2280,7 @@ fn main() {
             pinned,
             force,
             preserve_held,
+            cohort,
             trust,
             runtime,
             dry_run,
@@ -2270,10 +2296,17 @@ fn main() {
                 },
                 dry_run,
                 payload_from: payload_from.map(app_registry::HttpBlobs::new),
+                cohort,
             },
             &trust,
             &runtime,
         ),
+        Cmd::CohortPrepare { ticket, apps } => cohort::prepare(&ticket, &apps),
+        Cmd::CohortRestore {
+            ticket,
+            apps,
+            trust,
+        } => cohort::restore(&ticket, &apps, &trust),
         Cmd::Update {
             pkg_id,
             from,
