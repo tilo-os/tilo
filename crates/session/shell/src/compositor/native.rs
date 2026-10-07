@@ -10305,6 +10305,14 @@ pub fn run() {
                     .collect(),
             );
             st.pump_dbus_notifications();
+            for request in st.take_notification_launch_requests() {
+                if let Err(error) = crate::shell::notification::launch_scheduled_notification(
+                    request,
+                    &st.tree_handle(),
+                ) {
+                    tracing::warn!(%error, "scheduled notification activation failed");
+                }
+            }
         });
         if let Some(network) = peer_sync.as_ref()
             && continuity_feed_polled
