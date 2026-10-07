@@ -116,6 +116,20 @@ impl EncryptedBackend {
         Self::open_state(root, owner, key, None)
     }
 
+    /// Open the host's original approved profile key with its original grant.
+    /// The grant is installed before any store initialization and retained by
+    /// every SDK reader and writer, including clones.
+    /// # Errors
+    /// Refuses revoked authority, competing writers or invalid encrypted state.
+    pub fn open_profile(
+        root: &Path,
+        owner: Owner,
+        key: VaultKey,
+        authority: Arc<dyn StateAuthority>,
+    ) -> Result<Self> {
+        Self::open_authorized(root, owner, authority, || Ok(key))
+    }
+
     fn open_state(
         root: &Path,
         owner: Owner,

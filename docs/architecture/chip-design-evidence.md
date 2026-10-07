@@ -48,3 +48,26 @@ state; the imported report uses existing shared history and undo.
 This is a macro-footprint inspector. It explicitly counts omitted instances and
 does not authenticate detached reports or establish routing, signoff, manufactured
 silicon, or model quality. Existing reports without placement remain compatible.
+
+## Existing file handoff
+
+Chip Design consumes files through the framework's `LaunchInput::file`. Ordinary
+JSON files and the binary-named files staged by existing content-collecting
+launches are admitted as possible reports; the complete bytes must be UTF-8,
+within the existing 1 MiB limit, and pass the existing storage or verification
+importer before any action is submitted. Unsupported or malformed input shows a
+localized refusal and creates no report or report history. Opening without a
+file still starts empty.
+
+A successful handoff invokes the same typed import and inspection actions as the
+file chooser and semantic API, preserving permissions, attribution, history and
+undo. The host supplies bytes; the app does not fetch a caller-provided hash,
+resolve ambient paths, execute artifacts or create another content service.
+`application/octet-stream` is required because the current platform stages
+non-media content transfers as `.bin`; admission is not a declaration that
+arbitrary binary formats are supported.
+
+The authored package manifest advertises the same JSON and octet-stream inputs
+and the JSON extension, so file discovery sees the implemented handoff. Provider
+registration does not bypass report validation or make a malformed binary input
+a report.
