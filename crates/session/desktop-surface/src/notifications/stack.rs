@@ -253,6 +253,9 @@ impl NotificationStack {
                 } else {
                     0.0
                 };
+            if y + height > self.viewport.y1 - EDGE_INSET {
+                break;
+            }
             let (alpha, slide_dx) = Self::animation_state(n, now, self.reduce_motion, width);
             if alpha <= 0.0 {
                 y += height + TOAST_GAP;
@@ -371,7 +374,7 @@ impl NotificationStack {
         }
         self.draw_toast_cards(
             &mut ctx,
-            log.active().iter(),
+            log.active().iter().rev(),
             ui::time::now(),
             (x0_rest, width),
             y,
@@ -649,6 +652,61 @@ pub(super) mod tests {
             );
             assert!(stack.action_rects.is_empty());
             assert!(!stack.click_at(&host, actions[1].2.center()));
+        }
+    }
+
+    #[test]
+    fn persistent_alarm_choices_fit_the_viewport_and_keep_the_newest_alarm_visible() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
+            let host = TestHost::default();
+            host.actions.replace(vec![
+                ("dismiss".into(), "Dismiss".into()),
+                ("snooze".into(), "Snooze".into()),
+            ]);
+            let mut newest = 0;
+            for index in 0..super::super::MAX_NOTIFICATIONS {
+                newest = host.push(
+                    Notification::new(format!("Alarm {index}"), "Fixture")
+                        .with_dismiss_after(super::super::PERSISTENT_DISMISS),
+                );
+            }
+            let viewport = Rect::new(0.0, 0.0, 320.0, 600.0);
+            let mut stack = NotificationStack::new();
+            stack.set_viewport(viewport);
+            stack.draw(
+                &host,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+            );
+            assert!(
+                !stack.hit_rects.is_empty(),
+                "the newest alarm must actually paint"
+            );
+            assert!(
+                stack.hit_rects.len() < host.log().active().len(),
+                "fixture must exercise capacity"
+            );
+            assert_eq!(stack.hit_rects[0].0, newest);
+            for (_, card, _) in &stack.hit_rects {
+                assert!(
+                    card.y0 >= viewport.y0 && card.y1 <= viewport.y1,
+                    "a painted card escaped the viewport"
+                );
+            }
+            for (_, _, control) in &stack.action_rects {
+                assert!(
+                    control.y0 >= viewport.y0 && control.y1 <= viewport.y1,
+                    "a real alarm choice is unreachable below the viewport"
+                );
+            }
+            assert_eq!(
+                host.log().active().len(),
+                super::super::MAX_NOTIFICATIONS,
+                "fitting banners must not discard alarm data"
+            );
         }
     }
 
