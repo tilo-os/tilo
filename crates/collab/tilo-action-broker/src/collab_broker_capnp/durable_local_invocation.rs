@@ -639,6 +639,7 @@ pub(super) fn invoke(
                     requested: None,
                     caller: None,
                     execution: None,
+                    managed_interaction: None,
                     argument: request.argument.as_deref(),
                     actor: &actor,
                     confirmation_token: token.as_deref(),

@@ -1345,6 +1345,10 @@ struct PendingInvocation {
     /// admitted for them too.
     caller: Option<ContinuingCaller>,
     activity: Option<ActivityTarget>,
+    /// Public action lifecycle for one admitted managed task. This carries
+    /// catalogue identity only; task/model/result content never enters it.
+    managed_interaction: Option<ManagedInteractionTarget>,
+    managed_interaction_sequence: u64,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay::client::CertifiedAction>,
     original: Option<Arc<OriginalInvocationData>>,
@@ -1869,6 +1873,7 @@ impl CapnpBrokerState {
                 requested: None,
                 caller: None,
                 execution: None,
+                managed_interaction: None,
                 argument: request.argument.as_deref(),
                 actor: &admitted.broker_actor(),
                 confirmation_token: confirmation,
@@ -2813,10 +2818,145 @@ struct InvocationInputs<'a> {
     /// submits is admitted for them too.
     caller: Option<&'a tilo_actions::remote::Caller>,
     execution: Option<ExecutionScope>,
+    managed_interaction: Option<ManagedInteractionAdmission>,
     argument: Option<&'a str>,
     actor: &'a BrokerActor,
     confirmation_token: Option<&'a str>,
     context: Option<tilo_actions::ActionContext>,
+}
+
+struct ManagedInteractionAdmission {
+    source_peer: u64,
+    source_route: CrdtRoute,
+    admitted: AdmittedJoinIdentity,
+    agent_id: String,
+    run_id: u64,
+    lease: String,
+}
+
+#[derive(Clone)]
+struct ManagedInteractionTarget {
+    source_peer: u64,
+    source_route: CrdtRoute,
+    admitted: AdmittedJoinIdentity,
+    agent_id: String,
+    run_id: u64,
+    lease: String,
+    target_peer: u64,
+    published_action: PublishedAction,
+    route: CrdtRoute,
+    key: PresenceKey,
+    actor: tilo_actions::InteractionActor,
+    action: tilo_actions::InteractionAction,
+    resource: tilo_actions::ActionResource,
+    anchor: tilo_actions::InteractionAnchor,
+}
+
+struct ManagedInteractionPublication {
+    target: ManagedInteractionTarget,
+    source_peer: u64,
+    route: CrdtRoute,
+    key: PresenceKey,
+    actor_id: String,
+    payload: PresencePayload,
+    cancellation_terminal: bool,
+}
+
+impl ManagedInteractionTarget {
+    fn new(
+        admission: ManagedInteractionAdmission,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+    ) -> Self {
+        let ManagedInteractionAdmission {
+            source_peer,
+            source_route,
+            admitted,
+            agent_id,
+            run_id,
+            lease,
+        } = admission;
+        let anchor = if let Some(id) = action.resource.strip_prefix("ui:") {
+            tilo_actions::InteractionAnchor::SemanticControl { id: id.into() }
+        } else if action.resource_kind.contains("entry") || action.resource_kind.contains("file") {
+            tilo_actions::InteractionAnchor::ListItems {
+                ids: vec![action.resource.clone()],
+            }
+        } else {
+            tilo_actions::InteractionAnchor::Resource
+        };
+        Self {
+            source_peer,
+            source_route,
+            admitted,
+            agent_id: agent_id.clone(),
+            run_id,
+            lease,
+            target_peer: surface.peer_id,
+            published_action: action.clone(),
+            route: surface.route.clone(),
+            key: PresenceKey::resource(
+                surface.app_id.clone(),
+                action.resource.clone(),
+                action.resource_kind.clone(),
+            ),
+            actor: tilo_actions::InteractionActor {
+                id: format!("agent:{agent_id}"),
+                kind: tilo_actions::InteractionActorKind::Agent,
+            },
+            action: tilo_actions::InteractionAction {
+                id: action.action.clone(),
+                label: action.action_label.clone(),
+                app: Some(tilo_actions::ActionApp {
+                    id: surface.app_id.clone(),
+                    label: surface.app_id.clone(),
+                }),
+            },
+            resource: tilo_actions::ActionResource {
+                id: action.resource.clone(),
+                kind: action.resource_kind.clone(),
+                label: action.resource_label.clone(),
+            },
+            anchor,
+        }
+    }
+
+    fn interaction(
+        &self,
+        update: &tilo_actions::InvocationUpdate,
+        sequence: u64,
+    ) -> tilo_actions::SemanticInteraction {
+        let phase = match update {
+            tilo_actions::InvocationUpdate::Accepted { .. }
+            | tilo_actions::InvocationUpdate::Progress { .. }
+            | tilo_actions::InvocationUpdate::Item { .. } => {
+                tilo_actions::InteractionPhase::Applying
+            }
+            tilo_actions::InvocationUpdate::Succeeded { .. } => {
+                tilo_actions::InteractionPhase::Committed
+            }
+            tilo_actions::InvocationUpdate::Failed { .. } => {
+                tilo_actions::InteractionPhase::Failed {
+                    code: Some("action_failed".into()),
+                    message: "Action failed".into(),
+                }
+            }
+            tilo_actions::InvocationUpdate::Cancelled { .. } => {
+                tilo_actions::InteractionPhase::Cancelled { message: None }
+            }
+        };
+        tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: update.invocation(),
+            sequence,
+            actor: self.actor.clone(),
+            phase,
+            action: self.action.clone(),
+            resource: self.resource.clone(),
+            anchor: self.anchor.clone(),
+            group: None,
+        }
+    }
 }
 /// Who an admission is held for and where it came from: genuine durable
 /// caller evidence, the directory revision the target was chosen at, a
@@ -3431,7 +3571,7 @@ impl CapnpBrokerState {
                 })
                 .collect::<Vec<_>>()
         };
-        for (id, cancellation_expired, pending) in expired {
+        for (id, cancellation_expired, mut pending) in expired {
             let (code, message) = if cancellation_expired {
                 (
                     "action_cancellation_timeout",
@@ -3474,8 +3614,14 @@ impl CapnpBrokerState {
                     .publish_status(pending.activity.as_ref(), ExecutionStatus::OutcomeUnknown);
                 continue;
             }
-            self.execution_activity
-                .publish(pending.activity.as_ref(), &update);
+            let managed_current = pending
+                .managed_interaction
+                .as_ref()
+                .is_some_and(|target| self.managed_interaction_is_current_for(target, &update));
+            let publication = self.publish_pending_activity(&mut pending, &update, managed_current);
+            if let Some(publication) = publication {
+                self.publish_managed_interaction(publication);
+            }
             self.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -4430,6 +4576,7 @@ impl CapnpBrokerState {
                     requested: None,
                     caller: None,
                     execution: None,
+                    managed_interaction: None,
                     argument,
                     actor,
                     confirmation_token: confirmation_token.as_deref(),
@@ -4895,6 +5042,7 @@ impl CapnpBrokerState {
                 requested: None,
                 caller: None,
                 execution: None,
+                managed_interaction: None,
                 argument,
                 actor: &BrokerActor::person(actor),
                 confirmation_token,
@@ -5027,6 +5175,7 @@ impl CapnpBrokerState {
             requested,
             caller,
             execution,
+            managed_interaction,
             argument,
             actor,
             confirmation_token,
@@ -5238,6 +5387,8 @@ impl CapnpBrokerState {
             None
         };
         drop(journal_guard);
+        let managed_interaction = managed_interaction
+            .map(|admission| ManagedInteractionTarget::new(admission, &offered.0, &offered.1));
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
         // bus never waits or calls back into the broker.
@@ -5250,6 +5401,8 @@ impl CapnpBrokerState {
             PendingInvocation {
                 caller: continuing,
                 activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
+                managed_interaction,
+                managed_interaction_sequence: 0,
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
                 original: OriginalInvocationData::capture(
@@ -5326,11 +5479,28 @@ impl CapnpBrokerState {
             }
             return Err("the application invocation stream closed; outcome unknown".into());
         }
-        if let Some(pending) = registry.get(&id) {
-            self.execution_activity
-                .publish(pending.activity.as_ref(), &pending.update);
-        }
+        let managed_target = registry
+            .get(&id)
+            .and_then(|pending| pending.managed_interaction.clone());
         drop(registry);
+        let managed_current = managed_target
+            .as_ref()
+            .is_some_and(|target| self.managed_interaction_is_current(target));
+        let publication = self
+            .pending_invocations
+            .lock()
+            .ok()
+            .and_then(|mut registry| {
+                registry.get_mut(&id).and_then(|pending| {
+                    let update = pending.update.clone();
+                    matches!(update, tilo_actions::InvocationUpdate::Accepted { .. })
+                        .then(|| self.publish_pending_activity(pending, &update, managed_current))
+                        .flatten()
+                })
+            });
+        if let Some(publication) = publication {
+            self.publish_managed_interaction(publication);
+        }
         self.local_turn.notify_one();
         Ok(InvocationJob { id, completion: rx })
     }
@@ -5780,10 +5950,7 @@ impl CapnpBrokerState {
 
     fn start_task_action(
         &self,
-        peer_id: u64,
-        agent_id: &str,
-        run_id: u64,
-        lease: &str,
+        admission: ManagedInteractionAdmission,
         target: runtime_collab::TaskAction<'_>,
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
@@ -5792,36 +5959,21 @@ impl CapnpBrokerState {
             action,
             argument,
         } = target;
-        let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
+        let run = self.task_run_for(
+            admission.source_peer,
+            &admission.agent_id,
+            admission.run_id,
+            &admission.lease,
+        )?;
+        if self.task_run_cancelled(
+            admission.source_peer,
+            &admission.agent_id,
+            admission.run_id,
+            &admission.lease,
+        )? {
             return Err("the task was cancelled; no further action may start".into());
         }
         self.validate_owner_task_action_frontier(&run)?;
-        let confirmation_required = self
-            .surfaces
-            .lock()
-            .ok()
-            .and_then(|surfaces| surfaces.get(&target_peer).cloned())
-            .and_then(|surface| {
-                (surface.route.cluster_id == run.cluster_id)
-                    .then_some(surface)
-                    .and_then(|surface| {
-                        surface.actions.into_iter().find(|candidate| {
-                            candidate.resource == resource && candidate.action == action
-                        })
-                    })
-            })
-            .ok_or_else(|| "the task action is no longer published in this workspace".to_string())?
-            .contract
-            .confirmation;
-        if !matches!(
-            confirmation_required,
-            tilo_actions::ConfirmationPolicy::None
-        ) {
-            return Err(
-                "task action requires an interactive confirmation and cannot run unattended".into(),
-            );
-        }
         self.start_invocation_confirmed_for(
             target_peer,
             resource,
@@ -5830,8 +5982,9 @@ impl CapnpBrokerState {
                 requested: None,
                 caller: None,
                 execution: None,
+                managed_interaction: Some(admission),
                 argument,
-                actor: &BrokerActor::agent(run.agent_id),
+                actor: &BrokerActor::agent(format!("agent:{}", run.agent_id)),
                 confirmation_token: None,
                 context: Some(run.action_context),
             },
@@ -5895,61 +6048,67 @@ impl CapnpBrokerState {
     }
 
     fn fail_disconnected_invocations(&self, peer_id: u64) {
-        if let Ok(mut pending) = self.pending_invocations.lock() {
-            let ids = pending
-                .iter()
-                .filter_map(|(id, invocation)| (invocation.peer_id == peer_id).then_some(*id))
-                .collect::<Vec<_>>();
-            for id in ids {
-                if let Some(invocation) = pending.remove(&id) {
-                    let completion = InvocationCompletion {
-                        code: "action_failed".into(),
-                        message: "application disconnected before completing the action".into(),
-                    };
-                    let update = tilo_actions::InvocationUpdate::Failed {
-                        invocation: invocation.update.invocation(),
-                        error: tilo_actions::ActionFailure {
-                            code: completion.code.clone(),
-                            message: completion.message.clone(),
-                            details: None,
-                            retryable: invocation.retryable_on_disconnect,
-                        },
-                    };
-                    let (update, completion) = if invocation.journal_key.is_some() {
-                        (
-                            invocation_journal::unknown(invocation.update.invocation()),
-                            InvocationCompletion {
-                                code: "action_outcome_unknown".into(),
-                                message: "application outcome unknown after disconnect".into(),
-                            },
-                        )
-                    } else {
-                        (update, completion)
-                    };
-                    if self
-                        .persist_invocation(
-                            &invocation,
-                            update.clone(),
-                            invocation.journal_key.is_some(),
-                        )
-                        .is_err()
-                    {
-                        self.execution_activity.publish_status(
-                            invocation.activity.as_ref(),
-                            ExecutionStatus::OutcomeUnknown,
-                        );
-                        continue;
-                    }
-                    self.execution_activity
-                        .publish(invocation.activity.as_ref(), &update);
-                    self.record_completion(id, invocation.completion_owner(), update.clone());
-                    if let Ok(mut requests) = self.cancellation_requests.lock() {
-                        requests.remove(&id);
-                    }
-                    let _ = invocation.tx.send(completion);
-                    self.record_effect_receipt(&invocation, &update);
-                }
+        let disconnected = if let Ok(mut pending) = self.pending_invocations.lock() {
+            pending
+                .extract_if(|_, invocation| invocation.peer_id == peer_id)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for (id, mut invocation) in disconnected {
+            let completion = InvocationCompletion {
+                code: "action_failed".into(),
+                message: "application disconnected before completing the action".into(),
+            };
+            let update = tilo_actions::InvocationUpdate::Failed {
+                invocation: invocation.update.invocation(),
+                error: tilo_actions::ActionFailure {
+                    code: completion.code.clone(),
+                    message: completion.message.clone(),
+                    details: None,
+                    retryable: invocation.retryable_on_disconnect,
+                },
+            };
+            let (update, completion) = if invocation.journal_key.is_some() {
+                (
+                    invocation_journal::unknown(invocation.update.invocation()),
+                    InvocationCompletion {
+                        code: "action_outcome_unknown".into(),
+                        message: "application outcome unknown after disconnect".into(),
+                    },
+                )
+            } else {
+                (update, completion)
+            };
+            if self
+                .persist_invocation(
+                    &invocation,
+                    update.clone(),
+                    invocation.journal_key.is_some(),
+                )
+                .is_err()
+            {
+                self.execution_activity.publish_status(
+                    invocation.activity.as_ref(),
+                    ExecutionStatus::OutcomeUnknown,
+                );
+                continue;
             }
+            let managed_current = invocation
+                .managed_interaction
+                .as_ref()
+                .is_some_and(|target| self.managed_interaction_is_current_for(target, &update));
+            let publication =
+                self.publish_pending_activity(&mut invocation, &update, managed_current);
+            if let Some(publication) = publication {
+                self.publish_managed_interaction(publication);
+            }
+            self.record_completion(id, invocation.completion_owner(), update.clone());
+            if let Ok(mut requests) = self.cancellation_requests.lock() {
+                requests.remove(&id);
+            }
+            let _ = invocation.tx.send(completion);
+            self.record_effect_receipt(&invocation, &update);
         }
     }
 
@@ -6187,6 +6346,113 @@ impl CapnpBrokerState {
             return;
         };
         self.publisher().presence(route, presence);
+    }
+
+    /// Publish one broker-authored managed action lifecycle to its exact app
+    /// route. The retained target contains only current catalogue metadata;
+    /// task instructions, model progress, arguments and results never cross.
+    fn managed_interaction_is_current(&self, target: &ManagedInteractionTarget) -> bool {
+        self.managed_interaction_frontier_is_current(target, false)
+    }
+
+    fn managed_interaction_is_current_for(
+        &self,
+        target: &ManagedInteractionTarget,
+        update: &tilo_actions::InvocationUpdate,
+    ) -> bool {
+        self.managed_interaction_frontier_is_current(
+            target,
+            matches!(update, tilo_actions::InvocationUpdate::Cancelled { .. }),
+        )
+    }
+
+    fn managed_interaction_frontier_is_current(
+        &self,
+        target: &ManagedInteractionTarget,
+        cancellation_terminal: bool,
+    ) -> bool {
+        let current = self.revalidate_admission(&target.source_route, &target.admitted);
+        let source_is_current = current
+            .as_ref()
+            .ok()
+            .and_then(|identity| identity.agent_id.as_deref())
+            == Some(target.agent_id.as_str());
+        let target_is_current = self
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| surfaces.get(&target.target_peer).cloned())
+            .is_some_and(|surface| {
+                surface.live
+                    && surface.route == target.route
+                    && surface.app_id
+                        == target.action.app.as_ref().map_or("", |app| app.id.as_str())
+                    && surface
+                        .actions
+                        .iter()
+                        .any(|action| action == &target.published_action)
+            });
+        let run = self.task_run_for(
+            target.source_peer,
+            &target.agent_id,
+            target.run_id,
+            &target.lease,
+        );
+        let owner_frontier_is_current = run.as_ref().is_ok_and(|run| {
+            if cancellation_terminal {
+                self.owner_task_run_control(run).is_ok()
+            } else {
+                self.validate_owner_task_action_frontier(run).is_ok()
+            }
+        });
+        source_is_current && target_is_current && owner_frontier_is_current
+    }
+
+    fn prepare_managed_interaction(
+        pending: &mut PendingInvocation,
+        update: &tilo_actions::InvocationUpdate,
+        current: bool,
+    ) -> Option<ManagedInteractionPublication> {
+        if !current {
+            return None;
+        }
+        let target = pending.managed_interaction.clone()?;
+        let sequence = pending.managed_interaction_sequence.checked_add(1)?;
+        let interaction = target.interaction(update, sequence);
+        if interaction.validate().is_err() {
+            tracing::warn!("broker managed interaction did not satisfy the public contract");
+            return None;
+        }
+        pending.managed_interaction_sequence = sequence;
+        Some(ManagedInteractionPublication {
+            target: target.clone(),
+            source_peer: target.source_peer,
+            route: target.route,
+            key: target.key,
+            actor_id: target.actor.id,
+            payload: PresencePayload::Interaction(Box::new(interaction)),
+            cancellation_terminal: matches!(
+                update,
+                tilo_actions::InvocationUpdate::Cancelled { .. }
+            ),
+        })
+    }
+
+    fn publish_managed_interaction(&self, publication: ManagedInteractionPublication) {
+        if !self.managed_interaction_frontier_is_current(
+            &publication.target,
+            publication.cancellation_terminal,
+        ) {
+            return;
+        }
+        let event = CollabEvent::RemotePresenceUpdate {
+            user_id: publication.actor_id,
+            key: publication.key,
+            payload: publication.payload,
+        };
+        if let Some(fanout) = self.fanout.upgrade() {
+            fanout.fanout_to_route(&event, publication.source_peer, &publication.route);
+        }
     }
 
     /// Delegates to the shared fanout registry for typed connection ids.
@@ -9228,13 +9494,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(current) => current,
             Err(error) => return Promise::err(error),
         };
-        let Some(agent_id) = current.agent_id else {
+        let Some(agent_id) = current.agent_id.clone() else {
             return Promise::err(capnp::Error::failed(
                 "only an agent may invoke a task action".into(),
             ));
         };
         let state = self.state.clone();
         let peer_id = self.peer_id;
+        let source_route = self.route();
         Promise::from_future(async move {
             let request = params.get()?;
             // Interactive confirmations have no safe unattended equivalent.
@@ -9266,7 +9533,17 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ));
             }
             let job = state
-                .start_task_action(peer_id, &agent_id, request.get_run_id(), &lease, target)
+                .start_task_action(
+                    ManagedInteractionAdmission {
+                        source_peer: peer_id,
+                        source_route,
+                        admitted: current,
+                        agent_id,
+                        run_id: request.get_run_id(),
+                        lease,
+                    },
+                    target,
+                )
                 .map_err(capnp::Error::failed)?;
             let update = state.invocation_status(job.id).ok_or_else(|| {
                 capnp::Error::failed("accepted task action has no broker state".into())
@@ -9439,6 +9716,10 @@ impl channel_handle::Server for CapnpChannelHandle {
             {
                 state.revalidate_admission(&route, &identity)?;
             }
+            let managed_current = staged
+                .managed_interaction
+                .as_ref()
+                .is_some_and(|target| state.managed_interaction_is_current(target));
             let mut registry = state
                 .pending_invocations
                 .lock()
@@ -9458,9 +9739,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
-            state
-                .execution_activity
-                .publish(pending.activity.as_ref(), &update);
+            let mut pending = pending;
+            let publication =
+                state.publish_pending_activity(&mut pending, &update, managed_current);
+            if let Some(publication) = publication {
+                state.publish_managed_interaction(publication);
+            }
             state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -9742,6 +10026,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                             requested: None,
                             caller: None,
                             execution: None,
+                            managed_interaction: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: None,
@@ -9780,6 +10065,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                             requested: None,
                             caller: None,
                             execution: None,
+                            managed_interaction: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: Some(&token),
@@ -9810,6 +10096,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                             requested: None,
                             caller: None,
                             execution: None,
+                            managed_interaction: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: Some(&token),
@@ -13831,6 +14118,8 @@ pub mod tests {
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
     include!("record_content_tests.rs");
+    #[cfg(test)]
+    include!("managed_interaction_tests.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,
@@ -16771,6 +17060,8 @@ pub mod tests {
         let pending = PendingInvocation {
             caller: None,
             activity: None,
+            managed_interaction: None,
+            managed_interaction_sequence: 0,
             owner: InvocationOwner::Local {
                 actor: "agent:Scribe".into(),
             },
@@ -18006,12 +18297,35 @@ fn validate_invocation_update(
     Ok(next_sequence)
 }
 
+fn terminal_invocation_completion(
+    update: &tilo_actions::InvocationUpdate,
+) -> Result<InvocationCompletion, capnp::Error> {
+    match update {
+        tilo_actions::InvocationUpdate::Succeeded { .. } => Ok(InvocationCompletion {
+            code: String::new(),
+            message: String::new(),
+        }),
+        tilo_actions::InvocationUpdate::Failed { error, .. } => Ok(InvocationCompletion {
+            code: error.code.clone(),
+            message: error.message.clone(),
+        }),
+        tilo_actions::InvocationUpdate::Cancelled { message, .. } => Ok(InvocationCompletion {
+            code: "action_cancelled".into(),
+            message: message.clone().unwrap_or_default(),
+        }),
+        _ => Err(capnp::Error::failed(
+            "nonterminal invocation reached terminal handling".into(),
+        )),
+    }
+}
+
 impl CapnpBrokerState {
     fn publish_pending_activity(
         &self,
-        pending: &PendingInvocation,
+        pending: &mut PendingInvocation,
         update: &tilo_actions::InvocationUpdate,
-    ) {
+        managed_current: bool,
+    ) -> Option<ManagedInteractionPublication> {
         if pending.cancellation_requested_at.is_some() && !update.is_terminal() {
             self.execution_activity.publish_status(
                 pending.activity.as_ref(),
@@ -18021,6 +18335,7 @@ impl CapnpBrokerState {
             self.execution_activity
                 .publish(pending.activity.as_ref(), update);
         }
+        Self::prepare_managed_interaction(pending, update, managed_current)
     }
 
     #[expect(
@@ -18077,6 +18392,10 @@ impl CapnpBrokerState {
         if requires_owner && let Some((route, identity)) = &identity {
             state.revalidate_admission(route, identity)?;
         }
+        let managed_current = staged
+            .managed_interaction
+            .as_ref()
+            .is_some_and(|target| state.managed_interaction_is_current_for(target, &update));
         let mut registry = state
             .pending_invocations
             .lock()
@@ -18093,38 +18412,28 @@ impl CapnpBrokerState {
         pending.last_activity = std::time::Instant::now();
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
-        state.publish_pending_activity(pending, &update);
+        let publication = state.publish_pending_activity(pending, &update, managed_current);
         state.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if update.is_terminal() {
-            let completion = match &update {
-                tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
-                    code: String::new(),
-                    message: String::new(),
-                },
-                tilo_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
-                    code: error.code.clone(),
-                    message: error.message.clone(),
-                },
-                tilo_actions::InvocationUpdate::Cancelled { message, .. } => InvocationCompletion {
-                    code: "action_cancelled".into(),
-                    message: message.clone().unwrap_or_default(),
-                },
-                _ => {
-                    return Err(capnp::Error::failed(
-                        "nonterminal invocation reached terminal handling".into(),
-                    ));
-                }
-            };
+            let completion = terminal_invocation_completion(&update)?;
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
+            if let Some(publication) = publication {
+                state.publish_managed_interaction(publication);
+            }
             state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }
             let _ = pending.tx.send(completion);
             state.record_effect_receipt(&pending, &update);
+        } else {
+            drop(registry);
+            if let Some(publication) = publication {
+                state.publish_managed_interaction(publication);
+            }
         }
         Ok(())
     }

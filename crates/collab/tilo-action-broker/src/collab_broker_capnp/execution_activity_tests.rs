@@ -706,6 +706,7 @@ fn an_invocation_id_two_callers_share_continues_neither() {
                     requested: Some(shared),
                     caller: Some(&caller),
                     execution: ExecutionScope::for_call(&caller, shared),
+                    managed_interaction: None,
                     argument: None,
                     actor: &BrokerActor::person(person),
                     confirmation_token: None,

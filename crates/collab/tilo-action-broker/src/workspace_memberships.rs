@@ -120,6 +120,7 @@ impl CapnpBrokerState {
                 requested: None,
                 caller: None,
                 execution: None,
+                managed_interaction: None,
                 argument,
                 actor: &actor,
                 confirmation_token: None,

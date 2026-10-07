@@ -624,6 +624,7 @@ fn invoke_checked(
                     requested: None,
                     caller: None,
                     execution: None,
+                    managed_interaction: None,
                     argument: argument.as_deref(),
                     actor: &actor,
                     confirmation_token: token.as_deref(),

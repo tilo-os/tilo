@@ -922,6 +922,8 @@ mod owner_commit_tests {
             PendingInvocation {
                 caller: None,
                 activity: None,
+                managed_interaction: None,
+                managed_interaction_sequence: 0,
                 owner: key.owner.clone(),
                 network_evidence: None,
                 original: None,
@@ -1988,6 +1990,8 @@ mod owner_commit_tests {
                 let pending = PendingInvocation {
                     caller: None,
                     activity: None,
+                    managed_interaction: None,
+                    managed_interaction_sequence: 0,
                     owner: InvocationOwner::Certified {
                         root: f.owner.peer().authority().user_public_key,
                         device: f.owner.peer().authority().device_public_key,
