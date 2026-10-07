@@ -10,8 +10,8 @@ use tilo_content::{ContentInputs, ContentStore, NoContent};
 use tilo_doc::Document;
 use tilo_doc_codecs::{DocxCodec, FormatProvider, OdtCodec};
 
-const SAMPLE_DOCX: &[u8] = include_bytes!("../../fixtures/sample.docx");
-const SAMPLE_ODT: &[u8] = include_bytes!("../../fixtures/sample.odt");
+const SAMPLE_DOCX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample.docx"));
+const SAMPLE_ODT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample.odt"));
 
 /// A font-like part: not text, so the preservation layer must not keep it in the document.
 fn binary_part() -> Vec<u8> {

@@ -343,10 +343,9 @@ impl ResourceApp for ChatShell {
         crate::i18n::ensure();
         let me = cx.me().unwrap_or_default().to_owned();
         let live = cx.mode().is_live();
-        // Only a live window reaches the shell's voice service. Attachments
-        // are in the store the host lends the window, which carries them on
-        // the conversation's route.
-        let native = live && crate::app::native_services();
+        // Native path access controls attachment import. A live browser
+        // independently discovers its host's voice service through media replies.
+        let native = live && crate::app::native_file_access();
         let content = cx.content().unwrap_or_else(ContentStore::memory);
         // A capture shows the app as a device with its services draws it;
         // nothing it stages reaches them.
@@ -574,6 +573,52 @@ fn draft_keys(doc: &Doc) -> Vec<String> {
 mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
+
+    #[test]
+    fn sidebar_remains_docked_and_semantically_resizable_in_a_medium_chat_window() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.harness().resize((760, 720)).unwrap();
+        let resources = app.harness().resources();
+        let resize = resources
+            .iter()
+            .find(|resource| resource.label == "Resize sidebar")
+            .expect("a medium conversation keeps its shared resize handle");
+        let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+        let arguments = serde_json::Map::from_iter([(
+            ui::tilo_actions::PROMPTED_PARAM.to_owned(),
+            serde_json::Value::String("40%".into()),
+        )]);
+        assert!(
+            app.harness()
+                .invoke_action(&address, &arguments, false, None)
+                .unwrap()
+                .completed()
+                .is_some()
+        );
+        assert_eq!(
+            app.with_surface::<ChatApp, _>(|surface| (
+                surface.left_flap.is_docked(),
+                surface.sidebar_rect().width(),
+                surface.content_rect().width(),
+            )),
+            Some((true, 228.0, 456.0))
+        );
+        assert!(app.harness().component_contract_violations().is_empty());
+        app.harness().resize((600, 720)).unwrap();
+        assert!(
+            app.harness()
+                .resources()
+                .iter()
+                .all(|resource| resource.label != "Resize sidebar"),
+            "a genuinely narrow window uses the shared overlay drawer"
+        );
+        app.harness().resize((760, 720)).unwrap();
+        assert_eq!(
+            app.with_surface::<ChatApp, _>(|surface| surface.sidebar_rect().width()),
+            Some(228.0),
+            "the usable resized width survives narrow-window collapse"
+        );
+    }
 
     #[test]
     fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {
