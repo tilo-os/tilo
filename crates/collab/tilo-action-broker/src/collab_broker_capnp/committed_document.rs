@@ -285,6 +285,64 @@ impl CapnpChannelHandle {
         context.revalidate()?;
         Ok(context)
     }
+    pub(super) fn native_private_window_instance(&self) -> Result<Option<u64>, String> {
+        let route = self.route();
+        if !self
+            .state
+            .services
+            .committed_documents
+            .as_ref()
+            .is_some_and(|service| service.requires_room(&route.cluster_id))
+        {
+            return Ok(None);
+        }
+        let Some(local) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .filter(|_| self.verified_identity.agent_id.is_none())
+            .filter(|local| local.continuation_instance.is_some())
+        else {
+            return Ok(None);
+        };
+        if !local.current()
+            || local.app_id != route.app_id
+            || local.workspace_id != route.cluster_id
+        {
+            return Err("native private launch custody ended".into());
+        }
+        let context = self.document_read_context()?;
+        self.state
+            .services
+            .committed_documents
+            .as_ref()
+            .ok_or("native document owner unavailable")?
+            .authorize(&context)?;
+        context.revalidate()?;
+        Ok(local
+            .continuation_instance
+            .filter(|instance| *instance != 0))
+    }
+
+    pub(super) fn continuation_instance(&self) -> Result<u64, String> {
+        if self
+            .state
+            .services
+            .committed_documents
+            .as_ref()
+            .is_some_and(|service| service.requires_room(&self.route().cluster_id))
+        {
+            return self
+                .native_private_window_instance()?
+                .ok_or_else(|| "native launch has no private window-instance binding".into());
+        }
+        self.route()
+            .record_id
+            .strip_prefix("continuation:")
+            .and_then(|id| id.parse::<u64>().ok())
+            .ok_or_else(|| "continuation requires a durable shell tab id".into())
+    }
+
     pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
         let required = self
             .state
@@ -308,6 +366,9 @@ impl CapnpChannelHandle {
             return Err("committed read channel expired".into());
         }
         match request {
+            Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding {
+                instance: self.native_private_window_instance()?,
+            }),
             Request::Initialize {
                 token,
                 revision,
