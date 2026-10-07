@@ -16,6 +16,9 @@ pub struct Cli {
     /// Print one JSON object instead of text (errors too: {"error","hint","see"}).
     #[arg(long, global = true)]
     pub json: bool,
+    /// Registered development target; overrides `TILO_VM`, `.tilo-vm` and the default.
+    #[arg(long, global = true)]
+    pub target: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -1132,6 +1135,17 @@ pub enum SeatCommand {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn target_flag_works_before_and_after_swap() {
+        use clap::Parser as _;
+        for args in [
+            vec!["tilo-vm", "--target", "review", "swap", "shell"],
+            vec!["tilo-vm", "swap", "shell", "--target", "review"],
+        ] {
+            let cli = super::Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.target.as_deref(), Some("review"));
+        }
+    }
     use clap::CommandFactory;
 
     use super::*;

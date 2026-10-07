@@ -547,9 +547,12 @@ inputs = [
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
   "crates/browser/paint-stream/tests/fixtures/",
+  "crates/browser/tilo-browser-runtime/src/background_work.rs",
+  "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
   "tools/test-assets.py",
 ]
 readers = [
+  "crates/sdk/ui-core/src/headless.rs",
   "crates/sdk/ui-core/build.rs",
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
@@ -1414,6 +1417,7 @@ inputs = [
   "tools/apps/browser_runtime_release.py",
   "tools/apps/signal_runtime_fixture.py",
   "tools/apps/signal_provider_release.py",
+  "tools/apps/signal_zero_runtime.py",
   "os/dev/cache-github-assets.sh",
   "tools/apps/pack-signal-provider.sh",
   "os/scripts/prepare-signal-provider.py",
