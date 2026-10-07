@@ -39,6 +39,15 @@ impl Worker {
         self
     }
 
+    #[cfg(test)]
+    pub(super) fn with_certificate_resolver(
+        mut self,
+        resolve: impl Fn(&str) -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.certificate = Arc::new(resolve);
+        self
+    }
+
     pub(super) fn run(self, receiver: mpsc::Receiver<Job>) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -97,6 +106,14 @@ impl Worker {
 
     fn read(&self, room: &str) -> Result<std::sync::Arc<TaskReviewSnapshot>, String> {
         let certificate = (self.certificate)(room)?;
+        self.read_with_certificate(room, &certificate)
+    }
+
+    fn read_with_certificate(
+        &self,
+        room: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<std::sync::Arc<TaskReviewSnapshot>, String> {
         let id = crate::shell::state::RoomId::parse(room).ok_or("invalid task room")?;
         let now = SystemTime::now();
         let seconds = now
@@ -163,9 +180,9 @@ impl Worker {
         }
         let caller = (self.certificate)(&request.room)?;
         let device = caller.device_public_key;
-        // Reading first refuses stale/foreign selected identities. The owner
-        // rechecks current membership and capabilities again in its mutation turn.
-        let snapshot = self.read(&request.room)?;
+        // Bind the admission read and commit to the same selected certificate.
+        // The owner rechecks membership and capabilities in its mutation turn.
+        let snapshot = self.read_with_certificate(&request.room, &caller)?;
         if snapshot.actor != request.observed_actor {
             return Err("selected person changed; review before changing this task".into());
         }
