@@ -723,6 +723,17 @@ fn widget_deadline_for_presenter(
     widget_deadline.filter(|_| pipe_ready)
 }
 
+// The pump already observed a due widget. Its pending visual change is
+// paced by the frame clock; retaining the expired deadline would spin until
+// that frame can paint. Future widget deadlines still wake an idle desktop.
+fn polled_widget_park_deadline(
+    now: Instant,
+    pipe_ready: bool,
+    widget_deadline: Option<Instant>,
+) -> Option<Instant> {
+    widget_deadline_for_presenter(pipe_ready, widget_deadline).filter(|deadline| *deadline > now)
+}
+
 // A due animation remains dirty until it paints, but is no longer a wake
 // deadline. Keeping an expired deadline here would busy-spin while waiting
 // for display cadence or presenter retirement. Those wake sources already
@@ -12279,7 +12290,11 @@ pub fn run() {
             [
                 (
                     "widget",
-                    widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
+                    polled_widget_park_deadline(
+                        park_now,
+                        pipe_ready,
+                        frame_builder.next_wake_deadline(),
+                    ),
                 ),
                 (
                     "lock-animation",
@@ -13141,6 +13156,68 @@ mod tests {
                  (D-3); got lingering file at {path:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_expired_polled_widget_does_not_spin_before_the_pending_frame() {
+        let now = Instant::now();
+        let stale = now.checked_sub(Duration::from_millis(1)).unwrap();
+        let frame = now + Duration::from_millis(7);
+        assert_eq!(
+            native_loop_park(
+                now,
+                false,
+                false,
+                cadence_wait_needed(true, true),
+                frame,
+                [polled_widget_park_deadline(now, true, Some(stale))],
+            ),
+            Some(Duration::from_millis(7)),
+            "the widget was already polled; cadence owns the still-pending frame",
+        );
+    }
+
+    #[test]
+    fn polled_widget_deadlines_keep_future_wakes_and_wait_for_retirement() {
+        let now = Instant::now();
+        let future = now + Duration::from_millis(3);
+        let frame = now + Duration::from_millis(7);
+        assert_eq!(
+            native_loop_park(
+                now,
+                false,
+                false,
+                false,
+                frame,
+                [polled_widget_park_deadline(now, true, Some(future))]
+            ),
+            Some(Duration::from_millis(3)),
+        );
+        assert_eq!(polled_widget_park_deadline(now, false, Some(future)), None);
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                false,
+                frame,
+                [polled_widget_park_deadline(now, true, Some(now))]
+            ),
+            None,
+            "an already polled idle widget must not keep waking itself",
+        );
+        assert_eq!(
+            native_loop_park(
+                now,
+                false,
+                false,
+                false,
+                frame,
+                [polled_widget_park_deadline(now, true, Some(now))]
+            ),
+            Some(IDLE_BACKEND_POLL),
+            "backends without event wake retain their ordinary polling floor",
+        );
     }
 
     #[test]
