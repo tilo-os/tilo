@@ -1189,7 +1189,10 @@ jobs:
           fi
           # Build / OS dev publishes images and nothing else: no disk install.
           fast=false
-          if [[ $GITHUB_EVENT_NAME == workflow_call || "${{ needs.plan.outputs.signed-development-board }}" == true ]]; then
+          if [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
+            [[ $publish != true ]]
+            fast=true
+          elif [[ "${{ needs.plan.outputs.signed-development-board }}" == true ]]; then
             [[ $publish != true ]]
             fast=true
           fi
