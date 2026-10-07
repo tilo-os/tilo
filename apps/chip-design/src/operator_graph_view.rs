@@ -145,6 +145,15 @@ fn node_view(
     targets: &[ui::graph_editor::ConnectionTarget],
 ) -> GraphCanvasNode {
     let visual = node.visual();
+    let displayed_shape = if node.kind == OperatorKind::MatrixWeightInput {
+        format!(
+            "[{}, {}]",
+            node.output_width.unwrap_or(0),
+            node.normalization_width
+        )
+    } else {
+        format!("{:?}", node.shape)
+    };
     let mut content = Column::new()
         .push(Box::new(effect_button(
             cx,
@@ -157,7 +166,7 @@ fn node_view(
         .push(Box::new(
             Text::new(&I18nManager::format(
                 "chip-tensor-shape",
-                &[("shape", format!("{:?}", node.shape).into())],
+                &[("shape", displayed_shape.into())],
             ))
             .with_role(TextRole::Caption),
         ));
