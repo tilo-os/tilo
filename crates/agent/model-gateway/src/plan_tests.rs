@@ -598,6 +598,58 @@ fn feed(
 }
 
 #[test]
+fn streamed_reasoning_is_preserved_for_history_without_visible_delta_frames() {
+    let chunks = [
+        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":"provider "}}]}),
+        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":"thought"}}]}),
+        args_chunk(0, Some("call_1"), Some("list_operations"), "{}"),
+        finish_chunk(),
+    ];
+    let (frames, body) = feed(&chunks, &[0, 10, 20, 30], true);
+    let completion: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        completion["choices"][0]["message"]["reasoning_content"],
+        "provider thought"
+    );
+    assert_eq!(
+        completion["choices"][0]["message"]["content"],
+        serde_json::Value::Null
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|(_, value)| !value.to_string().contains("provider thought"))
+    );
+    let replay = tilo_model_gateway::openai::read_turn(&completion).unwrap();
+    assert_eq!(replay.message["reasoning_content"], "provider thought");
+    assert_eq!(replay.calls[0].name, "list_operations");
+    assert!(replay.text.is_none());
+}
+
+#[test]
+fn malformed_streamed_reasoning_is_a_provider_failure() {
+    let text = sse(&[
+        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":{"wrong":"type"}}}]}),
+        finish_chunk(),
+    ]);
+    let mut reader = std::io::Cursor::new(text.into_bytes());
+    let mut timing = PlanTiming::start();
+    let mut emitted = false;
+    let result = read_sse(
+        &mut reader,
+        &mut |_event| {
+            emitted = true;
+            true
+        },
+        &mut timing,
+        false,
+        &mut Instant::now,
+    );
+    assert!(result.is_err());
+    assert!(!emitted);
+}
+
+#[test]
 fn deltas_are_coalesced_by_window_and_size() {
     let big = "y".repeat(300);
     let chunks = [

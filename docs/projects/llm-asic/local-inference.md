@@ -4,8 +4,9 @@ The development host has an 8,188 MiB NVIDIA GPU and about 30.6 GiB host RAM.
 That excludes a nominal 27B W4 payload wholly resident in dedicated VRAM;
 it does not exclude quantized CPU inference or partial GPU offload. Start with
 one request and a bounded context, measure memory and latency, then decide
-whether a larger device is necessary. No model weights, container runtime or
-candidate inference were downloaded or executed for this inspection.
+whether a larger device is necessary. The initial host inspection fetched no weights or runtime and executed no
+candidate inference. Artifact staging and actual inference acceptance are
+separate steps; source compatibility alone does not establish either.
 
 ## Existing boundary and new execution contract
 
@@ -73,7 +74,19 @@ is automated; it does not supply a complete converter command/lineage receipt.
 This is a concrete artifact candidate to qualify, not proof that each tensor
 matches the selected BF16 checkpoint. Preserve individual artifact identity,
 conversion provenance and actual load/tool outcomes before selecting it as
-our evaluation or ASIC checkpoint. No GGUF weights were fetched.
+our evaluation or ASIC checkpoint. The metadata inspection did not fetch GGUF weights.
+
+The subsequent candidate inventory verified the entire Q4_K_M object:
+18,973,870,528 bytes, SHA-256
+`c600de0300ae8a0eb3a6c0b8b5561b8b96f16bd2c863c2a66c42de29d391a747`.
+It declares `general.architecture=qwen35` and 851 tensors. Its embedded chat
+template's SHA-256 matches the pinned base template below exactly. Stored
+logical dimensions total 26,895,998,464 elements; F32, Q4_K, Q6_K and Q8_0
+storage coexist, so a nominal all-W4 byte estimate does not describe this
+artifact. Equal shape totals and template bytes do not prove weight lineage.
+The local immutable candidate receipts and extracted template are under
+`target/chip-workbench/inference-candidate-71bc7b6/`; no model inference was
+established by this inventory.
 
 ## Pinned reasoning policy to qualify
 
@@ -91,10 +104,43 @@ That is a proposed evaluation policy, not an observed runtime setting.
 assistant-message replay within the same conversation. It must not become a
 user-visible final answer or be invented from content. The coding app has its
 own `Conversation` parser; the participant planner uses the shared OpenAI turn
-reader. Gateway streamed assembly currently times reasoning deltas and drops
-their content, so changing only one parser would not repair the complete path.
+reader. The shared turn reader, gateway SSE assembly and coding-app conversation now
+preserve the provider's optional string `reasoning_content` in assistant replay.
+Absent/null values remain absent; other types fail as malformed provider output.
+Reasoning stays separate from final answer text and visible streaming deltas.
+Production-path regressions cover streamed tool calls and replay into the next
+coding request; new conversations start with empty history. Generic fields
+called `reasoning` are not guessed to be this provider contract.
 Verify the exact pinned llama-server build emits the expected field and honors
 these template controls before reporting a policy-matched comparison.
+
+## Immutable runtime candidate source review
+
+The inspected official CUDA image identifies llama.cpp source commit
+`5e03bdd8700948b9c41c54dd1b00f28a2aebc03f` (build `b11434`), with OCI
+index digest `sha256:c6fd6053d3b6a1a54849ab5468971cf3ae03fbf3d72fdfb25a1f862e320cace3`
+and amd64 manifest digest
+`sha256:6d4624a7cb40fd84f3b14d57c0d19ac1b6f8308c8cc833bac1461933e0bbe6a2`.
+Its configuration entrypoint is `/app/llama-server`. These identities describe
+an artifact candidate; an OCI source label is not a reproducible-build proof.
+
+At that exact revision, the
+[Qwen3.5 graph implementation](https://github.com/ggml-org/llama.cpp/blob/5e03bdd8700948b9c41c54dd1b00f28a2aebc03f/src/models/qwen35.cpp)
+implements full attention alongside gated DeltaNet/recurrent attention.
+The [chat implementation](https://github.com/ggml-org/llama.cpp/blob/5e03bdd8700948b9c41c54dd1b00f28a2aebc03f/common/chat.cpp)
+recognizes the Qwen XML tool markers, reads assistant `reasoning_content`
+and serializes it back into template messages. The
+[Jinja capability mapping](https://github.com/ggml-org/llama.cpp/blob/5e03bdd8700948b9c41c54dd1b00f28a2aebc03f/common/jinja/caps.cpp)
+maps `preserve_reasoning` to `preserve_thinking`, matching the selected
+base template's control. The pinned
+[server contract](https://github.com/ggml-org/llama.cpp/blob/5e03bdd8700948b9c41c54dd1b00f28a2aebc03f/tools/server/README.md)
+documents separate reasoning output and template effort controls.
+
+These source facts justify a loading experiment. They do not establish that
+the converted GGUF's architecture metadata and embedded template match this
+base revision, that this image executes correctly on this host, or that the
+model will make a valid tool call. Record the embedded template digest and
+actual health/discovery/tool outcomes before accepting this route.
 
 ## Required next evidence
 
@@ -102,9 +148,8 @@ these template controls before reporting a policy-matched comparison.
    Verify that exact build supports Qwen's DeltaNet architecture, tokenizer,
    chat template, thought-history handling and tools. vLLM needs a compatible
    automatic tool parser; the present bounded execution schema does not yet
-   configure one. The shared OpenAI turn reader currently reconstructs assistant
-   messages without `reasoning_content`; Qwen thought-history retention therefore
-   needs a specific parser/echo test and an explicit reasoning policy.
+   configure one. Transport/parser reasoning replay is covered by production
+   regressions; actual engine/template behavior still requires observation.
    llama.cpp's embedded template/Jinja route likewise needs
    an observed tool-call smoke test, not an inferred capability label.
 2. Pin a complete model revision and quantized artifact. For a conversion,

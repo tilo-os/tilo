@@ -967,7 +967,13 @@ impl SseReader {
             )));
         }
         let assembly = &mut self.assembly;
-        if assembly.push(&chunk) && timing.first_token.is_none() {
+        let visible_output = assembly.push(&chunk);
+        if assembly.malformed_reasoning_content {
+            return Err(stream_failure(
+                "provider reasoning_content was not a string",
+            ));
+        }
+        if visible_output && timing.first_token.is_none() {
             timing.first_token = Some(timing.started.elapsed());
         }
         if assembly.reasoning_seen && timing.first_reasoning.is_none() {
@@ -1162,17 +1168,30 @@ struct StreamAssembly {
     created: Option<serde_json::Value>,
     model: Option<serde_json::Value>,
     content: Option<String>,
+    reasoning_content: Option<String>,
+    malformed_reasoning_content: bool,
     refusal: Option<String>,
     calls: Vec<StreamCall>,
     /// Tool calls at an index below this one are complete.
     frontier: usize,
     finish: Option<String>,
     usage: Option<serde_json::Value>,
-    /// Whether a reasoning delta (never forwarded) has been seen.
+    /// Whether a reasoning delta (separate from visible output) has been seen.
     reasoning_seen: bool,
 }
 
 impl StreamAssembly {
+    fn push_reasoning_content(&mut self, value: Option<&serde_json::Value>) {
+        match value {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::String(reasoning)) => self
+                .reasoning_content
+                .get_or_insert_default()
+                .push_str(reasoning),
+            Some(_) => self.malformed_reasoning_content = true,
+        }
+    }
+
     /// Fold one chunk in; true when it carried output (text or a tool call).
     fn push(&mut self, chunk: &serde_json::Value) -> bool {
         for (field, slot) in [
@@ -1213,7 +1232,10 @@ impl StreamAssembly {
             self.content.get_or_insert_default().push_str(content);
             output = true;
         }
-        // Reasoning text is timed but neither assembled nor forwarded.
+        // Only the explicitly named provider field is replayable. Other
+        // reasoning dialects remain timing metadata; never infer their shape.
+        self.push_reasoning_content(delta.and_then(|delta| delta.get("reasoning_content")));
+        // Reasoning stays outside incremental visible text and tool frames.
         if text("reasoning")
             .or_else(|| text("reasoning_content"))
             .is_some_and(|reasoning| !reasoning.is_empty())
@@ -1290,6 +1312,12 @@ impl StreamAssembly {
             self.content
                 .map_or(serde_json::Value::Null, serde_json::Value::String),
         );
+        if let Some(reasoning) = self.reasoning_content {
+            message.insert(
+                "reasoning_content".into(),
+                serde_json::Value::String(reasoning),
+            );
+        }
         if let Some(refusal) = self.refusal {
             message.insert("refusal".into(), serde_json::Value::String(refusal));
         }
