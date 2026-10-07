@@ -59,6 +59,10 @@ fn member() -> SigningKey {
 }
 
 fn admit_test_agent(joined: &Enrolled, agent: &str) {
+    set_test_agent_membership(joined, agent, true);
+}
+
+fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     let key = SigningKey::from_bytes(&[61; 32]);
     let messages = joined
@@ -66,14 +70,22 @@ fn admit_test_agent(joined: &Enrolled, agent: &str) {
         .with_current(joined.room, |view| {
             let before = view.peer().clone();
             let mut candidate = before.clone();
-            candidate.put_governed_capabilities(
-                &[
-                    CapOverride::grant(Subject::agent(agent), Scope::Workspace, Verb::Write)
-                        .with_id(format!("test-agent-{agent}")),
-                ],
-                &key,
-                joined.now,
-            )?;
+            if admitted {
+                candidate.put_governed_capabilities(
+                    &[
+                        CapOverride::grant(Subject::agent(agent), Scope::Workspace, Verb::Write)
+                            .with_id(format!("test-agent-{agent}")),
+                    ],
+                    &key,
+                    joined.now,
+                )?;
+            } else {
+                candidate.remove_governed_capabilities(
+                    &[format!("test-agent-{agent}")],
+                    &key,
+                    joined.now,
+                )?;
+            }
             candidate.durable_mutation_messages(
                 &before,
                 &key,
@@ -934,6 +946,138 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
                 &mut |_| panic!("another signer's renewal asked the key holder"),
                 later,
             )
+            .is_err()
+    );
+}
+
+#[test]
+fn removed_agent_cannot_receive_a_direction_for_its_retained_run() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    set_test_agent_membership(&joined, "scribe", false);
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            let (_, _, caps) = tilo_peer_state::room::extract_governed_fields(
+                view.peer().admitted_room().unwrap(),
+            );
+            assert!(
+                caps.iter()
+                    .all(|cap| cap.subject != collab_types::caps::Subject::agent("scribe")),
+                "the signed removal must actually remove the agent"
+            );
+            Ok(())
+        })
+        .unwrap();
+    let before = std::fs::read(&joined.path).unwrap();
+    let result = joined.owner.commit_workspace_task_command(
+        OwnerCommitRequest {
+            room: ROOM.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation: uuid::Uuid::from_u128(501),
+                authority: WorkspaceTaskAuthority::Person { caller },
+                command: WorkspaceTaskCommand::DirectionForRun {
+                    task_id,
+                    run_epoch: 1,
+                    after_revision: 0,
+                    text: "Prioritize compatibility".into(),
+                },
+            },
+        },
+        joined.now,
+    );
+    assert!(
+        result.is_err(),
+        "a retained lease must not admit steering to a removed actor"
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+}
+
+#[test]
+fn person_cancel_is_frontier_fenced_and_durable_after_restart() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    let cancel = |invocation, epoch, revision| OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(invocation),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::CancelForRun {
+                task_id: task_id.clone(),
+                run_epoch: epoch,
+                after_revision: revision,
+            },
+        },
+    };
+    let before = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(cancel(601, 0, 0), joined.now)
+            .is_err()
+    );
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(cancel(602, 1, 1), joined.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let request = cancel(603, 1, 0);
+    joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    let bytes = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .with_task_action_admission(
+                joined.room,
+                &task_id,
+                "scribe",
+                1,
+                0,
+                || -> Result<(), String> { panic!("cancelled task admitted an action") }
+            )
+            .is_err()
+    );
+    joined
+        .owner
+        .commit_workspace_task_command(request, joined.now)
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), bytes);
+    let reopened = open_file(&joined.path).unwrap();
+    let snapshot = reopened.workspace_task_snapshot(joined.room).unwrap();
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .unwrap();
+    assert_eq!(
+        task.status,
+        tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+    );
+    assert_eq!(task.audit.last().unwrap().actor, task.created_by);
+    assert!(snapshot.controls[&task_id].active_run.is_none());
+    assert!(snapshot.controls[&task_id].execution.is_none());
+    assert!(
+        reopened
+            .workspace_task_result(
+                joined.room,
+                WorkspaceTaskCommandId {
+                    device: caller.device_public_key,
+                    invocation: uuid::Uuid::from_u128(603)
+                }
+            )
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        reopened
+            .commit_workspace_task_command(cancel(604, 1, 0), joined.now)
             .is_err()
     );
 }

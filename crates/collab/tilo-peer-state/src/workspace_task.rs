@@ -148,6 +148,13 @@ pub enum WorkspaceTaskCommand {
         sequence: u64,
         phase: WorkspaceTaskExecutionPhase,
     },
+    /// An admitted person cancels exactly the task/run frontier they reviewed.
+    /// Keep the variant index already published on main.
+    CancelForRun {
+        task_id: String,
+        run_epoch: u64,
+        after_revision: u64,
+    },
     /// Queue a task whose complete instruction is independent of its short
     /// Task Center title. Appended to preserve encoded command indices.
     QueueTask {
@@ -367,6 +374,17 @@ fn dispatch(
         WorkspaceTaskCommand::AmendPending { .. } | WorkspaceTaskCommand::CancelPending { .. } => {
             change_pending(tasks, controls, context, command)
         }
+        WorkspaceTaskCommand::CancelForRun {
+            task_id,
+            run_epoch,
+            after_revision,
+        } => cancel_for_run(
+            tasks,
+            controls,
+            context,
+            task_id,
+            (*run_epoch, *after_revision),
+        ),
     }
 }
 
@@ -1172,6 +1190,47 @@ fn next_queue_ordinal(
         .ok_or_else(|| "task queue admission order exhausted".into())
 }
 
+fn cancel_for_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    fence: (u64, u64),
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: author, .. } = context.actor else {
+        return Err("only a person may cancel a workspace task".into());
+    };
+    let task = task_mut(tasks, task_id)?;
+    let control = controls
+        .get_mut(task_id)
+        .ok_or("task has no execution control")?;
+    if task.status.is_finished()
+        || control.run_epoch != fence.0
+        || control
+            .directions
+            .last()
+            .map_or(0, |direction| direction.revision)
+            != fence.1
+    {
+        return Err("task run or instruction frontier changed; review before cancelling".into());
+    }
+    control.active_run = None;
+    control.execution = None;
+    task.status = WorkspaceTaskStatus::Cancelled;
+    task.updated_at = context.now;
+    task.audit.push(WorkspaceTaskAuditEvent {
+        at: context.now,
+        actor: author.clone(),
+        summary: "Cancelled task".into(),
+    });
+    Ok((
+        task_id.to_owned(),
+        WorkspaceTaskMutationResult::Finished {
+            task_id: task_id.to_owned(),
+        },
+    ))
+}
+
 fn task_mut<'a>(tasks: &'a mut [WorkspaceTask], id: &str) -> Result<&'a mut WorkspaceTask, String> {
     tasks
         .iter_mut()
@@ -1864,6 +1923,24 @@ mod tests {
     }
 
     #[test]
+    fn published_cancel_for_run_wire_index_survives_new_commands() {
+        // Bytes emitted by main before QueueTask and CancelRun were added.
+        let historical = [9, 1, b't', 1, 2];
+        let command = postcard::from_bytes::<WorkspaceTaskCommand>(&historical).unwrap();
+        let WorkspaceTaskCommand::CancelForRun {
+            task_id,
+            run_epoch,
+            after_revision,
+        } = &command
+        else {
+            panic!("published cancellation variant changed")
+        };
+        assert_eq!(task_id, "t");
+        assert_eq!((*run_epoch, *after_revision), (1, 2));
+        assert_eq!(postcard::to_allocvec(&command).unwrap(), historical);
+    }
+
+    #[test]
     fn execution_phase_distinguishes_lease_from_acceptance_and_replays_after_reopen() {
         let (mut doc, task) = task_with_applied_direction();
         assert!(snapshot(&doc).unwrap().controls[&task].execution.is_none());
@@ -2164,9 +2241,9 @@ mod tests {
             route: WorkspaceTaskRoute::Model,
             resource: None,
         };
-        // ExecutionPhase already occupies index 8; this newer command is
+        // CancelForRun already occupies index 9 on main; this newer command is
         // appended rather than changing any previously encoded variant.
-        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 9);
+        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 10);
         let mut doc = AutoCommit::new();
         let queued = run(&mut doc, 21, 21, &person(), &command).unwrap();
         let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
@@ -2324,7 +2401,7 @@ mod tests {
             run_epoch: 1,
             after_revision: 0,
         };
-        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 10);
+        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 11);
         let result = run(&mut doc, 43, 43, &person(), &request).unwrap();
         assert_eq!(
             result.result,

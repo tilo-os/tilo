@@ -48,18 +48,20 @@ def make_plan(source):
     names = [entry['file'] for entry in entries] + ['manifest.toml', 'PROVENANCE.md']
     if not fonts or len(names) > 128 or len(set(names)) != len(names):
         raise ValueError('empty, excessive or duplicate font catalog entries')
+    tool = regular(source, 'tools/font-catalog.py')
+    spec = importlib.util.spec_from_file_location('qualified_font_catalog', tool)
+    catalog = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(catalog)
+    if hasattr(catalog, 'prepared_root'):
+        root = catalog.prepared_root(root, 'product')
+    if (root / 'LICENSES/UPSTREAM.md').is_file():
+        names.append('LICENSES/UPSTREAM.md')
     files = {}
     for name in names:
         path = regular(root, name)
         files[str(DESTINATION / name)] = {'source': str(path), 'sha256': digest(path), 'bytes': path.stat().st_size}
     if sum(item['bytes'] for item in files.values()) > LIMIT:
         raise ValueError('font catalog byte bound exceeded')
-    # Reuse the exact app source's validator: historical app catalogs can have
-    # different reviewed face counts from the packaging tool's current source.
-    tool = regular(source, 'tools/font-catalog.py')
-    spec = importlib.util.spec_from_file_location('qualified_font_catalog', tool)
-    catalog = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(catalog)
     count, size = catalog.verify(root, 'product')
     return {'files': files, 'product_count': count, 'product_bytes': size,
             'manifest_sha256': digest(manifest), 'validator_sha256': digest(tool)}

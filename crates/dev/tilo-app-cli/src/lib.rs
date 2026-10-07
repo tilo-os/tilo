@@ -27,6 +27,7 @@ pub mod capability_usage;
 pub mod ci;
 mod dev_reload;
 pub mod examples;
+mod font_assets;
 mod json;
 pub mod native_libs;
 mod pack;

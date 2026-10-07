@@ -1,8 +1,9 @@
 //! Tilo's pinned font catalog.
 //!
 //! The catalog is one directory of unmodified font files plus a
-//! `manifest.toml` that pins every file by size and SHA-256. The checked-in
-//! copy is `crates/sdk/ui-core/assets/fonts`; the OS image installs it once,
+//! `manifest.toml` that pins every file by size and SHA-256. Source metadata lives in
+//! `crates/sdk/ui-core/assets/fonts`; builds prepare the pinned font bytes in
+//! a verified artifact cache. The OS image installs its catalog once,
 //! at [`INSTALLED_ROOT`], where fontconfig and every Tilo process that sets
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
@@ -32,7 +33,7 @@ pub const INSTALLED_ROOT: &str = "/usr/share/fonts/tilo";
 /// The catalog in this source checkout.
 #[must_use]
 pub fn checkout_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui-core/assets/fonts")
+    PathBuf::from(env!("TILO_CHECKOUT_FONT_ROOT"))
 }
 
 /// The installed catalog when the system has one, otherwise the checkout's

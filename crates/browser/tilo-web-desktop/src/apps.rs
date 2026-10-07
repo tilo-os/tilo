@@ -10,6 +10,7 @@ pub(crate) fn register() {
         camera::definition(),
         canvas::definition(),
         chat::definition(),
+        chip_design::definition(),
         clocks::definition(),
         contacts::definition(),
         diffmerge::definition(),

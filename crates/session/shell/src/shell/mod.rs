@@ -162,6 +162,7 @@ pub mod system_monitor;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
+pub(crate) mod task_review;
 pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;

@@ -266,6 +266,7 @@ pub mod sysdirs;
 pub mod testing;
 pub mod text_edit;
 pub mod text_metrics;
+pub mod text_position;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;

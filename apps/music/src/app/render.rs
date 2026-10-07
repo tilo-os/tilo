@@ -1765,6 +1765,8 @@ impl Widget for MusicApp {
         // engine) promptly without waiting for the next input event.
         self.pb.playing
             || self.audio.needs_poll()
+            || self.resource_stream_invocation.is_some()
+            || !self.effect_replies.is_empty()
             || self.local_file_pick.is_some()
             || self.toast.is_some()
             || self.live_search_pending.is_some()
@@ -1908,6 +1910,23 @@ impl MusicApp {
     ) -> Result<ui::framework::Effected, String> {
         use crate::actions::MusicEffect;
         match effect {
+            MusicEffect::PlaybackStatus => {
+                Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "track": self.pb.current,
+                        "requested_playing": self.pb.playing,
+                        "confirmed_playing": self.audio.is_playing_real(),
+                        "resolving": self.active_resolve_request.is_some(),
+                        "spotify_stage": self.audio.spotify_startup_stage(),
+                        "rendered_buffers": self.audio.frames_rendered(),
+                        "sink": self.audio.actual_audio_sink_name(),
+                        "position_ms": self.audio.position_ms(),
+                        "duration_ms": self.audio.duration_ms(),
+                        "error": self.playback_error,
+                    })),
+                    resources: Vec::new(),
+                }))
+            }
             MusicEffect::Sources => {
                 self.open_sources_menu();
                 Ok(ui::framework::Effected::done())

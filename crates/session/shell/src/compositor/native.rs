@@ -7215,6 +7215,9 @@ fn attach_collab_broker_bridges(
             .host_mut()
             .attach_app_action_broker(action_broker);
     }
+    if let Some(review) = broker.task_review() {
+        frame_builder.host_mut().attach_task_review(review);
+    }
     if let Some(realtime) = broker.realtime_fabric_bridge() {
         frame_builder
             .host_mut()
@@ -10683,6 +10686,14 @@ pub fn run() {
                     .collect(),
             );
             st.pump_dbus_notifications();
+            for request in st.take_notification_launch_requests() {
+                if let Err(error) = crate::shell::notification::launch_scheduled_notification(
+                    request,
+                    &st.tree_handle(),
+                ) {
+                    tracing::warn!(%error, "scheduled notification activation failed");
+                }
+            }
         });
         if let Some(network) = peer_sync.as_ref()
             && continuity_feed_polled
