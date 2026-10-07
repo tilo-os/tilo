@@ -2949,6 +2949,7 @@ impl Widget for ActionPalette {
             }
         }
         if !self.in_argument_mode()
+            && !self.history_review_required
             && let Some(results) = self.results.accessibility()
         {
             children.push(results.with_hashed_key(self.target("results")));
@@ -2980,7 +2981,7 @@ impl Widget for ActionPalette {
             }
             return self.field.perform_action(action, doc, path);
         }
-        if !self.in_argument_mode() {
+        if !self.in_argument_mode() && !self.history_review_required {
             let handled = self
                 .results
                 .perform_semantic_action(target, action, doc, path);
