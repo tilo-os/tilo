@@ -53,6 +53,13 @@ fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_au
     assert_eq!(retry.generation, original.generation);
     assert_eq!(retry.aggregate_hash, original.aggregate_hash);
     assert_eq!(std::fs::read(&path).unwrap(), committed);
+    fill_member_capacity(&fixture, &reopened, &member);
+    let committed = std::fs::read(&path).unwrap();
+    let archived = commit(&reopened, &operation, &member).unwrap();
+    assert_eq!(archived.binding, original.binding);
+    assert_eq!(archived.generation, original.generation);
+    assert_eq!(archived.aggregate_hash, original.aggregate_hash);
+    assert_eq!(std::fs::read(&path).unwrap(), committed);
     let mut conflict = operation.clone();
     effect.status = EffectReceiptStatus::Cancelled;
     if let CommitOperation::EffectReceipt { redacted, .. } = &mut conflict.operation {
@@ -94,6 +101,41 @@ fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_au
         "an existing UUID cannot waive current membership"
     );
     assert_eq!(std::fs::read(&path).unwrap(), removed);
+}
+
+fn fill_member_capacity(fixture: &Fixture, owner: &NativeWorkspaceOwner, member: &DeviceCert) {
+    // First archive the original member audit under other valid governor audits.
+    for _ in 0..128 {
+        owner
+            .commit_effect_receipt(
+                &request(EffectReceiptStatus::Succeeded),
+                &fixture.certificate,
+                &fixture.key,
+                fixture.now,
+            )
+            .unwrap();
+    }
+    // The signed public index retains the archived original audit. Fill its
+    // remaining per-member capacity with 127 new, admitted requests.
+    for _ in 0..127 {
+        let mut operation = request(EffectReceiptStatus::Succeeded);
+        let mut effect = decode(&operation).unwrap();
+        effect.actor = blake3::Hash::from_bytes(member.user_public_key)
+            .to_hex()
+            .to_string();
+        if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
+            *redacted = serde_json::to_vec(&effect).unwrap();
+        }
+        owner
+            .commit_member_effect_receipt(
+                &operation,
+                member,
+                &fixture.certificate,
+                &fixture.key,
+                fixture.now,
+            )
+            .unwrap();
+    }
 }
 
 fn request(status: EffectReceiptStatus) -> OwnerCommitRequest {
