@@ -234,6 +234,15 @@ impl Resource for Chat {
                 .invoking(open(&id, "reveal-message"))
                 .anchored(id)
         });
+        let feedback = state.feedback.iter().map(|report| {
+            let id = format!("chat.feedback:{}", report.submission.id);
+            SearchEntry::new(
+                &report.submission.feedback.text,
+                workspace_name(&report.submission.destination.room),
+            )
+            .invoking(open(&id, "reveal-message"))
+            .anchored(id)
+        });
         let people = state.users.iter().map(|user| {
             let id = format!("chat.person:{}", user.id);
             SearchEntry::new(&user.name, "Person")
@@ -244,6 +253,7 @@ impl Resource for Chat {
             .chain(channels)
             .chain(categories)
             .chain(messages)
+            .chain(feedback)
             .chain(people)
             .collect()
     }
@@ -573,6 +583,79 @@ fn draft_keys(doc: &Doc) -> Vec<String> {
 mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
+    use ui::search::SearchProvider as _;
+
+    #[test]
+    fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let channel = app
+            .state()
+            .channels
+            .into_iter()
+            .find(|channel| channel.id == "c_general")
+            .unwrap();
+        let mut preview = ui::feedback::Draft {
+            text: "The reader loses my position".into(),
+            ..Default::default()
+        }
+        .preview()
+        .unwrap();
+        preview.approve();
+        let submission = preview
+            .submission(
+                "0123456789abcdef0123456789abcdef".into(),
+                ui::feedback::Destination {
+                    room: channel.workspace,
+                    provider: "demo-chat".into(),
+                    channel: channel.id.clone(),
+                },
+            )
+            .unwrap();
+        for _ in 0..2 {
+            app.call_on(
+                &format!("chat.channel:{}", channel.id),
+                "submit-feedback",
+                serde_json::json!({"submission": submission}),
+            )
+            .unwrap();
+        }
+        app.settle();
+        let state = app.state();
+        assert_eq!(state.feedback.len(), 1);
+        let report_id = format!("chat.feedback:{}", submission.id);
+        let source = ui::framework::testing::search_source::<Chat>(Chat::search(&state));
+        let hit = source
+            .search("reader loses")
+            .into_iter()
+            .find(|hit| {
+                hit.action_address()
+                    .is_some_and(|address| address.resource == report_id)
+            })
+            .expect("system search finds the reviewed report as a typed resource");
+        let address = hit.action_address().unwrap();
+        app.call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        assert_eq!(
+            app.surface_mut::<ChatApp>().revealed_message.as_deref(),
+            Some(format!("m_feedback_{}", submission.id).as_str())
+        );
+        app.call_on(
+            &report_id,
+            "triage",
+            serde_json::json!({"update": {"status": "investigating"}}),
+        )
+        .unwrap();
+        app.settle();
+        let report = app.state().feedback.remove(0);
+        assert_eq!(report.submission, submission);
+        assert_eq!(report.triage.len(), 1);
+        assert_eq!(report.triage[0].author, report.author);
+        assert_eq!(
+            report.triage[0].update,
+            crate::feedback::TriageUpdate::Investigating
+        );
+    }
 
     #[test]
     fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {
