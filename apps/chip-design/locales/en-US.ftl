@@ -227,3 +227,5 @@ chip-flow-exact = Exact comparison
 chip-flow-characterization = Backend characterization
 chip-flow-completed = Completed simulation
 chip-flow-expected-refusal = Expected refusal; no completed result
+
+chip-open-invalid = This file is not a supported Chip Design report. No report was imported.
