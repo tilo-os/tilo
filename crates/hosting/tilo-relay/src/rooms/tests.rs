@@ -355,7 +355,13 @@ async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() 
         result,
     );
     let catalogue = tilo_agent_participant::AppCatalogue::native();
-    assert_canonical_chat_preparation(rooms, &created.room, &cert, &catalogue).await;
+    Box::pin(assert_canonical_chat_preparation(
+        rooms,
+        &created.room,
+        &cert,
+        &catalogue,
+    ))
+    .await;
     let state = rooms.room(&created.room).await.unwrap();
     {
         let room = state.lock().await;
@@ -448,6 +454,28 @@ async fn assert_canonical_chat_preparation(
             .expect("canonical Chat record exists")
     };
     assert!(!prepared.is_empty());
+    let caller =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let source = tilo_browser_peer::DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: room.into(),
+        record: String::new(),
+    };
+    let workspace = source.workspace_id().unwrap();
+    let retained = rooms
+        .resource_view_document(workspace, &caller, &source)
+        .await
+        .expect("the already-owned governor primary has a signed retained source");
+    let mut original = automerge::AutoCommit::load(&prepared).unwrap();
+    let mut arrived = automerge::AutoCommit::load(&retained.bytes).unwrap();
+    assert_eq!(arrived.get_heads(), original.get_heads());
+    assert_view_reader_refused(
+        rooms,
+        workspace,
+        &tilo_actions::remote::Caller::authenticated([9; 32], cert.device_public_key),
+        &source,
+    )
+    .await;
     assert!(
         !rooms
             .prepare_application(room, cert, catalogue, "so.tilo.chat")

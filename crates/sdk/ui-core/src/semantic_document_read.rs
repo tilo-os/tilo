@@ -211,6 +211,70 @@ impl SelectedSemanticRead<'_> {
     }
 }
 
+/// Inert descriptors for reads registered by the actual retained widget tree.
+/// This admits no invocation or document: execution still needs the normal
+/// bound SDK door and its canonical owner loan. Generic effects are excluded.
+pub fn registered_operations(
+    widget: &dyn crate::widget::Widget,
+    resources: &[Resource],
+) -> Vec<tilo_actions::ActionDescriptor> {
+    fn collect(
+        widget: &dyn crate::widget::Widget,
+        resource: &Resource,
+        addresses: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for spec in &resource.actions {
+            let Some(type_id) = spec.operation_type.as_deref() else {
+                continue;
+            };
+            if type_id.is_empty() {
+                continue;
+            }
+            let Some(table) = registered_in_tree(widget, type_id) else {
+                continue;
+            };
+            let mut matching = table
+                .iter()
+                .filter(|reader| reader.operation_type == type_id);
+            let Some(registration) = matching.next() else {
+                continue;
+            };
+            if matching.next().is_some() {
+                continue;
+            }
+            let encoded = EncodedAction {
+                type_id: type_id.to_owned(),
+                payload: Vec::new(),
+            };
+            if (SelectedSemanticRead {
+                registration,
+                resource,
+                spec,
+                encoded: &encoded,
+            })
+            .check_contract()
+            .is_ok()
+            {
+                addresses.insert(tilo_actions::ActionAddress::new(
+                    resource.id.as_str(),
+                    &spec.id,
+                ));
+            }
+        }
+        for child in &resource.children {
+            collect(widget, child, addresses);
+        }
+    }
+    let mut addresses = std::collections::HashSet::new();
+    for resource in resources {
+        collect(widget, resource, &mut addresses);
+    }
+    tilo_actions::door::survey(resources)
+        .into_iter()
+        .filter(|descriptor| addresses.contains(&descriptor.address))
+        .collect()
+}
+
 /// The reader registered anywhere in `widget`'s retained tree for `type_id`.
 pub(crate) fn registered_in_tree(
     widget: &dyn crate::widget::Widget,
