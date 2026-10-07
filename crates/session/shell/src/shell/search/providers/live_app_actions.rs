@@ -44,6 +44,7 @@ const MAX_JOB_ROWS_PER_QUERY: usize = 4;
 /// Directory responses are an acceleration cache, not a second unbounded
 /// replica of every connected application's action namespace.
 const MAX_RETAINED_DIRECTORY_PAGES: usize = 64;
+const MAX_RETAINED_SERVICE_PAGES: usize = 16;
 /// A stalled LocalSet/capability must not leave a palette-owned oneshot alive
 /// forever. Retrying after this deadline remains bounded by the bridge queue.
 const DIRECTORY_PAGE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -71,6 +72,11 @@ pub(crate) fn set_directory_start_timeout_for_test(timeout: Option<Duration>) {
 /// key lets a bounded palette walk a long directory without replacing an
 /// already-rendered page.
 type DirectoryCacheKey = (u64, String, String, Vec<u8>);
+
+/// One eager broker catalogue for the certified Person in a workspace.
+/// Unlike application directories, native workspace services use opaque
+/// provider names (for example `workspace:<room>`) rather than peer ids.
+type ServiceCacheKey = (String, String, String);
 
 struct PendingDirectoryPage {
     receiver: Pending<Result<CataloguePage, ActionHostError>>,
@@ -249,12 +255,16 @@ pub struct LiveAppActionsProvider {
     action_sessions: ActionSessionSource,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
+    service_pages: RefCell<HashMap<ServiceCacheKey, CataloguePage>>,
+    service_pending: RefCell<HashMap<ServiceCacheKey, PendingDirectoryPage>>,
+    service_context: RefCell<Option<(String, String, u64)>>,
     /// The palette owns at most one needle's directory projection.
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
     directory_query: RefCell<Option<String>>,
     resource_kinds: Vec<ResourceKind>,
     directory_invalidations: Rc<RefCell<HashSet<DirectoryCacheKey>>>,
+    service_invalidations: Rc<RefCell<HashSet<ServiceCacheKey>>>,
     directory_epoch: AtomicU64,
     surface_snapshot: RefCell<Option<SurfaceSnapshot>>,
     surface_build: RefCell<Option<Receiver<SurfaceSnapshot>>>,
@@ -318,6 +328,12 @@ enum AuxiliaryEntry {
         actor: String,
         cursor: Vec<u8>,
     },
+    Service {
+        room: String,
+        revision: String,
+        row: CatalogueRow,
+        actor: String,
+    },
     Resource {
         root: ActionDirectoryRoot,
         row: CatalogueRow,
@@ -362,6 +378,58 @@ struct LocalStart {
     confirmation: tilo_actions::ConfirmationPolicy,
     typed_arguments: bool,
     wants_content: bool,
+}
+
+struct ServiceStart {
+    action_sessions: ActionSessionSource,
+    provider: String,
+    room: String,
+    address: tilo_actions::ActionAddress,
+    actor: String,
+    revision: String,
+    typed_arguments: bool,
+}
+
+type ServiceAdmission = Pending<Result<(u64, InvocationReceipt), ActionHostError>>;
+
+impl ServiceStart {
+    fn begin(
+        &self,
+        args: &crate::shell::search::action_api::ActionArgs,
+    ) -> Result<ServiceAdmission, ActionError> {
+        let argument = if self.typed_arguments {
+            let mut values = args.to_json();
+            values.remove("confirm");
+            values.remove("confirmation_phrase");
+            InvokeArgument::Json(values)
+        } else {
+            args.text("argument").map_or(InvokeArgument::None, |text| {
+                InvokeArgument::Text(text.to_owned())
+            })
+        };
+        let confirmation = if args.boolean("confirm") == Some(true) {
+            Some(Confirmation::Confirmed)
+        } else {
+            args.text("confirmation_phrase")
+                .map(|value| Confirmation::Phrase(value.to_owned()))
+        };
+        Ok(self
+            .action_sessions
+            .open(&self.room, Some(&self.actor))
+            .map_err(ActionError::Refused)?
+            .invoke_job(InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: self.provider.clone(),
+                    address: self.address.clone(),
+                },
+                argument,
+                context: None,
+                confirmation,
+                revision: Some(self.revision.clone()),
+            }))
+    }
 }
 
 impl LocalStart {
@@ -465,6 +533,9 @@ impl LiveAppActionsProvider {
             broker,
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
+            service_pages: RefCell::new(HashMap::new()),
+            service_pending: RefCell::new(HashMap::new()),
+            service_context: RefCell::new(None),
             directory_query: RefCell::new(None),
             resource_kinds: vec![
                 ResourceKind::Action,
@@ -472,6 +543,7 @@ impl LiveAppActionsProvider {
                 ResourceKind::Custom("Resources".into()),
             ],
             directory_invalidations: Rc::new(RefCell::new(HashSet::new())),
+            service_invalidations: Rc::new(RefCell::new(HashSet::new())),
             directory_epoch: AtomicU64::new(0),
             surface_snapshot: RefCell::new(None),
             surface_build: RefCell::new(None),
@@ -788,6 +860,46 @@ impl LiveAppActionsProvider {
             // the source revision deliberately remains stable.
             self.auxiliary_snapshot.borrow_mut().take();
         }
+
+        let mut service_ready = Vec::new();
+        self.service_pending.borrow_mut().retain(|key, pending| {
+            if pending.deadline <= now {
+                return false;
+            }
+            match pending.receiver.poll_ready() {
+                PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
+                    service_ready.push((key.clone(), page));
+                    false
+                }
+                PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
+                PendingPoll::Waiting => true,
+            }
+        });
+        if !service_ready.is_empty() {
+            let mut pages = self.service_pages.borrow_mut();
+            let mut visible_projection_changed = false;
+            for (key, page) in service_ready {
+                let page_is_visible = |page: &CataloguePage| {
+                    page.rows.iter().any(|row| {
+                        tilo_actions::remote::workspace_provider_room(&row.provider)
+                            == Some(key.0.as_str())
+                    })
+                };
+                visible_projection_changed |=
+                    pages.get(&key).is_some_and(page_is_visible) || page_is_visible(&page);
+                if !pages.contains_key(&key)
+                    && pages.len() >= MAX_RETAINED_SERVICE_PAGES
+                    && let Some(evicted) = pages.keys().next().cloned()
+                {
+                    pages.remove(&evicted);
+                }
+                pages.insert(key, page);
+            }
+            if visible_projection_changed {
+                self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+                self.auxiliary_snapshot.borrow_mut().take();
+            }
+        }
     }
 
     fn poll_directory_pages(&self) {
@@ -810,6 +922,12 @@ impl LiveAppActionsProvider {
         self.directory_pending
             .borrow_mut()
             .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+        self.service_pages
+            .borrow_mut()
+            .retain(|(_, _, cached_needle), _| cached_needle == &next);
+        self.service_pending
+            .borrow_mut()
+            .retain(|(_, _, cached_needle), _| cached_needle == &next);
         self.directory_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -823,6 +941,43 @@ impl LiveAppActionsProvider {
             needle.to_string()
         };
         self.set_directory_query(&scoped_query);
+        let current = {
+            let tree = ctx.chrome.tree();
+            tree.desktop.active_workspace().map(|workspace| {
+                (
+                    workspace.room.to_string(),
+                    ctx.chrome.local_user_for_room(&workspace.room),
+                    tree.desktop.external_revision,
+                )
+            })
+        };
+        let previous_service_context = self.service_context.borrow().clone();
+        if previous_service_context.as_ref() != current.as_ref() {
+            self.service_pages.borrow_mut().clear();
+            self.service_pending.borrow_mut().clear();
+            if previous_service_context.is_some() {
+                self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+            }
+            self.service_context.borrow_mut().clone_from(&current);
+        }
+        self.service_pages
+            .borrow_mut()
+            .retain(|(room, actor, _), _| {
+                current
+                    .as_ref()
+                    .is_some_and(|(current_room, current_actor, _)| {
+                        room == current_room && actor == current_actor
+                    })
+            });
+        self.service_pending
+            .borrow_mut()
+            .retain(|(room, actor, _), _| {
+                current
+                    .as_ref()
+                    .is_some_and(|(current_room, current_actor, _)| {
+                        room == current_room && actor == current_actor
+                    })
+            });
     }
 
     fn apply_directory_invalidations(&self) {
@@ -832,6 +987,20 @@ impl LiveAppActionsProvider {
         }
         let mut pages = self.directory_pages.borrow_mut();
         let mut pending = self.directory_pending.borrow_mut();
+        for key in invalidated {
+            pages.remove(&key);
+            pending.remove(&key);
+        }
+        self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn apply_service_invalidations(&self) {
+        let invalidated = std::mem::take(&mut *self.service_invalidations.borrow_mut());
+        if invalidated.is_empty() {
+            return;
+        }
+        let mut pages = self.service_pages.borrow_mut();
+        let mut pending = self.service_pending.borrow_mut();
         for key in invalidated {
             pages.remove(&key);
             pending.remove(&key);
@@ -920,6 +1089,46 @@ impl LiveAppActionsProvider {
                         state,
                         cancel: true,
                         actor: actor.clone(),
+                    });
+                }
+            }
+        }
+        if resume.root_after.is_none()
+            && resume.directory.is_none()
+            && ctx.chrome.search_resource_scope.is_none()
+            && let Some(workspace) = ctx.chrome.tree().desktop.active_workspace()
+        {
+            let room = workspace.room.to_string();
+            let workspace_actor = ctx.chrome.local_user_for_room(&workspace.room);
+            let key = (room.clone(), workspace_actor.clone(), needle.to_string());
+            let current_revision = self.directory_roots(ctx).1;
+            if !current_revision.is_empty()
+                && self
+                    .service_pages
+                    .borrow()
+                    .get(&key)
+                    .is_some_and(|page| page.revision != current_revision)
+            {
+                self.service_pages.borrow_mut().remove(&key);
+                self.service_pending.borrow_mut().remove(&key);
+                self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+            }
+            self.request_service_page(&room, &workspace_actor, needle);
+            if let Some(page) = self.service_pages.borrow().get(&key) {
+                for row in &page.rows {
+                    if entries.len() >= root_limit {
+                        break;
+                    }
+                    if tilo_actions::remote::workspace_provider_room(&row.provider)
+                        != Some(room.as_str())
+                    {
+                        continue;
+                    }
+                    entries.push(AuxiliaryEntry::Service {
+                        room: room.clone(),
+                        revision: page.revision.clone(),
+                        row: row.clone(),
+                        actor: workspace_actor.clone(),
                     });
                 }
             }
@@ -1370,6 +1579,44 @@ impl LiveAppActionsProvider {
         );
     }
 
+    /// Request the eager broker rows for one exact workspace. Native
+    /// services publish opaque providers here, so they cannot be discovered
+    /// through the numeric application-directory root list.
+    fn request_service_page(&self, room: &str, actor: &str, needle: &str) {
+        let key = (room.to_string(), actor.to_string(), needle.to_string());
+        if self.service_pages.borrow().contains_key(&key)
+            || self.service_pending.borrow().contains_key(&key)
+        {
+            return;
+        }
+        let query = CatalogueQuery {
+            needle: needle.to_string(),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            limits: Some(CatalogueLimits {
+                max_bytes: Some(256 * 1024),
+                max_work: Some(8_192),
+                max_depth: Some(1),
+            }),
+            ..CatalogueQuery::default()
+        };
+        let Ok(session) = self.action_sessions.open(room, Some(actor)) else {
+            return;
+        };
+        if self.service_pending.borrow().len() >= MAX_RETAINED_SERVICE_PAGES
+            && let Some(evicted) = self.service_pending.borrow().keys().next().cloned()
+        {
+            self.service_pending.borrow_mut().remove(&evicted);
+        }
+        self.service_pending.borrow_mut().insert(
+            key,
+            PendingDirectoryPage {
+                receiver: session.query(query),
+                deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                initial_page: true,
+            },
+        );
+    }
+
     /// The browsable application directories in each workspace, as the
     /// action host offers them to the local user of that workspace,
     /// ordered by publisher.
@@ -1659,6 +1906,89 @@ impl LiveAppActionsProvider {
         }
     }
 
+    fn service_action_result(
+        &self,
+        room: &str,
+        revision: &str,
+        row: &CatalogueRow,
+        needle: &str,
+        actor: &str,
+    ) -> Option<SearchResult> {
+        let descriptor = row.action.as_ref()?;
+        let score = crate::shell::search::remote_score(
+            needle,
+            &descriptor.action_label,
+            &descriptor.resource_label,
+        );
+        let contract = descriptor.contract.clone();
+        let mut params = descriptor.params.clone();
+        push_confirmation_params(&mut params, &contract.advertised_confirmation());
+        let provider = row.provider.clone();
+        let app_id = row.app_id.clone();
+        let address = descriptor.address.clone();
+        let room = room.to_string();
+        let revision = revision.to_string();
+        let actor = actor.to_string();
+        let needle = needle.to_string();
+        let invalidations = Rc::clone(&self.service_invalidations);
+        let cache_key = (room.clone(), actor.clone(), needle);
+        let resource = address.resource.clone();
+        let action = address.action.clone();
+        let start = Rc::new(ServiceStart {
+            action_sessions: self.action_sessions.clone(),
+            provider: provider.clone(),
+            room,
+            address,
+            actor,
+            revision: revision.clone(),
+            typed_arguments: !descriptor.params.is_empty(),
+        });
+        Some(SearchResult {
+            kind: ResourceKind::Action,
+            operation_kind: descriptor.kind,
+            provider_id: PROVIDER_ID.into(),
+            id: format!(
+                "service{ID_SEPARATOR}{provider}{ID_SEPARATOR}{revision}{ID_SEPARATOR}{resource}{ID_SEPARATOR}{action}"
+            ),
+            title: descriptor.action_label.clone(),
+            subtitle: descriptor
+                .description
+                .clone()
+                .or_else(|| Some(format!("{} · {app_id}", descriptor.resource_label))),
+            badge: None,
+            score,
+            params,
+            contract: Some(contract),
+            on_open: Rc::new(|_, _, _, _| Ok(())),
+            on_invoke: None,
+            on_begin_invoke: Some(Rc::new(move |_, _, _, args| {
+                let admission = start.begin(args)?;
+                let refused_invalidations = Rc::clone(&invalidations);
+                let refused_key = cache_key.clone();
+                let timed_out_invalidations = Rc::clone(&invalidations);
+                let timed_out_key = cache_key.clone();
+                Ok(InvocationDisposition::Pending(admission_ticket(
+                    admission,
+                    deadline_after(directory_start_timeout()),
+                    move |error| {
+                        if invalidates_directory_cache(error) {
+                            refused_invalidations
+                                .borrow_mut()
+                                .insert(refused_key.clone());
+                        }
+                        ActionError::Refused(format!("workspace action refused: {error}"))
+                    },
+                    move || {
+                        timed_out_invalidations
+                            .borrow_mut()
+                            .insert(timed_out_key.clone());
+                        ActionError::Refused("workspace action admission timed out".into())
+                    },
+                )))
+            })),
+        })
+    }
+
     fn directory_resource_result(
         root: &ActionDirectoryRoot,
         row: &CatalogueRow,
@@ -1725,6 +2055,101 @@ impl LiveAppActionsProvider {
             on_begin_invoke: None,
         }
     }
+
+    fn service_action_hierarchy(&self, id: &str) -> Option<ActionHierarchy> {
+        let mut parts = id.split(ID_SEPARATOR);
+        (parts.next()? == "service").then_some(())?;
+        let provider = parts.next()?;
+        let revision = parts.next()?;
+        let resource = parts.next()?;
+        let operation = parts.next()?;
+        if parts.next().is_some()
+            || revision.is_empty()
+            || resource.is_empty()
+            || operation.is_empty()
+        {
+            return None;
+        }
+        let (room, row) = self
+            .service_pages
+            .borrow()
+            .iter()
+            .find_map(|((room, _, _), page)| {
+                if page.revision != revision
+                    || tilo_actions::remote::workspace_provider_room(provider)
+                        != Some(room.as_str())
+                {
+                    return None;
+                }
+                page.rows.iter().find_map(|row| {
+                    let descriptor = row.action.as_ref()?;
+                    (row.provider == provider
+                        && descriptor.address.resource == resource
+                        && descriptor.address.action == operation)
+                        .then(|| (room.clone(), row.clone()))
+                })
+            })?;
+        let descriptor = row.action?;
+        let semantic_identity = descriptor
+            .semantic_identity
+            .filter(|identity| identity.is_valid() && identity.kind == descriptor.resource_kind);
+        Some(ActionHierarchy {
+            application: row.app_id,
+            room,
+            record: String::new(),
+            resource: resource.into(),
+            operation: operation.into(),
+            semantic_identity,
+        })
+    }
+
+    fn resolve_service_action(&self, id: &str, ctx: &SearchContext<'_>) -> Option<SearchResult> {
+        let mut fields = id.split(ID_SEPARATOR);
+        (fields.next()? == "service").then_some(())?;
+        let provider = fields.next()?;
+        let revision = fields.next()?;
+        let resource = fields.next()?;
+        let action = fields.next()?;
+        if fields.next().is_some() || ctx.chrome.search_resource_scope.is_some() {
+            return None;
+        }
+        self.apply_service_invalidations();
+        self.poll_directory_pages();
+        let workspace_room = {
+            let tree = ctx.chrome.tree();
+            let room = tree.desktop.active_workspace()?.room;
+            drop(tree);
+            room
+        };
+        let room = workspace_room.to_string();
+        let actor = ctx.chrome.local_user_for_room(&workspace_room);
+        if tilo_actions::remote::workspace_provider_room(provider) != Some(room.as_str()) {
+            return None;
+        }
+        let cached = self.service_pages.borrow().iter().find_map(
+            |((cached_room, cached_actor, needle), page)| {
+                if cached_room != &room || cached_actor != &actor || page.revision != revision {
+                    return None;
+                }
+                page.rows.iter().find_map(|row| {
+                    let descriptor = row.action.as_ref()?;
+                    (row.provider == provider
+                        && descriptor.address.resource == resource
+                        && descriptor.address.action == action)
+                        .then(|| (row.clone(), needle.clone()))
+                })
+            },
+        )?;
+        self.service_action_result(&room, revision, &cached.0, &cached.1, &actor)
+            .filter(|result| result.id == id)
+    }
+
+    fn resolve_job_control(&self, id: &str, ctx: &SearchContext<'_>) -> Option<SearchResult> {
+        self.job_control_page(ctx, job_control_target(id)?, None, SearchBudget::PALETTE)
+            .results
+            .into_iter()
+            .find(|result| result.id == id)
+    }
 }
 
 impl SearchProvider for LiveAppActionsProvider {
@@ -1746,7 +2171,11 @@ impl SearchProvider for LiveAppActionsProvider {
 
     fn action_hierarchy(&self, id: &str) -> Option<ActionHierarchy> {
         let mut parts = id.split(ID_SEPARATOR);
-        if parts.next()? == "directory" {
+        let kind = parts.next()?;
+        if kind == "service" {
+            return self.service_action_hierarchy(id);
+        }
+        if kind == "directory" {
             let peer = parts.next()?.parse::<u64>().ok()?;
             let revision = parts.next()?;
             let resource = parts.next()?;
@@ -1845,7 +2274,7 @@ impl SearchProvider for LiveAppActionsProvider {
         // but the provider admits those rows in Workspace scope only after
         // matching their authenticated root's cluster to `current_room`.
         if chrome.search_scope == crate::shell::chrome_state::SearchScope::Workspace
-            && result.id.starts_with("directory\u{1f}")
+            && (result.id.starts_with("directory\u{1f}") || result.id.starts_with("service\u{1f}"))
         {
             return SearchProximity::CurrentWorkspace;
         }
@@ -1875,6 +2304,7 @@ impl SearchProvider for LiveAppActionsProvider {
         if self.projection.get() != QueryProjection::LocalOnly {
             self.set_directory_context(&ctx, &needle);
             self.apply_directory_invalidations();
+            self.apply_service_invalidations();
             self.poll_directory_pages();
         }
         if self.projection.get() != QueryProjection::LocalOnly {
@@ -2131,15 +2561,15 @@ impl SearchProvider for LiveAppActionsProvider {
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         // A receipt read or cancellation names one actor-owned job. It must
         // not depend on that job still being inside the bounded browse preview.
-        if let Some(target) = job_control_target(id) {
-            return self
-                .job_control_page(&ctx, target, None, SearchBudget::PALETTE)
-                .results
-                .into_iter()
-                .find(|result| result.id == id);
+        if job_control_target(id).is_some() {
+            return self.resolve_job_control(id, &ctx);
         }
         let mut fields = id.split(ID_SEPARATOR);
-        if fields.next() != Some("directory") {
+        let kind = fields.next();
+        if kind == Some("service") {
+            return self.resolve_service_action(id, &ctx);
+        }
+        if kind != Some("directory") {
             if Self::result_parts(id).is_none() {
                 return self
                     .query_page(ctx, None, SearchBudget::PALETTE)
@@ -2190,6 +2620,7 @@ impl SearchProvider for LiveAppActionsProvider {
         }
 
         self.apply_directory_invalidations();
+        self.apply_service_invalidations();
         self.poll_directory_pages();
         let root = self
             .directory_roots(&ctx)
@@ -2284,6 +2715,7 @@ impl SearchProvider for LiveAppActionsProvider {
         let needle = ctx.needle.trim().to_lowercase();
         self.set_directory_context(&ctx, &needle);
         self.apply_directory_invalidations();
+        self.apply_service_invalidations();
         self.poll_directory_pages();
         let revision = self.search_revision(&ctx);
         let scope = Self::surface_scope(&ctx);
@@ -2406,6 +2838,30 @@ impl SearchProvider for LiveAppActionsProvider {
                         self.directory_action_result(
                             root, revision, descriptor, &needle, actor, cursor,
                         )
+                    }
+                    AuxiliaryEntry::Service {
+                        room,
+                        revision,
+                        row,
+                        actor,
+                    } => {
+                        if row.action.as_ref().is_some_and(|descriptor| {
+                            descriptor.contract.is_programmatic() && !ctx.include_programmatic
+                        }) || (!ctx.wanted.is_empty()
+                            && !ctx.wanted.contains(&ResourceKind::Action))
+                        {
+                            position = position.saturating_add(1);
+                            work = work.saturating_add(1);
+                            continue;
+                        }
+                        let Some(result) =
+                            self.service_action_result(room, revision, row, &needle, actor)
+                        else {
+                            position = position.saturating_add(1);
+                            work = work.saturating_add(1);
+                            continue;
+                        };
+                        result
                     }
                     AuxiliaryEntry::Resource { root, row } => {
                         if !Self::wants_resource_rows(ctx.wanted) {
@@ -2914,6 +3370,176 @@ mod tests {
         chrome: &crate::shell::chrome_state::Chrome,
     ) -> crate::shell::collab_broker::AppActionBroker {
         crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end broker service scenario keeps cold discovery, invocation, and revocation together"
+    )]
+    fn opaque_workspace_service_rows_use_the_broker_catalogue_and_invocation_door() {
+        let chrome = chrome();
+        let owner = chrome.borrow().active_local_user();
+        chrome.borrow().tree_handle().write().desktop.workspaces[0].set_owner(owner);
+        let broker = broker_for(&chrome);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
+        let doc = AutoCommit::new();
+        let mut first_doc = AutoCommit::new();
+
+        let first = provider.query_page(
+            context("profile.save", &chrome.borrow(), &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert!(
+            first
+                .results
+                .iter()
+                .all(|row| !row.id.starts_with("service\u{1f}")),
+            "a workspace-service row is not fabricated before its catalogue replies"
+        );
+        let second = provider.query_page(
+            context("profile.save", &chrome.borrow(), &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        let row = second
+            .results
+            .into_iter()
+            .find(|row| row.id.ends_with("\u{1f}profile.save"))
+            .expect("the broker's workspace service row is published");
+        let hierarchy = provider
+            .action_hierarchy(&row.id)
+            .expect("the exact retained row supplies its hierarchy");
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        assert_eq!(hierarchy.application, "tilo.workspace");
+        assert_eq!(hierarchy.room, room);
+        assert_eq!(hierarchy.operation, "profile.save");
+
+        let mut supplied = serde_json::Map::new();
+        supplied.insert("name".into(), "Fixture profile".into());
+        supplied.insert("description".into(), "Broker-backed".into());
+        supplied.insert(
+            "rules".into(),
+            serde_json::json!([{
+                "scope": {"Action": {"app": "so.tilo.chat", "action": "open-agent-conversation"}},
+                "effect": "Grant",
+                "verb": "Write"
+            }]),
+        );
+        supplied.insert("confirm".into(), true.into());
+        let args = crate::shell::search::action_api::ActionArgs::bind_json(&row.params, &supplied)
+            .expect("arguments follow the published descriptor");
+        let mut edits = ui::widget::Edits::lend(&mut first_doc);
+        let disposition = row
+            .on_begin_invoke
+            .as_ref()
+            .expect("workspace service admission is asynchronous")(
+            &mut edits,
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .expect("the current owner is admitted");
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("workspace service starts through the retained broker ticket");
+        };
+        let receipt = ticket()
+            .expect("broker admission does not refuse")
+            .expect("the eager native service answers immediately");
+        assert!(receipt.broker_invocation_id.is_some());
+        assert!(
+            chrome.borrow().tree().desktop.workspaces[0]
+                .permission_profiles
+                .iter()
+                .any(|profile| profile.name == "Fixture profile"),
+            "the broker service, rather than the local search callback, applied the operation"
+        );
+        let _ = provider.query_page(
+            context("profile.save", &chrome.borrow(), &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        let fresh_row = provider
+            .query_page(
+                context("profile.save", &chrome.borrow(), &doc),
+                None,
+                SearchBudget::PALETTE,
+            )
+            .results
+            .into_iter()
+            .find(|candidate| candidate.id.ends_with("\u{1f}profile.save"))
+            .expect("the changed workspace republishes a fresh governance row");
+
+        let mut foreign = row.id.split(ID_SEPARATOR).collect::<Vec<_>>();
+        foreign[1] = "workspace:00000000-0000-0000-0000-000000000001";
+        assert!(
+            provider
+                .resolve(
+                    &foreign.join(&ID_SEPARATOR.to_string()),
+                    context("", &chrome.borrow(), &doc),
+                )
+                .is_none(),
+            "an opaque provider for another room never inherits the cached action"
+        );
+        let mut stale = row.id.split(ID_SEPARATOR).collect::<Vec<_>>();
+        stale[2] = "unobserved-revision";
+        assert!(
+            provider
+                .resolve(
+                    &stale.join(&ID_SEPARATOR.to_string()),
+                    context("", &chrome.borrow(), &doc),
+                )
+                .is_none(),
+            "an unobserved catalogue revision cannot be invoked"
+        );
+
+        {
+            let handle = chrome.borrow().tree_handle();
+            let mut tree = handle.write();
+            tree.desktop.workspaces[0].set_owner("another-person");
+            tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        }
+        let denied = fresh_row
+            .on_begin_invoke
+            .as_ref()
+            .expect("the retained result keeps only the broker invocation door")(
+            &mut edits,
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .expect("starting an admission ticket is not an authority claim");
+        let crate::shell::search::InvocationDisposition::Pending(denied) = denied else {
+            panic!("workspace service authority is decided by the retained broker ticket");
+        };
+        assert!(
+            denied().is_err(),
+            "the old result must fail the broker's fresh authority check"
+        );
+        let _ = provider.query_page(
+            context("profile.save", &chrome.borrow(), &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        let revoked = provider.query_page(
+            context("profile.save", &chrome.borrow(), &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert!(
+            revoked
+                .results
+                .iter()
+                .all(|candidate| !candidate.id.ends_with("\u{1f}profile.save")),
+            "a caller removed from current workspace authority cannot retain a cached service row"
+        );
+        assert!(
+            provider.action_hierarchy(&fresh_row.id).is_none(),
+            "a refreshed context retires the old cached hierarchy"
+        );
     }
 
     fn page(rows: Vec<CatalogueRow>, next_cursor: Vec<u8>) -> CataloguePage {
