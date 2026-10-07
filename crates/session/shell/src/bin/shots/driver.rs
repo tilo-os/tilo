@@ -623,6 +623,41 @@ impl ShellDriver {
     }
 }
 
+// Real room-owned task state qualifies catch-up review, only in shots fixtures.
+fn seed_catch_up_tasks(tree: &mut WorkspaceTree, local: &str) {
+    let workspace = tree.desktop.active;
+    for (title, status) in [
+        (
+            "Finish release notes",
+            shell::shell::state::WorkspaceTaskStatus::Done,
+        ),
+        (
+            "Check yesterday's goals",
+            shell::shell::state::WorkspaceTaskStatus::InProgress,
+        ),
+        (
+            "Review the draft result",
+            shell::shell::state::WorkspaceTaskStatus::Waiting,
+        ),
+    ] {
+        let task = tree.create_workspace_task(
+            workspace,
+            title.to_string(),
+            local.to_string(),
+            None,
+            shell::shell::state::WorkspaceTaskRoute::Manual,
+            None,
+        );
+        assert!(
+            task.is_some(),
+            "shots fixture must create real workspace work"
+        );
+        if let Some(task) = task {
+            assert!(tree.set_workspace_task_status(workspace, &task, status, local));
+        }
+    }
+}
+
 /// Every tab in `tree` whose tile is an in-process app — the tabs that
 /// the production open-app actions give a scratch document when they
 /// mint them (`window_actions`).
@@ -2100,6 +2135,7 @@ impl ShellDriver {
                 .host_mut()
                 .room_activity_mut()
                 .prepare_away_recap_for_shots(&mut *tree);
+            seed_catch_up_tasks(&mut tree, &local);
             drop(tree);
             drop(state);
         }
