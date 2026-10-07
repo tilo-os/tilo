@@ -175,3 +175,67 @@ fn source_failure_leaves_no_pending_acknowledgment() {
     assert!(wire.borrow().replies.is_empty());
     assert!(client.call(LayerList {}).unwrap().is_empty());
 }
+
+#[test]
+fn serialized_frame_storage_is_reused_without_leaking_previous_request_bytes() {
+    let (mut client, wire) = client(Wire::default());
+    let upload = client.call(LayerUploadBegin {}).unwrap().upload;
+    let chunk = LayerUploadChunk {
+        upload,
+        data: STANDARD.encode(vec![53; UPLOAD_CHUNK_BYTES]),
+    };
+    assert_eq!(
+        client.call(chunk.clone()).unwrap().received,
+        UPLOAD_CHUNK_BYTES as u64
+    );
+    let capacity = client.request_buffer.capacity();
+    let expected = RequestEnvelope {
+        jsonrpc: "2.0".into(),
+        id: 3,
+        request: chunk.clone().into(),
+    };
+    assert_eq!(
+        client.call(chunk).unwrap().received,
+        (UPLOAD_CHUNK_BYTES * 2) as u64
+    );
+    let mut expected_bytes = serde_json::to_vec(&expected).unwrap();
+    expected_bytes.push(b'\n');
+    assert_eq!(client.request_buffer, expected_bytes);
+    assert_eq!(client.request_buffer.capacity(), capacity);
+    // The wire decoder parses the complete frame: stale large-request bytes
+    // after this tiny request would fail before it could return LayerList.
+    assert!(client.call(LayerList {}).unwrap().is_empty());
+    assert_eq!(client.request_buffer.capacity(), capacity);
+    assert!(client.request_buffer.len() < 128);
+    assert_eq!(wire.borrow().batches, [1; 4]);
+}
+
+#[test]
+fn unusually_large_rpc_frames_are_sent_but_not_retained() {
+    let responses = concat!(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"received\":0}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":[]}\n"
+    );
+    let mut client = Client::new(Cursor::new(responses), Vec::new());
+    // Direct RPC bodies can be larger than the chunks produced by upload().
+    // This only tests framing/cache retention; the daemon owns validation.
+    let data = "a".repeat(MAX_RETAINED_REQUEST_BYTES + 1);
+    client
+        .call(LayerUploadChunk {
+            upload: "large-frame".into(),
+            data: data.clone(),
+        })
+        .unwrap();
+    assert_eq!(client.request_buffer.capacity(), 0);
+    assert!(client.call(LayerList {}).unwrap().is_empty());
+    let frames = std::str::from_utf8(&client.writer).unwrap();
+    let mut frames = frames.lines();
+    let first: RequestEnvelope = serde_json::from_str(frames.next().unwrap()).unwrap();
+    let Request::LayerUploadChunk(first) = first.request else {
+        panic!("the original request must be sent intact");
+    };
+    assert_eq!(first.data, data);
+    let second: RequestEnvelope = serde_json::from_str(frames.next().unwrap()).unwrap();
+    assert!(matches!(second.request, Request::LayerList(_)));
+    assert!(frames.next().is_none());
+}
