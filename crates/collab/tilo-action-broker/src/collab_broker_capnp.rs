@@ -6561,6 +6561,20 @@ struct ConnectionLease {
     peer_id: u64,
 }
 
+/// Disconnect even when the `LocalSet` cancels a connection instead of polling it
+/// to EOF. capnp-rpc's first disconnect poll releases exported capabilities and
+/// pipelines synchronously; dropping `RpcSystem` alone does not release those
+/// cycles. No peer response or additional shutdown time is needed here.
+struct DisconnectOnDrop<F: std::future::Future>(Option<F>);
+
+impl<F: std::future::Future> Drop for DisconnectOnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(disconnector) = self.0.take() {
+            let _ = futures::FutureExt::now_or_never(disconnector);
+        }
+    }
+}
+
 struct ConnectionExit {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
@@ -11277,6 +11291,8 @@ pub(super) fn spawn_configured(
                         );
                     })
                 };
+                #[cfg(any(test, feature = "test-support"))]
+                report_retired_broker_owners(&state, &directories);
                 match run {
                     Ok(()) => return,
                     Err(panic) => {
@@ -11290,6 +11306,24 @@ pub(super) fn spawn_configured(
     fanout.attach_capnp(attached_state);
 
     Ok(thread)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn report_retired_broker_owners(
+    state: &Arc<CapnpBrokerState>,
+    directories: &Rc<LocalActionDirectoryRegistry>,
+) {
+    if std::env::var_os("TILO_IN_PROCESS_TEST_ROOT").is_some() {
+        eprintln!(
+            "native broker retired LocalSet: state refs={}, directory refs={}, registered={:?}",
+            Arc::strong_count(state),
+            Rc::strong_count(directories),
+            directories
+                .directories
+                .try_borrow()
+                .map(|entries| entries.len()),
+        );
+    }
 }
 
 /// Most broker threads a session starts after one unwound, before the
@@ -11895,6 +11929,7 @@ async fn drive_connection(
         peer_id,
     });
     let rpc = RpcSystem::new(network, Some(client.client));
+    let _disconnect = DisconnectOnDrop(Some(rpc.get_disconnector()));
     rpc.await
 }
 
