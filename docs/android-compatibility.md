@@ -278,8 +278,8 @@ Metadata requires a read-authorized open inside the unchanged launcher sandbox,
 then observes that descriptor with `fstat`; a swapped path cannot redirect the
 metadata lookup. MIME is inferred from the caller-supplied filename without reading
 content. This remains a file-URI path: Android content providers,
-persisted URI authority and already-open descriptor revocation remain
-unqualified. The [document journey source](../tools/android/run_document_journey.py)
+persisted URI authority remain unqualified. The separate foreground-worker journey
+below covers interruption of already-open descriptors. The [document journey source](../tools/android/run_document_journey.py)
 records actual runtime, APK and production binary pins outside tracked source.
 The original signed integration, denial and Arity APKs are rerun against the new
 runtime to preserve their prior behavior.
@@ -339,20 +339,137 @@ Generated reports, original screenshots, APKs and signing material stay outside
 tracked source.
 
 This qualifies a self-stopping started service in the existing isolated APK
-process. Sticky restarts, bound-client lifetimes, foreground services, worker-thread
-stop requests, process-loss recovery and service survival after closing an activity
+process. Sticky restarts, bound-client lifetimes, process-loss recovery and service survival after closing an activity
 still need separate app journeys. This run did not exercise new file grants or
 their revocation, signed OS admission, physical devices or ARM64.
+
+## Foreground worker and live grant withdrawal
+
+The owned SDK-23 `ForegroundActivity` APK reproduced two defects on current
+main's actual ART runtime: `startForeground` accepted invalid arguments and
+returned without sending its notification, and revocation left the running
+sandbox's already-open output descriptor writable. The baseline wrote six more
+ticks after withdrawal; relaunch denied the former file authority.
+
+The bounded framework patch now requires a nonzero notification ID, a notification
+and the existing filtered host provider. It marks the ongoing notice through
+[GIO's category API](https://docs.gtk.org/gio/method.Notification.set_category.html).
+The compositor makes that notice persistent only for an authenticated Tilo caller
+and tracks its unique bus owner. Another sender cannot replace or close it;
+owner disconnection withdraws it. Service destruction removes the notice.
+Modern foreground permission checks still deny permission, and media/detach
+variants explicitly report unsupported behavior. This grants no independent
+background execution authority. Foreground sticky process recovery is qualified
+separately below; intent redelivery remains unsupported.
+
+Accepted filesystem policy publication now interrupts supervised immutable
+sandboxes retaining revoked grants, rather than leaving old open descriptors
+usable. The original process identity and durable room scope this interruption;
+new restrictions and grant expiry use the same route. A queued launch rechecks
+authority before its gate opens. Private per-launch capability files stay with
+the supervisor; concurrent launches of the same package cannot overwrite each
+other's grants. Policy acceptance is asynchronous, so this is
+not a claim that the control request itself synchronously closes descriptors.
+
+On 2026-10-06 the unchanged signed APK passed with the changed framework and
+production compositor: a persistent notice outlasted the ordinary toast lifetime,
+normal worker stop withdrew it, accepted grant withdrawal interrupted the old
+sandbox and removed its notice, and relaunch denied metadata/read/write while
+preserving three private visits. The worker returned `START_STICKY`, but authority
+withdrawal caused no automatic restart. An unrelated real bus client could not
+close or replace the notice or gain persistence by supplying the category.
+Only the fixture's new source-read and output-write grants were used and revoked.
+Run `tools/android/run_foreground_journey.py --help`; generated JSON, logs, APKs
+and screenshots belong under `target/` or outside source.
+
+This qualifies a scoped worker in the existing APK process, with software graphics
+on remote x86_64. It does not establish foreground media/typed service support,
+sticky process recovery, service survival after activity closure, signed OS image
+admission, ARM64 or physical-device success.
+
+## Foreground sticky process recovery
+
+Android's [START_STICKY contract](https://developer.android.com/reference/android/app/Service)
+recreates a started Service after process loss and delivers a null Intent when
+there is no pending new command. Reopening the application's Activity does not
+prove that contract. The new owned fixture records both service starts and
+Activity visits in private storage. Its unchanged signed APK reproduced missing
+recovery on the previous runtime: killing ART stopped the worker permanently,
+while private state and denial after grant withdrawal remained intact.
+
+The private entrypoint now remains in the original launcher sandbox, creates a
+launch-local anonymous memfd journal, and supervises ART. The framework journals
+only running foreground Services returning START_STICKY. After abnormal signal
+loss, the entry validates a bounded journal and retries at most three times with
+a two-second backoff. The framework validates service names against this APK's
+enabled declarations, uses a visible recovery surface, and calls each Service on
+the main looper with null Intent. The app's Activity is not recreated. The
+recovered service must pass the existing foreground/notification admission.
+Normal exit or termination, normal service stop and empty/malformed journals do
+not restart. Journal state is never persisted across explicit launches.
+
+The real ART journey on remote x86_64 passed with the identical signed APK:
+new process, null Intent, unchanged Activity visit count, resumed scoped work,
+presented recovery surface and persistent foreground notice. During a second
+process-loss backoff, accepted grant withdrawal killed the original sandbox;
+there was no further worker creation, notification or descriptor write. Explicit
+relaunch denied former metadata/read/write authority and retained private visits.
+Only newly created disposable fixture files received grants, all withdrawn.
+Run `tools/android/run_sticky_journey.py --help`; reports and screenshots stay
+private outside Git. Six real fork/exec tests additionally check normal exit,
+termination, empty/malformed journal, retry and the crash bound.
+
+This qualifies foreground START_STICKY recovery after signal process loss in the
+existing authority scope. It adds no independent background privileges. Intent
+redelivery, ordinary background services, recovery after closing the activity or
+compositor, modern typed/media services, signed OS admission and real devices
+remain unqualified. Software graphics and x86_64 execution do not establish ARM64.
+
+## ARM64 qualification path
+
+The official Alpine ARM64 repositories provide the same pinned
+[ATL package](https://pkgs.alpinelinux.org/package/edge/testing/aarch64/android-translation-layer)
+and ART version as the x86_64 baseline. `acquire_alpine_runtime.sh` accepts an
+explicit `aarch64` target. On an x86_64 builder it stages a separate root with
+apk signature verification and package scripts disabled, using the target's
+architecture-specific keys from the immutable official image's alpine-keys
+package. It neither registers binfmt nor installs host packages. Cross-architecture
+staging does not execute ART and is not runtime acceptance.
+
+The current entrypoint was cross-linked statically against signed ARM64 musl and
+GCC compiler builtins, and the current JNI bridge was cross-linked against signed
+ARM64 GTK/GLib headers and libraries with generic signed OpenJDK JNI headers.
+Both actual ELF machine IDs are AArch64. The same architecture-independent DEX
+framework and unchanged signed foreground APK pass ARM64 receipt/signature
+admission; `execution_accepted` remains false. Cross-build and staging are not
+ART runtime success. Package scripts were disabled, so a native acquisition must
+also qualify generated schema/cache inputs before device use.
+
+`build_arm64_entry.sh` and `mediation/build_arm64_bridge.py` provide the remote
+cross-build commands for a signed development sysroot (musl-dev, gcc, gtk4.0-dev
+and glib-dev). The existing `stage_alpine_runtime.py`, `stage_runtime.py` and
+`qualify_apk.py` validate ARM64 ELF IDs and complete separate receipts. Preserve
+the full upstream GPL source and package provenance, and retain an accepted
+native ARM64 Tilo image from the existing
+`Build / OS dev (aarch64)` pipeline. The execution drivers default to the observed Linux host architecture and accept
+`--architecture aarch64`; a mismatching execution host fails before launching.
+On a native remote ARM64 session, run the same
+unchanged signed APK journeys through the production launcher/compositor with
+mandatory confinement, frames, file/permission denials, notification ownership,
+lifecycle and sticky recovery. A loader or emulator probe alone is insufficient.
+Yoga/Pi image installation, kernel/security changes, reboots and physical
+GPU/input acceptance are coordinated through the parent task; none are performed
+by this Android task.
 
 ## Compatibility assessment
 
 | Area | Confirmed | Remaining acceptance |
 | --- | --- | --- |
 | Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation | Real GPU/DRM, resize/rotation, ARM64, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
-| Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source | Android content providers, Android sharing intents, persisted URI authority, immediate running-process revocation, native projection and legacy external storage mapping |
-| Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability | Full Android notification tags, actions, resource mapping and background persistence |
+| Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source; accepted withdrawal interrupts an old sandbox holding open descriptors | Android content providers, Android sharing intents, persisted URI authority, native projection and legacy external storage mapping |
+| Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability; ongoing notice persistence, owner cleanup and unrelated-sender denial | Full Android notification tags, actions, resource mapping and independent background persistence |
 | Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
-| Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks; started-service request IDs and stale/current self-stop with main-looper destruction; owned compositor teardown | Workspace stop, compositor loss, background workers, bound/foreground/sticky services, updates and migration |
+| Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks; started-service request IDs and stale/current self-stop with main-looper destruction; scoped foreground worker stop and revocation interruption; bounded null-Intent sticky recovery and revocation during backoff; owned compositor teardown | Workspace stop, compositor loss, bound/typed/media services, broader recovery, updates and migration |
 | Security | Production launcher and authenticated surface adoption; mandatory fully enforced Landlock and no-new-privileges; negative file/network fixture | Malicious JNI/ART probes, cross-room input/bus/clipboard, broader native attack surface review |
 | Collaboration/accessibility | Foreign surface display, semantic shell actions, real picker AT-SPI actions and external Android TextView content description | APK state is not system-owned CRDT state; complete Android semantic resource/action and accessibility coverage |
 

@@ -1393,32 +1393,25 @@ fn attach_trusted_identities_projection(
 }
 
 /// Write `capabilities` where `tilo-launcher --capabilities` will read
-/// them, returning the path. `Ok(None)` means nothing was granted — no
-/// file, no flag, the launcher applies the manifest alone — and any
-/// stale file for this app is removed so a revoked grant can't survive
-/// on disk.
+/// them. Each launch owns a private immutable snapshot until its supervisor
+/// drops the file. `Ok(None)` means no file or flag: manifest permissions alone.
 fn write_capabilities_file(
     package_id: &str,
     capabilities: &[CapOverride],
-) -> std::io::Result<Option<PathBuf>> {
+) -> std::io::Result<Option<tempfile::NamedTempFile>> {
     // Create at 0600 rather than writing and chmod-ing after: the window
     // between the two is exactly when another process could open it.
     use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
 
     // Reverse-DNS in principle, but this arrives from a registry file —
     // refuse anything that could escape the directory.
-    let file_name = format!("{package_id}.json");
     if package_id.is_empty() || package_id.contains('/') || package_id.contains("..") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("refusing to write a capability file for package id {package_id:?}"),
         ));
     }
-    let path = capabilities_dir().join(file_name);
     if capabilities.is_empty() {
-        // Best-effort: a missing file is the same as an empty one.
-        let _ = std::fs::remove_file(&path);
         return Ok(None);
     }
     {
@@ -1434,15 +1427,13 @@ fn write_capabilities_file(
             format!("serialising capabilities: {e}"),
         )
     })?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("launch-")
+        .suffix(".json")
+        .tempfile_in(capabilities_dir())?;
     file.write_all(&json)?;
-    file.sync_all()?;
-    Ok(Some(path))
+    file.as_file().sync_all()?;
+    Ok(Some(file))
 }
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
@@ -2599,6 +2590,44 @@ fn execute_installed(
     )
 }
 
+fn stage_launch_capabilities(
+    app_id: &str,
+    capabilities: &[CapOverride],
+) -> Option<tempfile::NamedTempFile> {
+    match write_capabilities_file(app_id, capabilities) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!(
+                "[launch {app_id}] could not stage {} capabilities ({error}); starting with manifest permissions only",
+                capabilities.len()
+            );
+            None
+        }
+    }
+}
+
+fn attach_sandbox_authority(
+    app: &InstalledApp,
+    room: RoomId,
+    command: &mut LaunchCommand,
+    capabilities: Vec<CapOverride>,
+    file: Option<tempfile::NamedTempFile>,
+) -> Result<Option<action_authority::Lease>, LaunchError> {
+    let applied = if file.is_some() {
+        capabilities
+    } else {
+        Vec::new()
+    };
+    let requires_supervision = !applied.is_empty();
+    match action_authority::attach_optional(app, room, command) {
+        Some(lease) => Ok(Some(lease.with_sandbox_capabilities(applied, file))),
+        None if requires_supervision => Err(LaunchError::RegistryUnreadable {
+            detail: crate::shell::i18n::t("launch-error-sandbox-supervision"),
+        }),
+        None => Ok(None),
+    }
+}
+
 fn execute_installed_inner(
     app: InstalledApp,
     room: RoomId,
@@ -2616,18 +2645,7 @@ fn execute_installed_inner(
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
     let capabilities = capability_snapshot.unwrap_or_else(|| capabilities_for_app(&app.package_id));
-    let capabilities_file = match write_capabilities_file(&app.package_id, &capabilities) {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!(
-                "[launch {}] could not stage {} capabilities ({e}); \
-                 starting with manifest permissions only",
-                app.package_id,
-                capabilities.len()
-            );
-            None
-        }
-    };
+    let capabilities_file = stage_launch_capabilities(&app.package_id, &capabilities);
     let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
         .map_err(|error| LaunchError::IdentityUnavailable {
             detail: error.to_string(),
@@ -2640,7 +2658,9 @@ fn execute_installed_inner(
         Some(&socket),
         room,
         &LaunchExtras {
-            capabilities_file: capabilities_file.as_deref(),
+            capabilities_file: capabilities_file
+                .as_ref()
+                .map(tempfile::NamedTempFile::path),
             identity_path: identity_path.as_deref(),
             render_node: crate::compositor::render_node::resolved(),
             document,
@@ -2713,7 +2733,8 @@ fn execute_installed_inner(
             app.package_id
         );
     }
-    let authority_lease = action_authority::attach_optional(&app, room, &mut command);
+    let authority_lease =
+        attach_sandbox_authority(&app, room, &mut command, capabilities, capabilities_file)?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "governance projection staged");
     remember_launch(&app);
     spawn_detached(app.clone(), command, authority_lease)
@@ -3402,7 +3423,7 @@ fn start_launch(
     let worker_events = events.clone();
     let startup_token = super::launch_readiness::command_token(&command);
     let spawn_result = builder.spawn(move || {
-        let _authority_lease = authority;
+        let mut authority_lease = authority;
         let events = worker_events;
         events.clone().adopt();
         let mut cmd = Command::new(&command.program);
@@ -3461,6 +3482,27 @@ fn start_launch(
             workspace_id,
             command.service_identity.is_some(),
         );
+        #[cfg(target_os = "linux")]
+        if let Some(lease) = authority_lease.as_mut()
+            && let Err(error) = lease.register_sandbox(child.id())
+        {
+            // The child is still behind the launch gate and has no sandbox
+            // descriptors. Do not release a stale accepted-policy snapshot.
+            let _ = child.kill();
+            let _ = child.wait();
+            unregister_launched_process(child.id());
+            events.startup.fail(startup_token, error.to_string());
+            events.push(LaunchEvent {
+                package_id: app.package_id.clone(),
+                display_name: app.display_name.clone(),
+                managed_agent_id: app.managed_agent_id.clone(),
+                managed_workspace_id: app.managed_workspace_id.clone(),
+                kind: LaunchEventKind::SpawnFailed {
+                    detail: error.to_string(),
+                },
+            });
+            return;
+        }
         mark_launch_spawned(&app.package_id, child.id());
         events.startup.started(startup_token, child.id());
         // Recorded before the gate opens, so the session learns of the start
@@ -5922,10 +5964,10 @@ mod tests {
                 .expect("a granted app gets a file");
 
             // readable only by the user: this file says what one app may reach
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            let mode = std::fs::metadata(path.path()).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "capability file must not be world-readable");
 
-            let records = launcher::capabilities::load_capability_file(&path);
+            let records = launcher::capabilities::load_capability_file(path.path());
             let plan = launcher::capabilities::CapabilityPlan::for_app(
                 "so.tilo.books",
                 &records,
@@ -5950,9 +5992,8 @@ mod tests {
             );
         }
 
-        /// Revoking is not a UI state — the file the launcher reads has to
-        /// go away too, or the next launch would honour a grant the user
-        /// took back.
+        /// Every launch has its own record. A reduced-policy launch cannot
+        /// reuse the previous file; the supervisor removes that file on exit.
         fn revoking_the_last_capability_removes_the_file() {
             let tmp = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -5966,20 +6007,43 @@ mod tests {
             let path = write_capabilities_file("so.tilo.books", &granted)
                 .unwrap()
                 .expect("file written while granted");
-            assert!(path.exists());
+            let old_path = path.path().to_path_buf();
+            assert!(old_path.exists());
 
             let after_revoke = write_capabilities_file("so.tilo.books", &[]).unwrap();
-            let still_there = path.exists();
-            env.remove("XDG_RUNTIME_DIR");
-
-            assert_eq!(
-                after_revoke, None,
-                "with nothing granted there is no file to name on the command line"
-            );
             assert!(
-                !still_there,
-                "the stale capability file must be gone, not left for the next launch to read"
+                after_revoke.is_none(),
+                "revoked relaunch must have no capability file"
             );
+            let other = write_capabilities_file(
+                "so.tilo.books",
+                &[fs_grant("so.tilo.books", "/another-room", Verb::Write)],
+            )
+            .unwrap()
+            .unwrap();
+            assert_ne!(old_path, other.path());
+            assert_eq!(
+                launcher::capabilities::load_capability_file(&old_path),
+                granted,
+                "a concurrent same-package launch must not overwrite this snapshot"
+            );
+            assert_eq!(
+                launcher::capabilities::load_capability_file(other.path())[0].scope,
+                Scope::FsPath("/another-room".into())
+            );
+            drop(path);
+            assert!(
+                !old_path.exists(),
+                "the ended launch's snapshot must be removed"
+            );
+            let other_path = other.path().to_path_buf();
+            assert!(other_path.exists(), "another launch's snapshot must remain");
+            drop(other);
+            assert!(
+                !other_path.exists(),
+                "each supervisor removes only its own snapshot"
+            );
+            env.remove("XDG_RUNTIME_DIR");
         }
 
         published_capabilities_are_filtered_to_the_launching_app();

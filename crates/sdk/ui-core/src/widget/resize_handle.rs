@@ -88,6 +88,18 @@ pub struct ResizeHandle {
 }
 
 impl ResizeHandle {
+    /// Move the handle by `dx`; see
+    /// [`super::window_group::WindowGroup::offset_layout`].
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.rect = self.rect + shift;
+        self.left_rect = self.left_rect + shift;
+        self.right_rect = self.right_rect + shift;
+    }
+
     pub fn new() -> Self {
         Self {
             left_rect: Rect::ZERO,

@@ -387,6 +387,32 @@ pub(crate) struct TabDragVisual {
 }
 
 impl TabBar {
+    /// Move the bar and every rectangle laid out in it by `dx`; see
+    /// [`super::window_group::WindowGroup::offset_layout`].
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.rect = shift_rect(self.rect, shift);
+        for rect in &mut self.tab_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.close_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.close_hit_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.max_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.search_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
+    }
+
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
     /// inactive but the slot still holds its place (no neighbour reflow).
     pub const SOURCE_PILL_DIM_ALPHA: f32 = 0.35;

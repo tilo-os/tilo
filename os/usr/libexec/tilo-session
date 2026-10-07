@@ -72,6 +72,10 @@ esac
 logout_request_dir="$($MKDTEMP -d "$runtime_dir/tilo-session.XXXXXX")"
 logout_request_path="$logout_request_dir/logout-request"
 export TILO_SESSION_LOGOUT_REQUEST="$logout_request_path"
+# A fresh directory belongs to this successful PAM login. Native compositor
+# runs arm it locked while alive and hand their final lock state back only
+# after ordered teardown; the next run must not silently unlock this login.
+(umask 077; printf 'unlocked\n' >"$logout_request_dir/lock-state")
 
 # greetd supplies these only to the compositor process.  D-Bus activation and
 # the already-running systemd user manager need their own copy or
@@ -101,6 +105,9 @@ stop_target() {
 }
 
 cleanup_logout_channel() {
+  if [ -n "$logout_request_dir" ]; then
+    "$RM" -f -- "$logout_request_dir/lock-state" 2>/dev/null || true
+  fi
   if [ -n "$logout_request_path" ]; then
     "$RM" -f -- "$logout_request_path" 2>/dev/null || true
   fi
