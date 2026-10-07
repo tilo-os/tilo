@@ -101,15 +101,16 @@ to that owner, with no change to the held PR's release permissions.
 
 ## Focused verification
 
-Keep compilation on the remote builder:
+Run through a remote Cargo drop-in configured as `$CARGO`, keeping compilation
+off the interactive device:
 
 ```bash
-rcargo --no-fallback test --locked -p settings-store personal_dictionary --lib
-rcargo --no-fallback test --locked -p osk personal_vocabulary_tests --lib
-rcargo --no-fallback test --locked -p tilo-ui --lib collaboration::channel_settings::tests
-rcargo --no-fallback test --locked -p tilo-action-broker --lib app_settings_tests
-rcargo --no-fallback test --locked -p word-processor --test it framework_host::the_persons_own_words_are_spelled_right_in_every_window -- --exact
-rcargo --no-fallback check --locked -p shell --tests -p settings -p osk -p word-processor --all-targets
+$CARGO test --locked -p settings-store personal_dictionary --lib
+$CARGO test --locked -p osk personal_vocabulary_tests --lib
+$CARGO test --locked -p tilo-ui --lib collaboration::channel_settings::tests
+$CARGO test --locked -p tilo-action-broker --lib app_settings_tests
+$CARGO test --locked -p word-processor --test it framework_host::the_persons_own_words_are_spelled_right_in_every_window -- --exact
+$CARGO check --locked -p shell --tests -p settings -p osk -p word-processor --all-targets
 ```
 
 Service tests exercise real disk persistence, edit/remove/reset/restart,
