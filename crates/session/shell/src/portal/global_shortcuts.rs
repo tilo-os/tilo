@@ -1676,6 +1676,14 @@ mod tests {
                 preferred_trigger: Some("Ctrl+Shift+F10".into()),
             }],
         };
+        assert!(
+            service.is_reserved("CTRL+SHIFT+KEYT"),
+            "reopen is owned by the shell"
+        );
+        assert!(
+            !service.is_reserved("CTRL+SHIFT+KEYM"),
+            "the grant fixture is unreserved"
+        );
         assert_eq!(service.install_approved(&request), vec!["talk"]);
         let key = PhysicalKey::Code(KeyCode::F10);
         let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
