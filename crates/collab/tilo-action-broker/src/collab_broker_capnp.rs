@@ -28,6 +28,7 @@ mod durable_local_invocation;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+mod launcher_message_publisher;
 #[cfg(test)]
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
@@ -2749,13 +2750,32 @@ struct LocalHostWorkerScope {
     certificate: tilo_user_identity::DeviceCert,
 }
 
-/// A unique actual private connection, independent of device role. A native
-/// primary device and a delegated Cloud host retain their existing admission paths.
+/// Broker-private app connection custody, not a host or Agent authority grant.
+/// An in-process worker retains its exact private descriptor; canonical Chat
+/// may instead retain its ordinary launcher-attested Person connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PrivateWorkerRegistration {
     identity: uuid::Uuid,
     route: CrdtRoute,
     certificate: tilo_user_identity::DeviceCert,
+    /// Actual connected peer lifetime, never reconstructed from launch labels.
+    launcher: Option<launcher_message_publisher::LauncherCustody>,
+}
+impl PrivateWorkerRegistration {
+    fn current(&self) -> bool {
+        self.launcher
+            .as_ref()
+            .is_none_or(launcher_message_publisher::LauncherCustody::current)
+    }
+    fn require_current(&self) -> Result<(), capnp::Error> {
+        if self.current() {
+            Ok(())
+        } else {
+            Err(capnp::Error::failed(
+                "launcher publisher process or connection ended".into(),
+            ))
+        }
+    }
 }
 /// Host-owned admission for one private SDK descriptor. Never serialized on the wire.
 #[derive(Clone)]
@@ -3316,6 +3336,7 @@ impl CapnpBrokerState {
                     identity,
                     route: route.clone(),
                     certificate: certificate.clone(),
+                    launcher: None,
                 }),
                 route,
                 root: certificate.user_public_key,
@@ -5946,6 +5967,9 @@ impl CapnpBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
     ) -> Result<AdmittedJoinIdentity, capnp::Error> {
+        if let Some(registration) = admitted.worker_registration.as_ref() {
+            registration.require_current()?;
+        }
         let now = self.policy_now_ns().map_err(capnp::Error::failed)?;
         if let Some(cert) = &admitted.certificate {
             tilo_user_identity::verify_device_cert_at(cert, now)
@@ -6855,7 +6879,19 @@ impl collab_service::Server for CapnpCollabService {
                     }
                     verified_identity.worker_registration = Some(registration.clone());
                 }
-            } else if state.durable_owner_required && !route.app_id.is_empty() {
+            } else {
+                let kind = reader
+                    .get_participant_kind()?
+                    .to_str()
+                    .map_err(capnp::Error::from)?;
+                verified_identity.worker_registration =
+                    self.launcher_message_registration(&route, &verified_identity, kind)?;
+            }
+            if self.worker.is_none()
+                && verified_identity.worker_registration.is_none()
+                && state.durable_owner_required
+                && !route.app_id.is_empty()
+            {
                 return Err(capnp::Error::failed(
                     "application requires host-owned worker descriptor admission".into(),
                 ));
@@ -13787,6 +13823,8 @@ pub mod tests {
     include!("canonical_route_tests.rs");
     #[cfg(test)]
     include!("workspace_message_publisher_tests.rs");
+    #[cfg(test)]
+    include!("launcher_message_publisher_tests.rs");
     #[cfg(test)]
     include!("workspace_message_source_tests.rs");
     #[cfg(test)]

@@ -1,4 +1,6 @@
-//! Original invocation custody, minted only by dispatch and an actual private worker.
+//! Original invocation custody, minted only by dispatch and broker-private app custody.
+//! Launcher-attested Chat connections retain live connection/process provenance;
+//! managed Agent channels do not gain Person publisher authority through this door.
 use super::{
     Actor, AdmittedJoinIdentity, Arc, CapDecision, CapnpBrokerState, CrdtRoute,
     PrivateWorkerRegistration, PublishedAction, PublishedInput, ResourceRef, Verb,
@@ -361,6 +363,9 @@ impl OriginalInvocation {
     ///
     /// Returns a message when the broker, worker, certificate or clock lapsed.
     pub fn check_custody(&self) -> Result<u64, String> {
+        if !self.worker.current() {
+            return Err("original launcher publisher process or connection ended".into());
+        }
         if self
             .data
             .execution
@@ -536,6 +541,7 @@ impl CapnpBrokerState {
             route,
             certificate: certificate.clone(),
             identity: registration,
+            launcher: None,
         };
         let authorize = Arc::new(move |request: &PublishedInvocationRequest| -> Result<PublishedInvocationLease, String> {
             let state = broker.upgrade().ok_or("original invocation broker retired")?;

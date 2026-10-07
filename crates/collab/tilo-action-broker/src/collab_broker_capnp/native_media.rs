@@ -170,10 +170,11 @@ impl ProcessMonitor {
             let state = Arc::downgrade(state);
             let stop: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 checked.stop();
-                if let Some(state) = state.upgrade()
-                    && let Some(service) = state.services.native_media.as_ref()
-                {
-                    service.disconnect(peer);
+                if let Some(state) = state.upgrade() {
+                    if let Some(service) = state.services.native_media.as_ref() {
+                        service.disconnect(peer);
+                    }
+                    state.retire_launcher_message_publisher(peer, &checked);
                 }
             });
             match watch_death(connection.process.clone(), stop) {

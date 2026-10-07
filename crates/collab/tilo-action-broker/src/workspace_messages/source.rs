@@ -227,7 +227,7 @@ impl CapnpBrokerState {
             .map_err(|_| "worker registry unavailable")?
             .get(&peer)
             .and_then(|worker| worker.worker_registration.clone());
-        if worker.as_ref() != Some(&source.worker) {
+        if worker.as_ref() != Some(&source.worker) || !source.worker.current() {
             return Err("Message publisher registration changed".into());
         }
         source.original.message_facts(self, &source.invocation)?;
@@ -322,6 +322,10 @@ impl CapnpBrokerState {
                 delivery_marker!("broker_guards", "definitive_refusal");
                 "native Message worker unavailable"
             })?;
+        if !worker.current() {
+            delivery_marker!("broker_guards", "definitive_refusal");
+            return Err("native Message launcher process or connection ended".into());
+        }
         delivery_marker!("broker_guards", "complete");
         Ok((stream, lease, worker))
     }
