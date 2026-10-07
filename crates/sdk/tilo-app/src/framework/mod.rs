@@ -356,6 +356,7 @@ pub use participant::Participant;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
+pub use root::read_item;
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;

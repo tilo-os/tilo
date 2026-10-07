@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use tilo_action_broker::collab_broker_capnp::{ApprovedCheckContext, ApprovedCheckServices};
 use ush::approved_checks::{ApprovedCheck, ApprovedChecks, CheckOutcome, ProjectBinding};
 
+mod selected_outputs;
 mod source_projection;
 
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
@@ -28,6 +29,8 @@ struct Project {
     checks: Vec<ApprovedCheck>,
     #[serde(default)]
     source_projections: Vec<source_projection::Definition>,
+    #[serde(default)]
+    selected_outputs: Vec<selected_outputs::Definition>,
 }
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +46,7 @@ struct Registered {
     checks: ApprovedChecks,
     templates: Vec<ApprovedCheck>,
     projections: Vec<source_projection::Definition>,
+    outputs: Vec<selected_outputs::Definition>,
 }
 impl Registered {
     fn matches(
@@ -155,6 +159,7 @@ fn load(path: &Path) -> Result<Definitions, String> {
             return Err("approved private artifacts directory is not owned/private".into());
         }
         validate_projections(&project)?;
+        validate_outputs(&project)?;
         let templates = project.checks.clone();
         let checks = ApprovedChecks::new(binding.clone(), project.checks)?;
         definitions.push(Registered {
@@ -165,6 +170,7 @@ fn load(path: &Path) -> Result<Definitions, String> {
             checks,
             templates,
             projections: project.source_projections,
+            outputs: project.selected_outputs,
         });
     }
     Ok(Definitions(definitions))
@@ -185,6 +191,24 @@ fn validate_projections(project: &Project) -> Result<(), String> {
             return Err("duplicate source projection check ID".into());
         }
         projection.validate(template)?;
+    }
+    Ok(())
+}
+
+fn validate_outputs(project: &Project) -> Result<(), String> {
+    let mut ids = std::collections::HashSet::new();
+    for outputs in &project.selected_outputs {
+        if !ids.insert(&outputs.check_id)
+            || !project
+                .source_projections
+                .iter()
+                .any(|projection| projection.check_id == outputs.check_id)
+        {
+            return Err(
+                "selected outputs require a unique fresh approved source projection".into(),
+            );
+        }
+        outputs.validate()?;
     }
     Ok(())
 }
@@ -243,6 +267,54 @@ struct NativeChecks {
     owner: NativeOwnerCommitService,
 }
 impl NativeChecks {
+    fn publish_selected(
+        &self,
+        registered: &Registered,
+        context: &ApprovedCheckContext,
+        prepared: Option<&source_projection::Prepared>,
+        observed: &ush::approved_checks::CheckReceipt,
+    ) -> Result<Vec<runtime_collab::approved_checks::SelectedOutput>, String> {
+        Ok(
+            if observed.cleanup_observed
+                && matches!(observed.outcome, CheckOutcome::Exited)
+                && observed.exit_code.is_some()
+            {
+                if let Some(outputs) = registered
+                    .outputs
+                    .iter()
+                    .find(|outputs| outputs.check_id == context.check_id())
+                {
+                    let prepared = prepared.ok_or("selected outputs require a fresh candidate")?;
+                    selected_outputs::publish(
+                        outputs,
+                        &prepared.build,
+                        || {
+                            context.recheck()?;
+                            self.host_current(&registered.binding)?;
+                            prepared.recheck()?;
+                            prepared.verify_source()
+                        },
+                        |bytes, mime| {
+                            super::with_session_blobs(|client| {
+                                client
+                                    .scope(
+                                        &registered.binding.workspace.to_string(),
+                                        &registered.app_id,
+                                    )?
+                                    .put(bytes, mime)
+                            })
+                            .map(|stored| stored.hash)
+                            .map_err(|error| error.to_string())
+                        },
+                    )?
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            },
+        )
+    }
     fn host_current(&self, binding: &ProjectBinding) -> Result<(), String> {
         let room = tilo_desktop_model::RoomId::parse(&binding.workspace.to_string())
             .ok_or("invalid approved project room")?;
@@ -277,6 +349,31 @@ fn diagnostic(text: Option<&String>, sha256: Option<String>) -> Diagnostic {
         preview: text.get(..end).map_or_else(String::new, str::to_owned),
         truncated: end != text.len(),
     }
+}
+fn retain_private_receipt(
+    registered: &Registered,
+    context: &ApprovedCheckContext,
+    prepared: Option<&source_projection::Prepared>,
+    observed: &ush::approved_checks::CheckReceipt,
+) -> Result<String, String> {
+    let artifact_value = serde_json::json!({
+        "resource_identity": registered.resource_identity,
+        "accepted_opaque_resource": context.resource(),
+        "observed": observed,
+        "source_projection": prepared.map(|prepared| &prepared.provenance),
+    });
+    let bytes = serde_json::to_vec(&artifact_value).map_err(|error| error.to_string())?;
+    let artifact_sha256 = hex::encode(Sha256::digest(&bytes));
+    let path = registered.artifacts.join(format!("{artifact_sha256}.json"));
+    // Full private streams/config/manager receipts never enter an action catalog.
+    let mut artifact = private_fs::create_new(&path).map_err(|error| error.to_string())?;
+    artifact
+        .write_all(&bytes)
+        .and_then(|()| artifact.sync_all())
+        .map_err(|error| error.to_string())?;
+    drop(artifact);
+    private_fs::sync_directory(&registered.artifacts).map_err(|error| error.to_string())?;
+    Ok(artifact_sha256)
 }
 impl ApprovedCheckServices for NativeChecks {
     fn run(&self, context: &ApprovedCheckContext) -> Result<Receipt, String> {
@@ -325,23 +422,10 @@ impl ApprovedCheckServices for NativeChecks {
         if let Some(prepared) = &prepared {
             prepared.verify_source()?;
         }
-        let artifact_value = serde_json::json!({
-            "resource_identity": registered.resource_identity,
-            "accepted_opaque_resource": context.resource(),
-            "observed": observed,
-            "source_projection": prepared.as_ref().map(|prepared| &prepared.provenance),
-        });
-        let bytes = serde_json::to_vec(&artifact_value).map_err(|error| error.to_string())?;
-        let artifact_sha256 = hex::encode(Sha256::digest(&bytes));
-        let path = registered.artifacts.join(format!("{artifact_sha256}.json"));
-        // Full private streams/config/manager receipts never enter an action catalog.
-        let mut artifact = private_fs::create_new(&path).map_err(|error| error.to_string())?;
-        artifact
-            .write_all(&bytes)
-            .and_then(|()| artifact.sync_all())
-            .map_err(|error| error.to_string())?;
-        drop(artifact);
-        private_fs::sync_directory(&registered.artifacts).map_err(|error| error.to_string())?;
+        let artifact_sha256 =
+            retain_private_receipt(registered, context, prepared.as_ref(), &observed)?;
+        let selected_outputs =
+            self.publish_selected(registered, context, prepared.as_ref(), &observed)?;
         let receipt = Receipt {
             version: 1,
             invocation: context.invocation(),
@@ -357,6 +441,7 @@ impl ApprovedCheckServices for NativeChecks {
             candidate_source_sha256: prepared
                 .as_ref()
                 .map(|prepared| prepared.source_sha256.clone()),
+            selected_outputs,
             config_sha256: observed.config_sha256,
             runtime_binary_sha256: observed.runtime_binary_sha256,
             supervisor_source_sha256: observed.supervisor_source_sha256,
@@ -455,6 +540,48 @@ mod tests {
         ));
     }
 
+    fn assert_no_stale_output_registration(
+        registered: &Registered,
+        config: &serde_json::Value,
+        path: &Path,
+    ) {
+        assert!(
+            registered.outputs.is_empty(),
+            "legacy configuration publishes no outputs"
+        );
+        let mut stale = config.clone();
+        stale["projects"][0]["selected_outputs"] = serde_json::json!([{
+            "check_id":"regression", "outputs":[{"id":"summary", "role":"reported_evidence", "media_type":"application/json", "path":"summary.json", "max_bytes":64}]
+        }]);
+        std::fs::write(path, serde_json::to_vec(&stale).expect("serialize fixture"))
+            .expect("write fixture");
+        assert!(
+            load(path).is_err(),
+            "a reusable legacy build cannot publish a stale output as fresh"
+        );
+        let source = registered.templates[0].checkout.join("probe.sv");
+        std::fs::write(&source, b"fixture").expect("write inert source fixture");
+        let source_hash = hex::encode(Sha256::digest(b"fixture"));
+        let inventory = format!(
+            "{{\"probe.sv\":{{\"bytes\":7,\"sha256\":\"{source_hash}\",\"executable\":false}}}}"
+        );
+        stale["projects"][0]["source_projections"] = serde_json::json!([{
+            "check_id":"regression", "baseline_sha256":hex::encode(Sha256::digest(inventory.as_bytes())),
+            "sources":[{"path":"probe.sv", "file_id":"probe", "source":{
+                "app_id":"so.tilo.code-editor", "workspace":registered.binding.workspace.to_string(),
+                "record":"source", "resource_identity":{"kind":"code_editor.file","key":"probe"},
+                "action":"committed-source"
+            }}]
+        }]);
+        std::fs::write(path, serde_json::to_vec(&stale).expect("serialize fixture"))
+            .expect("write selected-output registration");
+        let admitted = load(path).expect("fresh owner-reviewed output registration is admitted");
+        assert_eq!(admitted.0[0].outputs.len(), 1);
+        assert_eq!(admitted.0[0].outputs[0].check_id, "regression");
+        std::fs::write(&source, b"changed").expect("change source fixture");
+        assert!(load(path).is_err(), "changed baseline cannot admit outputs");
+    }
+
     #[test]
     fn approved_check_startup_refuses_foreign_scope_and_guest_visible_private_receipts() {
         let directory = tempfile::tempdir().expect("fixture operation succeeds");
@@ -502,6 +629,7 @@ mod tests {
         let definitions = load(&path).expect("real startup definitions");
         let registered = &definitions.0[0];
         assert_stable_registration(registered);
+        assert_no_stale_output_registration(registered, &config, &path);
         let mut conflicting_host = config.clone();
         let mut duplicate = conflicting_host["projects"][0].clone();
         duplicate["checks"][0]["binding"]["host"] = serde_json::json!(vec![8u8; 32]);

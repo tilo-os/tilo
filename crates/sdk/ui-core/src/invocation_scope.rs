@@ -1,5 +1,9 @@
 //! Host-local invocation custody. No wire caller can manufacture these checks.
 
+pub use runtime_collab::approved_checks::{
+    Receipt as ApprovedCheckReceipt, SelectedOutput as ApprovedCheckOutput,
+};
+
 /// A typed host check response, suitable for an existing effect worker.
 pub type ApprovedCheckFuture = std::pin::Pin<
     Box<

@@ -140,3 +140,64 @@ run epochs after terminal clearing. Private invocation/process receipts and
 provider credentials remain host-owned. Task cancellation, child actions,
 read-only source projection and approved checks keep their existing authority
 and lifecycle contracts.
+
+### Selected approved-check outputs
+
+The owner may add `selected_outputs` to an existing approved-check project
+registration. It defaults to empty. Each entry names an approved `check_id` with
+an existing fresh `source_projections` definition, and up to eight outputs:
+
+```json
+{
+  "check_id": "build",
+  "outputs": [
+    {
+      "id": "summary",
+      "role": "reported_evidence",
+      "media_type": "application/json",
+      "path": "evidence/summary.json",
+      "max_bytes": 1048576
+    }
+  ]
+}
+```
+
+Paths are relative to that invocation's fresh build directory (the existing
+candidate's writable `target` mount), never the checkout, private receipts or
+host filesystem. The public action still accepts only `check_id`; a caller
+cannot select a path, command, image or output policy. Registrations refuse
+traversal and duplicate IDs/paths, cap each item at 16 MiB and the sum of declared
+bounds at 32 MiB. Reusable legacy build directories cannot publish selected
+outputs, because a previous invocation's file could otherwise look newly made.
+
+Publication follows observed process cleanup and normal exit, including a
+nonzero exit that produced useful diagnostics. Cancelled, timed-out or otherwise
+interrupted executions publish no selected outputs. Every declared file must
+exist, fit its bound and be a regular single-link file; symlink components,
+foreign ownership and changes during capture refuse publication. The complete
+private execution receipt is retained before selected-file capture, so a
+publication refusal does not erase the actual execution observation.
+
+The host rechecks original invocation custody, project host and source captures
+before and after reading and storing bytes through the existing filesystem
+`BlobClient` scoped to the admitted room and app. An unavailable content service
+is an error, with no host-file or local-store fallback. Publication across several
+outputs is not an atomic transaction: a later refusal may leave earlier stored
+bytes without returned references. No successful output result is returned after
+a failed authority or source recheck.
+
+The existing typed check receipt reports each selected ID, role, declared media
+type, captured length, SHA256 and canonical BLAKE3 content identity. Legacy
+receipts omit the empty field and retain their previous serialization. These
+identities describe captured bytes; they do not authenticate claims in a report
+or establish numerical, physical or manufacturing success.
+
+Git returns its existing JSON check result with `ActionOutput.resources` content
+references. The same record retains only bounded output references through an
+external CRDT action, not another job lifecycle or stream log. It exposes each
+output as `git_client.check-output:<invocation>:<output_id>`: ordinary `read`
+returns typed metadata and `transfer-check-output` produces exactly one
+`tilo.content` resource for the existing content-transfer door. Output records
+are bounded to 16 invocation entries; changing the repository clears current
+references. Earlier document versions retain their normal History semantics.
+Neither the transfer action nor a content hash grants access to another room.

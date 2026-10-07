@@ -29,11 +29,13 @@ pub struct GitClientState {
     /// opened, when the client looks around its working directory.
     pub repository: Option<String>,
     pub repo: RepoModel,
+    pub(crate) check_outputs: Vec<crate::check_outputs::CheckOutputs>,
 }
 
 impl GitClientState {
     pub fn from_doc(doc: &AutoCommit) -> Self {
         Self {
+            check_outputs: crate::check_outputs::read(doc),
             repository: read_str(doc, &ROOT, keys::REPOSITORY).filter(|path| !path.is_empty()),
             repo: SharedRepo::read(doc)
                 .map(SharedRepo::into_model)

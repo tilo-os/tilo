@@ -132,6 +132,7 @@ impl Definition {
             provenance,
             source,
             source_sha256,
+            build: root.join("build"),
         };
         result.recheck()?;
         Ok(result)
@@ -143,6 +144,7 @@ pub(super) struct Prepared {
     pub provenance: serde_json::Value,
     source: std::path::PathBuf,
     pub source_sha256: String,
+    pub build: std::path::PathBuf,
 }
 impl Prepared {
     pub(super) fn verify_source(&self) -> Result<(), String> {

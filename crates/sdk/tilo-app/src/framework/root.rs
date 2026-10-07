@@ -190,12 +190,20 @@ pub(crate) const READ_TYPE: &str = "tilo.resource.read";
 /// nested resource of that id. It is a view: it changes nothing, needs only
 /// read permission and is checked like every other action.
 fn read_spec() -> tilo_actions::ActionSpec {
-    let mut spec = tilo_actions::ActionSpec::typed_operation(
-        "read",
-        "Read the content",
-        "Read the content",
-        tilo_actions::OperationKind::View,
-        READ_TYPE,
+    read_spec_for(None)
+}
+
+/// The existing canonical Read operation offered on a nested resource with
+/// its item already bound. The owning readable resource resolves the item
+/// against its current committed document; this declaration grants no authority.
+pub fn read_item(item: impl Into<String>) -> tilo_actions::ActionSpec {
+    read_spec_for(Some(item.into()))
+}
+
+fn read_spec_for(item: Option<String>) -> tilo_actions::ActionSpec {
+    let params = if item.is_some() {
+        Vec::new()
+    } else {
         vec![
             tilo_actions::ActionParam::optional(
                 "item",
@@ -203,11 +211,19 @@ fn read_spec() -> tilo_actions::ActionSpec {
                 "A nested resource's id, as the first read lists it (default: the whole resource)",
             )
             .nullable(),
-        ],
-        |args| {
+        ]
+    };
+    let mut spec = tilo_actions::ActionSpec::typed_operation(
+        "read",
+        "Read the content",
+        "Read the content",
+        tilo_actions::OperationKind::View,
+        READ_TYPE,
+        params,
+        move |args| {
             tilo_actions::EncodedAction::encode_operation(
                 READ_TYPE,
-                &serde_json::json!({ "item": args.text("item") }),
+                &serde_json::json!({ "item": item.as_deref().or_else(|| args.text("item")) }),
             )
             .unwrap_or_else(|_| tilo_actions::EncodedAction {
                 type_id: READ_TYPE.into(),
