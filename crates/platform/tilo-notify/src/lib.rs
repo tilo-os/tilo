@@ -292,7 +292,7 @@ pub(crate) fn validate(notification: &Notification) -> Result<(), NotifyError> {
 
 /// `scheme:rest`, the scheme as RFC 3986 spells it, without control
 /// characters or whitespace.
-fn valid_activation(uri: &str) -> bool {
+pub fn valid_activation(uri: &str) -> bool {
     let Some((scheme, _)) = uri.split_once(':') else {
         return false;
     };

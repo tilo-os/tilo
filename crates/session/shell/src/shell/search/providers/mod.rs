@@ -14,6 +14,7 @@ pub mod permission_prompts;
 pub mod records;
 pub mod session_actions;
 pub mod shortcuts;
+pub(crate) mod task_review;
 pub mod terminal_device_shell;
 pub mod tray_items;
 pub mod unavailable_applications;

@@ -31,6 +31,10 @@ de = "Code-Editor"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+[continuity]
+required = ["presentation"]
+semantic-schema = "text-position-v1"
+
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["files.paths"]

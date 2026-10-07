@@ -299,7 +299,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         let mut state = tilo_ui::State::new();
         state.doc.put(ROOT, "marker", "shell").unwrap();
         let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            tilo_ui::font_catalog::checkout_root(),
             "en-US",
         );
         let renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
@@ -1155,7 +1155,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         let component = component(&host, 1);
         let checkout = component.record().clone();
         let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            tilo_ui::font_catalog::checkout_root(),
             "en-US",
         );
         let replace = std::rc::Rc::new(Cell::new(false));
@@ -1292,7 +1292,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             match callback {
                 Callback::DrawPermissions => {
                     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-                        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+                        tilo_ui::font_catalog::checkout_root(),
                         "en-US",
                     );
                     let mut renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
@@ -2030,7 +2030,7 @@ impl Widget for SameNameUnregisteredWrapper {
 
 fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
     tilo_ui::headless::Driver::new_with_controlled_inputs(
