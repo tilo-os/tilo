@@ -13,6 +13,11 @@ use tilo_app::prelude::tilo_actions::Action as _;
 use tilo_app::prelude::*;
 use tilo_resource::Effect;
 
+thread_local! {
+    static RECEIPT_REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
+    static RECEIPT_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
+}
+
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Mailbox {
     pub outbox: Collection<String>,
@@ -57,6 +62,12 @@ pub enum MailEffect {
     /// Promise an answer without starting anything.
     #[effect(job)]
     Stall,
+    /// Settle an external receipt as the original caller.
+    #[effect(job)]
+    Receipt,
+    /// A read receipt cannot authorize a document edit.
+    #[effect(job, permission = "read")]
+    ReadReceipt,
     /// Note what was read, as an edit.
     #[effect(permission = "read")]
     Note { text: String },
@@ -71,6 +82,23 @@ thread_local! {
 }
 
 struct MailApp;
+
+fn deferred_receipt(cx: &mut EffectCx<Mailbox, ()>) -> Effected {
+    RECEIPT_REPLIES.with(|replies| {
+        replies.borrow_mut().push(cx.reply_then(|(), output, cx| {
+            RECEIPT_CALLERS.with(|callers| {
+                callers.borrow_mut().push(cx.invocation().unwrap());
+            });
+            let text = output
+                .value
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or("receipt has no text")?;
+            cx.invoke(Mailbox::FETCHED.with(text));
+            Ok(Effected::done())
+        }));
+    });
+    Effected::Pending
+}
 
 impl ResourceApp for MailApp {
     type Resource = Mailbox;
@@ -100,6 +128,7 @@ impl ResourceApp for MailApp {
             }
             MailEffect::Connect => Ok(Effected::done()),
             MailEffect::Stall => Ok(Effected::Pending),
+            MailEffect::Receipt | MailEffect::ReadReceipt => Ok(deferred_receipt(cx)),
             MailEffect::Note { text } => {
                 cx.invoke(Mailbox::FETCHED.with(text));
                 Ok(Effected::done())
@@ -364,6 +393,138 @@ fn an_effect_lends_its_invoker_no_more_than_they_were_admitted_for() {
         .and_then(|context| context.invoker)
         .map(|invoker| invoker.actor);
     assert_eq!(invoker.as_deref(), Some("agent:writer"));
+}
+
+fn start_receipt(app: &mut TestApp<MailApp>) -> tilo_actions::InvocationId {
+    start_named_receipt(app, "receipt")
+}
+
+fn start_named_receipt(app: &mut TestApp<MailApp>, action: &str) -> tilo_actions::InvocationId {
+    let address = tilo_app::bound_dispatch::BoundActionAddress {
+        instance_id: app.harness().component_instance_id().unwrap(),
+        address: tilo_actions::ActionAddress::new("test.mailbox", action),
+    };
+    let (invocation, started) = app
+        .harness()
+        .start_bound_job_for(
+            Some(tilo_actions::ActionInvoker::actor("agent:receipt-writer")),
+            &address,
+            &serde_json::Map::new(),
+            true,
+        )
+        .unwrap();
+    assert!(started.completed().is_none());
+    invocation
+}
+
+#[test]
+fn delayed_receipt_completion_applies_history_as_its_original_invoker() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    let invocation = start_receipt(&mut app);
+    app.settle();
+    assert!(app.state().fetched.is_empty());
+    assert!(RECEIPT_CALLERS.with(|callers| callers.borrow().is_empty()));
+    RECEIPT_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .answer(Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!("settled receipt")),
+            resources: Vec::new(),
+        }));
+    app.settle();
+    assert_eq!(
+        RECEIPT_CALLERS.with(|callers| callers.borrow().clone()),
+        [invocation]
+    );
+    assert_eq!(app.state().fetched, "settled receipt");
+    assert_eq!(
+        app.versions()
+            .last()
+            .unwrap()
+            .context
+            .as_ref()
+            .unwrap()
+            .invoker
+            .as_ref()
+            .unwrap()
+            .actor,
+        "agent:receipt-writer"
+    );
+    assert!(
+        app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+}
+
+#[test]
+fn delayed_receipt_refusal_preserves_failure_and_skips_history_completion() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    let invocation = start_receipt(&mut app);
+    let refused = tilo_actions::ActionFailure {
+        code: "clipboard_refused".into(),
+        message: "destination grant revoked".into(),
+        details: Some(serde_json::json!({"receipt": "opaque"})),
+        retryable: true,
+    };
+    RECEIPT_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .answer(Err(refused.clone()));
+    app.settle();
+    assert!(RECEIPT_CALLERS.with(|callers| callers.borrow().is_empty()));
+    assert!(app.state().fetched.is_empty());
+    assert!(app.harness().job_updates(invocation).iter().any(|update|
+        matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. } if *error == refused)));
+}
+
+#[test]
+fn cancelled_delayed_receipt_cannot_run_its_history_completion() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    let invocation = start_receipt(&mut app);
+    assert!(app.harness().cancel_job(invocation).is_some());
+    let reply = RECEIPT_REPLIES.with(|replies| replies.borrow_mut().pop().unwrap());
+    assert!(reply.is_cancelled());
+    reply.answer(Ok(tilo_actions::ActionOutput {
+        value: Some(serde_json::json!("cancelled receipt")),
+        resources: Vec::new(),
+    }));
+    app.settle();
+    assert!(RECEIPT_CALLERS.with(|callers| callers.borrow().is_empty()));
+    assert!(app.state().fetched.is_empty());
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+}
+
+#[test]
+fn delayed_receipt_completion_cannot_exceed_its_original_read_admission() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    let invocation = start_named_receipt(&mut app, "read-receipt");
+    RECEIPT_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .answer(Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!("unadmitted edit")),
+            resources: Vec::new(),
+        }));
+    app.settle();
+    assert_eq!(
+        RECEIPT_CALLERS.with(|callers| callers.borrow().clone()),
+        [invocation]
+    );
+    assert!(app.state().fetched.is_empty());
+    assert!(app.harness().job_updates(invocation).iter().any(
+        |update| matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. }
+            if error.code == "permission_denied")
+    ));
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
 }
 
 /// A surface's own effects: answered with `&mut self`, completed with it.
