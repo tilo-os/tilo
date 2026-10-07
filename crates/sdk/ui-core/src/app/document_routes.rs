@@ -370,6 +370,10 @@ impl App {
         match self.queue_owned_documents() {
             Ok(()) => true,
             Err(reason) => {
+                tracing::error!(
+                    reason,
+                    "document publication blocked before action terminal"
+                );
                 self.action_publication_failure = Some(format!(
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));

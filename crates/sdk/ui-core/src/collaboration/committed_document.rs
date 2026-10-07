@@ -159,6 +159,27 @@ impl std::fmt::Debug for CommittedDocument {
     }
 }
 impl CommittedDocument {
+    #[cfg(test)]
+    pub(crate) fn captured_for_test(bytes: Vec<u8>) -> (Self, Arc<AtomicBool>) {
+        let merged = Arc::new(AtomicBool::new(false));
+        let budget = ByteBudget::new();
+        let reservation = budget.reserve(bytes.len(), bytes.len()).unwrap();
+        (
+            Self {
+                data: Arc::new(Captured {
+                    bytes: std::sync::Mutex::new(bytes),
+                    _reservation: reservation,
+                }),
+                merged: merged.clone(),
+                valid: Arc::new(AtomicBool::new(true)),
+                creation: None,
+                revision: [0; 32],
+                initialized: Arc::new(AtomicBool::new(false)),
+            },
+            merged,
+        )
+    }
+
     pub(crate) fn creation_workspace(
         &self,
     ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {

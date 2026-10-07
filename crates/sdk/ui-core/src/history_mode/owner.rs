@@ -423,10 +423,31 @@ impl HistoryOwner {
     /// See [`crate::bound_dispatch::CallbackBinding::close_open_step`]. A
     /// legacy tile keeps no open step.
     pub(crate) fn close_open_step(&self, outer: &mut AutoCommit) {
-        if let OwnerKind::Component(binding) = &self.0
-            && let Err(error) = binding.close_open_step(outer)
-        {
+        if let Err(error) = self.close_open_step_checked(outer) {
             tracing::debug!(?error, "history review could not close the open step");
+        }
+    }
+
+    /// Close a component's current attributed step before an external merge.
+    /// Unlike the presentation helper above, callers at a publication boundary
+    /// must retain the remote capture when current owner custody cannot be
+    /// proven or the boundary cannot be finished.
+    pub(crate) fn close_open_step_checked(
+        &self,
+        outer: &mut AutoCommit,
+    ) -> Result<(), super::routes::RemoteApplyError> {
+        self.validate().map_err(|_| {
+            super::routes::RemoteApplyError::Unavailable(
+                "current document owner unavailable".into(),
+            )
+        })?;
+        match &self.0 {
+            OwnerKind::Component(binding) => binding.close_open_step(outer).map_err(|_| {
+                super::routes::RemoteApplyError::Unavailable(
+                    "current document owner could not finish its open action step".into(),
+                )
+            }),
+            OwnerKind::Legacy { .. } => Ok(()),
         }
     }
 

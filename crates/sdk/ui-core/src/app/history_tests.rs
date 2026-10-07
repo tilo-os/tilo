@@ -1674,6 +1674,98 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
 }
 
 #[test]
+fn committed_owner_read_closes_attributed_step_before_merge_and_retains_closed_owner_read() {
+    use std::sync::atomic::Ordering;
+
+    // The native committed-document path is a boundary, unlike ordinary peer
+    // delivery: finish the local attributed step, then merge and acknowledge
+    // this exact immutable read once.
+    let mut fixture = RoutedOwners::new();
+    let binding = fixture.bindings[0].clone();
+    let route = binding.broker_route().unwrap();
+    let before_revision = fixture
+        .records
+        .read_history(&binding.checkout.id, |_, history| history.revision())
+        .unwrap();
+    let mut peer = fixture
+        .records
+        .read_checked(&binding.checkout.id, Clone::clone)
+        .unwrap();
+    peer.set_actor(automerge::ActorId::from(b"committed-peer".as_slice()));
+    peer.put(ROOT, "committed-remote", "applied once").unwrap();
+    peer.commit();
+    binding
+        .with_document(&mut fixture.app.state.doc, |doc, _| {
+            doc.put(ROOT, "local-open-step", "preserved once").unwrap();
+        })
+        .unwrap();
+    fixture
+        .records
+        .with_action_state(&binding.checkout.id, |doc, _, _| {
+            doc.commit();
+        })
+        .unwrap();
+    fixture
+        .records
+        .read_checked(&binding.checkout.id, |doc| {
+            assert_eq!(doc.pending_ops(), 0, "the open step is already physical");
+        })
+        .unwrap();
+
+    let (read, applied) = crate::collaboration::CommittedDocument::captured_for_test(peer.save());
+    fixture.app.queue_committed_document(route, read);
+
+    assert!(applied.load(Ordering::Acquire));
+    assert!(fixture.app.committed_documents.is_empty());
+    assert_eq!(
+        fixture.value(0, "local-open-step").as_deref(),
+        Some("preserved once")
+    );
+    assert_eq!(
+        fixture.value(0, "committed-remote").as_deref(),
+        Some("applied once")
+    );
+    let settled = fixture
+        .records
+        .read_history(&binding.checkout.id, |doc, history| {
+            (doc.base_heads(), history.revision())
+        })
+        .unwrap();
+    assert_eq!(settled.1, before_revision + 1, "one attributed local step");
+    fixture.app.pump_committed_documents();
+    assert_eq!(
+        fixture
+            .records
+            .read_history(&binding.checkout.id, |doc, history| (
+                doc.base_heads(),
+                history.revision()
+            ))
+            .unwrap(),
+        settled,
+        "an acknowledged committed read cannot repeat either effect"
+    );
+
+    // If the current mounted owner retires, the same path must retain the
+    // unread capture rather than acknowledge or merge through stale custody.
+    let mut closed = RoutedOwners::new();
+    let binding = closed.bindings[0].clone();
+    let route = binding.broker_route().unwrap();
+    let mut peer = closed
+        .records
+        .read_checked(&binding.checkout.id, Clone::clone)
+        .unwrap();
+    peer.set_actor(automerge::ActorId::from(b"closed-peer".as_slice()));
+    peer.put(ROOT, "must-wait", true).unwrap();
+    peer.commit();
+    binding.closing.set(true);
+    let (read, applied) = crate::collaboration::CommittedDocument::captured_for_test(peer.save());
+    closed.app.queue_committed_document(route, read);
+    assert!(!applied.load(Ordering::Acquire));
+    assert_eq!(closed.app.committed_documents.len(), 1);
+    assert_eq!(closed.value(0, "must-wait"), None);
+}
+
+#[test]
 fn native_routed_live_update_keeps_selected_historical_canvas_pinned() {
     let mut fixture = RoutedOwners::new();
     let binding = fixture.bindings[0].clone();

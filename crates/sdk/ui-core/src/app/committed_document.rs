@@ -74,6 +74,13 @@ impl App {
                     if entry.owners.iter().any(|other| !owner.same_document(other)) {
                         return Err("committed document owner ambiguous".into());
                     }
+                    // A remote committed capture is an external mutation
+                    // boundary. Finish the component's open local undo step
+                    // before merging, preserving that step's attribution and
+                    // keeping the foreign range out of its inverse.
+                    owner
+                        .close_open_step_checked(&mut self.state.doc)
+                        .map_err(|error| error.to_string())?;
                     return owner.merge_remote(mutation).map_err(|e| e.to_string());
                 }
                 if self
