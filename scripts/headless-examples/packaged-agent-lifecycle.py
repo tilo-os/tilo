@@ -3485,7 +3485,8 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             "tilo_agent=info,"
             "tilo_agent_delivery=debug,"
             "shell::shell::search::providers::live_app_actions=debug,"
-            "shell::shell::search::action_api=debug,tilo_native_action_gate=debug"
+            "shell::shell::search::action_api=debug,tilo_native_action_gate=debug,"
+            "tilo_native_governance=debug"
         )
         # Existing bounded launcher diagnostic: managed child output otherwise
         # goes to /dev/null. It changes no sandbox, custody or service route.
