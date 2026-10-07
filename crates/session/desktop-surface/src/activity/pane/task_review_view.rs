@@ -17,7 +17,135 @@ pub(super) struct DirectionDraft {
     pub input: ui::widget::TextInput,
     pub rect: Rect,
 }
+pub(super) struct ReviewButton {
+    action: TaskAction,
+    button: ui::widget::Embedded<ui::widget::Button>,
+    pressed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+#[derive(Clone, PartialEq)]
+pub(super) struct ReviewObservation {
+    room: String,
+    actor: String,
+    task: String,
+    epoch: u64,
+    direction: u64,
+    pending: tilo_desktop_model::WorkspaceTaskPendingFrontier,
+}
 impl RoomActivityPane {
+    fn review_observation(&self) -> Option<ReviewObservation> {
+        let id = self.selected_task.as_ref()?;
+        let (snapshot, control) = self.reviewed_control(id)?;
+        let task = snapshot.tasks.iter().find(|task| &task.id == id)?;
+        Some(ReviewObservation {
+            room: snapshot.room.clone(),
+            actor: snapshot.actor.clone(),
+            task: id.clone(),
+            epoch: control.run_epoch,
+            direction: control
+                .directions
+                .last()
+                .map_or(0, |direction| direction.revision),
+            pending: tilo_desktop_model::WorkspaceTaskPendingFrontier {
+                status: task.status,
+                run_epoch: control.run_epoch,
+                revision: control.pending_revision,
+            },
+        })
+    }
+    pub(super) fn review_pointer_is_clipped(
+        &self,
+        event: &WindowEvent,
+        scale: f64,
+        cursor: Option<vello::kurbo::Point>,
+    ) -> bool {
+        if self.view != ActivityView::Tasks
+            || self.task_instruction_detail.is_some()
+            || self.direction.is_some()
+            || self
+                .reviewed_control(self.selected_task.as_deref().unwrap_or(""))
+                .is_none()
+        {
+            return false;
+        }
+        let point = match event {
+            WindowEvent::CursorMoved { position, .. } => Some(vello::kurbo::Point::new(
+                position.x / scale,
+                position.y / scale,
+            )),
+            WindowEvent::MouseInput { .. } => cursor,
+            _ => return false,
+        };
+        point.is_none_or(|point| !self.task_list_scroll.content_rect().contains(point))
+    }
+    pub(super) fn review_instruction(
+        &self,
+        task: &tilo_desktop_model::WorkspaceTask,
+    ) -> Option<String> {
+        let original = super::task_instruction(task);
+        let current = self
+            .reviewed_control(&task.id)
+            .and_then(|(_, control)| control.instruction.as_deref());
+        match (current, original) {
+            (Some(current), Some(original)) if current != original => Some(format!(
+                "{}\n\n{current}\n\n{}\n\n{original}",
+                t("activity-task-current-instruction"),
+                t("activity-task-original-instruction")
+            )),
+            _ => current.or(original).map(str::to_owned),
+        }
+    }
+    pub(super) fn route_review_button_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        cursor: Option<vello::kurbo::Point>,
+        tree: &mut impl ActivityTree,
+    ) -> bool {
+        if self.view != ActivityView::Tasks
+            || self.task_instruction_detail.is_some()
+            || self.direction.is_some()
+            || self
+                .reviewed_control(self.selected_task.as_deref().unwrap_or(""))
+                .is_none()
+        {
+            return false;
+        }
+        let viewport = self.task_list_scroll.content_rect();
+        let clipped = self.review_pointer_is_clipped(event, scale, cursor);
+        let mut handled = false;
+        let mut activated = None;
+        for button in &mut self.review_buttons {
+            if clipped || button.button.rect().intersect(viewport).area() <= 0.0 {
+                button.button.widget_mut().cancel_pointer_interaction();
+                button.pressed.set(false);
+                continue;
+            }
+            button
+                .button
+                .widget_mut()
+                .set_focus(self.keyboard_focus == Some(ActivityFocus::TaskAction(button.action)));
+            button.button.handle_event(
+                event,
+                scale,
+                &modifiers,
+                &mut ui::widget::Edits::lend(tree.document_mut()),
+                &automerge::ROOT,
+                &mut handled,
+            );
+            if button.button.take_focus_request() {
+                self.keyboard_focus = Some(ActivityFocus::TaskAction(button.action));
+            }
+            if button.pressed.replace(false) {
+                activated = Some(button.action);
+            }
+        }
+        if let Some(action) = activated {
+            self.apply_task_action(action, tree);
+            return true;
+        }
+        handled
+    }
     /// Shared field semantics used by the overlay accessibility bridge.
     pub fn perform_task_direction_action(&mut self, action: &ui::a11y::Action) -> bool {
         let Some(draft) = &mut self.direction else {
@@ -134,6 +262,14 @@ impl RoomActivityPane {
             });
             return true;
         }
+        if self.review_action_is_stale(action) {
+            self.review_notice = Some(t("activity-task-review-changed"));
+            return true;
+        }
+        if matches!(action, TaskAction::EditPending | TaskAction::CancelPending) {
+            self.apply_review_pending(action, &id);
+            return true;
+        }
         let Some((snapshot, control)) = self.reviewed_control(&id) else {
             return true;
         };
@@ -174,6 +310,84 @@ impl RoomActivityPane {
             _ => return false,
         }
         true
+    }
+    fn review_action_is_stale(&self, action: TaskAction) -> bool {
+        let reopening_private_edit = action == TaskAction::EditPending
+            && self.pending_task_editing
+            && self
+                .pending_task_detail
+                .as_ref()
+                .is_some_and(|detail| self.selected_task.as_ref() == Some(&detail.task_id));
+        !reopening_private_edit
+            && matches!(
+                action,
+                TaskAction::Steer
+                    | TaskAction::CancelRun
+                    | TaskAction::RetryRun
+                    | TaskAction::EditPending
+                    | TaskAction::CancelPending
+            )
+            && (self.review_painted.is_none() || self.review_painted != self.review_observation())
+    }
+    fn apply_review_pending(&mut self, action: TaskAction, id: &str) {
+        if action == TaskAction::EditPending
+            && self.pending_task_editing
+            && self
+                .pending_task_detail
+                .as_ref()
+                .is_some_and(|detail| detail.task_id == id)
+        {
+            self.task_instruction_detail = Some(id.into());
+            self.keyboard_focus = Some(ActivityFocus::PendingTaskEditor);
+            return;
+        }
+        let Some((snapshot, control)) = self.reviewed_control(id) else {
+            return;
+        };
+        let Some(task) = snapshot.tasks.iter().find(|task| task.id == id) else {
+            return;
+        };
+        if !snapshot.writable
+            || control.active_run.is_some()
+            || !matches!(
+                task.status,
+                tilo_desktop_model::WorkspaceTaskStatus::Queued
+                    | tilo_desktop_model::WorkspaceTaskStatus::Waiting
+            )
+        {
+            return;
+        }
+        let frontier = tilo_desktop_model::WorkspaceTaskPendingFrontier {
+            status: task.status,
+            run_epoch: control.run_epoch,
+            revision: control.pending_revision,
+        };
+        if action == TaskAction::CancelPending {
+            self.submit_review(TaskReviewCommand::CancelPending {
+                task_id: id.into(),
+                frontier,
+            });
+            return;
+        }
+        let Some(instruction) = control
+            .instruction
+            .clone()
+            .or_else(|| super::task_instruction(task).map(str::to_owned))
+        else {
+            return;
+        };
+        self.pending_task_detail = Some(crate::activity::PendingTaskDetail {
+            generation: snapshot.generation,
+            task_id: id.into(),
+            title: task.title.clone(),
+            instruction: instruction.clone(),
+            frontier,
+            queue_ordinal: control.queue_ordinal,
+        });
+        self.pending_task_editor.widget_mut().set_text(&instruction);
+        self.pending_task_editing = true;
+        self.task_instruction_detail = Some(id.into());
+        self.keyboard_focus = Some(ActivityFocus::PendingTaskEditor);
     }
     fn submit_review(&mut self, command: TaskReviewCommand) {
         let observed_actor = if matches!(&command, TaskReviewCommand::Steer { .. }) {
@@ -331,43 +545,161 @@ impl RoomActivityPane {
         bounds: Rect,
         mut y: f64,
         actions: &[TaskAction],
-    ) {
+        presence: &PresenceCtx,
+    ) -> f64 {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
-        let height =
-            f64::from(paint.theme.text(TextRole::Body).line_height_px()).max(28.0) + 2.0 * gap;
-        let width = (bounds.width() - 3.0 * gap) / 2.0;
-        for pair in actions.chunks(2) {
-            if y + gap + height > bounds.y1 - gap {
-                break;
+        self.review_buttons
+            .retain(|button| actions.contains(&button.action));
+        let width = (bounds.width() - 2.0 * gap)
+            .min(22.0 * f64::from(paint.theme.text(TextRole::Label).line_height_px()));
+        for action in actions {
+            if !self
+                .review_buttons
+                .iter()
+                .any(|button| button.action == *action)
+            {
+                let pressed = std::rc::Rc::new(std::cell::Cell::new(false));
+                let signal = pressed.clone();
+                self.review_buttons.push(ReviewButton {
+                    action: *action,
+                    button: ui::widget::Embedded::new(
+                        ui::widget::Button::new("task-review-action", &action.label())
+                            .on_click(move || signal.set(true)),
+                    ),
+                    pressed,
+                });
             }
-            for (action, left) in pair.iter().zip([true, false]) {
-                let x = if left {
-                    bounds.x0 + gap
-                } else {
-                    bounds.x0 + 2.0 * gap + width
-                };
-                let rect = Rect::new(x, y + gap, x + width, y + gap + height);
-                draw_task_button(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    rect,
-                    &action.label(),
-                    false,
-                );
-                self.task_action_rects.push((*action, rect));
-            }
+            let Some(button) = self
+                .review_buttons
+                .iter_mut()
+                .find(|button| button.action == *action)
+            else {
+                continue;
+            };
+            button
+                .button
+                .widget_mut()
+                .set_focus(self.keyboard_focus == Some(ActivityFocus::TaskAction(*action)));
+            let height = button.button.layout(
+                Rect::new(bounds.x0 + gap, y + gap, bounds.x0 + gap + width, y + gap),
+                paint.theme,
+                paint.text,
+            );
+            button.button.draw(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                presence,
+            );
+            self.task_action_rects
+                .push((*action, button.button.widget().get_rect()));
             y += height + gap;
         }
+        y + gap
     }
-    pub(super) fn draw_review_tasks(&mut self, paint: &mut PaintCtx<'_>, bounds: Rect) {
+    pub(super) fn draw_review_tasks(
+        &mut self,
+        paint: &mut PaintCtx<'_>,
+        bounds: Rect,
+        presence: &PresenceCtx,
+    ) {
+        let mut content = vello::Scene::new();
+        // Reserve the shared scrollbar lane before measuring, so overflow on
+        // the first frame cannot clip controls laid out at the wider width.
+        let content_bounds = Rect::new(
+            bounds.x0,
+            bounds.y0,
+            (bounds.x1 - f64::from(paint.theme.tokens.metrics.scrollbar_gutter)).max(bounds.x0),
+            bounds.y1,
+        );
+        let height = self.draw_review_content(
+            &mut PaintCtx::new(
+                &mut content,
+                vello::kurbo::Affine::IDENTITY,
+                paint.text,
+                paint.theme,
+            ),
+            content_bounds,
+            presence,
+        ) - bounds.y0;
+        let observation = self.review_observation();
+        if self.review_painted != observation {
+            for button in &mut self.review_buttons {
+                button.button.widget_mut().cancel_pointer_interaction();
+                button.pressed.set(false);
+            }
+        }
+        self.review_painted = observation;
+        self.task_list_scroll.set_viewport(bounds, paint.theme);
+        self.task_list_scroll
+            .set_content_size(content_bounds.width(), height.max(bounds.height()));
+        self.task_list_theme = Some(paint.theme.clone());
+        if self.keyboard_focus != self.review_scroll_focus {
+            let focused = match self.keyboard_focus.as_ref() {
+                Some(ActivityFocus::TaskAction(action)) => self
+                    .task_action_rects
+                    .iter()
+                    .find(|(value, _)| value == action)
+                    .map(|(_, rect)| *rect),
+                Some(ActivityFocus::TaskInstruction(id))
+                    if self.task_instruction_target.as_ref() == Some(id) =>
+                {
+                    Some(self.task_instruction_open_button.rect())
+                }
+                _ => None,
+            };
+            if let Some(rect) = focused {
+                let rect = rect.with_origin((rect.x0 - bounds.x0, rect.y0 - bounds.y0));
+                let gap = f64::from(paint.theme.tokens.spacing.s3);
+                self.task_list_scroll.scroll_into_view(Rect::new(
+                    rect.x0,
+                    rect.y0 - gap,
+                    rect.x1,
+                    rect.y1 + gap,
+                ));
+            }
+            self.review_scroll_focus = self.keyboard_focus.clone();
+        }
+        let shift = vello::kurbo::Vec2::new(0.0, -self.task_list_scroll.offset().y);
+        for (_, rect) in &mut self.task_rects {
+            *rect = vello::kurbo::Affine::translate(shift)
+                .transform_rect_bbox(*rect)
+                .intersect(bounds);
+        }
+        for (_, rect) in &mut self.task_action_rects {
+            *rect = vello::kurbo::Affine::translate(shift)
+                .transform_rect_bbox(*rect)
+                .intersect(bounds);
+        }
+        for button in &mut self.review_buttons {
+            let rect =
+                vello::kurbo::Affine::translate(shift).transform_rect_bbox(button.button.rect());
+            button.button.layout(rect, paint.theme, paint.text);
+        }
+        if self.task_instruction_target.is_some() {
+            let rect = vello::kurbo::Affine::translate(shift)
+                .transform_rect_bbox(self.task_instruction_open_button.rect());
+            self.task_instruction_open_button
+                .layout(rect, paint.theme, paint.text);
+        }
+        self.task_list_scroll
+            .paint(paint.scene, paint.transform, paint.theme, |scene, _| {
+                scene.append(&content, Some(paint.transform.pre_translate(shift)));
+            });
+    }
+    fn draw_review_content(
+        &mut self,
+        paint: &mut PaintCtx<'_>,
+        bounds: Rect,
+        presence: &PresenceCtx,
+    ) -> f64 {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let style = paint.theme.text(TextRole::Body);
         let width = text_width(bounds.width() - 2.0 * gap);
         let mut y = bounds.y0 + gap;
         let Some(Ok(snapshot)) = &self.task_review else {
-            return;
+            return y;
         };
         let source = review_source(snapshot, self.now());
         draw_review_line(paint, &source, &style, width, bounds.x0 + gap, &mut y);
@@ -387,7 +719,7 @@ impl RoomActivityPane {
                 bounds.x0 + gap,
                 &mut y,
             );
-            return;
+            return y;
         }
         let selected = self
             .selected_task
@@ -405,27 +737,45 @@ impl RoomActivityPane {
                 bounds.x0 + gap,
                 &mut y,
             );
-            return;
+            return y;
         };
         self.selected_task = Some(task.id.clone());
         let top = y;
         draw_review_line(paint, &task.title, &style, width, bounds.x0 + gap, &mut y);
-        let summary = t_args(
-            "activity-task-review-status",
-            &[
-                ("status", task_status_label(task.status).into()),
-                (
-                    "agent",
-                    task.assigned_agent
-                        .clone()
-                        .unwrap_or_else(|| t("activity-task-executor-none"))
-                        .into(),
-                ),
-            ],
-        );
+        let summary = review_task_summary(task);
         draw_review_line(paint, &summary, &style, width, bounds.x0 + gap, &mut y);
         if let Some(control) = snapshot.controls.get(&task.id) {
             draw_control_evidence(paint, control, width, bounds.x0 + gap, &mut y);
+        }
+        let instruction = snapshot
+            .controls
+            .get(&task.id)
+            .and_then(|control| control.instruction.as_deref())
+            .or_else(|| super::task_instruction(task));
+        if let Some(instruction) = instruction {
+            draw_instruction_preview(paint, instruction, bounds, &mut y);
+            self.task_instruction_target = Some(task.id.clone());
+            let height = self.task_instruction_open_button.layout(
+                Rect::new(
+                    bounds.x0 + gap,
+                    y,
+                    (bounds.x0
+                        + gap
+                        + 22.0 * f64::from(paint.theme.text(TextRole::Label).line_height_px()))
+                    .min(bounds.x1 - gap),
+                    y,
+                ),
+                paint.theme,
+                paint.text,
+            );
+            self.task_instruction_open_button.draw(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                presence,
+            );
+            y += height + gap;
         }
         self.task_rects
             .push((task.id.clone(), Rect::new(bounds.x0, top, bounds.x1, y)));
@@ -436,7 +786,43 @@ impl RoomActivityPane {
         if self.review_task_offset.saturating_add(1) < self.tasks.len() {
             actions.insert(0, TaskAction::NextTasks);
         }
-        self.draw_review_action_grid(paint, bounds, y, &actions);
+        self.draw_review_action_grid(paint, bounds, y, &actions, presence)
+    }
+}
+fn review_task_summary(task: &tilo_desktop_model::WorkspaceTask) -> String {
+    t_args(
+        "activity-task-review-status",
+        &[
+            ("status", task_status_label(task.status).into()),
+            (
+                "agent",
+                task.assigned_agent
+                    .clone()
+                    .unwrap_or_else(|| t("activity-task-executor-none"))
+                    .into(),
+            ),
+        ],
+    )
+}
+fn draw_instruction_preview(
+    paint: &mut PaintCtx<'_>,
+    instruction: &str,
+    bounds: Rect,
+    y: &mut f64,
+) {
+    let gap = f64::from(paint.theme.tokens.spacing.s3);
+    let style = paint.theme.text(TextRole::Body);
+    let width = text_width(bounds.width() - 2.0 * gap);
+    draw_review_line(
+        paint,
+        &t("activity-task-full-instruction"),
+        &style,
+        width,
+        bounds.x0 + gap,
+        y,
+    );
+    for line in paint.text.clamp_to_lines(instruction, &style, width, 3) {
+        draw_review_line(paint, &line, &style, width, bounds.x0 + gap, y);
     }
 }
 fn draw_review_line(
@@ -493,6 +879,21 @@ fn draw_control_evidence(
         ],
     );
     draw_review_line(paint, &status, &style, width, x, y);
+    if control.cancellation.as_ref().is_some_and(|request| {
+        control
+            .active_run
+            .as_ref()
+            .is_some_and(|run| run.epoch == request.run_epoch)
+    }) {
+        draw_review_line(
+            paint,
+            &t("activity-task-review-stopping"),
+            &style,
+            width,
+            x,
+            y,
+        );
+    }
     if let Some(direction) = control.directions.last() {
         let text = t_args(
             "activity-task-review-direction",

@@ -495,6 +495,198 @@ fn native_task_review_rechecks_a_signed_demotion_after_discovery() {
 }
 
 #[test]
+fn native_review_stop_retains_the_exact_run_until_agent_acknowledges() {
+    let (_directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
+    admit(&owner, room);
+    let caller = owner
+        .with_current(room, |view| Ok(view.device().clone()))
+        .unwrap();
+    let task_id = task(&owner, room, &caller);
+    let review = NativeTaskReview::start(
+        worker::Worker::new(
+            owner.clone(),
+            Arc::new(
+                crate::shell::broker_services::NativeOwnerCommitService::new(
+                    native_workspace_owner::tree_of(&owner),
+                    None,
+                ),
+            ),
+        )
+        .with_certificate(caller),
+    )
+    .unwrap();
+    let request = TaskReviewRequest {
+        room: room.to_string(),
+        observed_actor: owner.workspace_task_snapshot(room).unwrap().tasks[0]
+            .created_by
+            .clone(),
+        invocation: uuid::Uuid::new_v4(),
+        command: TaskReviewCommand::Cancel {
+            task_id: task_id.clone(),
+            run_epoch: 1,
+            after_revision: 0,
+        },
+    };
+    review.submit(request.clone()).unwrap();
+    wait(&review, request.invocation).unwrap();
+    let state = owner.workspace_task_snapshot(room).unwrap();
+    assert_eq!(
+        state.tasks[0].status,
+        crate::shell::state::WorkspaceTaskStatus::InProgress
+    );
+    let control = &state.controls[&task_id];
+    assert_eq!(control.active_run.as_ref().unwrap().epoch, 1);
+    assert_eq!(control.cancellation.as_ref().unwrap().run_epoch, 1);
+    review.shutdown();
+}
+
+fn pending_task(
+    owner: &NativeWorkspaceOwner,
+    room: crate::shell::state::RoomId,
+    caller: &tilo_user_identity::DeviceCert,
+) -> tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
+    let queued = uuid::Uuid::new_v4();
+    let person = WorkspaceTaskAuthority::Person {
+        caller: caller.clone(),
+    };
+    owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: room.to_string(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: queued,
+                    authority: person,
+                    command: WorkspaceTaskCommand::QueueTask {
+                        title: "Review notes".into(),
+                        instruction: "Preserve compatibility".into(),
+                        assigned_agent: "scribe".into(),
+                        route: crate::shell::state::WorkspaceTaskRoute::Model,
+                        resource: None,
+                    },
+                },
+            },
+            SystemTime::now(),
+        )
+        .unwrap();
+    owner.workspace_task_snapshot(room).unwrap()
+}
+
+#[test]
+fn native_review_pending_cancel_refuses_amended_instruction_frontier() {
+    let (_directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
+    admit(&owner, room);
+    let caller = owner
+        .with_current(room, |view| Ok(view.device().clone()))
+        .unwrap();
+    let state = pending_task(&owner, room, &caller);
+    let id = state.tasks[0].id.clone();
+    let frontier = tilo_desktop_model::WorkspaceTaskPendingFrontier {
+        status: state.tasks[0].status,
+        run_epoch: state.controls[&id].run_epoch,
+        revision: state.controls[&id].pending_revision,
+    };
+    owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: room.to_string(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    authority: WorkspaceTaskAuthority::Person {
+                        caller: caller.clone(),
+                    },
+                    command: WorkspaceTaskCommand::AmendPending {
+                        task_id: id.clone(),
+                        frontier,
+                        title: "Review all notes".into(),
+                        instruction: "Preserve every compatibility caveat".into(),
+                    },
+                },
+            },
+            SystemTime::now(),
+        )
+        .unwrap();
+    let review = NativeTaskReview::start(
+        worker::Worker::new(
+            owner.clone(),
+            Arc::new(
+                crate::shell::broker_services::NativeOwnerCommitService::new(
+                    native_workspace_owner::tree_of(&owner),
+                    None,
+                ),
+            ),
+        )
+        .with_certificate(caller),
+    )
+    .unwrap();
+    let mut request = TaskReviewRequest {
+        room: room.to_string(),
+        observed_actor: state.tasks[0].created_by.clone(),
+        invocation: uuid::Uuid::new_v4(),
+        command: TaskReviewCommand::CancelPending {
+            task_id: id.clone(),
+            frontier,
+        },
+    };
+    review.submit(request.clone()).unwrap();
+    assert!(wait(&review, request.invocation).is_err());
+    let amended = owner.workspace_task_snapshot(room).unwrap();
+    assert_eq!(
+        amended.tasks[0].status,
+        crate::shell::state::WorkspaceTaskStatus::Queued
+    );
+    assert_eq!(
+        amended.controls[&id].instruction.as_deref(),
+        Some("Preserve every compatibility caveat")
+    );
+    request.invocation = uuid::Uuid::new_v4();
+    request.command = TaskReviewCommand::CancelPending {
+        task_id: id.clone(),
+        frontier: tilo_desktop_model::WorkspaceTaskPendingFrontier {
+            revision: amended.controls[&id].pending_revision,
+            ..frontier
+        },
+    };
+    review.submit(request.clone()).unwrap();
+    wait(&review, request.invocation).unwrap();
+    assert_eq!(
+        owner.workspace_task_snapshot(room).unwrap().tasks[0].status,
+        crate::shell::state::WorkspaceTaskStatus::Cancelled
+    );
+    review.shutdown();
+}
+
+fn acknowledge_cancellation(
+    owner: &NativeWorkspaceOwner,
+    room: crate::shell::state::RoomId,
+    task_id: &str,
+) {
+    let attestor = owner
+        .with_current(room, |view| Ok(view.host().unwrap().clone()))
+        .unwrap();
+    owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: room.to_string(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    authority: WorkspaceTaskAuthority::Agent {
+                        attestor,
+                        agent_id: "scribe".into(),
+                    },
+                    command: WorkspaceTaskCommand::Finish {
+                        task_id: task_id.into(),
+                        run_epoch: 1,
+                        outcome: tilo_peer_state::workspace_task::WorkspaceTaskFinish::Cancelled,
+                        summary: "Stopped after the person's request".into(),
+                    },
+                },
+            },
+            SystemTime::now(),
+        )
+        .unwrap();
+}
+
+#[test]
 fn native_cancel_keeps_pending_instructions_and_survives_actual_state_reopen() {
     let (directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
     admit(&owner, room);
@@ -547,6 +739,20 @@ fn native_cancel_keeps_pending_instructions_and_survives_actual_state_reopen() {
             })
             .is_err()
     );
+    let requested = owner.workspace_task_snapshot(room).unwrap();
+    assert_eq!(
+        requested.tasks[0].status,
+        crate::shell::state::WorkspaceTaskStatus::InProgress
+    );
+    assert_eq!(
+        requested.controls[&task_id]
+            .active_run
+            .as_ref()
+            .unwrap()
+            .epoch,
+        1
+    );
+    acknowledge_cancellation(&owner, room, &task_id);
     review.shutdown();
     drop(owner);
     crate::shell::persist::wait_for_saves();

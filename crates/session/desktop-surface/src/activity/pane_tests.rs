@@ -2925,14 +2925,14 @@ mod tests {
     // widget — proving the whole chain, not just `apply_name`.
     // -----------------------------------------------------------------
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+    pub(super) fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
-    fn mouse_press() -> WindowEvent {
+    pub(super) fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: winit::event::ElementState::Pressed,
@@ -2940,7 +2940,7 @@ mod tests {
         }
     }
 
-    fn mouse_release() -> WindowEvent {
+    pub(super) fn mouse_release() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Released,
@@ -2948,7 +2948,7 @@ mod tests {
         }
     }
 
-    fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
+    pub(super) fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
         // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
         // tolerates the all-zero bit pattern, and winit 0.30 keeps
         // `KeyEventExtra` crate-private so a struct literal is unavailable.
@@ -2974,7 +2974,7 @@ mod tests {
         paint_with_theme(pane, &Theme::dark());
     }
 
-    fn paint_with_theme(pane: &mut RoomActivityPane, theme: &Theme) {
+    pub(super) fn paint_with_theme(pane: &mut RoomActivityPane, theme: &Theme) {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         tr.set_text_scale(theme.text_scale);
@@ -4108,8 +4108,383 @@ mod task_review_tests {
         pane.refresh(&mut tree);
         pane.set_view(ActivityView::Tasks);
         pane.selected_task = Some(id);
+        super::tests::paint_with_theme(&mut pane, &Theme::light());
         (tree, pane, host)
     }
+    #[test]
+    fn reviewed_task_inspector_render_matrix() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/task-review-renders");
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
+                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
+                for stage in [
+                    "queued",
+                    "active",
+                    "stopping",
+                    "instruction",
+                    "editing",
+                    "pending-controls",
+                ] {
+                    let (mut tree, mut pane, host) = review_fixture();
+                    let id = pane.selected_task.clone().unwrap();
+                    {
+                        let mut snapshot = host.snapshot.borrow_mut();
+                        snapshot.sampled_at_secs = i64::try_from(
+                            SystemTime::now()
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                        )
+                        .unwrap();
+                        snapshot.tasks[0].status =
+                            if matches!(stage, "queued" | "editing" | "pending-controls") {
+                                WorkspaceTaskStatus::Queued
+                            } else {
+                                WorkspaceTaskStatus::InProgress
+                            };
+                        let control = snapshot.controls.get_mut(&id).unwrap();
+                        control.instruction = Some(
+                            "Preserve the complete compatibility guidance, include the examples, and explain the migration without dropping the original caveats.".into(),
+                        );
+                        control.instruction_required = true;
+                        control.pending_revision = 4;
+                        if matches!(stage, "queued" | "editing" | "pending-controls") {
+                            control.active_run = None;
+                        } else if stage == "stopping" {
+                            control.cancellation =
+                                Some(tilo_desktop_model::WorkspaceTaskCancellationRequest {
+                                    run_epoch: 3,
+                                    requested_by: "local".into(),
+                                    requested_at: 100,
+                                });
+                        }
+                    }
+                    pane.refresh(&mut tree);
+                    pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+                    let mut scene = Scene::new();
+                    let mut text = TextRenderer::new();
+                    pane.draw(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut text,
+                        &theme,
+                        &PresenceCtx::empty(),
+                    );
+                    if matches!(stage, "instruction" | "editing" | "pending-controls") {
+                        pane.keyboard_focus = Some(match stage {
+                            "instruction" => ActivityFocus::TaskInstruction(id.clone()),
+                            "editing" => ActivityFocus::TaskAction(TaskAction::EditPending),
+                            _ => ActivityFocus::TaskAction(TaskAction::CancelPending),
+                        });
+                        super::tests::paint_with_theme(&mut pane, &theme);
+                        if stage != "pending-controls" {
+                            pane.handle_event(
+                                &super::tests::key_press(winit::keyboard::Key::Named(
+                                    winit::keyboard::NamedKey::Enter,
+                                )),
+                                1.0,
+                                &winit::event::Modifiers::default(),
+                                None,
+                                &mut tree,
+                            );
+                        }
+                        scene.reset();
+                        pane.draw(
+                            &mut scene,
+                            Affine::IDENTITY,
+                            &mut text,
+                            &theme,
+                            &PresenceCtx::empty(),
+                        );
+                    }
+                    renderer.render_png(
+                        &scene,
+                        theme.tokens.colors.surfaces.content,
+                        output.join(format!("{name}-{size}-{stage}.png")),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reviewed_clipped_pointer_gestures_cannot_activate_pending_cancel() {
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
+            let control = snapshot.controls.get_mut(&id).unwrap();
+            control.active_run = None;
+            control.instruction = Some("Keep every compatibility caveat".repeat(30));
+        }
+        pane.refresh(&mut tree);
+        pane.layout_window(Rect::new(0.0, 0.0, 560.0, 560.0));
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::CancelPending));
+        super::tests::paint_with_theme(&mut pane, &theme);
+        let viewport = pane.task_list_scroll.content_rect();
+        let before = pane
+            .task_action_rects
+            .iter()
+            .find(|(action, _)| *action == TaskAction::CancelPending)
+            .unwrap()
+            .1;
+        let offset = pane.task_list_scroll.offset().y;
+        pane.task_list_scroll.scroll_by(vello::kurbo::Vec2::new(
+            0.0,
+            -(viewport.y1 - before.center().y),
+        ));
+        let shift = offset - pane.task_list_scroll.offset().y;
+        super::tests::paint_with_theme(&mut pane, &theme);
+        let full = vello::kurbo::Affine::translate((0.0, shift)).transform_rect_bbox(before);
+        assert!(
+            full.y0 < viewport.y1,
+            "actual control must remain partly visible"
+        );
+        assert!(
+            full.y1 > viewport.y1,
+            "actual control must be partially clipped"
+        );
+        let hidden = Point::new(full.center().x, viewport.y1.midpoint(full.y1));
+        let visible = Point::new(full.center().x, full.y0.midpoint(viewport.y1));
+        let modifiers = winit::event::Modifiers::default();
+        for (event, point) in [
+            (super::tests::cursor_moved(hidden.x, hidden.y), hidden),
+            (super::tests::mouse_press(), hidden),
+            (super::tests::mouse_release(), hidden),
+            (super::tests::mouse_press(), hidden),
+            (super::tests::cursor_moved(visible.x, visible.y), visible),
+            (super::tests::mouse_release(), visible),
+        ] {
+            pane.handle_event(&event, 1.0, &modifiers, Some(point), &mut tree);
+        }
+        assert!(host.submitted.borrow().is_empty());
+        for event in [super::tests::mouse_press(), super::tests::mouse_release()] {
+            pane.handle_event(&event, 1.0, &modifiers, Some(visible), &mut tree);
+        }
+        assert_eq!(host.submitted.borrow().len(), 1);
+    }
+
+    #[test]
+    fn reviewed_readonly_instruction_uses_content_height_and_theme_reading_measure() {
+        let (_tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        host.snapshot
+            .borrow_mut()
+            .controls
+            .get_mut(&id)
+            .unwrap()
+            .instruction = Some("A complete short instruction.".into());
+        pane.task_review = Some(Ok(host.snapshot.borrow().clone().into()));
+        pane.task_instruction_detail = Some(id);
+        pane.layout_window(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        let theme = Theme::light();
+        super::tests::paint_with_theme(&mut pane, &theme);
+        let viewport = pane.task_instruction_scroll.content_rect();
+        assert!(viewport.width() <= f64::from(theme.tokens.metrics.reading_measure));
+        assert!(viewport.height() < 200.0);
+        assert!(!pane.task_instruction_scroll.overflows_vertically());
+        assert_eq!(
+            pane.access_control(&ActivityFocus::TaskInstructionScroll)
+                .unwrap()
+                .role,
+            ui::a11y::Role::Document
+        );
+    }
+
+    #[test]
+    fn reviewed_pointer_release_refuses_an_unseen_amended_frontier() {
+        let (mut tree, mut pane, host) = review_fixture();
+        pane.layout_window(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
+            let control = snapshot.controls.get_mut(&id).unwrap();
+            control.active_run = None;
+            control.instruction = Some("Preserve the original instruction".into());
+            control.pending_revision = 4;
+        }
+        pane.refresh(&mut tree);
+        super::tests::paint_with_theme(&mut pane, &Theme::light());
+        let rect = pane
+            .task_action_rects
+            .iter()
+            .find(|(action, _)| *action == TaskAction::CancelPending)
+            .unwrap()
+            .1;
+        let point = rect.center();
+        let modifiers = winit::event::Modifiers::default();
+        for event in [
+            super::tests::cursor_moved(point.x, point.y),
+            super::tests::mouse_press(),
+        ] {
+            pane.handle_event(&event, 1.0, &modifiers, Some(point), &mut tree);
+        }
+        host.snapshot
+            .borrow_mut()
+            .controls
+            .get_mut(&id)
+            .unwrap()
+            .pending_revision = 5;
+        pane.refresh(&mut tree);
+        pane.handle_event(
+            &super::tests::mouse_release(),
+            1.0,
+            &modifiers,
+            Some(point),
+            &mut tree,
+        );
+        assert!(host.submitted.borrow().is_empty());
+        assert!(pane.review_notice.is_some());
+        super::tests::paint_with_theme(&mut pane, &Theme::light());
+        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::CancelPending));
+        pane.handle_event(
+            &super::tests::key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+            1.0,
+            &modifiers,
+            None,
+            &mut tree,
+        );
+        assert_eq!(host.submitted.borrow().len(), 1);
+        assert!(
+            matches!(&host.submitted.borrow()[0].command, crate::activity::TaskReviewCommand::CancelPending { frontier, .. } if frontier.revision == 5)
+        );
+    }
+
+    #[test]
+    fn reviewed_pending_controls_use_current_instruction_and_exact_frontier() {
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
+            let control = snapshot.controls.get_mut(&id).unwrap();
+            control.active_run = None;
+            control.instruction = Some("Keep every compatibility caveat".into());
+            control.pending_revision = 4;
+        }
+        pane.refresh(&mut tree);
+        assert!(
+            pane.task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::EditPending)
+        );
+        assert!(
+            pane.task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::CancelPending)
+        );
+        assert!(
+            !pane
+                .task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::CancelRun)
+        );
+        super::tests::paint_with_theme(&mut pane, &Theme::light());
+        pane.apply_task_action(TaskAction::EditPending, &mut tree);
+        assert_eq!(
+            pane.pending_task_editor.widget().value(),
+            "Keep every compatibility caveat"
+        );
+        assert_eq!(
+            pane.pending_task_detail.as_ref().unwrap().frontier.revision,
+            4
+        );
+        assert_eq!(pane.keyboard_focus, Some(ActivityFocus::PendingTaskEditor));
+        pane.pending_task_editor
+            .widget_mut()
+            .set_text("A newer private edit");
+        host.snapshot
+            .borrow_mut()
+            .controls
+            .get_mut(&id)
+            .unwrap()
+            .pending_revision = 5;
+        pane.refresh(&mut tree);
+        pane.apply_task_action(TaskAction::EditPending, &mut tree);
+        assert_eq!(
+            pane.pending_task_editor.widget().value(),
+            "A newer private edit"
+        );
+        assert_eq!(
+            pane.pending_task_detail.as_ref().unwrap().frontier.revision,
+            4
+        );
+        pane.pending_task_editing = false;
+        pane.task_instruction_detail = None;
+        pane.apply_task_action(TaskAction::CancelPending, &mut tree);
+        assert!(
+            host.submitted.borrow().is_empty(),
+            "an unseen amended frontier cannot be cancelled"
+        );
+        super::tests::paint_with_theme(&mut pane, &Theme::light());
+        pane.apply_task_action(TaskAction::CancelPending, &mut tree);
+        assert_eq!(host.submitted.borrow().len(), 1);
+        assert!(matches!(&host.submitted.borrow()[0].command,
+            crate::activity::TaskReviewCommand::CancelPending { task_id, frontier }
+            if task_id == &id && frontier.status == WorkspaceTaskStatus::Queued && frontier.run_epoch == 3 && frontier.revision == 5));
+    }
+
+    #[test]
+    fn reviewed_compact_controls_scroll_and_activate_shared_buttons_without_duplicate_commands() {
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
+            let control = snapshot.controls.get_mut(&id).unwrap();
+            control.active_run = None;
+            control.instruction = Some("Keep every compatibility caveat".repeat(30));
+            control.pending_revision = 4;
+        }
+        pane.refresh(&mut tree);
+        pane.layout_window(Rect::new(0.0, 0.0, 560.0, 560.0));
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let modifiers = winit::event::Modifiers::default();
+        super::tests::paint_with_theme(&mut pane, &theme);
+        assert!(pane.task_list_scroll.overflows_vertically());
+        pane.keyboard_focus = Some(ActivityFocus::TaskInstruction(id.clone()));
+        super::tests::paint_with_theme(&mut pane, &theme);
+        let viewport = pane.task_list_scroll.content_rect();
+        let opener = pane.task_instruction_open_button.rect();
+        assert_eq!(opener.intersect(viewport), opener);
+        let enter = super::tests::key_press(winit::keyboard::Key::Named(
+            winit::keyboard::NamedKey::Enter,
+        ));
+        pane.handle_event(&enter, 1.0, &modifiers, None, &mut tree);
+        assert_eq!(pane.task_instruction_detail.as_deref(), Some(id.as_str()));
+        super::tests::paint_with_theme(&mut pane, &theme);
+        assert!(pane.task_instruction_scroll.overflows_vertically());
+        pane.task_instruction_detail = None;
+        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::CancelPending));
+        super::tests::paint_with_theme(&mut pane, &theme);
+        let rect = pane
+            .task_action_rects
+            .iter()
+            .find(|(action, _)| *action == TaskAction::CancelPending)
+            .unwrap()
+            .1;
+        assert!(rect.area() > 0.0);
+        assert_eq!(rect.intersect(pane.task_list_scroll.content_rect()), rect);
+        assert!(
+            rect.y1 <= pane.task_list_scroll.content_rect().y1 - f64::from(theme.tokens.spacing.s3)
+        );
+        pane.handle_event(&enter, 1.0, &modifiers, None, &mut tree);
+        pane.handle_event(&enter, 1.0, &modifiers, None, &mut tree);
+        assert_eq!(host.submitted.borrow().len(), 1);
+        assert!(matches!(
+            host.submitted.borrow()[0].command,
+            crate::activity::TaskReviewCommand::CancelPending { .. }
+        ));
+    }
+
     #[test]
     fn review_retry_is_offered_for_waiting_tasks_only() {
         let (mut tree, mut pane, host) = review_fixture();
@@ -4140,6 +4515,7 @@ mod task_review_tests {
     fn steering_draft_keeps_observed_run_and_revision_after_refresh() {
         use crate::activity::TaskReviewCommand;
         let (mut tree, mut pane, host) = review_fixture();
+        super::tests::paint_with_theme(&mut pane, &Theme::light());
         pane.apply_task_action(TaskAction::Steer, &mut tree);
         pane.direction
             .as_mut()
@@ -4166,6 +4542,7 @@ mod task_review_tests {
     #[test]
     fn switching_workspace_clears_steering_draft_and_keeps_new_room_private() {
         let (mut tree, mut pane, host) = review_fixture();
+        super::tests::paint_with_theme(&mut pane, &Theme::light());
         pane.apply_task_action(TaskAction::Steer, &mut tree);
         pane.direction
             .as_mut()

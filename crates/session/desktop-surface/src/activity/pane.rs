@@ -786,6 +786,9 @@ pub struct RoomActivityPane {
     task_instruction_theme: Option<Theme>,
     new_task_rect: Option<Rect>,
     task_action_rects: Vec<(TaskAction, Rect)>,
+    review_buttons: Vec<task_review_view::ReviewButton>,
+    review_painted: Option<task_review_view::ReviewObservation>,
+    review_scroll_focus: Option<ActivityFocus>,
     task_compose_open: bool,
     task_draft: String,
     task_route: WorkspaceTaskRoute,
@@ -1054,6 +1057,9 @@ impl RoomActivityPane {
             task_instruction_theme: None,
             new_task_rect: None,
             task_action_rects: Vec::new(),
+            review_buttons: Vec::new(),
+            review_painted: None,
+            review_scroll_focus: None,
             task_compose_open: false,
             task_draft: String::new(),
             task_route: WorkspaceTaskRoute::Manual,
@@ -4575,15 +4581,15 @@ impl RoomActivityPane {
             let detail = self
                 .pending_task_detail
                 .as_ref()
-                .filter(|detail| detail.task_id == task_id)
+                .filter(|detail| self.pending_task_editing && detail.task_id == task_id)
                 .map(|detail| (detail.title.clone(), detail.instruction.clone()))
                 .or_else(|| {
                     self.tasks
                         .iter()
                         .find(|task| task.id == task_id)
                         .and_then(|task| {
-                            task_instruction(task)
-                                .map(|instruction| (task.title.clone(), instruction.to_string()))
+                            self.review_instruction(task)
+                                .map(|instruction| (task.title.clone(), instruction))
                         })
                 });
             if let Some((title, instruction)) = detail {
@@ -4670,6 +4676,7 @@ impl RoomActivityPane {
             self.draw_review_tasks(
                 &mut PaintCtx::new(scene, transform, tr, theme),
                 Rect::new(x0, y, x1, self.sheet.y1),
+                presence,
             );
             return;
         }
@@ -5106,15 +5113,23 @@ impl RoomActivityPane {
             return;
         }
 
-        let viewport = Rect::new(rect.x0, y, rect.x1, rect.y1);
-        self.task_instruction_scroll.set_viewport(viewport, theme);
+        let width = rect
+            .width()
+            .min(f64::from(theme.tokens.metrics.reading_measure));
+        let padding = f64::from(theme.tokens.spacing.s2);
         let style = body_style;
         let line_height = f64::from(style.line_height_px());
         let content_width =
-            (viewport.width() - f64::from(theme.tokens.metrics.scrollbar_gutter) - 16.0).max(1.0);
+            (width - f64::from(theme.tokens.metrics.scrollbar_gutter) - 2.0 * padding).max(1.0);
         let lines = tr.clamp_to_lines(instruction, &style, text_width(content_width), usize::MAX);
-        let content_height =
-            (line_height * ui::num::f64_of_usize(lines.len()) + 16.0).max(viewport.height());
+        let content_height = line_height * ui::num::f64_of_usize(lines.len()) + 2.0 * padding;
+        let viewport = Rect::new(
+            rect.x0,
+            y,
+            rect.x0 + width,
+            y + content_height.min((rect.y1 - y).max(0.0)),
+        );
+        self.task_instruction_scroll.set_viewport(viewport, theme);
         self.task_instruction_scroll
             .set_content_size(viewport.width(), content_height);
         self.task_instruction_scroll
@@ -5124,7 +5139,7 @@ impl RoomActivityPane {
         self.task_instruction_scroll
             .paint(scene, transform, theme, |scene, content_transform| {
                 for (index, line) in lines.iter().enumerate() {
-                    let y = 8.0 + line_height * ui::num::f64_of_usize(index);
+                    let y = padding + line_height * ui::num::f64_of_usize(index);
                     if y + line_height < visible.y0 || y > visible.y1 {
                         continue;
                     }
@@ -5132,7 +5147,7 @@ impl RoomActivityPane {
                         scene,
                         line,
                         theme.tokens.colors.text_primary,
-                        at(content_transform, 8.0, y),
+                        at(content_transform, padding, y),
                         None,
                         &style,
                     );
@@ -5862,6 +5877,12 @@ impl RoomActivityPane {
     ) -> bool {
         let mut handled = false;
         let root = automerge::ROOT;
+        if self.review_pointer_is_clipped(event, scale_factor, cursor) {
+            self.task_instruction_open_button
+                .widget_mut()
+                .cancel_pointer_interaction();
+            return false;
+        }
         if self.task_instruction_detail.is_some() {
             self.task_instruction_close_button
                 .widget_mut()
@@ -6283,6 +6304,15 @@ impl RoomActivityPane {
         action: TaskAction,
         tree: &mut impl ActivityTree,
     ) -> RoomActivityOutcome {
+        if matches!(action, TaskAction::EditPending | TaskAction::CancelPending)
+            && self
+                .selected_task
+                .as_ref()
+                .is_some_and(|id| self.reviewed_control(id).is_some())
+        {
+            self.apply_review_action(action);
+            return handled_outcome();
+        }
         if matches!(
             action,
             TaskAction::ReviewHistory
@@ -6436,11 +6466,19 @@ impl RoomActivityPane {
                 if task.status == WorkspaceTaskStatus::Waiting && control.active_run.is_none() {
                     actions.push(TaskAction::RetryRun);
                 }
-                if !task.status.is_finished() {
+                if !task.status.is_finished() && control.cancellation.is_none() {
                     if control.active_run.is_some() {
                         actions.push(TaskAction::Steer);
+                        actions.push(TaskAction::CancelRun);
+                    } else if matches!(
+                        task.status,
+                        WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
+                    ) {
+                        if control.instruction.is_some() || task_instruction(task).is_some() {
+                            actions.push(TaskAction::EditPending);
+                        }
+                        actions.push(TaskAction::CancelPending);
                     }
-                    actions.push(TaskAction::CancelRun);
                 }
             }
             return actions;
@@ -6871,6 +6909,9 @@ impl RoomActivityPane {
         }
 
         if self.route_task_instruction_button_event(event, scale_factor, *modifiers, cursor, tree) {
+            return handled_outcome();
+        }
+        if self.route_review_button_event(event, scale_factor, *modifiers, cursor, tree) {
             return handled_outcome();
         }
         if self.route_task_instruction_scroll_event(event, scale_factor, *modifiers, tree) {
@@ -7332,6 +7373,7 @@ impl RoomActivityPane {
             | ActivityFocus::PendingTaskCancelEdit
             | ActivityFocus::PendingTaskCancel => return outcome,
             ActivityFocus::TaskRoute(route) => self.task_route = route,
+            ActivityFocus::DirectionField | ActivityFocus::Detail(_) => {}
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
             ActivityFocus::TaskAction(action) => return self.apply_task_action(action, tree),
@@ -7340,7 +7382,6 @@ impl RoomActivityPane {
                 self.reinstall_filter();
             }
             ActivityFocus::MoreLenses => self.advance_lenses(),
-            ActivityFocus::DirectionField | ActivityFocus::Detail(_) => {}
             ActivityFocus::ExplorerPane(pane) => self.explorer_pane = pane,
             ActivityFocus::Timeline => self.timeline.set_focus(true),
             ActivityFocus::ReplayBack => self.step_replay(false),
@@ -7673,7 +7714,7 @@ impl RoomActivityPane {
                     Role::Button,
                     false,
                     Some(self.task_instruction_detail.as_ref() == Some(id)),
-                    task_instruction(task).unwrap_or_default().to_string(),
+                    self.review_instruction(task).unwrap_or_default(),
                 )
             }
             ActivityFocus::TaskInstructionClose => control(
@@ -7689,7 +7730,7 @@ impl RoomActivityPane {
                     Role::Document,
                     false,
                     None,
-                    task_instruction(task).unwrap_or_default().to_string(),
+                    self.review_instruction(task).unwrap_or_default(),
                 )
             }
             ActivityFocus::PendingTaskEditor => control(

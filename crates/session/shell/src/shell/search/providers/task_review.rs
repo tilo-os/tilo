@@ -44,7 +44,10 @@ impl TaskReviewProvider {
                 .directions
                 .last()
                 .map_or(0, |direction| direction.revision);
-            if !task.status.is_finished() && control.active_run.is_some() {
+            if !task.status.is_finished()
+                && control.active_run.is_some()
+                && control.cancellation.is_none()
+            {
                 rows.push(self.edit(
                     snapshot,
                     &task.id,
@@ -57,7 +60,10 @@ impl TaskReviewProvider {
                     },
                 ));
             }
-            if !task.status.is_finished() {
+            if !task.status.is_finished()
+                && control.active_run.is_some()
+                && control.cancellation.is_none()
+            {
                 rows.push(self.edit(
                     snapshot,
                     &task.id,
@@ -66,6 +72,26 @@ impl TaskReviewProvider {
                         task_id: task.id.clone(),
                         run_epoch: control.run_epoch,
                         after_revision: revision,
+                    },
+                ));
+            }
+            if matches!(
+                task.status,
+                crate::shell::state::WorkspaceTaskStatus::Queued
+                    | crate::shell::state::WorkspaceTaskStatus::Waiting
+            ) && control.active_run.is_none()
+            {
+                rows.push(self.edit(
+                    snapshot,
+                    &task.id,
+                    &task.title,
+                    TaskReviewCommand::CancelPending {
+                        task_id: task.id.clone(),
+                        frontier: tilo_desktop_model::WorkspaceTaskPendingFrontier {
+                            status: task.status,
+                            run_epoch: control.run_epoch,
+                            revision: control.pending_revision,
+                        },
                     },
                 ));
             }
@@ -195,6 +221,9 @@ impl TaskReviewProvider {
                 after_revision,
                 ..
             } => ("cancel", *run_epoch, *after_revision),
+            TaskReviewCommand::CancelPending { frontier, .. } => {
+                ("cancel-pending", frontier.run_epoch, frontier.revision)
+            }
             TaskReviewCommand::Retry { run_epoch, .. } => ("retry", *run_epoch, 0),
             TaskReviewCommand::Inspect { .. } => return self.status(snapshot.room.clone()),
         };
@@ -209,7 +238,7 @@ impl TaskReviewProvider {
                 "{}: {title}",
                 t(match verb {
                     "steer" => "task-review-steer",
-                    "cancel" => "task-review-cancel",
+                    "cancel" | "cancel-pending" => "task-review-cancel",
                     _ => "task-review-retry",
                 })
             ),

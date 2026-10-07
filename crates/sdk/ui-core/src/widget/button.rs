@@ -126,6 +126,15 @@ fn theme_key(theme: &Theme) -> ThemeKey {
 }
 
 impl Button {
+    /// Cancel an interrupted pointer gesture, for example when a host clips the
+    /// control. Keyboard focus is preserved; no activation is emitted.
+    pub fn cancel_pointer_interaction(&mut self) {
+        self.dirty |= self.is_hovered || self.is_pressed || self.pressed_into_focus;
+        self.is_hovered = false;
+        self.is_pressed = false;
+        self.pressed_into_focus = false;
+    }
+
     /// Focus a person needs to be shown: keyboard focus, not the focus a
     /// click on the button gave it.
     fn focus_visible(&self) -> bool {
@@ -1931,6 +1940,57 @@ mod tests {
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn cancelled_pointer_gesture_never_activates_and_preserves_focus() {
+        let clicks = Arc::new(AtomicUsize::new(0));
+        let counted = clicks.clone();
+        let mut button = Button::new("cancelled", "Save").on_click(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut tree = TaffyTree::<()>::new();
+        let node = button.build_layout(&mut tree, &Theme::light(), &mut Default::default());
+        button.apply_layout_external(Rect::new(0.0, 0.0, 100.0, 40.0));
+        let mut doc = AutoCommit::new();
+        let modifiers = winit::event::Modifiers::default();
+        let device = winit::event::DeviceId::dummy();
+        let mut dispatch = |button: &mut Button, event: WindowEvent| {
+            button.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: crate::widget::Edits::lend(&mut doc),
+                    path: &automerge::ROOT,
+                    handled: &mut false,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
+        };
+        let moved = || WindowEvent::CursorMoved {
+            device_id: device,
+            position: (10.0, 10.0).into(),
+        };
+        let mouse = |state| WindowEvent::MouseInput {
+            device_id: device,
+            state,
+            button: winit::event::MouseButton::Left,
+        };
+        dispatch(&mut button, moved());
+        dispatch(&mut button, mouse(winit::event::ElementState::Pressed));
+        button.set_focus(true);
+        button.cancel_pointer_interaction();
+        assert!(button.is_focused);
+        assert!(!button.is_hovered && !button.is_pressed && !button.pressed_into_focus);
+        dispatch(&mut button, moved());
+        dispatch(&mut button, mouse(winit::event::ElementState::Released));
+        assert_eq!(clicks.load(Ordering::SeqCst), 0);
+        dispatch(&mut button, mouse(winit::event::ElementState::Pressed));
+        dispatch(&mut button, mouse(winit::event::ElementState::Released));
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn a_shared_button_answers_through_an_ordinary_container() {

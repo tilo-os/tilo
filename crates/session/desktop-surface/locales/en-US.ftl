@@ -1003,3 +1003,7 @@ activity-task-review-status = { $status } · Agent: { $agent }
 activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
 activity-task-review-direction = { $author }: { $text }
 activity-task-review-missing = This task is no longer available in this workspace.
+activity-task-review-stopping = Stop requested; waiting for the agent to acknowledge
+activity-task-current-instruction = Current instruction
+activity-task-review-changed = This task changed. Review its current state before changing it.
+activity-task-original-instruction = Original request

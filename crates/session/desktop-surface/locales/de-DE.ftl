@@ -1027,3 +1027,7 @@ activity-task-review-status = { $status } · Agent: { $agent }
 activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
 activity-task-review-direction = { $author }: { $text }
 activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.
+activity-task-review-stopping = Stopp angefordert; Bestätigung des Agenten steht aus
+activity-task-current-instruction = Aktuelle Anweisung
+activity-task-review-changed = Diese Aufgabe hat sich geändert. Prüfe ihren aktuellen Stand, bevor du sie änderst.
+activity-task-original-instruction = Ursprüngliche Anfrage

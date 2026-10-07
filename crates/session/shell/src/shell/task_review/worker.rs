@@ -207,11 +207,17 @@ impl Worker {
                 task_id,
                 run_epoch,
                 after_revision,
-            } => WorkspaceTaskCommand::CancelForRun {
+            } => WorkspaceTaskCommand::CancelRun {
                 task_id: task_id.clone(),
                 run_epoch: *run_epoch,
                 after_revision: *after_revision,
             },
+            TaskReviewCommand::CancelPending { task_id, frontier } => {
+                WorkspaceTaskCommand::CancelPending {
+                    task_id: task_id.clone(),
+                    frontier: *frontier,
+                }
+            }
             TaskReviewCommand::Retry { task_id, run_epoch } => WorkspaceTaskCommand::Retry {
                 task_id: task_id.clone(),
                 run_epoch: *run_epoch,

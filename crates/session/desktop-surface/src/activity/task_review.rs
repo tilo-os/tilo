@@ -2,7 +2,7 @@
 //! Hosts authenticate commands; presentation never supplies an actor or grant.
 
 use std::collections::BTreeMap;
-use tilo_desktop_model::{WorkspaceTask, WorkspaceTaskControl};
+use tilo_desktop_model::{WorkspaceTask, WorkspaceTaskControl, WorkspaceTaskPendingFrontier};
 
 #[derive(Clone, Debug)]
 pub struct TaskReviewSnapshot {
@@ -31,6 +31,10 @@ pub enum TaskReviewCommand {
         task_id: String,
         run_epoch: u64,
         after_revision: u64,
+    },
+    CancelPending {
+        task_id: String,
+        frontier: WorkspaceTaskPendingFrontier,
     },
     Retry {
         task_id: String,
