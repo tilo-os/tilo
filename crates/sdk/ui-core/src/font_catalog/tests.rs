@@ -3,10 +3,7 @@ use cosmic_text::fontdb::{Query, Style, Weight};
 use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping};
 
 fn fixture() -> FontCatalog {
-    FontCatalog::controlled_fixture(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
-        "en-US",
-    )
+    FontCatalog::controlled_fixture(crate::font_catalog::checkout_root(), "en-US")
 }
 
 #[test]
@@ -352,7 +349,7 @@ fn a_face_installed_twice_resolves_the_same_whatever_the_discovery_order() {
 #[cfg(unix)]
 #[test]
 fn a_machine_without_tilo_sans_sets_ui_text_in_the_bundled_catalog() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+    let source = crate::font_catalog::checkout_root();
     assert_eq!(catalog_roots().last(), Some(&source));
 
     let tmp = tempfile::tempdir().unwrap();
