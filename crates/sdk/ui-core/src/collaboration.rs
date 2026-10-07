@@ -1767,6 +1767,12 @@ impl CollaborationManager {
         self.primary_route.accepted = None;
     }
 
+    pub(crate) fn finish_event_batch(&mut self) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.finish_event_batch();
+        }
+    }
+
     /// Drain every event pending on the current backend. Non-blocking.
     ///
     /// Also records a primary-route acknowledgement the transport reported

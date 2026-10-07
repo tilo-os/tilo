@@ -498,3 +498,183 @@ fn initial_history_local_control_is_not_admitted_while_committed_capture_is_pend
     assert!(app.collaboration.manager.is_connected());
     assert!(app.action_publication_failure.is_none());
 }
+
+#[test]
+fn initial_history_external_job10_waits_for_subsequent_capture_on_original_live_owner() {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = fixture.manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let original_actor = app.state.doc.get_actor().clone();
+    app.publish_action_surface();
+    history
+        .put(ROOT, "subsequent-history", "settlement")
+        .unwrap();
+    history.commit();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    (fixture.refresh)(history.save(), gate);
+    while app
+        .state
+        .doc
+        .get(ROOT, "subsequent-history")
+        .unwrap()
+        .is_none()
+    {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(!app.published_action_history_ready());
+    (fixture.invoke)();
+    while (fixture.received)() == 0 {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    // The exact stable job10 has crossed the original socket. Its capture
+    // remains parked before the worker recheck, with the original owner live.
+    let observe_until = crate::time::now() + crate::time::Duration::from_millis(60);
+    while crate::time::now() < observe_until {
+        app.pump_collab_presence();
+        assert!(
+            app.collaboration.manager.is_connected(),
+            "subsequent capture must preserve original owner custody"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(calls.get(), 0);
+    assert!(
+        app.collaboration.manager.is_connected(),
+        "a subsequent capture is not lost owner custody"
+    );
+    assert!(app.action_publication_failure.is_none());
+    assert_eq!(app.state.doc.get_actor(), &original_actor);
+    release.send(()).unwrap();
+    while calls.get() == 0 {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(calls.get(), 1);
+    assert_eq!((fixture.received)(), 1);
+    assert!(app.action_publication_failure.is_none());
+    assert!(app.collaboration.manager.is_connected());
+    assert_eq!(app.state.doc.get_actor(), &original_actor);
+    drop(app);
+    fixture.thread.join().unwrap();
+}
+
+#[test]
+fn initial_history_waited_external_job_rechecks_cancelled_or_refused_original_execution() {
+    for refused in [false, true] {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut history = automerge::AutoCommit::new();
+        history
+            .put(ROOT, "original-owner-history", "retained")
+            .unwrap();
+        history.commit();
+        let fixture =
+            CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(InitialHistoryProbe(
+                calls.clone(),
+                std::rc::Rc::new(std::cell::Cell::new(false)),
+            )),
+        );
+        app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+        app.collaboration.manager = fixture.manager;
+        let deadline = tilo_test_env::hang_deadline();
+        while !app.published_action_history_ready() {
+            app.pump_collab_presence();
+            assert!(crate::time::now() < deadline);
+            std::thread::yield_now();
+        }
+        history
+            .put(ROOT, "subsequent-history", "settlement")
+            .unwrap();
+        history.commit();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        (fixture.refresh)(history.save(), gate);
+        while app
+            .state
+            .doc
+            .get(ROOT, "subsequent-history")
+            .unwrap()
+            .is_none()
+        {
+            app.pump_collab_presence();
+            assert!(crate::time::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(!app.published_action_history_ready());
+        (fixture.invoke)();
+        while (fixture.received)() == 0 {
+            app.pump_collab_presence();
+            assert!(crate::time::now() < deadline);
+            std::thread::yield_now();
+        }
+        (fixture.execution)(if refused {
+            Err("original host execution refused".into())
+        } else {
+            Ok(true)
+        });
+        release.send(()).unwrap();
+        while app.collaboration.manager.is_connected() && (fixture.terminals)() == 0 {
+            app.pump_collab_presence();
+            assert!(crate::time::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            calls.get(),
+            0,
+            "neither cancelled nor refused execution can enter a handler"
+        );
+        if refused {
+            assert!(!app.collaboration.manager.is_connected());
+            assert_eq!(
+                (fixture.terminals)(),
+                0,
+                "lost authority cannot fabricate a terminal outcome"
+            );
+        } else {
+            assert!(app.collaboration.manager.is_connected());
+            assert_eq!(
+                (fixture.terminals)(),
+                1,
+                "confirmed cancellation crosses the original host terminal door once"
+            );
+            assert_eq!(
+                (fixture.updates)(),
+                vec![(
+                    10,
+                    tilo_actions::InvocationUpdate::Cancelled {
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(10)),
+                        message: None,
+                    }
+                )],
+                "the original wire must record the exact cancelled job, not a fabricated outcome"
+            );
+        }
+        drop(app);
+        fixture.thread.join().unwrap();
+    }
+}

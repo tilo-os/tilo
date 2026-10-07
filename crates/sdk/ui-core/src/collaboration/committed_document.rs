@@ -10,6 +10,7 @@ pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
     Arc<std::sync::Mutex<BTreeMap<String, CommittedDocument>>>,
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
 );
 #[derive(Clone)]
 enum Gate {
@@ -18,6 +19,41 @@ enum Gate {
     Required(Arc<AtomicBool>, Arc<std::sync::atomic::AtomicU64>),
 }
 impl Reads {
+    pub(super) fn delivery_generation(&self, key: &str) -> Option<Arc<AtomicBool>> {
+        let rows = self.0.lock().ok()?;
+        match rows.get(key)? {
+            Gate::Required(ready, _) => Some(ready.clone()),
+            _ => None,
+        }
+    }
+    pub(super) fn delivery_turn(&self, key: &str) -> Result<Arc<tokio::sync::Semaphore>, String> {
+        let mut turns = self.3.lock().map_err(|_| "document turn map poisoned")?;
+        Ok(turns
+            .entry(key.into())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone())
+    }
+    pub(super) fn required_delivery_turns(
+        &self,
+    ) -> Result<Vec<Arc<tokio::sync::Semaphore>>, String> {
+        let keys: Vec<_> = self
+            .0
+            .lock()
+            .map_err(|_| "document reads poisoned")?
+            .iter()
+            .filter_map(|(key, gate)| matches!(gate, Gate::Required(..)).then_some(key.clone()))
+            .collect();
+        keys.iter().map(|key| self.delivery_turn(key)).collect()
+    }
+    pub(super) fn required_routes_ready(&self) -> bool {
+        self.0.lock().is_ok_and(|rows| {
+            rows.values().all(|gate| match gate {
+                Gate::Joining => false,
+                Gate::Legacy => true,
+                Gate::Required(ready, _) => ready.load(Ordering::Acquire),
+            })
+        })
+    }
     #[cfg(test)]
     pub(super) fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
         self.pending(key).unwrap()
@@ -122,7 +158,7 @@ impl Reads {
             rows.remove(key);
         }
     }
-    fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
+    pub(super) fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
         self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready)))
     }
     fn discard_stage(&self, key: &str) {
@@ -606,6 +642,18 @@ pub(super) async fn install(
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
             }
+            // A queued native invocation retains this existing transport turn
+            // through the owner's dispatch batch. A refresh cannot withdraw its
+            // applied capture between admission delivery and the unchanged guard.
+            let Ok(semaphore) = inbound.state.document_reads.delivery_turn(&key) else {
+                break;
+            };
+            let Ok(turn) = semaphore.acquire_owned().await else {
+                break;
+            };
+            if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
+                break;
+            }
             if let Some(read) = current.take() {
                 let merged = read.merged.clone();
                 if inbound
@@ -672,6 +720,7 @@ pub(super) async fn install(
                     break;
                 }
             }
+            drop(turn);
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         set_read_ready(&inbound, &ready, false);
