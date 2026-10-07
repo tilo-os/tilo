@@ -1578,6 +1578,7 @@ mod action_host;
 mod app_consent;
 mod launchable;
 mod local_action_host;
+pub use local_action_host::CertifiedPersonContext;
 
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
@@ -11964,6 +11965,7 @@ pub mod tests {
         reason = "test scenarios and fixtures: a failed unwrap is the assertion, and each scenario keeps its setup, guards and awaits in one readable body"
     )]
     use super::*;
+    include!("certified_person_fixture.rs");
     #[cfg(test)]
     use crate::test_support::WorkspaceTree;
     use crate::test_support::WorkspaceTreeHandle;
