@@ -2456,3 +2456,10 @@ dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkrip
 search-action-tab-drag-cancel = Tab-Ziehen abbrechen
 search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
 search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
+
+search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
+search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
+search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
+search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
+search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
+search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
