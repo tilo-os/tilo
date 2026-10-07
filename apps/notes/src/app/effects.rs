@@ -124,7 +124,8 @@ impl NotesApp {
         {
             return Err("the block no longer exists".into());
         }
-        self.open_note(page)?;
+        state.get(page).ok_or("the note no longer exists")?;
+        self.open_page(page);
         self.pending_block_range = None;
         if let Some(block) = block {
             self.pending_block_reveal = Some((page, block));
