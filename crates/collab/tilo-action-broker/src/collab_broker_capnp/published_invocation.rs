@@ -32,6 +32,80 @@ pub(super) struct OriginalInvocationData {
     execution: Option<tilo_actions::remote::ExecutionLease>,
 }
 impl OriginalInvocationData {
+    pub(super) fn permits_clipboard_command(
+        &self,
+        command: &runtime_collab::file_clipboard::Command,
+    ) -> bool {
+        use runtime_collab::file_clipboard::Command;
+        let action = self.request.address.action.as_str();
+        match command {
+            Command::Publish { cut: false, .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect
+                    && matches!(action, "copy" | "copy-selection")
+            }
+            Command::Publish { cut: true, .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect
+                    && matches!(action, "cut" | "cut-selection")
+            }
+            Command::Paste { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect && action == "paste"
+            }
+            Command::Observe { .. } | Command::Cancel { .. } => {
+                matches!(
+                    action,
+                    "paste" | "undo" | "redo" | "recover-clipboard-transfers"
+                )
+            }
+            Command::Undo { .. } => self.clipboard_compensation() && action == "undo",
+            Command::Redo { .. } => self.clipboard_compensation() && action == "redo",
+            Command::Recover { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect
+                    && action == "recover-clipboard-transfers"
+            }
+            Command::Capture { .. } | Command::Release { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect
+                    && matches!(
+                        action,
+                        "copy" | "copy-selection" | "cut" | "cut-selection" | "paste"
+                    )
+            }
+            Command::Snapshot => true,
+        }
+    }
+
+    pub(super) fn clipboard_compensation(&self) -> bool {
+        self.spec.kind == tilo_actions::OperationKind::Document
+            && matches!(self.request.address.action.as_str(), "undo" | "redo")
+    }
+
+    pub(super) fn clipboard_action(&self) -> &str {
+        &self.request.address.action
+    }
+    pub(super) fn revalidate_clipboard_origin(
+        &self,
+        state: &CapnpBrokerState,
+    ) -> Result<(), String> {
+        state.checked_policy_time(Some(&self.time))?;
+        match &self.caller {
+            InvocationCaller::Certified { caller, .. } => {
+                state.current_action_caller(caller)?;
+            }
+            InvocationCaller::Local { route, admitted } => {
+                state
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn permits_clipboard(&self, needed: tilo_actions::PermissionRequirement) -> bool {
+        self.spec.contract.permission.covers(needed)
+            && self
+                .execution
+                .as_ref()
+                .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
+    }
+
     fn current_person_certificate(
         &self,
         state: &CapnpBrokerState,

@@ -259,6 +259,35 @@ pub struct IncomingNotification {
 
 type ActionTap = Arc<dyn Fn(u32, &str) + Send + Sync + 'static>;
 
+/// A host action on one durable calendar-alarm occurrence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ScheduledAction {
+    Snooze,
+    Dismiss,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ScheduledActionRequest {
+    pub id: u64,
+    pub app_id: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+    pub action: ScheduledAction,
+}
+
+#[cfg(target_os = "linux")]
+struct ScheduledActionController {
+    store: std::sync::Weak<Mutex<scheduled::ScheduleStore>>,
+    changed: crate::idle_wake::IdleWake,
+}
+
+/// A pending snooze projected from the durable scheduler, independent of history.
+#[derive(Clone, Debug)]
+pub(crate) struct SnoozedAlarm {
+    pub app_id: String,
+    pub title: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+}
+
 #[derive(Default)]
 struct BridgeInner {
     /// `Notify` → compositor toast pump.
@@ -271,6 +300,11 @@ struct BridgeInner {
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
     action_events: Vec<(u32, String)>,
+    #[cfg(target_os = "linux")]
+    schedule_controller: Option<ScheduledActionController>,
+    scheduled_actions: Vec<ScheduledActionRequest>,
+    scheduled_action_results: HashMap<u64, Result<(), String>>,
+    next_scheduled_action: u64,
     scheduled_targets: HashMap<
         u32,
         (
@@ -291,14 +325,22 @@ struct BridgeInner {
 
 impl std::fmt::Debug for BridgeInner {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BridgeInner")
+        let mut debug = formatter.debug_struct("BridgeInner");
+        #[cfg(target_os = "linux")]
+        debug.field("schedule_controller", &self.schedule_controller.is_some());
+        debug
             .field("incoming", &self.incoming.len())
             .field("close_requests", &self.close_requests.len())
             .field("ongoing_owners", &self.ongoing_owners.len())
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
             .field("scheduled_targets", &self.scheduled_targets.len())
+            .field("scheduled_actions", &self.scheduled_actions.len())
+            .field(
+                "scheduled_action_results",
+                &self.scheduled_action_results.len(),
+            )
+            .field("next_scheduled_action", &self.next_scheduled_action)
             .field("action_taps", &self.action_taps.len())
             .field("sharing", &self.sharing.len())
             .field("continuity_routes", &self.continuity.by_id.len())
@@ -393,6 +435,127 @@ impl NotificationBridge {
             g.incoming.push(n);
         }
         self.wake_compositor();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn attach_schedule_controller(
+        &self,
+        store: &Arc<Mutex<scheduled::ScheduleStore>>,
+        changed: crate::idle_wake::IdleWake,
+    ) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.schedule_controller = Some(ScheduledActionController {
+                store: Arc::downgrade(store),
+                changed,
+            });
+        }
+    }
+
+    pub(crate) fn scheduled_actions_available(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.lock().ok().is_some_and(|inner| {
+                inner
+                    .schedule_controller
+                    .as_ref()
+                    .is_some_and(|controller| controller.store.upgrade().is_some())
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    pub(crate) fn snoozed_alarms(&self, room: &str) -> Vec<SnoozedAlarm> {
+        #[cfg(target_os = "linux")]
+        {
+            let store = self.inner.lock().ok().and_then(|inner| {
+                inner
+                    .schedule_controller
+                    .as_ref()
+                    .and_then(|controller| controller.store.upgrade())
+            });
+            store
+                .and_then(|store| store.lock().ok().map(|store| store.snoozed_alarms(room)))
+                .unwrap_or_default()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = room;
+            Vec::new()
+        }
+    }
+
+    pub(crate) fn request_scheduled_action(
+        &self,
+        app_id: String,
+        target: tilo_desktop::notifications::ScheduledNotificationTarget,
+        action: ScheduledAction,
+    ) -> Result<u64, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let (id, changed) = {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "notification mailbox failed")?;
+                let controller = inner
+                    .schedule_controller
+                    .as_ref()
+                    .filter(|controller| controller.store.upgrade().is_some())
+                    .ok_or("durable alarm actions are unavailable")?;
+                let changed = controller.changed.clone();
+                if inner
+                    .scheduled_actions
+                    .len()
+                    .saturating_add(inner.scheduled_action_results.len())
+                    >= 64
+                {
+                    return Err("too many pending alarm actions".into());
+                }
+                let id = inner
+                    .next_scheduled_action
+                    .checked_add(1)
+                    .ok_or("alarm action identifiers exhausted")?;
+                inner.next_scheduled_action = id;
+                inner.scheduled_actions.push(ScheduledActionRequest {
+                    id,
+                    app_id,
+                    target,
+                    action,
+                });
+                drop(inner);
+                (id, changed)
+            };
+            changed.poke();
+            Ok(id)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (app_id, target, action);
+            Err("durable alarm actions are unavailable".into())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn drain_scheduled_actions(&self) -> Vec<ScheduledActionRequest> {
+        self.inner
+            .lock()
+            .map(|mut inner| std::mem::take(&mut inner.scheduled_actions))
+            .unwrap_or_default()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn finish_scheduled_action(&self, id: u64, result: Result<(), String>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.scheduled_action_results.insert(id, result);
+        }
+        self.wake_compositor();
+    }
+
+    pub(crate) fn take_scheduled_action_result(&self, id: u64) -> Option<Result<(), String>> {
+        self.inner.lock().ok()?.scheduled_action_results.remove(&id)
     }
 
     #[cfg(target_os = "linux")]
@@ -1074,6 +1237,7 @@ impl NotificationService {
         });
         let schedule_changed = crate::idle_wake::IdleWake::default();
         let schedule_worker = schedules.as_ref().map(|store| {
+            bridge.attach_schedule_controller(store, schedule_changed.clone());
             tokio::spawn(scheduled::drive(
                 Arc::downgrade(store),
                 bridge.clone(),

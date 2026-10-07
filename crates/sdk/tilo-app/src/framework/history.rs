@@ -45,6 +45,9 @@ pub(crate) enum HistoryEdit {
     Undo {
         steps: Option<u32>,
         run: Option<String>,
+        /// An exact author id from history for steps outside a run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
         /// Every step after this version instead.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<String>,
@@ -68,10 +71,16 @@ fn limit(steps: Option<u32>, default: usize) -> usize {
 impl tilo_actions::Action for HistoryEdit {
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
-            Self::Undo { steps, run, to } => {
+            Self::Undo { steps, run, by, to } => {
                 let (scope, default) = match run {
                     Some(run) => (Scope::Run(run.clone()), usize::MAX),
-                    None => (Scope::invoking(doc), 1),
+                    None => (
+                        by.as_ref().map_or_else(
+                            || Scope::invoking(doc),
+                            |author| Scope::Invoker(author.clone()),
+                        ),
+                        1,
+                    ),
                 };
                 match to {
                     Some(to) => steps::resolve(doc, to)
@@ -96,6 +105,129 @@ impl tilo_actions::Action for HistoryEdit {
             Self::Checkpoint { .. } => ChangeKind::Housekeeping,
             _ => ChangeKind::Content,
         }
+    }
+}
+
+/// The resource's own registry is the only decoder for its recorded
+/// compensation. Wire context never installs a decoder or a caller.
+pub(crate) struct ResourceHistoryEdit<R> {
+    edit: HistoryEdit,
+    resource: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R> std::fmt::Debug for ResourceHistoryEdit<R> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.edit.fmt(formatter)
+    }
+}
+
+impl<'de, R> Deserialize<'de> for ResourceHistoryEdit<R> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self {
+            edit: HistoryEdit::deserialize(deserializer)?,
+            resource: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R> {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
+        if let HistoryEdit::Redo { steps: count } = &self.edit {
+            let scope = Scope::invoking(doc);
+            let mut registry = tilo_actions::ActionRegistry::new();
+            tilo_resource::group::register::<R>(&mut registry);
+            let mut original = doc.fork();
+            return steps::redo_with(doc, &scope, limit(*count, 1), |version| {
+                if tilo_actions::executor::verified_compensation(
+                    &mut original,
+                    version.hash,
+                    &registry,
+                )
+                .map_err(|error| error.to_string())?
+                .is_none()
+                {
+                    return Ok(None);
+                }
+                let recorded = version
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.compensation.as_ref())
+                    .ok_or("verified redo compensation absent")?;
+                let action = registry
+                    .decode(&recorded.redo)
+                    .map_err(|error| error.to_string())?;
+                let restoration = action
+                    .redo_encoded(&original)
+                    .ok_or("redo requires the recorded outside operation's declared restoration")?;
+                let restoration = registry
+                    .decode(&restoration)
+                    .map_err(|error| error.to_string())?;
+                if restoration.locus() != ExecutionLocus::ClientLocal {
+                    return Err("history restoration requires another execution locus".into());
+                }
+                Ok(Some(steps::UndoCompensation {
+                    action: restoration,
+                    requires_settlement: action.inverse_requires_settlement(),
+                }))
+            })
+            .map(drop)
+            .map_err(ActionError::Refused);
+        }
+        let HistoryEdit::Undo {
+            steps: count,
+            run,
+            by,
+            to,
+        } = &self.edit
+        else {
+            return self.edit.apply(doc);
+        };
+        let (scope, default) = match run {
+            Some(run) => (Scope::Run(run.clone()), usize::MAX),
+            None => (
+                by.as_ref().map_or_else(
+                    || Scope::invoking(doc),
+                    |author| Scope::Invoker(author.clone()),
+                ),
+                1,
+            ),
+        };
+        let mut registry = tilo_actions::ActionRegistry::new();
+        tilo_resource::group::register::<R>(&mut registry);
+        let mut original = doc.fork();
+        let compensate = |version: &Version| {
+            let Some(action) = tilo_actions::executor::verified_compensation(
+                &mut original,
+                version.hash,
+                &registry,
+            )
+            .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            if action.locus() != ExecutionLocus::ClientLocal {
+                return Err("history compensation requires another execution locus".into());
+            }
+            let requires_settlement = version
+                .context
+                .as_ref()
+                .and_then(|context| context.compensation.as_ref())
+                .map(|compensation| registry.decode(&compensation.redo))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .is_some_and(|original| original.inverse_requires_settlement());
+            Ok(Some(steps::UndoCompensation {
+                action,
+                requires_settlement,
+            }))
+        };
+        match to {
+            Some(to) => steps::resolve(doc, to)
+                .and_then(|heads| steps::undo_since_with(doc, &scope, &heads, compensate)),
+            None => steps::undo_with(doc, &scope, limit(*count, default), compensate),
+        }
+        .map(drop)
+        .map_err(ActionError::Refused)
     }
 }
 
@@ -211,11 +343,17 @@ fn edit_specs() -> Vec<ActionSpec> {
         edit(
             "undo",
             "Undo",
-            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with to, all after a version.",
+            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
             vec![
                 steps("How many steps, newest first"),
                 ActionParam::optional("run", ParamType::Text, "An agent run id from history")
                     .nullable(),
+                ActionParam::optional(
+                    "by",
+                    ParamType::Text,
+                    "Exact author id from history, for steps outside a run",
+                )
+                .nullable(),
                 ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
             ],
             |args| {
@@ -223,7 +361,20 @@ fn edit_specs() -> Vec<ActionSpec> {
                 if to.is_some() && args.integer("steps").is_some() {
                     return Err("give steps or to, not both".into());
                 }
+                let by = args.text("by").map(str::trim).map(str::to_owned);
+                if by.as_ref().is_some_and(|author| {
+                    author.is_empty() || author.len() > 512 || author.chars().any(char::is_control)
+                }) {
+                    return Err(
+                        "author id must be nonempty, at most 512 bytes, and contain no controls"
+                            .into(),
+                    );
+                }
+                if by.is_some() && args.text("run").is_some() {
+                    return Err("choose an author or a run, not both".into());
+                }
                 Ok(HistoryEdit::Undo {
+                    by,
                     steps: steps_arg(args)?,
                     run: args.text("run").map(str::to_owned),
                     to,
@@ -606,9 +757,19 @@ fn ledger(patches: &[Patch], prefix: &str, put: bool) -> Vec<String> {
         .iter()
         .filter(|patch| patch.path.is_empty())
         .filter_map(|patch| match (&patch.action, put) {
-            (PatchAction::PutMap { key, .. }, true) | (PatchAction::DeleteMap { key }, false) => {
+            (PatchAction::PutMap { key, value, .. }, true)
+                if prefix != steps::UNDONE_KEY
+                    || value.0.as_i64().is_none_or(|attempt| attempt <= 0) =>
+            {
                 key.strip_prefix(prefix).map(str::to_owned)
             }
+            (PatchAction::PutMap { key, value, .. }, false)
+                if prefix == steps::UNDONE_KEY
+                    && value.0.as_i64().is_some_and(|attempt| attempt > 0) =>
+            {
+                key.strip_prefix(prefix).map(str::to_owned)
+            }
+            (PatchAction::DeleteMap { key }, false) => key.strip_prefix(prefix).map(str::to_owned),
             _ => None,
         })
         .collect()

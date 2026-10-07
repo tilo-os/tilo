@@ -502,7 +502,10 @@ mod tests {
         }
     }
 
-    fn membership_surface_counts(state: &CapnpBrokerState, room: &str) -> (usize, usize) {
+    fn membership_surface_actions(
+        state: &CapnpBrokerState,
+        room: &str,
+    ) -> (usize, Vec<(String, String)>) {
         let surfaces = state.published_surfaces();
         let matching = surfaces
             .iter()
@@ -512,10 +515,13 @@ mod tests {
                     && surface.route.cluster_id == room
             })
             .collect::<Vec<_>>();
-        (
-            matching.len(),
-            matching.iter().map(|surface| surface.actions.len()).sum(),
-        )
+        let mut actions = matching
+            .iter()
+            .flat_map(|surface| &surface.actions)
+            .map(|action| (action.resource.clone(), action.action.clone()))
+            .collect::<Vec<_>>();
+        actions.sort();
+        (matching.len(), actions)
     }
 
     #[tokio::test]
@@ -549,7 +555,18 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 3));
+                let mut expected = [
+                    "add-agent",
+                    "create-task",
+                    "grant-app-authorship",
+                    "queue-agent-task",
+                ]
+                .map(|action| (WORKSPACE.to_string(), action.to_string()))
+                .to_vec();
+                assert_eq!(
+                    membership_surface_actions(&state, &room),
+                    (1, expected.clone())
+                );
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(
                     state.published_surfaces_generation(),
@@ -569,7 +586,9 @@ mod tests {
                     ));
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 4));
+                expected.push((format!("{AGENT_PREFIX}scribe"), "remove".into()));
+                expected.sort();
+                assert_eq!(membership_surface_actions(&state, &room), (1, expected));
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
                 let peer = *state
@@ -590,7 +609,7 @@ mod tests {
                     3,
                     "real service retirement invalidates discovery"
                 );
-                assert_eq!(membership_surface_counts(&state, &room), (0, 0));
+                assert_eq!(membership_surface_actions(&state, &room), (0, Vec::new()));
                 drop(state);
             })
             .await;
