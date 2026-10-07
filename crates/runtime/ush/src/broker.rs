@@ -2223,7 +2223,12 @@ mod tests {
             stopped, pids,
             "the command process group survived its guest connection"
         );
-        let audit = broker.state().lock().unwrap().audit.read_all();
+        // Observing a terminated process can precede the broker's wait/reap
+        // returning and its subsequent cancellation audit. Join the actual
+        // connection worker before observing that final production record.
+        let state = broker.state().clone();
+        drop(broker);
+        let audit = state.lock().unwrap().audit.read_all();
         assert!(audit.iter().any(|record| {
             !record.allowed
                 && record
@@ -2231,7 +2236,6 @@ mod tests {
                     .as_deref()
                     .is_some_and(|detail| detail.contains("disconnected"))
         }));
-        drop(broker);
     }
 
     #[test]
