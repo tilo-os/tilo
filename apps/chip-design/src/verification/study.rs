@@ -166,7 +166,7 @@ fn validate_terminal(
         || receipt.tools.is_empty()
         || receipt.tools.len() > 8
         || receipt.tools.iter().any(|(name, tool)| {
-            !identity_name(name) || !super::text(&tool.version) || !digest(&tool.executable_sha256)
+            !tool_name(name) || !super::text(&tool.version) || !digest(&tool.executable_sha256)
         })
         || receipt
             .declared_toolchain_image
@@ -200,6 +200,14 @@ fn validate_terminal(
         }
         _ => Err("architecture study terminal claim is incomplete".into()),
     }
+}
+
+fn tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
 }
 
 fn validate_links(receipt: &VerificationReceipt, study: &ArchitectureStudy) -> Result<(), String> {
