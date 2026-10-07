@@ -2080,6 +2080,8 @@ mod tests {
         /// Cancel after this many successful status surveys (zero disables).
         cancel_after_checks: usize,
         cancellation_checks: usize,
+        control_epoch: u64,
+        control_directions: Vec<runtime_collab::TaskRunDirection>,
         /// Hold typed phase acknowledgements to prove Stop is not coupled to
         /// optional owner milestone observation.
         delay_phase_ack: bool,
@@ -2407,9 +2409,9 @@ mod tests {
                         request_id: *request_id,
                         result: Ok(runtime_collab::TaskRunControl {
                             version: 1,
-                            run_epoch: 1,
+                            run_epoch: world.control_epoch.max(1),
                             applied_revision: 0,
-                            directions: Vec::new(),
+                            directions: world.control_directions.clone(),
                             cancel_requested: cancelled,
                         }),
                     });
@@ -2472,6 +2474,75 @@ mod tests {
 
     fn fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> Fixture {
         paced_fixture(title, world, turns, None)
+    }
+
+    #[test]
+    fn enrolled_task_control_reads_direction_and_reports_exact_revision() {
+        let mut f = fixture(
+            "current task",
+            World {
+                control_epoch: 1,
+                control_directions: vec![runtime_collab::TaskRunDirection {
+                    revision: 7,
+                    text: "Saved direction".into(),
+                }],
+                ..World::default()
+            },
+            Vec::new(),
+        );
+        let acceptance = f.session.enrolled_active.clone().unwrap();
+        let super::super::TaskControlChange::Directed(directions) =
+            f.session.task_control_change(&f.run).unwrap()
+        else {
+            panic!("enrolled task must observe its saved direction");
+        };
+        assert_eq!(directions.len(), 1);
+        assert_eq!(directions.first().unwrap().revision, 7);
+        assert_eq!(directions.first().unwrap().text, "Saved direction");
+        f.session
+            .report_task(
+                &f.run,
+                runtime_collab::TaskRunUpdate::DirectionApplied { revision: 7 },
+            )
+            .unwrap();
+        let sent = f.sent.borrow();
+        assert_eq!(sent.iter().filter(|request| matches!(request, CollabRequest::TaskRunControl { run_id, lease, .. } if *run_id == f.run.run_id && lease == &f.run.lease)).count(), 1);
+        assert_eq!(sent.iter().filter(|request| matches!(request, CollabRequest::ReportEnrolledTask { acceptance: bound, sequence: 1, update: runtime_collab::TaskRunUpdate::DirectionApplied {revision: 7}, .. } if bound == &acceptance)).count(), 1);
+        assert_eq!(sent.len(), 2);
+        assert!(!sent.iter().any(|request| matches!(
+            request,
+            CollabRequest::TaskRunCancellation { .. } | CollabRequest::ReportTaskRun { .. }
+        )));
+    }
+
+    #[test]
+    fn task_control_cancel_precedes_direction_for_enrolled_and_legacy() {
+        for enrolled in [true, false] {
+            let mut f = fixture(
+                "current task",
+                World {
+                    cancel_after_checks: 1,
+                    control_epoch: 1,
+                    control_directions: vec![runtime_collab::TaskRunDirection {
+                        revision: 7,
+                        text: "Saved direction".into(),
+                    }],
+                    ..World::default()
+                },
+                Vec::new(),
+            );
+            if !enrolled {
+                f.session.enrolled_active = None;
+            }
+            assert!(
+                matches!(f.session.task_control_change(&f.run).unwrap(), super::super::TaskControlChange::Directed(directions) if directions.first().is_some_and(|direction| direction.revision == 7))
+            );
+            assert!(matches!(
+                f.session.task_control_change(&f.run).unwrap(),
+                super::super::TaskControlChange::Cancelled
+            ));
+            assert_eq!(f.world.borrow().cancellation_checks, 2);
+        }
     }
 
     #[test]

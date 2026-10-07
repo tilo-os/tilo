@@ -1375,22 +1375,6 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
     ) -> Result<TaskControlChange> {
         let request_id = self.next_request_id();
-        if self.enrolled_active.is_some() {
-            self.link.send(&CollabRequest::TaskRunCancellation {
-                request_id,
-                run_id: run.run_id,
-                lease: run.lease.clone(),
-            })?;
-            return self
-                .wait_for_task_cancellation(request_id)
-                .map(|cancelled| {
-                    if cancelled {
-                        TaskControlChange::Cancelled
-                    } else {
-                        TaskControlChange::Current
-                    }
-                });
-        }
         self.link.send(&CollabRequest::TaskRunControl {
             request_id,
             run_id: run.run_id,
@@ -1409,34 +1393,6 @@ impl Session {
         }
     }
 
-    fn wait_for_task_cancellation(&mut self, request_id: u64) -> Result<bool> {
-        let deadline = ui::time::now() + Duration::from_secs(5);
-        let mut deferred = Vec::new();
-        loop {
-            let now = ui::time::now();
-            if now >= deadline {
-                self.link.defer(deferred);
-                return Err(anyhow::anyhow!(
-                    "the broker did not answer task cancellation status"
-                ));
-            }
-            match self.recv_with_managed((deadline - now).min(Duration::from_millis(100)))? {
-                Some(CollabEvent::TaskRunCancellation {
-                    request_id: received,
-                    result,
-                }) if received == request_id => {
-                    self.link.defer(deferred);
-                    return result.map_err(anyhow::Error::msg);
-                }
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
-                }
-                Some(event) => deferred.push(event),
-                None => {}
-            }
-        }
-    }
-
     fn wait_for_task_control(&mut self, request_id: u64) -> Result<runtime_collab::TaskRunControl> {
         let deadline = ui::time::now() + Duration::from_secs(5);
         let mut deferred = Vec::new();
@@ -1445,7 +1401,7 @@ impl Session {
             if now >= deadline {
                 self.link.defer(deferred);
                 return Err(anyhow::anyhow!(
-                    "the broker did not answer task cancellation status"
+                    "the broker did not answer task control status"
                 ));
             }
             match self.recv_with_managed((deadline - now).min(Duration::from_millis(100)))? {
