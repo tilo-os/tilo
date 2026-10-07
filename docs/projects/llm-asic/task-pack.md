@@ -122,3 +122,36 @@ Connect pack, task, proposal, calibration and result files to existing Tilo
 resources/typed Effects and the engineering workbench. This is an integration
 plan, not a second scheduler implemented in Python. Process supervision,
 cancellation, task dispatch, model access and permissions remain platform-owned.
+
+## Observed historical calibration exercise
+
+On 2026-10-06 an evaluator-owned exercise used the public background-effect
+return-contract repair at `2910651426ef9d48468b287937330d03bc9df59d`.
+The named SDK regression asserts the generated production resource-effect
+contract accepts its declared return object while preserving the cancellation
+contract. The unrepaired historical parent with the same regression backported
+fails; the published repair passes; a compiling mutant that drops only the
+background return capability fails.
+
+All three outcomes were observed through ordinary Cargo in isolated private
+worktrees, then exported as real nextest JUnit reports. Their run UUIDs were
+matched to the actual console logs; actual commit identities and identical
+acceptance-source digests were verified before validating the pack. The private
+receipts retain exact commands, return codes, source/report digests and capture
+source identity under `target/private-coding-calibration-291065/`.
+
+| Observation | Process | Nextest run UUID |
+|---|---:|---|
+| Unrepaired base | 100, named assertion failure | `65695483-ab30-44c2-bdc5-e3b031964668` |
+| Reference repair | 0, named test passes | `62a26122-242c-4691-b4f2-98f3051cec94` |
+| Plausible wrong repair | 100, named assertion failure | `6fc6db31-452c-46d9-965a-fd05669bae85` |
+
+This validates the calibration evidence path on a real defect; it evaluates no
+candidate model. The public historical repair is not held out from pretraining.
+Private grader worktrees share Git history and must never be exposed to an
+evaluated agent. Independent grader identity, sandbox grants and durable agent
+traces were not exercised by these runs. New private challenges and a learner
+export excluding grader tests and future Git objects remain required.
+
+The supported local inference route, signed engine contract and remaining
+Qwen template/tool requirements are documented in [local-inference.md](local-inference.md).

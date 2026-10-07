@@ -694,12 +694,23 @@ fn signed_runtime_for<'a>(
 ) -> Result<&'a SignedRuntime, String> {
     let kind = runtime_kind_for(
         hardware,
-        catalog.runtimes.iter().map(|runtime| runtime.release.kind),
+        catalog
+            .runtimes
+            .iter()
+            .filter(|runtime| {
+                model.allowed_runtimes.contains(&runtime.release.kind)
+                    && runtime.release.supports_format(model.artifact_format)
+            })
+            .map(|runtime| runtime.release.kind),
     )?;
     catalog
         .runtimes
         .iter()
-        .filter(|runtime| runtime.release.kind == kind && model.allowed_runtimes.contains(&kind))
+        .filter(|runtime| {
+            runtime.release.kind == kind
+                && model.allowed_runtimes.contains(&kind)
+                && runtime.release.supports_format(model.artifact_format)
+        })
         .max_by_key(|runtime| &runtime.release.version)
         .ok_or_else(|| format!("The selected model has no signed {} runtime.", kind.label()))
 }

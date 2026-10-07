@@ -25,6 +25,8 @@ The [arithmetic tile](../../../hardware/llm-asic/README.md),
 provide executable experiments toward that objective. They cover limited
 contracts; they do not complete the ASIC. [Private task calibration](task-pack.md)
 provides the acceptance gates for future common coding evaluations.
+The [local inference route](local-inference.md) records signed runtime
+provisioning requirements and the remaining model/template acceptance gates.
 
 ## Reproducible inputs
 

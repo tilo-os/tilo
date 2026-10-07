@@ -60,6 +60,78 @@ pub struct RuntimeRelease {
     /// Immutable OCI image digest prepared by the signed runtime extension.
     /// A runtime is never treated as an executable downloaded blob.
     pub oci_image: String,
+    /// Signed engine and bounded launch tuning. Omission preserves legacy
+    /// vLLM catalog signing bytes exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<RuntimeExecution>,
+}
+
+/// Engine-specific settings. No caller-supplied command or arbitrary argv.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "engine", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimeExecution {
+    Vllm {
+        max_context_tokens: u32,
+        cpu_offload_gib: u16,
+    },
+    LlamaCpp {
+        max_context_tokens: u32,
+        gpu_layers: u16,
+    },
+}
+
+impl RuntimeRelease {
+    /// Whether this signed engine accepts the explicitly declared layout.
+    pub const fn supports_format(&self, format: ModelArtifactFormat) -> bool {
+        match &self.execution {
+            Some(RuntimeExecution::LlamaCpp { .. }) => {
+                matches!(format, ModelArtifactFormat::LlamaCppGguf)
+            }
+            None | Some(RuntimeExecution::Vllm { .. }) => matches!(
+                format,
+                ModelArtifactFormat::HfSnapshotTarZst | ModelArtifactFormat::VllmGguf
+            ),
+        }
+    }
+
+    /// Validate finite execution limits before installation or launch.
+    /// # Errors
+    /// Rejects zero/excessive context and impossible CPU-only GPU offload.
+    pub fn validate_execution(&self) -> Result<(), ProvisionError> {
+        let Some(execution) = &self.execution else {
+            return Ok(());
+        };
+        let context = match execution {
+            RuntimeExecution::Vllm {
+                max_context_tokens,
+                cpu_offload_gib,
+            } => {
+                if *cpu_offload_gib > 1024 {
+                    return Err(ProvisionError::InvalidCatalog(
+                        "CPU offload exceeds launch limit",
+                    ));
+                }
+                *max_context_tokens
+            }
+            RuntimeExecution::LlamaCpp {
+                max_context_tokens,
+                gpu_layers,
+            } => {
+                if *gpu_layers > 4096 || (self.kind == RuntimeKind::Cpu && *gpu_layers != 0) {
+                    return Err(ProvisionError::InvalidCatalog(
+                        "GPU layer setting is incompatible with runtime",
+                    ));
+                }
+                *max_context_tokens
+            }
+        };
+        if context == 0 || context > 1_048_576 {
+            return Err(ProvisionError::InvalidCatalog(
+                "runtime context is outside launch limits",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// An immutable, verified downloadable object.
@@ -82,6 +154,8 @@ pub enum ModelArtifactFormat {
     /// An explicit GGUF single-file release. Catalog authors must assert vLLM
     /// compatibility; the format is not inferred as a fallback.
     VllmGguf,
+    /// A GGUF release explicitly assigned to llama.cpp server.
+    LlamaCppGguf,
     /// One ONNX graph that a per-user service loads into its own process and
     /// runs on the CPU. It needs no signed runtime, container or service
     /// start: the verified content-addressed object is the whole install.
@@ -212,6 +286,13 @@ impl LocalModelRelease {
     ///
     /// Returns an error naming the first contradiction.
     pub fn validate_shape(&self) -> Result<(), ProvisionError> {
+        if self.artifact_format == ModelArtifactFormat::LlamaCppGguf
+            && (self.vision || self.face_recognition)
+        {
+            return Err(ProvisionError::InvalidCatalog(
+                "single-file llama.cpp release has no vision projection",
+            ));
+        }
         if self.artifact_format == ModelArtifactFormat::WhisperGgml && self.segmentation {
             return Err(ProvisionError::InvalidCatalog(
                 "speech graph cannot claim segmentation",
@@ -275,6 +356,7 @@ impl LocalModelCatalog {
                 return Err(ProvisionError::InvalidCatalog("runtime ids must be unique"));
             }
             runtime.artifact.validate()?;
+            runtime.validate_execution()?;
             if !runtime.oci_image.contains("@sha256:") {
                 return Err(ProvisionError::InvalidCatalog(
                     "runtime OCI image must be digest pinned",
@@ -312,6 +394,22 @@ impl LocalModelCatalog {
             .max_by_key(|runtime| &runtime.version)
     }
 
+    /// Select a hardware-compatible engine for this explicit model layout.
+    pub fn runtime_for_model(
+        &self,
+        kind: RuntimeKind,
+        model: &LocalModelRelease,
+    ) -> Option<&RuntimeRelease> {
+        self.runtimes
+            .iter()
+            .filter(|runtime| {
+                runtime.kind == kind
+                    && model.allowed_runtimes.contains(&kind)
+                    && runtime.supports_format(model.artifact_format)
+            })
+            .max_by_key(|runtime| &runtime.version)
+    }
+
     /// Pick the largest known-fitting model for the preferred runtime. The
     /// caller still presents this as a recommendation, never a silent install.
     /// In-process models are never the chat recommendation.
@@ -326,6 +424,7 @@ impl LocalModelCatalog {
             .filter(|model| {
                 !model.runs_in_process()
                     && model.allowed_runtimes.contains(&runtime)
+                    && self.runtime_for_model(runtime, model).is_some()
                     && model.required_memory_mib <= hardware.memory_mib
                     && model.required_accelerator_mib <= accelerator
                     && model.artifact.size_bytes / (1024 * 1024) <= hardware.free_storage_mib
@@ -575,11 +674,12 @@ impl<'a, B: LocalModelBackend> LocalModelProvisioner<'a, B> {
                 runtime.label()
             )));
         }
-        let runtime_release = catalog
-            .runtime(runtime)
-            .ok_or(ProvisionError::InvalidCatalog(
-                "no pinned runtime for selected hardware",
-            ))?;
+        let runtime_release =
+            catalog
+                .runtime_for_model(runtime, release)
+                .ok_or(ProvisionError::InvalidCatalog(
+                    "no pinned runtime for selected hardware",
+                ))?;
         self.download_verified(&runtime_release.artifact)?;
         self.backend.install_runtime(runtime_release)?;
         self.download_verified(&release.artifact)?;
@@ -600,22 +700,24 @@ impl<'a, B: LocalModelBackend> LocalModelProvisioner<'a, B> {
         model_id: &str,
         port: u16,
     ) -> Result<LocalModelStatus, ProvisionError> {
+        catalog.validate()?;
         let runtime = match select_runtime(hardware) {
             RuntimeDecision::Ready(runtime) => runtime,
             RuntimeDecision::Unavailable(reason) => {
                 return Err(ProvisionError::UnsupportedHardware(reason.into()));
             }
         };
-        let runtime_release = catalog
-            .runtime(runtime)
-            .ok_or(ProvisionError::InvalidCatalog(
-                "no pinned runtime for selected hardware",
-            ))?;
         let model = catalog
             .models
             .iter()
             .find(|model| model.id == model_id)
             .ok_or(ProvisionError::InvalidCatalog("unknown model id"))?;
+        let runtime_release =
+            catalog
+                .runtime_for_model(runtime, model)
+                .ok_or(ProvisionError::InvalidCatalog(
+                    "no compatible pinned runtime for selected model",
+                ))?;
         if port == 0 {
             return Err(ProvisionError::Backend("port 0 cannot be activated".into()));
         }
@@ -658,6 +760,25 @@ impl<'a, B: LocalModelBackend> LocalModelProvisioner<'a, B> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_runtime_metadata_roundtrips_without_changing_signing_payload() {
+        let runtime = catalog().runtimes.remove(0);
+        // Exact legacy RuntimeRelease encoding, used inside signed payloads.
+        let golden = r#"{"id":"vllm-cpu-0.9.0","kind":"cpu","version":"0.9.0","artifact":{"url":"https://models.example.invalid/runtime","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size_bytes":100},"oci_image":"registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+        assert_eq!(serde_json::to_string(&runtime).unwrap(), golden);
+        let mut wire = serde_json::to_value(&runtime).unwrap();
+        assert!(wire.get("execution").is_none());
+        let recovered: RuntimeRelease = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(recovered).unwrap(), wire);
+        wire["execution"] =
+            serde_json::json!({"engine":"llama_cpp","max_context_tokens":4096,"gpu_layers":0});
+        let configured: RuntimeRelease = serde_json::from_value(wire).unwrap();
+        assert!(configured.supports_format(ModelArtifactFormat::LlamaCppGguf));
+        assert!(!configured.supports_format(ModelArtifactFormat::VllmGguf));
+        let invalid = serde_json::json!({"engine":"llama_cpp","max_context_tokens":4096,"gpu_layers":0,"args":["--host","0.0.0.0"]});
+        assert!(serde_json::from_value::<RuntimeExecution>(invalid).is_err());
+    }
+
     fn artifact(name: &str) -> PinnedArtifact {
         PinnedArtifact {
             url: format!("https://models.example.invalid/{name}"),
@@ -672,6 +793,7 @@ mod tests {
                 kind: RuntimeKind::Cpu,
                 version: "0.9.0".into(),
                 artifact: artifact("runtime"),
+                execution: None,
                 oci_image: "registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             }],
             models: vec![LocalModelRelease {
@@ -864,6 +986,41 @@ mod tests {
         assert!(no_runtime.validate_shape().is_err());
     }
 
+    #[test]
+    fn incompatible_engine_and_disallowed_backend_never_recommend_or_activate() {
+        let mut value = catalog();
+        value.models[0].artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        let mut fake = Fake {
+            partial: 0,
+            calls: vec![],
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+        };
+        assert!(value.recommend(&cpu(), RuntimeKind::Cpu).is_none());
+        assert!(
+            LocalModelProvisioner::new(&mut fake)
+                .activate(&value, &cpu(), "tiny-q4", 8000)
+                .is_err()
+        );
+        assert!(fake.calls.is_empty());
+        value.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens: 4096,
+            gpu_layers: 0,
+        });
+        assert!(value.recommend(&cpu(), RuntimeKind::Cpu).is_some());
+        value.models[0].allowed_runtimes = [RuntimeKind::NvidiaCuda].into();
+        assert!(
+            value
+                .runtime_for_model(RuntimeKind::Cpu, &value.models[0])
+                .is_none()
+        );
+        assert!(
+            LocalModelProvisioner::new(&mut fake)
+                .activate(&value, &cpu(), "tiny-q4", 8000)
+                .is_err()
+        );
+        assert!(fake.calls.is_empty());
+    }
+
     fn catalog_model() -> LocalModelRelease {
         catalog().models.remove(0)
     }
@@ -909,6 +1066,7 @@ mod tests {
             Ok(())
         }
         fn start_vllm(&mut self, _: VllmLaunch) -> Result<LocalEndpoint, ProvisionError> {
+            self.calls.push("start");
             Ok(LocalEndpoint {
                 url: self.endpoint.clone(),
                 model_id: "tiny-q4".into(),

@@ -32,7 +32,7 @@ use std::path::{Component, Path, PathBuf};
 pub use agent_provider_config::local::InProcessCapability;
 use agent_provider_config::local::{
     LocalEndpoint, LocalModelRelease, LocalModelStatus, ModelArtifactFormat, PinnedArtifact,
-    RuntimeRelease,
+    RuntimeExecution, RuntimeRelease,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -145,8 +145,87 @@ impl SignedRuntime {
         {
             return Err(ServiceError::RuntimeNotAccepted);
         }
+        self.release
+            .validate_execution()
+            .map_err(|_| ServiceError::RuntimeNotAccepted)?;
         Ok(())
     }
+}
+
+/// Build bounded argv exclusively from signed runtime/model metadata.
+fn runtime_arguments(
+    runtime: &RuntimeRelease,
+    model: &LocalModelRelease,
+    path: &str,
+    port: u16,
+) -> Result<Vec<String>, ServiceError> {
+    runtime
+        .validate_execution()
+        .map_err(|_| ServiceError::RuntimeNotAccepted)?;
+    model
+        .validate_shape()
+        .map_err(|_| ServiceError::RuntimeNotAccepted)?;
+    if port == 0
+        || model.id.is_empty()
+        || model.id.len() > 128
+        || model.id.starts_with('-')
+        || !model.id.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'-' | b'_' | b'.' | b'/')
+        })
+    {
+        return Err(ServiceError::InvalidEndpoint);
+    }
+    if !runtime.supports_format(model.artifact_format)
+        || !model.allowed_runtimes.contains(&runtime.kind)
+    {
+        return Err(ServiceError::RuntimeNotAccepted);
+    }
+    let mut args = match &runtime.execution {
+        Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens,
+            gpu_layers,
+        }) => vec![
+            "--model".into(),
+            path.into(),
+            "--alias".into(),
+            model.id.clone(),
+            "--ctx-size".into(),
+            (*max_context_tokens).min(model.context_window).to_string(),
+            "--n-gpu-layers".into(),
+            gpu_layers.to_string(),
+            "--jinja".into(),
+        ],
+        execution => {
+            let mut args = vec![
+                "serve".into(),
+                path.into(),
+                "--served-model-name".into(),
+                model.id.clone(),
+            ];
+            if let Some(RuntimeExecution::Vllm {
+                max_context_tokens,
+                cpu_offload_gib,
+            }) = execution
+            {
+                args.extend([
+                    "--max-model-len".into(),
+                    (*max_context_tokens).min(model.context_window).to_string(),
+                    "--cpu-offload-gb".into(),
+                    cpu_offload_gib.to_string(),
+                ]);
+            }
+            args
+        }
+    };
+    args.extend([
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string(),
+    ]);
+    Ok(args)
 }
 
 /// Persisted non-secret lifecycle state for a model. A process handle is an
@@ -358,6 +437,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         match model.artifact_format {
             ModelArtifactFormat::HfSnapshotTarZst => self.snapshot_path(&model.artifact.sha256),
             ModelArtifactFormat::VllmGguf
+            | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
             | ModelArtifactFormat::WhisperGgml => self.object_path(&model.artifact.sha256),
         }
@@ -434,6 +514,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let object = self.fetch_verified(&model.artifact)?;
         match model.artifact_format {
             ModelArtifactFormat::VllmGguf
+            | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
             | ModelArtifactFormat::WhisperGgml => Ok(object),
             ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
@@ -506,6 +587,11 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
         runtime.validate()?;
+        if !runtime.release.supports_format(model.artifact_format)
+            || !model.allowed_runtimes.contains(&runtime.release.kind)
+        {
+            return Err(ServiceError::RuntimeNotAccepted);
+        }
         self.require_license_acceptance(model)?;
         let archive = self.fetch_verified(&runtime.release.artifact)?;
         self.supervisor
@@ -525,6 +611,11 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
         runtime.validate()?;
+        if !runtime.release.supports_format(model.artifact_format)
+            || !model.allowed_runtimes.contains(&runtime.release.kind)
+        {
+            return Err(ServiceError::RuntimeNotAccepted);
+        }
         self.require_license_acceptance(model)?;
         let archive = self.fetch_verified(&runtime.release.artifact)?;
         self.supervisor
@@ -767,13 +858,22 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             return Err(ServiceError::InProcessModel(model.id.clone()));
         }
         runtime.validate()?;
+        if !runtime.release.supports_format(model.artifact_format)
+            || !model.allowed_runtimes.contains(&runtime.release.kind)
+        {
+            return Err(ServiceError::RuntimeNotAccepted);
+        }
         if port == 0 {
             return Err(ServiceError::InvalidPort);
         }
         let model_path = self.model_path(model)?;
         let model_container_path = match model.artifact_format {
             ModelArtifactFormat::HfSnapshotTarZst if model_path.is_dir() => "/models/model",
-            ModelArtifactFormat::VllmGguf if model_path.is_file() => "/models/model.gguf",
+            ModelArtifactFormat::VllmGguf | ModelArtifactFormat::LlamaCppGguf
+                if model_path.is_file() =>
+            {
+                "/models/model.gguf"
+            }
             _ => return Err(ServiceError::ModelNotInstalled(model.id.clone())),
         };
         if matches!(model.artifact_format, ModelArtifactFormat::HfSnapshotTarZst) {
@@ -796,17 +896,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let command = VllmCommand {
             runtime_image: runtime.release.oci_image.clone(),
             runtime_kind: runtime.release.kind,
-            args: vec![
-                "serve".into(),
-                // The supervisor mounts this verified host object at this
-                // stable, container-visible path. Never pass a host path to
-                // vLLM inside the OCI container.
-                model_container_path.into(),
-                "--host".into(),
-                "127.0.0.1".into(),
-                "--port".into(),
-                port.to_string(),
-            ],
+            args: runtime_arguments(&runtime.release, model, model_container_path, port)?,
             model_path,
             model_container_path: model_container_path.into(),
             endpoint: endpoint.clone(),
@@ -1165,6 +1255,150 @@ mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
     use std::io::{Cursor, Write as _};
+
+    #[test]
+    fn signed_execution_builds_bounded_engine_argv_and_rejects_layout_mismatch() {
+        let mut runtime = RuntimeRelease {
+            id: "test-runtime".into(),
+            kind: RuntimeKind::NvidiaCuda,
+            version: "pinned".into(),
+            artifact: artifact(b"runtime"),
+            oci_image: format!("registry.example.invalid/runtime@sha256:{}", "a".repeat(64)),
+            execution: Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 16384,
+                gpu_layers: 12,
+            }),
+        };
+        let mut release = model(b"weights");
+        release.context_window = 4096;
+        release.allowed_runtimes.insert(RuntimeKind::NvidiaCuda);
+        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        release.vision = true;
+        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+        release.vision = false;
+        let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
+        assert_eq!(
+            args,
+            [
+                "--model",
+                "/models/model.gguf",
+                "--alias",
+                "tiny",
+                "--ctx-size",
+                "4096",
+                "--n-gpu-layers",
+                "12",
+                "--jinja",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000"
+            ]
+        );
+        runtime.kind = RuntimeKind::Cpu;
+        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+        runtime.execution = Some(RuntimeExecution::Vllm {
+            max_context_tokens: 1024,
+            cpu_offload_gib: 16,
+        });
+        release.artifact_format = ModelArtifactFormat::VllmGguf;
+        let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--served-model-name", "tiny"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--max-model-len", "1024"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--cpu-offload-gb", "16"])
+        );
+        for invalid_id in ["--host", "alias,other", "", "bad\0id"] {
+            release.id = invalid_id.into();
+            assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+        }
+    }
+
+    #[test]
+    fn service_launches_signed_llama_metadata_through_existing_supervisor() {
+        let bytes = b"synthetic model and runtime fixture";
+        let item = artifact(bytes);
+        let manifest = system_extension::ExtensionManifest {
+            schema_version: system_extension::SCHEMA_VERSION,
+            id: "test-llama-runtime".into(),
+            kind: ExtensionKind::LocalModelRuntime,
+            version: "test".into(),
+            artifact: system_extension::PinnedArtifact {
+                source: item.url.clone(),
+                sha256: item.sha256.clone(),
+                size_bytes: item.size_bytes,
+            },
+            target: system_extension::ImageConstraint {
+                base_image_digest: format!("sha256:{}", "a".repeat(64)),
+                architecture: None,
+                kernel_abi: None,
+            },
+            requires_reboot: false,
+        };
+        let signed = system_extension::SignedExtensionManifest::sign(
+            manifest,
+            "unit-test-key",
+            &ed25519_dalek::SigningKey::from_bytes(&[5; 32]),
+        )
+        .unwrap();
+        let mut runtime = SignedRuntime {
+            accepted: AcceptedExtension {
+                signed,
+                artifact: system_extension::ArtifactReceipt {
+                    sha256: item.sha256.clone(),
+                    size_bytes: item.size_bytes,
+                },
+                committed_revision: 1,
+            },
+            release: RuntimeRelease {
+                id: "test-llama-runtime".into(),
+                kind: RuntimeKind::Cpu,
+                version: "test".into(),
+                artifact: item,
+                oci_image: format!("registry.example.invalid/llama@sha256:{}", "a".repeat(64)),
+                execution: Some(RuntimeExecution::LlamaCpp {
+                    max_context_tokens: 1024,
+                    gpu_layers: 0,
+                }),
+            },
+        };
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        release.context_window = 4096;
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = service_for(dir.path(), bytes);
+        service.install_with_runtime(&runtime, &release).unwrap();
+        let endpoint = service.start(&runtime, &release, 9000).unwrap();
+        assert_eq!(endpoint.model_id, "tiny");
+        assert_eq!(endpoint.url, "http://127.0.0.1:9000/v1");
+        let command = service.supervisor.command.as_ref().unwrap();
+        assert_eq!(command.runtime_image, runtime.release.oci_image);
+        assert_eq!(command.model_path, service.model_path(&release).unwrap());
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--alias", "tiny"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--ctx-size", "1024"])
+        );
+        service.supervisor.command = None;
+        runtime.release.execution = None;
+        assert!(service.start(&runtime, &release, 9000).is_err());
+        assert!(service.supervisor.command.is_none());
+    }
 
     fn artifact(bytes: &[u8]) -> PinnedArtifact {
         PinnedArtifact {

@@ -39,8 +39,8 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use agent_provider_config::local::{
-    LocalModelRelease, ModelArtifactFormat, PinnedArtifact as ModelArtifact, RuntimeKind,
-    RuntimeRelease,
+    LocalModelRelease, ModelArtifactFormat, PinnedArtifact as ModelArtifact, RuntimeExecution,
+    RuntimeKind, RuntimeRelease,
 };
 use clap::Parser;
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -154,6 +154,8 @@ struct RuntimeSource {
     version: String,
     /// Digest-pinned OCI identity used by a container-aware supervisor.
     oci_image: String,
+    #[serde(default)]
+    execution: Option<RuntimeExecution>,
     artifact: ArtifactSource,
     base_image_digest: String,
     architecture: Option<String>,
@@ -284,14 +286,12 @@ fn compile(
     source.models.sort_by(|left, right| left.id.cmp(&right.id));
 
     let mut runtime_ids = BTreeSet::new();
-    let mut runtime_kinds = BTreeSet::new();
     let mut runtimes = Vec::with_capacity(source.runtimes.len());
     for runtime in source.runtimes {
         validate_identifier("runtime id", &runtime.id)?;
         if !runtime_ids.insert(runtime.id.clone()) {
             return Err(format!("duplicate runtime id {}", runtime.id));
         }
-        runtime_kinds.insert(runtime.kind);
         validate_oci_digest(&runtime.oci_image)?;
         let receipt = resolve_artifact(&runtime.artifact, source_dir, source.production, None)?;
         let manifest = ExtensionManifest {
@@ -332,8 +332,15 @@ fn compile(
                     size_bytes: receipt.size_bytes,
                 },
                 oci_image: runtime.oci_image,
+                execution: runtime.execution,
             },
         });
+    }
+
+    for runtime in &runtimes {
+        runtime
+            .validate()
+            .map_err(|error| format!("invalid runtime {}: {error}", runtime.release.id))?;
     }
 
     let mut model_ids = BTreeSet::new();
@@ -356,11 +363,12 @@ fn compile(
         validate_immutable_url(&model.license_url, source.production, Some(&model.revision))?;
         // An in-process model names no runtime at all; every runtime a served
         // model names must be one this catalog signs.
-        if !model
-            .allowed_runtimes
-            .iter()
-            .all(|kind| runtime_kinds.contains(kind))
-        {
+        if !model.allowed_runtimes.iter().all(|kind| {
+            runtimes.iter().any(|runtime| {
+                runtime.release.kind == *kind
+                    && runtime.release.supports_format(model.artifact_format)
+            })
+        }) {
             return Err(format!(
                 "model {} names a runtime kind absent from this catalog",
                 model.id
@@ -564,6 +572,7 @@ fn validate_oci_digest(image: &str) -> Result<(), String> {
 
 fn validate_identifier(name: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
+        || value.starts_with('-')
         || value.len() > 128
         || !value.bytes().all(|byte| {
             byte.is_ascii_lowercase()
@@ -676,6 +685,7 @@ mod tests {
                 id: "vllm-cpu".into(),
                 kind: RuntimeKind::Cpu,
                 version: "0.1.0-example".into(),
+                execution: None,
                 oci_image: format!(
                     "registry.example.invalid/tilo/vllm@sha256:{}",
                     "b".repeat(64)
@@ -733,6 +743,40 @@ mod tests {
             face_recognition: false,
             segmentation: true,
         }
+    }
+
+    #[test]
+    fn execution_engine_and_limits_are_signed_and_incompatible_layouts_refused() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let temp = tempfile::tempdir().unwrap();
+        let mut catalog = source(temp.path());
+        catalog.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens: 4096,
+            gpu_layers: 0,
+        });
+        assert!(compile(catalog.clone(), temp.path(), &key).is_err());
+        catalog.models[0].artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        catalog.models[0].vision = false;
+        let (signed, _) = compile(catalog.clone(), temp.path(), &key).unwrap();
+        let signature = Signature::from_slice(&signed.signature).unwrap();
+        key.verifying_key()
+            .verify(&catalog_signing_bytes(&signed.payload).unwrap(), &signature)
+            .unwrap();
+        let mut forged = signed.payload;
+        forged.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens: 8192,
+            gpu_layers: 0,
+        });
+        assert!(
+            key.verifying_key()
+                .verify(&catalog_signing_bytes(&forged).unwrap(), &signature)
+                .is_err()
+        );
+        catalog.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens: 0,
+            gpu_layers: 0,
+        });
+        assert!(compile(catalog, temp.path(), &key).is_err());
     }
 
     #[test]
