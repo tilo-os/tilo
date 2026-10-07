@@ -1,6 +1,6 @@
 //! Shared retained widgets and the framework's consented file chooser.
 
-use ui::framework::{Effected, ResourceApp, ViewCx};
+use ui::framework::{Effected, LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::{EmbeddedCatalog, I18nManager};
 use ui::portal::{FileFilter, PickRequest};
 use ui::tilo_resource::{self, ActionRef, Effect, Invoke};
@@ -59,6 +59,7 @@ const REMOVE: ActionRef<ChipProject, String> = ActionRef::new("remove-report", &
 pub struct ChipDesignShell;
 
 fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<String>>) -> Element {
+    let invalid_file = crate::launch::invalid(&cx.launch());
     let synthetic = cx.local(false);
     let notice = synthetic.clone();
     let staged = selected.clone();
@@ -74,9 +75,11 @@ fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<Str
             staged.set(Some(crate::operator_graph::RESOURCE_ID.into()));
         }
     });
-    cx.switch(&synthetic, |_, synthetic| {
+    cx.switch(&synthetic, move |_, synthetic| {
         let label = if *synthetic {
             tr("chip-synthetic-fixture")
+        } else if invalid_file {
+            tr("chip-open-invalid")
         } else {
             String::new()
         };
@@ -88,6 +91,14 @@ impl ResourceApp for ChipDesignShell {
     type Resource = ChipProject;
     const ID: &'static str = "so.tilo.chip-design";
     const TITLE: &'static str = "Chip Design";
+    // Content collection currently stages non-media transfers with a .bin name.
+    // Both routes validate the complete bounded report before any action is sent.
+    const OPENS: &'static [&'static str] = &["application/json", "application/octet-stream"];
+    const ARGUMENTS: usize = 1;
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<ChipProject>> {
+        crate::launch::actions(input)
+    }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
         Some(&CATALOG)
