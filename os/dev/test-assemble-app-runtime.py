@@ -2,6 +2,7 @@
 """Exercise actual private cohort assembly namespaces without compiling apps."""
 import importlib.util
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +12,65 @@ SOURCE = Path(__file__).with_name('assemble-app-runtime.py')
 SPEC = importlib.util.spec_from_file_location('assemble_runtime', SOURCE)
 ASSEMBLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ASSEMBLER)
+
+
+class NativeClosure(unittest.TestCase):
+    def make_binaries(self, directory):
+        leaf = directory / 'leaf.c'
+        leaf.write_text('int leaf(void) { return 7; }\n')
+        bridge = directory / 'bridge.c'
+        bridge.write_text('extern int leaf(void); int bridge(void) { return leaf(); }\n')
+        app = directory / 'app.c'
+        app.write_text('#include <stdio.h>\nextern int bridge(void); '
+                       'int main(void) { printf("%d", bridge()); return 0; }\n')
+        commands = [
+            ['cc', '-shared', '-fPIC', str(leaf), '-Wl,-soname,libleaf.so',
+             '-o', str(directory / 'libleaf.so')],
+            ['cc', '-shared', '-fPIC', str(bridge), '-L' + str(directory),
+             '-lleaf', '-Wl,-soname,libbridge.so', '-o', str(directory / 'libbridge.so')],
+            ['cc', str(app), '-L' + str(directory), '-lbridge',
+             '-Wl,-rpath-link,' + str(directory), '-o', str(directory / 'app')],
+        ]
+        for command in commands:
+            subprocess.run(command, check=True, capture_output=True)
+        return directory / 'app'
+
+    def test_app_only_transitive_native_dependencies_are_collected(self):
+        with tempfile.TemporaryDirectory(prefix='native-closure-') as name:
+            directory = Path(name)
+            app = self.make_binaries(directory)
+            environment = dict(os.environ, LD_LIBRARY_PATH=str(directory))
+            paths = ASSEMBLER.native_dependencies([app], environment)
+            self.assertIn(directory / 'libbridge.so', paths)
+            self.assertIn(directory / 'libleaf.so', paths)
+            self.assertTrue(any(path.name == 'libc.so.6' for path in paths))
+            (directory / 'libleaf.so').unlink()
+            with self.assertRaisesRegex(ValueError, 'unresolved native dependencies'):
+                ASSEMBLER.native_dependencies([app], environment)
+
+    def test_verifier_refuses_host_fallback_for_real_elf_dependencies(self):
+        with tempfile.TemporaryDirectory(prefix='native-closure-') as name:
+            directory = Path(name)
+            app = self.make_binaries(directory)
+            paths = ASSEMBLER.native_dependencies(
+                [app], dict(os.environ, LD_LIBRARY_PATH=str(directory)))
+            bundle = directory / 'bundle'
+            lib = bundle / 'lib'
+            lib.mkdir(parents=True)
+            for path in paths:
+                shutil.copyfile(path, lib / path.name)
+            # Small real ELF stand-ins meet the SDK name contract without Rust
+            # compilation; the application's actual DT_NEEDED is the subject.
+            for name in ('libruntime_dylib.so', 'libstd-fixture.so'):
+                shutil.copyfile(directory / 'libbridge.so', lib / name)
+            command = ['bash', str(SOURCE.parents[1] / 'scripts/verify-runtime-bundle-closure.sh'),
+                       str(bundle), str(app)]
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            (lib / 'libc.so.6').unlink()
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('signed runtime is missing libc.so.6', result.stderr)
 
 
 class AssemblyNamespaces(unittest.TestCase):

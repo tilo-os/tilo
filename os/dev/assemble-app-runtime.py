@@ -120,9 +120,20 @@ def profile_directory(profile):
     return 'debug' if profile == 'dev' else profile
 
 
+def native_dependencies(objects, dependency_env):
+    """Collect the native closure of every ELF before signing its SDK."""
+    paths = set()
+    for binary in objects:
+        report = run(['ldd', str(binary)], env=dependency_env, capture=True).stdout
+        if 'not found' in report:
+            raise ValueError(f'{binary} has unresolved native dependencies')
+        paths.update(map(Path, re.findall(r'(?:=>\s*)?(/[^\s()]+)', report)))
+    return sorted(paths)
+
+
 def assemble_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
-    rows = selected_applications(repo, args.app)
+    rows = applications(repo)
     binaries = [target / profile_directory(args.profile) / row[1] for row in rows]
     if any(not binary.is_file() for binary in binaries):
         raise ValueError('a required cohort binary is absent; refusing a partial store')
@@ -132,11 +143,8 @@ def assemble_inside(args):
     if len(std) != 1 or not toolkit.is_file():
         raise ValueError('the exact graph toolkit or Rust standard library is missing')
     dependency_env = dict(os.environ, LD_LIBRARY_PATH=f'{toolkit.parent}:{libdir}')
-    report = run(['ldd', str(toolkit)], env=dependency_env, capture=True).stdout
-    if 'not found' in report:
-        raise ValueError('the built toolkit has unresolved dependencies')
-    closure = sorted(set(re.findall(r'(?:=>\s*)?(/[^\s()]+)', report)))
-    includes = list(dict.fromkeys([toolkit, std[0], *map(Path, closure)]))
+    closure = native_dependencies([toolkit, *binaries], dependency_env)
+    includes = list(dict.fromkeys([toolkit, std[0], *closure]))
     bundle = target / 'release/tilo-runtime-bundle'
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'
@@ -200,8 +208,9 @@ def assemble(args):
                PROFILE=args.profile, APP_FEATURES=args.features)
     for variable in ('EXCLUDE_PACKAGES', 'INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXTRA_CARGO_ARGS'):
         env.pop(variable, None)
-    if args.app is not None:
-        env['BUILD_PACKAGES'] = selected_applications(repo, args.app)[0][0]
+    # The SDK is shared by the complete collection, including native libraries
+    # linked only by an app. Warm unchanged targets are reused by Cargo; a
+    # selected update packages only that app but derives the same complete SDK.
     run(['bash', str(repo / 'os/scripts/build-thin-apps.sh')], env=env)
     for _, binary, _ in selected_applications(repo, args.app):
         if not (target / profile_directory(args.profile) / binary).is_file():
