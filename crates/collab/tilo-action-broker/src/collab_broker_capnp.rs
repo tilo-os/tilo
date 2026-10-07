@@ -3012,6 +3012,10 @@ pub struct CapnpBrokerState {
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
     /// Monotonic generation for shell-side retained action projections.
     surface_generation: AtomicU64,
+    /// Last workspace authority revision projected into pushed catalogues.
+    /// A capability-only change does not mutate any app surface, so it has
+    /// its own revision fence instead of pretending the app republished.
+    action_catalogue_authority_epoch: Mutex<Option<u64>>,
     /// Last launchable projection per app, workspace and record, kept across
     /// restarts. Catalogue state, never an executable capability by itself.
     launchable: launchable::LaunchableCatalogue,
@@ -3923,6 +3927,7 @@ impl CapnpBrokerState {
                     .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from),
                 surfaces: Mutex::new(HashMap::new()),
                 surface_generation: AtomicU64::new(0),
+                action_catalogue_authority_epoch: Mutex::new(None),
                 launchable: launchable::LaunchableCatalogue::new(),
                 action_directory_bridge: ActionDirectoryRequestQueue {
                     sender: bridge_tx,
@@ -4890,6 +4895,30 @@ impl CapnpBrokerState {
     fn publish_changed_action_catalogue(&self) {
         self.surface_generation.fetch_add(1, Ordering::Relaxed);
         self.publish_action_catalogue();
+    }
+
+    /// Republish unchanged app surfaces when the authoritative workspace
+    /// policy projection changes. Catalogue rows are permission-filtered at
+    /// publication time, so retaining an earlier empty snapshot would make a
+    /// newly admitted exact action invisible until an unrelated app update.
+    fn publish_changed_action_catalogue_authority(&self) -> Result<(), String> {
+        let Some(membership) = &self.membership else {
+            return Ok(());
+        };
+        let epoch = membership.snapshot()?.room_epoch();
+        let changed = {
+            let mut previous = self
+                .action_catalogue_authority_epoch
+                .lock()
+                .map_err(|_| "the action catalogue authority revision is unavailable")?;
+            let changed = previous.is_none_or(|previous| previous != epoch);
+            *previous = Some(epoch);
+            changed
+        };
+        if changed {
+            self.publish_action_catalogue();
+        }
+        Ok(())
     }
 
     fn publish_action_catalogue(&self) {
@@ -12587,6 +12616,9 @@ async fn serve_broker_thread(
             if let Err(error) = state.refresh_workspace_context_services() {
                 tracing::debug!(%error, "native membership context could not be refreshed");
             }
+            if let Err(error) = state.publish_changed_action_catalogue_authority() {
+                tracing::debug!(%error, "action catalogue authority could not be refreshed");
+            }
             next_membership_refresh = std::time::Instant::now()
                 .checked_add(Duration::from_secs(1))
                 .unwrap_or_else(std::time::Instant::now);
@@ -13137,7 +13169,7 @@ pub mod tests {
     #[cfg(test)]
     use crate::collab_outbound::recording::{RecordingSink, Sent};
     #[cfg(test)]
-    use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
+    use collab_types::{CapOverride, Ed25519PublicKey, Role, Scope, Subject, sign_op};
     #[cfg(test)]
     use ed25519_dalek::Signer as _;
     #[cfg(test)]
@@ -16500,6 +16532,74 @@ pub mod tests {
                 .contains("files.entry:owner")
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn authority_epoch_republishes_unchanged_surfaces_after_exact_agent_grant() {
+        let CountingCatalogueFixture {
+            state,
+            tree,
+            cluster,
+            ..
+        } = counting_catalogue_state("owner");
+        state
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
+        let (owner_tx, mut owner_rx) = catalogue_test_channel();
+        let (other_tx, mut other_rx) = catalogue_test_channel();
+        state.action_catalogue_subscribers.lock().unwrap().extend([
+            (1, (cluster.clone(), BrokerActor::agent("scribe"), owner_tx)),
+            (2, (cluster.clone(), BrokerActor::person("other"), other_tx)),
+        ]);
+
+        state.publish_changed_action_catalogue_authority().unwrap();
+        assert!(
+            !current_catalogue(&mut owner_rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        assert!(
+            !current_catalogue(&mut other_rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+
+        {
+            let mut tree = tree.lock().unwrap();
+            tree.workspaces[0].grant_capability(CapOverride::membership(
+                Subject::agent("scribe"),
+                cluster,
+                Verb::Comment,
+            ));
+            tree.workspaces[0].grant_capability(CapOverride::grant(
+                Subject::agent("scribe"),
+                Scope::Action {
+                    app: "so.tilo.files".into(),
+                    action: "open".into(),
+                },
+                Verb::Write,
+            ));
+            tree.room_epoch = tree.room_epoch.wrapping_add(1);
+        }
+        state.publish_changed_action_catalogue_authority().unwrap();
+
+        assert!(
+            current_catalogue(&mut owner_rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        assert!(
+            !current_catalogue(&mut other_rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        state.publish_changed_action_catalogue_authority().unwrap();
+        assert!(
+            !owner_rx.has_changed().unwrap() && !other_rx.has_changed().unwrap(),
+            "an unchanged authority epoch must not keep republishing catalogues"
+        );
     }
 
     #[tokio::test]

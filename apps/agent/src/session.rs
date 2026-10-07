@@ -1346,14 +1346,20 @@ impl Session {
             return Ok(());
         }
         let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
+        self.wait_for_task_catalogue_until(deadline)
+    }
+
+    fn wait_for_task_catalogue_until(&mut self, deadline: Instant) -> Result<()> {
         let mut deferred = Vec::new();
         while ui::time::now() < deadline {
             let remaining = deadline.saturating_duration_since(ui::time::now());
             match self.recv_with_managed(remaining.min(Duration::from_millis(100)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
-                    self.link.defer(deferred);
-                    return Ok(());
+                    if !self.broker_surfaces.is_empty() {
+                        self.link.defer(deferred);
+                        return Ok(());
+                    }
                 }
                 Some(event) => deferred.push(event),
                 None => {}
@@ -3374,6 +3380,125 @@ mod tests {
                 "group": {"id": "task:review", "label": "Review draft", "kind": "task"}
             }),
         }
+    }
+
+    struct CataloguePeer(Vec<CollabEvent>);
+
+    impl ui::collaboration::PeerTransport for CataloguePeer {
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            std::mem::take(&mut self.0)
+        }
+
+        fn send(&mut self, _: CollabRequest) -> std::result::Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn catalogue_surface() -> ui::collaboration::BrokerActionSurface {
+        ui::collaboration::BrokerActionSurface {
+            peer_id: 7,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: Uuid::from_u128(1).to_string(),
+            record_id: String::new(),
+            live: true,
+            actions: Vec::new(),
+        }
+    }
+
+    fn catalogue_wait_session(events: Vec<CollabEvent>) -> Session {
+        Session {
+            cfg: Config {
+                agent_id: "agent-1".into(),
+                endpoint: None,
+                endpoint_identity: None,
+                app_id: "so.tilo.agent".into(),
+                cluster: Uuid::from_u128(1),
+                record: None,
+                name: "agent-1".into(),
+                pace: Duration::ZERO,
+                once: false,
+                model: false,
+                model_timeout: Duration::ZERO,
+                await_document: Duration::ZERO,
+                settle: Duration::ZERO,
+                permissions: PermissionContext::from_capabilities(
+                    ui::permissions::Actor::agent("agent-1"),
+                    vec![],
+                ),
+                content: tilo_content::ContentStore::memory(),
+            },
+            link: crate::wire::test_link(CataloguePeer(events)),
+            editor: None,
+            peers: BTreeMap::new(),
+            handled: HashSet::new(),
+            watching: HashMap::new(),
+            dispatched_this_turn: HashSet::new(),
+            chooser: Chooser::new(false, Duration::ZERO),
+            enrolled_custody: None,
+            managed_messages: None,
+            enrolled_active: None,
+            enrolled_sequence: 0,
+            asked_at: ui::time::now(),
+            last_route: None,
+            broker_catalogue: tilo_actions::remote::CataloguePage::default(),
+            catalogue_fetched: None,
+            broker_surfaces: Vec::new(),
+            next_broker_request: 1,
+            active_run: None,
+            chat_run: None,
+            chat_pending: false,
+            chat_catalogue_received: false,
+            last_chat_action: None,
+            chat_sources: HashMap::new(),
+            live: crate::live::LivePublisher::default(),
+            broker_revision: 0,
+            catalogue_cache: None,
+            turn: None,
+            memory: agent_loop::Memory::default(),
+        }
+    }
+
+    #[test]
+    fn task_catalogue_waits_through_an_empty_snapshot_for_fresh_authority() {
+        let mut session = catalogue_wait_session(vec![
+            CollabEvent::ActionCatalogue {
+                surfaces: Vec::new(),
+            },
+            CollabEvent::Context {
+                collaborators: Vec::new(),
+                permissions: Vec::new(),
+            },
+            CollabEvent::ActionCatalogue {
+                surfaces: vec![catalogue_surface()],
+            },
+        ]);
+
+        session
+            .wait_for_task_catalogue_until(ui::time::now() + Duration::from_millis(20))
+            .unwrap();
+
+        assert_eq!(session.broker_surfaces, vec![catalogue_surface()]);
+        assert!(matches!(
+            session.link.recv(Duration::ZERO).unwrap(),
+            Some(CollabEvent::Context { .. })
+        ));
+    }
+
+    #[test]
+    fn persistently_empty_task_catalogue_stops_at_the_existing_deadline() {
+        let mut session = catalogue_wait_session(vec![CollabEvent::ActionCatalogue {
+            surfaces: Vec::new(),
+        }]);
+        let deadline = ui::time::now() + Duration::from_millis(10);
+
+        session.wait_for_task_catalogue_until(deadline).unwrap();
+
+        assert!(session.broker_surfaces.is_empty());
+        assert!(ui::time::now() >= deadline);
     }
 
     #[test]
