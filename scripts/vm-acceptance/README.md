@@ -319,8 +319,26 @@ It will not navigate until an additional mapped tab/surface and a distinct
 same-room `browser.page` record appear while every previous Browser tab remains.
 This requires the framework instance-record fix `b576c07ae5` (PR3215). A queued
 Open receipt alone is insufficient. Only that new bound page receives Navigate,
-WaitPageSettled and ReadPage; success requires actual settled HTTPS Example
-Domain content, not a successful job carrying `settled: false`.
+WaitPageSettled and ReadPage; success requires the genuine WPT HTTPS title-element directory: exact URL and
+title, H1, and two live document references with exact link targets. The existing
+Web Platform Tests mirror is used without deploying a service or changing TLS
+trust. A successful job carrying `settled: false` is refused. The expected
+content lives in `scripts/browser/fixtures/https-functional.json`; upstream
+content drift fails this check and must be reviewed. This is functional evidence,
+not a latency measurement.
+
+The same fixture can be qualified against the real native Chromium helper:
+
+```bash
+RCARGO_CONFIG=/absolute/path/to/rcargo/config.toml rcargo --no-fallback \
+  --on-builder run --locked -p browser --example native_navigation_completion \
+  -- --https-acceptance
+```
+
+`--host target/chromium/tilo-chromium-host` reuses an already built maintained
+helper; its exact SHA256 is printed. The default existing loopback/navigation
+fixture remains separate. This HTTPS invocation requires real owned navigation,
+settlement and document extraction, and fails on TLS/network/engine errors.
 
 `proof.json` records only completed selected flows. Per-invocation contracts,
 receipts/status, public baseline and mapped SDK hashes remain available on

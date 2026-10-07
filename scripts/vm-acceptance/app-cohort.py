@@ -245,27 +245,45 @@ def fresh_browser(vm, out):
     return AppDoor(vm, BROWSER, "browser.page", result[0], out), result[1]
 
 
-def example_url(value):
+HTTPS_FIXTURE = json.loads(Path(__file__).resolve().parents[1].joinpath("browser/fixtures/https-functional.json").read_text())
+
+
+def fixture_url(value):
     if not isinstance(value, str):
         return False
     try:
-        parsed = urlsplit(value)
-        return (parsed.scheme == "https" and parsed.hostname == "example.com"
-                and parsed.username is None and parsed.password is None and parsed.port in (None, 443))
+        observed, expected = urlsplit(value), urlsplit(HTTPS_FIXTURE["url"])
+        return (observed.scheme == "https" and observed.hostname == expected.hostname
+                and observed.username is None and observed.password is None
+                and observed.port in (None, 443) and observed.path == expected.path
+                and not observed.query and not observed.fragment)
     except ValueError:
         return False
 
 
+def verify_https_page(page):
+    require(isinstance(page, dict) and page.get("provenance") == "web-content"
+            and page.get("title") == HTTPS_FIXTURE["title"] and fixture_url(page.get("url")),
+            "readable HTTPS page identity missing")
+    outline = page.get("outline")
+    require(isinstance(outline, str), "HTTPS web-content outline missing")
+    lines = [line.lstrip() for line in outline.splitlines()]
+    heading = '- heading ' + json.dumps(HTTPS_FIXTURE["heading"]) + ' level=1'
+    require(heading in lines, "HTTPS fixture H1 not read from the live document")
+    for link in HTTPS_FIXTURE["links"]:
+        pattern = r'^- listitem: link ' + re.escape(json.dumps(link["name"])) + r' \[ref=d[0-9]+e[0-9]+\] -> ' + re.escape(link["url"]) + r'$'
+        require(any(re.fullmatch(pattern, line) for line in lines), "HTTPS fixture live link/reference/target missing")
+
+
 def browser_flow(door):
-    final_url = door.call("navigate", {"url": "https://example.com/"})
-    require(example_url(final_url), "HTTPS navigation completion missing")
+    final_url = door.call("navigate", {"url": HTTPS_FIXTURE["url"]})
+    require(fixture_url(final_url), "HTTPS navigation completion missing")
     settled = door.call("wait-page-settled", {"quiet_ms": 500, "timeout_ms": 10000})
     require(settled.get("data", {}).get("settled") is True, "successful job did not prove a settled page")
     page = door.call("read-page")
-    require(page.get("provenance") == "web-content" and page.get("title") == "Example Domain"
-            and example_url(page.get("url")) and "Example Domain" in page.get("outline", ""),
-            "readable HTTPS page evidence missing")
-    return {"binding": door.bound, "url": page["url"], "title": page["title"], "settled": True}
+    verify_https_page(page)
+    return {"binding": door.bound, "url": page["url"], "title": page["title"], "settled": True,
+            "content_verified": "H1 and two live links with exact targets", "latency_claim": False}
 
 
 def run(args):

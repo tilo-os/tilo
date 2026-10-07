@@ -127,9 +127,44 @@ class FreshBrowser(unittest.TestCase):
             self.assertEqual(vm.invoked[0][1], "tab.open-beside")
 
     def test_host_prefix_does_not_authorize_different_https_site(self):
-        self.assertTrue(app.example_url("https://example.com/"))
-        for url in ("https://example.com.evil/", "https://user@example.com/", "http://example.com/", None):
-            self.assertFalse(app.example_url(url))
+        self.assertTrue(app.fixture_url(app.HTTPS_FIXTURE["url"]))
+        for url in ("https://wpt.live.evil/", "https://user@wpt.live/", "http://wpt.live/", app.HTTPS_FIXTURE["url"] + "?other=1", "https://wpt.live/elsewhere", None):
+            self.assertFalse(app.fixture_url(url))
+
+
+class HttpsReadback(unittest.TestCase):
+    def page(self):
+        fixture = app.HTTPS_FIXTURE
+        return {"provenance": "web-content", "url": fixture["url"], "title": fixture["title"],
+                "outline": '- heading ' + __import__('json').dumps(fixture["heading"]) + ' level=1\n' +
+                    '\n'.join('- listitem: link ' + __import__('json').dumps(link["name"]) + ' [ref=d1e2] -> ' + link["url"] for link in fixture["links"])}
+
+    def test_exact_live_fixture_roles_and_links_are_required(self):
+        app.verify_https_page(self.page())
+        for field, replacement in (("provenance", "test-engine"), ("title", "TLS error"),
+                ("url", app.HTTPS_FIXTURE["url"] + "?other=1"), ("outline", app.HTTPS_FIXTURE["heading"])):
+            page = self.page(); page[field] = replacement
+            with self.assertRaises(VmError):
+                app.verify_https_page(page)
+        for old, new in (("level=1", "level=2"), ("[ref=d1e2]", "[ref=guessed]"),
+                ("https://wpt.live/", "https://wpt.live.evil/")):
+            page = self.page(); page["outline"] = page["outline"].replace(old, new)
+            with self.assertRaises(VmError):
+                app.verify_https_page(page)
+
+    def test_navigate_then_settle_then_read_and_refuse_transport_only_success(self):
+        class Door:
+            bound = (app.BROWSER, "room", "new-record", "page")
+            def call(self, *args):
+                return next(self.results)
+        door = Door()
+        for results in ([app.HTTPS_FIXTURE["url"], {"data": {"settled": False}}, self.page()],
+                        [app.HTTPS_FIXTURE["url"], {"data": {"settled": True}}, {"title": app.HTTPS_FIXTURE["title"]}]):
+            door.results = iter(results)
+            with self.assertRaises(VmError):
+                app.browser_flow(door)
+        door.results = iter([app.HTTPS_FIXTURE["url"], {"data": {"settled": True}}, self.page()])
+        self.assertFalse(app.browser_flow(door)["latency_claim"])
 
 
 class Store(unittest.TestCase):
