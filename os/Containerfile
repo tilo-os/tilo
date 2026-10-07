@@ -934,9 +934,11 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
           --version-out /out/runtime-version); \
+        report="$(LD_LIBRARY_PATH=/out ldd /out/libruntime_dylib.so /out/thin-apps/*)"; \
+        if grep -Fq "not found" <<<"$report"; then printf "%s\n" "$report" >&2; exit 1; fi; \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done \
-          < <(ldd /out/libruntime_dylib.so \
-              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
+          < <(printf "%s\n" "$report" \
+              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\// && $i !~ /:$/) print $i }'\'' \
               | sort -u); \
         "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \

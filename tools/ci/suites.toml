@@ -55,6 +55,7 @@ suites = ["os/tests/flight_recorder_test.py"]
 name = "os"
 inputs = ["os/"]
 suites = [
+  "os/dev/test-assemble-app-runtime.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",

@@ -61,6 +61,7 @@ pub mod device_wake;
 pub mod display_bars;
 pub mod display_confirm;
 pub mod display_identify;
+pub(crate) mod display_persistence;
 pub mod doc_open;
 pub mod document_import;
 pub mod durable_writer;
