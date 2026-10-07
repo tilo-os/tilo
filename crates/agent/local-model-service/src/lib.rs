@@ -207,17 +207,24 @@ fn runtime_arguments(
         Some(RuntimeExecution::LlamaCpp {
             max_context_tokens,
             gpu_layers,
-        }) => vec![
-            "--model".into(),
-            path.into(),
-            "--alias".into(),
-            model.id.clone(),
-            "--ctx-size".into(),
-            (*max_context_tokens).min(model.context_window).to_string(),
-            "--n-gpu-layers".into(),
-            gpu_layers.to_string(),
-            "--jinja".into(),
-        ],
+            parallel_slots,
+        }) => {
+            let mut args = vec![
+                "--model".into(),
+                path.into(),
+                "--alias".into(),
+                model.id.clone(),
+                "--ctx-size".into(),
+                (*max_context_tokens).min(model.context_window).to_string(),
+                "--n-gpu-layers".into(),
+                gpu_layers.to_string(),
+                "--jinja".into(),
+            ];
+            if let Some(slots) = parallel_slots {
+                args.extend(["--parallel".into(), slots.get().to_string()]);
+            }
+            args
+        }
         execution => {
             let mut args = vec![
                 "serve".into(),
@@ -1603,6 +1610,7 @@ mod tests {
             execution: Some(RuntimeExecution::LlamaCpp {
                 max_context_tokens: 16384,
                 gpu_layers: 12,
+                parallel_slots: None,
             }),
         };
         let mut release = model(b"weights");
@@ -1632,6 +1640,21 @@ mod tests {
                 "8000"
             ]
         );
+        for slots in [1, 64, 65] {
+            runtime.execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 16384,
+                gpu_layers: 12,
+                parallel_slots: std::num::NonZeroU16::new(slots),
+            });
+            let generated = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000);
+            if slots == 65 {
+                assert!(generated.is_err());
+            } else {
+                let mut expected = args.clone();
+                expected.splice(9..9, ["--parallel".into(), slots.to_string()]);
+                assert_eq!(generated.unwrap(), expected);
+            }
+        }
         runtime.kind = RuntimeKind::Cpu;
         assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
         runtime.execution = Some(RuntimeExecution::Vllm {
@@ -1735,6 +1758,7 @@ mod tests {
                 execution: Some(RuntimeExecution::LlamaCpp {
                     max_context_tokens: 1024,
                     gpu_layers: 0,
+                    parallel_slots: None,
                 }),
             },
         }
