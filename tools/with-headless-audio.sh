@@ -49,6 +49,9 @@ pulseaudio --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
     --load="module-native-protocol-unix socket=\"$socket_path\" auth-anonymous=1" \
     >"$audio_dir/server.log" 2>&1 &
 audio_pid=$!
+# Commands can observe their actual owned endpoint without relying on the
+# kernel's optional /proc/PID/task/PID/children interface.
+export TILO_HEADLESS_AUDIO_PID="$audio_pid"
 # The socket is bound and listening only once both modules have loaded, so it
 # is the readiness signal. On a loaded runner (cold page cache, saturated
 # disk) merely exec'ing the daemon and its libraries can take several
