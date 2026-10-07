@@ -1964,7 +1964,7 @@ fn splice_gpu(
     manifest: &MinimalManifest,
     opts: &RunOptions,
     capabilities: &CapabilityPlan,
-) -> Result<Option<crate::gpu::GpuSelection>, RunError> {
+) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), RunError> {
     let gpu = resolve_gpu_selection(manifest, opts);
     if let Some(sel) = &gpu {
         let entry = pop_entry(argv)?;
@@ -1975,7 +1975,27 @@ fn splice_gpu(
         );
         argv.push(entry);
     }
-    Ok(gpu)
+    let seed = gpu
+        .as_ref()
+        .and_then(|selection| selection.pipeline_seed.clone())
+        .or_else(crate::gpu::host_pipeline_seed);
+    if gpu.is_none()
+        && let Some(seed) = &seed
+    {
+        let entry = pop_entry(argv)?;
+        crate::sandbox::push_pipeline_seed(argv, seed);
+        argv.push(entry);
+    }
+    if seed.is_some() && matches!(&opts.mode, LaunchMode::Gui) {
+        let entry = pop_entry(argv)?;
+        argv.extend([
+            "--setenv".to_string(),
+            crate::mesa_seed::CONSUME_ENV.to_string(),
+            "1".to_string(),
+        ]);
+        argv.push(entry);
+    }
+    Ok((gpu, seed))
 }
 
 /// Everything [`splice_sandbox_shim`] needs beyond `argv` and `opts`.
@@ -1990,6 +2010,7 @@ struct ShimSpliceCtx<'a> {
     system_authority: &'a Option<crate::system_authority::SystemAuthorityPlan>,
     wayland_bind: &'a Option<crate::sandbox::WaylandBind>,
     gpu: &'a Option<crate::gpu::GpuSelection>,
+    pipeline_seed: &'a Option<PathBuf>,
     keep_fds: &'a [RawFd],
 }
 
@@ -2088,6 +2109,12 @@ fn splice_sandbox_shim(
     }
     if let Some(sel) = ctx.gpu {
         crate::sandbox::push_gpu_landlock_rules(argv, sel);
+    }
+    if ctx.gpu.is_none() && ctx.pipeline_seed.is_some() {
+        argv.extend([
+            "--ro".to_string(),
+            crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string(),
+        ]);
     }
     // The app's own directory, named by its in-sandbox path — the host path
     // isn't reachable from inside, so a rule on it would match nothing.
@@ -2993,7 +3020,7 @@ pub(crate) fn run_with_context(
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
-    let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
+    let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
     splice_sandbox_shim(
         &mut argv,
         opts,
@@ -3008,6 +3035,7 @@ pub(crate) fn run_with_context(
             system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
+            pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
         },
     )?;
@@ -3595,7 +3623,7 @@ fn run_with_capture_spawn<T>(
     splice_trusted_identities(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
-    let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
+    let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
     splice_sandbox_shim(
         &mut argv,
         opts,
@@ -3610,6 +3638,7 @@ fn run_with_capture_spawn<T>(
             system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
+            pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
         },
     )?;
@@ -4637,5 +4666,62 @@ mod action_authority_tests {
         )
         .unwrap();
         assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());
+    }
+}
+
+#[cfg(test)]
+mod mesa_seed_software_tests {
+    use super::*;
+
+    #[test]
+    fn a_software_launch_gets_only_the_read_only_session_seed_without_a_device_pin() {
+        let home = tilo_test_env::TestHome::new().unwrap();
+        let source = home.runtime().join("tilo/pipeline-seed");
+        std::fs::create_dir_all(&source).unwrap();
+        let manifest: MinimalManifest = toml::from_str("[package]\nid = \"io.tilo.seed-test\"\nversion = \"0.1.0\"\n[entrypoint]\nbin = \"bin/probe\"\n").unwrap();
+        let opts = RunOptions::default();
+        let mut argv = vec!["/app/probe".to_owned()];
+        let (gpu, seed) =
+            splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        assert!(gpu.is_none());
+        assert_eq!(seed.as_deref(), Some(source.as_path()));
+        assert!(argv.windows(3).any(|args| args
+            == [
+                "--ro-bind-try",
+                source.to_str().unwrap(),
+                crate::gpu::SANDBOX_PIPELINE_SEED_DIR
+            ]));
+        assert!(
+            !argv
+                .iter()
+                .any(|arg| arg == "--dev-bind-try" || arg == crate::gpu::VK_DRIVER_FILES_ENV)
+        );
+        assert!(
+            argv.windows(3)
+                .any(|args| args == ["--setenv", crate::mesa_seed::CONSUME_ENV, "1"])
+        );
+        for mode in [
+            LaunchMode::Cli {
+                command: "probe".into(),
+                passthrough_argv: Vec::new(),
+            },
+            LaunchMode::Service {
+                passthrough_argv: Vec::new(),
+            },
+        ] {
+            let opts = RunOptions {
+                mode,
+                ..RunOptions::default()
+            };
+            let mut helper = vec!["/app/helper".to_owned()];
+            splice_gpu(&mut helper, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+            assert!(
+                !helper
+                    .iter()
+                    .any(|arg| arg == crate::mesa_seed::CONSUME_ENV),
+                "non-painting helpers must not initialize graphics caches"
+            );
+        }
+        assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
     }
 }
