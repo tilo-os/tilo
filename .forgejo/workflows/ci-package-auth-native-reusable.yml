@@ -24,6 +24,7 @@ jobs:
         env:
           PROBE_KIND: ${{ inputs.probe_kind }}
           PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          GATED_PACKAGE_TOKEN: ${{ (github.event_name == 'workflow_call' || needs.plan.outputs.signed-development-board == 'true') && secrets.REGISTRY_TOKEN || '' }}
           JOB_TOKEN: ${{ github.token }}
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
         run: python3 tools/ci/package_auth_probe.py
