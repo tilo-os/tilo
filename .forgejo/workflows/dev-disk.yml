@@ -652,7 +652,7 @@ jobs:
             sudo -n dnf install -y binutils btrfs-progs curl dosfstools e2fsprogs jq mtools podman python3 qemu-img skopeo sudo systemd util-linux zstd
           fi
       - name: Prepare disposable disk devices
-        run: os/dev/ci-prepare-disk-devices.sh --kata-job
+        run: bash os/dev/ci-prepare-disk-devices.sh --kata-job
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign
         with:
