@@ -482,6 +482,31 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertTrue(runtime_owner.closed)
             self.assertFalse(profile.exists())
 
+    def test_finalization_retains_only_closed_managed_startup_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            profile = root / "profile"
+            output = root / "output"
+            profile.mkdir()
+            output.mkdir()
+            private_content = "private instruction and model output must not escape"
+            (profile / "launcher-debug-output.log").write_text(
+                "managed Agent enrolled subscription acknowledged\n"
+                "managed Agent enrolled task execution entered\n"
+                + private_content + "\n"
+            )
+            PROOF.finalize_fixture(profile, output, [], [], None, None)
+            retained = (output / "managed-child-final.json").read_text()
+            evidence = json.loads(retained)
+            self.assertEqual(evidence["log_count"], 1)
+            self.assertEqual(evidence["line_count"], 3)
+            self.assertTrue(evidence["subscription_acknowledged"])
+            self.assertTrue(evidence["execution_entered"])
+            self.assertFalse(evidence["model_turn_entered"])
+            self.assertIsNone(evidence["first_error_kind"])
+            self.assertNotIn(private_content, retained)
+            self.assertFalse(profile.exists())
+
     def test_exact_new_pointer_release_retains_revision_after_later_ack_frame(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory)

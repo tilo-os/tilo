@@ -3381,6 +3381,12 @@ def finalize_fixture(
             (output / "native-message-delivery-final.json").write_text(
                 json.dumps(diagnostic, indent=2) + "\n"
             )
+            # Marker and IME runs can stop before the full lifecycle's
+            # first-request diagnostic. Classify the managed child before
+            # deleting its private profile; never retain its raw output.
+            (output / "managed-child-final.json").write_text(
+                json.dumps(managed_child_diagnostic(profile), indent=2) + "\n"
+            )
         except OSError:
             raise RuntimeError("native delivery diagnostic unavailable") from None
     finally:
