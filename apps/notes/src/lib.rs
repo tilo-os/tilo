@@ -41,6 +41,8 @@
 pub mod actions;
 pub mod app;
 mod continuation;
+#[cfg(test)]
+mod cpu_profile;
 pub mod doc;
 pub mod effect;
 mod files;

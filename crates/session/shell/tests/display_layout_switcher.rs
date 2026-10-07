@@ -183,9 +183,68 @@ fn super_p(host: &mut ShellOverlayHost, layout: &(TaffyTree<()>, NodeId)) {
 }
 
 fn staged() -> DisplayTransaction {
+    shell::shell::durable_writer::global().flush();
     let transaction = DisplayTransaction::load().expect("a display transaction was staged");
     assert_eq!(transaction.state, DisplayTransactionState::Requested);
     transaction
+}
+
+fn paint_host(host: &mut ShellOverlayHost) {
+    host.draw(
+        &mut vello::Scene::new(),
+        vello::kurbo::Affine::IDENTITY,
+        &mut ui::text_render::TextRenderer::new(),
+        &Theme::dark(),
+        &ui::presence::PresenceCtx::empty(),
+    );
+}
+
+fn owner_chrome() -> shell::shell::chrome_state::Chrome {
+    use shell::shell::state::{FreshId as _, Workspace, WorkspaceId};
+    let mut tree = WorkspaceTree::default();
+    let id = WorkspaceId::new();
+    let mut workspace = Workspace::new(id, "Display fixture");
+    // The public host keeps the real session registry principal.
+    // Give that actual person ownership rather than inventing a fixture actor.
+    let person = shell::shell::state::local_user_id_for_room(&workspace.room);
+    workspace.set_owner(person);
+    tree.desktop.workspaces.push(workspace);
+    tree.desktop.active = id;
+    build_tilo_overlay_host_with_chrome(&tree).1
+}
+
+/// Begin the real published layout action; it must retain its original job
+/// until the captured request obtains its conditional durability receipt.
+fn begin_mirror(
+    chrome: &shell::shell::chrome_state::Chrome,
+) -> shell::shell::search::PendingInvocation {
+    use shell::shell::search::{ResourceKind, SearchContext, SearchProvider as _};
+    let provider = shell::shell::search::providers::actions::ActionsProvider::new();
+    let mut doc = automerge::AutoCommit::new();
+    let rows = provider.query(SearchContext {
+        query_scope: None,
+        include_programmatic: true,
+        needle: "display.layout.mirror",
+        wanted: &[ResourceKind::Action],
+        chrome: &chrome.borrow(),
+        doc: &doc,
+        doc_root: &automerge::ROOT,
+    });
+    let row = rows
+        .iter()
+        .find(|row| row.id == "display.layout.mirror")
+        .expect("declared owner layout action");
+    let disposition = row.on_begin_invoke.as_ref().expect("layout lifecycle")(
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+        chrome,
+        &shell::shell::search::action_api::ActionArgs::none(),
+    )
+    .unwrap();
+    let shell::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+        panic!("a queued layout must retain its published job");
+    };
+    ticket
 }
 
 /// The display sheet in the host's semantic tree.
@@ -251,6 +310,7 @@ fn super_p_arrow_enter_stages_a_mirror_transaction() {
     assert_eq!(panel.mode, Some(mode(1920, 1080)));
     assert_eq!(monitor.mode, Some(mode(1920, 1080)));
 
+    paint_host(&mut host);
     let sheet = display_sheet(&host);
     for name in ["Keep", "Revert"] {
         assert!(
@@ -261,6 +321,210 @@ fn super_p_arrow_enter_stages_a_mirror_transaction() {
             "a staged layout offers {name} until it restores itself"
         );
     }
+}
+
+#[test]
+fn layout_dispatch_remains_responsive_until_the_request_is_durable() {
+    use settings_store::SettingsSource as _;
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    publish_laptop_with_monitor();
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    let layout = layout_host(&mut host);
+    super_p(&mut host, &layout);
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::ArrowDown),
+        ModifiersState::empty(),
+    );
+    let lock_path = paths.copy.with_file_name("settings.json.lock");
+    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+    let lock = tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+    let (sent, received) = mpsc::channel();
+    let release = std::thread::spawn(move || {
+        let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+        drop(lock);
+        responsive
+    });
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::Enter),
+        ModifiersState::empty(),
+    );
+    let observed_before_release = DisplayTransaction::load();
+    let _ = sent.send(());
+    let responsive = release.join().unwrap();
+    shell::shell::durable_writer::global().flush();
+    settings_store::install_source(None);
+    let reopened = settings_store::SessionSettings::open(paths).unwrap();
+    assert!(
+        responsive,
+        "layout key dispatch waited for the actual storage lock"
+    );
+    assert_eq!(
+        observed_before_release, None,
+        "a queued request cannot become effective before durability"
+    );
+    assert_eq!(reopened.load()["display_transaction"]["state"], "requested");
+    assert_eq!(
+        reopened.load()["display_transaction"]["candidate"]["outputs"]["HDMI-A-1"]["mirror_of"],
+        "eDP-1"
+    );
+}
+
+#[test]
+fn layout_storage_failure_is_observed_by_the_ordinary_host_update_without_paint() {
+    use std::sync::Arc;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    publish_laptop_with_monitor();
+    let (mut host, _) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    let layout = layout_host(&mut host);
+    super_p(&mut host, &layout);
+    std::fs::create_dir_all(paths.device.parent().unwrap()).unwrap();
+    std::fs::create_dir(&paths.device).unwrap();
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::Enter),
+        ModifiersState::empty(),
+    );
+    let disabled = |host: &ShellOverlayHost| {
+        display_sheet(host)
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Mirror"))
+            .unwrap()
+            .state
+            .disabled
+    };
+    assert!(
+        disabled(&host),
+        "choices wait for the actual storage receipt"
+    );
+    shell::shell::durable_writer::global().flush();
+    assert!(
+        host.update(&automerge::AutoCommit::new(), &automerge::ROOT),
+        "the normal host update must invalidate on failed completion"
+    );
+    assert!(
+        !disabled(&host),
+        "the failed request leaves a reachable retry without forcing a paint"
+    );
+    assert!(DisplayTransaction::load().is_none());
+    std::fs::remove_dir(&paths.device).unwrap();
+    settings_store::install_source(None);
+}
+
+#[test]
+fn published_layout_completes_only_after_its_actual_durable_request() {
+    use settings_store::SettingsSource as _;
+    use std::sync::Arc;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    publish_laptop_with_monitor();
+    let chrome = owner_chrome();
+    let lock_path = paths.copy.with_file_name("settings.json.lock");
+    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+    let lock = tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+    let ticket = begin_mirror(&chrome);
+    assert!(ticket().unwrap().is_none());
+    assert!(DisplayTransaction::load().is_none());
+    drop(lock);
+    shell::shell::durable_writer::global().flush();
+    assert!(
+        ticket().unwrap().is_some(),
+        "published completion needs an actual durable receipt"
+    );
+    let transaction = DisplayTransaction::load().unwrap();
+    settings_store::install_source(None);
+    let reopened = settings_store::SessionSettings::open(paths).unwrap();
+    assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
+    assert_eq!(transaction.state, DisplayTransactionState::Requested);
+    assert_eq!(
+        transaction.candidate.outputs["HDMI-A-1"]
+            .mirror_of
+            .as_deref(),
+        Some("eDP-1")
+    );
+}
+
+#[test]
+fn published_layout_waits_for_durability_and_refuses_external_profile_replacement() {
+    use settings_store::SettingsSource as _;
+    use std::sync::Arc;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    publish_laptop_with_monitor();
+    let chrome = owner_chrome();
+    let lock_path = paths.copy.with_file_name("settings.json.lock");
+    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+    let lock = tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+    let ticket = begin_mirror(&chrome);
+    assert!(
+        ticket().unwrap().is_none(),
+        "held storage cannot complete a job"
+    );
+    let mut copy = settings_store::load_at(&paths.copy);
+    copy.insert(
+        "display_profiles".into(),
+        serde_json::json!({"profiles":{},"monitors":{},"external_revision":1}),
+    );
+    std::fs::write(&paths.copy, serde_json::to_vec_pretty(&copy).unwrap()).unwrap();
+    drop(lock);
+    shell::shell::durable_writer::global().flush();
+    let result = ticket();
+    settings_store::install_source(None);
+    let reopened = settings_store::SessionSettings::open(paths).unwrap();
+    assert!(matches!(
+        result,
+        Err(shell::shell::search::action_api::ActionError::Refused(_))
+    ));
+    assert!(
+        !reopened.load().contains_key("display_transaction"),
+        "a stale layout must never become effective"
+    );
+    assert_eq!(reopened.load()["display_profiles"]["external_revision"], 1);
+}
+
+#[test]
+fn published_layout_reports_actual_record_failure_without_publishing_intent() {
+    use std::sync::Arc;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    publish_laptop_with_monitor();
+    let chrome = owner_chrome();
+    assert!(
+        !paths.device.exists(),
+        "a fresh session has no device edits yet"
+    );
+    std::fs::create_dir_all(paths.device.parent().unwrap()).unwrap();
+    std::fs::create_dir(&paths.device).unwrap();
+    let ticket = begin_mirror(&chrome);
+    shell::shell::durable_writer::global().flush();
+    let result = ticket();
+    let document = settings_store::load();
+    std::fs::remove_dir(&paths.device).unwrap();
+    settings_store::install_source(None);
+    assert!(matches!(
+        result,
+        Err(shell::shell::search::action_api::ActionError::Refused(_))
+    ));
+    assert!(!document.contains_key("display_transaction"));
 }
 
 #[test]
