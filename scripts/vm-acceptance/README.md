@@ -376,3 +376,22 @@ when the app was already installed (including the private 57-app cohort).
 Missing capabilities, runtime incompatibility, publisher refusal, stale jobs or
 unobservable completion fail the run; they are never replaced with CLI install,
 clicks, retries, or trust changes. Review completion alone is not installation.
+
+Mapped SDK verification reads only public runtime metadata through maintained
+`tilo-vm vm ssh` maintenance transport, as root where Linux requires that access.
+This does not change the identity or authority of any semantic action: Store and
+chooser actions still execute as the actual slot owner on the owner console.
+The probe opens the exact `/proc/PID/map_files/START-END` kernel object and hashes
+that descriptor; it never substitutes `/proc/PID/root/...` or a readlink pathname.
+It checks process start-time, stable selected VMA identities and unchanged FD
+metadata. Overlay files can expose different device numbers in `maps` and
+`fstat`, so both are recorded rather than asserting a fabricated equality.
+
+Denied `map_files` access, missing subjects, changed mappings or mismatched
+verified layer hashes fail acceptance. A successful namespace pathname hash is
+insufficient proof of resident code. The unit fixtures exercise descriptor
+selection, remount differences and failure/race behavior; they do not claim a
+live kernel capability. An addressed live maintenance probe must succeed before
+hardware acceptance. Installation/Open still proves exact installed version and
+mapped window, not that an independently offered Calculator runtime was already
+verified or mapped; normal installer runtime authority stays mandatory.
