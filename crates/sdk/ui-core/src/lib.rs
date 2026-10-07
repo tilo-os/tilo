@@ -223,6 +223,7 @@ pub mod standalone_history_pane;
 pub mod storage;
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
+pub mod personal_dictionary;
 pub mod text_assistance;
 pub mod text_break;
 pub mod text_detect;

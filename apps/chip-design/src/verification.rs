@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::model::{MAX_REPORT_BYTES, report_id};
 
 mod operators;
+pub(super) mod study;
 mod superblock;
 pub use operators::{Observations, OperatorSummary};
+pub use study::ArchitectureStudy;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +64,8 @@ pub struct VerificationReceipt {
     pub failure_stage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operator_summary: Option<OperatorSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub architecture_study: Option<ArchitectureStudy>,
     // Device paths are accepted from producers but never synced or published.
     #[serde(skip_serializing)]
     input_directory: Option<String>,
@@ -211,6 +215,12 @@ fn hashes(values: &BTreeMap<String, String>) -> bool {
 
 impl VerificationReceipt {
     fn validate(&self) -> Result<(), String> {
+        if self.evidence == "architecture_study" {
+            return study::validate(self);
+        }
+        if self.architecture_study.is_some() {
+            return Err("architecture study cannot annotate other evidence".into());
+        }
         if operators::supported(&self.evidence) {
             return operators::validate(self);
         }

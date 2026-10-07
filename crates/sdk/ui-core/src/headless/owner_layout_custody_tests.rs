@@ -187,7 +187,7 @@ fn prepared(
     let id = component.record().id.clone();
     component.mount_with_owner_queue(queue, |_| {}).unwrap();
     let mut bound = BoundAppWidget::new(component);
-    bound.sync(&mut AutoCommit::new(), &ROOT);
+    bound.sync(&AutoCommit::new(), &ROOT);
     (bound, seen, id)
 }
 fn frame(queue: &OwnerWakeQueue, owners: Vec<BoundAppWidget>) -> FrameHarness {

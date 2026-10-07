@@ -247,7 +247,9 @@ fn evidence_body(
                 Text::new(&record.receipt.evidence).with_role(TextRole::Heading),
             ))
             .push(Box::new(Text::new(&tr(
-                if record.receipt.operator_summary.is_some() {
+                if record.receipt.architecture_study.is_some() {
+                    "chip-study-disclaimer"
+                } else if record.receipt.operator_summary.is_some() {
                     "chip-operator-disclaimer"
                 } else {
                     "chip-verification-disclaimer"
@@ -395,7 +397,9 @@ fn superblock_identities(receipt: &VerificationReceipt) -> Vec<Property> {
 }
 
 fn verification_checks_label(receipt: &VerificationReceipt) -> &'static str {
-    if receipt.operator_summary.is_some() {
+    if receipt.architecture_study.is_some() {
+        "chip-study-checks"
+    } else if receipt.operator_summary.is_some() {
         "chip-operator-checks"
     } else {
         "chip-receipt-checks"
@@ -404,6 +408,47 @@ fn verification_checks_label(receipt: &VerificationReceipt) -> &'static str {
 
 fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyList {
     let receipt = &record.receipt;
+    let scope = verification_scope(receipt);
+    let identities = verification_identities(id, record);
+    let checks = receipt
+        .checks
+        .iter()
+        .map(|(name, status)| Property::new(name, check_status(status)))
+        .collect();
+    let artifacts = receipt
+        .artifact_sha256
+        .iter()
+        .map(|(name, digest)| Property::new(name, digest.clone()))
+        .collect();
+    let exclusions = receipt
+        .excludes
+        .iter()
+        .map(|name| property("chip-verification-exclusion", name))
+        .collect();
+    let mut sections = vec![
+        (tr("chip-receipt-scope"), scope),
+        (tr(verification_checks_label(receipt)), checks),
+        (tr("chip-provenance"), identities),
+        (tr("chip-receipt-artifacts"), artifacts),
+        (tr("chip-scope"), exclusions),
+    ];
+    if let Some(study) = &receipt.architecture_study {
+        for variant in &study.variants {
+            sections.push((variant.identity.clone(), study_variant_properties(variant)));
+            if let Some(synthesis) = &variant.synthesis {
+                for memory in &synthesis.memories {
+                    sections.push((
+                        format!("{} / {}", variant.identity, memory.name),
+                        study_memory_properties(&variant.identity, memory),
+                    ));
+                }
+            }
+        }
+    }
+    PropertyList::sections(sections).with_id(format!("chip-verification-{id}"))
+}
+
+fn verification_scope(receipt: &VerificationReceipt) -> Vec<Property> {
     let status = tr(match receipt.status {
         ReceiptStatus::Passed => "chip-check-passed",
         ReceiptStatus::Failed => "chip-check-failed",
@@ -436,6 +481,21 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
     }
     scope.extend(superblock_scope(receipt));
     scope.extend(mapping_scope(receipt));
+    if let Some(study) = &receipt.architecture_study {
+        scope.push(property(
+            "chip-study-stage",
+            &tr(&format!("chip-study-stage-{}", study.stage.key())),
+        ));
+        scope.push(property(
+            "chip-study-words",
+            &study.expected_comparison_words,
+        ));
+    }
+    scope
+}
+
+fn verification_identities(id: &str, record: &VerificationRecord) -> Vec<Property> {
+    let receipt = &record.receipt;
     let mut identities = vec![
         property("chip-import-digest", &record.imported_bytes_blake3),
         property("chip-shared-receipt-digest", id),
@@ -474,29 +534,80 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
     }
     identities.extend(superblock_identities(receipt));
     identities.extend(reported_tools(receipt));
-    let checks = receipt
-        .checks
-        .iter()
-        .map(|(name, status)| Property::new(name, check_status(status)))
-        .collect();
-    let artifacts = receipt
-        .artifact_sha256
-        .iter()
-        .map(|(name, digest)| Property::new(name, digest.clone()))
-        .collect();
-    let exclusions = receipt
-        .excludes
-        .iter()
-        .map(|name| property("chip-verification-exclusion", name))
-        .collect();
-    PropertyList::sections(vec![
-        (tr("chip-receipt-scope"), scope),
-        (tr(verification_checks_label(receipt)), checks),
-        (tr("chip-provenance"), identities),
-        (tr("chip-receipt-artifacts"), artifacts),
-        (tr("chip-scope"), exclusions),
-    ])
-    .with_id(format!("chip-verification-{id}"))
+    if let Some(study) = &receipt.architecture_study {
+        identities.push(property(
+            "chip-study-original",
+            &study.original_receipt_sha256,
+        ));
+        identities.push(property("chip-study-producer", &study.producer_sha256));
+        identities.push(property("chip-study-input", &study.input_identity_sha256));
+        for (stage, link) in &study.links {
+            identities.push(Property::new(
+                tr(&format!("chip-study-stage-{stage}")),
+                link.receipt.clone(),
+            ));
+            identities.push(property("chip-study-producer", &link.producer));
+        }
+    }
+    identities
+}
+
+fn study_variant_properties(variant: &crate::verification::study::Variant) -> Vec<Property> {
+    let mut rows = Vec::new();
+    if let Some(value) = &variant.numerical {
+        rows.extend([
+            property("chip-study-cold-cycles", &value.cold_program_cycles),
+            property("chip-study-vector-cycles", &value.vector_load_cycles),
+            property("chip-study-warm-cycles", &value.warm_cycles),
+            property("chip-study-weight-bytes", &value.accepted_weight_bytes),
+            property(
+                "chip-study-descriptor-bytes",
+                &value.accepted_descriptor_bytes,
+            ),
+            property("chip-study-cache-reads", &value.cache_reads),
+            property("chip-study-quant-packets", &value.quantizer_packets),
+            property("chip-study-compared-words", &value.comparison_words),
+            property("chip-study-output", &value.output_sha256),
+        ]);
+    }
+    if let Some(value) = &variant.synthesis {
+        rows.extend([
+            property("chip-study-generic-cells", &value.generic_logic_cells),
+            property("chip-study-cache-bits", &value.activation_cache_bits),
+            property("chip-study-programmed-bits", &value.programmed_weight_bits),
+            property("chip-study-fixed-bits", &value.fixed_initialized_bits),
+        ]);
+    }
+    rows
+}
+
+fn study_memory_properties(
+    variant: &str,
+    memory: &crate::verification::study::LogicalMemory,
+) -> Vec<Property> {
+    vec![
+        property(
+            "chip-study-memory-name",
+            &format!("{variant} / {}", memory.name),
+        ),
+        property("chip-study-memory-width", &memory.width_bits),
+        property("chip-study-memory-depth", &memory.depth_words),
+        property("chip-study-memory-bits", &memory.bits),
+        property("chip-study-memory-read-ports", &memory.read_ports),
+        property(
+            "chip-study-memory-clocked-reads",
+            &memory.clocked_read_ports,
+        ),
+        property("chip-study-memory-write-ports", &memory.write_ports),
+        property(
+            "chip-study-memory-initialized",
+            &tr(if memory.fully_initialized {
+                "chip-value-yes"
+            } else {
+                "chip-value-no"
+            }),
+        ),
+    ]
 }
 
 fn identities_for_operator_scope(

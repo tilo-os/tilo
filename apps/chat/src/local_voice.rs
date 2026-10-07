@@ -10,6 +10,7 @@ use ui::{
 pub(crate) struct LocalVoice {
     pub(crate) snapshot: Snapshot,
     pub(crate) channel: Option<String>,
+    pub(crate) client_issue: Option<&'static str>,
     queued: Vec<CollabRequest>,
     pending: BTreeMap<u64, Command>,
     next_request: u64,
@@ -25,6 +26,7 @@ impl Default for LocalVoice {
         Self {
             snapshot: Snapshot::unavailable(),
             channel: None,
+            client_issue: None,
             queued: Vec::new(),
             pending: BTreeMap::new(),
             next_request: 0,
@@ -43,6 +45,17 @@ impl LocalVoice {
         if !request.valid() {
             return Err("Invalid call command".into());
         }
+        // Semantic status reads and the automatic poll share one refresh.
+        // A second read would cancel the transport's first status task; its
+        // cancellation reply is a real failure to this fail-closed client.
+        if matches!(command, Command::Status)
+            && self
+                .pending
+                .values()
+                .any(|pending| matches!(pending, Command::Status))
+        {
+            return Ok(());
+        }
         let stopping = matches!(command, Command::Leave | Command::SetMuted { muted: true });
         if stopping {
             self.queued.clear();
@@ -59,6 +72,7 @@ impl LocalVoice {
         self.next_request = id;
         if !matches!(command, Command::Status) {
             self.intent_floor = id;
+            self.client_issue = None;
         }
         match &command {
             Command::Join { channel_id } => {
@@ -98,7 +112,7 @@ impl LocalVoice {
             .pending_since
             .is_some_and(|sent| now.saturating_duration_since(sent) >= Duration::from_secs(2))
         {
-            self.invalidate();
+            self.invalidate("reply_timeout");
         }
         if self.pending.is_empty()
             && self.queued.is_empty()
@@ -144,12 +158,23 @@ impl LocalVoice {
         if self.pending.is_empty() {
             self.pending_since = None;
         }
-        let Ok(snapshot) = result else {
-            self.invalidate();
-            return before != self.snapshot || before_channel != self.channel;
+        let snapshot = match result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                // Transport errors may carry private details. Export only
+                // these fixed protocol categories, never the error itself.
+                let issue = match error.as_str() {
+                    "native media command timed out" => "reply_timeout",
+                    "native media command superseded" => "reply_superseded",
+                    "native media command refused" => "command_refused",
+                    _ => "unavailable",
+                };
+                self.invalidate(issue);
+                return before != self.snapshot || before_channel != self.channel;
+            }
         };
         if !snapshot.valid() {
-            self.invalidate();
+            self.invalidate("invalid_status");
             return before != self.snapshot || before_channel != self.channel;
         }
         self.snapshot = snapshot.clone();
@@ -173,11 +198,14 @@ impl LocalVoice {
     /// Forget the service's state and leave the call, if there is one. With
     /// no channel there is nothing to leave: a Leave here would itself be
     /// refused by an absent service and invalidate again, once per reply.
-    fn invalidate(&mut self) {
+    fn invalidate(&mut self, issue: &'static str) {
         if self.channel.is_some() {
             let _ = self.submit(Command::Leave);
         }
         self.snapshot = Snapshot::unavailable();
+        // Cleanup's successful Ended reply does not erase why the call
+        // failed. An explicit new command clears this ephemeral diagnosis.
+        self.client_issue = Some(issue);
     }
 }
 
@@ -511,6 +539,160 @@ mod tests {
         assert!(voice.complete(request_id(&join[0]), &Ok(same.clone())));
         let status = voice.take_requests(now + Duration::from_millis(500));
         assert!(!voice.complete(request_id(&status[0]), &Ok(same)));
+    }
+
+    #[test]
+    fn semantic_status_reads_share_the_in_flight_automatic_refresh() {
+        let now = ui::time::now();
+        let mut doc = automerge::AutoCommit::new();
+        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        let before = doc.save();
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.answer_effect(crate::effects::ChatEffect::JoinCall {
+            channel: "c_standup".into(),
+        })
+        .unwrap();
+        let join = app.native_voice.take_requests(now);
+        app.native_voice.complete(request_id(&join[0]), &Ok(live()));
+        let refresh = app
+            .native_voice
+            .take_requests(now + Duration::from_millis(500));
+        assert_eq!(refresh.len(), 1);
+        for _ in 0..12 {
+            app.answer_effect(crate::effects::ChatEffect::CallStatus {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+        }
+        assert!(
+            app.native_voice
+                .take_requests(now + Duration::from_secs(1))
+                .is_empty()
+        );
+        assert_eq!(app.native_voice.snapshot.state, State::Live);
+        assert_eq!(app.native_voice.channel.as_deref(), Some("c_standup"));
+        assert!(
+            !app.native_voice
+                .complete(request_id(&refresh[0]), &Ok(live()))
+        );
+        let next = app
+            .native_voice
+            .take_requests(now + Duration::from_millis(1500));
+        assert_eq!(next.len(), 1, "a later refresh still crosses the transport");
+        assert_eq!(
+            doc.save(),
+            before,
+            "query coalescing writes no shared state"
+        );
+    }
+
+    #[test]
+    fn coalesced_status_keeps_service_failures_terminal_and_leave_immediate() {
+        let now = ui::time::now();
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let join = voice.take_requests(now);
+        voice.complete(request_id(&join[0]), &Ok(live()));
+        let refresh = voice.take_requests(now + Duration::from_millis(500));
+        voice.submit(Command::Status).unwrap();
+        assert!(voice.complete(request_id(&refresh[0]), &Err("service refused".into())));
+        let stop = voice.take_requests(now + Duration::from_secs(1));
+        assert_eq!(stop.len(), 1);
+        assert!(matches!(
+            &stop[0],
+            CollabRequest::NativeMediaCommand {
+                command: Request {
+                    command: Command::Leave,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(voice.channel.is_none());
+        assert!(voice.snapshot.muted);
+        assert!(!voice.snapshot.capture_active);
+    }
+
+    #[test]
+    fn public_status_retains_a_safe_client_failure_after_cleanup_then_clears_on_rejoin() {
+        let now = ui::time::now();
+        let mut doc = automerge::AutoCommit::new();
+        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.answer_effect(crate::effects::ChatEffect::JoinCall {
+            channel: "c_standup".into(),
+        })
+        .unwrap();
+        let join = app.native_voice.take_requests(now);
+        app.native_voice.complete(request_id(&join[0]), &Ok(live()));
+        let refresh = app
+            .native_voice
+            .take_requests(now + Duration::from_millis(500));
+        app.native_voice.complete(
+            request_id(&refresh[0]),
+            &Err("native media command superseded".into()),
+        );
+        let stop = app.native_voice.take_requests(now + Duration::from_secs(1));
+        let mut ended = Snapshot::unavailable();
+        ended.state = State::Ended;
+        ended.issue = None;
+        app.native_voice.complete(request_id(&stop[0]), &Ok(ended));
+        let ui::framework::Effected::Done(output) = app
+            .answer_effect(crate::effects::ChatEffect::CallStatus {
+                channel: "c_standup".into(),
+            })
+            .unwrap()
+        else {
+            panic!("status must answer immediately");
+        };
+        let output = output.value.unwrap();
+        assert_eq!(output["reported"]["state"], "ended");
+        assert_eq!(output["clientIssue"], "reply_superseded");
+        assert_eq!(output["channel"], serde_json::Value::Null);
+        app.answer_effect(crate::effects::ChatEffect::JoinCall {
+            channel: "c_standup".into(),
+        })
+        .unwrap();
+        assert_eq!(app.native_voice.client_issue, None);
+        let join = app
+            .native_voice
+            .take_requests(now + Duration::from_millis(1500));
+        let join_id = join
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NativeMediaCommand {
+                    request_id,
+                    command:
+                        Request {
+                            command: Command::Join { .. },
+                            ..
+                        },
+                } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        app.native_voice.complete(
+            join_id,
+            &Err("private service detail must not escape".into()),
+        );
+        let ui::framework::Effected::Done(output) = app
+            .answer_effect(crate::effects::ChatEffect::CallStatus {
+                channel: "c_standup".into(),
+            })
+            .unwrap()
+        else {
+            panic!("status must answer immediately");
+        };
+        let output = output.value.unwrap();
+        assert_eq!(output["clientIssue"], "unavailable");
+        assert!(!output.to_string().contains("private service detail"));
+        assert_eq!(output["reported"]["capture_active"], false);
     }
 
     #[test]

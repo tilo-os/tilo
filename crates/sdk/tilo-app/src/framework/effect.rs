@@ -24,6 +24,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::{Rc, Weak};
+
+mod causal;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -408,8 +410,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self.env.live
     }
 
-    /// The invocation being answered; `None` for a projection drain, which
-    /// nobody invoked.
+    /// The actual source invocation this work continues. Ordinary background
+    /// projection drains have none; causal drains retain the current Document
+    /// caller. Its source identity may differ from the local reply operation.
     pub fn invocation(&self) -> Option<InvocationId> {
         self.invocation
     }
@@ -1474,6 +1477,7 @@ struct Drains<R: Resource> {
 }
 
 struct Inner<R: Resource> {
+    causal: causal::CausalEffects<R>,
     published: Vec<Published>,
     handlers: Vec<Registered<R>>,
     drains: Vec<Drains<R>>,
@@ -1506,6 +1510,7 @@ impl<R: Resource> Clone for Effects<R> {
 impl<R: Resource> Default for Inner<R> {
     fn default() -> Self {
         Self {
+            causal: causal::CausalEffects::default(),
             published: Vec::new(),
             handlers: Vec::new(),
             drains: Vec::new(),
@@ -1557,6 +1562,7 @@ impl<R: Resource> Effects<R> {
     /// Take up and finish the views' jobs.
     pub(crate) fn poll_jobs(&self) {
         self.jobs.borrow_mut().poll(&mut ());
+        self.inner.borrow_mut().causal.poll();
     }
 
     /// Publish vocabulary `E` while `alive` lives, as `specs` describes it
@@ -1669,10 +1675,39 @@ impl<R: Resource> Effects<R> {
 
     pub(crate) fn poll(&self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
         let mut inner = self.inner.borrow_mut();
+        if let Some(update) = inner.causal.poll_invocation(invocation, cancel) {
+            return Some(update);
+        }
         inner
             .handlers
             .iter_mut()
             .find_map(|entry| entry.handler.poll(invocation, cancel))
+    }
+
+    pub(crate) fn has_causal_drains(&self) -> bool {
+        self.inner.borrow().causal.registered()
+    }
+
+    pub(crate) fn start_document_effects(
+        &self,
+        operation: &ResourceOperation<'_>,
+        applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        self.inner.borrow_mut().causal.start(operation, applied)
+    }
+
+    pub(crate) fn drain_causal<K: Eq + Hash + Clone + 'static, T: 'static>(
+        &self,
+        alive: Weak<()>,
+        pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
+        run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) {
+        if let Some(env) = self.env.clone() {
+            self.inner
+                .borrow_mut()
+                .causal
+                .register(alive, env, pending, run);
+        }
     }
 
     /// Settle finished projection jobs, then start what the document at
