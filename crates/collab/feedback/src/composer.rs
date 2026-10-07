@@ -67,12 +67,21 @@ impl Composer {
         host: Box<dyn FeedbackHost>,
     ) -> Result<Self, Error> {
         destination.validate()?;
+        let mut active = None;
+        for id in outbox.ids() {
+            if let Some(submission) = outbox.pending(id)?
+                && submission.destination == destination
+            {
+                active = Some(id.to_owned());
+                break;
+            }
+        }
         Ok(Self {
             destination,
             outbox,
             host,
             reviewed: None,
-            active: None,
+            active,
         })
     }
 

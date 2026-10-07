@@ -45,7 +45,15 @@ external task automatically.
 
 ## Host integration still required
 
-The shared composer and native/browser entry points are not mounted yet. A host
+The SDK provides `feedback_composer::prepare`, a real shared resource component
+with the same semantic actions as its themed, localized controls. It always
+prepares an isolated ephemeral store and private component: raw draft text never
+enters profile records, history or room synchronization. Both attachment choices
+start off. Review shows masked issue/context and PNG before explicit approval;
+redaction, screenshot removal and retry use published effects. Changed issue text
+or consent requires a fresh review. The system-owned `feedback::Composer` freezes
+an approved queued payload and resumes a matching pending outbox report after
+restart. Native/browser desktop entry points are not mounted yet. A host
 must supply its existing durable profile store, an admitted
 `Destination { room, provider, channel }`, authenticated action transport,
 content storage, and an explicit focused-surface capture adapter. The composer
@@ -69,14 +77,15 @@ publishing, changing access policy or connecting personal resources/accounts.
 
 ## Focused verification
 
-Run on the existing builder:
+Run with the configured cargo drop-in:
 
 ```sh
-rcargo test --locked -p tilo-feedback-review --lib
-rcargo test --locked -p tilo-feedback --lib
-rcargo test --locked -p chat --lib feedback::tests
-rcargo --no-fetch clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
-rcargo --no-fetch check --locked -p shell --tests
+cargo test --locked -p tilo-feedback-review --lib
+cargo test --locked -p tilo-feedback --lib
+cargo test --locked -p tilo-app --lib feedback_composer::tests
+cargo test --locked -p chat --lib feedback::tests
+cargo clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
+cargo check --locked -p shell --tests
 ```
 
 Before enabling the journey, exercise the mounted native and browser production

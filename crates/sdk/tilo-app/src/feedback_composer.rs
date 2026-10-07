@@ -130,6 +130,10 @@ impl ResourceApp for FeedbackComposer {
     const TITLE: &'static str = "Feedback";
     const DOCUMENT_HISTORY: bool = false;
     const PRIVATE_WINDOWS: bool = true;
+    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
+        capture_protected: true,
+        ..ComponentBehaviour::DEFAULT
+    };
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
         Some(&CATALOG)
@@ -212,6 +216,9 @@ fn install_effects(
         .is_private()
         .then(|| cx.take_lent::<FeedbackServices>())
         .flatten();
+    if let Some(services) = &services {
+        restore_progress(services, status);
+    }
     let preview = shown.clone();
     let reviewed_fields = fields.clone();
     let reviewed_pixels = pixels.clone();
@@ -263,16 +270,33 @@ fn install_effects(
                 .map_err(|_| "feedback-retry-needed".to_owned())?
             {
                 None => "feedback-reviewed",
-                Some(DeliveryState::Saving) => "feedback-saving",
-                Some(DeliveryState::StorageFailed) => "feedback-storage-failed",
-                Some(DeliveryState::AwaitingReceipt) => "feedback-awaiting-receipt",
-                Some(DeliveryState::Sent { .. }) => "feedback-sent",
+                Some(state) => delivery_label(&state),
             }
         };
         progress.set(key.to_owned());
         result.map_err(|_| key.to_owned())?;
         Ok(Effected::done())
     });
+}
+
+fn restore_progress(services: &FeedbackServices, status: &LocalState<String>) {
+    match services.0.try_borrow() {
+        Ok(composer) => match composer.state() {
+            Ok(Some(state)) => status.set(delivery_label(&state).to_owned()),
+            Ok(None) => {}
+            Err(_) => status.set("feedback-retry-needed".to_owned()),
+        },
+        Err(_) => status.set("feedback-busy".to_owned()),
+    }
+}
+
+fn delivery_label(state: &DeliveryState) -> &'static str {
+    match state {
+        DeliveryState::Saving => "feedback-saving",
+        DeliveryState::StorageFailed => "feedback-storage-failed",
+        DeliveryState::AwaitingReceipt => "feedback-awaiting-receipt",
+        DeliveryState::Sent { .. } => "feedback-sent",
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
