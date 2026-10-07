@@ -59,15 +59,32 @@ impl ActionSessionSource {
         room: &str,
         expected_person: Option<&str>,
     ) -> Result<DesktopActionSession, String> {
+        self.open_classified(room, expected_person)
+            .map_err(|(detail, _)| detail)
+    }
+
+    /// Open the same certified session while retaining a content-free failure
+    /// class for the shell's bounded native-service diagnostic. The detailed
+    /// error remains private to the caller and is never put in the trace.
+    pub(crate) fn open_classified(
+        &self,
+        room: &str,
+        expected_person: Option<&str>,
+    ) -> Result<DesktopActionSession, (String, &'static str)> {
         #[cfg(test)]
         if let Some(host) = &self.fixture {
-            let person = expected_person.ok_or("fixture action Person is required")?;
+            let person = expected_person.ok_or_else(|| {
+                (
+                    "fixture action Person is required".into(),
+                    "projected_person_unavailable",
+                )
+            })?;
             return Ok(DesktopActionSession::Fixture {
                 host: host.clone(),
                 caller: Caller::local_person(person).in_room(room),
             });
         }
-        CertifiedActionSession::open(self.broker.clone(), room, expected_person)
+        CertifiedActionSession::open_classified(self.broker.clone(), room, expected_person)
             .map(DesktopActionSession::Certified)
     }
 }
@@ -117,39 +134,59 @@ impl CertifiedActionSession {
     ///
     /// Refuses an invalid room, unavailable/revoked selected identity,
     /// mismatched projected Person, or action-broker admission failure.
-    pub(crate) fn open(
+    fn open_classified(
         broker: AppActionBroker,
         room: &str,
         expected_person: Option<&str>,
-    ) -> Result<Self, String> {
-        let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid action room")?;
+    ) -> Result<Self, (String, &'static str)> {
+        let parsed = uuid::Uuid::parse_str(room)
+            .map_err(|_| ("invalid action room".into(), "invalid_room"))?;
         if parsed.is_nil() {
-            return Err("invalid action room".into());
+            return Err(("invalid action room".into(), "invalid_room"));
         }
-        let (key, certificate) = tilo_identity_host::broker::trusted_current_device(room)
-            .map_err(|error| format!("selected workspace identity unavailable: {error}"))?;
+        let (key, certificate) =
+            tilo_identity_host::broker::trusted_current_device(room).map_err(|error| {
+                (
+                    format!("selected workspace identity unavailable: {error}"),
+                    "identity_unavailable",
+                )
+            })?;
         let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
             certificate.user_public_key,
         );
         if expected_person.is_some_and(|expected| expected != person) {
-            return Err("displayed workspace Person differs from selected identity".into());
+            return Err((
+                "displayed workspace Person differs from selected identity".into(),
+                "projected_person_mismatch",
+            ));
         }
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: room.to_owned(),
-            device_certificate: serde_json::to_vec(&certificate)
-                .map_err(|error| format!("encoding selected device certificate failed: {error}"))?,
+            device_certificate: serde_json::to_vec(&certificate).map_err(|error| {
+                (
+                    format!("encoding selected device certificate failed: {error}"),
+                    "identity_unavailable",
+                )
+            })?,
             proof: key
                 .sign(&runtime_identity::collaboration_join_signing_bytes(room))
                 .to_bytes()
                 .to_vec(),
         }
         .encode()
-        .map_err(|error| format!("encoding certified action identity failed: {error}"))?;
+        .map_err(|error| {
+            (
+                format!("encoding certified action identity failed: {error}"),
+                "identity_unavailable",
+            )
+        })?;
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
                 .in_room(room)
                 .in_new_execution();
-        let host = broker.certified_local_action_host(&caller, &presentation)?;
+        let host = broker
+            .certified_local_action_host(&caller, &presentation)
+            .map_err(|detail| (detail, "broker_admission_refused"))?;
         Ok(Self {
             broker,
             caller,

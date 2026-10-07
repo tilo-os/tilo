@@ -45,6 +45,7 @@ const MAX_JOB_ROWS_PER_QUERY: usize = 4;
 /// replica of every connected application's action namespace.
 const MAX_RETAINED_DIRECTORY_PAGES: usize = 64;
 const MAX_RETAINED_SERVICE_PAGES: usize = 16;
+const SERVICE_DIAGNOSTIC_TARGET: &str = "tilo_native_governance";
 /// A stalled LocalSet/capability must not leave a palette-owned oneshot alive
 /// forever. Retrying after this deadline remains bounded by the bridge queue.
 const DIRECTORY_PAGE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -258,6 +259,9 @@ pub struct LiveAppActionsProvider {
     service_pages: RefCell<HashMap<ServiceCacheKey, CataloguePage>>,
     service_pending: RefCell<HashMap<ServiceCacheKey, PendingDirectoryPage>>,
     service_context: RefCell<Option<(String, String, u64)>>,
+    /// One bit per closed observation, bounded by the same service-page keys.
+    /// Repeated headless catalogue surveys must not flood the production log.
+    service_diagnostics: RefCell<HashMap<ServiceCacheKey, u16>>,
     /// The palette owns at most one needle's directory projection.
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
@@ -536,6 +540,7 @@ impl LiveAppActionsProvider {
             service_pages: RefCell::new(HashMap::new()),
             service_pending: RefCell::new(HashMap::new()),
             service_context: RefCell::new(None),
+            service_diagnostics: RefCell::new(HashMap::new()),
             directory_query: RefCell::new(None),
             resource_kinds: vec![
                 ResourceKind::Action,
@@ -861,9 +866,14 @@ impl LiveAppActionsProvider {
             self.auxiliary_snapshot.borrow_mut().take();
         }
 
+        self.poll_service_pages_at(now);
+    }
+
+    fn poll_service_pages_at(&self, now: Instant) {
         let mut service_ready = Vec::new();
         self.service_pending.borrow_mut().retain(|key, pending| {
             if pending.deadline <= now {
+                self.report_service_diagnostic(key, 1 << 6, "service_page", "timed_out");
                 return false;
             }
             match pending.receiver.poll_ready() {
@@ -871,7 +881,18 @@ impl LiveAppActionsProvider {
                     service_ready.push((key.clone(), page));
                     false
                 }
-                PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
+                PendingPoll::Ready(Ok(_)) => {
+                    self.report_service_diagnostic(key, 1 << 5, "service_page", "stale");
+                    false
+                }
+                PendingPoll::Ready(Err(_)) => {
+                    self.report_service_diagnostic(key, 1 << 4, "service_page", "failed");
+                    false
+                }
+                PendingPoll::Abandoned => {
+                    self.report_service_diagnostic(key, 1 << 7, "service_page", "uncertain");
+                    false
+                }
                 PendingPoll::Waiting => true,
             }
         });
@@ -887,6 +908,20 @@ impl LiveAppActionsProvider {
                 };
                 visible_projection_changed |=
                     pages.get(&key).is_some_and(page_is_visible) || page_is_visible(&page);
+                self.report_service_diagnostic(
+                    &key,
+                    if page_is_visible(&page) {
+                        1 << 2
+                    } else {
+                        1 << 3
+                    },
+                    "service_page",
+                    if page_is_visible(&page) {
+                        "ready_visible"
+                    } else {
+                        "ready_empty"
+                    },
+                );
                 if !pages.contains_key(&key)
                     && pages.len() >= MAX_RETAINED_SERVICE_PAGES
                     && let Some(evicted) = pages.keys().next().cloned()
@@ -928,6 +963,9 @@ impl LiveAppActionsProvider {
         self.service_pending
             .borrow_mut()
             .retain(|(_, _, cached_needle), _| cached_needle == &next);
+        self.service_diagnostics
+            .borrow_mut()
+            .retain(|(_, _, cached_needle), _| cached_needle == &next);
         self.directory_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -955,6 +993,7 @@ impl LiveAppActionsProvider {
         if previous_service_context.as_ref() != current.as_ref() {
             self.service_pages.borrow_mut().clear();
             self.service_pending.borrow_mut().clear();
+            self.service_diagnostics.borrow_mut().clear();
             if previous_service_context.is_some() {
                 self.directory_epoch.fetch_add(1, Ordering::Relaxed);
             }
@@ -1599,8 +1638,15 @@ impl LiveAppActionsProvider {
             }),
             ..CatalogueQuery::default()
         };
-        let Ok(session) = self.action_sessions.open(room, Some(actor)) else {
-            return;
+        let session = match self.action_sessions.open_classified(room, Some(actor)) {
+            Ok(session) => {
+                self.report_service_diagnostic(&key, 1, "service_session", "opened");
+                session
+            }
+            Err((_, outcome)) => {
+                self.report_service_diagnostic(&key, 1 << 1, "service_session", outcome);
+                return;
+            }
         };
         if self.service_pending.borrow().len() >= MAX_RETAINED_SERVICE_PAGES
             && let Some(evicted) = self.service_pending.borrow().keys().next().cloned()
@@ -1614,6 +1660,33 @@ impl LiveAppActionsProvider {
                 deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
                 initial_page: true,
             },
+        );
+    }
+
+    fn report_service_diagnostic(
+        &self,
+        key: &ServiceCacheKey,
+        bit: u16,
+        stage: &'static str,
+        outcome: &'static str,
+    ) {
+        let mut diagnostics = self.service_diagnostics.borrow_mut();
+        if !diagnostics.contains_key(key)
+            && diagnostics.len() >= MAX_RETAINED_SERVICE_PAGES
+            && let Some(evicted) = diagnostics.keys().next().cloned()
+        {
+            diagnostics.remove(&evicted);
+        }
+        let observed = diagnostics.entry(key.clone()).or_default();
+        if *observed & bit != 0 {
+            return;
+        }
+        *observed |= bit;
+        tracing::debug!(
+            target: SERVICE_DIAGNOSTIC_TARGET,
+            stage,
+            outcome,
+            "native workspace service catalogue observation"
         );
     }
 
@@ -1736,8 +1809,30 @@ impl LiveAppActionsProvider {
     pub fn capability_target(
         id: &str,
     ) -> Option<(&str, tilo_actions::PermissionRequirement, &str)> {
+        let mut service = id.split(ID_SEPARATOR);
+        if service.next() == Some("service") {
+            let _provider = service.next()?;
+            let revision = service.next()?;
+            let app = service.next()?;
+            let permission = Self::permission_from_id(service.next()?)?;
+            let resource = service.next()?;
+            let action = service.next()?;
+            if service.next().is_some()
+                || revision.is_empty()
+                || app.is_empty()
+                || resource.is_empty()
+                || action.is_empty()
+            {
+                return None;
+            }
+            return Some((app, permission, action));
+        }
         let (app, permission, _cluster, _record, _resource, action) = Self::result_parts(id)?;
-        let permission = match permission {
+        Some((app, Self::permission_from_id(permission)?, action))
+    }
+
+    fn permission_from_id(permission: &str) -> Option<tilo_actions::PermissionRequirement> {
+        Some(match permission {
             "none" => tilo_actions::PermissionRequirement::None,
             "read" => tilo_actions::PermissionRequirement::Read,
             "comment" => tilo_actions::PermissionRequirement::Comment,
@@ -1745,8 +1840,18 @@ impl LiveAppActionsProvider {
             "invite" => tilo_actions::PermissionRequirement::Invite,
             "admin" => tilo_actions::PermissionRequirement::Admin,
             _ => return None,
-        };
-        Some((app, permission, action))
+        })
+    }
+
+    fn permission_id(permission: tilo_actions::PermissionRequirement) -> &'static str {
+        match permission {
+            tilo_actions::PermissionRequirement::None => "none",
+            tilo_actions::PermissionRequirement::Read => "read",
+            tilo_actions::PermissionRequirement::Comment => "comment",
+            tilo_actions::PermissionRequirement::Write => "write",
+            tilo_actions::PermissionRequirement::Invite => "invite",
+            tilo_actions::PermissionRequirement::Admin => "admin",
+        }
     }
 
     /// The application, room, record, resource, and operation represented by
@@ -1767,14 +1872,7 @@ impl LiveAppActionsProvider {
             "{}{}{}{}{}{}{}{}{}{}{}",
             surface.app_id,
             ID_SEPARATOR,
-            match action.contract.permission {
-                tilo_actions::PermissionRequirement::None => "none",
-                tilo_actions::PermissionRequirement::Read => "read",
-                tilo_actions::PermissionRequirement::Comment => "comment",
-                tilo_actions::PermissionRequirement::Write => "write",
-                tilo_actions::PermissionRequirement::Invite => "invite",
-                tilo_actions::PermissionRequirement::Admin => "admin",
-            },
+            Self::permission_id(action.contract.permission),
             ID_SEPARATOR,
             surface.route.cluster_id,
             ID_SEPARATOR,
@@ -1926,6 +2024,19 @@ impl LiveAppActionsProvider {
         let provider = row.provider.clone();
         let app_id = row.app_id.clone();
         let address = descriptor.address.clone();
+        let permission = Self::permission_id(descriptor.contract.permission);
+        if [
+            provider.as_str(),
+            revision,
+            app_id.as_str(),
+            address.resource.as_str(),
+            address.action.as_str(),
+        ]
+        .into_iter()
+        .any(|field| field.is_empty() || field.contains(ID_SEPARATOR))
+        {
+            return None;
+        }
         let room = room.to_string();
         let revision = revision.to_string();
         let actor = actor.to_string();
@@ -1948,7 +2059,7 @@ impl LiveAppActionsProvider {
             operation_kind: descriptor.kind,
             provider_id: PROVIDER_ID.into(),
             id: format!(
-                "service{ID_SEPARATOR}{provider}{ID_SEPARATOR}{revision}{ID_SEPARATOR}{resource}{ID_SEPARATOR}{action}"
+                "service{ID_SEPARATOR}{provider}{ID_SEPARATOR}{revision}{ID_SEPARATOR}{app_id}{ID_SEPARATOR}{permission}{ID_SEPARATOR}{resource}{ID_SEPARATOR}{action}"
             ),
             title: descriptor.action_label.clone(),
             subtitle: descriptor
@@ -2061,6 +2172,8 @@ impl LiveAppActionsProvider {
         (parts.next()? == "service").then_some(())?;
         let provider = parts.next()?;
         let revision = parts.next()?;
+        let app = parts.next()?;
+        let permission = Self::permission_from_id(parts.next()?)?;
         let resource = parts.next()?;
         let operation = parts.next()?;
         if parts.next().is_some()
@@ -2084,6 +2197,8 @@ impl LiveAppActionsProvider {
                 page.rows.iter().find_map(|row| {
                     let descriptor = row.action.as_ref()?;
                     (row.provider == provider
+                        && row.app_id == app
+                        && descriptor.contract.permission == permission
                         && descriptor.address.resource == resource
                         && descriptor.address.action == operation)
                         .then(|| (room.clone(), row.clone()))
@@ -2108,6 +2223,8 @@ impl LiveAppActionsProvider {
         (fields.next()? == "service").then_some(())?;
         let provider = fields.next()?;
         let revision = fields.next()?;
+        let app = fields.next()?;
+        let permission = Self::permission_from_id(fields.next()?)?;
         let resource = fields.next()?;
         let action = fields.next()?;
         if fields.next().is_some() || ctx.chrome.search_resource_scope.is_some() {
@@ -2134,6 +2251,8 @@ impl LiveAppActionsProvider {
                 page.rows.iter().find_map(|row| {
                     let descriptor = row.action.as_ref()?;
                     (row.provider == provider
+                        && row.app_id == app
+                        && descriptor.contract.permission == permission
                         && descriptor.address.resource == resource
                         && descriptor.address.action == action)
                         .then(|| (row.clone(), needle.clone()))
@@ -3378,11 +3497,16 @@ mod tests {
         reason = "one end-to-end broker service scenario keeps cold discovery, invocation, and revocation together"
     )]
     fn opaque_workspace_service_rows_use_the_broker_catalogue_and_invocation_door() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, ResourceRef};
+        use crate::shell::search::visibility::CapabilityVisibility;
+        use crate::shell::state::WorkspaceAuthority as _;
+
         let chrome = chrome();
         let owner = chrome.borrow().active_local_user();
-        chrome.borrow().tree_handle().write().desktop.workspaces[0].set_owner(owner);
+        chrome.borrow().tree_handle().write().desktop.workspaces[0].set_owner(owner.clone());
         let broker = broker_for(&chrome);
-        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
+        let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
         let doc = AutoCommit::new();
         let mut first_doc = AutoCommit::new();
 
@@ -3417,6 +3541,80 @@ mod tests {
         assert_eq!(hierarchy.application, "tilo.workspace");
         assert_eq!(hierarchy.room, room);
         assert_eq!(hierarchy.operation, "profile.save");
+
+        let resource = ResourceRef::new(PROVIDER_ID, row.id.clone());
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let chrome_state = chrome.borrow();
+        let workspace = chrome_state.tree().desktop.workspaces[0].clone();
+        let allowed = CapabilityVisibility::new(&workspace, workspace.actor_for_person(&owner));
+        let catalogue = ActionCatalog::build(
+            &registry,
+            "profile.save",
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &chrome_state,
+            &doc,
+            &automerge::ROOT,
+            &allowed,
+        );
+        assert!(
+            catalogue.contains(&resource),
+            "the native catalogue retains the broker-authenticated Admin capability"
+        );
+        let denied = CapabilityVisibility::new(
+            &workspace,
+            workspace.actor_for_person(&"not-an-administrator".to_string()),
+        );
+        let hidden = ActionCatalog::build(
+            &registry,
+            "profile.save",
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &chrome_state,
+            &doc,
+            &automerge::ROOT,
+            &denied,
+        );
+        assert!(
+            !hidden.contains(&resource),
+            "the same opaque row stays absent for a caller without Admin"
+        );
+        drop(chrome_state);
+
+        let (cached_room, cached_actor, cached_needle, cached_revision, mut malformed) = provider
+            .service_pages
+            .borrow()
+            .iter()
+            .find_map(|((cached_room, cached_actor, cached_needle), page)| {
+                page.rows.iter().find_map(|candidate| {
+                    candidate.action.as_ref().and_then(|descriptor| {
+                        (descriptor.address.action == "profile.save").then(|| {
+                            (
+                                cached_room.clone(),
+                                cached_actor.clone(),
+                                cached_needle.clone(),
+                                page.revision.clone(),
+                                candidate.clone(),
+                            )
+                        })
+                    })
+                })
+            })
+            .expect("the exact broker row remains cached");
+        malformed.app_id.push(ID_SEPARATOR);
+        assert!(
+            provider
+                .service_action_result(
+                    &cached_room,
+                    &cached_revision,
+                    &malformed,
+                    &cached_needle,
+                    &cached_actor,
+                )
+                .is_none(),
+            "a separator in retained metadata cannot mint an ambiguous service id"
+        );
 
         let mut supplied = serde_json::Map::new();
         supplied.insert("name".into(), "Fixture profile".into());
@@ -3484,12 +3682,34 @@ mod tests {
                 .is_none(),
             "an opaque provider for another room never inherits the cached action"
         );
-        let mut stale = row.id.split(ID_SEPARATOR).collect::<Vec<_>>();
-        stale[2] = "unobserved-revision";
+        let mut forged_app = row.id.split(ID_SEPARATOR).collect::<Vec<_>>();
+        forged_app[3] = "so.tilo.chat";
         assert!(
             provider
                 .resolve(
-                    &stale.join(&ID_SEPARATOR.to_string()),
+                    &forged_app.join(&ID_SEPARATOR.to_string()),
+                    context("", &chrome.borrow(), &doc),
+                )
+                .is_none(),
+            "an app label in the opaque id cannot replace the retained descriptor"
+        );
+        let mut forged_permission = row.id.split(ID_SEPARATOR).collect::<Vec<_>>();
+        forged_permission[4] = "none";
+        assert!(
+            provider
+                .resolve(
+                    &forged_permission.join(&ID_SEPARATOR.to_string()),
+                    context("", &chrome.borrow(), &doc),
+                )
+                .is_none(),
+            "a permission in the opaque id cannot replace the retained contract"
+        );
+        let mut stale_revision = row.id.split(ID_SEPARATOR).collect::<Vec<_>>();
+        stale_revision[2] = "unobserved-revision";
+        assert!(
+            provider
+                .resolve(
+                    &stale_revision.join(&ID_SEPARATOR.to_string()),
                     context("", &chrome.borrow(), &doc),
                 )
                 .is_none(),

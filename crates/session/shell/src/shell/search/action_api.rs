@@ -12,6 +12,7 @@
 //! runs, so a bad call is a refusal rather than a partial mutation.
 
 use automerge::{AutoCommit, ObjId};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 // The app protocol owns the action vocabulary. Re-exporting it here keeps the
 // shell's public action API stable while making catalogue, palette, app and
@@ -23,6 +24,8 @@ use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use super::{
     ActionReceipt, InvocationDisposition, QueryArgs, ResourceKind, SearchRegistry, SearchResult,
 };
+
+static SERVICE_VISIBILITY_OBSERVED: AtomicU8 = AtomicU8::new(0);
 
 /// Why an invocation did not happen, or did not complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,6 +146,32 @@ pub struct ActionCatalog {
     hierarchies: Vec<Option<ActionHierarchy>>,
 }
 
+fn report_native_service_visibility(results: &[SearchResult], visible: &[usize]) {
+    let is_service = |result: &SearchResult| {
+        result.provider_id == super::providers::live_app_actions::PROVIDER_ID
+            && result.id.starts_with("service\u{1f}")
+    };
+    let candidates = results.iter().filter(|result| is_service(result)).count();
+    if candidates == 0 {
+        return;
+    }
+    let visible_count = visible
+        .iter()
+        .filter(|index| results.get(**index).is_some_and(&is_service))
+        .count();
+    let bit = if visible_count == 0 { 1 } else { 2 };
+    if SERVICE_VISIBILITY_OBSERVED.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+        tracing::debug!(
+            target: "tilo_native_governance",
+            stage = "service_visibility",
+            outcome = if visible_count == 0 { "hidden" } else { "visible" },
+            candidates,
+            visible = visible_count,
+            "native workspace service capability observation"
+        );
+    }
+}
+
 impl ActionCatalog {
     /// Fan `query` out to `registry` under `scope`, then apply `visibility`.
     /// An empty `query` returns every provider's default set (score 0), so
@@ -192,6 +221,7 @@ impl ActionCatalog {
             .filter(|(_, r)| visibility.can_see(&ResourceRef::new(&r.provider_id, &r.id), &r.kind))
             .map(|(i, _)| i)
             .collect();
+        report_native_service_visibility(&results, &visible);
         let hierarchies = Self::resolve_hierarchies(registry, &results, &visible);
         Self {
             results,
