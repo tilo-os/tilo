@@ -101,7 +101,7 @@ impl super::super::InProcessApps {
         let action = PersonAccounts::PUBLISH_WHATSAPP_ACCOUNT
             .with((owner.account.clone(), name, jid, owner.linking_generation))
             .build(tilo_resource::origin_now_ms())
-            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+            .map_err(LaunchError::Operation)?;
         let records = ui::record::person::PersonRecords::open(
             &mut self.owners,
             accounts::person::ACCOUNTS_OWNER,
@@ -120,10 +120,8 @@ impl super::super::InProcessApps {
                     .map_err(|_| "original native admission retired".to_owned())?;
                 action.apply(doc).map_err(|error| error.to_string())
             })
-            .map_err(|error| LaunchError::Operation(error.to_string()))?;
-        records
-            .flush()
-            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+            .map_err(LaunchError::Operation)?;
+        records.flush().map_err(LaunchError::Operation)?;
         identity.check().map_err(|_| LaunchError::BindingMismatch)
     }
     /// Prepare private key custody only for the exact unpublished enrollment

@@ -3,7 +3,7 @@ use crate::supervisor::whatsapp::WhatsappBootstrap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_messaging::SendError;
 
-struct Gate(AtomicBool);
+pub(in super::super) struct Gate(pub(in super::super) AtomicBool);
 impl AccountAuthority for Gate {
     fn check(&self) -> Result<(), SendError> {
         if self.0.load(Ordering::SeqCst) {
@@ -32,7 +32,7 @@ impl Transport for Pipe {
         self.closes.fetch_add(1, Ordering::SeqCst);
     }
 }
-struct Provider {
+pub(in super::super) struct Provider {
     gate: Arc<Gate>,
     pipe: Arc<Pipe>,
     exchanges: AtomicUsize,
@@ -68,7 +68,10 @@ impl TransportFactory for Provider {
         Ok((self.pipe.clone(), receiver))
     }
 }
-fn fixture(revoke_on_call: bool, revoke_on_write: bool) -> (Arc<Gate>, Arc<Provider>, Network) {
+pub(in super::super) fn fixture(
+    revoke_on_call: bool,
+    revoke_on_write: bool,
+) -> (Arc<Gate>, Arc<Provider>, Network) {
     let gate = Arc::new(Gate(AtomicBool::new(true)));
     let pipe = Arc::new(Pipe {
         gate: gate.clone(),
