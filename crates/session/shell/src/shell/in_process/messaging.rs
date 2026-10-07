@@ -240,7 +240,7 @@ impl NativeAccountCustody for NativeSignalAccount {
     }
 }
 impl NativeSignalAccount {
-    /// Create a first sealed profile under an already granted system key.
+    /// Create a first sealed profile under the original approved account key.
     /// Existing profiles are refused; neither grant nor provider is created.
     /// # Errors
     /// Refuses retired admission/grants, weaker custody or occupied storage.
@@ -351,7 +351,7 @@ impl NativeSignalAccount {
         self.gate.check_account_scope(broker.scope())?;
         self.supervisor.install_signal_receiving(broker, receiver)
     }
-    /// Resume the exact retained account through production OS-keychain custody.
+    /// Resume the exact retained account through original approved credential custody.
     /// No grant, socket discovery, daemon spawn or login is performed here.
     /// # Errors
     /// Refuses relative storage, revoked authority or another activation.
@@ -359,23 +359,40 @@ impl NativeSignalAccount {
         if !handles.private_root.is_absolute() {
             return Err(SendError::InvalidRequest);
         }
-        self.activate(|authority| {
-            assemble_native(&self.gate.startup.identity.owner, handles, authority)
-        })
+        self.activate(|authority| assemble_native(self, handles, authority))
     }
 }
 fn assemble_native(
-    owner: &Owner,
+    account: &NativeSignalAccount,
     handles: NativeSignalHandles,
     authority: Arc<dyn SignalAuthority>,
 ) -> Result<(SignalBroker, SignalReceiver), SendError> {
-    let broker = SignalBroker::open_system(
-        &handles.private_root,
+    account.gate.check()?;
+    // Enrollment approved this exact account key. A fresh account has no
+    // unrelated messaging key in the OS keychain, and must not mint one here.
+    // Existing vault formats authenticate distinct purposes under this key.
+    let key = account.gate.startup.credential.profile_key()?;
+    account.gate.check()?;
+    let owner = &account.gate.startup.identity.owner;
+    let history = tilo_messaging_protocol::signal_broker::History::open(
+        &handles.private_root.join("history"),
+        owner,
+        key.clone(),
+    )?;
+    let journal = tilo_messaging_protocol::journal::EncryptedJournal::open(
+        &handles.private_root.join("journal"),
+        owner,
+        key,
+    )
+    .map_err(|_| SendError::Unavailable)?;
+    let runtime = tilo_messaging_protocol::signal_runtime::SignalRuntime::from_journal(
         owner.clone(),
         handles.signal_account.clone(),
         handles.sender,
-        authority,
-    )?;
+        journal,
+    )
+    .map_err(|_| SendError::Unavailable)?;
+    let broker = SignalBroker::new(runtime, history, authority, handles.signal_account.clone())?;
     let receiver = SignalReceiver::new(owner.clone(), handles.signal_account, handles.receiver)
         .map_err(|_| SendError::Unavailable)?;
     Ok((broker, receiver))
@@ -565,7 +582,7 @@ impl super::InProcessApps {
         }
         Ok(())
     }
-    /// Assemble the production adapter with existing OS-keychain custody, after
+    /// Assemble the production adapter with original approved account custody, after
     /// checking the account's signed admission and existing credential grant.
     /// Locked/missing custody has no local-file or generated-key fallback.
     /// # Errors

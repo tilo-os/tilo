@@ -94,7 +94,6 @@ impl NativeSignalAccount {
             return Err(SendError::InvalidRequest);
         }
         let account = self.clone();
-        let owner = self.gate.startup.identity.owner.clone();
         self.activate_on_worker(wake, move |authority| {
             let cancellation = policy.cancellation.clone();
             let consent = super::network::request(account.gate.startup.identity.clone(), &policy)?;
@@ -125,7 +124,7 @@ impl NativeSignalAccount {
             })?;
             let [sender, receiver] = pair;
             let result = assemble_native(
-                &owner,
+                &account,
                 NativeSignalHandles {
                     private_root: storage.history,
                     signal_account: storage.signal_account,
