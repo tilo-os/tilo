@@ -24,10 +24,12 @@ pub enum OperatorKind {
     Silu,
     Multiply,
     ProjectionInput,
+    MatrixWeightInput,
+    LinearProjection,
 }
 
 impl OperatorKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Input,
         Self::GateInput,
         Self::NormWeightInput,
@@ -36,6 +38,8 @@ impl OperatorKind {
         Self::Silu,
         Self::Multiply,
         Self::ProjectionInput,
+        Self::MatrixWeightInput,
+        Self::LinearProjection,
     ];
 
     pub fn key(self) -> &'static str {
@@ -48,10 +52,17 @@ impl OperatorKind {
             Self::Silu => "chip-op-silu",
             Self::Multiply => "chip-op-multiply",
             Self::ProjectionInput => "chip-op-projection",
+            Self::MatrixWeightInput => "chip-op-matrix-weights",
+            Self::LinearProjection => "chip-op-linear-projection",
         }
     }
 
-    fn ports(self, shape: &[u16], normalization_width: u16) -> (Vec<Port>, Vec<Port>) {
+    fn ports(
+        self,
+        shape: &[u16],
+        normalization_width: u16,
+        output_width: Option<u32>,
+    ) -> (Vec<Port>, Vec<Port>) {
         let values_type = format!("f32{shape:?}");
         let weights_type = format!("f32[{normalization_width}]");
         let values = |id: &str| port(id, &values_type);
@@ -69,6 +80,22 @@ impl OperatorKind {
                 vec![values("result")],
             ),
             Self::ProjectionInput => (vec![values("value")], vec![]),
+            Self::MatrixWeightInput | Self::LinearProjection => {
+                let width = output_width.unwrap_or(0);
+                let matrix = port("weights", &format!("f32[{width}, {normalization_width}]"));
+                if self == Self::MatrixWeightInput {
+                    (vec![], vec![matrix])
+                } else {
+                    let mut output: Vec<u32> = shape.iter().map(|d| u32::from(*d)).collect();
+                    if let Some(last) = output.last_mut() {
+                        *last = width;
+                    }
+                    (
+                        vec![values("value"), matrix],
+                        vec![port("result", &format!("f32{output:?}"))],
+                    )
+                }
+            }
         }
     }
 }
@@ -87,13 +114,18 @@ pub struct OperatorNode {
     pub kind: OperatorKind,
     pub shape: Vec<u16>,
     pub normalization_width: u16,
+    /// Structural matrix output width; no matrix payload is held in the CRDT.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_width: Option<u32>,
     pub x: u16,
     pub y: u16,
 }
 
 impl OperatorNode {
     pub fn visual(&self) -> GraphNode {
-        let (inputs, outputs) = self.kind.ports(&self.shape, self.normalization_width);
+        let (inputs, outputs) =
+            self.kind
+                .ports(&self.shape, self.normalization_width, self.output_width);
         GraphNode {
             id: self.id.clone(),
             title: self.kind.key().into(),
@@ -167,6 +199,8 @@ pub enum OperatorAction {
     RemoveNode { node: String },
     Connect { edge: Edge },
     Disconnect { node: String, port: String },
+    SetOutputWidth { node: String, width: u32 },
+    SetShape { node: String, shape: Vec<u16> },
 }
 
 fn valid_id(id: &str) -> bool {
@@ -187,6 +221,32 @@ fn valid_node(node: &OperatorNode) -> bool {
         && node.shape.iter().map(|d| u64::from(*d)).product::<u64>() <= 65536
         && node.shape.last() == Some(&node.normalization_width)
         && (node.kind != OperatorKind::NormWeightInput || node.shape == [node.normalization_width])
+        && valid_matrix(node)
+}
+
+fn valid_matrix(node: &OperatorNode) -> bool {
+    let matrix = matches!(
+        node.kind,
+        OperatorKind::MatrixWeightInput | OperatorKind::LinearProjection
+    );
+    match (matrix, node.output_width) {
+        (false, None) => true,
+        (true, Some(width)) if (1..=1_048_576).contains(&width) => {
+            let input = u64::from(node.normalization_width);
+            let elements = node.shape.iter().map(|d| u64::from(*d)).product::<u64>();
+            input > 0
+                && input
+                    .checked_mul(u64::from(width))
+                    .is_some_and(|size| size <= (1_u64 << 32))
+                && elements
+                    .checked_div(input)
+                    .and_then(|batch| batch.checked_mul(u64::from(width)))
+                    .is_some_and(|size| size <= (1_u64 << 32))
+                && (node.kind != OperatorKind::MatrixWeightInput
+                    || node.shape == [node.normalization_width])
+        }
+        _ => false,
+    }
 }
 
 fn refuse(message: &str) -> ActionError {
@@ -243,6 +303,12 @@ impl Action for OperatorAction {
                 moved.y = *y;
                 put_node(doc, &nodes, &moved)?;
             }
+            Self::SetShape { node, shape } => {
+                set_shape(doc, &state, &nodes, node, shape)?;
+            }
+            Self::SetOutputWidth { node, width } => {
+                set_output_width(doc, &state, &nodes, node, *width)?;
+            }
             Self::RemoveNode { node } => {
                 if !state.nodes.contains_key(node) {
                     return Err(refuse("unknown node"));
@@ -288,6 +354,45 @@ impl Action for OperatorAction {
         }
         Ok(())
     }
+}
+
+fn set_shape(
+    doc: &mut Doc,
+    state: &OperatorState,
+    collection: &ObjId,
+    id: &str,
+    shape: &[u16],
+) -> Result<(), ActionError> {
+    let mut node = state
+        .nodes
+        .get(id)
+        .cloned()
+        .ok_or_else(|| refuse("unknown node"))?;
+    node.shape = shape.to_vec();
+    node.normalization_width = shape.last().copied().unwrap_or(0);
+    if !valid_node(&node) {
+        return Err(refuse("invalid operator shape"));
+    }
+    put_node(doc, collection, &node)
+}
+
+fn set_output_width(
+    doc: &mut Doc,
+    state: &OperatorState,
+    collection: &ObjId,
+    id: &str,
+    width: u32,
+) -> Result<(), ActionError> {
+    let mut node = state
+        .nodes
+        .get(id)
+        .cloned()
+        .ok_or_else(|| refuse("unknown node"))?;
+    node.output_width = Some(width);
+    if !valid_node(&node) {
+        return Err(refuse("invalid matrix output width"));
+    }
+    put_node(doc, collection, &node)
 }
 
 pub struct OperatorGraph;
@@ -368,6 +473,8 @@ impl Resource for OperatorGraph {
     fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
             add_declaration(),
+            output_width_declaration(),
+            shape_declaration(),
             connect_declaration(),
             disconnect_declaration(),
             move_declaration(),
@@ -400,6 +507,8 @@ fn add_declaration() -> ActionDecl<OperatorGraph> {
                 "silu",
                 "multiply",
                 "projection_input",
+                "matrix_weight_input",
+                "linear_projection",
             ]),
             ActionParam::required(
                 "shape",
@@ -416,6 +525,10 @@ fn add_declaration() -> ActionDecl<OperatorGraph> {
                 ParamType::Integer,
                 "Last-axis normalization width",
             ),
+            ActionParam::optional(
+                "output_width", ParamType::Integer,
+                "Required for matrix weights and linear projection; structural output width",
+            ).with_schema(serde_json::json!({"type":"integer", "minimum":1, "maximum":1_048_576, "examples":[8]})),
             ActionParam::required("x", ParamType::Integer, "Horizontal position"),
             ActionParam::required("y", ParamType::Integer, "Vertical position"),
         ],
@@ -439,6 +552,7 @@ fn add_declaration() -> ActionDecl<OperatorGraph> {
                         })
                         .collect::<Result<Vec<_>, _>>()?,
                     normalization_width: position(args, "normalization_width")?,
+                    output_width: args.integer("output_width").map(u32::try_from).transpose().map_err(|error| error.to_string())?,
                     x: position(args, "x")?,
                     y: position(args, "y")?,
                 },
@@ -447,6 +561,30 @@ fn add_declaration() -> ActionDecl<OperatorGraph> {
     )
     .describe("Edit a structural operator design; does not execute or qualify a netlist.")
 }
+fn shape_declaration() -> ActionDecl<OperatorGraph> {
+    ActionDecl::new(
+        "set-shape", "Set operator input shape",
+        vec![text("node", "Operator node identity"), ActionParam::required("shape", ParamType::Array, "Up to four positive input dimensions; last axis sets normalization width")
+            .with_schema(serde_json::json!({"type":"array", "minItems":1,"maxItems":4,"items":{"type":"integer","minimum":1,"maximum":65535},"examples":[[1]]}))],
+        |args, _| Ok(OperatorAction::SetShape {
+            node: args.text("node").ok_or("missing node")?.into(),
+            shape: args.array("shape").ok_or("missing shape")?.iter().map(|dim| dim.as_u64().and_then(|value|u16::try_from(value).ok()).ok_or_else(||"invalid shape dimension".to_owned())).collect::<Result<Vec<_>,_>>()?,
+        }),
+    )
+}
+
+fn output_width_declaration() -> ActionDecl<OperatorGraph> {
+    ActionDecl::new(
+        "set-output-width", "Set matrix output width",
+        vec![text("node", "Matrix node identity"), ActionParam::required("width", ParamType::Integer, "Matrix output width")
+            .with_schema(serde_json::json!({"type":"integer", "minimum":1, "maximum":1_048_576, "examples":[8]}))],
+        |args, _| Ok(OperatorAction::SetOutputWidth {
+            node: args.text("node").ok_or("missing node")?.into(),
+            width: u32::try_from(args.integer("width").ok_or("missing width")?).map_err(|error| error.to_string())?,
+        }),
+    )
+}
+
 fn connect_declaration() -> ActionDecl<OperatorGraph> {
     ActionDecl::new(
         "connect",
