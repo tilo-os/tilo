@@ -12700,6 +12700,68 @@ mod tests {
     };
 
     #[test]
+    fn physical_pointer_motion_hits_the_painted_scaled_desktop_tray() {
+        use crate::compositor::backend::{Output, layout};
+        use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
+
+        let mut output = Output::new(OutputId(1), (2944, 1840), 2.0);
+        // The second phase also exercises a translated output: a global /2
+        // would miss this tray even though the panel has the same density.
+        for translated in [false, true] {
+            let mut outputs = Vec::new();
+            if translated {
+                outputs.push(Output::new(OutputId(2), (1280, 800), 1.0));
+                output.logical_position = (1280, 0);
+                output.position = (1280, 0);
+            }
+            outputs.push(output.clone());
+            let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+            let mut fb = FrameBuilder::with_handle(tree.clone(), false, (2944, 1840));
+            fb.set_output_geometry(output_geometry(&outputs));
+            fb.paint_settled();
+            let tray = fb.widget_registry()["topbar_tray_pill"].center();
+            let painted = fb.layout_point_to_scene(tray);
+            let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+            let display: Display<State> = Display::new().unwrap();
+            let mut state =
+                State::new_with_workspace_tree(event_loop.handle(), display.handle(), tree);
+            let mut ctx = TestControlCtx::new();
+            let mapped = layout::event_to_logical(
+                &layout::placements(&outputs),
+                BackendEvent::PhysicalPointerMotion {
+                    event: WindowEvent::CursorMoved {
+                        device_id: unsafe { std::mem::zeroed() },
+                        position: PhysicalPosition::new(painted.x, painted.y),
+                    },
+                    input_time_ns: 123_456,
+                },
+            );
+            let BackendEvent::PhysicalPointerMotion {
+                event,
+                input_time_ns,
+            } = mapped
+            else {
+                panic!("physical motion must retain its trusted wrapper");
+            };
+            assert_eq!(input_time_ns, 123_456);
+            dispatch_synth_event(&event, &mut fb, &mut ctx, &mut Some(&mut state));
+            // This is the actual backend normalization -> client/chrome
+            // router -> mounted host path, not a geometry helper assertion.
+            let press = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+            dispatch_synth_event(&press, &mut fb, &mut ctx, &mut Some(&mut state));
+            assert!(
+                fb.chrome().overlays.quick_settings,
+                "a physical click at the painted tray must open Quick Settings"
+            );
+            assert_eq!(fb.host().pointer_position(), Some(tray));
+        }
+    }
+
+    #[test]
     fn explicit_display_wake_restores_backend_and_presenter_without_unlock_or_input() {
         use crate::compositor::backend::{BackendEvent, Output};
         use crate::compositor::idle::IdleConfig;

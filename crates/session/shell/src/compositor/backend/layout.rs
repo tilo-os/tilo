@@ -239,6 +239,23 @@ pub fn event_to_logical(
                 position: winit::dpi::PhysicalPosition::new(x, y),
             })
         }
+        BackendEvent::PhysicalPointerMotion {
+            event:
+                WindowEvent::CursorMoved {
+                    device_id,
+                    position,
+                },
+            input_time_ns,
+        } => {
+            let (x, y) = map(position.x, position.y);
+            BackendEvent::PhysicalPointerMotion {
+                event: WindowEvent::CursorMoved {
+                    device_id,
+                    position: winit::dpi::PhysicalPosition::new(x, y),
+                },
+                input_time_ns,
+            }
+        }
         BackendEvent::Input(WindowEvent::Touch(mut touch)) => {
             let (x, y) = map(touch.location.x, touch.location.y);
             touch.location = winit::dpi::PhysicalPosition::new(x, y);
@@ -383,6 +400,69 @@ mod tests {
         assert_eq!(logical_to_scene(&p, (1300.0, 400.0)), (2580.0, 400.0));
         for point in [(640.0, 400.0), (1300.0, 400.0), (3199.0, 1279.0)] {
             assert_eq!(scene_to_logical(&p, logical_to_scene(&p, point)), point);
+        }
+    }
+
+    #[test]
+    fn trusted_pointer_and_touch_cross_the_same_mixed_scale_boundary_once() {
+        use super::super::{BackendEvent, TouchEvent};
+        use winit::event::WindowEvent;
+        let outputs = placements(&[
+            ((0, 0), (1472, 920), (2944, 1840)),
+            ((1472, 100), (1280, 800), (1920, 1200)),
+        ]);
+        for logical in [(1395.0, 24.0), (2100.0, 450.0)] {
+            let scene = logical_to_scene(&outputs, logical);
+            let physical = event_to_logical(
+                &outputs,
+                BackendEvent::PhysicalPointerMotion {
+                    event: WindowEvent::CursorMoved {
+                        device_id: winit::event::DeviceId::dummy(),
+                        position: winit::dpi::PhysicalPosition::new(scene.0, scene.1),
+                    },
+                    input_time_ns: 987_654_321,
+                },
+            );
+            let BackendEvent::PhysicalPointerMotion {
+                event: WindowEvent::CursorMoved { position, .. },
+                input_time_ns,
+            } = physical
+            else {
+                panic!("normalized mouse must retain the original physical witness");
+            };
+            assert_eq!((position.x, position.y), logical);
+            assert_eq!(input_time_ns, 987_654_321);
+            for touch in [
+                TouchEvent::Down {
+                    slot: 3,
+                    x: scene.0,
+                    y: scene.1,
+                },
+                TouchEvent::Motion {
+                    slot: 3,
+                    x: scene.0,
+                    y: scene.1,
+                },
+            ] {
+                let BackendEvent::Touch(normalized) =
+                    event_to_logical(&outputs, BackendEvent::Touch(touch))
+                else {
+                    panic!("raw touch remains raw touch");
+                };
+                let expected = match touch {
+                    TouchEvent::Down { slot, .. } => TouchEvent::Down {
+                        slot,
+                        x: logical.0,
+                        y: logical.1,
+                    },
+                    _ => TouchEvent::Motion {
+                        slot: 3,
+                        x: logical.0,
+                        y: logical.1,
+                    },
+                };
+                assert_eq!(normalized, expected);
+            }
         }
     }
 
