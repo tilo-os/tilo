@@ -1040,3 +1040,6 @@ fn native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root()
     })
     .unwrap();
 }
+
+#[cfg(unix)]
+mod inherited_control_wire;

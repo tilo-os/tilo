@@ -260,6 +260,8 @@ impl TerminalWidget {
         requested_by: Requester,
         attach: Option<&str>,
     ) {
+        #[cfg(unix)]
+        drop(self.service_lifetime.take());
         self.sessions.target = Some(target.clone());
         match self.sessions.open(target, requested_by, attach) {
             Ok(backend) => {

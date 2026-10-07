@@ -512,7 +512,7 @@ pub struct TerminalWidget {
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     #[cfg(unix)]
-    service_lifetime: Option<std::os::unix::net::UnixStream>,
+    service_lifetime: Option<runtime_portal::service_socket::SessionLease>,
     output_rx: Receiver<Vec<u8>>,
     /// At most one reader chunk that did not fit the current bounded pump.
     /// Retaining it locally preserves byte ordering without an unbounded
@@ -6009,7 +6009,7 @@ pub struct TerminalBackend {
     /// re-attaches to it.
     pub relay_session: Option<String>,
     #[cfg(unix)]
-    service_lifetime: Option<std::os::unix::net::UnixStream>,
+    service_lifetime: Option<runtime_portal::service_socket::SessionLease>,
     #[cfg(windows)]
     pub child: Box<dyn portable_pty::Child + Send + Sync>,
 }
@@ -6178,9 +6178,9 @@ pub fn exec_script(argv: &[String]) -> String {
 /// service socket on this app's behalf, per `[sandbox.services]`.
 pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
-/// Ownership and refusal retries live with the runtime's service transport.
-static USH_SERVICE: runtime_portal::service_socket::InheritedServiceSocket =
-    runtime_portal::service_socket::InheritedServiceSocket::new("ush");
+/// The inherited control connection is distinct from each session lifetime lease.
+static USH_SERVICE: runtime_portal::service_socket::InheritedControlSocket =
+    runtime_portal::service_socket::InheritedControlSocket::new("ush");
 
 /// Who caused a session to open. The device's own shell is never opened for
 /// an agent, whatever else allows it.
@@ -6467,18 +6467,19 @@ fn ush_service_backend(
 ) -> Result<TerminalBackend, OpenError> {
     use runtime_portal::service_socket::ServiceSocketError;
 
-    // SAFETY: this process-wide instance alone owns the launcher's ush fd.
-    let stream = unsafe { USH_SERVICE.take() }.map_err(|error| match error {
-        ServiceSocketError::InUse => OpenError::Unavailable(
-            "This window's shell service is already in use; open a new tab".into(),
-        ),
-        other => OpenError::Failed(other.to_string()),
-    })?;
-    let opened = ush_backend_on(&stream, program, target, requested_by, relay_session);
-    if opened.as_ref().is_err_and(OpenError::is_refusal) {
-        let _ = USH_SERVICE.retry_after_refusal(stream);
+    // SAFETY: this instance alone owns the inherited fd. ush_backend_on
+    // negotiates protocol two and returns only its independent session lease.
+    unsafe {
+        USH_SERVICE.with_control(|stream| {
+            ush_backend_on(stream, program, target, requested_by, relay_session)
+        })
     }
-    opened
+    .map_err(|error| match error {
+        ServiceSocketError::InUse => {
+            OpenError::Unavailable(t("terminal-service-control-unavailable"))
+        }
+        other => OpenError::Failed(other.to_string()),
+    })?
 }
 
 #[cfg(windows)]
@@ -6535,6 +6536,25 @@ pub(crate) fn ush_backend_on(
 ) -> Result<TerminalBackend, OpenError> {
     use std::os::fd::AsRawFd;
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
+    {
+        let mut writer = stream;
+        writer
+            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
+            .map_err(|e| failed(&e))?;
+        writer.flush().map_err(|e| failed(&e))?;
+    }
+    let (hello, rights) = runtime_portal::fd_transport::recv_with_owned_fds(stream.as_raw_fd())
+        .map_err(|e| failed(&e))?;
+    let ready = serde_json::from_slice::<serde_json::Value>(&hello).ok();
+    if !rights.is_empty()
+        || ready
+            .as_ref()
+            .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
+    {
+        return Err(OpenError::Unavailable(t(
+            "terminal-service-protocol-unavailable",
+        )));
+    }
     let request = ush_request(program, target, requested_by, relay_session, (80, 24))?;
     {
         let mut w = stream;
@@ -6542,15 +6562,32 @@ pub(crate) fn ush_backend_on(
         w.flush().map_err(|e| failed(&e))?;
     }
 
-    let (payload, fd) = runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd())
-        .map_err(|e| failed(&e))?;
-    let Some(fd) = fd else {
+    let (payload, mut rights) =
+        runtime_portal::fd_transport::recv_with_owned_fds(stream.as_raw_fd())
+            .map_err(|e| failed(&e))?;
+    if rights.is_empty() {
         return Err(refusal(&payload));
-    };
-
-    // `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
-    // supervisor sends a pty master and nothing else.
-    let master = std::fs::File::from(fd);
+    }
+    let response = serde_json::from_slice::<serde_json::Value>(&payload).ok();
+    if rights.len() != 2
+        || response
+            .as_ref()
+            .is_none_or(|value| value["result"] != "session" || value["protocol"] != 2)
+    {
+        return Err(OpenError::Failed(t("terminal-service-invalid-session")));
+    }
+    let lifetime = rights
+        .pop()
+        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-lease")))?;
+    let master = std::fs::File::from(
+        rights
+            .pop()
+            .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-terminal")))?,
+    );
+    let lifetime = std::os::unix::net::UnixStream::from(lifetime);
+    lifetime
+        .peer_addr()
+        .map_err(|_| OpenError::Failed(t("terminal-service-invalid-lease")))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
     let writer = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Write + Send>;
     Ok(TerminalBackend {
@@ -6559,7 +6596,7 @@ pub(crate) fn ush_backend_on(
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: granted_relay_session(&payload),
-        service_lifetime: Some(stream.try_clone().map_err(|e| failed(&e))?),
+        service_lifetime: Some(lifetime.into()),
     })
 }
 

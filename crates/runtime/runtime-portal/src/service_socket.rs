@@ -6,6 +6,34 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// An owned session lease. Reader clones cannot prolong the guest after its
+/// owner replaces or drops this lease.
+#[cfg(unix)]
+pub struct SessionLease(UnixStream);
+
+#[cfg(unix)]
+impl From<UnixStream> for SessionLease {
+    fn from(stream: UnixStream) -> Self {
+        Self(stream)
+    }
+}
+
+#[cfg(unix)]
+impl std::ops::Deref for SessionLease {
+    type Target = UnixStream;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
+
 /// One launcher-owned connection. A successful session consumes it; a refused
 /// request can return it for another request without reclaiming its raw fd.
 pub struct InheritedServiceSocket {
@@ -14,6 +42,56 @@ pub struct InheritedServiceSocket {
     claimed: AtomicBool,
     #[cfg(unix)]
     retry: Mutex<Option<UnixStream>>,
+}
+
+/// A serialized inherited control connection whose sessions use separate leases.
+/// The raw inherited descriptor is claimed once and never reacquired.
+pub struct InheritedControlSocket {
+    socket: InheritedServiceSocket,
+    #[cfg(unix)]
+    exchange: Mutex<()>,
+}
+
+impl InheritedControlSocket {
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            socket: InheritedServiceSocket::new(name),
+            #[cfg(unix)]
+            exchange: Mutex::new(()),
+        }
+    }
+
+    #[must_use]
+    pub fn was_taken(&self) -> bool {
+        self.socket.was_taken()
+    }
+
+    /// Exchange one serialized request, retaining only the control connection.
+    ///
+    /// # Errors
+    /// Returns inherited ownership or poisoned connection errors.
+    ///
+    /// # Safety
+    /// This instance alone must own the inherited fd. The request must negotiate
+    /// a protocol using independent session lifetime descriptors; this connection
+    /// must never itself be returned as a session lease.
+    #[cfg(unix)]
+    pub unsafe fn with_control<T>(
+        &self,
+        request: impl FnOnce(&UnixStream) -> T,
+    ) -> Result<T, ServiceSocketError> {
+        let exchange = self
+            .exchange
+            .lock()
+            .map_err(|_| ServiceSocketError::Poisoned)?;
+        // SAFETY: the caller guarantees this instance exclusively owns the fd.
+        let stream = unsafe { self.socket.take() }?;
+        let result = request(&stream);
+        self.socket.retain_connection(stream)?;
+        drop(exchange);
+        Ok(result)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +159,11 @@ impl InheritedServiceSocket {
     /// ownership lock cannot be acquired safely.
     #[cfg(unix)]
     pub fn retry_after_refusal(&self, stream: UnixStream) -> Result<(), ServiceSocketError> {
+        self.retain_connection(stream)
+    }
+
+    #[cfg(unix)]
+    fn retain_connection(&self, stream: UnixStream) -> Result<(), ServiceSocketError> {
         let mut retry = self
             .retry
             .lock()
@@ -98,6 +181,21 @@ impl InheritedServiceSocket {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn replacing_the_owned_lease_ends_it_even_while_a_reader_clone_exists() {
+        let (mut supervisor, terminal) = UnixStream::pair().unwrap();
+        let lease = SessionLease::from(terminal);
+        let clone = lease.try_clone().unwrap();
+        supervisor
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        drop(lease);
+        let mut byte = [0u8; 1];
+        assert_eq!(supervisor.read(&mut byte).unwrap(), 0);
+        assert!(clone.take_error().unwrap().is_none());
+        drop(clone);
+    }
 
     #[test]
     fn refusal_reuses_the_connection_without_reclaiming_a_consumed_descriptor() {

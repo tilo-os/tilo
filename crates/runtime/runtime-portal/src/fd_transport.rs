@@ -7,7 +7,15 @@ use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
 /// # Errors
 /// Returns the socket error or an error for an empty or partially sent payload.
 pub fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> io::Result<()> {
-    if payload.is_empty() {
+    send_with_fds(sock, payload, std::slice::from_ref(&fd))
+}
+
+/// Send at most two borrowed descriptors in one bounded message.
+///
+/// # Errors
+/// Rejects an empty payload, invalid descriptor count or partial write.
+pub fn send_with_fds(sock: RawFd, payload: &[u8], fds: &[RawFd]) -> io::Result<()> {
+    if payload.is_empty() || fds.is_empty() || fds.len() > 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "descriptor needs a payload",
@@ -18,20 +26,22 @@ pub fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> io::Result<()> {
         iov_len: payload.len(),
     };
     // cmsghdr requires native alignment; a byte array does not provide it.
-    let mut control = [0usize; 4];
+    let mut control = [0usize; 8];
     // SAFETY: each pointer is aligned, initialized and live for sendmsg; CMSG_SPACE
-    // for one descriptor fits the control buffer on supported Unix targets.
+    // for two descriptors fits the control buffer on supported Unix targets.
     let sent = unsafe {
         let mut msg: libc::msghdr = std::mem::zeroed();
         msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = control.as_mut_ptr().cast();
-        msg.msg_controllen = libc::CMSG_SPACE(4) as _;
+        let rights_size = u32::try_from(std::mem::size_of_val(fds))
+            .map_err(|_| io::Error::other("descriptor count overflow"))?;
+        msg.msg_controllen = libc::CMSG_SPACE(rights_size) as _;
         let header = libc::CMSG_FIRSTHDR(&raw const msg);
         (*header).cmsg_level = libc::SOL_SOCKET;
         (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = libc::CMSG_LEN(4) as _;
-        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<RawFd>(), fd);
+        (*header).cmsg_len = libc::CMSG_LEN(rights_size) as _;
+        std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(header).cast(), fds.len());
         libc::sendmsg(sock, &raw const msg, 0)
     };
     if sent < 0 {
@@ -65,6 +75,19 @@ pub fn recv_with_owned_fd(sock: RawFd) -> io::Result<(Vec<u8>, Option<OwnedFd>)>
 }
 
 fn recv_into(sock: RawFd, buf: &mut [u8]) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
+    let (bytes, mut fds) = recv_bounded(sock, buf, 1)?;
+    Ok((bytes, fds.pop()))
+}
+
+/// Receive a payload and at most two owned, close-on-exec descriptors.
+///
+/// # Errors
+/// Rejects truncation or excess rights, closing every received descriptor.
+pub fn recv_with_owned_fds(sock: RawFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    recv_bounded(sock, &mut [0u8; 4096], 2)
+}
+
+fn recv_bounded(sock: RawFd, buf: &mut [u8], limit: usize) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     let mut iov = libc::iovec {
         iov_base: buf.as_mut_ptr().cast(),
         iov_len: buf.len(),
@@ -126,7 +149,7 @@ fn recv_into(sock: RawFd, buf: &mut [u8]) -> io::Result<(Vec<u8>, Option<OwnedFd
             msg.msg_flags & (libc::MSG_CTRUNC | libc::MSG_TRUNC) != 0,
         )
     };
-    if truncated || descriptors.len() > 1 {
+    if truncated || descriptors.len() > limit {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "truncated or multiple-descriptor message",
@@ -140,7 +163,7 @@ fn recv_into(sock: RawFd, buf: &mut [u8]) -> io::Result<(Vec<u8>, Option<OwnedFd
     let bytes = buf
         .get(..length)
         .ok_or_else(|| io::Error::other("oversized receive length"))?;
-    Ok((bytes.to_vec(), descriptors.pop()))
+    Ok((bytes.to_vec(), descriptors))
 }
 
 #[cfg(test)]
@@ -174,6 +197,46 @@ mod tests {
             let flags = unsafe { libc::fcntl(received.as_raw_fd(), libc::F_GETFD) };
             assert_ne!(flags & libc::FD_CLOEXEC, 0);
         }
+    }
+
+    #[test]
+    fn two_owned_rights_preserve_order_and_single_rights_stay_strict() {
+        let (sender, receiver) = UnixStream::pair().unwrap();
+        let (mut first_peer, first) = UnixStream::pair().unwrap();
+        let (mut second_peer, second) = UnixStream::pair().unwrap();
+        send_with_fds(
+            sender.as_raw_fd(),
+            b"two",
+            &[first.as_raw_fd(), second.as_raw_fd()],
+        )
+        .unwrap();
+        let (payload, mut rights) = recv_with_owned_fds(receiver.as_raw_fd()).unwrap();
+        assert_eq!(payload, b"two");
+        assert_eq!(rights.len(), 2);
+        for fd in &rights {
+            assert!(
+                rustix::io::fcntl_getfd(fd)
+                    .unwrap()
+                    .contains(rustix::io::FdFlags::CLOEXEC)
+            );
+        }
+        let mut second = UnixStream::from(rights.pop().unwrap());
+        let mut first = UnixStream::from(rights.pop().unwrap());
+        first_peer.write_all(b"a").unwrap();
+        second_peer.write_all(b"b").unwrap();
+        let mut byte = [0u8; 1];
+        first.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, *b"a");
+        second.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, *b"b");
+        send_with_fds(
+            sender.as_raw_fd(),
+            b"strict",
+            &[first.as_raw_fd(), second.as_raw_fd()],
+        )
+        .unwrap();
+        assert!(recv_with_owned_fd(receiver.as_raw_fd()).is_err());
+        assert!(send_with_fds(sender.as_raw_fd(), b"limit", &[first.as_raw_fd(); 3]).is_err());
     }
 
     fn send_many(socket: &UnixDatagram, payload: &[u8], fds: &[RawFd]) {

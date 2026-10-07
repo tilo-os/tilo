@@ -492,3 +492,10 @@ display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
 device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
 device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
+
+terminal-service-control-unavailable = Die Shell-Verbindung ist nicht verfügbar.
+terminal-service-protocol-unavailable = Aktualisiere den Shell-Dienst, bevor du in diesem Fenster eine Sitzung öffnest.
+terminal-service-invalid-session = Der Shell-Dienst hat eine ungültige Sitzung zurückgegeben.
+terminal-service-missing-lease = Die Shell-Sitzung hat keine Verbindung für ihre Laufzeit bereitgestellt.
+terminal-service-missing-terminal = Die Shell-Sitzung hat kein Terminal bereitgestellt.
+terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht überprüft werden.
