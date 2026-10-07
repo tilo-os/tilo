@@ -555,7 +555,9 @@ pub struct ShellOverlayHost {
     /// The window in the current room's preview row the keyboard is on:
     /// Left and Right walk it, Enter goes there. `None` while the keyboard
     /// is on the room list.
-    overview_window_selection: Option<usize>,
+    overview_window_selection: Option<crate::shell::state::TabId>,
+    /// One interrupted activation is consumed after its target disappears.
+    overview_window_interrupted: bool,
     /// A press on the overview until it is let go: a click or tap on a
     /// window preview goes to that window, a drag carries it to another
     /// room.
@@ -2122,6 +2124,7 @@ impl ShellOverlayHost {
             overview_scroll_y: 0.0,
             overview_selection: None,
             overview_window_selection: None,
+            overview_window_interrupted: false,
             overview_press: None,
             overview_panel_cache: None,
             overview_panel_cache_fills: 0,
@@ -8860,6 +8863,7 @@ impl ShellOverlayHost {
             None
         };
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         self.overview_press = None;
     }
 
@@ -10595,6 +10599,7 @@ impl ShellOverlayHost {
             _ => return false,
         }
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         self.scroll_overview_selection_into_view();
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
@@ -10691,6 +10696,7 @@ impl ShellOverlayHost {
         };
         let closed = crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), tab).is_ok();
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         closed
     }
 
@@ -10715,6 +10721,7 @@ impl ShellOverlayHost {
             Ok(_) => {
                 drop(state);
                 self.overview_window_selection = None;
+                self.overview_window_interrupted = false;
                 true
             }
             Err(err) => {
@@ -12668,6 +12675,19 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
+    fn reconcile_overview_window_selection(&mut self) {
+        if let Some(tab) = self.overview_window_selection
+            && !self
+                .overview_row_windows()
+                .iter()
+                .any(|window| window.address.tab == tab)
+        {
+            self.overview_window_selection = None;
+            self.overview_window_interrupted = true;
+            self.overview_selection = self.overview_here_index();
+        }
+    }
+
     /// Left and Right walk the current room's preview row, a ring like
     /// the room list; Enter on a selected window goes there. Returns
     /// whether the key was taken.
@@ -12676,11 +12696,12 @@ impl ShellOverlayHost {
         let count = windows.len();
         if count == 0 {
             self.overview_window_selection = None;
+            self.overview_window_interrupted = false;
             return false;
         }
         let current = self
             .overview_window_selection
-            .filter(|index| *index < count);
+            .and_then(|tab| windows.iter().position(|window| window.address.tab == tab));
         match logical_key {
             Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 let Some(window) = current.and_then(|index| windows.get(index)) else {
@@ -12711,7 +12732,15 @@ impl ShellOverlayHost {
     /// Put the keyboard on window `index` of the preview row; the row is
     /// part of the current room's block, so the room is selected with it.
     fn select_overview_window(&mut self, index: usize) {
-        self.overview_window_selection = Some(index);
+        let Some(tab) = self
+            .overview_row_windows()
+            .get(index)
+            .map(|window| window.address.tab)
+        else {
+            return;
+        };
+        self.overview_window_selection = Some(tab);
+        self.overview_window_interrupted = false;
         self.overview_selection = self.overview_here_index();
         self.scroll_overview_selection_into_view();
         if let Some(chrome) = self.chrome.as_ref() {
@@ -12746,6 +12775,13 @@ impl ShellOverlayHost {
         ) {
             return false;
         }
+        self.reconcile_overview_window_selection();
+        if std::mem::take(&mut self.overview_window_interrupted)
+            && matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space))
+        {
+            *handled = true;
+            return true;
+        }
         if self.handle_overview_window_keys(logical_key) {
             *handled = true;
             return true;
@@ -12757,6 +12793,7 @@ impl ShellOverlayHost {
             return false;
         }
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         let count = self.overview_cards().len();
         if count == 0 {
             return false;
@@ -18298,8 +18335,13 @@ impl Widget for ShellOverlayHost {
                             .iter()
                             .enumerate()
                             .map(|(index, window)| {
-                                let selected = self.overview_window_selection == Some(index);
+                                let selected =
+                                    self.overview_window_selection == Some(window.address.tab);
                                 AccessNode::new(Role::ListItem)
+                                    .with_semantic_key(format!(
+                                        "overview-window:{}",
+                                        window.address.tab
+                                    ))
                                     .with_name(window.title.clone())
                                     .with_position(index.saturating_add(1), total)
                                     .with_bounds(self.overview_window_tile_rect(index))
@@ -19910,7 +19952,7 @@ fn palette_surface_theme(theme: &Theme) -> Theme {
 struct OverviewPanelCacheKey {
     scroll_bits: u64,
     selection: Option<usize>,
-    window_selection: Option<usize>,
+    window_selection: Option<crate::shell::state::TabId>,
     press: Option<(u64, u8, u64, u64)>,
     panel: (u64, u64, u64, u64),
     chrome_revision: u64,
@@ -20388,6 +20430,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         overview_open: bool,
     ) {
+        self.reconcile_overview_window_selection();
         let target = if overview_open { 1.0 } else { 0.0 };
         let t = self.tick_overview_transition(target, theme.reduce_motion);
         // The overview is a panel over the desk, not a place you travel
@@ -22709,7 +22752,7 @@ impl ShellOverlayHost {
             );
             let is_carried = carried == Some(window.address.tab);
             let state = ui::chrome::SelectionState::new(
-                self.overview_window_selection == Some(index),
+                self.overview_window_selection == Some(window.address.tab),
                 self.last_cursor.is_some_and(|c| bounds.contains(c)),
                 pressed == Some(window.address.tab),
             );
