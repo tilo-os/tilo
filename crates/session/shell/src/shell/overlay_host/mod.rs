@@ -11161,9 +11161,13 @@ impl ShellOverlayHost {
     /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
+        (self.palette_visible && self.palette.get_rect().contains(p))
+            || self.cursor_over_other_open_overlay(p)
+    }
+
+    fn cursor_over_other_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         self.dictation_pointer_at((p.x, p.y))
-            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -11647,7 +11651,7 @@ impl ShellOverlayHost {
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let is_absorbable_pointer = matches!(
             event,
@@ -11662,7 +11666,20 @@ impl ShellOverlayHost {
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
         {
-            *handled = true;
+            // The palette owns hover before this guard isolates the app below.
+            // Another covering overlay keeps its existing input priority.
+            if self.palette_visible
+                && self.palette.get_rect().contains(p)
+                && !self.cursor_over_other_open_overlay(p)
+            {
+                let palette_child = ctx
+                    .taffy
+                    .children(ctx.node_id)
+                    .ok()
+                    .and_then(|children| children.get(1).copied());
+                self.route_palette_event(event, ctx, palette_child);
+            }
+            *ctx.handled = true;
             return true;
         }
 
@@ -11680,7 +11697,7 @@ impl ShellOverlayHost {
                 .notification_stack
                 .click_at(&ChromeNotifications::new(chrome), p)
         {
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -18267,7 +18284,19 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        if self.route_absorbable_pointer_and_toast_click(event, ctx.handled) {
+        if self.route_absorbable_pointer_and_toast_click(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: state.reborrow(),
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
+        ) {
             return;
         }
         if self.route_permission_prompt_event(
