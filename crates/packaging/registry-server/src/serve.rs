@@ -16,7 +16,10 @@
 //!   appeal, or owner decision.
 //! - `GET  /moderation/cases/<id>` → convenience projection (not a proof).
 //! - `GET  /moderation/transparency` → bounded public signed hash-chain page.
-//! - `GET  /blobs/<blake3>`       → a reviewed payload blob.
+//! - `GET  /blobs/<blake3>`       → a reviewed payload blob, or one chunk of
+//!   a reviewed blob kept as chunks.
+//! - `GET  /blobs/<blake3>.chunks` → the chunk list of a reviewed blob kept as
+//!   chunks (see `tilo_app_package::chunks`).
 //! - `GET  /thin/<root>.tapp`     → a reviewed package's thin form, by
 //!   package root.
 //! - `GET  /artifacts/<blake3>.tapp` → an operator-imported full package.
@@ -206,7 +209,8 @@ pub async fn handle(
         }
         (Method::POST, "/entries") => handle_post_entries(&state, req).await,
         (Method::GET, p) if p.starts_with("/blobs/") => {
-            handle_get_blob(&state, p.trim_start_matches("/blobs/"))
+            let name = p.trim_start_matches("/blobs/").to_owned();
+            read_file(&state, move |state| handle_get_blob(state, &name)).await
         }
         (Method::GET, p) if p.starts_with("/thin/") => {
             let name = p.trim_start_matches("/thin/").to_owned();
@@ -1040,10 +1044,21 @@ fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::Publi
 /// A payload blob of a reviewed package, by BLAKE3 hash, so a client that
 /// downloaded a thin package fetches only the blobs it lacks. Content
 /// addressing makes the response self-verifying; clients check every blob.
-fn handle_get_blob(
-    state: &AppState,
-    blake3_hex: &str,
-) -> Result<Response<Full<Bytes>>, HandlerError> {
+fn handle_get_blob(state: &AppState, name: &str) -> Result<Response<Full<Bytes>>, HandlerError> {
+    if let Some(blake3_hex) = name.strip_suffix(tilo_app_package::chunks::CHUNKS_SUFFIX) {
+        return Ok(
+            match state
+                .inner
+                .storage
+                .load_chunk_list(blake3_hex)
+                .map_err(HandlerError::Storage)?
+            {
+                Some(list) => immutable_response_as(list.encode(), "application/json"),
+                None => text_response(StatusCode::NOT_FOUND, "not found"),
+            },
+        );
+    }
+    let blake3_hex = name;
     match state
         .inner
         .storage

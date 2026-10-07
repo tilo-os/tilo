@@ -508,7 +508,28 @@ pub enum Envelope {
         /// The calls, or why the room has none to list.
         result: Result<Vec<crate::voice::CallSummary>, String>,
     },
+
+    /// One piece of a record's content for exactly one device of the
+    /// workspace, which asked the room for it. Routed like
+    /// [`Envelope::RemoteAction`] — to the addressed device's live
+    /// connection, never stored, never fanned out — but never answered:
+    /// content that does not arrive is asked for again.
+    RecordContent {
+        /// Workspace id both devices are subscribed to.
+        workspace_id: u64,
+        /// The addressed device.
+        to_device_public_key: [u8; 32],
+        /// The sending device, stamped by the relay from the authenticated
+        /// connection. Whatever a sender puts here is overwritten.
+        from_device_public_key: [u8; 32],
+        /// Opaque piece, at most [`MAX_RECORD_CONTENT_FRAME_BYTES`].
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
 }
+
+/// Largest [`Envelope::RecordContent`] frame a relay routes.
+pub const MAX_RECORD_CONTENT_FRAME_BYTES: usize = 256 * 1024;
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
 /// relay refuses other versions as undeliverable instead of forwarding

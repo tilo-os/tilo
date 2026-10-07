@@ -17,7 +17,7 @@ fn canonical() -> (AutoCommit, NotesApp, [PageId; 3]) {
                 id,
                 title: format!("Page {order}"),
                 parent: None,
-                order: order as u32,
+                order: format!("{}", char::from(b'a' + order as u8)),
             },
         );
     }
@@ -38,9 +38,9 @@ fn continuation_navigation_identity_covers_actual_destination_not_availability()
         app.route_history.can_go_back(),
         app.route_history.can_go_forward(),
     );
-    assert!(app.navigate_history(ui::NavAction::Back, &doc).unwrap());
+    assert!(app.navigate_history(ui::NavAction::Back));
     // Canonical navigation queues the real Select event for the owner model pass.
-    app.sync(&mut doc, &automerge::ROOT);
+    app.frame(&mut doc, &automerge::ROOT);
     assert_eq!(app.workspace.selected(), Some(a));
     app.route_history = ui::NavStack::new(None);
     app.route_history.push(Some(c));
@@ -54,45 +54,7 @@ fn continuation_navigation_identity_covers_actual_destination_not_availability()
         )
     );
     assert_ne!(original, app.notes_invocation_domain(&doc));
-    assert!(app.navigate_history(ui::NavAction::Back, &doc).unwrap());
-    app.sync(&mut doc, &automerge::ROOT);
+    assert!(app.navigate_history(ui::NavAction::Back));
+    app.frame(&mut doc, &automerge::ROOT);
     assert_eq!(app.workspace.selected(), Some(c));
-}
-
-fn pending() -> PendingMarkdownImport {
-    PendingMarkdownImport {
-        path: PathBuf::from("same-selected-file.md"),
-        body: "same loaded bytes".into(),
-        assets: Some(Vec::new()),
-    }
-}
-
-#[test]
-fn continuation_replaced_identical_pending_import_is_a_different_job() {
-    let (mut doc, mut app, _) = canonical();
-    app.stage_pending_import(pending()).unwrap();
-    let first = app.notes_invocation_domain(&doc);
-    let bytes = doc.clone().save();
-    app.pending_markdown_source.take();
-    app.stage_pending_import(pending()).unwrap();
-    assert_ne!(first, app.notes_invocation_domain(&doc));
-    assert_eq!(
-        doc.save(),
-        bytes,
-        "job identity is local, not a notebook write"
-    );
-}
-
-#[test]
-fn continuation_pending_import_generation_overflow_refuses_without_replacement() {
-    let (doc, mut app, _) = canonical();
-    app.pending_import_generation = u64::MAX;
-    let original = app.notes_invocation_domain(&doc);
-    assert_eq!(
-        app.stage_pending_import(pending()).unwrap_err(),
-        "Markdown import generation exhausted"
-    );
-    assert!(app.pending_markdown_source.is_none());
-    assert_eq!(app.pending_import_generation, u64::MAX);
-    assert_eq!(app.notes_invocation_domain(&doc), original);
 }

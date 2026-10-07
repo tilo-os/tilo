@@ -207,6 +207,7 @@ fn exported(
     result: ResultSpec,
 ) -> ExportedAction {
     ExportedAction {
+        semantic_identity: None,
         resource: INBOX.into(),
         action: action.into(),
         resource_kind: "fixture.drafts".into(),
@@ -307,12 +308,14 @@ impl FixtureApp {
                 }
                 CollabEvent::Invocation {
                     id,
+                    invocation,
                     action,
                     argument,
                     context,
                     ..
                 } => {
-                    let update = self.serve(id, &action, argument.as_deref(), context.as_deref());
+                    let update =
+                        self.serve(invocation, &action, argument.as_deref(), context.as_deref());
                     self.manager
                         .send(CollabRequest::UpdateInvocation { id, update });
                 }
@@ -323,12 +326,11 @@ impl FixtureApp {
 
     fn serve(
         &mut self,
-        id: u64,
+        invocation: InvocationId,
         action: &str,
         argument: Option<&str>,
         context: Option<&ActionContext>,
     ) -> InvocationUpdate {
-        let invocation = InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let arguments: Map<String, Value> = argument
             .and_then(|slot| slot.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
             .and_then(|json| serde_json::from_str(json).ok())
@@ -473,6 +475,7 @@ impl Door {
         let receipt = answer(self.host.invoke(
             caller,
             InvokeRequest {
+                on_behalf_of: None,
                 invocation,
                 target: RemoteActionTarget {
                     provider: workspace_provider(&ROOM.to_string()),
@@ -933,7 +936,7 @@ fn press(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::from(modifiers),
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -1440,6 +1443,7 @@ impl AppConnection {
         let answer = self.ask_while(
             door,
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 invocation,
                 target,
                 argument: if arguments.is_empty() {
@@ -1848,6 +1852,7 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
             door.host.invoke(
                 &door.owner,
                 InvokeRequest {
+                    on_behalf_of: None,
                     invocation: InvocationId::new(),
                     target: RemoteActionTarget {
                         provider: workspace_provider(&ROOM.to_string()),

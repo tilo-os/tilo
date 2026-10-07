@@ -51,6 +51,9 @@ impl Default for Ground {
 pub struct Layer {
     pub id: String,
     pub name: String,
+    /// Organisational folder; empty for an ungrouped layer. It does not
+    /// change stacking, clipping or how the layers composite.
+    pub group: String,
     /// Fractional position among layers; later is on top.
     pub order: String,
     /// The medium preset that paints this layer's marks, or empty for plain
@@ -98,6 +101,20 @@ pub struct Selection {
     /// How far its edge fades, in units.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub feather: f64,
+    /// Its edge refined to the picture: how much of each pixel near it is
+    /// in, where a path can only say in or out (strands of fur and hair).
+    /// A mask made of the selection draws it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<Matte>,
+}
+
+/// A selection's soft edge: a picture, white where selected and as see-through
+/// as each pixel is out, laid over the artwork at `rect`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Matte {
+    pub src: String,
+    /// `[x, y, w, h]`.
+    pub rect: [f64; 4],
 }
 
 impl Selection {
@@ -233,6 +250,9 @@ pub struct Gradient {
 /// How a mark is coloured and, on a painted layer, how it is painted.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Style {
+    /// Enlarge image pixels with nearest-neighbor sampling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pixelated: bool,
     /// Fill colour: `#rrggbb`, `#rrggbbaa` or `pigment:<name>` from the
     /// layer medium's palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1339,7 +1359,7 @@ impl Mark {
     /// none of its own to pick.
     pub fn erases(&self) -> bool {
         matches!(self.shape, Shape::Stroke { .. })
-            && crate::brushes::Preset::of(&self.style) == crate::brushes::Preset::Eraser
+            && crate::brushes::Preset::of(&self.style).erases()
     }
 
     /// The area the mark is kept inside, in artwork units, if it has one.

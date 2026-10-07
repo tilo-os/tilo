@@ -4,9 +4,6 @@
 //!
 //! ```text
 //! root
-//! ├── "mode"      (Str)   # photo | video  (camera capture sub-mode)
-//! ├── "facing"    (Str)   # back | front | wide
-//! ├── "settings"  (Map)   # scalar settings (see Settings)
 //! ├── "scans"     (List)  # [ { raw, ts } ] newest-first scan history
 //! └── "recent_capture" (Map) # one portable content-addressed handoff
 //! ```
@@ -14,16 +11,16 @@
 //! The photo/video *pixels* live as verified bytes in the app's content store (see
 //! [`crate::media`]); a local capture file is merely an optional projection.
 //! The CRDT stores collaborative metadata and its content-addressed media ID,
-//! plus scan history and capture preferences. Camera deliberately retains one
-//! recent handoff, not a parallel photo/video library.
+//! plus scan history. Capture preferences are settings
+//! ([`crate::model::CapturePreferences`]), not document state. Camera
+//! deliberately retains one recent handoff, not a parallel photo/video
+//! library.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
-use ui::doc::{read_bool, read_i64_coerced, read_str};
+use ui::doc::{read_i64_coerced, read_str};
 
-use crate::model::{
-    CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, ScanEntry, Screen, Settings, Timer,
-};
+use crate::model::{CaptureKind, Facing, ScanEntry};
 
 /// Portable capture metadata. Pixel bytes live under `media_id` in the app's
 /// content store, verified on read; the document deliberately contains no path.
@@ -53,134 +50,6 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(obj, key) {
         Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
         _ => None,
-    }
-}
-
-// ---- mode / facing --------------------------------------------------
-
-pub fn read_mode(doc: &AutoCommit, root: &ObjId) -> CaptureMode {
-    read_str(doc, root, "mode").map_or(CaptureMode::Photo, |s| CaptureMode::parse_str(&s))
-}
-
-pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
-    let _ = doc.put(root, "mode", mode.as_str());
-}
-
-pub fn read_facing(doc: &AutoCommit, root: &ObjId) -> Facing {
-    read_str(doc, root, "facing").map_or(Facing::Back, |s| Facing::parse_str(&s))
-}
-
-pub fn write_facing(doc: &mut AutoCommit, root: &ObjId, facing: Facing) {
-    let _ = doc.put(root, "facing", facing.as_str());
-}
-
-// ---- settings --------------------------------------------------------
-
-pub fn read_settings(doc: &AutoCommit, root: &ObjId) -> Settings {
-    let mut s = Settings::default();
-    let Some(m) = map_at(doc, root, "settings") else {
-        return s;
-    };
-    if let Some(v) = read_str(doc, &m, "resolution") {
-        s.resolution = Resolution::parse_str(&v);
-    }
-    if let Some(v) = read_str(doc, &m, "photo_format") {
-        s.photo_format = PhotoFormat::parse_str(&v);
-    }
-    if let Some(v) = read_i64_coerced(doc, &m, "timer") {
-        s.timer = Timer::from_seconds(v);
-    }
-    if let Some(v) = read_bool(doc, &m, "grid") {
-        s.grid = v;
-    }
-    if let Some(v) = read_bool(doc, &m, "level") {
-        s.level = v;
-    }
-    if let Some(v) = read_bool(doc, &m, "mirror_front") {
-        s.mirror_front = v;
-    }
-    if let Some(v) = read_bool(doc, &m, "geotag") {
-        s.geotag = v;
-    }
-    if let Some(v) = read_bool(doc, &m, "hdr") {
-        s.hdr = v;
-    }
-    if let Some(v) = read_str(doc, &m, "default_facing") {
-        s.default_facing = Facing::parse_str(&v);
-    }
-    s
-}
-
-pub fn write_settings(doc: &mut AutoCommit, root: &ObjId, s: &Settings) {
-    let m = if let Some(m) = map_at(doc, root, "settings") {
-        m
-    } else {
-        let Ok(m) = doc.put_object(root, "settings", ObjType::Map) else {
-            return;
-        };
-        m
-    };
-    let _ = doc.put(&m, "resolution", s.resolution.as_str());
-    let _ = doc.put(&m, "photo_format", s.photo_format.as_str());
-    let _ = doc.put(&m, "timer", s.timer.seconds());
-    let _ = doc.put(&m, "grid", s.grid);
-    let _ = doc.put(&m, "level", s.level);
-    let _ = doc.put(&m, "mirror_front", s.mirror_front);
-    let _ = doc.put(&m, "geotag", s.geotag);
-    let _ = doc.put(&m, "hdr", s.hdr);
-    let _ = doc.put(&m, "default_facing", s.default_facing.as_str());
-}
-
-/// Locate or initialise the settings map for one granular preference write.
-/// Each canonical Camera action calls only the key it owns, preserving other
-/// preferences that may have changed concurrently on a collaborating peer.
-fn settings_map(doc: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
-    map_at(doc, root, "settings").or_else(|| doc.put_object(root, "settings", ObjType::Map).ok())
-}
-
-pub fn set_resolution(doc: &mut AutoCommit, root: &ObjId, value: Resolution) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "resolution", value.as_str());
-    }
-}
-pub fn set_photo_format(doc: &mut AutoCommit, root: &ObjId, value: PhotoFormat) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "photo_format", value.as_str());
-    }
-}
-pub fn set_timer(doc: &mut AutoCommit, root: &ObjId, value: Timer) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "timer", value.seconds());
-    }
-}
-pub fn set_grid(doc: &mut AutoCommit, root: &ObjId, value: bool) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "grid", value);
-    }
-}
-pub fn set_level(doc: &mut AutoCommit, root: &ObjId, value: bool) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "level", value);
-    }
-}
-pub fn set_mirror_front(doc: &mut AutoCommit, root: &ObjId, value: bool) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "mirror_front", value);
-    }
-}
-pub fn set_geotag(doc: &mut AutoCommit, root: &ObjId, value: bool) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "geotag", value);
-    }
-}
-pub fn set_hdr(doc: &mut AutoCommit, root: &ObjId, value: bool) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "hdr", value);
-    }
-}
-pub fn set_default_facing(doc: &mut AutoCommit, root: &ObjId, value: Facing) {
-    if let Some(map) = settings_map(doc, root) {
-        let _ = doc.put(&map, "default_facing", value.as_str());
     }
 }
 
@@ -345,61 +214,13 @@ pub fn register_recent_capture(
     Ok(())
 }
 
-// ---- first-run defaults ----------------------------------------------
-
-/// True once the doc has been initialised by this app.
-pub fn is_seeded(doc: &AutoCommit, root: &ObjId) -> bool {
-    read_str(doc, root, "mode").is_some()
-}
-
-/// Write capture preferences on first run (empty doc). Navigation is local
-/// presentation state, deliberately excluded from collaboration/history.
-/// No sample content is fabricated. Idempotent: a no-op once initialised.
-pub fn init_defaults(doc: &mut AutoCommit, root: &ObjId, _initial: Screen) {
-    if is_seeded(doc, root) {
-        return;
-    }
-    write_mode(doc, root, CaptureMode::Photo);
-    write_facing(doc, root, Facing::Back);
-    write_settings(doc, root, &Settings::default());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::ROOT;
 
     #[test]
-    fn camera_doc_round_trips_preferences_and_bounds_history_without_seeding() {
-        // Phase `settings_round_trip`.
-        {
-            let mut doc = AutoCommit::new();
-            let root = ROOT;
-            let s = Settings {
-                grid: false,
-                timer: Timer::S10,
-                resolution: Resolution::R4K,
-                hdr: false,
-                ..Settings::default()
-            };
-            write_settings(&mut doc, &root, &s);
-            let got = read_settings(&doc, &root);
-            assert_eq!(got, s);
-        }
-        // Phase `init_defaults_is_idempotent_and_seeds_no_content`.
-        {
-            let mut doc = AutoCommit::new();
-            let root = ROOT;
-            assert!(!is_seeded(&doc, &root));
-            init_defaults(&mut doc, &root, Screen::Scanner);
-            assert!(is_seeded(&doc, &root));
-            // No fabricated media content.
-            assert!(read_recent_capture(&doc, &root).is_none());
-            assert!(read_scans(&doc, &root).is_empty());
-            // Second init leaves durable preferences untouched; screens are local.
-            init_defaults(&mut doc, &root, Screen::Camera);
-            assert_eq!(read_mode(&doc, &root), CaptureMode::Photo);
-        }
+    fn camera_doc_bounds_scan_history() {
         // Phase `scans_are_newest_first_deduped_and_capped`.
         {
             let mut doc = AutoCommit::new();

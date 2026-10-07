@@ -60,11 +60,11 @@ impl LegacyAppearance {
         let document = settings_store::parse(text);
         let theme = ui::Theme::resolved_from_settings(text);
         let high_contrast = theme.colors_are_forced();
-        let background = theme.bg_app.to_rgba8();
+        let background = theme.tokens.colors.surfaces.content.to_rgba8();
         let luma = 0.2126 * f64::from(background.r)
             + 0.7152 * f64::from(background.g)
             + 0.0722 * f64::from(background.b);
-        let accent = theme.tokens.colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX].to_rgba8();
+        let accent = theme.tokens.colors.intent.inverted.to_rgba8();
         let large_cursor =
             settings_store::bool_at(&document, "accessibility", "large_cursor").unwrap_or(false);
         let cursor_size = if large_cursor {
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn a_light_theme_with_accessibility_choices_reaches_every_namespace() {
         let text = r#"{
-            "appearance": {"theme": "Light", "reduce_motion": true, "text_scale": 1.25},
+            "appearance": {"mode": "light", "reduce_motion": true, "text_scale": 1.25},
             "accessibility": {"large_cursor": true, "cursor_size": 48}
         }"#;
         let appearance = LegacyAppearance::from_settings_text(text, false);
@@ -405,10 +405,13 @@ mod tests {
     }
 
     #[test]
-    fn high_contrast_is_honoured_as_a_flag_and_as_a_theme_name() {
-        for text in [
-            r#"{"appearance": {"theme": "Light", "high_contrast": true}}"#,
-            r#"{"appearance": {"theme": "high-contrast"}}"#,
+    fn high_contrast_is_honoured_as_a_flag_and_as_a_theme_and_keeps_its_polarity() {
+        for (text, scheme) in [
+            (
+                r#"{"appearance": {"mode": "light", "high_contrast": true}}"#,
+                2,
+            ),
+            (r#"{"appearance": {"dark_theme": "high-contrast"}}"#, 1),
         ] {
             let settings = LegacyAppearance::from_settings_text(text, false).portal_settings();
             assert_eq!(
@@ -423,8 +426,8 @@ mod tests {
             );
             assert_eq!(
                 lookup(&settings, APPEARANCE, "color-scheme"),
-                &PortalSetting::Unsigned(1),
-                "the high-contrast palette is dark: {text}"
+                &PortalSetting::Unsigned(scheme),
+                "high contrast keeps the mode's polarity: {text}"
             );
         }
     }

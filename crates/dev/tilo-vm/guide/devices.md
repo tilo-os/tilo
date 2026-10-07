@@ -135,7 +135,9 @@ someone is using:
   everyone and restart the owner's desktop too; the greeter's restarts
   greetd, which ends the owner's login.
 
-On a laptop, building on the device is fine: release layers link without LTO
+When `vms.toml` names a remote builder for the laptop's architecture, swaps
+build there by default (Builds, below). Building on the device
+(`--builder vm`) works too: release layers link without LTO
 (`tilo-vm guide swapping`), and a laptop has the memory. Slots, layers and
 generations live in `/var` and survive image upgrades.
 
@@ -182,24 +184,35 @@ work on a device too, beside the device's session.
   upload either when the device still holds that layer (after a rollback, say). The aarch64
   lane builds the newest main commit only, so check that a commit has arm64
   first (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`).
-- **Your worktree on a builder of the device's architecture**
-  (`--builder host` with `TILO_VM_CARGO`): any cargo drop-in that builds for
-  aarch64 and leaves the binaries in the target dir `cargo metadata` names
-  (set `CARGO_TARGET_DIR` to where the drop-in puts them). The layer's target
-  and rustc are read from the binary it built, and the device refuses any
-  other architecture. With a drop-in `$CARGO_AARCH64` that runs cargo on an
-  aarch64 machine and brings the binaries back:
+- **Your worktree on a remote builder of the device's architecture**
+  (`--builder remote`, the default for a device whose architecture has a
+  `[remote_builders]` entry in `vms.toml`): the builder builds and lays out
+  the layer, and it streams through this host into the device's upload.
+  Neither the binaries nor the layer are written to this host's disk. Set it
+  up once with any cargo drop-in whose `run` runs the program on an aarch64
+  machine in this worktree (`tilo-vm guide swapping`):
+
+  ```toml
+  [remote_builders]
+  aarch64 = ["remote-cargo", "--on-builder"]
+  ```
 
   ```sh
-  CARGO_TARGET_DIR=$PWD/target/aarch64 TILO_VM_CARGO=$CARGO_AARCH64 \
-    tilo-vm swap --slot device shell --builder host
+  tilo-vm swap --slot device shell                    # builds on the aarch64 builder, streams to the device
+  tilo-vm swap --slot device shell --builder remote   # the same, said explicitly
   ```
+
+  Do not build for a device with `--builder host` and a `TILO_VM_CARGO`
+  drop-in that brings the binaries back: every swap copies them (a release
+  shell is about 165 MB) into `target/`, and that has filled this host's disk
+  before. The layer's target and rustc are read from the binary on the
+  builder, and the device refuses any other architecture.
 - **Your worktree on the device** (`--builder vm`, the default when the
   device's image can build): the slot's `release` profile with the
   manifest's features and `dev-overrides`, so `control` and `shot` work. A
   board with little memory (the Orange Pi) builds only small components or
-  `--profile dev` there; build the shell with the drop-in above, or take
-  CI's. A laptop builds it on the device.
+  `--profile dev` there: build the shell on a remote builder (above), or take
+  CI's.
 
 Each layer records its provenance (`authority = "ci"` for CI builds, `local`
 for everything built from a worktree), which `slot show --json` and the
@@ -285,6 +298,55 @@ recorded (registered before tilo-vm recorded one) is woken by hand once,
 then `vm status` records it. A libvirt VM is woken through the hypervisor
 (`virsh dompmwakeup`); `vm start` does the same for one that is suspended.
 
+## Beyond the LAN
+
+A device that is not on this network, a laptop at home or a board in
+another office, is reached over the peer network: hole-punched QUIC between
+the two machines, through a relay when no direct path exists, which follows
+a roam or a lost link by itself. Its dev image serves tilo-vmd's request
+protocol there as `tilo-device-admin/1` (`tilo-device-admin.service`, also
+while it sits at its login screen), never a shell.
+
+```sh
+tilo-vm vm enrol-admin --via yoga   # once: yoga holds your identity and certifies this machine
+tilo-vm vm status board             # on board's LAN once: records its route over the peer network
+tilo-vm vm status board             # anywhere: "reached over the peer network: relay https://..."
+```
+
+**This machine enrols as one of the owner's devices.** The device admits
+only a device of its owner's identity whose root-signed certificate grants
+administration, and that the owner has not removed. `vm enrol-admin` makes
+this machine's device key (beside `vms.toml`, in `admin-identity/`) and has
+the owner's root certify it with `tilo-enroll certify --capability admin`.
+With `--via <device>` tilo-vm runs that over SSH on the device where the
+owner approves new devices, as the account it logs in with, which must own
+the identity (register it as the owner: `vm add --ssh <owner>@<address>`).
+Without `--via` it prints the key and the command for the owner to run, and
+`--cert <file>` installs what they hand back. The certificate lists this
+machine among the owner's devices, so Settings shows it and removing it
+there ends its access. tilo-vm needs `tilo-device-admin` beside it (or in
+`TILO_DEVICE_ADMIN`): `cargo build --release -p tilo-device-admin` and copy
+it next to `tilo-vm`.
+
+**The route is recorded like the address.** `vm add` and `vm status` record
+the device id and route the device reports (`tilo-device-admin id`) in
+`vms.toml`; `vm status` says `beyond the LAN:` what it has. When the device
+answers neither at its address nor by name, a command looks once (no minute
+of retries: the peer network rides out roams itself), then dials the
+recorded route and says which one it took, relay or direct. The device logs
+each session and each request (`journalctl -u tilo-device-admin` on it).
+
+**What works over it.** Everything that is a tilo-vmd request: `status`,
+`vm status`, slots, swaps of CI layers (tilo-vm uploads them), rollbacks,
+`logs`, `shot`, `control`, `input` and `vm awake`. What needs SSH (`slot
+exec`, builds on the device, `vm ssh`, `vm upgrade`) waits until it is on
+this network again.
+
+**A relay of your own.** A device and this machine use the public relays
+unless `TILO_DEVICE_ADMIN_RELAY=<url>` names one of yours: on the device in
+`/etc/tilo/device-admin.env` (then `systemctl restart tilo-device-admin`),
+where it is recorded with the route, so tilo-vm uses it too.
+
 ## When something is off
 
 - `vm add` or `vm status` says the key was refused: run the install command
@@ -294,6 +356,15 @@ then `vm status` records it. A libvirt VM is woken through the hypervisor
   `tilo-vm vm awake <name> --for 2h` keeps it from sleeping again.
 - `moved from <old> to <new>`: it was found by name on another address and
   that is recorded now; nothing to do.
+- `not on this network, and it did not answer over the peer network`: it is
+  asleep, offline or cannot reach a relay; wake it at the machine, then
+  `tilo-vm vm awake <name> --for 2h`.
+- `it refused this machine`: the device said why (another identity, no
+  administration grant, removed from the owner's devices);
+  `tilo-vm vm enrol-admin` fixes each.
+- `this machine is not enrolled`: `tilo-vm vm enrol-admin --via <device>`.
+- `another device answered for it`: the recorded route is stale; `tilo-vm vm
+  status <name>` on its LAN records it again.
 - `cannot run commands as root without a password`: the `--ssh` account has
   no passwordless sudo; rerun `vm add` with the same `--ssh` and `--key` and
   `--grant-sudo` (each `vm add` records what it is given).

@@ -88,6 +88,16 @@ where
         risk
     }
 
+    /// A gesture of one kind of edit is named as that edit is ("Move 3
+    /// marks" for a selection's moves); a mixed one keeps its own name.
+    fn history_label(&self, doc: &Doc) -> Option<String> {
+        let mut labels = self.actions.iter().map(|action| action.history_label(doc));
+        let first = labels.next()??;
+        labels
+            .all(|label| label.as_deref() == Some(first.as_str()))
+            .then_some(first)
+    }
+
     fn locus(&self) -> ExecutionLocus {
         self.actions
             .first()

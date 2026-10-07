@@ -12,6 +12,7 @@ description = "greetd IPC client: the authenticate-then-start exchange"
 # `std::io::{Read,Write}`) — no async runtime needed for a login box.
 greetd_ipc = { version = "0.10", features = ["sync-codec"] }
 tracing.workspace = true
+zeroize.workspace = true
 workspace-hack = { version = "0.1" }
 
 [lints]

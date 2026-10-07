@@ -10,7 +10,7 @@
 //! one-shot output; the parent drains it each frame and applies the
 //! resulting `Capability` grant.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -21,9 +21,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::{centered_text_top, renderer_type_size};
+use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -98,6 +99,14 @@ pub struct PermissionPrompt {
     /// an accidental Enter cannot grant a capability.
     focused_choice: Option<PromptChoice>,
     has_keyboard_focus: bool,
+    local_input: Option<LocalInputPrompt>,
+}
+
+/// Local input consent and controls preserve the editable field's keyboard owner.
+#[derive(Clone, Debug)]
+struct LocalInputPrompt {
+    labels: [&'static str; 2],
+    modal: bool,
 }
 
 impl PermissionPrompt {
@@ -117,7 +126,46 @@ impl PermissionPrompt {
             hover_idx: None,
             focused_choice: None,
             has_keyboard_focus: false,
+            local_input: None,
         }
+    }
+
+    /// Two one-shot choices for a trusted local input surface. The translated
+    /// label keys name the affirmative/negative controls. Session and persistent
+    /// grants are absent from paint, hit testing and the accessibility door.
+    /// Pointer activation preserves the original editable field's keyboard owner.
+    /// Identical labels collapse to a single negative control for loading/error status.
+    pub fn for_local_input(
+        app_label: String,
+        capability_label: String,
+        labels: [&'static str; 2],
+        modal: bool,
+    ) -> Self {
+        let mut prompt = Self::new(app_label, capability_label, false);
+        prompt.local_input = Some(LocalInputPrompt { labels, modal });
+        prompt
+    }
+
+    fn visible_choices(&self) -> &[PromptChoice] {
+        if let Some(local) = &self.local_input {
+            if local.labels[0] == local.labels[1] {
+                return &[PromptChoice::Deny];
+            }
+            &[PromptChoice::Allow, PromptChoice::Deny]
+        } else {
+            &CHOICES
+        }
+    }
+
+    fn button_label(&self, choice: PromptChoice) -> String {
+        if let Some(local) = &self.local_input {
+            match choice {
+                PromptChoice::Allow => return crate::i18n!(local.labels[0]),
+                PromptChoice::Deny => return crate::i18n!(local.labels[1]),
+                _ => {}
+            }
+        }
+        button_label(choice)
     }
 
     /// For call-sites that always want the `Always` button enabled.
@@ -152,6 +200,14 @@ impl PermissionPrompt {
         self.session_rect = Rect::new(session_x0, by, session_x1, by1);
         self.always_rect = Rect::new(always_x0, by, always_x1, by1);
         self.deny_rect = Rect::new(deny_x0, by, deny_x1, by1);
+        if self.local_input.is_some() {
+            self.allow_rect = Rect::new(always_x0, by, always_x1, by1);
+            self.session_rect = Rect::ZERO;
+            self.always_rect = Rect::ZERO;
+            if !self.visible_choices().contains(&PromptChoice::Allow) {
+                self.allow_rect = Rect::ZERO;
+            }
+        }
     }
 
     pub fn allow_rect(&self) -> Rect {
@@ -169,7 +225,8 @@ impl PermissionPrompt {
     }
 
     fn choice_enabled(&self, choice: PromptChoice) -> bool {
-        !matches!(choice, PromptChoice::Always) || self.is_owner
+        self.visible_choices().contains(&choice)
+            && (!matches!(choice, PromptChoice::Always) || self.is_owner)
     }
 
     fn choose(&mut self, choice: PromptChoice) -> bool {
@@ -181,8 +238,8 @@ impl PermissionPrompt {
         }
     }
 
-    fn choice_from_index(index: usize) -> Option<PromptChoice> {
-        CHOICES.get(index).copied()
+    fn choice_from_index(&self, index: usize) -> Option<PromptChoice> {
+        self.visible_choices().get(index).copied()
     }
 
     fn choice_from_key(key: u64) -> Option<PromptChoice> {
@@ -231,7 +288,8 @@ impl PermissionPrompt {
     }
 }
 
-fn button_label(choice: PromptChoice) -> String {
+/// Shared localized label for pointer and semantic permission decisions.
+pub fn button_label(choice: PromptChoice) -> String {
     crate::i18n!(match choice {
         PromptChoice::Allow => "permission-prompt-allow",
         PromptChoice::Session => "permission-prompt-session",
@@ -264,13 +322,16 @@ fn draw_button(
     label: &str,
     state: ButtonVisualState,
 ) {
-    let radius = f64::from(theme.tokens.radii.md);
+    let radius = f64::from(theme.tokens.radii.control);
     let shape = RoundedRect::from_rect(rect, radius);
 
     let mut bg = if state.primary {
-        theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        theme.tokens.colors.intent.inverted
     } else if state.hover {
-        theme.bg_hover
+        theme
+            .tokens
+            .colors
+            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
     } else {
         theme.tokens.colors.surfaces.raised
     };
@@ -320,18 +381,18 @@ fn draw_button(
         theme.tokens.colors.text_primary
     };
 
-    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let text_style = theme.text(TextRole::Caption);
     // Centre on the measured line in both axes, not on the font size.
-    let (text_w, text_h) = text_renderer.measure(label, text_size, None);
+    let (text_w, text_h) = text_renderer.measure_style(label, None, &text_style);
     let text_x = rect.center().x - (f64::from(text_w) / 2.0);
     let text_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         label,
-        text_size,
         text_color,
         transform.pre_translate(Vec2::new(text_x, text_y)),
         None,
+        &text_style,
     );
 }
 
@@ -378,110 +439,124 @@ impl Widget for PermissionPrompt {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // `surfaces.overlay` is a darker tint than `raised` so the prompt
-        // reads as a layer above the strip's content, not another tile.
-        let radius = f64::from(theme.tokens.radii.md);
-        let shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        // Panel role (HIG §9.1): the derived panel edge as a crisp 1 px
-        // inset stroke, never a declared `border_standard`.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(self.rect, radius),
-        );
-
-        // Placeholder pulled from the accent ramp until the portal layer
-        // surfaces real icons via the app's desktop-file metadata.
-        let icon_x = self.rect.x0 + PADDING_X;
-        let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
-        let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
-        let icon_shape = RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            None,
-            &icon_shape,
-        );
-
-        // Button geometry first: the label block ends `spacing.s3` before the
-        // leftmost button and is elided to that width, so the two never
-        // overlap on a narrow strip (HIG §7 "Nothing touches"). Also keeps a
-        // draw without a preceding `apply_layout` hit-testing correctly.
-        self.apply_layout_helper();
-        let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
-        let label_max_w =
-            (self.allow_rect.x0 - f64::from(theme.tokens.spacing.s3) - label_x).max(0.0);
-        let app_id_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let cap_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "bounded screen-space width; f32 precision is sufficient for text layout"
-        )]
-        let label_max_w = label_max_w as f32;
-        let app_id = text_renderer.elide_to_width(&self.app_id, app_id_size, label_max_w);
-        let capability =
-            text_renderer.elide_to_width(&self.capability_label, cap_size, label_max_w);
-        // Centre the two-line block on its measured line boxes, not on the
-        // font sizes, so both lines sit where the band says they are.
-        let (_, app_id_h) = text_renderer.measure(&app_id, app_id_size, None);
-        let (_, cap_h) = text_renderer.measure(&capability, cap_size, None);
-        let label_y = centered_text_top(
-            self.rect.y0,
-            PROMPT_HEIGHT,
-            f64::from(app_id_h) + 4.0 + f64::from(cap_h),
-        );
-        text_renderer.draw_text(
-            scene,
-            &app_id,
-            app_id_size,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate(Vec2::new(label_x, label_y)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &capability,
-            cap_size,
-            theme.tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
-            None,
-        );
-
-        let buttons = [
-            (self.allow_rect, PromptChoice::Allow, true), // primary (accent)
-            (self.session_rect, PromptChoice::Session, false),
-            (self.always_rect, PromptChoice::Always, false),
-            (self.deny_rect, PromptChoice::Deny, false),
-        ];
-        for (i, (rect, choice, is_primary)) in buttons.iter().enumerate() {
-            let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
-            let is_hover = self.hover_idx.is_some_and(|h| usize::from(h) == i) && !is_disabled;
-            let is_focused = self.has_keyboard_focus && self.focused_choice == Some(*choice);
-            draw_button(
-                scene,
+        // A permission prompt is a security surface: the app id and the
+        // capability are read letter by letter.
+        text_renderer.security_surface(|text_renderer| {
+            // `surfaces.overlay` is a darker tint than `raised` so the prompt
+            // reads as a layer above the strip's content, not another tile.
+            let radius = f64::from(theme.tokens.radii.control);
+            let shape = RoundedRect::from_rect(self.rect, radius);
+            scene.fill(
+                Fill::NonZero,
                 transform,
-                text_renderer,
-                theme,
-                *rect,
-                &button_label(*choice),
-                ButtonVisualState {
-                    hover: is_hover,
-                    disabled: is_disabled,
-                    primary: *is_primary,
-                    focused: is_focused,
-                },
+                theme.tokens.colors.surfaces.overlay,
+                None,
+                &shape,
             );
-        }
+            // Panel role (HIG §9.1): the derived panel edge as a crisp 1 px
+            // inset stroke, never a declared `border_standard`.
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::chrome::panel_border(theme),
+                None,
+                &crate::surface::edge_outline(self.rect, radius),
+            );
+
+            // Placeholder pulled from the accent ramp until the portal layer
+            // surfaces real icons via the app's desktop-file metadata.
+            let icon_x = self.rect.x0 + PADDING_X;
+            let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
+            let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
+            let icon_shape =
+                RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.detail));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.intent.inverted,
+                None,
+                &icon_shape,
+            );
+
+            // Button geometry first: the label block ends `spacing.s3` before the
+            // leftmost button and is elided to that width, so the two never
+            // overlap on a narrow strip (HIG §7 "Nothing touches"). Also keeps a
+            // draw without a preceding `apply_layout` hit-testing correctly.
+            self.apply_layout_helper();
+            let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
+            let label_max_w = (if self.allow_rect == Rect::ZERO {
+                self.deny_rect.x0
+            } else {
+                self.allow_rect.x0
+            } - f64::from(theme.tokens.spacing.s3)
+                - label_x)
+                .max(0.0);
+            let app_id_style = theme.text(TextRole::Caption);
+            let cap_style = theme.text(TextRole::Body);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "bounded screen-space width; f32 precision is sufficient for text layout"
+            )]
+            let label_max_w = label_max_w as f32;
+            let app_id =
+                text_renderer.elide_to_width_style(&self.app_id, label_max_w, &app_id_style);
+            let capability =
+                text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style);
+            // Centre the two-line block on its measured line boxes, not on the
+            // font sizes, so both lines sit where the band says they are.
+            let (_, app_id_h) = text_renderer.measure_style(&app_id, None, &app_id_style);
+            let (_, cap_h) = text_renderer.measure_style(&capability, None, &cap_style);
+            let label_y = centered_text_top(
+                self.rect.y0,
+                PROMPT_HEIGHT,
+                f64::from(app_id_h) + 4.0 + f64::from(cap_h),
+            );
+            text_renderer.draw_style(
+                scene,
+                &app_id,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate(Vec2::new(label_x, label_y)),
+                None,
+                &app_id_style,
+            );
+            text_renderer.draw_style(
+                scene,
+                &capability,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
+                None,
+                &cap_style,
+            );
+
+            let buttons = [
+                (self.allow_rect, PromptChoice::Allow, true), // primary (accent)
+                (self.session_rect, PromptChoice::Session, false),
+                (self.always_rect, PromptChoice::Always, false),
+                (self.deny_rect, PromptChoice::Deny, false),
+            ];
+            for (i, (rect, choice, is_primary)) in buttons.iter().enumerate() {
+                let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
+                let is_hover = self.hover_idx.is_some_and(|h| usize::from(h) == i) && !is_disabled;
+                let is_focused = self.has_keyboard_focus && self.focused_choice == Some(*choice);
+                if !self.visible_choices().contains(choice) {
+                    continue;
+                }
+                draw_button(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    &self.button_label(*choice),
+                    ButtonVisualState {
+                        hover: is_hover,
+                        disabled: is_disabled,
+                        primary: *is_primary,
+                        focused: is_focused,
+                    },
+                );
+            }
+        });
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -515,25 +590,33 @@ impl Widget for PermissionPrompt {
                 if self.allow_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Allow);
                     self.choose(PromptChoice::Allow);
-                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.local_input.is_none() {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                     *ctx.handled = true;
                 } else if self.session_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Session);
                     self.choose(PromptChoice::Session);
-                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.local_input.is_none() {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                     *ctx.handled = true;
                 } else if self.always_rect.contains(p) {
                     if self.is_owner {
                         self.focused_choice = Some(PromptChoice::Always);
                         self.choose(PromptChoice::Always);
-                        *ctx.focus_target = Some(ctx.node_id);
+                        if self.local_input.is_none() {
+                            *ctx.focus_target = Some(ctx.node_id);
+                        }
                         *ctx.handled = true;
                     }
                     // Dropped for a non-owner: `pending_choice` stays untouched.
                 } else if self.deny_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Deny);
                     self.choose(PromptChoice::Deny);
-                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.local_input.is_none() {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                     *ctx.handled = true;
                 }
             }
@@ -575,11 +658,12 @@ impl Widget for PermissionPrompt {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let children = CHOICES
+        let children = self
+            .visible_choices()
             .iter()
             .map(|choice| {
                 AccessNode::new(Role::Button)
-                    .with_name(button_label(*choice))
+                    .with_name(self.button_label(*choice))
                     .with_key(Self::key_for_choice(*choice))
                     .with_state(AccessState {
                         focusable: self.choice_enabled(*choice),
@@ -597,7 +681,7 @@ impl Widget for PermissionPrompt {
                     "app" => self.app_id.as_str()
                 ))
                 .with_state(AccessState {
-                    modal: true,
+                    modal: self.local_input.as_ref().is_none_or(|local| local.modal),
                     focusable: true,
                     focused: self.has_keyboard_focus,
                     ..Default::default()
@@ -632,7 +716,7 @@ impl Widget for PermissionPrompt {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate)
@@ -645,23 +729,25 @@ impl Widget for PermissionPrompt {
     }
 
     fn traps_focus(&self) -> bool {
-        true
+        self.local_input.as_ref().is_none_or(|local| local.modal)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        match path {
-            [0] => Some(self.allow_rect),
-            [1] => Some(self.session_rect),
-            [2] => Some(self.always_rect),
-            [3] => Some(self.deny_rect),
-            _ => None,
+        let [index] = path else {
+            return None;
+        };
+        match self.choice_from_index(*index)? {
+            PromptChoice::Allow => Some(self.allow_rect),
+            PromptChoice::Session => Some(self.session_rect),
+            PromptChoice::Always => Some(self.always_rect),
+            PromptChoice::Deny => Some(self.deny_rect),
         }
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let Some(choice) = path
             .first()
-            .and_then(|index| Self::choice_from_index(*index))
+            .and_then(|index| self.choice_from_index(*index))
         else {
             return false;
         };
@@ -677,7 +763,7 @@ impl Widget for PermissionPrompt {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let [key] = key_path else {
@@ -714,6 +800,71 @@ mod tests {
         // `mem::zeroed`. Same pattern as `quick-tilo_ui::widget::slider`'s
         // own test helpers.
         unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn local_input_prompt_has_only_one_shot_choices_and_preserves_field_focus() {
+        let mut prompt = PermissionPrompt::for_local_input(
+            "Dictation".into(),
+            "Microphone".into(),
+            ["dictation-record-once", "dictation-cancel"],
+            true,
+        );
+        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+        let node = prompt.accessibility().unwrap();
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(
+            prompt.synthetic_accessibility_rect(&[1]),
+            Some(prompt.deny_rect())
+        );
+        assert_eq!(prompt.session_rect(), Rect::ZERO);
+        assert_eq!(prompt.always_rect(), Rect::ZERO);
+        let mut doc = AutoCommit::new();
+        for key in [SESSION_KEY, ALWAYS_KEY] {
+            assert!(!prompt.perform_action_at(
+                &crate::a11y::Action::Activate,
+                &[key],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+            assert!(prompt.pending_choice.is_none());
+        }
+        let mut tree = TaffyTree::<()>::new();
+        let field = tree.leaf_node(Style::default());
+        let overlay = tree.leaf_node(Style::default());
+        let mut focus = Some(field);
+        let mut handled = false;
+        for event in [cursor_at(prompt.allow_rect().center()), left_press()] {
+            prompt.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: crate::widget::Edits::lend(&mut doc),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: overlay,
+                    taffy: &tree,
+                },
+            );
+        }
+        assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
+        assert_eq!(
+            focus,
+            Some(field),
+            "microphone consent must not redirect IME insertion"
+        );
+        let mut single = PermissionPrompt::for_local_input(
+            "Dictation".into(),
+            "Loading".into(),
+            ["dictation-cancel", "dictation-cancel"],
+            false,
+        );
+        single.set_rect(prompt.get_rect());
+        assert_eq!(single.accessibility().unwrap().children.len(), 1);
+        assert!(!single.traps_focus());
+        assert_eq!(single.allow_rect(), Rect::ZERO);
     }
 
     #[test]
@@ -759,7 +910,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
@@ -769,7 +920,7 @@ mod tests {
                 &mut p,
                 &crate::a11y::Action::Activate,
                 &[SESSION_KEY],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Session));
@@ -780,7 +931,7 @@ mod tests {
                     &mut p,
                     &crate::a11y::Action::Activate,
                     &[ALWAYS_KEY],
-                    &mut doc,
+                    &mut crate::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "a disabled persistent grant cannot be activated through AT"
@@ -836,7 +987,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

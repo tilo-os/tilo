@@ -56,6 +56,29 @@ impl Stewardship {
         }
     }
 
+    /// Read keys for an existing channel, recovering its sealed state if cold.
+    /// Missing channels are refused; this path never initializes a group.
+    #[cfg(feature = "agents")]
+    pub(super) fn existing_keys(
+        &mut self,
+        channel: ChannelId,
+    ) -> Result<channel_crypto::ChannelContentKeys, String> {
+        if !self.stewards.contains_key(&channel) {
+            if self.stewards.len() >= MAX_CHANNELS {
+                return Err("the room stewards too many channels".into());
+            }
+            let steward =
+                ChannelSteward::open_existing(&self.dir, channel, self.key.clone(), &self.vault)
+                    .map_err(|error| error.to_string())?;
+            self.stewards.insert(channel, steward);
+        }
+        self.stewards
+            .get(&channel)
+            .ok_or("the source channel is not open on this host")?
+            .content_keys()
+            .map_err(|error| error.to_string())
+    }
+
     fn device(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
     }

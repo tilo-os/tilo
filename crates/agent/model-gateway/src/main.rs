@@ -3,6 +3,8 @@
 //! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
 //! planning call. It does not include a general `LiteLLM` control plane.
 
+mod subject;
+
 use std::fs;
 #[cfg(test)]
 use std::io::{BufRead, Read};
@@ -62,6 +64,7 @@ const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(
 const SETTINGS_APP: &str = "so.tilo.settings";
 const AGENT_APP: &str = "so.tilo.agent";
 const PHOTOS_APP: &str = "so.tilo.photos";
+const CANVAS_APP: &str = "so.tilo.canvas";
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
@@ -367,7 +370,8 @@ async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, St
     if handoff.protocol != 1
         || (handoff.app_id != SETTINGS_APP
             && handoff.app_id != AGENT_APP
-            && handoff.app_id != PHOTOS_APP)
+            && handoff.app_id != PHOTOS_APP
+            && handoff.app_id != CANVAS_APP)
     {
         return Err("launcher is not authorized for the model gateway".into());
     }
@@ -471,6 +475,12 @@ async fn handle_streaming(
         Request::ClusterFaces { .. } => {
             Err("only Photos may request fixed local face clustering".into())
         }
+        Request::SegmentSubject { image } if app_id == CANVAS_APP || app_id == PHOTOS_APP => {
+            blocking(move || subject::segment(&image)).await.map(output)
+        }
+        Request::SegmentSubject { .. } => {
+            Err("only Canvas and Photos may find a picture's subject".into())
+        }
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
             blocking(move || secret_status(&profile_id))
                 .await
@@ -568,13 +578,13 @@ fn secret_status(profile_id: &str) -> Result<bool, String> {
 }
 
 /// Check only prerequisites available locally. No HTTP client is created and
-/// no request is sent; local models retain Plan's existing credential rule.
+/// no request is sent; credential and loopback rules match Plan.
 fn selection_configured(
     profile_id: &str,
     model_id: &str,
     protocol: ProviderProtocol,
 ) -> Result<(), String> {
-    let account = vault_id(profile_id)?;
+    let _ = vault_id(profile_id)?;
     if model_id.is_empty() || model_id.len() > 256 || model_id.chars().any(char::is_control) {
         return Err("invalid selected model id".into());
     }
@@ -590,19 +600,17 @@ fn selection_configured(
     if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host().is_none() {
         return Err("provider endpoint is invalid".into());
     }
-    let secret = SecretVault::open()
-        .get(&account)
-        .map(|secret| Zeroizing::new(secret.password))
-        .filter(|secret| !secret.is_empty())
-        .ok_or_else(|| "API key is not configured".to_string())?;
-    // Match provider_attempt's x-api-key / bearer_auth header representation.
-    // Header parsing is local and its error never includes credential bytes.
-    let header = match protocol {
-        ProviderProtocol::Anthropic => secret,
-        ProviderProtocol::OpenAiCompatible => Zeroizing::new(format!("Bearer {}", secret.as_str())),
-    };
-    reqwest::header::HeaderValue::from_str(header.as_str())
-        .map_err(|_| "API key cannot form a provider request".to_string())?;
+    if let Some(secret) = plan_secret(&profile)? {
+        // Header parsing is local and never includes credential bytes in errors.
+        let header = match protocol {
+            ProviderProtocol::Anthropic => secret,
+            ProviderProtocol::OpenAiCompatible => {
+                Zeroizing::new(format!("Bearer {}", secret.as_str()))
+            }
+        };
+        reqwest::header::HeaderValue::from_str(header.as_str())
+            .map_err(|_| "API key cannot form a provider request".to_string())?;
+    }
     Ok(())
 }
 
@@ -687,17 +695,49 @@ async fn plan(
 fn plan_profile(
     profile_id: &str,
     model_id: &str,
-) -> Result<(ProviderProfile, Zeroizing<String>), String> {
+) -> Result<(ProviderProfile, Option<Zeroizing<String>>), String> {
     let profile = configured_profile(profile_id)?;
     if !profile.models.iter().any(|model| model.id == model_id) {
         return Err("model is not configured for this provider".into());
     }
-    let secret = SecretVault::open()
-        .get(&vault_id(profile_id)?)
+    let secret = plan_secret(&profile)?;
+    Ok((profile, secret))
+}
+
+/// A missing credential means unauthenticated only for a literal loopback
+/// endpoint explicitly classified as this device. All other Plan profiles
+/// retain the existing vault requirement.
+fn unauthenticated_local_plan(profile: &ProviderProfile) -> Result<bool, String> {
+    if profile.location != EndpointLocation::ThisDevice || profile.credential.is_some() {
+        return Ok(false);
+    }
+    let endpoint = url::Url::parse(&provider_url(profile))
+        .map_err(|_| "local provider endpoint is invalid".to_string())?;
+    let loopback = match endpoint.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    if !matches!(endpoint.scheme(), "http" | "https")
+        || !loopback
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+    {
+        return Err("unauthenticated local Plan requires a literal loopback endpoint".into());
+    }
+    Ok(true)
+}
+
+fn plan_secret(profile: &ProviderProfile) -> Result<Option<Zeroizing<String>>, String> {
+    if unauthenticated_local_plan(profile)? {
+        return Ok(None);
+    }
+    SecretVault::open()
+        .get(&vault_id(&profile.id)?)
         .map(|secret| Zeroizing::new(secret.password))
         .filter(|secret| !secret.is_empty())
-        .ok_or_else(|| "API key is not configured".to_string())?;
-    Ok((profile, secret))
+        .map(Some)
+        .ok_or_else(|| "API key is not configured".to_string())
 }
 
 async fn plan_dispatch(
@@ -713,9 +753,32 @@ async fn plan_dispatch(
     // always answered with one final frame, which streaming clients accept.
     let streaming = call.stream && profile.protocol == ProviderProtocol::OpenAiCompatible;
     timing.stream = streaming;
+    let ceiling = profile
+        .models
+        .iter()
+        .find(|model| model.id == call.model_id)
+        .and_then(|model| model.request_limits.as_ref())
+        .and_then(|limits| limits.plan_timeout_ms)
+        .map_or(MAX_PROVIDER_TIMEOUT, |milliseconds| {
+            Duration::from_millis(u64::from(milliseconds))
+        });
+    let timeout = call.timeout.min(ceiling);
+    timing.timeout_ms = Some(timeout.as_millis());
     let body = outbound_body(&profile, call.model_id, body, streaming)?;
+    if let Some(model) = profile
+        .models
+        .iter()
+        .find(|model| model.id == call.model_id)
+        && let Some(limits) = &model.request_limits
+    {
+        timing.output_allowance = body
+            .get("max_completion_tokens")
+            .or_else(|| body.get("max_tokens"))
+            .and_then(serde_json::Value::as_u64);
+        timing.runtime_context = limits.runtime_context_tokens;
+        timing.source_context = model.context_window;
+    }
     let endpoint = provider_url(&profile);
-    let timeout = call.timeout.min(MAX_PROVIDER_TIMEOUT);
     let budget = timeout
         .checked_sub(timing.started.elapsed())
         .filter(|budget| !budget.is_zero())
@@ -725,7 +788,7 @@ async fn plan_dispatch(
             http,
             &profile,
             &endpoint,
-            Some(secret.as_str()),
+            secret.as_ref().map(|secret| secret.as_str()),
             &body,
             budget,
         )
@@ -763,6 +826,65 @@ async fn plan_dispatch(
     result
 }
 
+/// Resolve only the checked model's explicit output policy; legacy bodies stay untouched.
+fn model_output_limit(
+    profile: &ProviderProfile,
+    model_id: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<(&'static str, u64)>, String> {
+    let limits = profile
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .and_then(|model| model.request_limits.as_ref().map(|limits| (model, limits)));
+    let requested_limit = if let Some((model, limits)) = limits {
+        limits
+            .validate(model.context_window)
+            .map_err(str::to_owned)?;
+        let number = |key: &str| -> Result<Option<u64>, String> {
+            object
+                .get(key)
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .filter(|value| *value > 0)
+                        .ok_or_else(|| "output limit must be a positive integer".into())
+                })
+                .transpose()
+        };
+        let completion = number("max_completion_tokens")?;
+        let tokens = number("max_tokens")?;
+        if completion.is_some() && tokens.is_some() && completion != tokens {
+            return Err("conflicting output limits".into());
+        }
+        Some(
+            completion
+                .or(tokens)
+                .unwrap_or_else(|| u64::from(limits.max_output_tokens))
+                .min(u64::from(limits.max_output_tokens)),
+        )
+    } else {
+        None
+    };
+    let capped_field = if profile.protocol == ProviderProtocol::Anthropic {
+        "max_tokens"
+    } else {
+        profile.token_limit_param.map_or_else(
+            || {
+                if object.contains_key("max_tokens")
+                    && !object.contains_key("max_completion_tokens")
+                {
+                    "max_tokens"
+                } else {
+                    "max_completion_tokens"
+                }
+            },
+            |param| param.key(),
+        )
+    };
+    Ok(requested_limit.map(|limit| (capped_field, limit)))
+}
+
 /// The request actually sent. The gateway owns it: the checked `model_id`
 /// replaces whatever model the caller named (the allowlist cannot be
 /// bypassed through the body), and for OpenAI-compatible profiles the
@@ -778,6 +900,7 @@ fn outbound_body(
     let serde_json::Value::Object(mut object) = body else {
         return Err("plan body must be a JSON object".into());
     };
+    let capped = model_output_limit(profile, model_id, &object)?;
     object.insert("model".into(), serde_json::Value::String(model_id.into()));
     match profile.protocol {
         ProviderProtocol::OpenAiCompatible => {
@@ -825,6 +948,13 @@ fn outbound_body(
         ProviderProtocol::Anthropic => {
             object.remove("stream");
         }
+    }
+    // Apply the model-owned cap after provider shaping and optional omission.
+    // A caller cannot suppress or duplicate the enforced token-limit field.
+    if let Some((capped_field, limit)) = capped {
+        object.remove("max_tokens");
+        object.remove("max_completion_tokens");
+        object.insert(capped_field.into(), serde_json::Value::from(limit));
     }
     Ok(serde_json::Value::Object(object))
 }
@@ -957,7 +1087,14 @@ impl SseReader {
             )));
         }
         let assembly = &mut self.assembly;
-        if assembly.push(&chunk) && timing.first_token.is_none() {
+        let visible_output = assembly.push(&chunk);
+        if assembly.malformed_reasoning_content {
+            return Err(stream_failure(
+                "provider reasoning_content was not a string",
+            ));
+        }
+        timing.observe_stream(assembly);
+        if visible_output && timing.first_token.is_none() {
             timing.first_token = Some(timing.started.elapsed());
         }
         if assembly.reasoning_seen && timing.first_reasoning.is_none() {
@@ -1152,17 +1289,41 @@ struct StreamAssembly {
     created: Option<serde_json::Value>,
     model: Option<serde_json::Value>,
     content: Option<String>,
+    reasoning_content: Option<String>,
+    malformed_reasoning_content: bool,
     refusal: Option<String>,
     calls: Vec<StreamCall>,
     /// Tool calls at an index below this one are complete.
     frontier: usize,
     finish: Option<String>,
     usage: Option<serde_json::Value>,
-    /// Whether a reasoning delta (never forwarded) has been seen.
+    /// Whether a reasoning delta (separate from visible output) has been seen.
     reasoning_seen: bool,
+    reasoning_chunks: u64,
+    reasoning_bytes: u64,
 }
 
 impl StreamAssembly {
+    fn push_reasoning_content(&mut self, value: Option<&serde_json::Value>) {
+        match value {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::String(reasoning)) => self
+                .reasoning_content
+                .get_or_insert_default()
+                .push_str(reasoning),
+            Some(_) => self.malformed_reasoning_content = true,
+        }
+    }
+
+    fn observe_reasoning(&mut self, reasoning: Option<&str>) {
+        let Some(reasoning) = reasoning.filter(|value| !value.is_empty()) else {
+            return;
+        };
+        self.reasoning_seen = true;
+        self.reasoning_chunks = self.reasoning_chunks.saturating_add(1);
+        self.reasoning_bytes = self.reasoning_bytes.saturating_add(reasoning.len() as u64);
+    }
+
     /// Fold one chunk in; true when it carried output (text or a tool call).
     fn push(&mut self, chunk: &serde_json::Value) -> bool {
         for (field, slot) in [
@@ -1203,13 +1364,11 @@ impl StreamAssembly {
             self.content.get_or_insert_default().push_str(content);
             output = true;
         }
-        // Reasoning text is timed but neither assembled nor forwarded.
-        if text("reasoning")
-            .or_else(|| text("reasoning_content"))
-            .is_some_and(|reasoning| !reasoning.is_empty())
-        {
-            self.reasoning_seen = true;
-        }
+        // Only the explicitly named provider field is replayable. Other
+        // reasoning dialects remain timing metadata; never infer their shape.
+        self.push_reasoning_content(delta.and_then(|delta| delta.get("reasoning_content")));
+        // Reasoning stays outside incremental visible text and tool frames.
+        self.observe_reasoning(text("reasoning").or_else(|| text("reasoning_content")));
         if let Some(refusal) = text("refusal").filter(|refusal| !refusal.is_empty()) {
             self.refusal.get_or_insert_default().push_str(refusal);
             output = true;
@@ -1280,6 +1439,12 @@ impl StreamAssembly {
             self.content
                 .map_or(serde_json::Value::Null, serde_json::Value::String),
         );
+        if let Some(reasoning) = self.reasoning_content {
+            message.insert(
+                "reasoning_content".into(),
+                serde_json::Value::String(reasoning),
+            );
+        }
         if let Some(refusal) = self.refusal {
             message.insert("refusal".into(), serde_json::Value::String(refusal));
         }
@@ -1325,6 +1490,15 @@ struct PlanTiming {
     /// Prompt tokens the provider served from its prompt cache.
     cached_tokens: Option<u64>,
     tool_calls: usize,
+    output_allowance: Option<u64>,
+    runtime_context: Option<u32>,
+    source_context: Option<u32>,
+    timeout_ms: Option<u128>,
+    stream_chunks: u64,
+    reasoning_chunks: u64,
+    reasoning_bytes: u64,
+    last_stream: Option<Duration>,
+    last_reasoning: Option<Duration>,
 }
 
 impl PlanTiming {
@@ -1344,7 +1518,42 @@ impl PlanTiming {
             reasoning_tokens: None,
             cached_tokens: None,
             tool_calls: 0,
+            output_allowance: None,
+            runtime_context: None,
+            source_context: None,
+            timeout_ms: None,
+            stream_chunks: 0,
+            reasoning_chunks: 0,
+            reasoning_bytes: 0,
+            last_stream: None,
+            last_reasoning: None,
         }
+    }
+
+    fn observe_stream(&mut self, assembly: &StreamAssembly) {
+        let elapsed = self.started.elapsed();
+        self.stream_chunks = self.stream_chunks.saturating_add(1);
+        self.last_stream = Some(elapsed);
+        if assembly.reasoning_chunks > self.reasoning_chunks {
+            self.last_reasoning = Some(elapsed);
+        }
+        self.reasoning_chunks = assembly.reasoning_chunks;
+        self.reasoning_bytes = assembly.reasoning_bytes;
+    }
+
+    /// Only counters/times: provider text is never retained in diagnostics.
+    fn progress_log_fields(&self) -> String {
+        let ms = |value: Option<Duration>| {
+            value.map_or_else(|| "-".to_string(), |value| value.as_millis().to_string())
+        };
+        format!(
+            "stream_chunks={} reasoning_chunks={} reasoning_bytes={} last_stream_ms={} last_reasoning_ms={}",
+            self.stream_chunks,
+            self.reasoning_chunks,
+            self.reasoning_bytes,
+            ms(self.last_stream),
+            ms(self.last_reasoning),
+        )
     }
 
     /// Token counts and tool-call count from a non-streaming body.
@@ -1396,7 +1605,8 @@ impl PlanTiming {
             "tilo-model-gateway: timing plan trace={trace} profile={} model={} stream={} status={} \
              start_unix_ms={} first_byte_ms={} first_reasoning_ms={} first_token_ms={} first_tool_call_ms={} \
              plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
-             reasoning_tokens={} cached_tokens={} tool_calls={} outcome={}",
+             reasoning_tokens={} cached_tokens={} tool_calls={} output_allowance={} \
+             source_context={} runtime_context={} timeout_ms={} {} outcome={}",
             log_token(call.profile_id),
             log_token(call.model_id),
             self.stream,
@@ -1414,6 +1624,12 @@ impl PlanTiming {
             count(self.reasoning_tokens),
             count(self.cached_tokens),
             self.tool_calls,
+            count(self.output_allowance),
+            count(self.source_context.map(u64::from)),
+            count(self.runtime_context.map(u64::from)),
+            self.timeout_ms
+                .map_or_else(|| "-".into(), |value| value.to_string()),
+            self.progress_log_fields(),
             if outcome.is_ok() { "ok" } else { "error" },
         );
     }
@@ -1590,7 +1806,7 @@ async fn transform(
                 http,
                 &profile,
                 &endpoint,
-                Some(secret.as_str()),
+                secret.as_ref().map(|secret| secret.as_str()),
                 &body,
                 budget,
             )
@@ -1860,6 +2076,24 @@ async fn send_provider(
     body: &serde_json::Value,
     budget: Duration,
 ) -> Result<reqwest::Response, ProviderFailure> {
+    let mut bounded_body = body.clone();
+    if let Some(object) = bounded_body.as_object_mut()
+        && let Some(model_id) = object
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        && let Some((field, limit)) =
+            model_output_limit(profile, &model_id, object).map_err(|why| ProviderFailure {
+                why,
+                again: Again::Never,
+                outcome_unknown: false,
+                status: None,
+            })?
+    {
+        object.remove("max_tokens");
+        object.remove("max_completion_tokens");
+        object.insert(field.into(), serde_json::Value::from(limit));
+    }
     let mut request = client
         .post(endpoint)
         .timeout(budget)
@@ -1885,7 +2119,7 @@ async fn send_provider(
         }
     }
     let response = request
-        .json(body)
+        .json(&bounded_body)
         .send()
         .await
         .map_err(|error| ProviderFailure {
@@ -2401,6 +2635,73 @@ mod tests {
         agent_provider_config::ReasoningSetting {
             param,
             effort: effort.into(),
+        }
+    }
+
+    #[test]
+    fn outbound_model_limits_are_explicit_bounded_and_protocol_aware() {
+        for protocol in [
+            ProviderProtocol::OpenAiCompatible,
+            ProviderProtocol::Anthropic,
+        ] {
+            let mut profile = ProviderProfile::hosted(protocol);
+            let mut model = agent_provider_config::ModelDescriptor::new("bounded");
+            model.request_limits = Some(agent_provider_config::ModelRequestLimits {
+                max_output_tokens: 512,
+                runtime_context_tokens: Some(4096),
+                plan_timeout_ms: None,
+            });
+            profile.models = vec![model, agent_provider_config::ModelDescriptor::new("legacy")];
+            profile.omit_params = vec!["max_tokens".into(), "max_completion_tokens".into()];
+            for body in [
+                serde_json::json!({}),
+                serde_json::json!({"max_tokens":4096}),
+                serde_json::json!({"max_completion_tokens":4096}),
+                serde_json::json!({"max_tokens":4096,"max_completion_tokens":4096}),
+            ] {
+                let outbound = outbound_body(&profile, "bounded", body, false).unwrap();
+                let key = if protocol == ProviderProtocol::Anthropic {
+                    "max_tokens"
+                } else {
+                    "max_completion_tokens"
+                };
+                assert_eq!(
+                    outbound
+                        .get("max_tokens")
+                        .or_else(|| outbound.get("max_completion_tokens")),
+                    Some(&serde_json::json!(512))
+                );
+                // The OpenAI caller's existing token field is preserved unless
+                // the profile explicitly chooses one; Anthropic has one field.
+                if protocol == ProviderProtocol::Anthropic {
+                    assert_eq!(outbound[key], 512);
+                }
+                assert!(
+                    !(outbound.get("max_tokens").is_some()
+                        && outbound.get("max_completion_tokens").is_some())
+                );
+            }
+            for bad in [
+                serde_json::json!({"max_tokens":false}),
+                serde_json::json!({"max_tokens":0}),
+                serde_json::json!({"max_tokens":-1}),
+                serde_json::json!({"max_tokens":1.5}),
+                serde_json::json!({"max_tokens":64,"max_completion_tokens":512}),
+            ] {
+                assert!(outbound_body(&profile, "bounded", bad.clone(), false).is_err());
+                assert!(outbound_body(&profile, "legacy", bad, false).is_ok());
+            }
+            profile.omit_params.clear();
+            assert_eq!(
+                outbound_body(
+                    &profile,
+                    "legacy",
+                    serde_json::json!({"max_tokens":4096}),
+                    false
+                )
+                .unwrap()["max_tokens"],
+                4096
+            );
         }
     }
 

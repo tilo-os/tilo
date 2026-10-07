@@ -16,10 +16,50 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource;
 use ui::widget::{Button, Row, Spacer, Widget};
 
+use crate::host::PaneCx;
 use crate::i18n::t;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, hero, rows, value_row};
+
+/// What About offers to do with this device's identity.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum AboutEffect {
+    /// Open the identity backup, to carry the person's identity to a new
+    /// device.
+    #[effect(job, label = "Back up identity")]
+    BackUpIdentity,
+}
+
+/// Answer `effect` by opening the tool it names.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: AboutEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    match effect {
+        AboutEffect::BackUpIdentity => {
+            if !app.host().reaches_devices() {
+                return Err("only a window someone uses opens the identity backup".into());
+            }
+            Ok(cx.thread(
+                move |_| os_actions::open_tool(portable_identity_backup_intent()),
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ))
+        }
+    }
+}
 
 fn fact(value: &str) -> String {
     if value == "unknown" {
@@ -147,13 +187,21 @@ impl AboutInfo {
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    build_with(&AboutInfo::from_system())
+pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
+    build_with(cx, &AboutInfo::from_system())
 }
 
-pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
+pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
     // A device-identity hero: the machine's name in the accent, the OS beneath.
-    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname, &info.pretty_name);
+    let hero_block = Box::new(
+        ui::widget::Column::new()
+            .with_no_padding()
+            .push(hero(ui::icons::Icon::Monitor, &info.hostname))
+            .push(Box::new(
+                ui::widget::Text::new(&info.pretty_name)
+                    .with_role(ui::tokens::typography::TextRole::Body),
+            )),
+    );
 
     let person = info
         .identity_name
@@ -181,13 +229,10 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
             caption(&t("settings-about-backup-caption")),
             Box::new(
                 Row::new()
-                    .push(Box::new(
-                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label, None)
-                            .content_sized()
-                            .on_effect(|| {
-                                let _ = os_actions::open_tool(portable_identity_backup_intent());
-                            }),
-                    ))
+                    .push(Box::new(cx.bind_invocation(
+                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label),
+                        AboutEffect::BackUpIdentity,
+                    )))
                     .push(Box::new(Spacer::new())),
             ),
         ]),

@@ -1,5 +1,5 @@
 use super::*;
-use automerge::{ObjType, ROOT, transaction::Transactable};
+use automerge::ROOT;
 use winit::keyboard::ModifiersState;
 
 fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: NamedKey, modifiers: ModifiersState) {
@@ -35,7 +35,7 @@ fn dispatch_key(
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::from(modifiers),
-            state: doc,
+            state: crate::widget::Edits::lend(doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut None,
@@ -455,50 +455,44 @@ fn code_tab_indentation_preserves_identity_and_emits_canonical_undoable_edits() 
         assert_eq!(editor.blocks[0].text(), "α    β");
     }
 
-    fn bound_code_indent_and_exit_have_undo_redo_checkpoints() {
-        let mut state = crate::state::State::new();
-        let list = state.doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
+    fn code_indent_and_exit_are_undo_checkpoints_on_the_same_block() {
+        let mut doc = AutoCommit::new();
         let mut editor = BlockEditor::new();
-        editor.bind_blocks(&mut state.doc, list);
-        editor.try_convert_to(0, code("").kind);
-        editor.blocks[0].line.set_text("value");
-        editor.code_keyboard_edited();
-        editor.sync(&mut state.doc, &ROOT);
+        editor.set_blocks(vec![code("value")]);
         editor.focus_block(0, CursorPlacement::Start);
         let id = editor.blocks[0].id.clone();
-        let bound = editor.blocks[0].line.bound_obj();
-        state.commit_action(None, None);
-        crate::undo::on_commit(&mut editor);
         send(
             &mut editor,
-            &mut state.doc,
+            &mut doc,
             NamedKey::Tab,
             ModifiersState::empty(),
         );
-        assert!(crate::undo::needs_commit(&editor));
-        state.commit_action(None, None);
-        crate::undo::on_commit(&mut editor);
+        assert_eq!(
+            editor.take_edit_ops(),
+            vec![BlockEditOp::TextSplice {
+                block_id: id.clone(),
+                start: 0,
+                end: 0,
+                text: "    ".into(),
+            }]
+        );
         send(
             &mut editor,
-            &mut state.doc,
+            &mut doc,
             NamedKey::Enter,
             ModifiersState::CONTROL,
         );
-        state.commit_action(None, None);
-        crate::undo::on_commit(&mut editor);
         assert_eq!(editor.blocks.len(), 2);
-        assert!(state.undo(None, None).is_some());
-        editor.sync(&mut state.doc, &ROOT);
-        assert_eq!(editor.blocks.len(), 1);
-        assert_eq!(editor.blocks[0].text(), "    value");
-        assert!(state.undo(None, None).is_some());
-        editor.sync(&mut state.doc, &ROOT);
-        assert_eq!(editor.blocks[0].text(), "value");
         assert_eq!(editor.blocks[0].id, id);
-        assert_eq!(editor.blocks[0].line.bound_obj(), bound);
-        assert!(state.redo(None, None).is_some());
-        editor.sync(&mut state.doc, &ROOT);
         assert_eq!(editor.blocks[0].text(), "    value");
+        let ops = editor.take_edit_ops();
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [BlockEditOp::Insert { after: Some(after), .. }] if *after == id
+            ),
+            "exiting code appends one block after the code: {ops:?}"
+        );
     }
 
     fn code_indentation_emits_canonical_text_edits_for_stable_blocks() {
@@ -508,8 +502,7 @@ fn code_tab_indentation_preserves_identity_and_emits_canonical_undoable_edits() 
             DocumentPosition { block: 0, byte: 0 },
             DocumentPosition { block: 1, byte: 6 },
         );
-        editor.set_action_interception(true);
-        editor.begin_action_intercept();
+        editor.begin_edit();
         let mut doc = AutoCommit::new();
         send(
             &mut editor,
@@ -517,7 +510,7 @@ fn code_tab_indentation_preserves_identity_and_emits_canonical_undoable_edits() 
             NamedKey::Tab,
             ModifiersState::empty(),
         );
-        let ops = editor.take_intercepted_ops();
+        let ops = editor.take_edit_ops();
         assert_eq!(
             ops.len(),
             2,
@@ -563,7 +556,7 @@ fn code_tab_indentation_preserves_identity_and_emits_canonical_undoable_edits() 
 
     tab_indents_selected_code_rows_preserving_identity_and_selection();
     tab_at_unicode_caret_inserts_spaces_and_outdent_keeps_body();
-    bound_code_indent_and_exit_have_undo_redo_checkpoints();
+    code_indent_and_exit_are_undo_checkpoints_on_the_same_block();
     code_indentation_emits_canonical_text_edits_for_stable_blocks();
     long_code_line_scrolls_to_keep_the_keyboard_caret_visible();
 }

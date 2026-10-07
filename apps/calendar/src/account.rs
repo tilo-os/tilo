@@ -182,6 +182,13 @@ impl CalendarAccount {
         stored
     }
 
+    /// The account as the shared store holds it, for a test that saves it
+    /// elsewhere.
+    #[cfg(test)]
+    pub(crate) fn to_stored_for_test(&self) -> StoredAccount {
+        self.to_stored()
+    }
+
     /// Rebuild a calendar account from a shared [`StoredAccount`], reading the
     /// password back from `vault`.
     fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
@@ -261,27 +268,17 @@ impl AccountStore {
         Some(Self::load_from_settings_in(&root))
     }
 
-    /// Persist Calendar's account projection to the canonical shared store.
-    /// Other account types and their sealed secrets are retained by
-    /// [`Self::persist_in`]; callers receive an error when the real config
-    /// root cannot be resolved or written, rather than claiming a setting was
-    /// saved when it was not.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` when no Tilo config root is available or persistence fails.
-    pub fn persist(&self) -> std::io::Result<()> {
-        let root = accounts::config_root()
-            .ok_or_else(|| std::io::Error::other("no config dir for calendar accounts"))?;
-        self.persist_in(&root)
-    }
-
     /// Load under an explicit config root — the seam tests use.
     pub fn load_from_settings_in(config_root: &Path) -> Self {
         Self::from_shared(
             &SharedStore::load_in(config_root),
             &SecretVault::open_in(config_root),
         )
+    }
+
+    /// The `CalDAV` accounts `shared` holds, each password from `vault`.
+    pub fn from_store(shared: &SharedStore, vault: &SecretVault) -> Self {
+        Self::from_shared(shared, vault)
     }
 
     fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {

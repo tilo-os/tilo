@@ -7,8 +7,10 @@ include bold, italic, underline, strikethrough, code, external links and
 `[[Note]]` links. A standalone `![[Note]]` becomes a live, one-level embed; its
 stable target survives renames and bounded previews keep cyclic embeds safe.
 
-Created and last-edited dates sit below the title. The transient status bubble
-reports save state and word count without taking permanent editor space. The
+Created and last-edited dates sit below the title, with the note's tags and the
+notes that link to it as buttons. The transient status bubble reports save
+state and word count without taking permanent editor space, and a note that
+cannot be saved says so under its title until it can. The
 layout fills the available view, keeps the note header visible while the body
 scrolls, and collapses the note tree into a drawer at narrow widths.
 
@@ -44,40 +46,25 @@ and presents **New note**. The shared record host supplies persistence,
 history, undo and collaboration; the status bubble shows **Saving...** while a
 write is queued and **Saved** once it lands.
 
-On a standalone personal launch, Notes imports an existing legacy notebook
-from `~/notes/` once when no canonical notebook exists. Set `TILO_NOTES_ROOT`
-to an absolute directory to select another legacy import source. Empty and
-relative values are rejected. Passing one Markdown file on the command line
-imports it into the opened notebook.
+Passing a Markdown file on the command line (or opening one with Notes)
+imports it as a new note, with the images next to it, and opens it. The same
+file always becomes the same note, so opening it again shows that note.
 
-For headless visual review, render the production component offscreen:
+For headless visual review, render a screenshot scenario offscreen:
 
 ```bash
-cargo run -p notes --release -- --shots out.png --viewport 800x600
-# add --scenario drawer for the narrow note drawer
+cargo run -p notes --release -- --shots out.png --scenario drawer
+# --shots-dir DIR renders every scenario
 # add --text-scale 1.5 to inspect the large-text layout
-# add --scenario shortcuts for the keyboard reference
+# add --viewport 390x844 for the phone layout
 ```
 
-## Canonical and legacy storage
+## Storage
 
-The current app stores one host-owned `notes.notebook` Automerge record. Notes,
-blocks, tags, note memberships and managed assets share that document, so
-platform history, undo and collaboration observe the same operations.
-
-Older standalone builds used this recoverable layout:
-
-```text
-~/notes/
-|-- workspace.automerge
-|-- pages/
-|   `-- {uuid}.md
-`-- assets/
-    `-- {uuid}.{png,jpg,webp}
-```
-
-The app can migrate that layout into the canonical record. It leaves the
-legacy files untouched after import.
+Notes stores one host-owned `notes.notebook` Automerge record. Notes, blocks,
+tags, note memberships and image references share that document, so platform
+history, undo and collaboration observe the same operations; image bytes live
+in the device content store.
 
 ## Block-type reference
 
@@ -155,10 +142,9 @@ Inline marks inside non-code blocks:
 - `main_panel.rs`: title, metadata, scrolling and the shared `BlockEditor`.
 - `sidebar.rs`: responsive note tree, hover actions, context menus and
   drag/reparent behavior.
-- `app.rs` / `hosting.rs` / `component.rs`: component lifecycle, published
-  resources/actions, record binding and local presentation state.
+- `resource.rs`: the `Notebook` resource and the `NotesShell` framework app.
+- `app.rs`: the notebook surface, published resources/actions and local
+  presentation state.
 - `markdown.rs`: block-list and Markdown conversion.
-- `model.rs` / `storage.rs` / `legacy_import.rs`: the legacy standalone format
-  and its import, which now only seed test and capture fixtures; a launch
-  never reads it.
-- `capture.rs`: semantic production-component fixtures for visual review.
+- `model.rs`: the in-memory page tree the notebook projects into.
+- `scenario.rs`: the screenshot scenarios, staged with notebook actions.

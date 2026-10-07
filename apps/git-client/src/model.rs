@@ -45,8 +45,20 @@ impl ChangeKind {
             ChangeKind::Modified => "M",
             ChangeKind::Deleted => "D",
             ChangeKind::Renamed => "R",
-            ChangeKind::Untracked => "?",
-            ChangeKind::Conflicted => "!",
+            ChangeKind::Untracked => "U",
+            ChangeKind::Conflicted => "C",
+        }
+    }
+
+    /// What the badge stands for, in words (for assistive technology).
+    pub fn label(self) -> &'static str {
+        match self {
+            ChangeKind::Added => "added",
+            ChangeKind::Modified => "modified",
+            ChangeKind::Deleted => "deleted",
+            ChangeKind::Renamed => "renamed",
+            ChangeKind::Untracked => "untracked",
+            ChangeKind::Conflicted => "conflicted",
         }
     }
 }
@@ -270,6 +282,15 @@ pub struct Remote {
     pub url: String,
 }
 
+/// One working directory belonging to this repository, read from disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Worktree {
+    pub name: String,
+    pub path: String,
+    pub head: String,
+    pub current: bool,
+}
+
 /// The complete render state. Cloneable and self-contained.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RepoModel {
@@ -289,6 +310,12 @@ pub struct RepoModel {
     pub tags: Vec<Tag>,
     pub stashes: Vec<Stash>,
     pub remotes: Vec<Remote>,
+    /// Device-local linked working directories, never part of the CRDT projection.
+    #[serde(skip)]
+    pub worktrees: Vec<Worktree>,
+    /// Failure to observe registered working directories, shown rather than treated as empty.
+    #[serde(skip)]
+    pub worktree_error: Option<String>,
 
     /// Number of graph lanes in use (for sizing the graph gutter).
     pub graph_width: usize,

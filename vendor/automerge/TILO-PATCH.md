@@ -20,3 +20,12 @@ has the same code; remove this copy once a release carries the fix.
 Three `#[allow]`s (the `log!` macro's import, `GenericColIter::try_next` and
 `ValueRange::try_splice`) silence warnings the current compiler raises in the
 upstream code, since CI builds path dependencies with `-D warnings`.
+
+# Tilo patch: read committed history through a shared reference
+
+`AutoCommit::get_heads`, `diff` and `document` take `&mut self` because they
+close the open transaction first. Tilo hands widgets the document read-only
+and commits before every frame, so `committed_heads`, `committed_diff`,
+`committed_fork_at` and `committed_document` read the committed document
+from `&self` (an open transaction is not part of it). Pinned by
+`crates/doc/tilo-automerge/tests/committed_readers.rs`.

@@ -114,6 +114,9 @@ pub enum RenderRequest {
         damage_regions: Vec<Rect>,
         /// Resize, relayout, structure, or untracked overlay invalidation.
         full_redraw: bool,
+        /// The backdrops the scene's floating surfaces were recorded over
+        /// (`crate::backdrop`), in physical pixels. Empty draws no blur.
+        backdrop: crate::backdrop::BackdropFrame,
         /// Called with the time this frame, or the first later one, is
         /// presented.
         on_present: Option<PresentHook>,
@@ -125,6 +128,26 @@ pub enum RenderRequest {
 
 /// A device and a renderer whose pipelines are compiled for it, with no
 /// surface yet.
+/// Why the drawing surface was lost, kept for the window that stops on it.
+static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Record why the drawing surface was lost; the first reason is the cause.
+fn note_surface_loss(reason: String) {
+    let mut slot = SURFACE_LOSS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    slot.get_or_insert(reason);
+}
+
+/// The reason recorded by the render worker when it lost its surface.
+#[cfg(feature = "native")]
+pub(crate) fn take_surface_loss() -> Option<String> {
+    SURFACE_LOSS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
 #[cfg_attr(
     not(feature = "native"),
     allow(
@@ -345,15 +368,26 @@ impl RenderThreadHandle {
 ///
 /// Returns an error if the OS refuses to spawn the `ui-render` thread (e.g.
 /// the process is out of resources for new threads).
+pub fn spawn_render_thread(
+    render_cx: RenderContext,
+    surface: RenderSurface<'static>,
+    renderer: Renderer,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) -> Result<RenderThreadHandle, String> {
+    spawn_render_thread_for_window(render_cx, surface, renderer, wake, None)
+}
+
+/// Same worker with the native window retained for standard Wayland feedback.
 #[allow(
     clippy::too_many_lines,
     reason = "keep the single GPU owner's resize/render/trace/recycle/shutdown sequence and resource drop order visible together"
 )]
-pub fn spawn_render_thread(
+pub(crate) fn spawn_render_thread_for_window(
     render_cx: RenderContext,
     mut surface: RenderSurface<'static>,
     mut renderer: Renderer,
     wake: Arc<dyn Fn() + Send + Sync>,
+    window: Option<Arc<winit::window::Window>>,
 ) -> Result<RenderThreadHandle, String> {
     let (req_tx, rx) = mpsc::sync_channel::<RenderRequest>(1);
     let (pool_tx, pool_rx) = mpsc::sync_channel(2);
@@ -375,7 +409,7 @@ pub fn spawn_render_thread(
             let present_dbg = crate::env::var("TILO_UI_PRESENT").is_ok();
             let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
-            let presentation = crate::presentation_feedback::Observer::from_env();
+            let presentation = crate::presentation_feedback::Observer::from_env(window);
             let native_timing = presentation.as_ref().filter(|_| timing::enabled());
             if let Some(observer) = native_timing {
                 observer.log_native_config(&surface);
@@ -391,6 +425,10 @@ pub fn spawn_render_thread(
             let mut bump_recovery = bump_recovery::BumpRecovery::default();
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             let mut keep_renderer = false;
+            // Built with the first frame that draws a floating surface over
+            // the blurred material.
+            let mut backdrop_blur: Option<crate::backdrop::BackdropBlur> = None;
+            let mut had_backdrop = false;
             loop {
                 let wait = bump_recovery.wait();
                 let (message, receive_bounds) =
@@ -430,6 +468,7 @@ pub fn spawn_render_thread(
                     mut damage_regions,
                     full_redraw,
                     cpu_frame_id,
+                    backdrop,
                 ) = match msg {
                     RenderRequest::Frame {
                         scene,
@@ -439,6 +478,7 @@ pub fn spawn_render_thread(
                         damage_regions,
                         full_redraw,
                         cpu_frame_id,
+                        backdrop,
                         on_present,
                     } => {
                         present_hooks.extend(on_present);
@@ -450,6 +490,7 @@ pub fn spawn_render_thread(
                             damage_regions,
                             full_redraw,
                             cpu_frame_id,
+                            backdrop,
                         )
                     }
                     RenderRequest::Shutdown {
@@ -481,6 +522,9 @@ pub fn spawn_render_thread(
                         // Re-attempting the same reconfigure on a destroyed
                         // surface fails identically forever.
                         tracing::warn!(%err, "drawing surface is gone; stopping the render thread");
+                        note_surface_loss(format!(
+                            "its drawing surface could not be resized: {err}"
+                        ));
                         log_render_outcome(
                             frame_ix,
                             cpu_frame_id,
@@ -528,13 +572,20 @@ pub fn spawn_render_thread(
                     &surface,
                     &mut renderer,
                     &mut damage_cache,
+                    &mut backdrop_blur,
                     FrameContent {
                         scene: &scene,
                         width,
                         height,
                         base_color,
                         damage_regions: &damage_regions,
-                        full_redraw,
+                        // A blurred surface samples everything under it, and
+                        // the frame after one repaints what it covered.
+                        full_redraw: full_redraw
+                            || !target_valid
+                            || !backdrop.is_empty()
+                            || had_backdrop,
+                        backdrop: &backdrop,
                     },
                     FramePresentation {
                         frame_ix,
@@ -572,6 +623,8 @@ pub fn spawn_render_thread(
                 // length at typical refresh rates, nowhere near `u64::MAX`.
                 frame_ix = frame_ix.saturating_add(1);
                 target_valid = outcome == FrameOutcome::Presented;
+                had_backdrop = !backdrop.is_empty();
+                drop(backdrop);
                 if target_valid && !present_hooks.is_empty() {
                     let presented = crate::time::wall();
                     for hook in std::mem::take(&mut present_hooks) {
@@ -836,6 +889,7 @@ fn rasterize_damage(
         base_color,
         damage_regions,
         full_redraw,
+        ..
     } = *frame;
     let full_pixels = u64::from(width).saturating_mul(u64::from(height));
     let render_full = |renderer: &mut Renderer| {
@@ -1117,6 +1171,7 @@ struct FrameContent<'a> {
     base_color: Color,
     damage_regions: &'a [Rect],
     full_redraw: bool,
+    backdrop: &'a crate::backdrop::BackdropFrame,
 }
 
 /// How a presented frame is identified and observed.
@@ -1137,6 +1192,7 @@ fn render_one_frame(
     surface: &RenderSurface<'static>,
     renderer: &mut Renderer,
     damage_cache: &mut DamageCache,
+    backdrop_blur: &mut Option<crate::backdrop::BackdropBlur>,
     frame: FrameContent<'_>,
     present: FramePresentation<'_>,
 ) -> FrameOutcome {
@@ -1154,6 +1210,7 @@ fn render_one_frame(
     } = present;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         tracing::info!("render device index out of range; stopping the render thread");
+        note_surface_loss("its render device is gone".to_owned());
         return FrameOutcome::SurfaceGone;
     };
     if frame_ix == 0 {
@@ -1172,6 +1229,9 @@ fn render_one_frame(
             // and ask main to redraw.
             if let Err(err) = configure_surface_checked(render_cx, surface) {
                 tracing::info!(%err, "drawing surface is gone; abandoning the frame");
+                note_surface_loss(format!(
+                    "its drawing surface could not be reconfigured: {err}"
+                ));
                 return FrameOutcome::SurfaceGone;
             }
             if let Some(observer) = presentation.filter(|_| timing::enabled()) {
@@ -1196,6 +1256,7 @@ fn render_one_frame(
             // Same shutdown race as the reconfigure above; panicking here
             // used to abort the process for an ordinary end of session.
             tracing::info!("drawing surface is no longer usable; stopping the render thread");
+            note_surface_loss("its drawing surface was lost".to_owned());
             return FrameOutcome::SurfaceGone;
         }
     };
@@ -1209,7 +1270,21 @@ fn render_one_frame(
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-raster-start");
     }
-    let raster_pixels = match rasterize_damage(
+    // Floating surfaces over the blurred material: render, blur and
+    // substitute each one's backdrop before the frame that draws it.
+    let backdrop_stats = (!frame.backdrop.is_empty()).then(|| {
+        backdrop_blur
+            .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(&device_handle.device))
+            .prepare(
+                &device_handle.device,
+                &device_handle.queue,
+                renderer,
+                frame.backdrop,
+                (width, height),
+                frame.base_color,
+            )
+    });
+    let rasterized = rasterize_damage(
         (&device_handle.device, &device_handle.queue),
         RetainedTarget {
             texture: &surface.target_texture,
@@ -1218,11 +1293,22 @@ fn render_one_frame(
         renderer,
         damage_cache,
         &FrameContent {
+            backdrop: &crate::backdrop::BackdropFrame::default(),
             full_redraw: frame.full_redraw
                 || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
             ..frame
         },
-    ) {
+    );
+    if let Some(blur) = backdrop_blur.as_mut() {
+        blur.release(renderer);
+    }
+    if present_dbg && let Some(stats) = backdrop_stats {
+        eprintln!(
+            "present-backdrop {frame_ix}: substituted={} skipped={} encode={}us",
+            stats.substituted, stats.skipped, stats.encode_us
+        );
+    }
+    let raster_pixels = match rasterized {
         Ok(pixels) => pixels,
         Err(err) => {
             // A programmer bug (bad encoding / ran out of GPU resources); log and
@@ -1317,6 +1403,15 @@ fn render_one_frame(
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(crate::time::now);
+    let damage = bounded_present_damage(width, height, frame.damage_regions).filter(|_| {
+        !frame.full_redraw
+            && !POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+            && frame.backdrop.is_empty()
+    });
+    tilo_presentation::set_next_present_damage(
+        &surface.surface,
+        damage.as_deref().unwrap_or_default(),
+    );
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-start");
     }
@@ -1324,7 +1419,11 @@ fn render_one_frame(
         observer.arm(&surface.surface, frame_ix, cpu_frame_id);
     }
     let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
-        surface_texture.present();
+        if let Some(observer) = presentation {
+            observer.present_wayland(frame_ix, cpu_frame_id, || surface_texture.present());
+        } else {
+            surface_texture.present();
+        }
     });
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-done");
@@ -1380,6 +1479,111 @@ fn render_one_frame(
     FrameOutcome::Presented
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite framebuffer bounds are rounded outward and clamped to their u32 extent before narrowing"
+)]
+fn bounded_present_damage(
+    width: u32,
+    height: u32,
+    damage: &[Rect],
+) -> Option<Vec<tilo_presentation::DamageRect>> {
+    if width == 0 || height == 0 || damage.is_empty() || damage.len() > 128 {
+        return None;
+    }
+    let mut regions = Vec::with_capacity(damage.len());
+    for rect in damage {
+        if !rect.is_finite() || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
+            return None;
+        }
+        let x = rect.x0.floor().clamp(0.0, f64::from(width)) as u32;
+        let y = rect.y0.floor().clamp(0.0, f64::from(height)) as u32;
+        let x1 = rect.x1.ceil().clamp(0.0, f64::from(width)) as u32;
+        let y1 = rect.y1.ceil().clamp(0.0, f64::from(height)) as u32;
+        if x1 > x && y1 > y {
+            regions.push(Region {
+                x,
+                y,
+                width: x1.saturating_sub(x),
+                height: y1.saturating_sub(y),
+            });
+        }
+    }
+    if regions.is_empty() {
+        return None;
+    }
+    Some(
+        coalesce_regions(regions)
+            .into_iter()
+            .map(|rect| tilo_presentation::DamageRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod present_damage_tests {
+    use super::{Rect, bounded_present_damage};
+
+    #[test]
+    fn presentation_hints_cover_every_changed_framebuffer_pixel() {
+        let changed = [
+            Rect::new(-4.5, 1.2, 5.1, 7.8),
+            Rect::new(10.7, 12.4, 23.8, 29.2),
+            Rect::new(22.6, 28.1, 35.0, 37.0),
+        ];
+        let hints = bounded_present_damage(32, 32, &changed).expect("bounded damage");
+        // Pixel-cell intersection, independently of the outward-rounding
+        // implementation: every pixel touched by any submitted damage must
+        // be included, including fractional edges and output clipping.
+        for y in 0_u32..32 {
+            for x in 0_u32..32 {
+                let cell = Rect::new(
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(x.saturating_add(1)),
+                    f64::from(y.saturating_add(1)),
+                );
+                if changed
+                    .iter()
+                    .any(|rect| !rect.intersect(cell).is_zero_area())
+                {
+                    assert!(
+                        hints.iter().any(|hint| {
+                            x >= hint.x
+                                && y >= hint.y
+                                && x < hint.x.saturating_add(hint.width)
+                                && y < hint.y.saturating_add(hint.height)
+                        }),
+                        "changed framebuffer pixel ({x}, {y}) omitted"
+                    );
+                }
+            }
+        }
+        assert!(hints.iter().all(|hint| {
+            hint.x.saturating_add(hint.width) <= 32 && hint.y.saturating_add(hint.height) <= 32
+        }));
+    }
+
+    #[test]
+    fn uncertain_damage_preserves_whole_surface_presentation() {
+        for damage in [
+            vec![],
+            vec![Rect::new(f64::NAN, 0.0, 1.0, 1.0)],
+            vec![Rect::new(0.0, 0.0, f64::INFINITY, 1.0)],
+            vec![Rect::new(3.0, 0.0, 2.0, 1.0)],
+            vec![Rect::new(0.0, 0.0, 1.0, 1.0); 129],
+        ] {
+            assert!(bounded_present_damage(32, 32, &damage).is_none());
+        }
+    }
+}
+
 #[cfg(test)]
 mod admission_tests {
     use super::*;
@@ -1403,22 +1607,13 @@ mod admission_tests {
             impl Widget for Root {
                 fn update(
                     &mut self,
-                    doc: &mut crate::widget::AppModel,
-                    path: &crate::widget::ModelPath,
+                    _: &crate::widget::AppModel,
+                    _: &crate::widget::ModelPath,
                 ) -> bool {
-                    let (doc, path) = crate::doc::document(doc, path);
-                    if let Some(value) = self.pending.take() {
-                        doc.put(path, "label", value).unwrap();
-                        true
-                    } else {
-                        false
-                    }
+                    // The owner wrote the label; this pass takes it up.
+                    self.pending.take().is_some()
                 }
-                fn sync(
-                    &mut self,
-                    doc: &mut crate::widget::AppModel,
-                    path: &crate::widget::ModelPath,
-                ) {
+                fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
                     self.text.sync(doc, path);
                 }
                 fn build_layout(
@@ -1469,8 +1664,9 @@ mod admission_tests {
                 pending: Some("initial"),
             };
             let mut doc = automerge::AutoCommit::new();
-            root.update(&mut doc, &automerge::ROOT);
-            root.sync(&mut doc, &automerge::ROOT);
+            doc.put(automerge::ROOT, "label", "initial").unwrap();
+            root.update(&doc, &automerge::ROOT);
+            root.sync(&doc, &automerge::ROOT);
             let now = crate::time::now();
             let mut retry = retry::RenderRetryState::default();
             for _ in 0..8 {
@@ -1490,6 +1686,7 @@ mod admission_tests {
                 );
                 tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
                 root.pending = Some(value);
+                doc.put(automerge::ROOT, "label", value).unwrap();
                 let admitted_at = if index == 1 {
                     assert!(retry.known_occluded());
                     assert!(
@@ -1501,8 +1698,8 @@ mod admission_tests {
                     tick
                 };
                 if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
-                    assert!(root.update(&mut doc, &automerge::ROOT));
-                    root.sync(&mut doc, &automerge::ROOT);
+                    assert!(root.update(&doc, &automerge::ROOT));
+                    root.sync(&doc, &automerge::ROOT);
                     let _ = buffers.recv().unwrap();
                 }
                 assert_eq!(
@@ -1835,6 +2032,9 @@ mod retained_damage_tests {
         scene
     }
 
+    static EMPTY_BACKDROP: std::sync::OnceLock<crate::backdrop::BackdropFrame> =
+        std::sync::OnceLock::new();
+
     fn content<'a>(
         scene: &'a Scene,
         base_color: Color,
@@ -1842,6 +2042,7 @@ mod retained_damage_tests {
         full_redraw: bool,
     ) -> FrameContent<'a> {
         FrameContent {
+            backdrop: EMPTY_BACKDROP.get_or_init(crate::backdrop::BackdropFrame::default),
             scene,
             width: WIDTH,
             height: HEIGHT,
@@ -1870,8 +2071,17 @@ mod retained_damage_tests {
         let scene = marching_ants();
         let corner = [Rect::new(0.0, 0.0, 24.0, 24.0)];
 
+        // Software rasterization sums a tile's segments in GPU scheduling
+        // order, and this dense scene's dashes then differ by more than
+        // anti-aliasing between two complete renders. Both renderers sum in a
+        // fixed order, so the comparison sees only missing geometry.
+        let renderer_for = || {
+            let mut renderer = Renderer::new(device, options()).unwrap();
+            renderer.enable_canonical_segment_order(device).unwrap();
+            renderer
+        };
         // What a renderer that already knows this scene presents.
-        let mut oracle = Renderer::new(device, options()).unwrap();
+        let mut oracle = renderer_for();
         let (oracle_texture, oracle_view) = target(device);
         let mut oracle_cache = DamageCache::default();
         let mut fitted = false;
@@ -1895,7 +2105,7 @@ mod retained_damage_tests {
         assert!(fitted, "the oracle must converge to a complete frame");
         let expected = read(device, queue, &oracle_texture);
 
-        let mut renderer = Renderer::new(device, options()).unwrap();
+        let mut renderer = renderer_for();
         let (retained_texture, retained_view) = target(device);
         let retained = RetainedTarget {
             texture: &retained_texture,
@@ -1972,6 +2182,68 @@ mod retained_damage_tests {
         );
     }
 
+    /// A frame whose bump counters report no overflow drew everything. The
+    /// segments reservation is separate from seg_counts and had no overflow
+    /// check: a frame could outgrow it, report `failed=0`, and be presented
+    /// with geometry missing, which the overflow repaint then never fixed.
+    #[test]
+    fn a_frame_reported_complete_is_complete() {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let base_color = Color::from_rgb8(10, 10, 12);
+        let scene = marching_ants();
+        let mut renderer = Renderer::new(
+            device,
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .unwrap();
+        let (texture, view) = target(device);
+        let mut cache = DamageCache::default();
+        let mut render = |renderer: &mut Renderer| {
+            rasterize_damage(
+                (device, queue),
+                RetainedTarget {
+                    texture: &texture,
+                    view: &view,
+                },
+                renderer,
+                &mut cache,
+                &content(&scene, base_color, &[], true),
+            )
+            .unwrap();
+            renderer.settle_bump_budget(device)
+        };
+        let mut overflows = 0;
+        while render(&mut renderer) {
+            overflows += 1;
+            assert!(overflows <= 8, "the reservation must converge");
+        }
+        assert!(
+            overflows > 0,
+            "the scene must overflow a fresh reservation, or this test proves nothing"
+        );
+        let reported_complete = read(device, queue, &texture);
+        assert!(
+            !render(&mut renderer),
+            "a converged reservation keeps fitting"
+        );
+        let again = read(device, queue, &texture);
+        let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            &reported_complete,
+            &again,
+        );
+        assert_eq!(
+            differing, 0,
+            "a frame reported complete after {overflows} overflow(s) lacked {differing} pixels"
+        );
+    }
+
     #[test]
     fn every_presented_frame_equals_a_full_render() {
         let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
@@ -2040,6 +2312,7 @@ mod retained_damage_tests {
             }
             let scene = scene_of(&items);
             let content = FrameContent {
+                backdrop: &crate::backdrop::BackdropFrame::default(),
                 scene: &scene,
                 width: WIDTH,
                 height: HEIGHT,
@@ -2067,6 +2340,7 @@ mod retained_damage_tests {
                 &mut oracle,
                 &mut oracle_cache,
                 &FrameContent {
+                    backdrop: &crate::backdrop::BackdropFrame::default(),
                     full_redraw: true,
                     ..content
                 },

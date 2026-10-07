@@ -167,7 +167,7 @@ impl CapnpBrokerState {
         let caller = self.verify_network_action_caller_with_policy_time(evidence, policy_time)?;
         let host = self.invocation_host()?;
         if let Some(invocation) = poll {
-            let mut observation = self.peer_observation(&caller, invocation)?;
+            let mut observation = self.peer_observation(&caller, invocation).await?;
             if let Some(update) = notification {
                 if update.invocation() != invocation {
                     return Err("notification identity mismatch".into());
@@ -184,6 +184,25 @@ impl CapnpBrokerState {
             return Ok(observation);
         }
         match &evidence.action().message {
+            ActionMessage::RecordEffectReceipt {
+                invocation,
+                redacted,
+            } => {
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    room: caller.room.clone(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                        invocation: invocation.0,
+                        redacted: redacted.as_bytes().to_vec(),
+                    },
+                };
+                let _order = self.owner_commit_order.lock().await;
+                self.publisher
+                    .commit_member_effect_receipt(request, evidence.certificate().clone())
+                    .await?;
+                Ok(ActionMessage::EffectReceiptCommitted {
+                    invocation: *invocation,
+                })
+            }
             ActionMessage::CatalogueRefresh { scope } => {
                 let catalogue = serde_json::from_str(&self.action_catalogue_json_for(
                     &caller.room,
@@ -193,7 +212,9 @@ impl CapnpBrokerState {
                 .map_err(|_| "catalogue unavailable")?;
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue })
             }
-            ActionMessage::Status { invocation } => self.peer_observation(&caller, *invocation),
+            ActionMessage::Status { invocation } => {
+                self.peer_observation(&caller, *invocation).await
+            }
             ActionMessage::Cancel { invocation } => {
                 self.cancel_verified_invocation(&caller, *invocation)?;
                 Ok(ActionMessage::CancellationRequested {
@@ -244,7 +265,7 @@ impl CapnpBrokerState {
                     {
                         return Err("changed invocation intent".into());
                     }
-                    return self.peer_observation(&caller, *invocation);
+                    return self.peer_observation(&caller, *invocation).await;
                 }
                 let actor = caller.admitted.broker_actor();
                 let resolved_offer = if let Some(revision) = revision {
@@ -311,7 +332,8 @@ impl CapnpBrokerState {
                     {
                         return Err("changed invocation intent".into());
                     }
-                    return self.peer_observation(&caller, *invocation);
+                    drop(admission);
+                    return self.peer_observation(&caller, *invocation).await;
                 }
                 let confirmation = confirmation.as_ref().map(|c| match c {
                     Confirmation::Confirm => DirectoryActionConfirmation::Confirmed,
@@ -332,6 +354,8 @@ impl CapnpBrokerState {
                     request.peer_id,
                     offered,
                     InvocationInputs {
+                        requested: None,
+                        caller: None,
                         execution: None,
                         argument: request.argument.as_deref(),
                         actor: &actor,
@@ -341,19 +365,27 @@ impl CapnpBrokerState {
                     Some((&caller, &request)),
                     revision.as_deref(),
                 )?;
-                let observation = self.peer_observation(&caller, *invocation);
                 drop(admission);
-                observation
+                self.peer_observation(&caller, *invocation).await
             }
             _ => Err("unsupported action request".into()),
         }
     }
-    fn peer_observation(
+    async fn peer_observation(
         &self,
         caller: &VerifiedActionCaller,
         invocation: tilo_actions::InvocationId,
     ) -> Result<ActionMessage, String> {
-        let record = self.verified_invocation_status(caller, invocation)?;
+        let mut record = self.verified_invocation_status(caller, invocation)?;
+        if let Some(retained) = record {
+            record = Some(
+                self.reconcile_prepared_effect(retained, || {
+                    self.verified_invocation_status(caller, invocation)?;
+                    Ok(())
+                })
+                .await?,
+            );
+        }
         Ok(ActionMessage::Observation {
             host: self.invocation_host()?,
             invocation,

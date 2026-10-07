@@ -65,6 +65,11 @@ use crate::a11y::{AccessNode, AccessibleTextSelection, Action, Role};
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
 
+#[cfg(any(feature = "native", test))]
+mod floating_surface;
+#[cfg(feature = "native")]
+pub(crate) use floating_surface::{surface_action_target, surface_tree_update};
+
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
@@ -138,6 +143,7 @@ pub fn map_role(role: Role) -> AkRole {
         Role::RadioButton => AkRole::RadioButton,
         Role::Switch => AkRole::Switch,
         Role::Slider => AkRole::Slider,
+        Role::Separator => AkRole::Splitter,
         Role::SpinButton => AkRole::SpinButton,
         Role::ComboBox => AkRole::ComboBox,
         Role::TextInput => AkRole::TextInput,
@@ -232,8 +238,8 @@ fn synthetic_text_run_node_id(parent: AkNodeId) -> AkNodeId {
     synthetic_node_id(parent, SYNTHETIC_TEXT_RUN_KEY)
 }
 
-/// What an editable node's text run carries: its value and the caret or
-/// selection in it, or `None` when the node exports no run.
+/// What a readable text node's run carries: its value and caret or selection,
+/// or `None` when the node exports no run.
 ///
 /// A protected (password) field still gets a run: AccessKit offers AT-SPI
 /// Text and EditableText only on a node with one, and without them a screen
@@ -251,6 +257,16 @@ fn text_run_content(access: &AccessNode) -> Option<(&str, AccessibleTextSelectio
     }
     match (&access.value, access.text_selection) {
         (Some(value), Some(selection)) => Some((value.as_str(), selection)),
+        // A terminal transcript is readable even before anyone selects it.
+        // AccessKit derives the platform Text interface from descendant runs,
+        // rather than from the terminal node's value alone.
+        (Some(value), None) if access.role == Role::Terminal => Some((
+            value.as_str(),
+            AccessibleTextSelection {
+                anchor: 0,
+                focus: 0,
+            },
+        )),
         _ => None,
     }
 }
@@ -1225,10 +1241,14 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
         ak.add_action(AkAction::Click);
     }
     match access.role {
-        Role::Slider | Role::SpinButton => {
+        Role::Slider | Role::Separator | Role::SpinButton => {
             if !access.state.disabled {
                 ak.add_action(AkAction::Increment);
                 ak.add_action(AkAction::Decrement);
+                if matches!(access.role, Role::Slider | Role::Separator) && !access.state.read_only
+                {
+                    ak.add_action(AkAction::SetValue);
+                }
             }
         }
         Role::ComboBox | Role::TreeItem => {
@@ -1350,7 +1370,7 @@ mod tests {
     }
 
     impl Widget for TestWidget {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1413,7 +1433,7 @@ mod tests {
     }
 
     impl Widget for AliasWrapper {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -1693,7 +1713,7 @@ mod tests {
     }
 
     impl Widget for FirstFieldHost {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1863,6 +1883,24 @@ mod tests {
             assert_eq!(update.tree.as_ref().unwrap().root, ROOT_ID);
             assert!(update.nodes.iter().any(|(id, _)| *id == ROOT_ID));
         }
+    }
+
+    #[test]
+    fn sidebar_shared_separator_exports_resize_verbs_to_accesskit() {
+        use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
+        let handle = SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default());
+        let mut root = TestWidget::new(None).with_child(Box::new(handle));
+        let (_taffy, map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &map, None, 1.0);
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == AkRole::Splitter)
+            .expect("actual shared divider exported");
+        for action in [AkAction::Increment, AkAction::Decrement, AkAction::SetValue] {
+            assert!(node.supports_action(action));
+        }
+        assert_eq!(node.value(), Some("50%"));
     }
 
     #[test]
@@ -2276,6 +2314,24 @@ mod tests {
             assert!(node.supports_action(AkAction::SetTextSelection));
             assert!(!node.supports_action(AkAction::SetValue));
             assert_eq!(node.value(), Some("$ cargo test"));
+            let run_id = *node
+                .children()
+                .first()
+                .expect("unselected terminal has a readable text run");
+            let run = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == run_id)
+                .expect("terminal text run reaches the platform tree");
+            assert_eq!(run.1.role(), AkRole::TextRun);
+            assert_eq!(run.1.value(), Some("$ cargo test"));
+            assert_eq!(run.1.character_lengths().len(), 12);
+            let selection = node
+                .text_selection()
+                .expect("unselected transcript has a collapsed caret");
+            assert_eq!(selection.anchor.node, run_id);
+            assert_eq!(selection.anchor.character_index, 0);
+            assert_eq!(selection.focus, selection.anchor);
         }
 
         // Case `protected_value_is_never_exposed`.

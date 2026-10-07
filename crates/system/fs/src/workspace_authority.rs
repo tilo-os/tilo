@@ -985,6 +985,26 @@ mod tests {
             find_local_authority_in(&sockets).await.unwrap(),
             (workspace, live)
         );
+        let other_workspace = uuid::Uuid::new_v4();
+        let other_authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("other-authority.bin"),
+                other_workspace,
+                governor.verifying_key().to_bytes(),
+                [1; 32],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let other_socket = sockets.join(format!(
+            "{LOCAL_AUTHORITY_SOCKET_PREFIX}{other_workspace}{LOCAL_SOCKET_SUFFIX}"
+        ));
+        let other_task = serve_local_authority(&other_socket, other_authority).unwrap();
+        assert!(
+            find_local_authority_in(&sockets).await.is_err(),
+            "multiple live workspace authorities must not be guessed"
+        );
+        other_task.abort();
         task.abort();
     }
 

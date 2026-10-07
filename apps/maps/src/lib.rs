@@ -16,7 +16,8 @@
 //! [`MapsShell`] is the app every host runs and mounts ([`definition`]). A
 //! live window fetches real data on background threads; a `--shots`
 //! capture renders the bundled sample city from its scenario's fixture and
-//! actions, so the screenshot is fully populated offline.
+//! actions, so the screenshot is fully populated offline. Finding places is
+//! the platform search ([`place_search`]).
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -50,17 +51,18 @@ pub mod doc;
 pub mod draw;
 mod endpoint_editor;
 pub mod geo;
+mod hand_laid;
 mod map_controls;
 mod map_info_sheet;
 pub mod model;
 pub mod net;
 pub mod offline_areas;
 mod offline_panel;
+pub mod place_search;
 pub mod rank;
 pub mod resource;
 pub mod sample;
 mod scenario;
-mod search_box;
 pub mod tiles;
 pub mod traffic;
 

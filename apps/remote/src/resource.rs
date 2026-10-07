@@ -4,19 +4,26 @@
 
 use std::rc::Rc;
 
-use ui::framework::{Fixture, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
+};
+use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::items::{ItemAction, ItemCollection, item_children, item_resource_id};
 use ui::tilo_resource::{ActionDecl, Doc, Id, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    REMOTE_ACTION_TYPE, RemoteAction, delete_action, register, rename_action, set_favorite_action,
+    REMOTE_ACTION_TYPE, RemoteAction, RemoteEffect, delete_action, register, rename_action,
+    set_favorite_action,
 };
 use crate::app::RemoteApp;
 use crate::doc::{CONNECTIONS, RemoteDoc};
 use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind};
+
+/// The app's id, which its settings are kept under.
+pub const REMOTE_APP_ID: &str = "so.tilo.remote";
 
 /// The remote connections list resource.
 pub struct Remote;
@@ -116,10 +123,10 @@ impl Resource for Remote {
             .describe("Rename a saved connection."),
             ActionDecl::new(
                 "set-favorite",
-                "Set favourite",
+                "Pin connection",
                 vec![
                     connection(),
-                    ActionParam::required("favorite", ParamType::Boolean, "Favourite"),
+                    ActionParam::required("favorite", ParamType::Boolean, "Pinned"),
                 ],
                 |args, _| {
                     let favorite = args.boolean("favorite").unwrap_or(true);
@@ -136,13 +143,6 @@ impl Resource for Remote {
             .describe("Remove a saved connection from every device.")
             .destructive(),
         ]
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::list_view_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     /// Every saved connection, with its settings view, its connect effect
@@ -188,6 +188,7 @@ impl Resource for Remote {
                 title: connection.name.clone(),
                 text: connection.host.clone(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }
@@ -198,16 +199,20 @@ pub struct RemoteShell;
 
 /// The screenshot scenarios; a plain `--shots` is the saved-connection list.
 const SCENARIOS: &[&str] = &[
+    "empty",
+    "pinned",
     "narrow",
-    "narrow-open",
     "form",
     "form-tilo",
+    "form-invalid",
+    "edit",
     "session-ssh",
     "session-vnc",
     "session-rdp",
     "session-tilo",
     "session-connecting",
     "session-failed",
+    "session-closed",
     "confirm-connect",
     "confirm-delete",
     "confirm-ssh-trust",
@@ -215,12 +220,16 @@ const SCENARIOS: &[&str] = &[
 
 impl ResourceApp for RemoteShell {
     type Resource = Remote;
-    const ID: &'static str = "so.tilo.remote";
+    const ID: &'static str = REMOTE_APP_ID;
     const TITLE: &'static str = "Remote Desktop";
     const ICON: Option<&'static str> = Some("remote");
 
     fn view(cx: &mut ViewCx<Remote>) -> Element {
-        cx.surface(RemoteApp::new())
+        let app = RemoteApp::new();
+        // A picked search hit shows its connection in the list.
+        let opened = app.open_requests();
+        cx.on_open(move |anchor| opened.borrow_mut().push(anchor.to_owned()));
+        cx.surface(app)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -228,11 +237,9 @@ impl ResourceApp for RemoteShell {
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        if scenario.is_some_and(|name| name.starts_with("narrow")) {
-            (560, 720)
-        } else {
-            (1100, 720)
-        }
+        scenario
+            .and_then(|name| (name == "narrow").then_some((800, 600)))
+            .unwrap_or((1280, 800))
     }
 
     /// What a capture shows that the document does not hold: the time "last
@@ -242,9 +249,18 @@ impl ResourceApp for RemoteShell {
         fixture.provide(crate::app::Sample::new());
     }
 
-    /// A lived-in list of saved machines.
-    fn scenario(_name: Option<&str>) -> Vec<Invoke<Remote>> {
-        crate::app::sample_connections()
+    /// Every scenario but `empty` shows a lived-in list of saved machines,
+    /// written through the same actions the form, the pin control and an
+    /// opened session use.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Remote>> {
+        if name == Some("empty") {
+            return Vec::new();
+        }
+        let mut connections = crate::app::sample_connections();
+        if name == Some("session-rdp") {
+            connections.push(crate::app::sample_legacy_rdp());
+        }
+        connections
             .iter()
             .flat_map(|connection| {
                 let mut actions = vec![crate::actions::upsert_action(connection)];
@@ -261,7 +277,7 @@ impl ResourceApp for RemoteShell {
     }
 }
 
-impl ResourceSurface<Remote> for RemoteApp {
+impl ResourceSurface<Remote, RemoteEffect> for RemoteApp {
     fn present(&mut self, state: &Rc<Vec<Connection>>) {
         self.adopt_resource_state(state);
     }
@@ -271,7 +287,23 @@ impl ResourceSurface<Remote> for RemoteApp {
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
+        RemoteApp::stage(self, scenario);
+    }
+
+    fn effect(&mut self, effect: RemoteEffect, cx: &mut EffectCx<Remote, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    /// Text reaches only a connected SSH terminal.
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.can_send_text() {
+            return Vec::new();
+        }
+        vec![EffectStatus::unavailable(
+            RemoteEffect::SEND_TEXT,
+            "terminal_not_connected",
+            "Text input requires a connected SSH terminal",
+        )]
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {

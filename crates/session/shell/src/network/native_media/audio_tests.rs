@@ -137,10 +137,7 @@ fn percentile(values: &mut [f64], q: f64) -> f64 {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency() {
-    let Some(mut encoder) = OpusEncoder::new() else {
-        eprintln!("SKIP: GStreamer opusenc unavailable");
-        return;
-    };
+    let mut encoder = OpusEncoder::new().expect("native voice proof requires GStreamer opusenc");
     let seconds = 5;
     let relay = LoopbackRelay::start(Arc::new(TestIdentities)).expect("loopback relay");
     let mut sides = Vec::new();

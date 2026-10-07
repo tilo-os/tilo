@@ -10,6 +10,8 @@
 # FINAL_RECEIPT_POLICY inputs. It uploads immutable packages, submits each
 # tapp to the signed registry, assembles each collection and, for main's
 # default collection, advances the TILO_APP_COLLECTION_* repository variables.
+# Last, it offers the runtime build the apps link as the registry package
+# so.tilo.runtime, so a device without that build fetches it with the apps.
 set -euo pipefail
 audience=$MAIN_AUDIENCE
 [[ -n $audience ]] || { printf 'app release Authorized Integration audience is required\n' >&2; exit 1; }
@@ -56,7 +58,7 @@ TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
 
 # Product artwork is immutable alongside its tapp release.  The
 # metadata builder always emits an accessible owned icon, and adds
-# checked-in app screenshots where available, so a store card can
+# local or checksum-pinned archived app screenshots, so a store card can
 # never become a blank patch of UI again.
 registry_url=${TILO_REGISTRY_URL%/}
 [[ $registry_url == https://* && $registry_url != *'.svc.cluster.local'* ]] || {
@@ -83,6 +85,12 @@ while IFS= read -r media; do
 done < <(find "$registry_media" -maxdepth 1 -type f -printf '%f\n' | sort)
 TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
   tools/upload_immutable_packages.sh "$registry_media_uploads"
+
+# Archived screenshots are served directly through the existing public proxy.
+# Include them in the same availability/type gate before signing any entry.
+jq -r --arg base "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION/" \
+  '.images.en[] | select(.url | startswith($base) | not) | [(.url | split("/") | last), .url] | @tsv' \
+  "$registry_metadata"/*.json >> "$registry_media_urls"
 
 # Registry metadata is a public API contract.  Do not sign image
 # URLs into an entry until the public artifact endpoint can serve
@@ -113,6 +121,22 @@ check_media() {
       "$media_url" "$status" "${content_type:-no Content-Type}" "$expected_type" >&2
     return 1
   }
+  local version=${media_url%/*} archived_file actual_sha
+  version=${version##*/}
+  if [[ $version =~ ^[0-9a-f]{64}$ ]]; then
+    archived_file=$(mktemp "$RUNNER_TEMP/tilo-registry-archive.XXXXXX")
+    if ! curl --fail --silent --show-error --max-filesize 33554432 \
+      "$media_url" --output "$archived_file"; then
+      rm -f -- "$archived_file"
+      return 1
+    fi
+    actual_sha=$(sha256sum "$archived_file")
+    rm -f -- "$archived_file"
+    [[ ${actual_sha%% *} == "$version" ]] || {
+      printf 'archived registry screenshot SHA-256 mismatch: %s\n' "$media_url" >&2
+      return 1
+    }
+  fi
 }
 export -f check_media
 export RUNNER_TEMP
@@ -246,7 +270,41 @@ while IFS= read -r id; do
   }
 done < <(cut -f1 "$publication_plan" | uniq)
 
-[[ -n ${COLLECTION:-} ]] || exit 0
+# Offer the runtime build every app above links, as `so.tilo.runtime`: its
+# thin package beside its content-addressed payload objects, which devices
+# fetch through the registry before an app that names the build. A build the
+# registry already offers is not submitted again. Runs last so a refusal here
+# fails the job loudly without holding back the apps or the collections;
+# until it is offered, devices refuse those apps with a clear message rather
+# than installing apps they cannot start.
+runtime_failed=0
+publish_runtimes() {
+  local index metadata
+  metadata="$RUNNER_TEMP/tilo-runtime-metadata.json"
+  jq -n '{name: {en: "Tilo runtime"},
+          description: {en: "The shared libraries Tilo apps are built against. The Store installs the build an app needs together with the app."},
+          tagline: {en: "Runtime for Tilo apps"},
+          supported_languages: ["en"],
+          source_url: "https://code.tilo.so/tilo/tilo"}' > "$metadata"
+  for index in release/*/index.json; do
+    VERSION=$VERSION TILO_PACKAGE_TOKEN=$jwt PACKAGE_API=$package_api \
+      REGISTRY_URL=$registry_url OWNER=$owner REGISTRY_CLI=$registry_cli \
+      REGISTRY_IDENTITY=$registry_identity \
+      tools/apps/publish-runtime-package.sh "${index%/index.json}/runtime-package" \
+      "$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")" \
+      so.tilo.runtime tilo-app-runtime "$metadata" \
+      || runtime_failed=1
+  done
+  (( runtime_failed == 0 )) || {
+    printf 'the runtime build the published apps link is not offered by the registry\n' >&2
+    return 1
+  }
+}
+
+if [[ -z ${COLLECTION:-} ]]; then
+  publish_runtimes
+  exit
+fi
 collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
 python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
 source_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
@@ -291,8 +349,12 @@ for index in release/*/index.json; do
     dist/apps/assemble-collection.sh
   bundle="$out/tilo-apps-$arch.tar.gz"
   digest_file="$bundle.sha256"
-  bundle_upload_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
-  bundle_url="$package_public_api/tilo-app-collections/$VERSION/${bundle##*/}"
+  # Runs for one source can select different apps and reuse different prior
+  # members. Their immutable collection address must identify the bytes too.
+  bundle_sha=$(sha256sum "$bundle" | cut -d' ' -f1)
+  collection_version="$VERSION-$bundle_sha"
+  bundle_upload_url="$package_api/tilo-app-collections/$collection_version/${bundle##*/}"
+  bundle_url="$package_public_api/tilo-app-collections/$collection_version/${bundle##*/}"
   if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
     python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
       --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
@@ -319,13 +381,13 @@ for index in release/*/index.json; do
     rm -f "$readback"
     printf '%s\t%s\n' \
       "$out/published-receipt.json" \
-      "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.receipt.json" \
+      "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.receipt.json" \
       "$out/published-receipt.upload.json" \
-      "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.upload.json" \
+      "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.upload.json" \
       >> "$metadata_uploads"
   fi
   printf '%s\t%s\n' "$digest_file" \
-    "$package_api/tilo-app-collections/$VERSION/${digest_file##*/}" \
+    "$package_api/tilo-app-collections/$collection_version/${digest_file##*/}" \
     >> "$metadata_uploads"
   TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=3 \
     tools/upload_immutable_packages.sh "$metadata_uploads"
@@ -372,3 +434,5 @@ if [[ $GITHUB_REF == refs/heads/main && $COLLECTION == default ]]; then
   fi
   echo '::notice::advanced the default OS app-collection channel'
 fi
+
+publish_runtimes

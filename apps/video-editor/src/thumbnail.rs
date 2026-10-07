@@ -258,6 +258,10 @@ pub struct ThumbnailCache {
     sources: HashMap<MediaId, (PathBuf, ThumbKey)>,
     /// Monotonic stamp for LRU eviction.
     clock: u64,
+    /// Whether real frames are decoded at all. A hermetic editor (a capture,
+    /// a past version) shows representative frames only, so what it draws
+    /// does not depend on when a decode lands.
+    decoding: bool,
     service: ThumbnailService,
 }
 
@@ -291,8 +295,15 @@ impl ThumbnailCache {
             #[cfg(feature = "decode")]
             sources: HashMap::new(),
             clock: 0,
+            decoding: true,
             service,
         }
+    }
+
+    /// Stop (or resume) decoding real frames: representative frames stand in
+    /// for every source while it is off.
+    pub fn set_decoding(&mut self, decoding: bool) {
+        self.decoding = decoding;
     }
 
     /// Pull settled decodes into the cache. Call each `sync`.
@@ -486,7 +497,7 @@ impl ThumbnailCache {
     /// flight. Only reached under the decode feature.
     #[cfg(feature = "decode")]
     fn request(&mut self, id: MediaId, source: &MediaSource, bucket: u32, at: f64) {
-        if self.undecodable.contains(&id) || !source.is_decodable() {
+        if !self.decoding || self.undecodable.contains(&id) || !source.is_decodable() {
             return;
         }
         // Already answered, already failed, or already in flight.

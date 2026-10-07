@@ -214,6 +214,7 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "TILO_APP_NAME".to_string(),
             "TILO_APP_ICON".to_string(),
             "TILO_APP_DIR".to_string(),
+            "TILO_PERSON_DIR".to_string(),
             "TILO_USER_HOME".to_string(),
             "TILO_USER_IDENTITY".to_string(),
             "TILO_IDENTITY_BROKER_FD".to_string(),

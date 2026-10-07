@@ -120,8 +120,6 @@ pub struct RunnerDiagnostics {
     pub perf_log: bool,
     /// Disable the scroll-reposition layout fast path.
     pub disable_scroll_fast_path: bool,
-    /// Disable the navigation split's cached content layout.
-    pub disable_split_cache: bool,
     /// Request GPU timestamp queries.
     pub gpu_timestamps: bool,
     /// Request timestamp queries inside compute passes.
@@ -132,6 +130,8 @@ pub struct RunnerDiagnostics {
     pub profile_out: Option<PathBuf>,
     /// Record presentation feedback for a native performance scenario.
     pub presentation_profile: bool,
+    /// Record content-free render stages under explicit presentation diagnostics.
+    pub presentation_timing: bool,
     /// Open windows without taking focus from the active application.
     pub window_no_activate: bool,
     /// Restore the always-refresh hosted pump for paired host measurements.

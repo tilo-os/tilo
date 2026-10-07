@@ -31,7 +31,7 @@ fn document_fields_are_synchronized_and_undoable() {
     app.harness()
         .expect(
             &SemanticExpectation::named("document-title-preview")
-                .role(Role::Heading { level: 2 })
+                .role(Role::Heading { level: 3 })
                 .name("Project Atlas"),
         )
         .expect("the preview follows the document");

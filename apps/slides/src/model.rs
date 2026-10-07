@@ -18,6 +18,7 @@
 
 use ui::ColorCompat;
 use ui::paint::with_alpha;
+use ui::tokens::colors::PresenceHue;
 use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 use uuid::Uuid;
@@ -236,6 +237,13 @@ impl Element {
     /// The text as written: its blocks, or for an element built from plain
     /// text, a paragraph per line carrying the element's bold and italic
     /// over all of it.
+    /// Whether a text box has no words yet.
+    pub fn is_blank_text(&self) -> bool {
+        self.kind == ElementKind::Text
+            && self.text.trim().is_empty()
+            && self.blocks.iter().all(|block| block.text.trim().is_empty())
+    }
+
     pub fn rich_blocks(&self) -> Vec<BlockContent> {
         if !self.blocks.is_empty() {
             return self.blocks.clone();
@@ -444,8 +452,8 @@ impl Layout {
     pub fn label(self) -> &'static str {
         match self {
             Layout::Title => "Title",
-            Layout::TitleContent => "Title + Body",
-            Layout::TwoColumn => "Two Column",
+            Layout::TitleContent => "Title and body",
+            Layout::TwoColumn => "Two columns",
             Layout::Section => "Section",
             Layout::Blank => "Blank",
         }
@@ -640,41 +648,61 @@ pub struct Palette {
     pub warning: Color,
     pub danger: Color,
     pub info: Color,
+    /// The status colour of an image that could not be loaded.
+    pub failed: Color,
     /// The `text` and `text-dim` inks for each slide background, in
     /// [`Background::ALL`] order. See [`Palette::on`].
     inks: [(Color, Color); 3],
 }
 
+/// The deck's deep tone: an authored dark treatment in every OS theme (a
+/// theme-tracking neutral would flip near-white in the light palette).
+const DEEP: Color = Color::from_rgb8(15, 23, 42);
+
+/// A deck's colours are content: they come from the presence palette's
+/// evenly spaced hues, never from the status colours, and a deck looks the
+/// same in either theme, so its hues are the light palette's (deep enough to
+/// carry white type).
+static DECK_HUES: std::sync::LazyLock<ui::tokens::colors::PresencePalette> =
+    std::sync::LazyLock::new(|| ui::tokens::Colors::light().presence);
+
 impl Palette {
     /// Build the resolved palette for `kind` against `theme`.
     pub fn resolve(kind: PaletteKind, theme: &ui::theme::Theme) -> Palette {
         let c = &theme.tokens.colors;
+        let hue = |h: PresenceHue| DECK_HUES.hue(h);
         let accent = match kind {
-            PaletteKind::Indigo => theme.accent_primary,
-            PaletteKind::Emerald => c.semantic.success,
-            PaletteKind::Amber => c.semantic.warning,
-            PaletteKind::Rose => c.semantic.danger,
-            PaletteKind::Sky => c.semantic.info,
+            PaletteKind::Indigo => hue(PresenceHue::Blue),
+            PaletteKind::Emerald => hue(PresenceHue::Green),
+            PaletteKind::Amber => hue(PresenceHue::Amber),
+            PaletteKind::Rose => hue(PresenceHue::Pink),
+            PaletteKind::Sky => hue(PresenceHue::Sky),
         };
         let mut palette = Palette {
             accent,
             accent_soft: with_alpha(accent, 56),
-            accent_deep: mix(accent, c.surfaces.base, 0.62),
+            accent_deep: mix(accent, DEEP, 0.62),
             surface: c.surfaces.raised,
-            surface_dim: mix(c.surfaces.raised, c.surfaces.base, 0.5),
+            surface_dim: mix(c.surfaces.raised, c.surfaces.content, 0.5),
             // A "Deep" slide is an authored dark treatment in every OS theme
             // — a theme-tracking neutral flips near-white in the light
             // palette. A fixed deep tone keeps it dramatic; its text inks
             // are chosen against it below.
-            deep: Color::from_rgb8(15, 23, 42),
+            deep: DEEP,
             text: c.text_primary,
             text_dim: c.text_dim,
             // White on the accent where it reads, else the legible ink.
-            on_accent: c.readable_on(accent, Color::WHITE),
-            success: c.semantic.success,
-            warning: c.semantic.warning,
-            danger: c.semantic.danger,
-            info: c.semantic.info,
+            // White type on the accent, as slides set it large.
+            on_accent: c.ink_on_any(
+                &[accent],
+                Color::WHITE,
+                ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            ),
+            success: hue(PresenceHue::Green),
+            warning: hue(PresenceHue::Amber),
+            danger: hue(PresenceHue::Red),
+            info: hue(PresenceHue::Violet),
+            failed: c.semantic.danger,
             inks: [(c.text_primary, c.text_dim); 3],
         };
         // The theme's text colours are chosen for the theme's own surfaces;
@@ -767,6 +795,34 @@ impl Palette {
         }
     }
 
+    /// The `text` (or, with `dim`, `text-dim`) ink for text standing on
+    /// `ground`: the slide's own ink where it clears AA on that ground,
+    /// otherwise whichever of the palette's inks reads best on it.
+    pub fn ink_on(&self, ground: Color, dim: bool) -> Color {
+        use ui::a11y::contrast_ratio;
+        use ui::tokens::colors::ON_FILL_MIN_CONTRAST as AA;
+        let text = if contrast_ratio(self.text, ground) >= AA {
+            self.text
+        } else {
+            std::iter::once(self.text)
+                .chain(self.inks.iter().map(|(ink, _)| *ink))
+                .max_by(|a, b| contrast_ratio(*a, ground).total_cmp(&contrast_ratio(*b, ground)))
+                .unwrap_or(self.text)
+        };
+        if !dim {
+            return text;
+        }
+        if text == self.text && contrast_ratio(self.text_dim, ground) >= AA {
+            return self.text_dim;
+        }
+        let soft = mix(text, ground, 0.3);
+        if contrast_ratio(soft, ground) >= AA {
+            soft
+        } else {
+            text
+        }
+    }
+
     /// Default body / heading text colour for a slide background: the ink
     /// the `text` role resolves to on it (see [`Palette::on`]).
     pub fn on_bg(&self, bg: Background) -> Color {
@@ -774,18 +830,25 @@ impl Palette {
     }
 }
 
-/// The fill/stroke roles offered in the inspector swatch row.
+/// The fill roles the inspector offers. They stay distinct from one another
+/// in either OS theme: `surface` is the slide's own ground and `text` its
+/// ink, which sit at opposite ends whichever theme is showing, and the rest
+/// are the deck's hues.
 pub const FILL_ROLES: [&str; 8] = [
     "accent",
     "accent-soft",
     "surface",
-    "deep",
+    "text",
     "success",
     "warning",
     "danger",
     "info",
 ];
-pub const STROKE_ROLES: [&str; 6] = ["none", "accent", "text", "white", "deep", "danger"];
+/// The stroke roles the inspector offers: no stroke, the slide's ink, and
+/// the deck's hues.
+pub const STROKE_ROLES: [&str; 7] = [
+    "none", "text", "accent", "success", "warning", "danger", "info",
+];
 
 /// Linear blend `a*(1-t) + b*t` in straight RGB.
 fn mix(a: Color, b: Color, t: f64) -> Color {
@@ -807,9 +870,11 @@ fn mix(a: Color, b: Color, t: f64) -> Color {
 pub fn starter_deck() -> Deck {
     let mut s = Slide::new(Layout::Title);
     s.background = Background::Surface;
-    s.add(Element::text("Title", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
+    // Empty boxes: the editor prompts for their words, a presentation
+    // shows nothing until they are written.
+    s.add(Element::text("", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
     s.add(
-        Element::text("Subtitle", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
+        Element::text("", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
             e.fill = "text-dim".into();
         }),
     );
@@ -848,7 +913,7 @@ fn seed_slide_cover() -> Slide {
                the workshop is for."
         .into();
     s.add(
-        Element::text("CONCEPT REVIEW", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
+        Element::text("Concept review", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
             e.fill = "on-accent".into();
             e.bold = true;
         }),
@@ -869,7 +934,7 @@ fn seed_slide_cover() -> Slide {
     );
     s.add(
         Element::text(
-            "Design workshop  ·  spring review",
+            "Design workshop, spring review",
             110.0,
             500.0,
             900.0,
@@ -881,7 +946,7 @@ fn seed_slide_cover() -> Slide {
         }),
     );
     s.add(
-        Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
+        Element::shape(ElementKind::Rect, 110.0, 222.0, 92.0, 8.0).with(|e| {
             e.fill = "white".into();
             e.radius = 4.0;
         }),
@@ -897,7 +962,7 @@ fn seed_slide_goals() -> Slide {
                wetland — that's the constraint everything else works around."
         .into();
     s.add(
-        Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
+        Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 76.0, 56.0).with(|e| {
             e.bold = true;
         }),
     );
@@ -945,7 +1010,7 @@ fn seed_slide_two_column() -> Slide {
                before we cost them out."
         .into();
     s.add(
-        Element::text("Two options to compare", 96.0, 70.0, 1088.0, 90.0, 56.0)
+        Element::text("Two options to compare", 96.0, 70.0, 1088.0, 76.0, 56.0)
             .with(|e| e.bold = true),
     );
     s.add(
@@ -963,7 +1028,7 @@ fn seed_slide_two_column() -> Slide {
         }),
     );
     s.add(
-        Element::text("OPTION A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+        Element::text("Option A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
             e.fill = "accent".into();
             e.bold = true;
         }),
@@ -983,7 +1048,7 @@ fn seed_slide_two_column() -> Slide {
         }),
     );
     s.add(
-        Element::text("OPTION B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+        Element::text("Option B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
         }),
@@ -1092,7 +1157,7 @@ fn seed_slide_closing() -> Slide {
     );
     s.add(
         Element::text(
-            "Share feedback by Friday  ·  prototype in April",
+            "Share feedback by Friday, prototype in April",
             110.0,
             450.0,
             1000.0,

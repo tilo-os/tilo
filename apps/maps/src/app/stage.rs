@@ -1,67 +1,108 @@
-//! Staging a screenshot scenario's view state: an open panel, a menu, a
-//! search in progress, a detached navigation card. The scenario's places and
-//! plans are already the resource's, written by its actions
-//! ([`crate::scenario`]); what is staged here is this window's alone.
+//! Staging a screenshot scenario's view state: the camera, an open panel, a
+//! menu or sheet, a search on screen, a detached navigation card. The
+//! scenario's places and plans are already the resource's, written by its
+//! actions ([`crate::scenario`]); what is staged here is this window's alone.
 
 use vello::kurbo::{Point, Rect};
 
 #[cfg(test)]
 use super::TravelMode;
-use super::{Endpoint, FloatingSurfaceProvider, LatLon, MapInfo, MapsApp, Panel, Widget, sample};
+use super::{Endpoint, FloatingSurfaceProvider, LatLon, MapInfo, MapsApp, Panel, sample};
+use crate::scenario::Scenario;
 
 impl MapsApp {
-    /// Stage `scenario`'s view state, once its actions are laid out.
-    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
+    /// Stage `name`'s view state (`None` for a plain `--shots`, the drive
+    /// route), once its actions are laid out.
+    pub(crate) fn stage_scenario(&mut self, name: Option<&str>) {
+        let scenario = Scenario::of(name);
+        let sample = sample::default_model();
+        self.model.center = sample.center;
+        self.model.zoom = sample.zoom;
+        self.model.selected.clone_from(&sample.selected);
+        self.model.panel = Panel::Directions;
+        self.nav_open = true;
         match scenario {
-            "explore" => self.set_active_panel(Panel::Explore),
-            "directions" | "transit" | "transit-arrive" => self.set_active_panel(Panel::Directions),
-            "edit-from" => self.stage_edit_origin(),
-            "search" => self.stage_search(),
-            "pois" => self.stage_pois(),
-            "traffic" | "traffic-empty" => self.stage_traffic(),
-            "offline" => self.stage_offline(),
-            "menu" => self.stage_overflow(),
-            "attribution" => self.stage_attribution(),
-            "error" => self.stage_error(),
-            "nav-closed" => self.set_nav_open(false),
-            "floating-navigation" => self.stage_navigation("detached"),
-            _ => {
-                if let Some(stage) = scenario.strip_prefix("floating-navigation-") {
-                    self.stage_navigation(stage);
+            Scenario::Directions | Scenario::Error | Scenario::Collapsed => {
+                self.pending_fit = true;
+                if scenario == Scenario::Error {
+                    self.stage_error();
                 }
+                if scenario == Scenario::Collapsed {
+                    self.panel_collapsed = true;
+                }
+            }
+            Scenario::EditOrigin => self.stage_edit_origin(),
+            Scenario::Explore => {
+                self.model.panel = Panel::Explore;
+                if let Some(place) = self.model.selected_place().cloned() {
+                    self.center_on(place.pos);
+                }
+            }
+            Scenario::Search => self.stage_search(),
+            Scenario::Pois => {
+                self.stage_pois();
+                self.pending_poi_focus = true;
+                // A narrow window shows the place card over the map, the
+                // place centred above it.
+                if self.overlay_mode()
+                    && let Some(id) = self.selected_poi.clone()
+                {
+                    self.select_poi_from_list(&id);
+                }
+            }
+            Scenario::Navigation => {
+                // Under way: the map follows the start of the route at street
+                // level, and the turn card leads — the panel folds to its
+                // header (the drawer closes when narrow).
+                self.nav_open = false;
+                self.panel_collapsed = true;
+                self.model.zoom = 15.5;
+                if let Some(start) = self.model.origin {
+                    self.center_on(start);
+                }
+            }
+            Scenario::FloatingNavigation => {
+                self.pending_fit = true;
+                let stage = name
+                    .and_then(|name| name.strip_prefix("floating-navigation-"))
+                    .unwrap_or("detached");
+                self.stage_navigation(stage);
+            }
+            Scenario::Transit | Scenario::TransitArrive => {
+                self.pending_fit = true;
+            }
+            Scenario::Traffic => {
+                self.model.panel = Panel::Explore;
+                self.set_traffic(true);
+            }
+            Scenario::Offline => self.stage_offline(),
+            Scenario::Menu => {
+                self.model.panel = Panel::Explore;
+                self.open_overflow();
+            }
+            Scenario::Attribution => {
+                self.model.panel = Panel::Explore;
+                self.info_sheet.open(MapInfo::Attribution);
+            }
+            Scenario::Empty => {
+                self.model.panel = Panel::Explore;
+                self.model.selected = None;
             }
         }
     }
 
-    /// Scenario stage: force the overlay drawer open/closed so both the
-    /// map-first and panel-open states can be captured headlessly.
-    pub(super) fn set_nav_open(&mut self, open: bool) {
-        self.nav_open = open;
-    }
-
-    /// Scenario stage for the shared attribution dialog.
-    pub(super) fn stage_attribution(&mut self) {
-        self.info_sheet.open(MapInfo::Attribution);
-    }
-
-    /// Scenario stage for an honest recoverable network failure. This
-    /// keeps visual regression review from treating loading and error states as
-    /// interchangeable, while the production app still obtains this text only
-    /// from a real worker failure.
+    /// An honest recoverable network failure, so visual review never treats
+    /// loading and error states as interchangeable; the live app obtains
+    /// this text only from a real worker failure.
     pub(super) fn stage_error(&mut self) {
-        self.model.status = "Map imagery unavailable offline — reconnect and try again".into();
+        self.model.status = "Routing failed, so the route shown is an estimate".into();
+        let now = ui::time::now();
+        self.status_bubble.show(&self.model.status, now);
+        self.status_bubble.set_hover(true, now);
     }
 
-    /// Scenario stage: force the active side panel so each tab can be
-    /// captured headlessly. Offline sample data already populates every panel,
-    /// so this never triggers a fetch.
-    pub(super) fn set_active_panel(&mut self, panel: Panel) {
-        self.model.panel = panel;
-    }
-
-    /// Scenario stage: force the Directions "From" field into its editing
-    /// state with a populated geocoded dropdown, so the typeable-origin flow can
-    /// be captured headlessly. Uses offline local matches only — no network.
+    /// The Directions "From" field editing, with a populated geocoded
+    /// dropdown. Offline local matches only — no network.
     pub(super) fn stage_edit_origin(&mut self) {
         self.model.panel = Panel::Directions;
         self.model.origin_query = "hauptbahnhof".to_string();
@@ -72,9 +113,8 @@ impl MapsApp {
             .set_results(Endpoint::Origin, self.local_matches("hauptbahnhof"));
     }
 
-    /// Scenario stage: seed the live POI marker layer from bundled sample
-    /// data and open the info card for one of them, so the themed POI markers and
-    /// the info card can be captured headlessly. No network.
+    /// The themed POI markers from bundled sample data, with the place card
+    /// of one of them open. No network.
     pub(super) fn stage_pois(&mut self) {
         self.pois = sample::pois();
         self.selected_poi = Some("osm-node-203".to_string()); // Hofbräuhaus
@@ -84,44 +124,44 @@ impl MapsApp {
         self.model.center = LatLon::new(48.1381, 11.5770);
         self.model.zoom = 16.7;
         self.model.selected = None;
-        // Focus the Explore panel on the live NEARBY list for the shot: drop the
-        // stale committed search/results so the nearby places lead the panel and
-        // the selected POI's row is the highlighted one.
+        // Focus the Explore panel on the live NEARBY list: drop the committed
+        // search/results so the nearby places lead the panel and the selected
+        // POI's row is the highlighted one.
         self.model.results.clear();
         self.model.query.clear();
         self.model.panel = Panel::Explore;
     }
 
-    /// Scenario stage: open the offline-maps overlay with a couple of
-    /// already-saved regions and a plausible on-disk size, so the download UI
-    /// AND the managed-region list render headlessly. No network, no disk I/O —
-    /// the regions are bundled sample metadata, not real cache entries.
+    /// The offline-maps sheet as the shipped map source shows it — what
+    /// stays on the device and a plausible on-disk size. No network, no disk
+    /// I/O.
     pub(super) fn stage_offline(&mut self) {
         self.model.panel = Panel::Explore;
         self.model.selected = None;
-        self.model.regions = sample::regions();
-        // Demonstrate the download-by-place search: a typed city with candidate
-        // results in the shared dropdown (offline sample data — no network).
-        self.offline_panel
-            .set_demo(47_542_000, "Mün", sample::download_regions());
+        self.offline_panel.open(47_542_000);
     }
 
-    /// Scenario stage: open the ⋯ overflow menu so its Attribution /
-    /// Offline maps / Licenses options render expanded over the map, anchored
-    /// above its bottom-right button.
-    pub(super) fn stage_overflow(&mut self) {
-        let b = self.overflow_rect();
-        self.overflow.open_at([b.x1 as f32, b.y0 as f32]);
-        let mr = self.overflow.get_rect();
-        self.overflow.open_at([
-            (b.x1 - mr.width()) as f32,
-            (b.y0 - mr.height() - 6.0) as f32,
-        ]);
+    /// The panel after a committed search ("café"): its results listed
+    /// nearest first, the first one selected and brought to the middle of the
+    /// map, and the platform search open on the query. Offline local data
+    /// only — no network.
+    pub(super) fn stage_search(&mut self) {
+        self.model.panel = Panel::Explore;
+        self.model.query = "café".to_string();
+        let results = self.ranked_matches("café");
+        self.results_anchor = Some(self.search_anchor());
+        self.model.selected = results.first().map(|place| place.id.clone());
+        if let Some(first) = results.first() {
+            self.center_on(first.pos);
+        }
+        self.model.results = results;
+        self.search_opener
+            .open(ui::search::SearchRequest::this_app().with_query("café".to_string()));
     }
 
-    /// Scenario stage for the production navigation renderer and its real
-    /// shell → app ownership edge. Staged after layout so the `Suspended` host
-    /// path uses authoritative app-local coordinates.
+    /// The production navigation renderer and its real shell → app ownership
+    /// edge. Staged after layout so the `Suspended` host path uses
+    /// authoritative app-local coordinates.
     pub(super) fn stage_navigation(&mut self, stage: &str) {
         if stage == "attached" {
             self.navigation_placement
@@ -169,18 +209,6 @@ impl MapsApp {
             .pin_handoff_for_visual_review(handoff_phase);
     }
 
-    /// Scenario stage: open the floating search-results overlay populated
-    /// with proximity-ranked matches, so the search-as-you-type dropdown can be
-    /// captured headlessly. Offline local data only — no network.
-    pub(super) fn stage_search(&mut self) {
-        self.model.panel = Panel::Explore;
-        self.search.set_focused(true);
-        self.model.query = "Marienplatz".to_string();
-        let mut results = self.model.places.clone();
-        self.rank_by_proximity(&mut results);
-        self.search.replace_results(results);
-    }
-
     /// Select a travel mode in the Directions panel of this window only, as
     /// tests drive it. Offline sample data already populates the
     /// route/departures, so nothing fetches.
@@ -193,12 +221,5 @@ impl MapsApp {
         if mode.is_transit() {
             self.model.route = None;
         }
-    }
-
-    /// Scenario stage: turn the traffic overlay on so the coloured
-    /// congestion segments (or, in an empty map, the honest "No traffic data"
-    /// state) can be captured headlessly.
-    pub(super) fn stage_traffic(&mut self) {
-        self.set_traffic(true);
     }
 }

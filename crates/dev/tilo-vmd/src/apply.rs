@@ -111,16 +111,28 @@ pub trait Apply {
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
+    /// Prepare one readonly combined filesystem view for a stand-in slot.
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError>;
+    fn remove_session_view(&mut self, slot: &str) -> Result<(), DaemonError>;
     /// `systemctl daemon-reload`.
     fn reload(&mut self) -> Result<(), DaemonError>;
     fn start_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     fn stop_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
+    /// Verify a declared component unit is installed and loadable before deferring activation.
+    fn validate_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
+    /// Restart a declared component unit only if it is already running.
+    fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     /// Restart a login's desktop in place: ask its `tilo-session` (SIGUSR1)
     /// and wait until the old compositor has exited. The login, its user
     /// manager and its services stay.
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError>;
-    /// `systemctl --user restart <unit>` in `user`'s running user manager.
+    /// Reload the running user manager and try-restart an existing component unit.
     fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError>;
     /// `systemctl is-active` output, e.g. `active`, `inactive`, `failed`.
     fn unit_state(&mut self, unit: &str) -> String;
@@ -191,7 +203,17 @@ pub trait Apply {
     fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError>;
     /// `tilo-install install --allow-self-signed --force <tapp>` as `user`;
     /// returns what it printed.
-    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError>;
+    fn install_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError>;
+    /// Select an authenticated development-cohort package, preserving holds.
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError>;
     /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
     /// or with `None` put the image's own kernel back (see [`crate::boot`]).
     /// Returns what the next boot starts, and warnings.
@@ -272,7 +294,7 @@ pub fn check_scope(
 pub struct Restarts {
     /// System units of changed VM-wide components.
     pub units: Vec<String>,
-    /// User units of changed session components, which a login that keeps
+    /// User units of changed VM or session components, which a login that keeps
     /// its user manager restarts one by one.
     pub user_units: Vec<String>,
 }
@@ -289,14 +311,19 @@ impl Restarts {
     }
 
     fn add(&mut self, info: &ComponentInfo) {
-        let (list, names) = match info.scope {
-            Scope::Vm => (&mut self.units, &info.units),
-            Scope::Session => (&mut self.user_units, &info.user_units),
-            Scope::App => return,
-        };
-        for unit in names {
-            if !list.contains(unit) {
-                list.push(unit.clone());
+        if info.scope == Scope::App {
+            return;
+        }
+        if info.scope == Scope::Vm {
+            for unit in &info.units {
+                if !self.units.contains(unit) {
+                    self.units.push(unit.clone());
+                }
+            }
+        }
+        for unit in &info.user_units {
+            if !self.user_units.contains(unit) {
+                self.user_units.push(unit.clone());
             }
         }
     }
@@ -406,8 +433,27 @@ pub fn activate(
         apply.sysext_refresh()?;
         actions.push(Action::SysextRefresh);
         for unit in &restarts.units {
-            apply.restart_unit(unit)?;
-            actions.push(Action::RestartUnit { unit: unit.clone() });
+            // The greeter component is VM-wide, but its manager also owns
+            // the active login. Re-query the host's verified session rather
+            // than using a saved slot record or caller-supplied identity.
+            if unit == GREETER_UNIT
+                && apply.device_session().is_some_and(|device| {
+                    device.login.is_some_and(|login| {
+                        login.session.is_some_and(|id| !id.is_empty())
+                            && login.wrapper.is_some_and(|pid| pid > 0)
+                    })
+                })
+            {
+                apply.validate_unit(unit)?;
+                actions.push(Action::Deferred {
+                    reason: format!(
+                        "{unit}: active owner login preserved; updated greeter runs at the next greeter launch"
+                    ),
+                });
+            } else {
+                apply.try_restart_unit(unit)?;
+                actions.push(Action::RestartUnit { unit: unit.clone() });
+            }
         }
         return Ok(actions);
     };
@@ -437,7 +483,7 @@ pub fn activate(
         record.seat = Some(seat);
     }
 
-    let dropin = layers_dropin(&record.name, generation.number, layers);
+    let dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
     for unit in layered_units(&session, uid) {
         apply.write_dropin(&unit, LAYERS_DROPIN, &dropin)?;
         actions.push(Action::WriteDropIn { unit });
@@ -600,6 +646,7 @@ pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Acti
     let uid = apply.ensure_user(&user)?;
     let user_manager = user_unit(uid);
     apply.stop_unit(&user_manager)?;
+    apply.remove_session_view(&record.name)?;
     actions.push(Action::StopUnit {
         unit: user_manager.clone(),
     });
@@ -631,11 +678,17 @@ pub struct RecordingApply {
     users: BTreeMap<String, u32>,
     units: BTreeMap<String, bool>,
     pub sysext: Vec<PathBuf>,
+    pub prepared_session_layers: Vec<(String, Vec<PathBuf>)>,
     /// The kernel layer the next boot runs; `None` for the image's.
     pub next_kernel: Option<PathBuf>,
     /// Answers for the next `control` calls, in order; an echo of the
     /// arguments once they run out.
     pub control_replies: std::collections::VecDeque<ControlResult>,
+    /// Scripted readiness observations, consumed once per restarted session.
+    pub readiness_replies: std::collections::VecDeque<Result<(), String>>,
+
+    /// Exact normal installer output for production cohort selection tests.
+    pub cohort_replies: std::collections::VecDeque<String>,
     /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
     /// Every call is copied here too, for a test that hands this to a daemon.
@@ -686,6 +739,24 @@ impl RecordingApply {
 }
 
 impl Apply for RecordingApply {
+    fn wait_session_ready(&mut self, session: &Session) -> Result<(), String> {
+        self.call(format!("wait_session_ready {}", session.slot));
+        self.readiness_replies.pop_front().unwrap_or(Ok(()))
+    }
+
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        self.prepared_session_layers
+            .push((slot.to_owned(), layers.to_vec()));
+        Ok(layers_dropin(slot, generation, layers))
+    }
+    fn remove_session_view(&mut self, _slot: &str) -> Result<(), DaemonError> {
+        Ok(())
+    }
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
         self.call(format!("ensure_user {user}"));
         let next = u32::try_from(self.users.len())
@@ -738,6 +809,16 @@ impl Apply for RecordingApply {
     fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
         self.call(format!("restart {unit}"));
         self.units.insert(unit.to_owned(), true);
+        Ok(())
+    }
+    fn validate_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        self.call(format!("validate-unit {unit}"));
+        Ok(())
+    }
+    fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        self.call(format!("try-restart {unit}"));
+        // An inactive or failed service remains stopped. The actual manager
+        // validates installed units; this recorder has no installed-unit DB.
         Ok(())
     }
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError> {
@@ -844,13 +925,34 @@ impl Apply for RecordingApply {
         self.call(format!("stop_input {slot}"));
         Ok(())
     }
-    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError> {
-        self.call(format!("install_app {user}"));
+    fn install_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError> {
+        self.call(format!("install_app {}", session.user));
         let name = tapp
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
+    }
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError> {
+        self.call(format!(
+            "install_cohort_app {} {}",
+            session.user,
+            tapp.display()
+        ));
+        self.cohort_replies
+            .pop_front()
+            .ok_or_else(|| DaemonError::Apply {
+                step: "select cohort app".into(),
+                detail: "no recorded installer receipt".into(),
+            })
     }
     fn boot_kernel(
         &mut self,
@@ -951,6 +1053,33 @@ mod tests {
             );
         }
         g
+    }
+
+    #[test]
+    fn component_refresh_does_not_start_inactive_services() {
+        let mut apply = RecordingApply::default();
+        apply.units.insert("fs.service".into(), true);
+        apply.units.insert("tilo-fs-replica.service".into(), false);
+        let mut vm = record("vm", SlotKind::Vm);
+        activate(
+            &mut apply,
+            &mut vm,
+            &Generation::default(),
+            &[PathBuf::from("/layers/fs")],
+            Policy::VmRefresh,
+            &Restarts {
+                units: vec!["fs.service".into(), "tilo-fs-replica.service".into()],
+                ..Restarts::default()
+            },
+            SessionChange::Keep,
+        )
+        .unwrap();
+        assert_eq!(apply.units.get("fs.service"), Some(&true));
+        assert_eq!(
+            apply.units.get("tilo-fs-replica.service"),
+            Some(&false),
+            "updating an executable must not enable an optional replica"
+        );
     }
 
     #[test]
@@ -1088,7 +1217,96 @@ mod tests {
             .unwrap();
             assert_eq!(
                 apply.calls,
-                ["link_sysext 1", "sysext_refresh", "restart fs.service"]
+                ["link_sysext 1", "sysext_refresh", "try-restart fs.service"]
+            );
+        }
+    }
+
+    #[test]
+    fn vm_greeter_update_preserves_only_a_verified_active_owner_login() {
+        for (name, mut apply, defer) in [
+            ("owner", RecordingApply::with_login("tester"), true),
+            ("ordinary-vm", RecordingApply::default(), false),
+            (
+                "board-session",
+                RecordingApply::with_device("tester"),
+                false,
+            ),
+            (
+                "logged-out",
+                {
+                    let mut apply = RecordingApply::with_login("tester");
+                    apply.device = apply.device.take().map(DeviceSession::logged_out);
+                    apply
+                },
+                false,
+            ),
+            (
+                "incomplete-login",
+                {
+                    let mut apply = RecordingApply::with_login("tester");
+                    apply
+                        .device
+                        .as_mut()
+                        .unwrap()
+                        .login
+                        .as_mut()
+                        .unwrap()
+                        .session = None;
+                    apply
+                },
+                false,
+            ),
+        ] {
+            let mut slot = record("vm", SlotKind::Vm);
+            let next = generation(
+                1,
+                &[("greeter", "g", Scope::Vm, &[GREETER_UNIT, "fs.service"])],
+            );
+            let (policy, restarts) = policy(&slot, &Generation::default(), &next).unwrap();
+            let layers = vec![PathBuf::from("/var/lib/tilo-vm/layers/greeter")];
+            let actions = activate(
+                &mut apply,
+                &mut slot,
+                &next,
+                &layers,
+                policy,
+                &restarts,
+                SessionChange::Keep,
+            )
+            .unwrap();
+            assert_eq!(apply.sysext, layers, "{name}: verified layers still merge");
+            assert!(actions.contains(&Action::SysextRefresh));
+            assert!(
+                apply.calls.contains(&"try-restart fs.service".to_owned()),
+                "{name}: other required services still activate"
+            );
+            assert_eq!(
+                apply.calls.contains(&format!("try-restart {GREETER_UNIT}")),
+                !defer,
+                "{name}: an active owner's greetd manager must stay running"
+            );
+            assert_eq!(
+                apply
+                    .calls
+                    .contains(&format!("validate-unit {GREETER_UNIT}")),
+                defer,
+                "{name}: a deferred unit still passes installed-unit validation"
+            );
+            assert_eq!(
+                actions.iter().any(|action| matches!(action,
+                Action::Deferred { reason } if reason.contains(GREETER_UNIT))),
+                defer,
+                "{name}: report the actual deferred manager activation"
+            );
+            assert!(
+                !apply
+                    .calls
+                    .iter()
+                    .any(|call| call.starts_with("restart_desktop")
+                        || call.starts_with("stop ")
+                        || call.starts_with("start ")),
+                "{name}: this update cannot authenticate, log out or restart the owner"
             );
         }
     }

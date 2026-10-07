@@ -33,17 +33,36 @@ rpm -q --requires tilo-session | grep -Eq '^tilo-session-apps(\([^)]*\))? = '
     '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
 ! rpm -q --provides tilo-session-apps | grep -Eq \
     '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
+test -x /usr/bin/app
+/usr/bin/app --help >/dev/null
+owner=/usr/share/tilo/trust/tilo-main-registry-owner.pub
+test "$(rpm -qf "$owner")" = "$(rpm -q tilo-session-apps)"
+grep -Eiq '^[0-9a-f]{64}$' "$owner"
+! grep -Eq '^0{64}$' "$owner"
+# An older Store could save an empty registry list when the pin was missing.
+# The installed reader must migrate it using the packaged authority.
+config=$(mktemp -d)
+mkdir -p "$config/tilo-store"
+printf 'registry = []\n' > "$config/tilo-store/registries.toml"
+XDG_CONFIG_HOME=$config /usr/bin/app repo list > "$config/repos.txt"
+grep -Fq 'Tilo main' "$config/repos.txt"
+grep -Fq "$(cat "$owner")" "$config/tilo-store/registries.toml"
+rm -rf -- "$config"
 test -s /usr/share/tilo-apps/registry.toml
 grep -Fxq 'id = "so.tilo.settings"' /usr/share/tilo-apps/registry.toml
 grep -q '^payload_root = "/usr/lib/tilo-apps/' /usr/share/tilo-apps/registry.toml
 test -d /usr/lib/tilo-apps/pkgs
 test ! -e /usr/share/tilo-apps/pkgs
 test ! -e /usr/lib/tilo-apps/content
-test -f /usr/lib/tilo-runtime/2026.07/bundle.toml
-test "$(stat -c %a /usr/lib/tilo-runtime/2026.07/bundle.toml)" = 644
+# One runtime build of the 2026.07 release, named by its ABI digest.
+runtime_dirs=(/usr/lib/tilo-runtime/2026.07+native.*)
+test "${#runtime_dirs[@]}" -eq 1
+runtime_dir=${runtime_dirs[0]}
+test -f "$runtime_dir/bundle.toml"
+test "$(stat -c %a "$runtime_dir/bundle.toml")" = 644
 grep -q '/usr/lib/tilo-apps/bin' /etc/profile.d/tilo-apps.sh
 test -s /etc/tilo/runtime-bundle-trusted-publishers.txt
-tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
+tilo-runtime-bundle verify "$runtime_dir" \
     --require-publisher "$(head -n 1 /etc/tilo/runtime-bundle-trusted-publishers.txt)"
 # The trust pin and signed runtime must remain one package-owned generation.
 # Merely verifying them independently missed an upgrade where `%config(noreplace)`
@@ -51,7 +70,7 @@ tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
 test "$(rpm -qf /etc/tilo/runtime-bundle-trusted-publishers.txt)" = \
     "$(rpm -q tilo-session-apps)"
 bundle_publisher=$(sed -n 's/^publisher_hex = "\([0-9a-fA-F]\{64\}\)"$/\1/p' \
-    /usr/lib/tilo-runtime/2026.07/bundle.toml)
+    "$runtime_dir/bundle.toml")
 test "${#bundle_publisher}" -eq 64
 grep -Fxiq "$bundle_publisher" /etc/tilo/runtime-bundle-trusted-publishers.txt
 # The ush supervisor runs these: a relay environment's pty bridge, the relay

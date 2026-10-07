@@ -91,7 +91,8 @@ containerfile="$repo/os/Containerfile"
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
 # The image ships one login session and no peer-sync marker unit.
-# The release gate's input hotplug check ships beside them.
+# The release gate's input hotplug check and the device admin's action-model
+# check ship beside them.
 # The boot units gate ships with the rollback units whose confirmation it gates.
 # The ush supervisor ships with what it runs: the two relay helpers for
 # Terminal, and the legacy VM service behind app shims. The WPE engine overlay
@@ -99,7 +100,32 @@ containerfile="$repo/os/Containerfile"
 # app store and its Chromium engine a signed runtime bundle under
 # /usr/lib/tilo-runtime, both already copied.
 # NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
-expected_contract=04f66dbee7ef23f2100a3eed9fa16b9738b2f8e52729967d0b6d23a84ab05014
+# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
+# components.toml) and its dracut module ship in the rollback-files overlay
+# beside tilo-rollback, which the initramfs carries the same way.
+# The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
+# publisher.hex), which the launcher trusts for runtimes the Store installs,
+# is a deliberate addition.
+# /usr/bin/terminal, /usr/bin/file-explorer and /usr/bin/settings are
+# deliberate removals: those apps ship only as packages in the app store.
+# The system-interface declaration (/usr/share/tilo/system-interfaces.toml),
+# which says what app builds this OS can run, is a deliberate addition.
+# The ush service unit is installed through its component manifest so normal
+# component updates carry the same owned reexec path as the OS image.
+# The public /usr/bin/ush symlink deliberately exposes the same confined
+# runtime already installed at /usr/libexec/tilo-ush.
+# The confined speech worker and its full MIT notice are deliberate additions.
+# Cisco requires the complete OpenH264 binary license notice in a licensing
+# information location. Only that text is added to extension-files; Cisco
+# binaries remain separately downloaded by opted-in devices.
+# The offline, signed Flathub descriptor is the one additional payload row.
+# The AppHost service unit moves from a direct context COPY into its component
+# manifest; the installed path, reviewed bytes and 0644 mode are unchanged.
+# Firstboot account handoff and authenticated startup recovery now ship in the
+# base image too: their three helpers, three units and the greeter baseline.
+# The session wrapper moves into the shell component beside its compositor;
+# the destination, source bytes and executable mode remain the same.
+expected_contract=a67f5b224dd494f8d87a808930dc944ef2dd307b26d13cbdad518455505ab072
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -144,8 +170,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Redeclaring RPMS_REF before the first snapshot install, for the same reason,
 # adds one more (154).
 # NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
-[ "$instructions" -le 155 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 155)" >&2
+# The offline predefined Flathub descriptor adds one reviewed COPY (156).
+[ "$instructions" -le 156 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 156)" >&2
   exit 1
 }
 
@@ -179,7 +206,6 @@ containerfile_instructions "$containerfile" |
 
 for path in \
   os/scripts/finalize-rpmdb.sh \
-  os/usr/libexec/tilo-session \
   os/usr/libexec/tilo-disk-encrypt \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
@@ -202,3 +228,15 @@ for path in \
 done
 
 echo "rootfs COPY contract unchanged; $instructions-instruction layer budget satisfied"
+
+# The shell's startup companion is now installed by the canonical component
+# installer rather than a direct COPY --chmod. Observe that actual image path
+# and its mandatory executable-mode plan instead of accepting a staging COPY.
+containerfile_installs_output "$containerfile" '@manifest/usr/libexec/tilo-session' /usr/libexec/tilo-session
+python3 "$repo/os/scripts/install-components.py" shell --dry-run --format json |
+  python3 -c 'import json,sys
+rows = [row for row in json.load(sys.stdin) if row["to"] == "/usr/libexec/tilo-session"]
+assert len(rows) == 1, "shell must install exactly one startup wrapper"
+row = rows[0]
+assert row["from"] == "@manifest/usr/libexec/tilo-session", row
+assert row["mode"] == "0755" and not row["optional"], row'

@@ -20,6 +20,10 @@ pub(super) struct LocalCaller {
     time: crate::peer_actions::PolicyTime,
 }
 impl LocalCaller {
+    /// The room it acts in and who the host admitted on it.
+    pub(super) fn admitted_in(&self) -> (String, AdmittedJoinIdentity) {
+        (self.route.cluster_id.clone(), self.admitted.clone())
+    }
     fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
         let time = channel
             .state
@@ -293,6 +297,15 @@ impl CapnpBrokerState {
             .ok_or("durable admission unavailable")?
             .lookup(&key)?;
         if let Some(record) = &record {
+            if record.prepared_effect.is_some()
+                && record
+                    .intent
+                    .get("actor")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(current.broker_actor().id.as_str())
+            {
+                return Err("prepared invocation actor differs from current caller".into());
+            }
             let contract: tilo_actions::ActionContract =
                 serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
                     .map_err(|_| "journal action contract invalid")?;
@@ -518,6 +531,15 @@ pub(super) fn invoke(
             .local_existing(&caller, &request)
             .map_err(capnp::Error::failed)?
         {
+            let record = state
+                .reconcile_prepared_effect(record, || {
+                    state
+                        .local_existing(&caller, &request)?
+                        .ok_or("invocation missing")?;
+                    Ok(())
+                })
+                .await
+                .map_err(capnp::Error::failed)?;
             return write_observation(
                 results.get().init_observation(),
                 host,
@@ -614,6 +636,8 @@ pub(super) fn invoke(
                 request.binding.peer_id,
                 offered,
                 InvocationInputs {
+                    requested: None,
+                    caller: None,
                     execution: None,
                     argument: request.argument.as_deref(),
                     actor: &actor,
@@ -647,7 +671,7 @@ pub(super) fn observe(
     params: &channel_handle::PublishedInvocationObservationParams,
     mut results: channel_handle::PublishedInvocationObservationResults,
 ) -> Promise<(), capnp::Error> {
-    let outcome = (|| {
+    let parsed = (|| {
         let p = params.get()?;
         let host = uuid::Uuid::from_bytes(array(p.get_host()?, "invocation host")?);
         let id = tilo_actions::InvocationId(uuid::Uuid::from_bytes(array(
@@ -655,16 +679,30 @@ pub(super) fn observe(
             "invocation UUID",
         )?));
         let caller = LocalCaller::capture(channel).map_err(capnp::Error::failed)?;
-        let record = channel
-            .state
+        Ok((caller, host, id))
+    })();
+    let (caller, host, id) = match parsed {
+        Ok(value) => value,
+        Err(error) => return Promise::err(error),
+    };
+    let state = channel.state.clone();
+    Promise::from_future(async move {
+        let mut record = state
             .local_status(&caller, host, id)
             .map_err(capnp::Error::failed)?;
+        if let Some(retained) = record {
+            record = Some(
+                state
+                    .reconcile_prepared_effect(retained, || {
+                        state.local_status(&caller, host, id)?;
+                        Ok(())
+                    })
+                    .await
+                    .map_err(capnp::Error::failed)?,
+            );
+        }
         write_observation(results.get().init_observation(), host, id, record.as_ref())
-    })();
-    match outcome {
-        Ok(()) => Promise::ok(()),
-        Err(error) => Promise::err(error),
-    }
+    })
 }
 pub(super) fn cancel(
     channel: &CapnpChannelHandle,

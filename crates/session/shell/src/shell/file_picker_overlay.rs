@@ -17,7 +17,6 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 
 use crate::shell::chrome_state::Chrome;
-use crate::shell::overlay_host::{MODAL_SCRIM_ALPHA, fill_scrim};
 
 /// The portal file chooser's complete on-screen state.
 #[derive(Default)]
@@ -99,7 +98,7 @@ impl FilePickerOverlay {
         let Some(active) = self.active.as_mut() else {
             return;
         };
-        fill_scrim(scene, transform, viewport, MODAL_SCRIM_ALPHA, theme);
+        ui::overlay::scrim::modal(scene, transform, viewport, 1.0, theme);
         active.widget.set_rect(file_picker_rect(viewport));
         active
             .widget
@@ -133,7 +132,7 @@ impl FilePickerOverlay {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: &mut *ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -393,7 +392,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus_target,

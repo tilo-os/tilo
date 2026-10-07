@@ -122,6 +122,9 @@ impl<T> std::ops::Deref for Taught<T> {
 pub struct EditLayer {
     pub id: String,
     pub name: Option<String>,
+    /// Organisational folder name; empty removes the layer from its folder.
+    /// Consecutive members are presented together without changing stacking.
+    pub group: Option<String>,
     /// A medium id, or empty for plain vector art.
     pub medium: Option<String>,
     pub opacity: Option<f64>,
@@ -155,6 +158,8 @@ pub struct RemoveLayer {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewMark {
+    /// Images: preserve hard pixel edges when enlarged.
+    pub pixelated: Option<bool>,
     /// An id to address the mark by later (`sun`, `hill-2`); one is made when
     /// absent.
     pub id: Option<String>,
@@ -214,6 +219,7 @@ impl NewMark {
     /// `shape` with nothing else given.
     pub fn new(shape: Shape) -> Self {
         Self {
+            pixelated: None,
             id: None,
             name: None,
             shape,
@@ -270,7 +276,8 @@ pub struct NewStroke {
     /// `airbrush` (soft spray that builds up), `charcoal` (picks up the
     /// ground's tooth), `calligraphy` (broad nib at `angle`, default 45).
     /// Any layer: `eraser` clears paint beneath it on its layer. A round
-    /// ink brush when absent.
+    /// ink brush when absent. Plain layers: `pixel` and `pixel-eraser`
+    /// paint or clear whole square cells, ignoring pressure and taper.
     pub brush: Option<String>,
     pub opacity: Option<f64>,
     /// Paint into what is still wet: blends in oil, bleeds in watercolour.
@@ -322,6 +329,8 @@ pub struct Paint {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EditMarks {
+    /// Images: preserve hard pixel edges when enlarged.
+    pub pixelated: Option<bool>,
     /// Marks, or groups (all their members).
     pub ids: Vec<String>,
     pub name: Option<String>,
@@ -520,6 +529,26 @@ pub(crate) fn refuse(message: impl Into<String>) -> ActionError {
 /// The id of a mark or layer given none: a hash of what it is and where it
 /// sits in its action, so every replica of the action names it alike and two
 /// collaborators drawing different things never collide.
+/// A name for a new layer made from `base` that no layer has yet: "Layer
+/// 3" after "Layer 2"; another medium's base alone while it is unused
+/// ("Oil"), numbered once it is ("Oil 2"). Plain layers are always
+/// numbered, as people count them.
+pub fn numbered_name<'a>(names: impl IntoIterator<Item = &'a str>, base: &str) -> String {
+    let number = |name: &str| -> Option<u32> {
+        let rest = name.strip_prefix(base)?;
+        if rest.is_empty() {
+            return Some(1);
+        }
+        rest.strip_prefix(' ')?.parse().ok()
+    };
+    let highest = names.into_iter().filter_map(number).max();
+    match highest {
+        None if base != "Layer" => base.to_owned(),
+        None => format!("{base} 1"),
+        Some(highest) => format!("{base} {}", highest.saturating_add(1)),
+    }
+}
+
 pub fn derived_id(prefix: &str, content: &impl Serialize, index: usize) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(
@@ -917,6 +946,7 @@ impl Draw {
                     .clone()
                     .unwrap_or_else(|| derived_id("m", mark, index));
                 let style = Style {
+                    pixelated: mark.pixelated.unwrap_or(false),
                     fill: mark.fill.clone(),
                     gradient: mark.gradient.clone(),
                     stroke: mark.stroke.clone(),
@@ -1098,6 +1128,14 @@ fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), ActionErro
         return Err(refuse(
             "an eraser does not fork; give it dabs to clear broken patches, or erase along plain strokes",
         ));
+    }
+    if crate::brushes::Preset::of(&mark.style).pixel() {
+        let bounds = mark.bounds();
+        if bounds.width().max(bounds.height()) > 16384.0 {
+            return Err(refuse(
+                "a pixel stroke may travel at most 16384 artwork units",
+            ));
+        }
     }
     let plain = art.layer(layer).is_none_or(|layer| layer.medium.is_empty());
     match crate::brushes::problem(mark.style.brush.as_deref(), &mark.style.params, plain) {
@@ -1425,6 +1463,9 @@ impl EditMarks {
             if let Some(opacity) = self.opacity {
                 mark.style.opacity = Some(opacity);
             }
+            if let Some(pixelated) = self.pixelated {
+                mark.style.pixelated = pixelated;
+            }
             if let Some(brush) = &self.brush {
                 mark.style.brush = crate::brushes::stored(brush);
             }
@@ -1581,6 +1622,11 @@ fn arrange_marks(doc: &mut Doc, art: &Artwork, arrange: &Arrange) -> Result<(), 
 }
 
 impl tilo_actions::Action for CanvasAction {
+    /// The step as history names it: "Recolour 2 marks", "Move Sun".
+    fn history_label(&self, doc: &Doc) -> Option<String> {
+        crate::described::label(self, doc)
+    }
+
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let art = doc::read(doc);
         match self {
@@ -1822,6 +1868,7 @@ impl NewArtwork {
             ground: crate::model::Ground { texture, colour },
             layers: vec![FileLayer {
                 id: "layer-1".into(),
+                group: String::new(),
                 name,
                 medium,
                 opacity: 1.0,
@@ -1918,6 +1965,7 @@ fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), Act
             &Layer {
                 id: layer.id.clone(),
                 name: layer.name.clone(),
+                group: layer.group.clone(),
                 order: order.clone(),
                 medium: layer.medium.clone(),
                 opacity: layer.opacity.clamp(0.0, 1.0),
@@ -2110,7 +2158,7 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
         &Layer {
             id,
             name: if add.name.trim().is_empty() {
-                "Layer".into()
+                numbered_name(art.layers.iter().map(|layer| layer.name.as_str()), "Layer")
             } else {
                 add.name.clone()
             },
@@ -2136,6 +2184,16 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     })?;
     if let Some(name) = &edit.name {
         layer.name.clone_from(name);
+    }
+    if let Some(group) = &edit.group {
+        if layer.is_mask() {
+            return Err(refuse("a mask belongs to its layer’s folder"));
+        }
+        let group = group.trim();
+        if group.chars().count() > 80 {
+            return Err(refuse("a layer folder name must be at most 80 characters"));
+        }
+        layer.group = group.into();
     }
     if let Some(medium) = &edit.medium {
         check_medium(art, medium)?;

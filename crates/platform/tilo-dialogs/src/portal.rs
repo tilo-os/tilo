@@ -64,6 +64,7 @@ pub trait EffectGate: Send + 'static {
 use std::fs::File;
 #[cfg(any(unix, windows))]
 use std::fs::OpenOptions;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
@@ -413,6 +414,7 @@ pub struct PickRequest {
     pub(crate) thread_name: String,
     pub(crate) filters: Vec<FileFilter>,
     pub(crate) kind: PickKind,
+    pub(crate) max_contents_bytes: Option<usize>,
 }
 
 impl PickRequest {
@@ -452,7 +454,23 @@ impl PickRequest {
             thread_name: "tilo-portal".to_string(),
             filters: Vec::new(),
             kind,
+            max_contents_bytes: None,
         }
+    }
+
+    /// Bound the total contents returned across all chosen files. Oversized
+    /// selections fail without reading their full contents into memory.
+    /// Applies to `send_contents`, not path or descriptor requests. With no
+    /// override, the host's existing contents policy applies.
+    #[must_use]
+    pub fn max_contents_bytes(mut self, limit: usize) -> Self {
+        self.max_contents_bytes = Some(limit);
+        self
+    }
+
+    /// The requested aggregate contents budget, when explicitly bounded.
+    pub fn contents_byte_limit(&self) -> Option<usize> {
+        self.max_contents_bytes
     }
 
     /// Name the worker thread, so a stuck picker is identifiable in a
@@ -603,6 +621,10 @@ pub struct PickedContents {
     /// The MIME type the host reported, when it did.
     pub media_type: Option<String>,
     pub bytes: Vec<u8>,
+    /// Where the chosen file is on this device, when the host chose one
+    /// with a path: for recognising the same file chosen again, never for
+    /// showing. `None` where files have no paths (a browser page).
+    pub location: Option<std::path::PathBuf>,
 }
 
 /// The result of [`PickRequest::send_contents`].
@@ -639,7 +661,10 @@ pub(crate) enum PickedPaths {
 /// The paths a path-based picker answered, read on the host's
 /// [`tilo_rt::background::Background`]: the default
 /// [`crate::FilePicker::pick_contents`] for hosts with local files.
-pub(crate) fn read_picked(paths: Option<PickedPaths>) -> ContentsChannel {
+pub(crate) fn read_picked(
+    paths: Option<PickedPaths>,
+    max_contents_bytes: Option<usize>,
+) -> ContentsChannel {
     let (tx, rx) = std::sync::mpsc::channel();
     let Some(paths) = paths else {
         let _ = tx.send(ContentsOutcome::Failed(
@@ -666,11 +691,16 @@ pub(crate) fn read_picked(paths: Option<PickedPaths>) -> ContentsChannel {
         let outcome = paths.map_or_else(
             |outcome| outcome,
             |paths| {
+                let mut remaining = max_contents_bytes;
                 paths
                     .into_iter()
                     .map(|path| {
-                        let bytes = std::fs::read(&path)
-                            .map_err(|error| format!("{}: {error}", path.display()))?;
+                        let bytes = read_contents(&path, remaining)?;
+                        if let Some(remaining) = &mut remaining {
+                            *remaining = remaining
+                                .checked_sub(bytes.len())
+                                .ok_or_else(|| "chosen contents exceed byte limit".to_owned())?;
+                        }
                         let name = path
                             .file_name()
                             .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
@@ -678,6 +708,7 @@ pub(crate) fn read_picked(paths: Option<PickedPaths>) -> ContentsChannel {
                             name,
                             media_type: None,
                             bytes,
+                            location: Some(path),
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()
@@ -692,6 +723,29 @@ pub(crate) fn read_picked(paths: Option<PickedPaths>) -> ContentsChannel {
         ));
     }
     rx
+}
+
+fn read_contents(path: &Path, limit: Option<usize>) -> Result<Vec<u8>, String> {
+    let read = || -> std::io::Result<Vec<u8>> {
+        match limit {
+            None => std::fs::read(path),
+            Some(limit) => {
+                let mut bytes = Vec::new();
+                File::open(path)?
+                    .take((limit as u64).saturating_add(1))
+                    .read_to_end(&mut bytes)?;
+                Ok(bytes)
+            }
+        }
+    };
+    let bytes = read().map_err(|error| format!("{}: {error}", path.display()))?;
+    if limit.is_some_and(|limit| bytes.len() > limit) {
+        return Err(format!(
+            "{}: chosen contents exceed the byte limit",
+            path.display()
+        ));
+    }
+    Ok(bytes)
 }
 
 /// Write `bytes` to the path a Save chooser answers, on the host's

@@ -11,6 +11,8 @@ pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
 #[cfg(target_os = "linux")]
+pub(crate) mod admin_control;
+#[cfg(target_os = "linux")]
 pub mod agent_seats;
 #[cfg(target_os = "linux")]
 mod audio_capture;
@@ -33,6 +35,9 @@ pub mod dev_env;
 pub mod dev_test_identity;
 #[cfg(target_os = "linux")]
 pub mod device_rotation;
+pub(crate) mod diagnostic_actions;
+#[cfg(target_os = "linux")]
+pub mod dictation;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
@@ -54,6 +59,8 @@ pub mod input_environment;
 pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
+pub mod key_latency;
+pub(crate) mod lock_actions;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
@@ -73,6 +80,8 @@ pub mod pad_layout;
 #[cfg(target_os = "linux")]
 pub mod pointer_lock;
 pub mod present;
+#[cfg(target_os = "linux")]
+pub mod presentation;
 pub mod projection_capture;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
@@ -80,6 +89,10 @@ pub mod render_node;
 pub mod screen_dim;
 pub mod selection;
 pub mod session_env;
+#[cfg(target_os = "linux")]
+mod session_recovery;
+#[cfg(target_os = "linux")]
+mod session_termination;
 #[cfg(target_os = "linux")]
 pub mod shell_text_input;
 #[cfg(target_os = "linux")]

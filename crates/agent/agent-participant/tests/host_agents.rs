@@ -7,8 +7,8 @@
 //! presence) asks for a grant; a root-holding laptop approves the agent and
 //! signs its delegation in the same step; the browser spawns the agent with
 //! a plain-words task planned by the scripted model. The agent edits Notes
-//! and Sheets, the browser receives the edits and sees the agent's cursor
-//! move between the controls it uses. The host then restarts: the agent
+//! and Sheets, the browser receives the edits and sees the agent's presence
+//! move between the records it works in. The host then restarts: the agent
 //! resumes and takes new work; a stopped agent stays stopped; a revoked
 //! grant ends its agent.
 
@@ -49,7 +49,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget,
 };
-use tilo_agent_participant::{AgentHost, HostedApp, ModelChoice, Seed};
+use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed};
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
@@ -105,7 +105,6 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
         tilo_relay::agents::AgentOptions {
             state_dir: state.join("agents"),
             model,
-            host_profile: false,
             catalogue: Some(Arc::new(common::catalogue)),
         },
     )
@@ -275,6 +274,7 @@ impl Browser {
     ) -> Result<serde_json::Value, String> {
         let invocation = InvocationId::new();
         let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: AGENTS_PROVIDER.into(),
@@ -385,7 +385,7 @@ impl Browser {
                 );
                 // Until the change that sets the record up arrives, the app
                 // refuses to open what came before it.
-                let page = match HostedApp::open(
+                let page = match Replica::open(
                     &catalogue,
                     app,
                     ROOM,
@@ -399,11 +399,8 @@ impl Browser {
                     Ok(page) => page,
                     Err(error) => return format!("(does not open yet: {error})"),
                 };
-                let body = page
-                    .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-                    .unwrap();
-                page.close();
-                body
+                page.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
+                    .unwrap()
             })
             .collect()
     }
@@ -543,7 +540,6 @@ fn activity(presence: &PresenceFrame) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -641,13 +637,9 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     assert_eq!(steps, ["open", "new-page"]);
     let agent_key: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
     browser.until_edited(NOTES, agent_key, "Groceries").await;
-    assert!(
-        hosted.agents.profile_dir(&grant).is_dir(),
-        "the agent's apps have a profile of their own"
-    );
 
-    // 3. The browser sees the agent's cursor on the control it used, with
-    // what it is doing, then moving to the next app's control.
+    // 3. The browser sees the agent on the record it works in, with what
+    // it is doing, then moving to the next app's record.
     let mut presence = browser.watch(&hosted.web, &info.device).await;
     let on_notes = presence
         .until("its Notes activity", |presence| {
@@ -658,7 +650,6 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     assert_eq!(participant.kind, ParticipantKind::Agent);
     assert_eq!(participant.label, "Writer");
     assert_eq!(on_notes.focus.as_ref().unwrap().app, NOTES);
-    let notes_pointer = on_notes.pointer.expect("a declared action points too");
     browser
         .call(
             &agent_resource(&grant),
@@ -673,11 +664,6 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         })
         .await;
     assert_eq!(on_sheets.focus.as_ref().unwrap().app, SHEETS);
-    let sheets_pointer = on_sheets.pointer.expect("a declared action points too");
-    assert_ne!(
-        notes_pointer, sheets_pointer,
-        "the cursor moved between controls"
-    );
     browser.until_edited(SHEETS, agent_key, "Budget").await;
     drop(presence);
 
@@ -830,7 +816,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 }
 
 /// The sheets of a workbook, in order.
-fn sheet_names(app: &HostedApp) -> Vec<String> {
+fn sheet_names(app: &Replica) -> Vec<String> {
     let body: serde_json::Value = app
         .read(|doc| serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap())
         .unwrap();
@@ -848,7 +834,7 @@ fn sheet_names(app: &HostedApp) -> Vec<String> {
 /// A person's workbook, open in a browser session: it publishes what the
 /// person does and merges what everyone else committed.
 struct Page {
-    app: HostedApp,
+    app: Replica,
     route: DocumentRoute,
     merged: usize,
 }
@@ -856,7 +842,7 @@ struct Page {
 impl Page {
     fn create(browser: &Browser, app: &str) -> Self {
         let mut page =
-            HostedApp::open(&common::catalogue(), app, ROOM, "ada", false, Seed::New).unwrap();
+            Replica::open(&common::catalogue(), app, ROOM, "ada", false, Seed::New).unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: ROOM.into(),
@@ -885,7 +871,7 @@ impl Page {
                 .get(&creator.route)
                 .filter(|c| !c.is_empty())
             {
-                let mut app = HostedApp::open(
+                let mut app = Replica::open(
                     &common::catalogue(),
                     SHEETS,
                     ROOM,
@@ -956,7 +942,6 @@ impl Page {
 /// once each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -1054,7 +1039,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             .get(&page.route)
             .filter(|c| !c.is_empty())
         {
-            let replayed = HostedApp::open(
+            let replayed = Replica::open(
                 &common::catalogue(),
                 SHEETS,
                 ROOM,
@@ -1087,7 +1072,6 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
 /// leave the creator behind a change it never received.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_creator_and_a_joined_page_both_see_every_task_live() {
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -1217,7 +1201,6 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
         tilo_agent_participant::ApiKey::File(key_file.into()),
     )
     .unwrap();
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());

@@ -239,6 +239,10 @@ pub enum WindowEvent {
     /// The keyboard modifiers have changed.
     ModifiersChanged(Modifiers),
 
+    /// Immutable symbols and masks of the focused Wayland keyboard. `None`
+    /// revokes an unavailable keymap; other platforms do not fabricate one.
+    KeyboardLayoutChanged(Option<std::sync::Arc<crate::keyboard::KeyboardLayout>>),
+
     /// An event from an input method.
     ///
     /// **Note:** You have to explicitly enable this event using [`Window::set_ime_allowed`].
@@ -752,6 +756,8 @@ impl KeyEvent {
             orbital_platform,
         ))]
         let platform_specific = platform_impl::KeyEventExtra {
+            #[cfg(any(x11_platform, wayland_platform))]
+            wayland_stamp: None,
             text_with_all_modifiers,
             key_without_modifiers,
         };

@@ -4,7 +4,7 @@ path and report which ones adopt a toplevel.
 
 Drives the whole chain, no mocks:
 
-    headless compositor -> Super+K palette -> Applications provider row
+    headless compositor -> Super+Space palette -> Applications provider row
     -> shell::launcher::launch -> tilo-launcher -> bwrap -> the app
     -> wl_display_connect -> xdg_toplevel -> tab adoption
 
@@ -450,11 +450,11 @@ class Compositor:
         return False
 
     def open_palette_and_launch(self, short_name: str) -> None:
-        """Super+K, type the app's name, activate the top row.
+        """Super+Space, type the app's name, activate the top row.
 
-        Exactly what a person does, with nothing in between — and Super+K
+        Exactly what a person does, with nothing in between — and Super+Space
         is the chord for it. The two chords ask different questions:
-        Ctrl+K searches within the app you are looking at, Super+K
+        Ctrl+K searches within the app you are looking at, Super+Space
         searches the machine, and only the latter offers to launch
         something you do not already have open.
 
@@ -473,7 +473,7 @@ class Compositor:
                 "logo": True,
             },
         )
-        call(self.sock, {"op": "key", "key": "k"})
+        call(self.sock, {"op": "key", "key": "Space"})
         call(
             self.sock,
             {

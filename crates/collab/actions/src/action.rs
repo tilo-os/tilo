@@ -178,6 +178,21 @@ pub trait Action: std::fmt::Debug {
         None
     }
 
+    /// A declared outside restoration after this action was undone. The
+    /// history executor calls it only after verifying the original action at
+    /// its dependency heads. Saved metadata alone never enables restoration.
+    fn redo_encoded(&self, doc: &Doc) -> Option<EncodedAction> {
+        let _ = doc;
+        None
+    }
+
+    /// Whether undoing this value needs an outside receipt before history
+    /// can mark it undone. This is a pure declaration, not caller authority.
+    /// The app confirms completion only through its admitted settlement action.
+    fn inverse_requires_settlement(&self) -> bool {
+        false
+    }
+
     /// Whether this value changes the document's content or is housekeeping
     /// about it (a read marker, a reading position). The executor writes it
     /// into the change's [`ActionContext`](crate::ActionContext), where a
@@ -185,6 +200,17 @@ pub trait Action: std::fmt::Debug {
     /// Defaults to [`Content`](crate::context::ChangeKind::Content).
     fn change_kind(&self) -> crate::context::ChangeKind {
         crate::context::ChangeKind::Content
+    }
+
+    /// What history calls this value: the step it makes, in words a person
+    /// and an agent reading the history both follow ("Recolour 2 marks",
+    /// "Move Sun", "Brush size 24"), read from `doc` as it is before the
+    /// value applies. `None` names the step after the action it came
+    /// through. Runs on the origin only; replicas replay the name with the
+    /// change.
+    fn history_label(&self, doc: &Doc) -> Option<String> {
+        let _ = doc;
+        None
     }
 }
 

@@ -61,6 +61,7 @@ impl WordProcessorWidget {
                 if laid.text != block.text {
                     return None;
                 }
+                let (start, end) = (laid.shown(start), laid.shown(end));
                 // A glyph may overhang its wrapping width, so horizontal
                 // culling must wait for the real shaped geometry.
                 if laid.y_top + laid.height <= content_clip.y0 || laid.y_top >= content_clip.y1 {

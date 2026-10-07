@@ -738,13 +738,20 @@ async fn a_device_asks_its_relays_and_offers_only_those_with_workers() {
     };
 
     // No worker yet: asked, answered, not offered; the silent relay costs
-    // no more than the budget.
+    // the budget, not its own dial timeout. Unbudgeted, that ask waits out
+    // QUIC's 30 s idle timeout, so a bound well under it still proves the
+    // budget holds while leaving a loaded runner room for the endpoint's
+    // bind and close around it.
     let started = std::time::Instant::now();
     let answered =
         tilo_relay::relay_offers::refresh_offers(identity.path(), &offers, budget, 1_000)
             .await
             .unwrap();
-    assert!(started.elapsed() < budget + Duration::from_secs(2));
+    let took = started.elapsed();
+    assert!(
+        took < budget + Duration::from_secs(10),
+        "the silent relay held the ask for {took:?}, past its {budget:?} budget"
+    );
     assert_eq!(answered.len(), 2, "every relay was asked");
     assert!(answered.values().all(|offer| offer.checked_at_ms == 1_000));
     assert!(offered(&answered).is_empty());

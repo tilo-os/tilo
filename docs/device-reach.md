@@ -73,6 +73,21 @@ An IP address is only a hint.
   machine reaches devices this way by enrolling as one of the person's
   devices, like any other.
 
+  The route is served by `tilo-device-admin.service` on dev images, a system
+  service rather than the session's endpoint, so a device at the greeter, or
+  one nobody has logged in to since boot, stays reachable. It shares the
+  device key: its endpoint id is derived from it, as tilo-relay's is, since
+  one endpoint id published by two processes would take each other's relay
+  slot, and the device key proves who answers inside the handshake. Both
+  sides present their root-signed certificate and sign a challenge bound to
+  the QUIC connection's two endpoint ids. The device admits only a device of
+  its own identity whose certificate grants `can_administer_devices` and that
+  is not revoked, bridges the session to a fresh `tilo-vmd rpc`, and logs each
+  session and request to its journal. A developer's machine is certified for
+  this with `tilo-enroll certify --capability admin` on the device that holds
+  the identity, which also lists it among the person's devices, where Settings
+  can remove it (`tilo-vm vm enrol-admin`).
+
 ## Updating what it runs
 
 An update is a set of layers, never edits to `/usr`. Every change can be
@@ -84,8 +99,13 @@ rolled back, and the next boot either keeps or drops it on purpose.
 - **Session binaries on a dev device** are tilo-vm layers. Each one is a
   system-extension directory with recorded provenance (CI digest, or the
   commit built locally), applied to that device's session:
-  - On a board, the `device` slot's session units take the layers as
-    `ExtensionDirectories=`.
+  - Stand-in session units bind a readonly combined `/usr` and `/opt` view.
+    The daemon retains the immutable boot root in a private mount, then
+    combines the global layers and that slot's layers once, avoiding another
+    overlay over the host's system-extension view. Later system-extension
+    refreshes cannot propagate into the retained boot root. An older shared
+    retained mount is disconnected before its propagated children are removed,
+    leaving the host's active mounts intact.
   - On a laptop whose owner logs in through greetd, the `device` slot is the
     owner's session on seat0. Its layers merge system-wide with
     `systemd-sysext`, because greetd starts that session in the host's mount
@@ -114,8 +134,11 @@ the recovery key always remains (`tilo-disk-encrypt`).
   boot chain Tilo signed.
 - **A sibling's consent over the network.** A LUKS slot opens with a key
   derived from two halves:
-  - The device half lives on the machine, sealed to the TPM where there is
-    one, otherwise in the boot partition.
+  - The device half lives on the machine, in a token in the volume's own
+    LUKS2 header beside the slot it opens: sealed to the TPM where there is
+    one, otherwise in the clear. Like the boot partition, the header is
+    readable by anyone holding the disk, and early boot reads it without
+    mounting anything.
   - The sibling half is sealed to the person's root-derived secret-sync key
     and held by their other devices.
 
@@ -131,10 +154,20 @@ the recovery key always remains (`tilo-disk-encrypt`).
   copied boot partition alone gets nothing.
 - **The passphrase or recovery key** at the keyboard, as today.
 
-Wi-Fi-only machines need the network in early boot: the image's
-NetworkManager in the initramfs, plus the credentials of the networks the
-machine last used, stored beside the device half. Those credentials unlock
-nothing on their own.
+Wi-Fi-only machines need the network in early boot. The initramfs runs the
+image's NetworkManager, only for a root enrolled for sibling unlock: wired
+links come up with DHCP, plus the networks the owner chose for unlocking
+(`tilo-disk-encrypt enrol --sibling --network NAME`), and no others. Their
+credentials are stored with the device half: sealed to the TPM where there is
+one, otherwise in the clear, readable by anyone holding the disk, which
+Settings tells the owner when they choose them (`tilo-sibling-unlock status`
+reports the sealing). They unlock nothing on their own.
+
+The prompt for the passphrase is up while early boot asks; whichever answers
+first opens the volume. The client answers systemd-cryptsetup's passphrase
+request as a password agent, and only with a key it has already checked
+against the slot, so a failed or refused attempt costs the person nothing and
+leaves the prompt as it was.
 
 The Lenovo Yoga Slim 7x has no TPM Linux can use yet. Its firmware TPM sits
 behind Qualcomm's TEE, and the driver for it (`tpm_qcom` on QCOMTEE) is still
@@ -156,5 +189,7 @@ passphrase.
 - On hardware, a board on Ethernet and a laptop on Wi-Fi each run a swap and a
   rollback through the `device` slot, then sleep and are woken by name.
 - A VM with an encrypted disk reboots and is unlocked by its paired sibling
-  after `device.unlock` is approved. A request that is denied, or comes from
-  a boot key that was never certified, leaves it at the passphrase prompt.
+  after `device.unlock` is approved (`os/dev/test-nearby-pairing.sh
+  --unlock`). A denied request, a replayed earlier exchange, a boot key that
+  was never certified, and a device removed from the fleet each leave it at
+  the passphrase prompt, with the attempt in the owner's history.

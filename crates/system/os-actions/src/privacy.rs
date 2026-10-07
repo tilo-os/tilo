@@ -5,7 +5,7 @@ use std::io::Read;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MediaKind {
@@ -201,7 +201,7 @@ pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Re
     if !crate::process::which("pw-dump") {
         return Err("pw-dump not installed".into());
     }
-    let mut child = Command::new("pw-dump")
+    let child = Command::new("pw-dump")
         .args(["--monitor", "--no-colors"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -209,12 +209,20 @@ pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Re
         .process_group(0)
         .spawn()
         .map_err(|error| format!("PipeWire monitor could not start: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("PipeWire monitor has no output")?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
+    run_media_monitor(child, &mut on_change)
+}
+
+fn run_media_monitor(
+    mut child: std::process::Child,
+    on_change: &mut impl FnMut(Vec<ActiveMediaUse>),
+) -> Result<(), String> {
+    let Some(stdout) = child.stdout.take() else {
+        terminate_monitor(&mut child);
+        return Err("PipeWire monitor has no output".into());
+    };
+    // Four fixed-size chunks bound the reader independently of graph size.
+    let (tx, rx) = std::sync::mpsc::sync_channel(4);
+    let reader = std::thread::Builder::new()
         .name("os-pw-dump-read".into())
         .spawn(move || {
             let mut reader = std::io::BufReader::new(stdout);
@@ -233,10 +241,14 @@ pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Re
                 }
             }
         })
-        .map_err(|error| format!("PipeWire monitor reader could not start: {error}"))?;
-    let result = drive_media_monitor(&rx, &mut on_change);
+        .map_err(|error| {
+            terminate_monitor(&mut child);
+            format!("PipeWire monitor reader could not start: {error}")
+        })?;
+    let result = drive_media_monitor(&rx, on_change);
     drop(rx);
     terminate_monitor(&mut child);
+    let _ = reader.join();
     result
 }
 
@@ -244,36 +256,44 @@ fn drive_media_monitor(
     rx: &std::sync::mpsc::Receiver<Vec<u8>>,
     on_change: &mut impl FnMut(Vec<ActiveMediaUse>),
 ) -> Result<(), String> {
-    let mut buf = Vec::new();
+    let mut decoder = MonitorJson::default();
     let mut watch = DeviceGraphWatch::default();
+    let mut started = Instant::now();
     loop {
-        let incoming = if watch.is_established() {
-            match rx.recv_timeout(MONITOR_QUIET) {
-                Ok(chunk) => Some(chunk),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return established_or_lost(watch.is_established());
-                }
-            }
+        let remaining = crate::DEFAULT_TIMEOUT.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err("PipeWire monitor graph deadline exceeded".into());
+        }
+        let wait = if watch.is_established() && !decoder.incomplete() {
+            remaining.min(MONITOR_QUIET)
         } else {
-            match rx.recv() {
-                Ok(chunk) => Some(chunk),
-                Err(_) => return established_or_lost(false),
-            }
+            remaining
         };
-        match incoming {
-            None => {
-                if watch.observe_quiet() == MonitorDisposition::Stop {
+        match rx.recv_timeout(wait) {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                if decoder.incomplete() {
+                    return Err("PipeWire monitor exited during a graph".into());
+                }
+                return established_or_lost(watch.is_established());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !decoder.incomplete() && watch.observe_quiet() == MonitorDisposition::Stop {
                     return Ok(());
                 }
+                return Err("PipeWire monitor graph deadline exceeded".into());
             }
-            Some(chunk) => {
-                buf.extend_from_slice(&chunk);
-                while let Some(doc) = pop_json_array(&mut buf) {
-                    let text = String::from_utf8_lossy(&doc);
-                    publish_media_snapshot(&text, on_change);
-                    if watch.observe_document(&text) == MonitorDisposition::Stop {
-                        return Ok(());
+            Ok(chunk) => {
+                for byte in chunk {
+                    if let Some(doc) = decoder.push(byte)? {
+                        let text = std::str::from_utf8(&doc)
+                            .map_err(|_| "PipeWire monitor graph is not UTF-8")?;
+                        publish_media_snapshot(text, on_change);
+                        if watch.observe_document(text) == MonitorDisposition::Stop {
+                            return Ok(());
+                        }
+                        if watch.is_established() {
+                            started = Instant::now();
+                        }
                     }
                 }
             }
@@ -340,49 +360,64 @@ fn device_fact(object: &serde_json::Value) -> Option<String> {
     None
 }
 
-fn pop_json_array(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let start = buf.iter().position(|byte| *byte == b'[')?;
-    if start > 0 {
-        buf.drain(..start);
-    }
-    let end = json_array_end(buf)?;
-    let doc = buf.get(..end)?.to_vec();
-    buf.drain(..end);
-    Some(doc)
+/// Carry JSON framing state between reads: no previously received prefix is
+/// rescanned when a large graph arrives in many small fragments.
+#[derive(Default)]
+struct MonitorJson {
+    bytes: Vec<u8>,
+    depth: usize,
+    in_string: bool,
+    escape: bool,
+    scanned: usize,
+    #[cfg(test)]
+    total_scanned: usize,
 }
 
-/// Byte length of one JSON array at the start of `bytes`, or `None` when
-/// the closing bracket has not arrived yet.
-fn json_array_end(bytes: &[u8]) -> Option<usize> {
-    let mut depth = 0_u32;
-    let mut in_string = false;
-    let mut escape = false;
-    for (offset, byte) in bytes.iter().copied().enumerate() {
-        if in_string {
-            if escape {
-                escape = false;
-                continue;
+impl MonitorJson {
+    fn incomplete(&self) -> bool {
+        self.depth != 0
+    }
+
+    fn push(&mut self, byte: u8) -> Result<Option<Vec<u8>>, String> {
+        self.scanned = self.scanned.saturating_add(1);
+        #[cfg(test)]
+        {
+            self.total_scanned = self.total_scanned.saturating_add(1);
+        }
+        if self.scanned > crate::process::MAX_CAPTURE_BYTES {
+            return Err("PipeWire monitor graph exceeds output limit".into());
+        }
+        if self.depth == 0 && byte != b'[' {
+            return Ok(None);
+        }
+        self.bytes.push(byte);
+        if self.in_string {
+            if self.escape {
+                self.escape = false;
+            } else if byte == b'\\' {
+                self.escape = true;
+            } else if byte == b'"' {
+                self.in_string = false;
             }
+        } else {
             match byte {
-                b'\\' => escape = true,
-                b'"' => in_string = false,
+                b'"' => self.in_string = true,
+                b'[' | b'{' => self.depth = self.depth.saturating_add(1),
+                b']' | b'}' => {
+                    self.depth = self.depth.saturating_sub(1);
+                    if self.depth == 0 {
+                        if byte != b']' {
+                            return Err("PipeWire monitor graph has invalid framing".into());
+                        }
+                        self.scanned = 0;
+                        return Ok(Some(std::mem::take(&mut self.bytes)));
+                    }
+                }
                 _ => {}
             }
-            continue;
         }
-        match byte {
-            b'"' => in_string = true,
-            b'[' | b'{' => depth = depth.saturating_add(1),
-            b']' | b'}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 && byte == b']' {
-                    return Some(offset.saturating_add(1));
-                }
-            }
-            _ => {}
-        }
+        Ok(None)
     }
-    None
 }
 
 fn terminate_monitor(child: &mut std::process::Child) {
@@ -707,6 +742,132 @@ mod tests {
     }
 
     #[test]
+    fn media_monitor_fragmented_graph_preserves_framing_and_quiet_exit() {
+        let graph = serde_json::json!([
+            {"id":1,"type":"PipeWire:Interface:Device", "info":{"props":{
+                "device.name":"alsa_card", "description":"[\"escaped\\]".repeat(16000)}}},
+            {"id":2,"type":"PipeWire:Interface:Client","info":{"props":{}}}
+        ])
+        .to_string();
+        let mut decoder = MonitorJson::default();
+        let mut documents = Vec::new();
+        for byte in graph.bytes() {
+            if let Some(doc) = decoder.push(byte).unwrap() {
+                documents.push(doc);
+            }
+        }
+        assert_eq!(
+            decoder.total_scanned,
+            graph.len(),
+            "each byte is scanned once"
+        );
+        assert_eq!(documents, [graph.as_bytes()]);
+        // This fixture proves tiny-fragment framing, not producer scheduling.
+        // Queue its bounded graph before starting the production deadline;
+        // the real reader still uses four bounded 8192-byte chunks.
+        let (tx, rx) = std::sync::mpsc::channel();
+        for chunk in graph.as_bytes().chunks(3) {
+            tx.send(chunk.to_vec()).unwrap();
+        }
+        drop(tx);
+        let mut published = 0;
+        drive_media_monitor(&rx, &mut |uses| {
+            assert!(uses.is_empty());
+            published += 1;
+        })
+        .expect("a complete authoritative device graph survives tiny fragments");
+        assert_eq!(published, 1);
+    }
+
+    #[test]
+    fn media_monitor_worker_rejects_oversized_and_truncated_graphs() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut oversized = vec![b' '; crate::process::MAX_CAPTURE_BYTES + 1];
+        oversized[0] = b'[';
+        tx.send(oversized).unwrap();
+        drop(tx);
+        let error =
+            drive_media_monitor(&rx, &mut |_| panic!("incomplete graph published")).unwrap_err();
+        assert_eq!(error, "PipeWire monitor graph exceeds output limit");
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(b"[{\"info\": [".to_vec()).unwrap();
+        drop(tx);
+        assert_eq!(
+            drive_media_monitor(&rx, &mut |_| panic!("truncated graph published")).unwrap_err(),
+            "PipeWire monitor exited during a graph"
+        );
+    }
+
+    #[test]
+    fn media_monitor_worker_bounds_initial_graph_wait() {
+        let (_tx, rx) = std::sync::mpsc::sync_channel(4);
+        assert_eq!(
+            drive_media_monitor(&rx, &mut |_| panic!("absent graph published")).unwrap_err(),
+            "PipeWire monitor graph deadline exceeded"
+        );
+    }
+
+    #[test]
+    fn media_monitor_complete_graph_still_stops_when_stream_is_quiet() {
+        let graph = serde_json::json!([
+            {"type":"PipeWire:Interface:Device", "info":{"props":{"device.name":"alsa_card"}}},
+            {"type":"PipeWire:Interface:Client", "info":{"props":{}}}
+        ])
+        .to_string()
+        .into_bytes();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(graph).unwrap();
+        let mut published = 0;
+        drive_media_monitor(&rx, &mut |_| published += 1)
+            .expect("a complete stable graph stops without transport EOF");
+        drop(tx);
+        assert_eq!(published, 1);
+    }
+
+    #[test]
+    fn media_monitor_fragmented_next_graph_survives_a_quiet_interval() {
+        let graph = |name: &str| {
+            serde_json::json!([
+                {"type":"PipeWire:Interface:Device", "info":{"props":{"device.name":name}}},
+                {"type":"PipeWire:Interface:Client", "info":{"props":{}}}
+            ])
+            .to_string()
+            .into_bytes()
+        };
+        let initial = graph("alsa_card");
+        let next = graph("bluez_card");
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        let sender = std::thread::spawn(move || {
+            tx.send(initial).unwrap();
+            // A rendezvous ensures the real worker received this fragment
+            // before the quiet-sized gap begins.
+            tx.send(next[..1].to_vec()).unwrap();
+            std::thread::sleep(MONITOR_QUIET.saturating_mul(2));
+            let _ = tx.send(next[1..].to_vec());
+        });
+        let mut published = 0;
+        let result = drive_media_monitor(&rx, &mut |_| published += 1);
+        drop(rx);
+        sender.join().unwrap();
+        result.expect("an incomplete next graph waits for the graph deadline, not quiet-stop");
+        assert_eq!(published, 2, "both complete graph snapshots were processed");
+    }
+
+    #[test]
+    fn media_monitor_owned_child_is_reaped_after_bounded_reader_disconnect() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf '%s' '[{\"type\":\"PipeWire:Interface:Device\",\"info\":{\"props\":{\"device.name\":\"alsa\"}}}][]'; while :; do printf '%8192s' ''; done"])
+            .stdout(Stdio::piped()).stderr(Stdio::null()).stdin(Stdio::null()).process_group(0);
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        run_media_monitor(child, &mut |_| {}).expect("stable graph stops owned monitor");
+        assert!(
+            !Path::new("/proc").join(pid.to_string()).exists(),
+            "owned monitor was reaped"
+        );
+    }
+
+    #[test]
     fn an_unchanged_device_graph_stops_the_pw_dump_monitor() {
         let device = |name: &str| {
             format!(
@@ -763,10 +924,14 @@ mod tests {
             "a new device is a real graph change"
         );
 
-        let mut buf = b"noise [1, {\"a\": [2]}] tail".to_vec();
-        let doc = pop_json_array(&mut buf).expect("one array");
-        assert_eq!(doc, b"[1, {\"a\": [2]}]");
-        assert_eq!(buf, b" tail");
-        assert!(pop_json_array(&mut buf).is_none());
+        let mut decoder = MonitorJson::default();
+        let mut documents = Vec::new();
+        for byte in b"noise [1, {\"a\": [2]}] tail" {
+            if let Some(doc) = decoder.push(*byte).unwrap() {
+                documents.push(doc);
+            }
+        }
+        assert_eq!(documents, [b"[1, {\"a\": [2]}]".to_vec()]);
+        assert!(!decoder.incomplete());
     }
 }

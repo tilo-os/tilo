@@ -78,6 +78,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
+    "tools/rust_feedback.py": "tools/tests/test_rust_feedback.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
@@ -94,6 +95,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
+    "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
 }
 # Control-plane files are validated by tests that read or execute the production
@@ -439,6 +441,30 @@ def package_cost(pkg: dict) -> int:
     return score
 
 
+def has_native_tests(package: dict) -> bool:
+    """Conservatively retain runnable targets; whole-crate wasm gates are native-empty."""
+    for target in package.get("targets", []):
+        if target.get("test") is False or "custom-build" in target.get("kind", []):
+            continue
+        source = target.get("src_path")
+        if source is None:
+            return True
+        try:
+            with Path(source).open(encoding="utf-8") as stream:
+                for _, line in zip(range(128), stream):
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("//"):
+                        continue
+                    if not re.fullmatch(r'#!\[\s*cfg\(\s*target_arch\s*=\s*"wasm32"\s*\)\s*\]', stripped):
+                        return True
+                    break
+                else:
+                    return True
+        except (OSError, UnicodeError):
+            return True
+    return False
+
+
 def direct_dependants_within_budget(
     seeds: set[str],
     reverse: dict[str, set[str]],
@@ -732,6 +758,9 @@ def make_plan(
         dependants, deferred_dependants = direct_dependants_within_budget(
             seeds, reverse, packages, tested)
         tested |= dependants & selected
+    # The native build of a whole-crate wasm-only target is an empty library.
+    # Keep its all-target compile and wasm job; never schedule a zero-test run.
+    tested = {name for name in tested if has_native_tests(packages[name])}
     if only is not None:
         selected &= set(only["packages"])
         tested &= selected

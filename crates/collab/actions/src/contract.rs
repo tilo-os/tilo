@@ -64,6 +64,11 @@ impl RiskLevel {
 /// and never listed for a person to pick (the action palette, menus).
 pub const PROGRAMMATIC_TAG: &str = "surface:programmatic";
 
+/// [`ActionContract::tags`] entry of an action whose result carries content
+/// from outside the user's own data (a web page's text, its logs): data for
+/// the caller to reason about, never instructions to follow.
+pub const UNTRUSTED_CONTENT_TAG: &str = "content:untrusted";
+
 /// [`ActionContract::tags`] entry of an action whose risk, and therefore
 /// whether it needs confirmation, depends on the arguments it is invoked
 /// with (a generic edit that may delete). The publishing host classifies each
@@ -91,6 +96,15 @@ pub enum PermissionRequirement {
     Write,
     Invite,
     Admin,
+}
+
+impl PermissionRequirement {
+    /// Whether someone admitted for `self` holds what `needed` asks: each
+    /// level holds every one before it, as each role holds the roles below.
+    #[must_use]
+    pub const fn covers(self, needed: Self) -> bool {
+        self as u8 >= needed as u8
+    }
 }
 
 /// Confirmation required after argument binding and immediately before run.
@@ -205,6 +219,11 @@ impl ResultSpec {
         }
     }
 }
+
+/// The contract tag of an action that reaches files, hardware or services
+/// of the device it runs on: the door runs it only for the person at that
+/// device, never for a collaborator or a remote participant.
+pub const LOCAL_DEVICE_ONLY: &str = "tilo.local-device-only";
 
 /// Complete operational contract copied into every inert descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,6 +369,17 @@ impl ActionContract {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_permission_level_covers_the_levels_below_it() {
+        use super::PermissionRequirement as P;
+        assert!(P::Write.covers(P::Read));
+        assert!(P::Write.covers(P::Write));
+        assert!(!P::Read.covers(P::Write));
+        assert!(!P::Comment.covers(P::Write));
+        assert!(P::Read.covers(P::None));
+        assert!(P::Admin.covers(P::Invite));
+    }
+
     use super::*;
 
     /// Risk levels keep their compact wire discriminants and a broker-owned job identity is not a

@@ -5,7 +5,8 @@ Every app window prints one line per GPU device it opens; the session log keeps 
 driver="<driver>"`, and a window that ends up on a CPU rasterizer although a hardware
 adapter exists also prints `tilo-gpu: window renders on a CPU adapter although a GPU is
 present: ...`. `tilo system health --gpu --json` says whether the machine has a hardware
-render node at all ("no-gpu") and whether the session uses it ("ok" or "degraded").
+render node with a GPU behind it at all ("no-gpu"; a virtio GPU without 3D acceleration has a
+render node but no GPU) and whether the session uses it ("ok" or "degraded").
 
 Plain functions over text, so the VM check (R05) and the installed-image gate in CI
 (gpu_check.py) judge alike.
@@ -67,7 +68,7 @@ def judge(health: dict | None, adapters: list[dict], fallbacks: list[dict],
           health_text: str = "") -> tuple[str, str]:
     """("pass" | "fail" | "unobservable", why).
 
-    A machine without a hardware render node has nothing to fall back from, so it cannot
+    A machine without a GPU behind its render nodes has nothing to fall back from, so it cannot
     show the fault: unobservable. Otherwise the health report must be "ok", no window may
     report a CPU adapter, and at least one window must have reported its adapter at all."""
     if health is None:
@@ -76,8 +77,9 @@ def judge(health: dict | None, adapters: list[dict], fallbacks: list[dict],
     status = health.get("status")
     problems = [str(p) for p in health.get("problems") or []]
     if status == "no-gpu":
-        return "unobservable", ("no hardware render node in this machine (a software-only VM; "
-                                "boot it with --gl for virgl), so a CPU fallback cannot be told apart")
+        return "unobservable", ("no render node with a GPU behind it in this machine (a "
+                                "software-only VM; boot it with --gl for virgl), so a CPU "
+                                "fallback cannot be told apart")
     if status not in STATUSES:
         return "unobservable", f"unknown GPU health status {status!r}"
     faults = []

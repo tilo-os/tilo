@@ -262,6 +262,9 @@ pub struct Relay {
     own_signing_key: ed25519_dalek::SigningKey,
     /// Own user pubkey — the one this relay chains to.
     own_user_public_key: [u8; 32],
+    /// Only the browser listener publishes this public navigation origin.
+    #[cfg(feature = "web")]
+    pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     live_revocations: Arc<std::sync::RwLock<RevocationList>>,
     /// Federation dial tasks — one per known peer relay. Aborted
     /// (per-handle) when the `Relay` drops.
@@ -543,6 +546,29 @@ impl Relay {
             cfg,
             identity,
             None,
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            app_serving,
+            Arc::new(tilo_clock::SystemClock),
+        ))
+        .await
+    }
+
+    /// Start an app-serving host with an explicit transport relay policy.
+    ///
+    /// # Errors
+    /// The same as [`Relay::start`].
+    pub async fn start_with_app_serving_and_relay_mode(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+        relay_mode: iroh::RelayMode,
+    ) -> Result<Self, RelayError> {
+        Box::pin(Self::start_inner(
+            cfg,
+            identity,
+            Some(relay_mode),
             None,
             Vec::new(),
             RelayStartupMode::CertifiedHost,
@@ -907,6 +933,8 @@ impl Relay {
             own_cert: identity.device_cert,
             own_signing_key: identity.device_signing_key,
             own_user_public_key: identity.user_public_key,
+            #[cfg(feature = "web")]
+            browser_origin: Arc::new(std::sync::RwLock::new(None)),
             live_revocations: revocations,
             peer_relay_tasks,
             mesh_profile,

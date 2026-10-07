@@ -209,6 +209,16 @@ impl DesktopSurface {
                 self.navigation.framed.remove(&strip);
                 continue;
             };
+            if self.row(strip).is_some_and(|row| {
+                row.groups
+                    .iter()
+                    .any(ui::widget::WindowGroup::edge_resize_in_flight)
+            }) {
+                // A captured edge sets the viewport under the hand. Retain
+                // that deliberate framing when its Width intent is applied;
+                // a later explicit selection still reveals normally.
+                self.navigation.manual_pan = Some((strip, group));
+            }
             let Some(key) = self.navigation_key(strip, group) else {
                 continue;
             };
@@ -296,7 +306,13 @@ impl DesktopSurface {
                 ..
             } => {
                 if let Some((strip, group)) = self.navigation.pressed_group.take()
-                    && self.row(strip).is_some_and(|row| !row.group_drag_active())
+                    && self.row(strip).is_some_and(|row| {
+                        !row.group_drag_active()
+                            && !row
+                                .groups
+                                .iter()
+                                .any(ui::widget::WindowGroup::edge_resize_in_flight)
+                    })
                 {
                     self.navigation.pending_focus = Some((strip, group));
                 }

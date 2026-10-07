@@ -1885,6 +1885,15 @@ fn scalar_props(doc: &AutoCommit, obj: &ObjId) -> BTreeMap<String, AttrVal> {
     out
 }
 
+/// The rich-text document a peer's saved `bytes` hold, read without
+/// keeping them: `None` when they are not a document, or not a rich-text
+/// one.
+pub fn snapshot_of(bytes: &[u8]) -> Option<DocSnapshot> {
+    let doc = AutoCommit::load(bytes).ok()?;
+    let c = open(&doc, &ROOT).ok()?;
+    Some(materialize(&doc, &c))
+}
+
 pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
     let blocks = ordered_views(doc, &c.blocks);
     let ranges = AnchorRanges::of(&blocks);

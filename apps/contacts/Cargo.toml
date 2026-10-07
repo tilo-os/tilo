@@ -19,6 +19,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
@@ -57,11 +58,9 @@ pim-lines = { path = "../../crates/text/pim-lines" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
 # Serialises the tests that construct scratch files / drive the portal
 # drain path so parallel runs don't race on the shared temp dir.
 serial_test.workspace = true
-tempfile.workspace = true
 # Schema-validate the app manifest (`tilo-app.toml`) in a test so the vCard
 # file-type association it declares is checked against the packaging schema.
 # Already resolved in the workspace lockfile.

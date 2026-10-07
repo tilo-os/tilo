@@ -18,6 +18,34 @@ pub enum ApplicationFocusRestore {
     Application,
 }
 
+/// The application-owned presentation of a widget below a component's root:
+/// which item is open, what is expanded, where the caret was. A root that
+/// hosts the widget (a framework app's root over its surface) saves and
+/// restores it as its own [`AppWidget`](crate::widget::AppWidget) view, so a
+/// reopened window shows what it showed.
+pub trait ApplicationViewState {
+    /// Capture the presentation to save with the window.
+    /// # Errors
+    /// Rejects an invalid contribution before anything is saved.
+    fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError>;
+
+    /// Prepare the saved presentation `local` against the latest record.
+    /// # Errors
+    /// Rejects a payload the application cannot restore.
+    fn restore_application_view(
+        &mut self,
+        local: &ApplicationLocalView,
+        doc: &automerge::AutoCommit,
+    ) -> Result<ApplicationFocusRestore, ThawError>;
+
+    /// Finish after the ordinary view restored, before the first frame.
+    /// # Errors
+    /// Rejects a prepared plan without publishing a partial view.
+    fn finish_application_view_restore(&mut self) -> Result<(), ThawError> {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SavedInstanceView {
     pub version: u32,

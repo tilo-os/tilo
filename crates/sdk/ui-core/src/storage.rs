@@ -420,6 +420,7 @@ pub struct AppStorage {
     app_id: String,
     secrets: crate::secrets::SecretStore,
     settings: SettingsDocument,
+    files: AppFiles,
 }
 
 impl AppStorage {
@@ -434,7 +435,16 @@ impl AppStorage {
             app_id: app_id.to_owned(),
             secrets,
             settings,
+            files: AppFiles::for_app(app_id),
         }
+    }
+
+    /// The same storage with the app's file areas at `files`: a test or
+    /// capture profile's own instead of the person's.
+    #[must_use]
+    pub fn with_files(mut self, files: AppFiles) -> Self {
+        self.files = files;
+        self
     }
 
     /// Storage of the app `app_id` in the current host's secret store and
@@ -453,7 +463,7 @@ impl AppStorage {
     /// The app's private file areas.
     #[must_use]
     pub fn files(&self) -> AppFiles {
-        AppFiles::for_app(&self.app_id)
+        self.files.clone()
     }
 
     /// The app's secrets. A secret that belongs to one document item is
@@ -501,8 +511,15 @@ impl SettingsSection {
     /// The same section in the document at `path` instead of the user's
     /// (tests, tools that edit another profile).
     #[must_use]
-    pub fn in_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.document = SettingsDocument::File(path.into());
+    pub fn in_file(self, path: impl Into<PathBuf>) -> Self {
+        self.in_document(SettingsDocument::File(path.into()))
+    }
+
+    /// The same section in `document`: the one the host gave the app
+    /// ([`AppStorage::settings_document`]).
+    #[must_use]
+    pub fn in_document(mut self, document: SettingsDocument) -> Self {
+        self.document = document;
         self
     }
 

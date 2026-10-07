@@ -4,7 +4,7 @@
 //! they never enter Automerge. What *does* sync is how the table is laid
 //! out: its sort and whether it shows the process tree. Which tab is showing,
 //! the filter and the selected process belong to the window that shows them;
-//! the person's preferences (cadence, kernel threads, confirm-kill) are
+//! the person's preferences (cadence, kernel threads) are
 //! [`crate::prefs::MonitorPreferences`], a personal setting.
 //!
 //! ```text

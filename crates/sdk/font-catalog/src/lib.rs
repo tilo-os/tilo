@@ -1,8 +1,9 @@
 //! Tilo's pinned font catalog.
 //!
 //! The catalog is one directory of unmodified font files plus a
-//! `manifest.toml` that pins every file by size and SHA-256. The checked-in
-//! copy is `crates/sdk/ui-core/assets/fonts`; the OS image installs it once,
+//! `manifest.toml` that pins every file by size and SHA-256. Source metadata lives in
+//! `crates/sdk/ui-core/assets/fonts`; builds prepare the pinned font bytes in
+//! a verified artifact cache. The OS image installs its catalog once,
 //! at [`INSTALLED_ROOT`], where fontconfig and every Tilo process that sets
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
@@ -32,7 +33,7 @@ pub const INSTALLED_ROOT: &str = "/usr/share/fonts/tilo";
 /// The catalog in this source checkout.
 #[must_use]
 pub fn checkout_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui-core/assets/fonts")
+    PathBuf::from(env!("TILO_CHECKOUT_FONT_ROOT"))
 }
 
 /// The installed catalog when the system has one, otherwise the checkout's
@@ -65,12 +66,41 @@ impl Error {
     }
 }
 
-/// Whether a font ships in the product or only in controlled test fixtures.
+/// Where a font ships.
+///
+/// | Scope | Tilo OS image | SDK standalone catalog | test fixtures |
+/// |---|---|---|---|
+/// | `Product` | yes | yes | yes |
+/// | `Os` | yes | no | yes |
+/// | `Fixture` | no | no | yes |
+///
+/// The standalone catalog is the one the SDK ships next to a third-party
+/// app's Windows, macOS, Android and web builds. It carries only fonts whose
+/// licence lets any app bundle them (OFL, GUST); a font under another
+/// licence, such as New Computer Modern's GPL-licensed Regular cut, is
+/// `Os`. A catalog directory without its `Os` files is a standalone
+/// catalog, and the toolkit sets text in the faces it has.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
     Product,
+    Os,
     Fixture,
+}
+
+impl Scope {
+    /// Whether the SDK's standalone catalog for third-party app builds
+    /// carries fonts of this scope.
+    #[must_use]
+    pub const fn standalone(self) -> bool {
+        matches!(self, Self::Product)
+    }
+
+    /// Whether the Tilo OS image installs fonts of this scope.
+    #[must_use]
+    pub const fn os(self) -> bool {
+        matches!(self, Self::Product | Self::Os)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,9 +129,17 @@ pub struct Asset {
 #[derive(Debug, Deserialize)]
 pub struct Face {
     pub index: u32,
+    /// The family the file itself names.
     pub family: String,
     pub post_script_name: String,
     pub style: String,
+    /// The families Tilo sets this face under, in place of the file's own,
+    /// when that name cannot tell the face apart from its siblings: every
+    /// New Computer Modern file says `NewComputerModern` at weight 400,
+    /// whether it is the Book, Regular or 8 pt cut. Empty keeps the file's
+    /// own family. The file's bytes are never changed.
+    #[serde(default)]
+    pub tilo_families: Vec<String>,
 }
 
 /// The compiled-in manifest, parsed once.

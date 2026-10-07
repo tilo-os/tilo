@@ -1,20 +1,21 @@
 //! Automerge document layer.
 //!
-//! What the user decided lives in the CRDT: which file is open, and the edits
-//! applied to it. That makes every edit undoable through `State::commit_action`
-//! and replicable to a collaborator for free.
+//! What the user decided lives in the CRDT: the photographs of the library,
+//! how each is filed, and the crop and turn each is shown with. That makes
+//! every edit undoable and replicable to a collaborator for free. Which
+//! photograph a window shows is that window's own view state, never shared.
 //!
 //! ```text
 //! root
-//! ├── "image"  (Str)   # serde_json of Option<OpenImage> — atomic editor selection
-//! ├── "photos_edits" (Map) # independently mergeable crop + quarter turns
-//! └── "photos_library" (Map) # keyed photo/album records, order lists, delete tombstones
+//! └── "photos_library" (Map) # keyed photo/album records, one column map per
+//!                            # field (crop and turn among them), order
+//!                            # lists, delete tombstones
 //! ```
 //!
 //! # What is deliberately not here
 //!
 //! The pixels. The document holds portable display metadata and two small edit
-//! fields and never the image itself, which lives in the app's content store
+//! fields per photograph and never the image itself, which lives in the app's content store
 //! (`tilo-content`) under its hash: an automerge change carrying a multi-megabyte payload bloats every replica and
 //! durable host log and makes later edits wait behind the media. A content
 //! address plus a crop rect is a change of a few dozen bytes.
@@ -104,11 +105,12 @@ const PHOTO_ANALYSIS_VISION_KEY: &str = "photo_analysis_vision";
 /// Structured library projection: independently mergeable maps and lists
 /// below this key.
 const LIBRARY_KEY: &str = "photos_library";
-/// Field-granular edits. A crop is
-/// one coherent rectangle, while rotation is a separate user decision; the
-/// two fields therefore merge independently without pretending that the four
-/// coordinates of a single crop can safely be composed.
-const EDITS_KEY: &str = "photos_edits";
+/// A photograph's crop and its turn are separate columns: a crop is one
+/// coherent rectangle, while rotation is a separate decision, so the two
+/// merge independently without pretending that the four coordinates of one
+/// crop could be composed.
+const PHOTO_CROP_KEY: &str = "photo_crop";
+const PHOTO_ROTATION_KEY: &str = "photo_rotation";
 const METADATA_FOLDERS_KEY: &str = "metadata_folders";
 const METADATA_PEOPLE_KEY: &str = "metadata_people";
 const METADATA_TAGS_KEY: &str = "metadata_tags";
@@ -132,6 +134,8 @@ struct PhotoColumns {
     analysis_ocr: ObjId,
     analysis_vision: ObjId,
     location: ObjId,
+    crop: ObjId,
+    rotation: ObjId,
 }
 
 impl PhotoColumns {
@@ -149,140 +153,16 @@ impl PhotoColumns {
             analysis_ocr: PhotosDoc::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY)?,
             analysis_vision: PhotosDoc::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY)?,
             location: PhotosDoc::map_or_make(doc, root, "photo_location")?,
+            crop: PhotosDoc::map_or_make(doc, root, PHOTO_CROP_KEY)?,
+            rotation: PhotosDoc::map_or_make(doc, root, PHOTO_ROTATION_KEY)?,
         })
     }
 }
 
 impl PhotosDoc {
-    /// True when the document has never been written to.
+    /// True when the document holds no library yet.
     pub fn is_empty(doc: &AutoCommit) -> bool {
-        !matches!(
-            doc.get(&ROOT, EDITS_KEY),
-            Ok(Some((Value::Object(ObjType::Map), _)))
-        )
-    }
-
-    /// Seed default state: **no image open** and no edits. An app with nothing
-    /// open shows an empty state; content arrives from an opened file.
-    /// Idempotent — only writes fields that are missing.
-    pub fn seed(doc: &mut AutoCommit) {
-        if read_str(doc, &ROOT, "image").is_none() {
-            Self::write_json(doc, "image", &Option::<OpenImage>::None);
-        }
-        let _ = Self::ensure_structured_edits(doc);
-        let _ = Self::ensure_structured_library(doc);
-    }
-
-    /// The photograph currently open, if any.
-    ///
-    /// Reads **every** value the key holds, not only the one Automerge would
-    /// hand back, and a photograph beats no photograph. See
-    /// `Self::conflicting` for why that is the difference between a
-    /// collaborator's picture surviving and a collaborator's picture being
-    /// closed by somebody else's app starting up.
-    pub fn image(doc: &AutoCommit) -> Option<OpenImage> {
-        Self::conflicting::<Option<OpenImage>>(doc, "image")
-            .into_iter()
-            .flatten()
-            .next()
-    }
-
-    /// Open `image`, resetting the edits — a newly opened file starts
-    /// untouched, never inheriting the previous one's crop. The image itself
-    /// deliberately remains one atomic selection record: its content identity,
-    /// display metadata, and reset boundary must change together.
-    pub fn set_image(doc: &mut AutoCommit, image: Option<&OpenImage>) {
-        let image = image.cloned().map(OpenImage::portable);
-        Self::write_json(doc, "image", &image);
-        Self::set_edits(doc, &Edits::default());
-        if let Some(image) = &image {
-            let mut library = Self::library(doc);
-            if library.add_photo(LibraryPhoto::from_image(image.clone())) {
-                Self::set_library(doc, &library);
-            }
-        }
-    }
-
-    /// The edits in force.
-    ///
-    /// Crop and rotation resolve independently. An app that has just started
-    /// writing untouched rotation therefore cannot erase a concurrent crop.
-    pub fn edits(doc: &AutoCommit) -> Edits {
-        let roots = Self::edits_roots(doc);
-        if roots.is_empty() {
-            return Edits::default();
-        }
-        // Two just-created replicas can concurrently make the map itself.
-        // Read every root-map conflict so their independently written fields
-        // still merge; subsequent writes target the deterministic first map.
-        let crop = roots
-            .iter()
-            .flat_map(|root| Self::conflicting_at::<crate::model::Rect01>(doc, root, "crop"))
-            .into_iter()
-            .find(|crop| !crop.is_full())
-            .unwrap_or_default();
-        let rotate_quarters = roots
-            .iter()
-            .flat_map(|root| Self::conflicting_at::<u8>(doc, root, "rotate_quarters"))
-            .into_iter()
-            .find(|turns| !turns.is_multiple_of(4))
-            .unwrap_or_default();
-        Edits {
-            crop,
-            rotate_quarters,
-        }
-    }
-
-    /// Replace changed edit fields only. This delta is the compatibility seam
-    /// for the existing absolute `SetEdits` action: a crop writer updates only
-    /// `crop`, while a concurrent rotation writer updates only
-    /// `rotate_quarters`.
-    pub fn set_edits(doc: &mut AutoCommit, edits: &Edits) {
-        let before = Self::edits(doc);
-        let Some(root) = Self::ensure_structured_edits(doc) else {
-            return;
-        };
-        if before.crop != edits.crop {
-            Self::write_json_at(doc, &root, "crop", &edits.crop);
-        }
-        if before.rotate_quarters != edits.rotate_quarters {
-            Self::write_json_at(doc, &root, "rotate_quarters", &edits.rotate_quarters);
-        }
-    }
-
-    /// The one edits map, created on first write.
-    fn ensure_structured_edits(doc: &mut AutoCommit) -> Option<ObjId> {
-        let roots = Self::edits_roots(doc);
-        if let [root] = roots.as_slice() {
-            return Some(root.clone());
-        }
-        // Concurrent first-run replicas can each create this map. Once an
-        // editor has observed both, replace the competing roots with one map
-        // containing their deterministic merged projection. This gives a
-        // subsequent explicit Reset normal Automerge overwrite semantics
-        // instead of leaving an unseen old map to resurrect a crop forever.
-        let inherited = (!roots.is_empty()).then(|| Self::edits(doc));
-        if !roots.is_empty() {
-            let _ = doc.delete(&ROOT, EDITS_KEY);
-        }
-        let edits = inherited.unwrap_or_default();
-        let root = doc.put_object(&ROOT, EDITS_KEY, ObjType::Map).ok()?;
-        Self::write_json_at(doc, &root, "crop", &edits.crop);
-        Self::write_json_at(doc, &root, "rotate_quarters", &edits.rotate_quarters);
-        Some(root)
-    }
-
-    fn edits_roots(doc: &AutoCommit) -> Vec<ObjId> {
-        doc.get_all(&ROOT, EDITS_KEY)
-            .map(|values| {
-                values
-                    .into_iter()
-                    .filter_map(|(value, id)| {
-                        matches!(value, Value::Object(ObjType::Map)).then_some(id)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        Self::library_roots(doc).is_empty()
     }
 
     /// Complete durable library metadata, materialized from per-record CRDT
@@ -441,7 +321,7 @@ impl PhotosDoc {
         if let [root] = roots.as_slice() {
             return Some(root.clone());
         }
-        // As with edits, concurrent first-run roots are folded as
+        // Concurrent first-run roots are folded as
         // soon as an editor observes them. Until then `structured_library`
         // reads their additive projection, so no independently imported
         // record is stranded behind Automerge's single-value map lookup.
@@ -463,6 +343,8 @@ impl PhotosDoc {
         let _ = Self::map_or_make(doc, &root, PHOTO_ANALYSIS_OCR_KEY);
         let _ = Self::map_or_make(doc, &root, PHOTO_ANALYSIS_VISION_KEY);
         let _ = Self::map_or_make(doc, &root, "photo_location");
+        let _ = Self::map_or_make(doc, &root, PHOTO_CROP_KEY);
+        let _ = Self::map_or_make(doc, &root, PHOTO_ROTATION_KEY);
         let _ = Self::map_or_make(doc, &root, "albums");
         let _ = Self::map_or_make(doc, &root, "removed_photos");
         let _ = Self::map_or_make(doc, &root, "removed_albums");
@@ -604,6 +486,9 @@ impl PhotosDoc {
                 if existing.location.is_none() {
                     existing.location = photo.location;
                 }
+                if existing.edits.is_identity() {
+                    existing.edits = photo.edits;
+                }
             } else {
                 into.photos.push(photo);
             }
@@ -710,6 +595,22 @@ impl PhotosDoc {
                     .next()
                     .flatten()
             }),
+            edits: Edits {
+                // A real crop beats an untouched one and a turn beats none,
+                // so a collaborator's edit survives a concurrent reset.
+                crop: field(PHOTO_CROP_KEY)
+                    .map(|map| Self::conflicting_at::<crate::model::Rect01>(doc, &map, id))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|crop| !crop.is_full())
+                    .unwrap_or_default(),
+                rotate_quarters: field(PHOTO_ROTATION_KEY)
+                    .map(|map| Self::conflicting_at::<u8>(doc, &map, id))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|turns| !turns.is_multiple_of(4))
+                    .unwrap_or_default(),
+            },
         })
     }
 
@@ -1123,6 +1024,8 @@ impl PhotosDoc {
             analysis_ocr,
             analysis_vision,
             location,
+            crop,
+            rotation,
         } = columns;
         if old.is_none_or(|value| value.image != photo.image) {
             Self::write_json_at(doc, core, &photo.id, &photo.image);
@@ -1163,8 +1066,20 @@ impl PhotosDoc {
             if photo.location.is_some() {
                 Self::write_json_at(doc, location, &photo.id, &photo.location);
             }
+            if !photo.edits.crop.is_full() {
+                Self::write_json_at(doc, crop, &photo.id, &photo.edits.crop);
+            }
+            if photo.edits.rotate_quarters != 0 {
+                Self::write_json_at(doc, rotation, &photo.id, &photo.edits.rotate_quarters);
+            }
             return;
         };
+        if old.edits.crop != photo.edits.crop {
+            Self::write_json_at(doc, crop, &photo.id, &photo.edits.crop);
+        }
+        if old.edits.rotate_quarters != photo.edits.rotate_quarters {
+            Self::write_json_at(doc, rotation, &photo.id, &photo.edits.rotate_quarters);
+        }
         if old.favorite != photo.favorite {
             Self::write_json_at(doc, favorite, &photo.id, &photo.favorite);
         }
@@ -1223,12 +1138,6 @@ impl PhotosDoc {
 
     // -- scalar helpers ----------------------------------------------------
 
-    fn write_json<T: serde::Serialize>(doc: &mut AutoCommit, key: &str, value: &T) {
-        if let Ok(s) = serde_json::to_string(value) {
-            let _ = doc.put(&ROOT, key, s);
-        }
-    }
-
     fn write_json_at<T: serde::Serialize>(
         doc: &mut AutoCommit,
         parent: &ObjId,
@@ -1240,39 +1149,16 @@ impl PhotosDoc {
         }
     }
 
-    /// Every value `key` currently holds, parsed.
-    ///
-    /// # Why a key can hold more than one value
+    /// Every value `key` of `parent` currently holds, parsed.
     ///
     /// Two replicas that write the same key without having seen each other's
-    /// write leave both values in the document. Automerge keeps them all and
-    /// `get` returns one — deterministically, so every replica agrees, but it
-    /// decides by actor id, which is a coin toss nobody chose.
-    ///
-    /// That is not an abstract hazard. An app of this kind starts by writing
-    /// what it holds, and a second participant's photo editor starting up
-    /// holds nothing: it writes "no photograph", concurrently with the
-    /// photograph somebody else has open. Half the time the empty write wins
-    /// the toss and the picture disappears off both screens, in the middle of
-    /// somebody working on it, with nothing anywhere reporting a loss.
-    ///
-    /// So the choice is made here instead, on what the values *say* rather
-    /// than on who wrote them: **a value with something in it beats one with
-    /// nothing in it.** That is a property of the data, so it holds whatever
-    /// order the documents merged in and whichever way the actor ids happened
-    /// to sort. It stays convergent because `get_all` orders its answers by op
-    /// id, which every replica sees identically — two replicas holding the
-    /// same conflict make the same choice.
-    ///
-    /// A write that *saw* the other one is not a conflict at all: it
-    /// supersedes it and is the only value here. Closing a photograph, or
-    /// resetting a crop, therefore still does exactly what it says.
-    fn conflicting<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Vec<T> {
-        Self::conflicting_at(doc, &ROOT, key)
-    }
-
-    /// As [`Self::conflicting`], but for fields of an independently mergeable
-    /// map instead of a root scalar.
+    /// write leave both values in the document; `get` would return one by
+    /// actor id, a coin toss nobody chose. Readers choose instead on what the
+    /// values *say* (a real crop beats an untouched one), which holds
+    /// whatever order the documents merged in. It stays convergent because
+    /// `get_all` orders its answers by op id, which every replica sees
+    /// identically. A write that *saw* the other one is not a conflict: it
+    /// supersedes it, so a reset still does exactly what it says.
     fn conflicting_at<T: serde::de::DeserializeOwned>(
         doc: &AutoCommit,
         parent: &ObjId,
@@ -1291,6 +1177,37 @@ impl PhotosDoc {
     }
 }
 
+/// What tests build their documents with: a library holding a photograph,
+/// and its edits, written as the actions do.
+#[cfg(test)]
+impl PhotosDoc {
+    /// Put the photograph `image` is in the library, returning its id.
+    pub(crate) fn put_image(doc: &mut AutoCommit, image: &OpenImage) -> String {
+        let photo = LibraryPhoto::from_image(image.clone());
+        let id = photo.id.clone();
+        let mut library = Self::library(doc);
+        library.add_photo(photo);
+        Self::set_library(doc, &library);
+        id
+    }
+
+    /// The edits of photograph `id`; untouched when it is not in the library.
+    pub(crate) fn photo_edits(doc: &AutoCommit, id: &str) -> Edits {
+        Self::photo(doc, id)
+            .map(|photo| photo.edits)
+            .unwrap_or_default()
+    }
+
+    /// Give photograph `id` `edits`.
+    pub(crate) fn set_photo_edits(doc: &mut AutoCommit, id: &str, edits: Edits) {
+        let mut library = Self::library(doc);
+        if let Some(photo) = library.photo_mut(id) {
+            photo.edits = edits;
+            Self::set_library(doc, &library);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1299,67 +1216,92 @@ mod tests {
     use tilo_actions::Action;
     use tilo_automerge::ApplyIncoming;
 
-    #[test]
-    fn seeding_and_opening_keep_state_and_never_carry_pixels_or_origin_paths() {
+    /// A library holding `image`, and the id it gave it.
+    fn with_photo(image: OpenImage) -> (AutoCommit, String) {
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
+        let photo = LibraryPhoto::from_image(image);
+        let id = photo.id.clone();
+        let mut library = PhotosDoc::library(&doc);
+        library.add_photo(photo);
+        PhotosDoc::set_library(&mut doc, &library);
+        (doc, id)
+    }
+
+    fn set_edits(doc: &mut AutoCommit, id: &str, edits: Edits) {
+        PhotosAction::set(id, &edits)
+            .apply(doc)
+            .expect("an edit of a library photograph applies");
+    }
+
+    fn edits(doc: &AutoCommit, id: &str) -> Edits {
+        PhotosDoc::photo(doc, id).expect("the photograph").edits
+    }
+
+    #[test]
+    fn photographs_keep_their_own_edits_and_never_carry_pixels_or_origin_paths() {
+        let doc = AutoCommit::new();
+        assert!(PhotosDoc::is_empty(&doc));
         assert!(
-            PhotosDoc::image(&doc).is_none(),
+            PhotosDoc::library(&doc).photos.is_empty(),
             "a fresh document must not fabricate a photograph"
         );
-        assert!(PhotosDoc::edits(&doc).is_identity());
 
+        // Editing one photograph leaves every other photograph alone: a crop
+        // of the harbour survives opening, importing and editing another.
         {
-            let mut doc = AutoCommit::new();
-            PhotosDoc::seed(&mut doc);
-            let img = OpenImage::from_path("/x/harbour.png", 800, 600);
-            PhotosDoc::set_image(&mut doc, Some(&img));
-            PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-
-            PhotosDoc::seed(&mut doc);
-            assert_eq!(PhotosDoc::image(&doc).unwrap().name, "harbour.png");
-            assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
-        }
-
-        {
-            let mut doc = AutoCommit::new();
-            PhotosDoc::seed(&mut doc);
-            PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-            let img = OpenImage::from_path("/x/other.png", 10, 10);
-            PhotosDoc::set_image(&mut doc, Some(&img));
+            let (mut doc, harbour) = with_photo(OpenImage::from_path("/x/harbour.png", 800, 600));
+            set_edits(&mut doc, &harbour, Edits::default().rotated_right());
+            let other = LibraryPhoto::from_image(OpenImage::from_path("/x/other.png", 10, 10));
+            let other_id = other.id.clone();
+            let mut library = PhotosDoc::library(&doc);
+            library.add_photo(other);
+            PhotosDoc::set_library(&mut doc, &library);
             assert!(
-                PhotosDoc::edits(&doc).is_identity(),
-                "a newly opened photograph must start untouched"
+                edits(&doc, &other_id).is_identity(),
+                "a new photograph starts untouched"
+            );
+            set_edits(
+                &mut doc,
+                &other_id,
+                Edits::default().cropped_from_view(Rect01 {
+                    x: 0.1,
+                    y: 0.1,
+                    w: 0.5,
+                    h: 0.5,
+                }),
+            );
+            assert_eq!(edits(&doc, &harbour).rotate_quarters, 1);
+            assert!(edits(&doc, &harbour).crop.is_full());
+            assert!(!edits(&doc, &other_id).crop.is_full());
+            assert!(
+                PhotosAction::set("photos.photo:gone", &Edits::default())
+                    .apply(&mut doc)
+                    .is_err(),
+                "an edit of a photograph the library lacks refuses"
             );
         }
 
         {
-            let mut doc = AutoCommit::new();
-            PhotosDoc::seed(&mut doc);
             let origin = "/var/home/alice/Private/harbour.png";
             let hash = "a".repeat(64);
-            let image = OpenImage::from_path(origin, 800, 600).with_content(hash.clone());
-
-            PhotosDoc::set_image(&mut doc, Some(&image));
-
-            let image_json = read_str(&doc, &ROOT, "image").expect("image JSON");
-            assert!(!image_json.contains(origin));
-            assert!(read_str(&doc, &ROOT, "library").is_none());
-            let open = PhotosDoc::image(&doc).expect("imported image");
-            assert_eq!(open.path, "harbour.png");
-            assert_eq!(open.content.as_deref(), Some(hash.as_str()));
-            assert_eq!(PhotosDoc::library(&doc).photos[0].image.path, "harbour.png");
+            let (mut doc, id) =
+                with_photo(OpenImage::from_path(origin, 800, 600).with_content(hash.clone()));
+            let photo = PhotosDoc::photo(&doc, &id).expect("imported photograph");
+            assert_eq!(photo.image.path, "harbour.png");
+            assert_eq!(photo.image.content.as_deref(), Some(hash.as_str()));
+            assert!(!String::from_utf8_lossy(&doc.save()).contains(origin));
         }
 
         // The invariant the content store exists to protect, asserted here rather
-        // than assumed: a document that has an image open is still tiny, because
-        // the pixels are not in it.
+        // than assumed: a document holding an edited photograph is still tiny,
+        // because the pixels are not in it.
         {
-            let mut doc = AutoCommit::new();
-            PhotosDoc::seed(&mut doc);
-            let img = OpenImage::from_path("/var/tmp/tilo/home/user/harbour.png", 4000, 3000);
-            PhotosDoc::set_image(&mut doc, Some(&img));
-            PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+            let (mut doc, id) = with_photo(OpenImage::from_path(
+                "/var/tmp/tilo/home/user/harbour.png",
+                4000,
+                3000,
+            ));
+            set_edits(&mut doc, &id, Edits::default().rotated_right());
             let saved = doc.save().len();
             assert!(
                 saved < 4096,
@@ -1369,9 +1311,7 @@ mod tests {
     }
 
     #[test]
-    fn edits_round_trip_and_merge_at_separate_fields() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
+    fn a_photographs_crop_and_turn_merge_independently_and_reset_supersedes_what_it_saw() {
         let e = Edits {
             crop: Rect01 {
                 x: 0.25,
@@ -1381,68 +1321,41 @@ mod tests {
             },
             rotate_quarters: 3,
         };
-        PhotosDoc::set_edits(&mut doc, &e);
-        assert_eq!(PhotosDoc::edits(&doc), e);
-        assert!(read_str(&doc, &ROOT, "edits").is_none());
-        assert!(!PhotosDoc::edits_roots(&doc).is_empty());
+        let (mut doc, id) = with_photo(OpenImage::from_path("/x/harbour.png", 800, 600));
+        set_edits(&mut doc, &id, e);
+        assert_eq!(edits(&doc, &id), e);
 
-        {
-            let mut cropper = replica(1);
-            let mut rotator = fork(&mut cropper, 2u8);
-            let crop = Rect01 {
-                x: 0.2,
-                y: 0.1,
-                w: 0.6,
-                h: 0.75,
-            };
-            PhotosDoc::set_edits(
-                &mut cropper,
-                &Edits {
-                    crop,
-                    ..Edits::default()
-                },
-            );
-            PhotosDoc::set_edits(&mut rotator, &Edits::default().rotated_right());
+        set_edits(&mut doc, &id, Edits::default());
+        let mut cropper = fork(&mut doc, 1);
+        let mut rotator = fork(&mut doc, 2);
+        let crop = Rect01 {
+            x: 0.2,
+            y: 0.1,
+            w: 0.6,
+            h: 0.75,
+        };
+        set_edits(
+            &mut cropper,
+            &id,
+            Edits {
+                crop,
+                ..Edits::default()
+            },
+        );
+        set_edits(&mut rotator, &id, Edits::default().rotated_right());
 
-            let mut merged = copy(&mut cropper);
-            merged
-                .merge_incoming(&mut copy(&mut rotator))
-                .expect("independent edit fields merge");
-            let edits = PhotosDoc::edits(&merged);
-            assert!((edits.crop.x - crop.x).abs() <= f64::EPSILON);
-            assert!((edits.crop.y - crop.y).abs() <= f64::EPSILON);
-            assert!((edits.crop.w - crop.w).abs() <= f64::EPSILON);
-            assert!((edits.crop.h - crop.h).abs() <= f64::EPSILON);
-            assert_eq!(edits.rotate_quarters, 1);
-        }
+        let mut merged = copy(&mut cropper);
+        merged
+            .merge_incoming(&mut copy(&mut rotator))
+            .expect("independent edit fields merge");
+        let both = edits(&merged, &id);
+        assert!((both.crop.x - crop.x).abs() <= f64::EPSILON);
+        assert!((both.crop.w - crop.w).abs() <= f64::EPSILON);
+        assert_eq!(both.rotate_quarters, 1);
 
-        {
-            let mut cropper = replica(1);
-            let mut rotator = fork(&mut cropper, 2u8);
-            PhotosDoc::set_edits(
-                &mut cropper,
-                &Edits {
-                    crop: Rect01 {
-                        x: 0.2,
-                        y: 0.2,
-                        w: 0.5,
-                        h: 0.5,
-                    },
-                    ..Edits::default()
-                },
-            );
-            PhotosDoc::set_edits(&mut rotator, &Edits::default().rotated_right());
-            let mut observed = copy(&mut cropper);
-            observed
-                .merge_incoming(&mut copy(&mut rotator))
-                .expect("both edit roots merge for the observing editor");
-            assert!(!PhotosDoc::edits(&observed).is_identity());
-
-            PhotosDoc::set_edits(&mut observed, &Edits::default());
-
-            assert!(PhotosDoc::edits(&observed).is_identity());
-            assert_eq!(PhotosDoc::edits_roots(&observed).len(), 1);
-        }
+        // A reset that saw both supersedes them.
+        set_edits(&mut merged, &id, Edits::default());
+        assert!(edits(&merged, &id).is_identity());
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -1735,7 +1648,8 @@ mod tests {
             assert!(merged.photo(&left_photo.id).is_some());
             assert!(merged.photo(&right_photo.id).is_some());
 
-            PhotosDoc::seed(&mut left);
+            let library = PhotosDoc::library(&left);
+            PhotosDoc::set_library(&mut left, &library);
 
             assert_eq!(PhotosDoc::library_roots(&left).len(), 1);
             let consolidated = PhotosDoc::library(&left);
@@ -1792,141 +1706,6 @@ mod tests {
     fn replica(actor: u8) -> AutoCommit {
         let mut doc = AutoCommit::new();
         doc.set_actor(automerge::ActorId::from([actor; 16].as_slice()));
-        PhotosDoc::seed(&mut doc);
         doc
-    }
-
-    /// A participant's editor starting up must not close the photograph
-    /// another participant is working on.
-    ///
-    /// This is data loss between collaborators, and it happened: a second
-    /// person's photo editor came up holding nothing, wrote "no photograph"
-    /// into the room's document concurrently with the picture that was open in
-    /// it, and the picture left both screens mid-edit — the app went from four
-    /// operations to none, and the participant that had asked for a crop was
-    /// left addressing a window with nothing in it.
-    ///
-    /// Every way the tie can fall, because none of them is a choice anybody
-    /// made. Automerge resolves two concurrent writes to one key by the op's
-    /// Lamport stamp — its counter first, the actor id second. The counter is
-    /// just how much history that replica's document happens to carry, which
-    /// for an app is however much its toolkit wrote before the app itself
-    /// wrote anything; the actor id is random. So the empty replica is run
-    /// both behind and ahead of the populated one, under both actor
-    /// orderings, and both merge directions are checked because it is one
-    /// document afterwards and both participants have to be looking at it.
-    #[test]
-    fn the_room_photograph_survives_an_empty_replica_but_not_a_seen_close() {
-        for (open_actor, empty_actor) in [(1u8, 2u8), (2u8, 1u8)] {
-            for empty_is_ahead in [false, true] {
-                run_the_empty_replica_against_the_open_one(open_actor, empty_actor, empty_is_ahead);
-            }
-        }
-
-        // And the rule is about concurrency, not about refusing to let go.
-        //
-        // Closing a photograph is a write that *saw* the open one, so it
-        // supersedes it rather than competing with it — there is one value under
-        // the key afterwards and it is the close. Without this the fix above
-        // would read as "a photograph can never be closed once any replica has
-        // seen it", which would be a worse defect than the one it replaces.
-        {
-            let mut here = replica(1);
-            let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
-            PhotosDoc::set_image(&mut here, Some(&img));
-            PhotosDoc::set_edits(&mut here, &Edits::default().rotated_right());
-
-            // A collaborator, holding the same document, closes it and resets the
-            // turn — both after seeing what was there.
-            let mut there = fork(&mut here, 2u8);
-            PhotosDoc::set_image(&mut there, None);
-
-            let mut back = copy(&mut here);
-            back.merge_incoming(&mut copy(&mut there))
-                .expect("the collaborator's document must merge back");
-            assert!(
-                PhotosDoc::image(&back).is_none(),
-                "a close that saw the open supersedes it; the photograph must go",
-            );
-            assert!(
-                PhotosDoc::edits(&back).is_identity(),
-                "and opening or closing a photograph resets the edits with it",
-            );
-        }
-    }
-
-    #[allow(
-        clippy::useless_vec,
-        reason = "see the comment on the loop below: a fixed-size array of two full \
-                  AutoCommit replicas would put this stack frame over clippy's own \
-                  large-array threshold"
-    )]
-    fn run_the_empty_replica_against_the_open_one(
-        open_actor: u8,
-        empty_actor: u8,
-        empty_is_ahead: bool,
-    ) {
-        {
-            // Somebody with a picture open, and part-way through editing it.
-            let mut has_picture = replica(open_actor);
-            let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
-            PhotosDoc::set_image(&mut has_picture, Some(&img));
-            PhotosDoc::set_edits(&mut has_picture, &Edits::default().rotated_right());
-
-            // Somebody else's editor, just started: its own history, nothing
-            // in it, and it has never seen the picture.
-            let mut just_started = AutoCommit::new();
-            just_started.set_actor(automerge::ActorId::from([empty_actor; 16].as_slice()));
-            if empty_is_ahead {
-                // The history that replica carried before the app wrote a
-                // line of its own — a toolkit seeding its containers, a
-                // session that had been up longer. Nobody chose it, and
-                // without it the empty write loses the Lamport comparison for
-                // a reason that has nothing to do with what either document
-                // says.
-                for n in 0..8i64 {
-                    just_started
-                        .put(&ROOT, "toolkit-scratch", n)
-                        .expect("a scalar put on a fresh document cannot fail");
-                }
-            }
-            PhotosDoc::seed(&mut just_started);
-
-            let clock = if empty_is_ahead { "ahead" } else { "behind" };
-            // The room hands each of them the other's whole document. A `Vec`
-            // rather than a fixed-size array: each element is a full
-            // `AutoCommit` replica, and two of those inline would put this
-            // stack frame over clippy's large-array threshold for no benefit
-            // — the pair is only ever iterated once, never indexed.
-            for (mut doc, mut incoming, side) in vec![
-                (
-                    copy(&mut has_picture),
-                    copy(&mut just_started),
-                    "the screen with the picture on it",
-                ),
-                (
-                    copy(&mut just_started),
-                    copy(&mut has_picture),
-                    "the screen that had just started",
-                ),
-            ] {
-                doc.merge_incoming(&mut incoming)
-                    .expect("two replicas of one app's document must merge");
-                assert_eq!(
-                    PhotosDoc::image(&doc).map(|i| i.name),
-                    Some("harbour.png".to_string()),
-                    "actors {open_actor}/{empty_actor}, empty replica {clock}: \
-                     an editor starting up with nothing open must not take \
-                     the photograph off {side}",
-                );
-                assert_eq!(
-                    PhotosDoc::edits(&doc).rotate_quarters,
-                    1,
-                    "actors {open_actor}/{empty_actor}, empty replica {clock}: \
-                     nor undo the turn somebody had already applied to it, \
-                     on {side}",
-                );
-            }
-        }
     }
 }

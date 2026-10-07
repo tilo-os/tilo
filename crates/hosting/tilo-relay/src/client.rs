@@ -115,6 +115,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::SyncResponse { workspace_id, .. }
         | Envelope::RemoteAction { workspace_id, .. }
         | Envelope::RemoteActionUndeliverable { workspace_id, .. }
+        | Envelope::RecordContent { workspace_id, .. }
         | Envelope::Commit { workspace_id, .. }
         | Envelope::Committed { workspace_id, .. }
         | Envelope::CommitRefused { workspace_id, .. }

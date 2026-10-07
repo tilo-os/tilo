@@ -16,7 +16,7 @@ category = "Network"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
-optional-runtimes = ["tilo-runtime/2026.10.0-chromium"]
+optional-runtimes = ["tilo-runtime/2026.10.4-chromium"]
 platforms = ["linux", "macos"]
 platform-reason = "Embeds a WebView engine."
 
@@ -27,7 +27,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http", "webview"]
-optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes"]
+optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

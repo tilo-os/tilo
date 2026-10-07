@@ -19,12 +19,12 @@ use winit::event::WindowEvent;
 use crate::a11y::AccessNode;
 use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 
 use super::button::ButtonInteract;
-use super::{ActionRowFace, AppModel, Button, ModelPath, TaffyTreeExt, Widget};
+use super::{ActionRowFace, Button, ModelPath, TaffyTreeExt, Widget};
 
 /// The card's geometry, all from theme tokens.
 #[derive(Clone, Copy)]
@@ -66,21 +66,13 @@ impl Geometry {
     }
 }
 
-fn title_size(theme: &Theme) -> f32 {
-    theme.tokens.typography.scale.lg
-}
-
-fn description_size(theme: &Theme) -> f32 {
-    theme.tokens.typography.scale.base
-}
-
 /// The authored minimum, or both text lines plus padding once larger type
 /// needs more.
 fn card_height(theme: &Theme) -> f64 {
     let geometry = Geometry::of(theme);
-    let text = f64::from(TextStyle::new(title_size(theme)).line_height_px())
+    let text = f64::from(theme.text(TextRole::Subheading).line_height_px())
         + geometry.text_gap
-        + f64::from(TextStyle::new(description_size(theme)).line_height_px());
+        + f64::from(theme.text(TextRole::Body).line_height_px());
     (text + 2.0 * geometry.pad)
         .ceil()
         .max(geometry.min_height())
@@ -227,42 +219,40 @@ impl<'a> ChoiceCardFace<'a> {
             LUCIDE_DEFAULT_STROKE_PX,
         );
 
-        let title_size = renderer_type_size(text_renderer, title_size(theme));
-        let description_size = renderer_type_size(text_renderer, description_size(theme));
+        let title_style = theme.text(TextRole::Subheading);
+        let description_style = theme.text(TextRole::Body);
         let (text_x, text_width) = geometry.text_span(self.rect);
         let text_width = px(text_width);
-        let title = text_renderer.elide_to_width_weighted(
-            self.title.as_ref(),
-            title_size,
+        let title =
+            text_renderer.elide_to_width_style(self.title.as_ref(), text_width, &title_style);
+        let description = text_renderer.elide_to_width_style(
+            self.description.as_ref(),
             text_width,
-            TextWeight::Semibold,
+            &description_style,
         );
-        let description =
-            text_renderer.elide_to_width(self.description.as_ref(), description_size, text_width);
-        let (_, title_height) =
-            text_renderer.measure_weighted(&title, title_size, None, TextWeight::Semibold);
-        let (_, description_height) = text_renderer.measure(&description, description_size, None);
+        let (_, title_height) = text_renderer.measure_style(&title, None, &title_style);
+        let (_, description_height) =
+            text_renderer.measure_style(&description, None, &description_style);
         let block = f64::from(title_height) + geometry.text_gap + f64::from(description_height);
         let top = center_y - block / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             foreground,
             transform.pre_translate(Vec2::new(text_x, top)),
             None,
-            TextWeight::Semibold,
+            &title_style,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &description,
-            description_size,
             secondary,
             transform.pre_translate(Vec2::new(
                 text_x,
                 top + f64::from(title_height) + geometry.text_gap,
             )),
             None,
+            &description_style,
         );
         draw_icon(
             scene,
@@ -285,7 +275,7 @@ impl<'a> ChoiceCardFace<'a> {
 /// description and a trailing chevron, all one target.
 ///
 /// Activation follows [`Button`]: a click, Enter, Space or an assistive
-/// `Activate` writes `on_click_path` in the document.
+/// `Activate` runs [`ChoiceCard::on_click`].
 pub struct ChoiceCard {
     icon: Icon,
     title: String,
@@ -303,17 +293,24 @@ impl ChoiceCard {
         icon: Icon,
         title: impl Into<String>,
         description: impl Into<String>,
-        on_click_path: Option<&str>,
     ) -> Self {
         let title = title.into();
         Self {
             icon,
-            control: Button::new(id, &title, on_click_path),
+            control: Button::new(id, &title),
             title,
             description: description.into(),
             emphasized: false,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Run `f` on each activation: a click, Enter, Space or an assistive
+    /// `Activate`.
+    #[must_use]
+    pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.control = self.control.on_click(f);
+        self
     }
 
     /// Give the recommended path the accent surface.
@@ -407,7 +404,7 @@ impl Widget for ChoiceCard {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         self.control.perform_action(action, state, root)
@@ -498,16 +495,15 @@ mod tests {
             assert!(!scene.encoding().draw_tags.is_empty());
 
             let available = px(Geometry::of(&theme).text_span(rect).1);
-            let title = renderer.elide_to_width_weighted(
+            let title = renderer.elide_to_width_style(
                 face.title.as_ref(),
-                renderer_type_size(&renderer, title_size(&theme)),
                 available,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Subheading),
             );
-            let description = renderer.elide_to_width(
+            let description = renderer.elide_to_width_style(
                 face.description.as_ref(),
-                renderer_type_size(&renderer, description_size(&theme)),
                 available,
+                &theme.text(TextRole::Body),
             );
             assert_ne!(title, face.title.as_ref());
             assert_ne!(description, face.description.as_ref());
@@ -520,16 +516,16 @@ mod tests {
     }
 
     #[test]
-    fn choice_card_is_one_focusable_target_that_writes_its_path() {
-        use automerge::{AutoCommit, ROOT, ReadDoc};
+    fn choice_card_is_one_focusable_target_that_reports_its_choice() {
+        use automerge::{AutoCommit, ROOT};
 
         let mut card = ChoiceCard::new(
             "setup.restore",
             Icon::Archive,
             "Restore from a backup",
             "Use an encrypted backup file",
-            Some("setup.restore"),
-        );
+        )
+        .on_click(crate::testing::record_click("setup.restore"));
         assert!(card.is_focusable());
         assert_eq!(card.test_id(), Some("setup.restore"));
         let node = card.accessibility().expect("the card is announced");
@@ -538,24 +534,28 @@ mod tests {
         assert_eq!(node.value.as_deref(), Some("Use an encrypted backup file"));
 
         let mut doc = AutoCommit::new();
-        assert!(card.perform_action(&crate::a11y::Action::Activate, &mut doc, &ROOT));
-        assert!(matches!(
-            doc.get(ROOT, "setup.restore"),
-            Ok(Some((automerge::Value::Scalar(value), _)))
-                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+        assert!(card.perform_action(
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT
         ));
+        assert_eq!(crate::testing::clicks("setup.restore"), 1);
+        assert!(doc.get_heads().is_empty(), "the choice writes nothing");
 
         let mut disabled = ChoiceCard::new(
             "setup.disabled",
             Icon::Archive,
             "Unavailable",
             "Not offered here",
-            Some("setup.disabled"),
         )
         .with_enabled(false);
         assert!(!disabled.is_enabled());
         let mut doc = AutoCommit::new();
-        assert!(!disabled.perform_action(&crate::a11y::Action::Activate, &mut doc, &ROOT));
+        assert!(!disabled.perform_action(
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT
+        ));
     }
 
     #[test]

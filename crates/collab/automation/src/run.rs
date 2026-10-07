@@ -650,6 +650,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         let context = self.context(app_id, &row, descriptor);
         Ok(Prepared {
             request: InvokeRequest {
+                on_behalf_of: None,
                 invocation: invocation_id(self.run, path),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: row.provider.clone(),
@@ -830,7 +831,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     self.hooks.settle(id).await.ok_or(StepFailure::Abandoned)?;
                     self.host
                         .observe(&self.caller, &id)
-                        .ok_or(StepFailure::Host {
+                        .ok_or_else(|| StepFailure::Host {
                             error: Box::new(ActionHostError::UnknownInvocation),
                         })?
                         .receipt()

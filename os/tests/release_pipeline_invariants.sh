@@ -287,6 +287,32 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && ok 'desktop PRs keep preflight while native packaging is scheduled or explicit' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
+# Signing material belongs only to the tag-only step. Ordinary dispatches
+# keep the same install tests and lane resources without receiving a key.
+desktop_tag_build=$(sed -n '/^      - name: Build, install-test and sign protected desktop release userspaces$/,/^      # The v4 artifact pins/p' "$desktop")
+desktop_candidate_build=$(sed -n '/^      - name: Build and install-test unsigned candidate userspaces$/,/^      - name: Build, install-test and sign protected desktop release userspaces$/p' "$desktop")
+desktop_validate=$(sed -n '/^  validate:$/,/^  package:$/p' "$desktop")
+desktop_package=$(sed -n '/^  package:$/,/^  host-session-e2e:$/p' "$desktop")
+signing_boundary_ok=1
+for name in TILO_RPM_SIGNING_KEY_B64 TILO_RPM_SIGNING_KEY_ID; do
+  [[ $(grep -Fc "secrets.$name" "$desktop") == 1 ]] \
+    && grep -Fq "secrets.$name" <<<"$desktop_tag_build" \
+    || signing_boundary_ok=0
+done
+grep -Fq "if: startsWith(github.ref, 'refs/tags/desktop-v')" <<<"$desktop_tag_build" \
+  && grep -Fq 'TILO_RPM_SIGNING_ENABLED: "1"' <<<"$desktop_tag_build" \
+  && grep -Fq "if: \${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}" <<<"$desktop_candidate_build" \
+  && grep -Fq 'TILO_RPM_SIGNING_ENABLED: "0"' <<<"$desktop_candidate_build" \
+  && ! grep -Fq 'secrets.' <<<"$desktop_candidate_build" \
+  && grep -Fq 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' <<<"$desktop_validate" \
+  && grep -Fq 'needs: validate' <<<"$desktop_package" \
+  || signing_boundary_ok=0
+if [[ $signing_boundary_ok == 1 ]]; then
+  ok 'desktop signing keys reach only tag packaging after exact-main qualification'
+else
+  bad 'desktop signing boundary or pre-packaging qualification regressed'
+fi
+
 grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}' "$desktop" \
   && grep -Fq 'VARIABLE_TOKEN: ${{ secrets.RELEASE_TOKEN }}' "$desktop" \
@@ -300,14 +326,14 @@ grep -Fq 'publish-os-payload:' "$desktop" \
   || bad 'OS releases still rebuild the desktop component'
 
 grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json")' "$os" \
-  && grep -Fq 'Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor)' "$os" \
+  && grep -Fq 'Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor) ]]; then' "$os" \
   && grep -Fq 'predates this commit'"'"'s desktop inputs; building the desktop from source' "$os" \
   && grep -Fq '"source": sys.argv[3]' "$repo/dist/desktop/package-os-payload.sh" \
   && ok 'OS composition reuses the desktop payload only while no Rust or Cargo input changed since it was built' \
   || bad 'OS composition can ship a desktop payload older than its own compositor sources'
 
 grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
-  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 8 \
+  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 9 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
@@ -340,7 +366,7 @@ grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
 grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
   && grep -Fq 'FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}' "$os" \
   && grep -Fq 'WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}' "$os" \
-  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 8 ] \
+  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 9 ] \
   && grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
   && grep -Fq -- '--build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS"' "$repo/os/dev/build-image.sh" \
   && grep -Fq 'FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider' "$repo/os/Containerfile" \
@@ -352,6 +378,7 @@ if ! grep -q '^  pull_request:' "$os" \
   && ! grep -Fq '  schedule:' "$os" \
   && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
+  && grep -Fq 'native-atspi-smoke.sh quick-settings' "$os" \
   && grep -Fq 'native-atspi-smoke.sh auth' "$os" \
   && grep -Fq 'org.freedesktop.PolicyKit1.Authority.CheckAuthorization' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
@@ -369,6 +396,17 @@ else
   bad 'AT-SPI release gate can ship an app outside the readable, action-capable desktop endpoint'
 fi
 
+# polkit's rules engine reads a subject as a process or a bus name only; a
+# unix-session subject reaches g_assert_not_reached() and aborts polkitd, so
+# the administrator-prompt check must ask as a process in the session.
+smoke="$repo/crates/session/shell/tests/native_atspi_smoke.sh"
+if grep -Fq "('unix-process', {'pid': <uint32 \$asker>, 'start-time': <uint64 \$started>" "$smoke" \
+  && ! grep -Fq "('unix-session'" "$smoke"; then
+  ok 'the release VM asks polkit for administrator access as a session process'
+else
+  bad 'the release VM asks polkit with a subject its rules engine aborts on'
+fi
+
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
   && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
@@ -381,7 +419,9 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq 'cancel-in-progress: false' "$apps" \
   && ! grep -Eq '^  pull_request(_target)?:' "$apps" \
-  && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" "$apps_publish" \
+  && grep -Fq '$package_api/tilo-app-collections/$collection_version/' "$apps_publish" \
+  && grep -Fq 'collection_version="$VERSION-$bundle_sha"' "$apps_publish" \
+  && grep -Fq 'bundle_sha=$(sha256sum "$bundle"' "$apps_publish" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" "$apps_publish" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
   && grep -Fq 'if [[ $GITHUB_REF == refs/heads/main ]]; then' "$apps" \

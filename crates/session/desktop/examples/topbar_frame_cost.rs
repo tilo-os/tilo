@@ -124,10 +124,10 @@ fn main() {
     draw(&mut bar, &mut text, &theme);
     let mut rest = Vec::with_capacity(iters);
     let mut updates = Vec::with_capacity(iters);
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
     for _ in 0..iters {
         let start = Instant::now();
-        bar.update(&mut doc, &automerge::ROOT);
+        bar.update(&doc, &automerge::ROOT);
         updates.push(start.elapsed());
         rest.push(draw(&mut bar, &mut text, &theme));
     }

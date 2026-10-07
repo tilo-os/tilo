@@ -29,6 +29,7 @@ const SLOT_USER_GROUPS: &str = "tilo-identity,video";
 
 pub struct SystemdApply {
     layers_dir: PathBuf,
+    views_dir: PathBuf,
     boot: Boot,
 }
 
@@ -36,6 +37,7 @@ impl SystemdApply {
     pub fn new(root: &Path) -> Self {
         Self {
             layers_dir: root.join("layers"),
+            views_dir: root.join("views"),
             boot: Boot::new(root),
         }
     }
@@ -238,6 +240,56 @@ fn device_control_socket(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/tilo-session/test-control.sock"))
 }
 
+/// A component update preserves the operator's service activation state.
+/// Validate the installed unit first: try-restart alone can be a successful
+/// no-op for an absent unit on some systemd versions.
+fn try_restart_unit_with(
+    user: Option<&str>,
+    unit: &str,
+    mut execute: impl FnMut(&str, &mut Command) -> Result<String, DaemonError>,
+) -> Result<(), DaemonError> {
+    if user.is_some() {
+        execute(
+            "reload component user manager",
+            &mut manager_command(user, &["daemon-reload"]),
+        )?;
+    }
+    validate_unit_with(user, unit, &mut execute)?;
+    execute(
+        &format!("systemctl try-restart {unit}"),
+        &mut manager_command(user, &["try-restart", unit]),
+    )
+    .map(drop)
+}
+
+/// The same installed-unit check for immediate and deferred activation.
+fn validate_unit_with(
+    user: Option<&str>,
+    unit: &str,
+    execute: &mut impl FnMut(&str, &mut Command) -> Result<String, DaemonError>,
+) -> Result<(), DaemonError> {
+    let loaded = execute(
+        "validate component unit",
+        &mut manager_command(user, &["show", "--property=LoadState", "--value", unit]),
+    )?;
+    if !matches!(loaded.trim(), "loaded" | "merged") {
+        return Err(DaemonError::Apply {
+            step: format!("validate component unit {unit}"),
+            detail: format!("unit is not loadable ({})", loaded.trim()),
+        });
+    }
+    Ok(())
+}
+
+fn manager_command(user: Option<&str>, args: &[&str]) -> Command {
+    let mut command = Command::new("systemctl");
+    if let Some(user) = user {
+        command.arg(format!("--machine={user}@")).arg("--user");
+    }
+    command.args(args);
+    command
+}
+
 fn run(step: &str, command: &mut Command) -> Result<String, DaemonError> {
     let output = command.output().map_err(|e| DaemonError::Apply {
         step: step.to_owned(),
@@ -314,6 +366,22 @@ fn uid_of(user: &str) -> Option<u32> {
 }
 
 impl Apply for SystemdApply {
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        let view = crate::session_view::prepare(&self.views_dir, slot, layers)?;
+        Ok(format!(
+            "# Written by tilo-vmd: slot {slot}, generation {generation}. Do not edit.\n[Service]\nExtensionDirectories=\nBindReadOnlyPaths={}/usr:/usr {}/opt:/opt\n",
+            view.display(),
+            view.display()
+        ))
+    }
+    fn remove_session_view(&mut self, slot: &str) -> Result<(), DaemonError> {
+        crate::session_view::remove(&self.views_dir, slot)
+    }
     fn boot_kernel(
         &mut self,
         layer: Option<&Path>,
@@ -479,6 +547,13 @@ impl Apply for SystemdApply {
         systemctl("restart", unit)
     }
 
+    fn validate_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        validate_unit_with(None, unit, &mut run)
+    }
+    fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        try_restart_unit_with(None, unit, run)
+    }
+
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError> {
         let step = format!("restart {}'s desktop", session.user);
         let fail = |detail: String| DaemonError::Apply {
@@ -514,13 +589,7 @@ impl Apply for SystemdApply {
     }
 
     fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError> {
-        run(
-            &format!("systemctl --user restart {unit} as {user}"),
-            Command::new("systemctl")
-                .arg(format!("--machine={user}@"))
-                .args(["--user", "restart", unit]),
-        )
-        .map(drop)
+        try_restart_unit_with(Some(user), unit, run)
     }
 
     fn unit_state(&mut self, unit: &str) -> String {
@@ -894,35 +963,92 @@ impl Apply for SystemdApply {
         Ok(())
     }
 
-    fn install_app(&mut self, user: &str, tapp: &Path) -> Result<String, DaemonError> {
-        let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
-            step: "tilo-install".into(),
-            detail: format!("no user {user}"),
-        })?;
-        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
-        // The slot user must read the package; the state root is root's.
-        let dir =
-            Path::new("/var/tmp").join(format!("tilo-vm-app-{}", uuid::Uuid::new_v4().simple()));
-        fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
-        let staged = dir.join("app.tapp");
-        let result = fs::copy(tapp, &staged)
-            .map_err(DaemonError::io("stage the app package"))
-            .and_then(|_| {
-                make_readable(&dir, &staged)?;
-                run(
-                    "tilo-install install --allow-self-signed --force",
-                    Command::new("runuser")
-                        .args(["-u", user, "--", "env"])
-                        .arg(format!("HOME={home}"))
-                        .arg(format!("USER={user}"))
-                        .arg(format!("XDG_RUNTIME_DIR=/run/user/{uid}"))
-                        .args(["tilo-install", "install", "--allow-self-signed", "--force"])
-                        .arg(&staged),
-                )
-            });
-        let _ = fs::remove_dir_all(&dir);
-        result
+    fn install_app(&mut self, session: &Session, tapp: &Path) -> Result<String, DaemonError> {
+        install_app_in_session(self, session, tapp, false)
     }
+
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &Path,
+    ) -> Result<String, DaemonError> {
+        install_app_in_session(self, session, tapp, true)
+    }
+}
+
+fn install_app_in_session(
+    apply: &mut SystemdApply,
+    session: &Session,
+    tapp: &Path,
+    preserve_held: bool,
+) -> Result<String, DaemonError> {
+    // The installed runtime and publisher pins are part of the resolved
+    // slot's verified /usr view, not the daemon's global namespace.
+    let pid = apply
+        .session_pid(session)
+        .ok_or_else(|| DaemonError::Apply {
+            step: "tilo-install".into(),
+            detail: "the slot has no live session mount namespace".into(),
+        })?;
+    let user = &session.user;
+    let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
+        step: "tilo-install".into(),
+        detail: format!("no user {user}"),
+    })?;
+    let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+    // The slot user must read the package; the state root is root's.
+    let dir = Path::new("/var/tmp").join(format!("tilo-vm-app-{}", uuid::Uuid::new_v4().simple()));
+    fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
+    let staged = dir.join("app.tapp");
+    let result = fs::copy(tapp, &staged)
+        .map_err(DaemonError::io("stage the app package"))
+        .and_then(|_| {
+            make_readable(&dir, &staged)?;
+            run(
+                "tilo-install install --allow-self-signed --force",
+                &mut if preserve_held {
+                    selected_app_install_command(pid, user, uid, &home, &staged, true)
+                } else {
+                    app_install_command(pid, user, uid, &home, &staged)
+                },
+            )
+        });
+    let _ = fs::remove_dir_all(&dir);
+    result
+}
+
+fn app_install_command(pid: u32, user: &str, uid: u32, home: &str, staged: &Path) -> Command {
+    selected_app_install_command(pid, user, uid, home, staged, false)
+}
+
+fn selected_app_install_command(
+    pid: u32,
+    user: &str,
+    uid: u32,
+    home: &str,
+    staged: &Path,
+    preserve_held: bool,
+) -> Command {
+    let mut arguments = vec![
+        "/usr/bin/tilo-install".into(),
+        "install".into(),
+        "--allow-self-signed".into(),
+        "--force".into(),
+    ];
+    if preserve_held {
+        arguments.push("--preserve-held".into());
+    }
+    arguments.push(staged.to_string_lossy().into_owned());
+    crate::exec::in_session(
+        pid,
+        user,
+        &[
+            ("HOME".into(), home.into()),
+            ("USER".into(), user.into()),
+            ("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")),
+        ],
+        &arguments,
+    )
 }
 
 /// How long a login's compositor may take to exit after SIGTERM.
@@ -1136,7 +1262,250 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_install_uses_the_verified_slot_namespace_and_never_ignores_runtime() {
+        let command = super::app_install_command(
+            123,
+            "you",
+            1002,
+            "/var/home/you",
+            std::path::Path::new("/var/tmp/private/app.tapp"),
+        );
+        assert_eq!(command.get_program(), "nsenter");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&args[..2], ["--target=123", "--mount"]);
+        assert!(
+            args.windows(4)
+                .any(|args| args == ["runuser", "-u", "you", "--"])
+        );
+        assert!(args.contains(&"HOME=/var/home/you".into()));
+        assert!(args.contains(&"XDG_RUNTIME_DIR=/run/user/1002".into()));
+        assert_eq!(
+            &args[args.len() - 5..],
+            [
+                "/usr/bin/tilo-install",
+                "install",
+                "--allow-self-signed",
+                "--force",
+                "/var/tmp/private/app.tapp"
+            ]
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("ignore-missing-runtime"))
+        );
+        let selected = super::selected_app_install_command(
+            123,
+            "you",
+            1002,
+            "/var/home/you",
+            std::path::Path::new("/var/tmp/private/app.tapp"),
+            true,
+        );
+        let selected: Vec<_> = selected
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&selected[..2], ["--target=123", "--mount"]);
+        assert_eq!(
+            &selected[selected.len() - 6..],
+            [
+                "/usr/bin/tilo-install",
+                "install",
+                "--allow-self-signed",
+                "--force",
+                "--preserve-held",
+                "/var/tmp/private/app.tapp",
+            ]
+        );
+        assert!(
+            !selected
+                .iter()
+                .any(|arg| arg.contains("ignore-missing-runtime"))
+        );
+    }
+
+    #[test]
+    fn app_install_refuses_a_missing_session_without_host_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let session = super::Session {
+            slot: "missing".into(),
+            unit: "tilo-test-missing-install-session.service".into(),
+            user: "missing-user".into(),
+            units: vec![],
+            control_socket: root.path().join("control"),
+            stand_in: true,
+            login: None,
+        };
+        let mut apply = super::SystemdApply::new(root.path());
+        let error =
+            super::Apply::install_app(&mut apply, &session, &root.path().join("missing.tapp"))
+                .unwrap_err();
+        assert!(
+            matches!(error, super::DaemonError::Apply { step, detail } if step == "tilo-install" && detail == "the slot has no live session mount namespace")
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn changed_user_unit_is_reloaded_before_restart_and_reload_failure_stops_it() {
+        let mut calls = Vec::new();
+        let mut loaded_pin = false;
+        try_restart_unit_with(Some("bob"), "tilo-ush.service", |_, command| {
+            assert_eq!(command.get_program(), "systemctl");
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(&args[..2], ["--machine=bob@", "--user"]);
+            calls.push(args[2].clone());
+            match args[2].as_str() {
+                "daemon-reload" => loaded_pin = true,
+                "show" => {
+                    assert!(loaded_pin);
+                    return Ok("loaded\n".into());
+                }
+                "try-restart" => {
+                    assert!(
+                        loaded_pin,
+                        "restart must observe the newly layered service definition"
+                    );
+                    assert_eq!(args[3], "tilo-ush.service");
+                }
+                unexpected => panic!("unexpected user manager operation {unexpected}"),
+            }
+            Ok(String::new())
+        })
+        .unwrap();
+        assert_eq!(calls, ["daemon-reload", "show", "try-restart"]);
+
+        let mut calls = 0;
+        let error = try_restart_unit_with(Some("bob"), "tilo-ush.service", |_, _| {
+            calls += 1;
+            Err(DaemonError::Apply {
+                step: "reload".into(),
+                detail: "manager unavailable".into(),
+            })
+        });
+        assert!(error.is_err());
+        assert_eq!(calls, 1, "a failed reload cannot restart the stale unit");
+    }
+
+    #[test]
+    fn deferred_greeter_activation_still_validates_the_installed_manager() {
+        for loaded in ["loaded", "merged", "not-found", "masked", "error", ""] {
+            let mut calls = Vec::new();
+            let result = validate_unit_with(None, GREETER_UNIT, &mut |_, command| {
+                calls.push(
+                    command
+                        .get_args()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(loaded.into())
+            });
+            assert_eq!(result.is_ok(), matches!(loaded, "loaded" | "merged"));
+            assert_eq!(
+                calls,
+                [vec![
+                    "show",
+                    "--property=LoadState",
+                    "--value",
+                    GREETER_UNIT
+                ]]
+            );
+        }
+        let result = validate_unit_with(None, GREETER_UNIT, &mut |_, _| {
+            Err(DaemonError::Apply {
+                step: "manager unavailable".into(),
+                detail: "failure".into(),
+            })
+        });
+        assert!(
+            result.is_err(),
+            "manager failures cannot become a successful deferral"
+        );
+    }
+
+    #[test]
+    fn component_restart_validates_units_and_preserves_manager_failures() {
+        for user in [None, Some("bob")] {
+            for state in ["not-found", "masked", "error", ""] {
+                let mut tried = false;
+                let result = try_restart_unit_with(user, "optional.service", |_, command| {
+                    let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
+                    if args.iter().any(|a| a == "try-restart") {
+                        tried = true;
+                    }
+                    Ok(if args.iter().any(|a| a == "show") {
+                        state.into()
+                    } else {
+                        String::new()
+                    })
+                });
+                assert!(result.is_err(), "invalid installed-unit state {state}");
+                assert!(
+                    !tried,
+                    "missing or unloadable units cannot be silently skipped"
+                );
+            }
+            let error = try_restart_unit_with(user, "active.service", |step, command| {
+                if command.get_args().any(|a| a == "try-restart") {
+                    return Err(DaemonError::Apply {
+                        step: step.into(),
+                        detail: "restart denied".into(),
+                    });
+                }
+                Ok("loaded".into())
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("restart denied"));
+        }
+    }
+
+    #[test]
+    fn component_restart_uses_conditional_operation_for_both_managers() {
+        for user in [None, Some("bob")] {
+            let mut verbs = Vec::new();
+            try_restart_unit_with(user, "optional.service", |_, command| {
+                let args: Vec<_> = command
+                    .get_args()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                let offset = if user.is_some() { 2 } else { 0 };
+                let verb = &args[offset];
+                verbs.push(verb.clone());
+                if verb == "show" {
+                    assert_eq!(
+                        &args[offset..],
+                        [
+                            "show",
+                            "--property=LoadState",
+                            "--value",
+                            "optional.service"
+                        ]
+                    );
+                    return Ok("loaded\n".into());
+                }
+                if verb == "try-restart" {
+                    assert_eq!(
+                        args.iter().skip(offset).nth(1).map(String::as_str),
+                        Some("optional.service")
+                    );
+                } else {
+                    assert_eq!(verb, "daemon-reload");
+                }
+                Ok(String::new())
+            })
+            .unwrap();
+            assert_eq!(verbs.last().map(String::as_str), Some("try-restart"));
+        }
+    }
 
     /// The board session tilo-vmd looks for is the one the board layer
     /// installs, and the units and socket it names are the ones

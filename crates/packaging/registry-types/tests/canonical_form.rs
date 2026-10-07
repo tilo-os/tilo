@@ -47,6 +47,7 @@ fn sample_entry(pubkey_hex: String) -> RegistryEntry {
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: None,
+                interfaces: Vec::new(),
             },
         }],
         updated_at_unix: 1_800_000_100,

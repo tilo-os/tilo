@@ -584,12 +584,11 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let context = crate::undo::take_commit_context(self.root_widget.as_mut());
         let changed = self.state.commit_action_authored_with_context(
             self.focus_history.stable_focus_idx,
             self.focus_history.stable_metadata.clone(),
             Some(self.collaboration.local_author.clone()),
-            context,
+            None,
         );
         self.focus_history.stable_focus_idx = self
             .focused_node
@@ -873,6 +872,17 @@ impl App {
         if len == 0 {
             return false;
         }
+        // Shown inside a host whose focus order continues past the app, Tab
+        // from the last control (Shift+Tab from the first) leaves the app.
+        if self.input.tab_order_continues_in_host {
+            let at = self
+                .focused_node
+                .and_then(|id| self.focusable_order.iter().position(|&n| n == id));
+            if at == Some(if shift { 0 } else { len - 1 }) {
+                self.set_focused_node(None);
+                return false;
+            }
+        }
         let Some(next_idx) =
             crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift)
         else {
@@ -1069,7 +1079,7 @@ impl App {
                 palette.perform_semantic_action(
                     target,
                     action,
-                    &mut self.state.doc,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
                     &self.state.root,
                 )
             });
@@ -1094,11 +1104,21 @@ impl App {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(target, action, doc, root)
+                    widget.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else if synthetic {
-                    widget.perform_action_at(action, &key_path, doc, root)
+                    widget.perform_action_at(
+                        action,
+                        &key_path,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_action(action, doc, root)
+                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .ok()?;
@@ -1402,7 +1422,7 @@ impl App {
                             palette.perform_semantic_action(
                                 &semantic_target,
                                 &verb,
-                                &mut self.state.doc,
+                                &mut crate::widget::Edits::lend(&mut self.state.doc),
                                 &self.state.root,
                             )
                         });
@@ -1434,9 +1454,19 @@ impl App {
                     let handled = self
                         .dispatch_node(taffy_id, |widget, doc, root| {
                             if let Some(key_path) = keyed_path {
-                                widget.perform_action_at(&verb, &key_path, doc, root)
+                                widget.perform_action_at(
+                                    &verb,
+                                    &key_path,
+                                    &mut crate::widget::Edits::lend(doc),
+                                    root,
+                                )
                             } else {
-                                widget.perform_semantic_action(&semantic_target, &verb, doc, root)
+                                widget.perform_semantic_action(
+                                    &semantic_target,
+                                    &verb,
+                                    &mut crate::widget::Edits::lend(doc),
+                                    root,
+                                )
                             }
                         })
                         .map_err(|error| format!("component dispatch refused: {error:?}"))?;

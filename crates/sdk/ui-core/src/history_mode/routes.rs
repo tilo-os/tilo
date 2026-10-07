@@ -180,6 +180,10 @@ pub(crate) struct OwnerRoute {
     pub(crate) pending: PendingRemote,
     /// Why local changes on this route are not reaching peers.
     pub(crate) outbound_failure: Option<String>,
+    /// A record kept beside the shown document ([`Widget::record_owners`]):
+    /// no host replays its route, so a snapshot that leaves this replica
+    /// ahead of its sender is answered with this replica's own.
+    pub(crate) answers_snapshots: bool,
 }
 #[derive(Default)]
 pub(crate) struct OwnerDocumentRoutes {
@@ -210,11 +214,16 @@ impl OwnerDocumentRoutes {
         generation: u64,
         outer: &AutoCommit,
     ) -> Vec<RouteSpec> {
-        fn collect(root: &dyn Widget, owners: &mut Vec<HistoryOwner>) {
-            if let Some(owner) = root.history_owner()
-                && !owners.iter().any(|existing| existing.same_owner(&owner))
-            {
-                owners.push(owner);
+        fn collect(root: &dyn Widget, owners: &mut Vec<(HistoryOwner, bool)>) {
+            let held = root.history_owner().map(|owner| (owner, false));
+            let beside = root.record_owners().into_iter().map(|owner| (owner, true));
+            for (owner, answers) in held.into_iter().chain(beside) {
+                if !owners
+                    .iter()
+                    .any(|(existing, _)| existing.same_owner(&owner))
+                {
+                    owners.push((owner, answers));
+                }
             }
             for child in root.children() {
                 collect(child, owners);
@@ -244,7 +253,8 @@ impl OwnerDocumentRoutes {
         });
         self.owners.retain_mut(|entry| {
             entry.owners.retain(|owner| {
-                current.iter().any(|actual| actual.same_owner(owner)) && owner.validate().is_ok()
+                current.iter().any(|(actual, _)| actual.same_owner(owner))
+                    && owner.validate().is_ok()
             });
             if entry.owners.is_empty() {
                 self.retired.insert(entry.route.clone());
@@ -255,7 +265,7 @@ impl OwnerDocumentRoutes {
             !entry.owners.is_empty()
         });
         let mut joins = vec![];
-        for owner in current {
+        for (owner, answers_snapshots) in current {
             let Some(route) = owner.broker_route() else {
                 continue;
             };
@@ -282,6 +292,7 @@ impl OwnerDocumentRoutes {
                     needs_snapshot: true,
                     pending: PendingRemote::default(),
                     outbound_failure: None,
+                    answers_snapshots,
                 });
             }
         }

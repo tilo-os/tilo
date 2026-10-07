@@ -461,7 +461,8 @@ pub fn open_ush_session(
     match response {
         ush::supervisor::ServeResponse::Session { .. } => {}
         ush::supervisor::ServeResponse::Denied { reason }
-        | ush::supervisor::ServeResponse::HostNotAllowed { reason } => {
+        | ush::supervisor::ServeResponse::HostNotAllowed { reason }
+        | ush::supervisor::ServeResponse::NoRuntime { reason } => {
             return Err(LaunchError::Failed(format!("supervisor denied: {reason}")));
         }
         other @ (ush::supervisor::ServeResponse::Environments { .. }

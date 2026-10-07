@@ -21,7 +21,7 @@ const MAX_REPORT_STATUS_CHARS: usize = 128;
 pub const MAX_REPORT_NOTE_CHARS: usize = 4_096;
 const MAX_CASE_ID_CHARS: usize = 128;
 /// The status a report has until the registry knows of it.
-pub const DRAFT_STATUS: &str = "Draft · not submitted";
+pub const DRAFT_STATUS: &str = "Not submitted";
 
 pub(crate) fn valid_app_id(value: &str) -> bool {
     !value.is_empty()

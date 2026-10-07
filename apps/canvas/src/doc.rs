@@ -83,7 +83,7 @@ fn flag(doc: &Doc, obj: &ObjId, key: &str) -> Option<bool> {
     }
 }
 
-fn json<T: serde::de::DeserializeOwned>(doc: &Doc, obj: &ObjId, key: &str) -> Option<T> {
+pub(crate) fn json<T: serde::de::DeserializeOwned>(doc: &Doc, obj: &ObjId, key: &str) -> Option<T> {
     serde_json::from_str(&text(doc, obj, key)?).ok()
 }
 
@@ -102,6 +102,7 @@ pub fn read(doc: &Doc) -> Artwork {
             let obj = child(doc, layers_map.as_ref()?, &id)?;
             Some(Layer {
                 name: text(doc, &obj, "name").unwrap_or_else(|| id.clone()),
+                group: text(doc, &obj, "group").unwrap_or_default(),
                 order: text(doc, &obj, "order").unwrap_or_default(),
                 medium: text(doc, &obj, "medium").unwrap_or_default(),
                 opacity: number(doc, &obj, "opacity").unwrap_or(1.0),
@@ -203,6 +204,9 @@ pub fn write_layer(doc: &mut Doc, layer: &Layer) -> Result<(), AutomergeError> {
     let layers = ensure(doc, &ROOT, LAYERS)?;
     let obj = ensure(doc, &layers, &layer.id)?;
     put_text(doc, &obj, "name", &layer.name)?;
+    if !layer.group.is_empty() || text(doc, &obj, "group").is_some() {
+        put_text(doc, &obj, "group", &layer.group)?;
+    }
     put_text(doc, &obj, "order", &layer.order)?;
     put_text(doc, &obj, "medium", &layer.medium)?;
     if number(doc, &obj, "opacity") != Some(layer.opacity) {

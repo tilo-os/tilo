@@ -1,7 +1,7 @@
 # Maintainer: Tilo contributors <tilo@code.tilo.so>
 pkgbase=tilo-session
 pkgname=(tilo-session tilo-session-devel)
-pkgver=0.1.12
+pkgver=0.1.13
 pkgrel=1
 pkgdesc='Tilo collaborative compositor as a Wayland session'
 url='https://code.tilo.so/tilo/tilo'
@@ -14,7 +14,9 @@ arch=('x86_64' 'aarch64')
 # into CFLAGS/CXXFLAGS, which cc-rs also applies to ring and OpenH264.
 # rust-lld cannot consume those GCC LTO archives at the final Rust link.
 # Keep native dependencies as ELF objects; Cargo's release LTO stays enabled.
-options=('!debug' '!lto')
+# `!strip` keeps the symbol table the release profile leaves in, so a crash
+# log names each frame's function.
+options=('!debug' '!lto' '!strip')
 makedepends=(
   'rustup' 'clang' 'cmake' 'pkgconf' 'capnproto'
   'libxkbcommon' 'wayland' 'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa'

@@ -45,6 +45,7 @@ PACKAGING_INPUTS = {
     "dist/apps/assemble-collection.sh",
     "tools/apps/assemble_app_collection.py",
     "os/scripts/bake-runtime-bundle.sh",
+    "os/scripts/stamp-runtime.sh",
     "tools/assemble_verified_apps.py",
     "tools/app_packaging_plan.py",
 }
@@ -262,6 +263,10 @@ def apps_from_changes(
             and not (path == "Cargo.lock" and lock_affected_packages is not None)
         )
         or path.startswith(GLOBAL_PREFIXES + FULL_REBUILD_PREFIXES)
+        # Thin apps and the runtime resolve the complete collection together.
+        # App dependency/feature changes can alter shared crate hashes even
+        # when the changed app is not a dependency of runtime-dylib itself.
+        or (path.startswith("apps/") and path.endswith("/Cargo.toml"))
         for path in paths
     ):
         return sorted(catalog)

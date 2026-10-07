@@ -6,18 +6,3 @@ corner_radius = 12.0
 [collaboration]
 enabled = true
 auto_share_new_windows = false
-
-[[apps]]
-name = "Terminal"
-icon = "terminal"
-command = "terminal"
-
-[[apps]]
-name = "Browser"
-icon = "browser"
-command = "browser"
-
-[[apps]]
-name = "Files"
-icon = "files"
-command = "file-explorer"

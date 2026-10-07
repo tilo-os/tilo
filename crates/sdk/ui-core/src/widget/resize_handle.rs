@@ -88,6 +88,18 @@ pub struct ResizeHandle {
 }
 
 impl ResizeHandle {
+    /// Move the handle by `dx`; see
+    /// [`super::window_group::WindowGroup::offset_layout`].
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.rect = self.rect + shift;
+        self.left_rect = self.left_rect + shift;
+        self.right_rect = self.right_rect + shift;
+    }
+
     pub fn new() -> Self {
         Self {
             left_rect: Rect::ZERO,
@@ -253,7 +265,7 @@ impl Widget for ResizeHandle {
             return;
         }
         let colour = if active {
-            theme.tokens.colors.accent[5]
+            theme.tokens.colors.intent.inverted
         } else {
             // Neutral slate at ~0.35 alpha, matching the per-group
             // right-edge grip's idle treatment. `accent[5] @ 0.45` read
@@ -535,7 +547,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &path,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -554,7 +566,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &path,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -573,7 +585,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &path,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -603,7 +615,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &path,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -640,7 +652,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &path,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -658,7 +670,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &path,
                     handled: &mut handled,
                     focus_target: &mut focus,

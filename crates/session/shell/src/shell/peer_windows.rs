@@ -409,9 +409,10 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string().into());
     };
-    // A window continuing from another device opens the record it showed
-    // there; bring that record here first when this device lacks it.
-    if !item.local {
+    // Profile-backed windows need their exact record before launch. Native
+    // committed rooms read through their owner: an app profile is neither
+    // required nor an authority fallback for that path.
+    if !item.local && !tree.commits_native_documents(ws.room) {
         bring_over_continued_record(item, ws.room)?;
     }
     stage_continuation_for_tab(tree, item);
@@ -546,8 +547,8 @@ fn bringing_note() -> String {
 
 /// Make sure the record a continuing window showed is kept here, and that
 /// its instance reopens on it. `Err` is the card's note while the record is
-/// still on its way; a record no device could give leaves the window to
-/// open as it would have.
+/// still on its way or cannot be read. A failed fetch must not open a
+/// lookalike empty record in place of the selected resource.
 fn bring_over_continued_record(
     item: &Pending,
     room: crate::shell::state::RoomId,
@@ -567,7 +568,7 @@ fn bring_over_continued_record(
             Hydration::Kept(record) => Some(record),
             Hydration::Failed(reason) => {
                 tracing::warn!(%reason, app = %item.app_id, "a continued record could not be brought over");
-                return Ok(());
+                return Err(reason);
             }
         }
     };
@@ -729,16 +730,28 @@ pub fn opened_here(
 ) -> Option<(crate::shell::state::WorkspaceId, StripId, GroupId, TabId)> {
     let local_salt = tree.local_salt();
     tree.desktop.workspaces.iter().find_map(|ws| {
-        ws.strips.iter().find_map(|strip| {
-            strip.window_groups.iter().find_map(|group| {
-                group.tabs.iter().find_map(|tab| {
-                    let ours = crate::shell::state::peer_salt_of(tab.id) == local_salt;
-                    let hosts = matches!(
-                        &tab.tile,
-                        TileContent::Foreign { app_id: a, .. } if a.eq_ignore_ascii_case(app_id)
-                    );
-                    (ours && hosts).then_some((ws.id, strip.id, group.id, tab.id))
-                })
+        opened_locally_in_workspace(ws, app_id, local_salt)
+            .map(|(strip, group, tab)| (ws.id, strip, group, tab))
+    })
+}
+
+/// A mapped local window within this workspace only. Ordinary Open Terminal
+/// returns to its existing room record; explicit new-window actions remain
+/// responsible for asking for another instance.
+pub(crate) fn opened_locally_in_workspace(
+    ws: &Workspace,
+    app_id: &str,
+    local_salt: u16,
+) -> Option<(StripId, GroupId, TabId)> {
+    ws.strips.iter().find_map(|strip| {
+        strip.window_groups.iter().find_map(|group| {
+            group.tabs.iter().find_map(|tab| {
+                let ours = crate::shell::state::peer_salt_of(tab.id) == local_salt;
+                let hosts = matches!(
+                    &tab.tile,
+                    TileContent::Foreign { app_id: a, .. } if a.eq_ignore_ascii_case(app_id)
+                );
+                (ours && hosts).then_some((strip.id, group.id, tab.id))
             })
         })
     })
@@ -910,6 +923,32 @@ mod tests {
             Some((other_id, strip_id, group_id, tab_id))
         );
         assert!(opened_here(&tree, "so.tilo.notes").is_none());
+        assert_eq!(
+            opened_locally_in_workspace(&tree.desktop.workspaces[1], SETTINGS, tree.local_salt()),
+            Some((strip_id, group_id, tab_id)),
+        );
+        assert!(
+            opened_locally_in_workspace(&tree.desktop.workspaces[0], SETTINGS, tree.local_salt())
+                .is_none(),
+            "an ordinary Open must stay in its workspace"
+        );
+        assert!(
+            opened_locally_in_workspace(
+                &tree.desktop.workspaces[1],
+                "so.tilo.terminal",
+                tree.local_salt()
+            )
+            .is_none()
+        );
+        assert!(
+            opened_locally_in_workspace(
+                &tree.desktop.workspaces[1],
+                SETTINGS,
+                tree.local_salt().wrapping_add(1)
+            )
+            .is_none(),
+            "a foreign device's tab is not a local mapped instance"
+        );
     }
 
     #[test]

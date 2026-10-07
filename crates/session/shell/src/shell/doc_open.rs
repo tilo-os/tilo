@@ -83,6 +83,30 @@ impl Opened {
     pub fn launched(&self) -> bool {
         matches!(self, Opened::Launched { .. } | Opened::HostLaunched { .. })
     }
+
+    /// The typed result an open action answers with: what happened and
+    /// which application holds the document now. `tab` is the focused tab
+    /// when the document was already open.
+    pub fn to_value(&self, path: &Path) -> serde_json::Value {
+        match self {
+            Opened::Launched { app } => serde_json::json!({
+                "opened": "launched",
+                "path": path,
+                "app": app.package_id,
+            }),
+            Opened::Focused { app, tab } => serde_json::json!({
+                "opened": "focused",
+                "path": path,
+                "app": app.package_id,
+                "tab": tab,
+            }),
+            Opened::HostLaunched { app } => serde_json::json!({
+                "opened": "host-launched",
+                "path": path,
+                "app": app.desktop_id,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -362,7 +386,12 @@ fn open_package(
     let workspace = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        tree.workspace_after_opening_app(&app.package_id)
+        let workspace = tree.workspace_after_opening_app(&app.package_id);
+        // The document's new read grant must reach the accepted-policy
+        // publication before the launch gate checks its immutable snapshot.
+        // Queue here; the launch worker waits without blocking the frame.
+        tree.queue_save();
+        workspace
     };
     let launched = workspace.map(|workspace| {
         launcher::launch_document_in_workspace(&app.package_id, &workspace, Some(path))
@@ -1203,11 +1232,27 @@ mod tests {
                 );
             }
 
-            let started: Vec<String> = launcher::drain_events()
-                .into_iter()
-                .filter(|e| matches!(e.kind, launcher::LaunchEventKind::Started { .. }))
-                .map(|e| e.package_id)
-                .collect();
+            // A child can write its recording log before the launch thread
+            // publishes Started. Observe the production event queue separately;
+            // seeing argv is not evidence that every event has arrived.
+            let deadline = std::time::Instant::now() + HANG_BOUND;
+            let mut started = Vec::new();
+            loop {
+                started.extend(
+                    launcher::drain_events()
+                        .into_iter()
+                        .filter(|e| matches!(e.kind, launcher::LaunchEventKind::Started { .. }))
+                        .map(|e| e.package_id),
+                );
+                if cases
+                    .iter()
+                    .all(|(_, package)| started.iter().any(|p| p == package))
+                    || std::time::Instant::now() >= deadline
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
             for (_, package) in cases {
                 assert!(
                     started.iter().any(|p| p == package),
@@ -1613,6 +1658,42 @@ mod tests {
         explicit_drop_placement_survives_launch_until_toplevel_adoption();
     }
 
+    /// Files as the shell mounts it on a session without startup inputs of
+    /// its own (a Linux session): its own component, starting at `files`,
+    /// opening documents through the shell's opener.
+    fn mounted_files(
+        profile: &std::path::Path,
+        files: &std::path::Path,
+    ) -> ui::headless::FrameHarness {
+        let mut apps =
+            crate::shell::in_process::InProcessApps::at(&profile.join("profile"), "fixture-person")
+                .unwrap();
+        let startup = file_explorer::StartupInputs {
+            initial_dir: files.to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+        };
+        let component = apps
+            .mount(
+                file_explorer::definition(),
+                "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc",
+                9,
+                ui::record::RecordId::room_default(),
+                |context| context.lend(startup),
+            )
+            .unwrap();
+        let mut harness = ui::headless::FrameHarness::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs::from_native_process(),
+        )
+        .unwrap();
+        harness.relayout();
+        harness
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     #[allow(
@@ -1640,16 +1721,9 @@ mod tests {
             let chrome = chrome_with_workspace();
             crate::shell::install_document_opener(&chrome);
 
-            let mut explorer = file_explorer::FileExplorerWidget::with_startup_inputs(
-                file_explorer::StartupInputs {
-                    initial_dir: files.clone(),
-                    workspace_roots: Vec::new(),
-                    record_roots: Vec::new(),
-                    remote_accounts: Vec::new(),
-                    trusted_humans:
-                        file_explorer::identity_directory::TrustedHumanDirectory::default(),
-                },
-            );
+            let mut harness = mounted_files(tmp.path(), &files);
+            let explorer =
+                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
             explorer.navigate(files);
             let idx = explorer
                 .displayed_entries()
@@ -1709,16 +1783,9 @@ mod tests {
             let chrome = chrome_with_workspace();
             crate::shell::install_document_opener(&chrome);
 
-            let mut explorer = file_explorer::FileExplorerWidget::with_startup_inputs(
-                file_explorer::StartupInputs {
-                    initial_dir: files.clone(),
-                    workspace_roots: Vec::new(),
-                    record_roots: Vec::new(),
-                    remote_accounts: Vec::new(),
-                    trusted_humans:
-                        file_explorer::identity_directory::TrustedHumanDirectory::default(),
-                },
-            );
+            let mut harness = mounted_files(tmp.path(), &files);
+            let explorer =
+                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
             explorer.navigate(files);
             let idx = explorer
                 .displayed_entries()

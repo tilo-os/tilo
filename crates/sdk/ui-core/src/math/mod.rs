@@ -13,7 +13,9 @@ pub mod render;
 pub mod tex;
 pub mod typst;
 
-pub use layout::{BASE_SIZE, Box2d, BoxKind, Gap, Layout, layout, measure_atom, nearest_gap};
+pub use layout::{
+    BASE_SIZE, Box2d, BoxKind, Gap, Layout, layout, layout_wrapped, measure_atom, nearest_gap,
+};
 pub use model::{
     MathExpr, Node, Path, Row, Slot, child_row, child_row_mut, node_slots, parse, to_linear,
 };
