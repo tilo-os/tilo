@@ -262,7 +262,9 @@ fn live_preedit_keeps_exact_source_seat_until_commit_or_same_owner_return() {
     let mut fixture = Fixture::new();
     let [source, child, other] = fixture.ids;
     fixture.state.set_client_keyboard_focus(Some(source));
-    fixture.state.input_method_preedit_active = true;
+    fixture
+        .state
+        .set_input_method_preedit_active_for_tests(true);
     let mut fb = fixture.float();
     fixture.ready(&mut fb);
 
@@ -287,10 +289,14 @@ fn live_preedit_keeps_exact_source_seat_until_commit_or_same_owner_return() {
     committed
         .state
         .set_client_keyboard_focus(Some(committed_source));
-    committed.state.input_method_preedit_active = true;
+    committed
+        .state
+        .set_input_method_preedit_active_for_tests(true);
     let mut fb = committed.float();
     committed.ready(&mut fb);
-    committed.state.input_method_preedit_active = false;
+    committed
+        .state
+        .set_input_method_preedit_active_for_tests(false);
     crate::compositor::client_input::sync_keyboard_focus(&mut committed.state, &fb);
     assert_eq!(
         committed.state.client_input.keyboard_focus(),
@@ -302,7 +308,9 @@ fn live_preedit_keeps_exact_source_seat_until_commit_or_same_owner_return() {
     wrong_alias
         .state
         .set_client_keyboard_focus(Some(wrong_source));
-    wrong_alias.state.input_method_preedit_active = true;
+    wrong_alias
+        .state
+        .set_input_method_preedit_active_for_tests(true);
     let mut fb = wrong_alias.float();
     wrong_alias.ready(&mut fb);
     wrong_alias.state.floating_toplevels[0].public_id = "other-conversation".into();
@@ -321,7 +329,9 @@ fn return_during_live_preedit_needs_no_reverse_protocol_focus() {
     let mut fixture = Fixture::new();
     let [source, _, _] = fixture.ids;
     fixture.state.set_client_keyboard_focus(Some(source));
-    fixture.state.input_method_preedit_active = true;
+    fixture
+        .state
+        .set_input_method_preedit_active_for_tests(true);
     let mut fb = fixture.float();
     fixture.ready(&mut fb);
     crate::compositor::client_input::sync_keyboard_focus(&mut fixture.state, &fb);

@@ -24,7 +24,7 @@ impl State {
         owner: Arc<FloatingToplevelOwner>,
     ) {
         let key = (connection, public_id.to_owned());
-        let preserve_preedit = self.input_method_preedit_active;
+        let preserve_preedit = self.input_method_preedit.is_active();
         let transfer =
             (self.client_input.keyboard_focus() == Some(source)).then_some(Transfer::Float);
         let already_detached = self.floating_toplevels.iter().any(|surface| {
@@ -68,7 +68,7 @@ impl State {
             .get_mut(&(connection, public_id.to_owned()))
         {
             if source.preserve_preedit
-                && self.input_method_preedit_active
+                && self.input_method_preedit.is_active()
                 && self.client_input.keyboard_focus() == Some(source.source)
             {
                 // The protocol focus never left the source, so Return has no
@@ -124,7 +124,7 @@ impl State {
     /// target is still authenticated against both sides of the compositor's
     /// one-shot floating owner binding; an unrelated surface never qualifies.
     pub(crate) fn preserves_floating_preedit_for(&self, target: u64) -> bool {
-        self.input_method_preedit_active
+        self.input_method_preedit.is_active()
             && self
                 .floating_focus_handoffs
                 .iter()
@@ -150,7 +150,7 @@ impl State {
     /// The exact source remains the protocol focus while the editor's live
     /// composition is painted in its authenticated floating child.
     pub(crate) fn floating_preedit_source_focus(&self) -> Option<u64> {
-        self.input_method_preedit_active.then_some(())?;
+        self.input_method_preedit.is_active().then_some(())?;
         self.floating_focus_handoffs
             .iter()
             .find_map(|((connection, public_id), source)| {
@@ -245,7 +245,7 @@ impl State {
                 self.client_input.surface(target)?;
                 if matches!(source.transfer, Some(Transfer::Float))
                     && source.preserve_preedit
-                    && self.input_method_preedit_active
+                    && self.input_method_preedit.is_active()
                 {
                     return None;
                 }

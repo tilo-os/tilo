@@ -453,6 +453,20 @@ mod personal_fabric_input_holder_tests {
 /// session.
 pub(crate) const CLOSING_FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InputMethodPreeditState {
+    #[default]
+    Inactive,
+    Pending(bool),
+    Active,
+}
+
+impl InputMethodPreeditState {
+    pub(crate) fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
 pub struct State {
     /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
@@ -778,8 +792,7 @@ pub struct State {
     /// Whether the trusted composing input method has a live, uncommitted
     /// preedit. This is content-free protocol state used only to keep an
     /// exact same-owner floating handoff from deactivating the composer.
-    pub(crate) input_method_preedit_pending: Option<bool>,
-    pub(crate) input_method_preedit_active: bool,
+    pub(crate) input_method_preedit: InputMethodPreeditState,
     /// Whether one of the shell's own text fields holds the seat's
     /// text-input focus (see `compositor::shell_text_input`).
     pub(crate) shell_field_active: bool,
@@ -1447,8 +1460,7 @@ impl State {
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
             osk_commits: 0,
-            input_method_preedit_pending: None,
-            input_method_preedit_active: false,
+            input_method_preedit: InputMethodPreeditState::Inactive,
             shell_field_active: false,
             shell_field_keys: Vec::new(),
             virtual_keymaps: std::collections::HashMap::new(),
@@ -4947,8 +4959,7 @@ impl State {
     ) {
         if self.seat_input_method.get() != owner {
             self.cancel_active_dictation();
-            self.input_method_preedit_pending = None;
-            self.input_method_preedit_active = false;
+            self.input_method_preedit = InputMethodPreeditState::Inactive;
         }
         self.seat_input_method.set(owner);
         let handle = self.display_handle.clone();
@@ -5001,7 +5012,15 @@ impl State {
 
     /// Content-free composing state for the input-method wire regression.
     pub fn input_method_preedit_active_for_tests(&self) -> bool {
-        self.input_method_preedit_active
+        self.input_method_preedit.is_active()
+    }
+
+    pub(crate) fn set_input_method_preedit_active_for_tests(&mut self, active: bool) {
+        self.input_method_preedit = if active {
+            InputMethodPreeditState::Active
+        } else {
+            InputMethodPreeditState::Inactive
+        };
     }
 
     /// The xdg popups mapped over a window, in the order they opened.
@@ -6361,14 +6380,18 @@ impl
         use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request;
         match &request {
             Request::SetPreeditString { text, .. } => {
-                state.input_method_preedit_pending = Some(!text.is_empty());
+                state.input_method_preedit = InputMethodPreeditState::Pending(!text.is_empty());
             }
             Request::CommitString { .. } => {
-                state.input_method_preedit_pending = Some(false);
+                state.input_method_preedit = InputMethodPreeditState::Pending(false);
             }
             Request::Commit { .. } => {
-                if let Some(active) = state.input_method_preedit_pending.take() {
-                    state.input_method_preedit_active = active;
+                if let InputMethodPreeditState::Pending(active) = state.input_method_preedit {
+                    state.input_method_preedit = if active {
+                        InputMethodPreeditState::Active
+                    } else {
+                        InputMethodPreeditState::Inactive
+                    };
                 }
             }
             _ => {}
@@ -6397,8 +6420,7 @@ impl
         // There is at most one admitted input-method resource for the seat.
         // Its disappearance cancels an unfinished composition; retaining the
         // bit could otherwise preserve focus for a dead owner.
-        state.input_method_preedit_pending = None;
-        state.input_method_preedit_active = false;
+        state.input_method_preedit = InputMethodPreeditState::Inactive;
         <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
             smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
             smithay::wayland::input_method::InputMethodUserData<State>,
