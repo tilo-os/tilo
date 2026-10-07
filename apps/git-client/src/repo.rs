@@ -1155,7 +1155,7 @@ pub fn list_worktrees(path: &Path) -> anyhow::Result<Vec<crate::model::Worktree>
     } else {
         vec![describe(&repo, "main".into())?]
     };
-    for name in repo.worktrees()?.iter() {
+    for name in &repo.worktrees()? {
         let name = name?.context("worktree name is not UTF-8")?;
         let worktree = repo.find_worktree(name)?;
         worktree.validate()?;

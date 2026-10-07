@@ -376,14 +376,11 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
 
 /// One section from `y`: its heading with the count, the new branch form
 /// when it has one, and its rows. Returns the `y` under it.
-fn paint_section(
+fn paint_section_heading(
     ctx: &mut PaintCtx<'_>,
     column: Rect,
-    clip: Rect,
     section: &SectionRows<'_>,
-    input: &PanelsInput<'_>,
     y: f64,
-    out: &mut PanelsDraw,
 ) -> f64 {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
@@ -418,7 +415,21 @@ fn paint_section(
         &count,
     )
     .paint(ctx.scene, ctx.transform, ctx.text, theme);
-    let mut y = band.y1 + f64::from(s.s2);
+    band.y1 + f64::from(s.s2)
+}
+
+fn paint_section(
+    ctx: &mut PaintCtx<'_>,
+    column: Rect,
+    clip: Rect,
+    section: &SectionRows<'_>,
+    input: &PanelsInput<'_>,
+    y: f64,
+    out: &mut PanelsDraw,
+) -> f64 {
+    let mut y = paint_section_heading(ctx, column, section, y);
+    let theme = ctx.theme;
+    let s = &theme.tokens.spacing;
 
     if section.form {
         y = if section.worktree_form {
@@ -428,8 +439,6 @@ fn paint_section(
         } + f64::from(s.s2);
     }
 
-    // Rows run out to the section's edges by their own padding, so their
-    // text lines up with the heading.
     let pad = f64::from(s.s3);
     let pointer = input.pointer.filter(|p| clip.contains(*p));
     for (i, row) in section.rows.iter().enumerate() {
@@ -584,6 +593,48 @@ pub fn remote_buttons_width(text: &mut ui::text_render::TextRenderer, theme: &Th
         + gap * (RemoteAction::ALL.len() - 1) as f64
 }
 
+/// Lay out shared toolkit inputs; all submission routes invoke `CreateWorktree`.
+fn paint_worktree_form(
+    ctx: &mut PaintCtx<'_>,
+    column: Rect,
+    input: &PanelsInput<'_>,
+    mut y: f64,
+    out: &mut PanelsDraw,
+) -> f64 {
+    let theme = ctx.theme;
+    let h = ButtonFace::height(ControlSize::Regular, theme);
+    let gap = f64::from(theme.tokens.spacing.s2);
+    for (slot, hit) in out.worktree_fields.iter_mut().zip([
+        PanelHit::WorktreeBranch,
+        PanelHit::WorktreePath,
+        PanelHit::WorktreeStart,
+    ]) {
+        let rect = Rect::new(column.x0, y, column.x1, y + h);
+        *slot = rect;
+        out.targets.push((rect, hit.clone()));
+        out.semantic.push((rect, hit));
+        y += h + gap;
+    }
+    let label = t("git-create-worktree");
+    let face = ButtonFace::new(Rect::ZERO, &label);
+    let w = face.intrinsic_width(ctx.text, theme);
+    let button = Rect::new(column.x0, y, column.x0 + w, y + h);
+    let enabled = input
+        .worktree_fields
+        .iter()
+        .all(|text| !text.trim().is_empty());
+    let face = ButtonFace::new(button, &label)
+        .role(ButtonRole::Secondary)
+        .disabled(!enabled)
+        .hovered(enabled && input.pointer.is_some_and(|p| button.contains(p)));
+    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+    if enabled {
+        out.targets.push((button, PanelHit::CreateWorktree));
+    }
+    out.semantic.push((button, PanelHit::CreateWorktree));
+    button.y1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,46 +716,4 @@ mod tests {
         };
         assert_eq!(stash_title(&stash), "try the msaa path");
     }
-}
-
-/// Lay out shared toolkit inputs; all submission routes invoke CreateWorktree.
-fn paint_worktree_form(
-    ctx: &mut PaintCtx<'_>,
-    column: Rect,
-    input: &PanelsInput<'_>,
-    mut y: f64,
-    out: &mut PanelsDraw,
-) -> f64 {
-    let theme = ctx.theme;
-    let h = ButtonFace::height(ControlSize::Regular, theme);
-    let gap = f64::from(theme.tokens.spacing.s2);
-    for (slot, hit) in out.worktree_fields.iter_mut().zip([
-        PanelHit::WorktreeBranch,
-        PanelHit::WorktreePath,
-        PanelHit::WorktreeStart,
-    ]) {
-        let rect = Rect::new(column.x0, y, column.x1, y + h);
-        *slot = rect;
-        out.targets.push((rect, hit.clone()));
-        out.semantic.push((rect, hit));
-        y += h + gap;
-    }
-    let label = t("git-create-worktree");
-    let face = ButtonFace::new(Rect::ZERO, &label);
-    let w = face.intrinsic_width(ctx.text, theme);
-    let button = Rect::new(column.x0, y, column.x0 + w, y + h);
-    let enabled = input
-        .worktree_fields
-        .iter()
-        .all(|text| !text.trim().is_empty());
-    let face = ButtonFace::new(button, &label)
-        .role(ButtonRole::Secondary)
-        .disabled(!enabled)
-        .hovered(enabled && input.pointer.is_some_and(|p| button.contains(p)));
-    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-    if enabled {
-        out.targets.push((button, PanelHit::CreateWorktree));
-    }
-    out.semantic.push((button, PanelHit::CreateWorktree));
-    button.y1
 }
