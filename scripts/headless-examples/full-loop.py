@@ -15,7 +15,7 @@ What it does:
      set to the socket path, and DISPLAY + WAYLAND_DISPLAY unset.
   2. Waits up to 15s for the socket to appear.
   3. Lists targets, picks the workspace wheel, clicks it.
-  4. Opens global search (Super+K), types "Files", proves its live state,
+  4. Opens global search (Super+Space), types "Files", proves its live state,
      waits for the transition to settle, and snapshots.
   5. Closes the palette (Escape), snapshots again.
   6. Kills the compositor + removes the socket.
@@ -207,10 +207,11 @@ def main() -> int:
         require_ok(call(SOCKET, {"op": "click_named", "name": "wheel_disc"}))
         print("  clicked wheel_disc")
 
-        # 4. Super+K → machine-wide search, type, prove live state, snapshot.
-        require_ok(call(SOCKET, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True}))
-        require_ok(call(SOCKET, {"op": "key", "key": "k"}))
-        require_ok(call(SOCKET, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False}))
+        # 4. Fresh profiles use Super+Space for machine-wide search.
+        # Hold the modifier through the production key-down/up path.
+        require_ok(call(SOCKET, {"op": "key_down", "key": "Super"}))
+        require_ok(call(SOCKET, {"op": "key", "key": "Space"}))
+        require_ok(call(SOCKET, {"op": "key_up", "key": "Super"}))
         wait_until("global-search palette to open", lambda: palette()["visible"])
         require_ok(call(SOCKET, {"op": "type", "text": "Files"}))
         wait_until(
@@ -218,7 +219,7 @@ def main() -> int:
             lambda: palette()["visible"] and palette()["query"] == "Files",
         )
         if state()["chrome"]["search_scope"] != "All":
-            raise RuntimeError("Super+K did not select machine-wide search scope")
+            raise RuntimeError("Super+Space did not select machine-wide search scope")
         if not any(
             t["name"] == "command_palette_input"
             for t in call(SOCKET, {"op": "list_targets"})["targets"]
