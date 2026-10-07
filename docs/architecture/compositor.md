@@ -366,3 +366,17 @@ current GPU renderer. Renderer/process identities and matched-current GPU sample
 coverage must still accompany any GPU-stage analysis. Disable `gpu_stages` after
 the bounded capture to return to ordinary aggregate reporting; the legacy
 `TILO_DRM_PHASE_TRACE` startup override continues to take precedence.
+
+The same lifecycle record also exports the existing exact physical outcome's
+`physical_presented_time_ns` and `physical_sequence`; failed/headless outcomes
+are `none`, never a newly sampled timestamp. `scripts/perf/physical_notes_stages.py`
+accepts `--compositor-log` for a bounded same-boot/presenter capture. It joins only
+that exact tuple to already-validated app presentation feedback, reports missing
+and unmatched coverage, and keeps whole-scene compositor costs distinct from
+client CPU stages. Old captures cannot supply this join by time proximity.
+The maintained rolling Notes collector preserves sanitized exact-match lifecycle
+rows plus its last 128 background rows within the existing 512 KiB RPC bound.
+The analyzer rejects duplicate presenter serials, ambiguous/partial outcomes,
+invalid durations and non-monotonic/non-hardware feedback. Capture files are
+bounded at 32 MiB and analysis at 10,000 lifecycle rows. Coverage describes the
+retained capture, not all frames rendered during the session.

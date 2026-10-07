@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 
+from compositor_phases import capture_lines, summarize_compositor_phases
 from input_latency import summarize_physical_notes_latency
 from main_stages import POINTS, STAGES
 from native_delivery import rows
@@ -26,7 +27,7 @@ def bracket(row, prefix):
     return values
 
 
-def summarize_physical_notes_stages(lines, scratch_page):
+def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None):
     latency = summarize_physical_notes_latency(lines, scratch_page)
     inputs = rows(lines, 'tilo-physical-input ')
     producer = inputs[0]['process_id'], inputs[0]['observer_session']
@@ -118,6 +119,9 @@ def summarize_physical_notes_stages(lines, scratch_page):
                 clock='CLOCK_MONOTONIC', process_id=producer[0],
                 observer_session=producer[1], frames=frames, stages=stages,
                 latency=latency['latency'],
+                compositor=summarize_compositor_phases(
+                    lines if compositor_lines is None else compositor_lines,
+                    latency['samples'], feedback),
                 limitations=['CPU stages include scheduling and logging overhead.',
                              'CPU render duration is not GPU execution duration.',
                              'KMS timestamps do not measure panel pixel response.'])
@@ -128,11 +132,14 @@ def main():
     parser.add_argument('--capture', type=Path, required=True,
                         help='directory produced by device_notes_latency.py')
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--compositor-log', type=Path,
+                        help='bounded lifecycle capture from the same boot/presenter; defaults to timeline.log')
     options = parser.parse_args()
     capture = json.loads((options.capture / 'capture.json').read_text())
     report = summarize_physical_notes_stages(
-        (options.capture / 'timeline.log').read_text().splitlines(),
-        capture['scratch_page'])
+        capture_lines(options.capture / 'timeline.log'),
+        capture['scratch_page'],
+        capture_lines(options.compositor_log) if options.compositor_log else None)
     descriptor = os.open(options.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'w') as output:
         json.dump(report, output, indent=2)

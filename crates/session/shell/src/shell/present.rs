@@ -160,6 +160,7 @@ struct FrameLifecycle {
     inflight_at_enqueue: usize,
     input_age_at_enqueue: Option<Duration>,
     phases: Option<FramePhaseTiming>,
+    physical: Option<PhysicalPresentation>,
 }
 
 #[derive(Clone, Copy)]
@@ -183,10 +184,11 @@ impl std::fmt::Display for FrameLifecycleRecord {
             inflight_at_enqueue,
             input_age_at_enqueue,
             phases,
+            physical,
         } = timing;
         write!(
             output,
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} cpu_copy_us={} readback_bytes={} output_bytes={}",
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} cpu_copy_us={} readback_bytes={} output_bytes={} physical_presented_time_ns={} physical_sequence={}",
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -202,6 +204,11 @@ impl std::fmt::Display for FrameLifecycleRecord {
             phases.map_or(0, |value| value.paint.cpu_copy_swizzle_us),
             phases.map_or(0, |value| value.paint.readback_bytes),
             phases.map_or(0, |value| value.paint.cpu_output_bytes),
+            physical.map_or_else(
+                || "none".to_owned(),
+                |value| value.timestamp.as_nanos().to_string()
+            ),
+            physical.map_or_else(|| "none".to_owned(), |value| value.sequence.to_string()),
         )
     }
 }
@@ -242,12 +249,13 @@ mod phase_record_tests {
                 inflight_at_enqueue: 1,
                 input_age_at_enqueue: None,
                 phases: None,
+                physical: None,
             },
         };
         let absent = record.to_string();
         assert!(absent.contains("serial=41 "));
         assert!(absent.contains("revision=73 phase_timing=false"));
-        assert!(absent.ends_with("cpu_copy_us=0 readback_bytes=0 output_bytes=0"));
+        assert!(absent.ends_with("cpu_copy_us=0 readback_bytes=0 output_bytes=0 physical_presented_time_ns=none physical_sequence=none"));
         record.timing.phases = Some(FramePhaseTiming {
             paint: super::super::render::paint::BridgePhaseTiming {
                 cpu_copy_swizzle_us: 17,
@@ -260,13 +268,24 @@ mod phase_record_tests {
         let readback = record.to_string();
         assert!(readback.contains("revision=73 phase_timing=true"));
         assert!(readback.ends_with(
-            "kms_retirement_us=19 cpu_copy_us=17 readback_bytes=4096 output_bytes=2048"
+            "kms_retirement_us=19 cpu_copy_us=17 readback_bytes=4096 output_bytes=2048 physical_presented_time_ns=none physical_sequence=none"
         ));
         record.timing.phases.as_mut().unwrap().paint =
             super::super::render::paint::BridgePhaseTiming::default();
         let direct = record.to_string();
         assert!(direct.contains("phase_timing=true"));
-        assert!(direct.ends_with("cpu_copy_us=0 readback_bytes=0 output_bytes=0"));
+        record.timing.physical = Some(PhysicalPresentation {
+            timestamp: Duration::new(123, 456_000),
+            sequence: 789,
+            refresh: None,
+        });
+        assert!(
+            record
+                .to_string()
+                .ends_with("physical_presented_time_ns=123000456000 physical_sequence=789")
+        );
+
+        assert!(direct.ends_with("cpu_copy_us=0 readback_bytes=0 output_bytes=0 physical_presented_time_ns=none physical_sequence=none"));
     }
 }
 
@@ -331,6 +350,7 @@ impl PresentPipe {
                                     inflight_at_enqueue,
                                     input_age_at_enqueue,
                                     phases,
+                                    physical,
                                 },
                             );
                             if let Some(detail) = presenter.frame_detail() {
