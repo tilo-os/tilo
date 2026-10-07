@@ -110,6 +110,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
+fn verify_native_confinement() -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "native sandbox startup probe requires Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
 fn verify_native_confinement() -> std::io::Result<()> {
     // SAFETY: this read-only prctl query takes no pointers and changes no
     // process state. It observes confinement without requesting proc access.
