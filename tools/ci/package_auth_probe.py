@@ -19,10 +19,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def status(url, credential, method="HEAD", scheme="token"):
-    request = urllib.request.Request(
-        url, headers={"Authorization": f"{scheme} {credential}"}, method=method
-    )
+def status(url, credential, method="GET", scheme="token"):
+    headers = {"Authorization": f"{scheme} {credential}"} if credential else {}
+    if url == ARCHIVE and method == "GET":
+        headers["Range"] = "bytes=0-0"
+    request = urllib.request.Request(url, headers=headers, method=method)
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=20) as response:
             return response.status
@@ -47,6 +48,8 @@ def main():
         "oidc_request_token_present": bool(oidc_token),
         "archive_url": ARCHIVE,
     }
+    result["anonymous_archive_get_status"] = status(ARCHIVE, "")
+    result["anonymous_archive_head_status"] = status(ARCHIVE, "", method="HEAD")
     for name, token in (("package_token", registry), ("job_token", job)):
         if token:
             result[name + "_archive_status"] = status(ARCHIVE, token)
@@ -65,7 +68,7 @@ def main():
                 oidc_token, method="GET", scheme="bearer"
             )
     print(json.dumps(result, sort_keys=True))
-    return 0 if registry and result.get("package_token_archive_status") == 200 else 1
+    return 0 if registry and result.get("package_token_archive_status") in (200, 206) else 1
 
 
 if __name__ == "__main__":
