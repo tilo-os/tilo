@@ -263,6 +263,7 @@ where
                 .await
                 .unwrap();
             let route = SdkRoute {
+                _checks: None,
                 spec: RouteSpec {
                     app_id: "notes".into(),
                     cluster_id: uuid::Uuid::from_u128(7),

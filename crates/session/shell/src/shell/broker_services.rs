@@ -4,6 +4,8 @@ use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
 mod airdrop_transfer;
+#[cfg(target_os = "linux")]
+pub mod approved_checks;
 mod committed_document;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
@@ -1405,8 +1407,14 @@ pub fn native_services(
         Arc::new(NativeAppActionGrants(tree.clone()))
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
+    #[cfg(target_os = "linux")]
+    let approved_checks = membership
+        .as_ref()
+        .map(|tree| approved_checks::service(tree.clone(), network.clone()));
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     HostServices {
+        #[cfg(target_os = "linux")]
+        approved_checks,
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
         committed_documents,

@@ -1,0 +1,338 @@
+// Socket-backed original history must precede public operation admission.
+use automerge::ReadDoc as _;
+struct InitialHistoryProbe(std::rc::Rc<std::cell::Cell<usize>>);
+impl crate::widget::Widget for InitialHistoryProbe {
+    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::testing::inert_widget_methods!(
+        unregistered_leaf_layout,
+        apply_layout,
+        draw,
+        get_rect,
+        name = "initial-history-probe"
+    );
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["initial-history.probe"]
+    }
+    fn start_operation(
+        &mut self,
+        _: &crate::widget::ResourceOperation<'_>,
+        _: &mut crate::widget::Edits<'_>,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.0.set(self.0.get().saturating_add(1));
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+impl crate::resources::PublishesResources for InitialHistoryProbe {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![
+            tilo_actions::Resource::new("initial-probe", "probe", "Probe").with_action(
+                tilo_actions::ActionSpec::operation(
+                    "inspect",
+                    "Inspect",
+                    tilo_actions::OperationKind::View,
+                    "initial-history.probe",
+                    &true,
+                )
+                .unwrap()
+                .with_contract(tilo_actions::ActionContract::view()),
+            ),
+        ]
+    }
+}
+fn initial_history_query() -> runtime_collab::ActionDirectoryQuery {
+    runtime_collab::ActionDirectoryQuery {
+        peer_id: 0,
+        revision: String::new(),
+        cursor: vec![],
+        needle: String::new(),
+        parent_resource: String::new(),
+        max_results: 16,
+        max_bytes: 8192,
+        max_work: 32,
+        max_depth: 8,
+    }
+}
+fn initial_history_app() -> (App, std::rc::Rc<std::cell::Cell<usize>>) {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let (manager, _) = CollaborationManager::native_initial_fixture_for_test(
+        "so.tilo.initial-history-probe",
+        uuid::Uuid::new_v4(),
+        history.save(),
+    );
+    let mut app =
+        App::new_with_controlled_inputs(State::new(), Box::new(InitialHistoryProbe(calls.clone())));
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = manager;
+    (app, calls)
+}
+#[test]
+fn initial_history_action_publication_waits_for_actual_owner_application() {
+    let (mut app, calls) = initial_history_app();
+    assert!(app.collaboration.manager.is_connected());
+    assert!(!app.collaboration.manager.document_route_ready(None));
+    assert!(!app.published_action_history_ready());
+    app.publish_action_surface();
+    assert!(app.actions.last_published_actions.is_none());
+    assert!(
+        app.published_action_directory_page(initial_history_query())
+            .rows
+            .is_empty()
+    );
+    assert!(matches!(
+        app.published_action_directory_resolution("", "initial-probe", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Unavailable
+    ));
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.poll_and_apply_collab_events();
+        assert!(
+            crate::time::now() < deadline,
+            "actual original history never applied"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        app.state
+            .doc
+            .get(ROOT, "original-owner-history")
+            .unwrap()
+            .is_some()
+    );
+    app.publish_action_surface();
+    assert!(app.actions.last_published_actions.is_some());
+    let page = app.published_action_directory_page(initial_history_query());
+    assert!(!page.rows.is_empty());
+    assert!(matches!(
+        app.published_action_directory_resolution(&page.revision, "initial-probe", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found(_)
+    ));
+    app.invoke_published_action(
+        77,
+        tilo_actions::InvocationId::new(),
+        "initial-probe".into(),
+        "inspect".into(),
+        None,
+        "fixture-user",
+        None,
+    );
+    assert_eq!(
+        calls.get(),
+        1,
+        "the actual public handler runs only after owner application"
+    );
+}
+#[test]
+fn initial_history_accepted_delivery_cannot_run_before_original_owner_application() {
+    let (mut app, calls) = initial_history_app();
+    app.invoke_published_action(
+        78,
+        tilo_actions::InvocationId::new(),
+        "initial-probe".into(),
+        "inspect".into(),
+        None,
+        "fixture-user",
+        None,
+    );
+    assert_eq!(calls.get(), 0);
+    assert!(!app.collaboration.manager.is_connected());
+    assert!(
+        app.action_publication_failure
+            .as_deref()
+            .unwrap()
+            .contains("outcome unknown")
+    );
+}
+
+#[test]
+fn initial_history_retired_capture_refuses_previously_published_handler() {
+    let (mut app, calls) = initial_history_app();
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.poll_and_apply_collab_events();
+        assert!(
+            crate::time::now() < deadline,
+            "actual original history never applied"
+        );
+        std::thread::yield_now();
+    }
+    app.publish_action_surface();
+    assert!(app.actions.last_published_actions.is_some());
+    let page = app.published_action_directory_page(initial_history_query());
+    assert!(!page.rows.is_empty());
+    let route = app
+        .collaboration
+        .manager
+        .primary_route()
+        .unwrap()
+        .route
+        .clone();
+    let unrelated = crate::collaboration::RouteSpec::record(
+        &route.app_id,
+        route.cluster_id,
+        "unrelated-record",
+    );
+    app.collaboration
+        .manager
+        .retire_document_capture_for_test(&unrelated);
+    assert!(
+        app.published_action_history_ready(),
+        "an unrelated record is outside the actual live owner map"
+    );
+    app.collaboration
+        .manager
+        .retire_document_capture_for_test(&route);
+    assert!(matches!(
+        app.published_action_directory_resolution(&page.revision, "initial-probe", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Unavailable
+    ));
+    app.invoke_published_action(
+        79,
+        tilo_actions::InvocationId::new(),
+        "initial-probe".into(),
+        "inspect".into(),
+        None,
+        "fixture-user",
+        None,
+    );
+    assert_eq!(
+        calls.get(),
+        0,
+        "capture retirement cannot authorize an already offered handler"
+    );
+    assert!(!app.collaboration.manager.is_connected());
+}
+
+struct NoCommittedReadPeer {
+    requests: std::rc::Rc<std::cell::RefCell<Vec<crate::collaboration::CollabRequest>>>,
+    directories: std::rc::Rc<std::cell::Cell<usize>>,
+}
+impl crate::collaboration::PeerTransport for NoCommittedReadPeer {
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn send(&mut self, request: crate::collaboration::CollabRequest) -> Result<(), String> {
+        self.requests.borrow_mut().push(request);
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<crate::collaboration::CollabEvent> {
+        vec![]
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        self.directories
+            .set(self.directories.get().saturating_add(1));
+        Ok(())
+    }
+}
+#[test]
+fn initial_history_no_committed_read_peer_preserves_actual_public_dispatch() {
+    let (mut app, calls) = initial_history_app();
+    let requests = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+    let directories = std::rc::Rc::new(std::cell::Cell::new(0));
+    app.collaboration.manager = CollaborationManager::with_peer_transport(NoCommittedReadPeer {
+        requests: requests.clone(),
+        directories: directories.clone(),
+    });
+    assert!(app.collaboration.manager.primary_route().is_none());
+    app.publish_action_surface();
+    assert_eq!(directories.get(), 1);
+    assert!(app.actions.last_published_actions.is_some());
+    let page = app.published_action_directory_page(initial_history_query());
+    assert!(!page.rows.is_empty());
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        80,
+        invocation,
+        "initial-probe".into(),
+        "inspect".into(),
+        None,
+        "fixture-user",
+        None,
+    );
+    assert_eq!(calls.get(), 1);
+    assert!(requests.borrow().iter().any(|request| matches!(request,
+        crate::collaboration::CollabRequest::UpdateInvocation {
+            update: tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. }, ..
+        } if *actual == invocation)));
+}
+
+#[test]
+fn initial_history_public_directory_requires_every_actual_live_record_owner() {
+    let mut fixture = RoutedOwners::new();
+    let manager = CollaborationManager::native_initial_named_fixture_for_test(
+        fixture.bindings[0].broker_route().unwrap(),
+        automerge::AutoCommit::new().save(),
+    );
+    fixture.app.collaboration.manager = manager;
+    fixture.app.actions.bound_broker_route_for_test = None;
+    assert!(
+        fixture
+            .app
+            .published_action_directory_page(initial_history_query())
+            .rows
+            .is_empty()
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    while !fixture.app.published_action_history_ready() {
+        fixture.app.poll_and_apply_collab_events();
+        assert!(
+            crate::time::now() < deadline,
+            "the actual two record histories never applied"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(fixture.app.document_routes.owners.len(), 2);
+    fixture.app.publish_action_surface();
+    assert!(fixture.app.actions.last_published_actions.is_some());
+    let page = fixture
+        .app
+        .published_action_directory_page(initial_history_query());
+    assert!(!page.rows.is_empty());
+    // A root directory page lists resources; its action children are reached
+    // by their parent. The eager surface supplies the actual published address.
+    let action = fixture
+        .app
+        .actions
+        .last_published_actions
+        .as_ref()
+        .and_then(|actions| actions.first())
+        .expect("actual published record action")
+        .clone();
+    assert!(matches!(
+        fixture.app.published_action_directory_resolution(
+            &page.revision,
+            &action.address.resource,
+            &action.address.action
+        ),
+        runtime_collab::ActionDirectoryResolution::Found(_)
+    ));
+    let second = fixture.app.document_routes.owners[1].route.clone();
+    fixture
+        .app
+        .collaboration
+        .manager
+        .retire_document_capture_for_test(&second);
+    assert!(!fixture.app.published_action_history_ready());
+    assert!(
+        fixture
+            .app
+            .published_action_directory_page(initial_history_query())
+            .rows
+            .is_empty()
+    );
+    assert!(matches!(
+        fixture.app.published_action_directory_resolution(
+            &page.revision,
+            &action.address.resource,
+            &action.address.action
+        ),
+        runtime_collab::ActionDirectoryResolution::Unavailable
+    ));
+}

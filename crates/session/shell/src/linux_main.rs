@@ -384,6 +384,11 @@ pub fn run() -> std::process::ExitCode {
         println!("{version}");
         return std::process::ExitCode::SUCCESS;
     }
+    if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
+    {
+        eprintln!("approved project check configuration refused: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
     tilo_startup_metrics::init();

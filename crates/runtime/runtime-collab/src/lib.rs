@@ -65,6 +65,7 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+pub mod approved_checks;
 pub mod committed_document;
 #[cfg(feature = "client")]
 pub mod live_activity;
