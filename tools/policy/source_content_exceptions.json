@@ -25,11 +25,6 @@
     "reason": "Actual audio/video decoder or editor fixture; preserve codec/sample properties. Replacement plan: inspect existing generation recipe and assertions; generate deterministic PCM from text source/recipe or pin original compressed media and prewarm offline; compare real decoder output."
   },
   {
-    "path": "crates/browser/paint-stream/tests/fixtures/layers.top.png",
-    "oid": "ab50351113635351798b002cc492534cc978120a",
-    "reason": "Actual image/paint/inline content fixture; confirm per-path consumer and pixel invariants. Replacement plan: small deterministic PNG recipe when reproducible; otherwise verified pinned original artifact through existing test-assets cache, with offline consumer coverage."
-  },
-  {
     "path": "crates/doc/fixtures/lo-annotations.docx",
     "oid": "dd0bc6fc3e439ea2e8cc0b94378a8a90bce946ed",
     "reason": "Foreign-format parser/serializer compatibility or adversarial ZIP package fixture. Replacement plan: retain original foreign-producer archives as verified pinned artifacts; generate controlled sample/XXE/zip-bomb packages from LF text members with deterministic recipes; prove actual parse/security behavior offline."
@@ -135,53 +130,8 @@
     "reason": "Actual PDF parsing/rendering fixture including embedded font streams and page semantics. Replacement plan: verified SHA-pinned original artifact with prewarm/offline reader; generate simple controlled PDFs from LF recipes only where byte-preservation assertions are unnecessary."
   },
   {
-    "path": "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf",
-    "oid": "e920290a4e9db814ff3300ba42f324b0032afd56",
-    "reason": "Font feature regression fixture; subset and shaping behavior need exact original bytes. Replacement plan: extend existing checksum-pinned font catalog; build-time preparation and offline prewarm; retain real font parser/shaping assertion."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/test_image.png",
-    "oid": "ecd6b467faef2f101fae6a5f603a14fa70bf9c70",
-    "reason": "Actual image/paint/inline content fixture; confirm per-path consumer and pixel invariants. Replacement plan: small deterministic PNG recipe when reproducible; otherwise verified pinned original artifact through existing test-assets cache, with offline consumer coverage."
-  },
-  {
     "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
     "oid": "7a7696681bad4f83fd92680fe7699ea263549022",
     "reason": "Original visual regression reference; must remain unchanged until genuine overview mismatch is fixed. Replacement plan: repair production or harness cause, then reuse pinned original PNG artifact; never refresh baseline to silence failure."
-  },
-  {
-    "path": "tools/android/mediation/res/drawable/icon.png",
-    "oid": "ac5572efcc58d610d218dcd8ac48ba2f53b3b5c5",
-    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
-  },
-  {
-    "path": "vendor/wgpu/src/macros/be-aligned.spv",
-    "oid": "0e2d0657840989e5b2dc34afbb8ad832b3c2263a",
-    "reason": "Exact tiny SPIR-V include macro/endian compile-time fixtures. Replacement plan: build-script emits original two u32 words from LF source into OUT_DIR; retain include macro/endian assertions."
-  },
-  {
-    "path": "vendor/wgpu/src/macros/le-aligned.spv",
-    "oid": "3f6aead0683d5339f713c63fa56ed38031bafdfc",
-    "reason": "Exact tiny SPIR-V include macro/endian compile-time fixtures. Replacement plan: build-script emits original two u32 words from LF source into OUT_DIR; retain include macro/endian assertions."
-  },
-  {
-    "path": "vendor/winit/examples/data/cross.png",
-    "oid": "9bfdf369b3ba297216a2859beda741508d02a43d",
-    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
-  },
-  {
-    "path": "vendor/winit/examples/data/cross2.png",
-    "oid": "b9f7a486b1d78da9a43011981f6cea68123415fd",
-    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
-  },
-  {
-    "path": "vendor/winit/examples/data/gradient.png",
-    "oid": "41ce610e66221b0803d20b0dcca6f9215745ac3b",
-    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
-  },
-  {
-    "path": "vendor/winit/examples/data/icon.png",
-    "oid": "aa3fbf3cfc18a3723cca4de446cf6f6079216b50",
-    "reason": "Example cursor/icon or Android packaging asset; verify actual consumer before removal. Replacement plan: derive exact decoded RGBA from text recipe/vector and generate PNG at build time, preserving dimensions/pixels; keep examples and APK packaging."
   }
 ]

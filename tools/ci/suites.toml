@@ -543,6 +543,7 @@ inputs = [
   "tools/test-assets.py",
 ]
 readers = [
+  "crates/sdk/ui-core/build.rs",
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
@@ -1430,3 +1431,8 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 package = "store"
 inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
 readers = ["apps/store/build.rs"]
+
+[[group]]
+name = "android-fixture-resources"
+inputs = ["tools/android/mediation/prepare-res.py", "tools/android/mediation/res/"]
+suites = ["tools/tests/test_android_fixture_resources.py"]
