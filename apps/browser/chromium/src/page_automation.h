@@ -51,6 +51,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         Reply(request,Failure("text_input_expired","The original text request expired"),true);return;
       }
     }
+    native_attempted_=false;native_object_.clear();
     pending_=Pending{request,++token_,navigations_,false,owned,{}};
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
       if(self->pending_ && self->pending_->token==token) self->Fail("timeout","The page did not answer in time");
@@ -78,7 +79,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // A started navigation is awaited this long; a slower one is reported as
   // still loading and the caller waits for it.
   static constexpr int64_t kLoadWaitMs=10000;
-  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, Evaluate };
+  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, Evaluate };
   struct TextFrame { std::string id,loader;int world=0,document=0;bool same_origin=true; };
   struct Pending {
     int request;uint64_t token;uint64_t navigations;bool retried;
@@ -124,6 +125,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto result=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
     // Never execute a nested DevTools method in its result callback; this
     // already runs on a later UI turn.
+    if(stage_==Stage::NativeElement || stage_==Stage::NativeDOM || stage_==Stage::NativeDocument ||
+        stage_==Stage::NativeNode || stage_==Stage::NativeEditors || stage_==Stage::NativeResolve || stage_==Stage::NativeConfigure) {
+      NativeResult(success,result);return;
+    }
     if(stage_==Stage::TextFailureFrameTree) {
       std::vector<TextFrame> frames;
       auto tree=success && result?result->GetDictionary("frameTree"):nullptr;
@@ -204,9 +209,61 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(!value || value->GetType("ok")!=VTYPE_BOOL) { Fail("script","The page did not return a result");return; }
       if(!value->GetBool("ok")) {
         const auto code=value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script";
+        if(code=="text_input_native_required" && PrivateText() && Action()=="prepare_text_input" &&
+            pending_->command->GetBool("native_caret") && !native_attempted_) {
+          native_attempted_=true;
+          auto params=CefDictionaryValue::Create();
+          params->SetString("expression","globalThis.__tiloPage.nativeTextInputElement()");
+          params->SetString("objectGroup","tilo-private-native-caret");
+          params->SetInt("contextId",text_frame_.world);params->SetBool("silent",true);
+          Call(Stage::NativeElement,"Runtime.evaluate",params);return;
+        }
         Fail(code.size()<=64?code:"script",Text(value,"message"));return;
       }
       Act(value);
+    }
+  }
+  // Resolve only node IDs and an editor object in the existing private world.
+  // No field contents, attributes or caret offsets are exported to the client; no
+  // remote-debugging port or universal-access world is opened.
+  void NativeResult(bool success,CefRefPtr<CefDictionaryValue> result) {
+    if(!success || !result) { Fail("not_editable","The original native caret cannot be observed");return; }
+    auto params=CefDictionaryValue::Create();
+    if(stage_==Stage::NativeElement) {
+      auto remote=result->GetDictionary("result");
+      if(!remote || remote->GetType("objectId")!=VTYPE_STRING) { Fail("not_editable","The original native field was lost");return; }
+      native_object_=remote->GetString("objectId").ToString();
+      Call(Stage::NativeDOM,"DOM.enable",nullptr);
+    } else if(stage_==Stage::NativeDOM) {
+      params->SetInt("depth",0);params->SetBool("pierce",false);
+      Call(Stage::NativeDocument,"DOM.getDocument",params);
+    } else if(stage_==Stage::NativeDocument) {
+      params->SetString("objectId",native_object_);
+      Call(Stage::NativeNode,"DOM.requestNode",params);
+    } else if(stage_==Stage::NativeNode) {
+      if(result->GetType("nodeId")!=VTYPE_INT || result->GetInt("nodeId")<=0) { Fail("not_editable","The original native field was lost");return; }
+      params->SetInt("nodeId",result->GetInt("nodeId"));params->SetBool("pierce",true);
+      auto styles=CefListValue::Create();auto style=CefDictionaryValue::Create();
+      style->SetString("name","-webkit-user-modify");style->SetString("value","read-write-plaintext-only");
+      styles->SetDictionary(0,style);params->SetList("computedStyles",styles);
+      Call(Stage::NativeEditors,"DOM.getNodesForSubtreeByStyle",params);
+    } else if(stage_==Stage::NativeEditors) {
+      auto nodes=result->GetList("nodeIds");
+      if(!nodes || nodes->GetSize()!=1 || nodes->GetType(0)!=VTYPE_INT) { Fail("not_editable","The native editor cannot be uniquely observed");return; }
+      params->SetInt("nodeId",nodes->GetInt(0));params->SetInt("executionContextId",text_frame_.world);
+      params->SetString("objectGroup","tilo-private-native-caret");
+      Call(Stage::NativeResolve,"DOM.resolveNode",params);
+    } else if(stage_==Stage::NativeResolve) {
+      auto object=result->GetDictionary("object");
+      if(!object || object->GetType("objectId")!=VTYPE_STRING) { Fail("not_editable","The original native editor was lost");return; }
+      params->SetString("objectId",object->GetString("objectId"));
+      params->SetString("functionDeclaration","function(){return globalThis.__tiloPage.configureNativeTextEditor(this)}");
+      params->SetBool("returnByValue",true);params->SetBool("silent",true);
+      Call(Stage::NativeConfigure,"Runtime.callFunctionOn",params);
+    } else {
+      auto remote=result->GetDictionary("result");
+      if(!remote || remote->GetType("value")!=VTYPE_BOOL || !remote->GetBool("value")) { Fail("text_input_changed","The original native field changed");return; }
+      Evaluate();
     }
   }
   void Evaluate() {
@@ -215,7 +272,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     command->SetString("action",action=="click"?"locate":action=="press"?"focus":action);
     command->SetInt("doc",PrivateText()?text_frame_.document:document_);
     for(const char* key:{"element","text","key","lease","history_scope"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
-    for(const char* key:{"cross_origin","secret"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
+    for(const char* key:{"cross_origin","secret","native_caret"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
     for(const char* key:{"x","y"}) if(pending_->command->HasKey(key)) command->SetDouble(key,Number(pending_->command,key));
     for(const char* key:{"quiet_ms","timeout_ms"}) if(pending_->command->HasKey(key)) command->SetInt(key,pending_->command->GetInt(key));
     if(pending_->command->HasKey("expires_ms")) command->SetDouble("expires_ms",Number(pending_->command,"expires_ms"));
@@ -300,13 +357,20 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void Finish(CefRefPtr<CefDictionaryValue> fields) {
     const int request=pending_->request;const bool text_input=pending_->command->GetString("op")=="text_input";
-    pending_.reset();call_=0;Reply(request,fields,text_input);
+    pending_.reset();call_=0;
+    if(native_attempted_) {
+      auto params=CefDictionaryValue::Create();params->SetString("objectGroup","tilo-private-native-caret");
+      browser_->GetHost()->ExecuteDevToolsMethod(0,"Runtime.releaseObjectGroup",params);
+      native_object_.clear();native_attempted_=false;
+    }
+    Reply(request,fields,text_input);
   }
   void Reply(int request,CefRefPtr<CefDictionaryValue> fields,bool text_input=false) { fields->SetInt("request_id",request);emit_(text_input?"text_input_result":"page_result",fields); }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;
   Emit emit_;Click click_;Key key_;
   std::optional<Pending> pending_;Stage stage_=Stage::FrameTree;int call_=0;
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;
+  bool native_attempted_=false;std::string native_object_;
   int world_=0,document_=0;std::string loader_;uint64_t token_=0,navigations_=0;
   IMPLEMENT_REFCOUNTING(PageAutomation);
 };

@@ -2199,9 +2199,11 @@ fn native_history_capability_is_optional_strict_and_per_tab() {
     let downloads = Mutex::default();
     let (ready, _receiver) = sync_channel(1);
     assert!(!first.native_edit_history.load(Ordering::Acquire));
-    route_native_event(&json!({"event":"ready","cef_version":"152","chromium_version":"152","native_edit_history":true,"guarded_edit_history":true}), &routes, &downloads, &ready).unwrap();
+    assert!(!first.native_caret_text_input.load(Ordering::Acquire));
+    route_native_event(&json!({"event":"ready","cef_version":"152","chromium_version":"152","native_edit_history":true,"guarded_edit_history":true,"native_caret_text_input":true}), &routes, &downloads, &ready).unwrap();
     assert!(first.native_edit_history.load(Ordering::Acquire));
     assert!(first.guarded_edit_history.load(Ordering::Acquire));
+    assert!(first.native_caret_text_input.load(Ordering::Acquire));
     route_native_event(
         &json!({"event":"tab_ready","tab":2}),
         &routes,
@@ -2211,9 +2213,10 @@ fn native_history_capability_is_optional_strict_and_per_tab() {
     .unwrap();
     assert!(!second.native_edit_history.load(Ordering::Acquire));
     assert!(!second.guarded_edit_history.load(Ordering::Acquire));
+    assert!(!second.native_caret_text_input.load(Ordering::Acquire));
     assert!(first.native_edit_history.load(Ordering::Acquire));
     route_native_event(
-        &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":true}),
+        &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":true,"native_caret_text_input":true}),
         &routes,
         &downloads,
         &ready,
@@ -2221,12 +2224,22 @@ fn native_history_capability_is_optional_strict_and_per_tab() {
     .unwrap();
     assert!(second.native_edit_history.load(Ordering::Acquire));
     assert!(second.guarded_edit_history.load(Ordering::Acquire));
+    assert!(second.native_caret_text_input.load(Ordering::Acquire));
     assert!(
         route_native_event(
             &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":"true"}),
             &routes,
             &downloads,
             &ready
+        )
+        .is_err()
+    );
+    assert!(
+        route_native_event(
+            &json!({"event":"tab_ready","tab":2,"native_caret_text_input":"true"}),
+            &routes,
+            &downloads,
+            &ready,
         )
         .is_err()
     );
@@ -2238,6 +2251,70 @@ fn native_history_capability_is_optional_strict_and_per_tab() {
     )
     .unwrap();
     assert!(!first.native_edit_history.load(Ordering::Acquire));
+    assert!(!first.native_caret_text_input.load(Ordering::Acquire));
     assert!(!first.guarded_edit_history.load(Ordering::Acquire));
     assert!(second.native_edit_history.load(Ordering::Acquire));
+}
+
+#[test]
+fn native_caret_prepare_opt_in_uses_the_original_tab_capability() {
+    let tx = Arc::new(CommandQueue::default());
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let runtime = Arc::new(Runtime {
+        tx: tx.clone(),
+        process: first.clone(),
+        supervisor: Mutex::default(),
+        routes,
+        next_tab: AtomicU32::new(3),
+        download_events: Arc::default(),
+        server: std::sync::OnceLock::new(),
+        link: None,
+    });
+    let one = ChromiumEngine {
+        tx: tx.clone(),
+        shared: first,
+        runtime: runtime.clone(),
+        tab: 1,
+    };
+    let two = ChromiumEngine {
+        tx: tx.clone(),
+        shared: second,
+        runtime: runtime.clone(),
+        tab: 2,
+    };
+    let original = one
+        .text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let legacy = tx.pop().unwrap();
+    assert!(legacy.get("native_caret").is_none());
+    let (ready, _receiver) = sync_channel(1);
+    route_native_event(
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152","native_caret_text_input":true}),
+        &runtime.routes, &runtime.download_events, &ready,
+    ).unwrap();
+    one.text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let native = tx.pop().unwrap();
+    assert_eq!(native["tab"], 1);
+    assert_eq!(native["native_caret"], true);
+    two.text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let other = tx.pop().unwrap();
+    assert_eq!(other["tab"], 2);
+    assert!(other.get("native_caret").is_none());
+    route_native_event(
+        &json!({"event":"text_input_result","tab":1,"request_id":legacy["request_id"],"ok":true,"navigated":false,"url":"http://fixture.invalid/","message":"Prepared","data":{"lease":"0123456789abcdef0123456789abcdef"}}),
+        &runtime.routes, &runtime.download_events, &ready,
+    ).unwrap();
+    let lease = original.poll().unwrap().unwrap().unwrap();
+    one.text_input(super::super::text_input::Request::Check(lease))
+        .unwrap();
+    let check = tx.pop().unwrap();
+    assert_eq!(check["action"], "check_text_input");
+    assert!(check.get("native_caret").is_none());
 }

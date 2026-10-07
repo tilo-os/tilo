@@ -287,9 +287,10 @@ stamps now come from the shared host input contract described above.
    Same-origin iframe input/textarea/rich-text
    finals now use private contexts pinned to their original frame/document, with
    native undo and removal/recovery qualification. Cross-origin/opaque frame
-   ancestry, selection-less email/number inputs, closed shadow roots and composition
-   already active when the isolated world starts need renderer lifecycle support
-   before admission. A complete assembled
+   ancestry, closed author shadow roots and composition already active when the
+   isolated world starts still need renderer lifecycle support before admission.
+   Selection-less email/number inputs require the privately negotiated native-caret
+   bridge described below; legacy clients retain refusal and recovery. A complete assembled
    browser microphone journey remains unqualified. Explicit consent now activates
    the same original lease/edit stamp once and waits for its private acknowledgement
    before recognition launches. Warm preparation and the consented session each
@@ -897,3 +898,42 @@ probes. Quiet boundaries are the selected next recognition improvement to
 validate in production-worker journeys; they are still benchmark-only. This
 is not evidence for noisy conversational accuracy, older CPU/ARM performance,
 Small-model stability, or a microphone/model release approval.
+
+
+### Private native caret binding for email and number fields (2026-10-07)
+
+The new optional `native_caret_text_input` ready capability is strict and
+per-tab. Only a capable original tab sends `native_caret: true` on private
+Prepare; subsequent Start, Check, Commit and Cancel keep their original lease.
+Legacy clients still refuse selection-less fields, and their original refusal,
+ambiguity and recovery assertions remain unchanged.
+
+The browser resolves the uniquely editable native node using the existing
+internal DevTools connection and the same original frame's isolated world.
+It grants no universal access and opens no inspector port. A captured native
+selection getter binds node identity, direction, offsets, raw editor state,
+value and original input ownership inside the renderer. The original native
+snapshot is checked on every operation and again after `beforeinput`, before
+native insertion. Only the opaque lease and existing history flags leave the
+private protocol; field contents and caret offsets are not exported to the
+client or recorded in its public action log. Temporary remote object handles
+are released, and retired sessions clear private editor references.
+
+Internal UA roots must not be treated as author-created open/closed roots:
+[Chromium's mode getter](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/core/dom/shadow_root.cc)
+rejects the internal UA mode. Ownership is checked through the original native
+input instead. The actual pinned-engine probe qualifies this distinction;
+the implementation does not assume a portable HTML selection API for these
+fields. Numeric finals are validated before and after page handlers so native
+filtering cannot acknowledge deletion of the selected original value. Invalid
+or non-finite numeric text requires correction; spoken-number/localized-digit
+normalization is not qualified. Password, OTP, payment, masked and read-only
+fields keep their privacy and eligibility guards.
+
+The published `813d28ed` passed affected-package run 75139, including wasm,
+clippy and every selected test shard, and fast-quality run 75142. App SDK run
+75138 measured the merged release desktop module at 93,218,050 bytes, 25,858
+above its existing budget. The additive dictation receipt follows the existing
+ratchet's measured 1% headroom rounded to 64 KiB; that is a merged-tree total,
+not an exclusive dictation cost. The native CEF caret adapter is excluded from
+wasm. No consent or caller-custody checks are removed to reduce the size.

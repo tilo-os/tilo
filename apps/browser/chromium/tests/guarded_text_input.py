@@ -109,6 +109,133 @@ class GuardedTextInput(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, 'owned frame must load')
         self.assertTrue(self.main_world("(()=>{const f=editorFrame.contentDocument.getElementById('first');f.focus();f.setSelectionRange(6,10);return editorFrame.contentDocument.hasFocus()})()"))
 
+    def native_field(self, kind, value):
+        self.main_world("(()=>{document.getElementById('nativeField')?.remove();const e=document.createElement('input');e.id='nativeField';e.type=" + json.dumps(kind) + ";e.value=" + json.dumps(value) + ";document.body.append(e);e.focus();e.select();return true})()")
+
+    def native_prepare(self):
+        ready = next(event for event in self.h.seen if event['event'] == 'ready')
+        self.assertIs(ready.get('native_caret_text_input'), True)
+        result = self.request_input('prepare', native_caret=True)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(set(result['data']), {'lease'})
+        return result['data']['lease']
+
+    def test_native_email_number_replace_cancel_repeat_and_history(self):
+        for kind, value, replacement in [('email', 'public@example.test', 'café@example.test'),
+                                          ('number', '123.5', '42.75'), ('email', '', 'a@b.test'), ('number', '', '7')]:
+            with self.subTest(kind=kind, value=value):
+                self.native_field(kind, value)
+                lease = self.native_prepare()
+                self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                self.assertTrue(self.request_input('check', lease=lease)['ok'])
+                self.assertTrue(self.request_input('cancel', lease=lease)['ok'])
+                self.assertEqual(self.main_world('nativeField.value'), value)
+                lease = self.native_prepare()
+                self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                self.assertFalse(self.request_input('start', lease=lease)['ok'])
+                self.assertTrue(self.request_input('commit', lease=lease, text=replacement)['ok'])
+                self.assertEqual(self.main_world('nativeField.value'), replacement)
+                self.assertEqual(self.main_world('second.value'), 'second')
+                self.assertTrue(self.main_world("document.execCommand('undo')"))
+                self.assertEqual(self.main_world('nativeField.value'), value)
+                self.assertTrue(self.main_world("document.execCommand('redo')"))
+                self.assertEqual(self.main_world('nativeField.value'), replacement)
+                self.main_world('(nativeField.remove(),true)')
+
+    def test_native_caret_does_not_trust_page_selection_prototype(self):
+        self.native_field('email', 'public@example.test')
+        self.main_world("(window.oldNativeSelection=ShadowRoot.prototype.getSelection,ShadowRoot.prototype.getSelection=()=>({rangeCount:1,anchorNode:document.body,focusNode:document.body,anchorOffset:0,focusOffset:0}),true)")
+        try:
+            lease = self.native_prepare()
+            self.assertTrue(self.request_input('start', lease=lease)['ok'])
+            self.assertTrue(self.request_input('commit', lease=lease, text='safe@example.test')['ok'])
+            self.assertEqual(self.main_world('nativeField.value'), 'safe@example.test')
+            self.unchanged()
+        finally:
+            self.main_world('(ShadowRoot.prototype.getSelection=oldNativeSelection,nativeField.remove(),true)')
+
+    def test_native_capability_preserves_sensitive_field_refusal_and_recovery(self):
+        for marker in ['one-time-code', 'cc-number', 'current-password', 'new-password']:
+            with self.subTest(marker=marker):
+                self.native_field('email', 'public@example.test')
+                self.main_world('(nativeField.autocomplete=' + json.dumps(marker) + ',true)')
+                result = self.request_input('prepare', native_caret=True)
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(result['code'], 'secret_field')
+                self.assertEqual(self.main_world('nativeField.value'), 'public@example.test')
+                self.main_world('(nativeField.autocomplete="",true)')
+                lease = self.native_prepare()
+                self.assertTrue(self.request_input('cancel', lease=lease)['ok'])
+                self.main_world('(nativeField.remove(),true)')
+
+    def test_native_email_beforeinput_cannot_lower_maxlength_and_truncate_text(self):
+        self.native_field('email', 'public@example.test')
+        lease = self.native_prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.main_world("(nativeField.addEventListener('beforeinput',()=>nativeField.maxLength=2,{once:true}),true)")
+        result = self.request_input('commit', lease=lease, text='safe@example.test')
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(self.main_world('nativeField.value'), 'public@example.test')
+        self.unchanged()
+
+    def test_native_number_rejects_filtered_text_without_deleting_original(self):
+        for text in ['forty two', '1e999', '٧', '1.2.3']:
+            with self.subTest(text=text):
+                self.native_field('number', '123.5')
+                lease = self.native_prepare()
+                self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                result = self.request_input('commit', lease=lease, text=text)
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(result['code'], 'rejected')
+                self.assertEqual(self.main_world('nativeField.value'), '123.5')
+                self.assertEqual(self.main_world('second.value'), 'second')
+                self.main_world('(nativeField.remove(),true)')
+        self.native_field('number', '123.5')
+        lease = self.native_prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.assertTrue(self.request_input('commit', lease=lease, text='-4.25e2')['ok'])
+        self.assertEqual(self.main_world('Number(nativeField.value)'), -425)
+
+    def test_native_fields_inside_original_iframe_and_shadow_host(self):
+        for context in ['iframe', 'shadow']:
+            if context == 'iframe':
+                self.frame_field()
+            for kind, value, replacement in [('email', 'public@example.test', '日本語@example.test'),
+                                              ('number', '123.5', '42.75')]:
+                with self.subTest(context=context, kind=kind):
+                    doc = 'editorFrame.contentDocument' if context == 'iframe' else 'document'
+                    host = doc + '.body' if context == 'iframe' else 'shadow.shadowRoot'
+                    self.main_world("(()=>{const e=" + doc + ".createElement('input');e.id='nestedNative';e.type=" + json.dumps(kind) + ";e.value=" + json.dumps(value) + ";" + host + ".append(e);e.focus();e.select();return true})()")
+                    lease = self.native_prepare()
+                    self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                    self.assertTrue(self.request_input('commit', lease=lease, text=replacement)['ok'])
+                    target = host + ".querySelector('#nestedNative')"
+                    self.assertEqual(self.main_world(target + '.value'), replacement)
+                    self.assertTrue(self.main_world(doc + ".execCommand('undo')"))
+                    self.assertEqual(self.main_world(target + '.value'), value)
+                    self.unchanged()
+                    self.main_world('(' + target + '.remove(),true)')
+            if context == 'iframe':
+                self.main_world('(editorFrame.remove(),true)')
+
+    def test_native_fields_refuse_focus_readonly_and_beforeinput_caret_changes(self):
+        for kind, value in [('email', 'public@example.test'), ('number', '123.5')]:
+            for attack in ['focus', 'readonly', 'caret']:
+                with self.subTest(kind=kind, attack=attack):
+                    self.native_field(kind, value)
+                    lease = self.native_prepare()
+                    self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                    if attack == 'focus':
+                        self.main_world('(second.focus(),true)')
+                    elif attack == 'readonly':
+                        self.main_world('(nativeField.readOnly=true,true)')
+                    else:
+                        self.main_world("(window.changeNativeCaret=()=>document.getSelection().modify('move','forward','character'),nativeField.addEventListener('beforeinput',changeNativeCaret,{once:true}),true)")
+                    self.assertFalse(self.request_input('commit', lease=lease, text='7')['ok'])
+                    self.assertEqual(self.main_world('nativeField.value'), value)
+                    self.assertEqual(self.main_world('second.value'), 'second')
+                    self.main_world('(nativeField.remove(),true)')
+
     def test_focused_iframe_original_ack_unicode_and_native_undo(self):
         self.frame_field()
         lease = self.prepare()
