@@ -128,8 +128,10 @@ def capture(socket, output, name):
     pixels.assert_nonblank_png(path)
 
 
-def proof(binaries, output, trash_restore=False):
+def proof(binaries, output, trash_restore=False, theme=None):
     env, profile = scratch_session_env()
+    if theme is not None:
+        env["TILO_SHOTS_THEME"] = theme
     processes, logs = [], []
     runtime_owner = tempfile.TemporaryDirectory(prefix="tilo-files-entry-run-")
     started = time.monotonic()
@@ -308,6 +310,7 @@ def proof(binaries, output, trash_restore=False):
             "later_edit_preserved_in_trash_and_redo": True, "source_and_control_intact": True,
             "post_redo_history_receipt": True, "published_entry_tracks_undo_redo": True,
             "packaged_trash_restore": trash_restore,
+            "requested_theme": theme,
             "packaging_seconds": round(packaged_at - started, 3),
             "journey_seconds": round(time.monotonic() - packaged_at, 3),
             "operator_profile_modified": False, "display_launched": False,
@@ -354,12 +357,14 @@ def main():
     parser.add_argument("--binaries", type=pathlib.Path, required=True)
     parser.add_argument("--trash-restore", action="store_true",
                         help="Also browse host Trash and restore the edited copy through its published entry action")
+    parser.add_argument("--theme", choices=("dark", "light", "high-contrast"),
+                        help="Render the isolated installed journey with this system theme")
     parser.add_argument("--font-namespace", type=pathlib.Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.font_namespace is not None:
         subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"), "verify",
                         "/usr/share/fonts/tilo", "--scope", "os"], check=True)
-        proof(args.binaries.resolve(), args.font_namespace, args.trash_restore)
+        proof(args.binaries.resolve(), args.font_namespace, args.trash_restore, args.theme)
         return
     parent = REPO / "target/files-clipboard-native"
     parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +386,8 @@ def main():
                         str(args.binaries.resolve()), "--font-namespace", str(output)]
         if args.trash_restore:
             command.append("--trash-restore")
+        if args.theme is not None:
+            command.extend(["--theme", args.theme])
         subprocess.run(command, check=True)
 
 
