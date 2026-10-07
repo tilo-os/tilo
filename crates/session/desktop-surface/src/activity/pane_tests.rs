@@ -4130,41 +4130,13 @@ mod task_review_tests {
                     "instruction",
                     "editing",
                     "pending-controls",
+                    "waiting",
+                    "applied",
+                    "direction",
                 ] {
                     let (mut tree, mut pane, host) = review_fixture();
                     let id = pane.selected_task.clone().unwrap();
-                    {
-                        let mut snapshot = host.snapshot.borrow_mut();
-                        snapshot.sampled_at_secs = i64::try_from(
-                            SystemTime::now()
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs(),
-                        )
-                        .unwrap();
-                        snapshot.tasks[0].status =
-                            if matches!(stage, "queued" | "editing" | "pending-controls") {
-                                WorkspaceTaskStatus::Queued
-                            } else {
-                                WorkspaceTaskStatus::InProgress
-                            };
-                        let control = snapshot.controls.get_mut(&id).unwrap();
-                        control.instruction = Some(
-                            "Preserve the complete compatibility guidance, include the examples, and explain the migration without dropping the original caveats.".into(),
-                        );
-                        control.instruction_required = true;
-                        control.pending_revision = 4;
-                        if matches!(stage, "queued" | "editing" | "pending-controls") {
-                            control.active_run = None;
-                        } else if stage == "stopping" {
-                            control.cancellation =
-                                Some(tilo_desktop_model::WorkspaceTaskCancellationRequest {
-                                    run_epoch: 3,
-                                    requested_by: "local".into(),
-                                    requested_at: 100,
-                                });
-                        }
-                    }
+                    prepare_review_render(&host, &id, stage);
                     pane.refresh(&mut tree);
                     pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
                     let mut scene = Scene::new();
@@ -4176,10 +4148,14 @@ mod task_review_tests {
                         &theme,
                         &PresenceCtx::empty(),
                     );
-                    if matches!(stage, "instruction" | "editing" | "pending-controls") {
+                    if matches!(
+                        stage,
+                        "instruction" | "editing" | "pending-controls" | "direction"
+                    ) {
                         pane.keyboard_focus = Some(match stage {
                             "instruction" => ActivityFocus::TaskInstruction(id.clone()),
                             "editing" => ActivityFocus::TaskAction(TaskAction::EditPending),
+                            "direction" => ActivityFocus::TaskAction(TaskAction::Steer),
                             _ => ActivityFocus::TaskAction(TaskAction::CancelPending),
                         });
                         super::tests::paint_with_theme(&mut pane, &theme);
@@ -4211,6 +4187,152 @@ mod task_review_tests {
                 }
             }
         }
+    }
+
+    fn prepare_review_render(host: &ReviewHost, id: &str, stage: &str) {
+        let mut snapshot = host.snapshot.borrow_mut();
+        snapshot.sampled_at_secs = i64::try_from(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        let pending = matches!(stage, "queued" | "editing" | "pending-controls");
+        snapshot.tasks[0].status = if pending {
+            WorkspaceTaskStatus::Queued
+        } else {
+            WorkspaceTaskStatus::InProgress
+        };
+        let control = snapshot.controls.get_mut(id).unwrap();
+        control.instruction = Some("Preserve the complete compatibility guidance, include the examples, and explain the migration without dropping the original caveats.".into());
+        control.instruction_required = true;
+        control.pending_revision = 4;
+        if matches!(stage, "waiting" | "applied") {
+            let mut direction = tilo_desktop_model::WorkspaceTaskDirection::owner_admitted(
+                1,
+                uuid::Uuid::from_u128(71),
+                "local".into(),
+                "Keep compatibility examples in the reply.".into(),
+                100,
+            );
+            if stage == "applied" {
+                direction.applied = Some(tilo_desktop_model::WorkspaceTaskDirectionApplied {
+                    agent_id: "scribe".into(),
+                    run_epoch: 3,
+                    applied_at: 101,
+                });
+                control
+                    .active_run
+                    .as_mut()
+                    .unwrap()
+                    .applied_direction_revision = 1;
+            }
+            control.directions.push(direction);
+        }
+        if pending {
+            control.active_run = None;
+        } else if stage == "stopping" {
+            control.cancellation = Some(tilo_desktop_model::WorkspaceTaskCancellationRequest {
+                run_epoch: 3,
+                requested_by: "local".into(),
+                requested_at: 100,
+            });
+        }
+    }
+
+    #[test]
+    fn reviewed_direction_milestone_requires_the_current_run_and_exact_agent_acknowledgement() {
+        use tilo_desktop_model::{
+            WorkspaceTaskActiveRun, WorkspaceTaskControl, WorkspaceTaskDirection,
+            WorkspaceTaskDirectionApplied,
+        };
+        let mut control = WorkspaceTaskControl {
+            run_epoch: 3,
+            active_run: Some(WorkspaceTaskActiveRun {
+                agent_id: "scribe".into(),
+                epoch: 3,
+                started_at: 100,
+                applied_direction_revision: 0,
+            }),
+            directions: vec![WorkspaceTaskDirection::owner_admitted(
+                1,
+                uuid::Uuid::from_u128(71),
+                "local".into(),
+                "Keep examples".into(),
+                100,
+            )],
+            ..Default::default()
+        };
+        let status = |control: &WorkspaceTaskControl| {
+            super::super::task_review_view::direction_application_status(control, Some("scribe"))
+        };
+        assert_eq!(
+            status(&control),
+            Some("activity-task-review-direction-waiting")
+        );
+        control
+            .active_run
+            .as_mut()
+            .unwrap()
+            .applied_direction_revision = 1;
+        assert_eq!(
+            status(&control),
+            Some("activity-task-review-direction-applied"),
+            "the owner-authenticated active-run counter is its current acknowledgement"
+        );
+        control.directions[0].applied = Some(WorkspaceTaskDirectionApplied {
+            agent_id: "scribe".into(),
+            run_epoch: 3,
+            applied_at: 101,
+        });
+        assert_eq!(
+            status(&control),
+            Some("activity-task-review-direction-applied")
+        );
+        control.run_epoch = 4;
+        control.active_run.as_mut().unwrap().epoch = 4;
+        control
+            .active_run
+            .as_mut()
+            .unwrap()
+            .applied_direction_revision = 0;
+        assert_eq!(
+            status(&control),
+            Some("activity-task-review-direction-waiting"),
+            "historical acknowledgement cannot describe a replacement run"
+        );
+        control
+            .active_run
+            .as_mut()
+            .unwrap()
+            .applied_direction_revision = 1;
+        assert_eq!(
+            status(&control),
+            Some("activity-task-review-direction-applied"),
+            "replacement-run acknowledgement is current even while first historical proof remains old"
+        );
+        assert_eq!(control.directions[0].applied.as_ref().unwrap().run_epoch, 3);
+        assert_eq!(
+            super::super::task_review_view::direction_application_status(
+                &control,
+                Some("another-agent")
+            ),
+            None,
+            "foreign assignment cannot describe this active run"
+        );
+        control.run_epoch = 5;
+        assert_eq!(
+            status(&control),
+            None,
+            "inconsistent run is not presented as current"
+        );
+        control.active_run = None;
+        assert_eq!(
+            status(&control),
+            None,
+            "a completed run is historical, not waiting for acknowledgement"
+        );
     }
 
     #[test]

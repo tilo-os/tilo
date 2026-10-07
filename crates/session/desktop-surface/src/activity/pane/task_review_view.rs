@@ -428,13 +428,7 @@ impl RoomActivityPane {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let width = text_width(bounds.width() - 2.0 * gap);
         let mut y = bounds.y0 + gap;
-        let summary = t_args(
-            "activity-task-direction-observation",
-            &[
-                ("epoch", draft.run_epoch.into()),
-                ("revision", draft.revision.into()),
-            ],
-        );
+        let summary = t("activity-task-direction-observation");
         let (_, h) = paint.text.measure_style(&summary, Some(width), &style);
         paint.text.draw_style(
             paint.scene,
@@ -697,15 +691,10 @@ impl RoomActivityPane {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let style = paint.theme.text(TextRole::Body);
         let width = text_width(bounds.width() - 2.0 * gap);
-        let mut y = bounds.y0 + gap;
+        let mut y = self.draw_review_heading(paint, bounds);
         let Some(Ok(snapshot)) = &self.task_review else {
             return y;
         };
-        let source = review_source(snapshot, self.now());
-        draw_review_line(paint, &source, &style, width, bounds.x0 + gap, &mut y);
-        if let Some(notice) = &self.review_notice {
-            draw_review_line(paint, notice, &style, width, bounds.x0 + gap, &mut y);
-        }
         if self
             .requested_review_task
             .as_ref()
@@ -745,7 +734,14 @@ impl RoomActivityPane {
         let summary = review_task_summary(task);
         draw_review_line(paint, &summary, &style, width, bounds.x0 + gap, &mut y);
         if let Some(control) = snapshot.controls.get(&task.id) {
-            draw_control_evidence(paint, control, width, bounds.x0 + gap, &mut y);
+            draw_control_evidence(
+                paint,
+                control,
+                task.assigned_agent.as_deref(),
+                width,
+                bounds.x0 + gap,
+                &mut y,
+            );
         }
         let instruction = snapshot
             .controls
@@ -787,6 +783,25 @@ impl RoomActivityPane {
             actions.insert(0, TaskAction::NextTasks);
         }
         self.draw_review_action_grid(paint, bounds, y, &actions, presence)
+    }
+    fn draw_review_heading(&self, paint: &mut PaintCtx<'_>, bounds: Rect) -> f64 {
+        let gap = f64::from(paint.theme.tokens.spacing.s3);
+        let style = paint.theme.text(TextRole::Body);
+        let width = text_width(bounds.width() - 2.0 * gap);
+        let mut y = bounds.y0 + gap;
+        if let Some(Ok(snapshot)) = &self.task_review {
+            let source = review_source(snapshot, self.now());
+            for line in paint
+                .text
+                .clamp_to_lines(&source, &style, width, usize::MAX)
+            {
+                draw_review_line(paint, &line, &style, width, bounds.x0 + gap, &mut y);
+            }
+            if let Some(notice) = &self.review_notice {
+                draw_review_line(paint, notice, &style, width, bounds.x0 + gap, &mut y);
+            }
+        }
+        y
     }
 }
 fn review_task_summary(task: &tilo_desktop_model::WorkspaceTask) -> String {
@@ -849,36 +864,15 @@ fn draw_review_line(
 fn draw_control_evidence(
     paint: &mut PaintCtx<'_>,
     control: &tilo_desktop_model::WorkspaceTaskControl,
+    assigned_agent: Option<&str>,
     width: f32,
     x: f64,
     y: &mut f64,
 ) {
     let style = paint.theme.text(TextRole::Body);
-    let revision = control
-        .directions
-        .last()
-        .map_or(0, |direction| direction.revision);
-    let applied = control.active_run.as_ref().map_or_else(
-        || {
-            control
-                .directions
-                .iter()
-                .filter(|direction| direction.applied.is_some())
-                .map(|direction| direction.revision)
-                .max()
-                .unwrap_or(0)
-        },
-        |run| run.applied_direction_revision,
-    );
-    let status = t_args(
-        "activity-task-review-frontier",
-        &[
-            ("epoch", control.run_epoch.into()),
-            ("revision", revision.into()),
-            ("applied", applied.into()),
-        ],
-    );
-    draw_review_line(paint, &status, &style, width, x, y);
+    if let Some(status) = direction_application_status(control, assigned_agent) {
+        draw_review_line(paint, &t(status), &style, width, x, y);
+    }
     if control.cancellation.as_ref().is_some_and(|request| {
         control
             .active_run
@@ -907,23 +901,36 @@ fn draw_control_evidence(
     }
 }
 
+pub(super) fn direction_application_status(
+    control: &tilo_desktop_model::WorkspaceTaskControl,
+    assigned_agent: Option<&str>,
+) -> Option<&'static str> {
+    let direction = control.directions.last()?;
+    let run = control.active_run.as_ref()?;
+    if run.epoch != control.run_epoch || assigned_agent != Some(run.agent_id.as_str()) {
+        return None;
+    }
+    Some(if run.applied_direction_revision >= direction.revision {
+        "activity-task-review-direction-applied"
+    } else {
+        "activity-task-review-direction-waiting"
+    })
+}
+
 fn review_source(snapshot: &TaskReviewSnapshot, now: SystemTime) -> String {
     t_args(
         "activity-task-review-source",
-        &[
-            ("generation", snapshot.generation.into()),
-            (
-                "time",
-                format_relative_time(
-                    SystemTime::UNIX_EPOCH
-                        .checked_add(Duration::from_secs(
-                            snapshot.sampled_at_secs.try_into().unwrap_or(0),
-                        ))
-                        .unwrap_or(SystemTime::UNIX_EPOCH),
-                    now,
-                )
-                .into(),
-            ),
-        ],
+        &[(
+            "time",
+            format_relative_time(
+                SystemTime::UNIX_EPOCH
+                    .checked_add(Duration::from_secs(
+                        snapshot.sampled_at_secs.try_into().unwrap_or(0),
+                    ))
+                    .unwrap_or(SystemTime::UNIX_EPOCH),
+                now,
+            )
+            .into(),
+        )],
     )
 }
