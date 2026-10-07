@@ -995,6 +995,15 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 result = PROOF.fresh_primary_presentation({}, previous)
                 self.assertEqual(result is not None, accepted)
 
+    def test_native_ime_retains_pixels_before_accessibility_or_focus_refusal(self):
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        self.assertLess(source.index("ime-detached-first-frame-"),
+                        source.index('"detached Tide editor during Rime preedit"'))
+        for required in ("ime-detached-native.json", "ime-detached-accessibility.json",
+                         '"keyboard_focused"', '"same_input_method_process"'):
+            self.assertIn(required, source)
+        self.assertNotIn('"last_error"', source)
+
     def test_native_ime_stage_uses_real_rime_and_preserves_each_handoff_boundary(self):
         source = inspect.getsource(PROOF.native_ime_float_return)
         for forbidden in ("Ime::Preedit", "TrustedInputMethod", "SetText", "AddSelection"):

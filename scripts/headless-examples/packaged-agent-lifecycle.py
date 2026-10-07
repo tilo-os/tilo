@@ -1314,9 +1314,24 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     except RuntimeError:
         preserve_ime_drag_refusal(socket, output, size, drag)
         raise
+    # A real buffer does not prove its controls, focus or editor are usable.
+    # Keep the first presented scene even if the following AT/focus gate fails.
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-detached-first-frame-{size}.png"
+    )}))
+    (output / "ime-detached-native.json").write_text(json.dumps({
+        "phase": "after_detached_native_presentation",
+        "keyboard_focused": frame["keyboard_focused"],
+        "chat_text_input_active": chat_text_input_active(socket),
+        "same_input_method_process": same_fcitx_process(fcitx_identity),
+        "geometry": presented_content_geometry(frame),
+        "private_content_recorded": False,
+    }, indent=2) + "\n")
     detached_access = wait_for(
         "detached Tide editor during Rime preedit",
-        lambda: agent_conversation_accessibility("Tide", detached=True), process,
+        lambda: agent_conversation_accessibility(
+            "Tide", detached=True, diagnostic_path=output / "ime-detached-accessibility.json"),
+        process,
     )
     if detached_access["process"] != chat_process or frame["keyboard_focused"] is not True:
         raise RuntimeError("Float replaced Chat or failed to transfer its keyboard seat")
