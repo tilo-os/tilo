@@ -229,3 +229,30 @@ prerequisites.
 runtime checks. A standalone package whose authored runtime is absent is refused;
 use the paired component above for an unpublished worktree toolkit rather than
 relabeling it as the VM's existing ABI.
+
+### Shell startup companions
+
+A source shell swap installs both `/usr/bin/shell` and the matching
+`/usr/libexec/tilo-session` from that source tree. The session wrapper is a
+mandatory input: an incomplete build fails before a layer can be imported.
+Published image swaps extract both paths from the same selected image.
+
+For a development slot, the normal swap restart opens a fresh PAM session and
+runs the matching wrapper, preserving its account and application data. The
+wrapper initializes that new login's recovery channel; an in-place compositor
+restart keeps the existing login's lock state. Never repair a locked session by
+writing a recovery record. An already-running owner login must use its normal
+logout/login flow when its wrapper needs updating.
+
+To repair a shell-only swap on an older development image, rebuild the paired
+component from the matching source in the existing worktree:
+
+```sh
+TILO_VM_CARGO="$CARGO" tilo-vm swap shell --slot my-slot --builder host --profile dev
+```
+
+Select the registered VM with `TILO_VM` (or `--target` on a current client).
+Set `CARGO` to your Cargo drop-in when using a remote builder. The host path
+packages and uploads its received binary
+and this worktree's mandatory startup companion. The slot restarts through its
+normal PAM unit; no OS image rebuild, account reset or lock override is needed.
