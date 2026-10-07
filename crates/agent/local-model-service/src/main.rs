@@ -41,6 +41,9 @@ struct Cli {
     catalog: Option<PathBuf>,
     #[arg(long)]
     keys: Option<PathBuf>,
+    /// Offline developer artifact store, indexed only by signed SHA-256.
+    #[arg(long)]
+    artifact_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Action,
 }
@@ -346,6 +349,44 @@ impl HttpsTransport for ReqwestTransport {
             progress(count);
         }
         Ok(count)
+    }
+}
+
+enum ManagerTransport {
+    Https(ReqwestTransport),
+    Offline(local_model_service::developer::OfflineTransport),
+}
+impl ManagerTransport {
+    fn new(dir: Option<&Path>, catalog: &CatalogPayload) -> Result<Self, ServiceError> {
+        match dir {
+            Some(dir) => local_model_service::developer::OfflineTransport::new(dir, catalog)
+                .map(Self::Offline),
+            None => ReqwestTransport::new().map(Self::Https),
+        }
+    }
+}
+impl HttpsTransport for ManagerTransport {
+    fn validate_pin(
+        &self,
+        pin: &agent_provider_config::local::PinnedArtifact,
+    ) -> Result<(), ServiceError> {
+        match self {
+            Self::Https(t) => t.validate_pin(pin),
+            Self::Offline(t) => t.validate_pin(pin),
+        }
+    }
+    fn resume(
+        &mut self,
+        url: &str,
+        start: u64,
+        maximum: u64,
+        progress: &mut dyn FnMut(u64),
+        destination: &mut File,
+    ) -> Result<u64, ServiceError> {
+        match self {
+            Self::Https(t) => t.resume(url, start, maximum, progress, destination),
+            Self::Offline(t) => t.resume(url, start, maximum, progress, destination),
+        }
     }
 }
 
@@ -823,6 +864,10 @@ fn phase(status: &LocalModelStatus) -> LocalModelPhase {
 fn main() {
     let cli = Cli::parse();
     let is_serve = matches!(&cli.command, Action::Serve { .. });
+    if let Err(error) = validate_developer_mode(&cli) {
+        eprintln!("tilo-model-manager: {error}");
+        std::process::exit(1);
+    }
     let result = match &cli.command {
         Action::Serve { socket } => serve(socket),
         Action::Worker { .. } | Action::WorkerStart { .. } => run_local(cli),
@@ -926,7 +971,11 @@ fn read_rpc<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> Result<T, 
 fn forward_to_service(cli: &Cli) -> Result<Option<String>, String> {
     // Path options are developer-only direct-mode facilities. A sandbox may
     // request only a typed catalog verb against the launcher-selected daemon.
-    if cli.root.is_some() || cli.catalog.is_some() || cli.keys.is_some() {
+    if cli.root.is_some()
+        || cli.catalog.is_some()
+        || cli.keys.is_some()
+        || cli.artifact_dir.is_some()
+    {
         return Err("path overrides are unavailable through the model service".into());
     }
     let fd = service_fd().ok_or_else(|| "model service descriptor is unavailable".to_string())?;
@@ -998,6 +1047,7 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
         root: None,
         catalog: None,
         keys: None,
+        artifact_dir: None,
         command,
     }
 }
@@ -1131,7 +1181,40 @@ fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
     }
     Ok(Some(listener))
 }
+fn validate_developer_mode(cli: &Cli) -> Result<(), String> {
+    // NoNewPrivs is kernel state and cannot be unset by an app. Unknown/error
+    // state fails closed; launcher markers and service FDs are extra refusals.
+    let confined = service_fd().is_some()
+        || std::env::var_os("TILO_APP_DIR").is_some()
+        || unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) } != 0;
+    validate_developer_inputs(cli, unsafe { libc::geteuid() }, confined)
+}
+
+fn validate_developer_inputs(cli: &Cli, uid: u32, confined: bool) -> Result<(), String> {
+    if cli.artifact_dir.is_some()
+        && (uid == 0
+            || confined
+            || cli.root.is_none()
+            || cli.catalog.is_none()
+            || cli.keys.is_none()
+            || matches!(cli.command, Action::Serve { .. } | Action::StageAccelerator))
+    {
+        return Err("offline artifacts require unprivileged unconfined direct mode with explicit root/catalog/keys".into());
+    }
+    Ok(())
+}
+
+fn selected_catalog(cli: &Cli, catalog: &Path, keys: &Path) -> Result<CatalogPayload, String> {
+    if cli.artifact_dir.is_some() {
+        local_model_service::catalog::VerifiedCatalog::load_developer_offline(catalog, keys)
+            .map(local_model_service::catalog::VerifiedCatalog::into_payload)
+    } else {
+        load_catalog(catalog, keys)
+    }
+}
+
 fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    validate_developer_mode(cli)?;
     // The model manager is deliberately a per-user service: Settings never
     // needs root or a writable image path to provision a model. Keep override
     // rejection when someone mistakenly elevates the normal user binary.
@@ -1272,12 +1355,20 @@ fn stage_recommended_accelerator() -> Result<(), String> {
 fn run_local(cli: Cli) -> Result<Option<String>, String> {
     let (root, catalog_path, key_path) = paths(&cli)?;
     if let Action::Snapshot { format } = &cli.command {
-        return local_snapshot(&root, &catalog_path, &key_path, format).map(Some);
+        return local_snapshot(
+            &root,
+            &catalog_path,
+            &key_path,
+            format,
+            cli.artifact_dir.as_deref(),
+        )
+        .map(Some);
     }
-    let catalog = load_catalog(&catalog_path, &key_path)?;
+    let catalog = selected_catalog(&cli, &catalog_path, &key_path)?;
     let mut service = LocalModelService::open(
         &root,
-        ReqwestTransport::new().map_err(|error| error.to_string())?,
+        ManagerTransport::new(cli.artifact_dir.as_deref(), &catalog)
+            .map_err(|error| error.to_string())?,
         SystemdSupervisor,
     )
     .map_err(|error| error.to_string())?;
@@ -1310,10 +1401,17 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             service
                 .queue_install(release)
                 .map_err(|error| error.to_string())?;
-            enqueue_worker(&root, &catalog_path, &key_path, &model, revision.as_deref())
-                .inspect_err(|error| {
-                    let _ = service.record_failure(&model, error);
-                })?;
+            enqueue_worker(
+                &root,
+                &catalog_path,
+                &key_path,
+                &model,
+                revision.as_deref(),
+                cli.artifact_dir.as_deref(),
+            )
+            .inspect_err(|error| {
+                let _ = service.record_failure(&model, error);
+            })?;
         }
         Action::Start { model } => {
             let release = catalog
@@ -1325,7 +1423,14 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             service
                 .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
-            enqueue_start_worker(&root, &catalog_path, &key_path, &model).inspect_err(|error| {
+            enqueue_start_worker(
+                &root,
+                &catalog_path,
+                &key_path,
+                &model,
+                cli.artifact_dir.as_deref(),
+            )
+            .inspect_err(|error| {
                 let _ = service.record_failure(&model, error);
             })?;
         }
@@ -1342,25 +1447,32 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
         Action::Worker { model, revision } => {
             run_install_worker(&mut service, &catalog, &model, revision.as_ref())?;
         }
-        Action::WorkerStart { model } => {
-            let release = catalog
-                .models
-                .iter()
-                .find(|release| release.id == model)
-                .ok_or_else(|| "model is not in the signed catalog".to_string())?;
-            refuse_in_process(release)?;
-            let runtime = signed_runtime_for(&catalog, &local_hardware(), release)?;
-            if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
-                let _ = service.record_failure(&model, error.to_string());
-                return Err(error.to_string());
-            }
-        }
+        Action::WorkerStart { model } => run_start_worker(&mut service, &catalog, &model)?,
         // The dispatcher answers these itself and never hands them over.
         Action::Snapshot { .. } | Action::Serve { .. } => {
             return Err("not a local model action".into());
         }
     }
     Ok(None)
+}
+
+fn run_start_worker(
+    service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
+    catalog: &CatalogPayload,
+    model: &str,
+) -> Result<(), String> {
+    let release = catalog
+        .models
+        .iter()
+        .find(|release| release.id == model)
+        .ok_or_else(|| "model is not in the signed catalog".to_string())?;
+    refuse_in_process(release)?;
+    let runtime = signed_runtime_for(catalog, &local_hardware(), release)?;
+    if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
+        let _ = service.record_failure(model, error.to_string());
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 /// The signed catalog, this machine's recommendation and installed models,
@@ -1370,14 +1482,23 @@ fn local_snapshot(
     catalog_path: &Path,
     key_path: &Path,
     format: &str,
+    artifact_dir: Option<&Path>,
 ) -> Result<String, String> {
     if format != "json" {
         return Err("snapshot supports only --format json".into());
     }
-    let catalog = load_catalog(catalog_path, key_path)?;
+    let catalog = if artifact_dir.is_some() {
+        local_model_service::catalog::VerifiedCatalog::load_developer_offline(
+            catalog_path,
+            key_path,
+        )
+        .map(local_model_service::catalog::VerifiedCatalog::into_payload)?
+    } else {
+        load_catalog(catalog_path, key_path)?
+    };
     let service = LocalModelService::open(
         root,
-        ReqwestTransport::new().map_err(|error| error.to_string())?,
+        ManagerTransport::new(artifact_dir, &catalog).map_err(|error| error.to_string())?,
         SystemdSupervisor,
     )
     .map_err(|error| error.to_string())?;
@@ -1445,7 +1566,7 @@ fn refuse_in_process(release: &LocalModelRelease) -> Result<(), String> {
 /// any failure in the service state Settings observes. An in-process model
 /// is only installed: no runtime, hardware gate or service applies to it.
 fn run_install_worker(
-    service: &mut LocalModelService<ReqwestTransport, SystemdSupervisor>,
+    service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
     catalog: &CatalogPayload,
     model: &str,
     revision: Option<&String>,
@@ -1489,6 +1610,7 @@ fn enqueue_worker(
     keys: &PathBuf,
     model: &str,
     revision: Option<&str>,
+    artifact_dir: Option<&Path>,
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
@@ -1513,6 +1635,9 @@ fn enqueue_worker(
             .arg("--keys")
             .arg(keys);
     }
+    if let Some(dir) = artifact_dir {
+        command.arg("--artifact-dir").arg(dir);
+    }
     command.args(["worker", "--model", model]);
     if let Some(revision) = revision {
         command.args(["--revision", revision]);
@@ -1531,6 +1656,7 @@ fn enqueue_start_worker(
     catalog: &PathBuf,
     keys: &PathBuf,
     model: &str,
+    artifact_dir: Option<&Path>,
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
@@ -1550,6 +1676,9 @@ fn enqueue_start_worker(
             .arg("--keys")
             .arg(keys);
     }
+    if let Some(dir) = artifact_dir {
+        command.arg("--artifact-dir").arg(dir);
+    }
     command.args(["worker-start", "--model", model]);
     let output = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(30))
         .map_err(|error| format!("could not enqueue model start: {error}"))?;
@@ -1564,6 +1693,65 @@ fn enqueue_start_worker(
 mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
+
+    #[test]
+    fn offline_developer_cli_requires_complete_unconfined_direct_mode() {
+        let args = [
+            "manager",
+            "--root",
+            "/private/store",
+            "--catalog",
+            "/private/catalog",
+            "--keys",
+            "/private/keys",
+            "--artifact-dir",
+            "/private/artifacts",
+            "worker",
+            "--model",
+            "pinned",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(validate_developer_inputs(&cli, 1000, false).is_ok());
+        assert!(validate_developer_inputs(&cli, 0, false).is_err());
+        assert!(validate_developer_inputs(&cli, 1000, true).is_err());
+        for missing in ["--root", "--catalog", "--keys"] {
+            let mut filtered = Vec::new();
+            let mut skip = false;
+            for arg in args {
+                if skip {
+                    skip = false;
+                    continue;
+                }
+                if arg == missing {
+                    skip = true;
+                    continue;
+                }
+                filtered.push(arg);
+            }
+            assert!(
+                validate_developer_inputs(&Cli::try_parse_from(filtered).unwrap(), 1000, false)
+                    .is_err()
+            );
+        }
+        let serve = Cli::try_parse_from([
+            "manager",
+            "--root",
+            "/private/store",
+            "--catalog",
+            "/private/catalog",
+            "--keys",
+            "/private/keys",
+            "--artifact-dir",
+            "/private/artifacts",
+            "serve",
+            "--socket",
+            "/private/socket",
+        ])
+        .unwrap();
+        assert!(validate_developer_inputs(&serve, 1000, false).is_err());
+        let plain = cli_for_rpc(RpcAction::Snapshot);
+        assert!(plain.artifact_dir.is_none());
+    }
 
     #[test]
     fn checked_in_catalog_signature_survives_speech_format_support() {

@@ -131,6 +131,9 @@ struct Cli {
     /// Public-only image trust output consumed as keys.json.
     #[arg(long)]
     trust_out: PathBuf,
+    /// Separate offline developer channel; never produces an image release catalog.
+    #[arg(long)]
+    developer_offline: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -242,7 +245,7 @@ fn run(cli: &Cli) -> Result<(), String> {
         .map_err(|error| format!("invalid catalog source: {error}"))?;
     let signing_key = read_signing_key(&cli.signing_key)?;
     let source_dir = cli.source.parent().unwrap_or_else(|| Path::new("."));
-    let (catalog, trust) = compile(source, source_dir, &signing_key)?;
+    let (catalog, trust) = compile_mode(source, source_dir, &signing_key, cli.developer_offline)?;
     let mut catalog_bytes = serde_json::to_vec_pretty(&catalog)
         .map_err(|error| format!("could not encode catalog: {error}"))?;
     catalog_bytes.push(b'\n');
@@ -268,11 +271,15 @@ fn run(cli: &Cli) -> Result<(), String> {
     clippy::too_many_lines,
     reason = "one linear release transaction validates, resolves, signs, and assembles two output documents"
 )]
-fn compile(
+fn compile_mode(
     mut source: CatalogSource,
     source_dir: &Path,
     signing_key: &SigningKey,
+    developer_offline: bool,
 ) -> Result<(SignedCatalog, PublicTrust), String> {
+    if developer_offline && source.production {
+        return Err("offline developer catalogs must declare production:false".into());
+    }
     if source.schema != CATALOG_SCHEMA {
         return Err(format!("unsupported source schema {}", source.schema));
     }
@@ -293,7 +300,13 @@ fn compile(
             return Err(format!("duplicate runtime id {}", runtime.id));
         }
         validate_oci_digest(&runtime.oci_image)?;
-        let receipt = resolve_artifact(&runtime.artifact, source_dir, source.production, None)?;
+        let receipt = resolve_artifact_mode(
+            &runtime.artifact,
+            source_dir,
+            source.production,
+            None,
+            developer_offline,
+        )?;
         let manifest = ExtensionManifest {
             schema_version: system_extension::SCHEMA_VERSION,
             id: runtime.id.clone(),
@@ -361,24 +374,12 @@ fn compile(
             ));
         }
         validate_immutable_url(&model.license_url, source.production, Some(&model.revision))?;
-        // An in-process model names no runtime at all; every runtime a served
-        // model names must be one this catalog signs.
-        if !model.allowed_runtimes.iter().all(|kind| {
-            runtimes.iter().any(|runtime| {
-                runtime.release.kind == *kind
-                    && runtime.release.supports_format(model.artifact_format)
-            })
-        }) {
-            return Err(format!(
-                "model {} names a runtime kind absent from this catalog",
-                model.id
-            ));
-        }
-        let receipt = resolve_artifact(
+        let receipt = resolve_artifact_mode(
             &model.artifact,
             source_dir,
             source.production,
             Some(&model.revision),
+            developer_offline,
         )?;
         if model.installed_size_bytes < receipt.size_bytes {
             return Err(format!(
@@ -412,9 +413,20 @@ fn compile(
         release
             .validate_shape()
             .map_err(|error| format!("invalid model {}: {error}", release.id))?;
-        release
-            .artifact
-            .validate()
+        // An in-process model names no runtime at all; every runtime a served
+        // model names must be one this catalog signs.
+        if !release.allowed_runtimes.iter().all(|kind| {
+            runtimes.iter().any(|runtime| {
+                runtime.release.kind == *kind
+                    && runtime.release.supports_format(release.artifact_format)
+            })
+        }) {
+            return Err(format!(
+                "model {} names a runtime kind absent from this catalog",
+                release.id
+            ));
+        }
+        validate_release_artifact(&release.artifact, developer_offline)
             .map_err(|error| format!("invalid model {}: {error}", release.id))?;
         models.push(release);
     }
@@ -432,7 +444,16 @@ fn compile(
         runtimes,
         recommendation: source.recommendation,
     };
-    let payload_bytes = catalog_signing_bytes(&payload)?;
+    let domain = if developer_offline {
+        local_model_service::catalog::DEVELOPER_SIGNATURE_DOMAIN
+    } else {
+        CATALOG_SIGNATURE_DOMAIN
+    };
+    let payload_bytes = if developer_offline {
+        local_model_service::catalog::developer_signing_bytes(&payload)?
+    } else {
+        catalog_signing_bytes(&payload)?
+    };
     let signature = signing_key.sign(&payload_bytes).to_bytes().to_vec();
     let public_key = hex::encode(signing_key.verifying_key().to_bytes());
     let trust = PublicTrust {
@@ -441,7 +462,7 @@ fn compile(
     Ok((
         SignedCatalog {
             schema: CATALOG_SCHEMA,
-            signature_domain: CATALOG_SIGNATURE_DOMAIN.into(),
+            signature_domain: domain.into(),
             key_id: source.key_id,
             signature,
             payload,
@@ -450,13 +471,20 @@ fn compile(
     ))
 }
 
-fn resolve_artifact(
+fn resolve_artifact_mode(
     source: &ArtifactSource,
     source_dir: &Path,
     production: bool,
     revision: Option<&str>,
+    developer_offline: bool,
 ) -> Result<Receipt, String> {
-    validate_immutable_url(&source.url, production, revision)?;
+    let offline = developer_offline
+        && source
+            .url
+            .starts_with(local_model_service::developer::OFFLINE_PREFIX);
+    if !offline {
+        validate_immutable_url(&source.url, production, revision)?;
+    }
     let path = if source.file.is_absolute() {
         source.file.clone()
     } else {
@@ -514,6 +542,14 @@ fn resolve_artifact(
             "artifact {} size does not match source",
             path.display()
         ));
+    }
+    if offline {
+        local_model_service::developer::validate_offline_pin(&ModelArtifact {
+            url: source.url.clone(),
+            sha256: sha256.clone(),
+            size_bytes,
+        })
+        .map_err(|error| error.to_string())?;
     }
     Ok(Receipt { sha256, size_bytes })
 }
@@ -651,6 +687,23 @@ fn read_signing_key(path: &Path) -> Result<SigningKey, String> {
     Ok(SigningKey::from_bytes(&bytes))
 }
 
+fn validate_release_artifact(pin: &ModelArtifact, developer: bool) -> Result<(), String> {
+    if developer && !pin.url.starts_with("https://") {
+        local_model_service::developer::validate_offline_pin(pin).map_err(|error| error.to_string())
+    } else {
+        pin.validate().map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+fn compile(
+    source: CatalogSource,
+    source_dir: &Path,
+    key: &SigningKey,
+) -> Result<(SignedCatalog, PublicTrust), String> {
+    compile_mode(source, source_dir, key, false)
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
@@ -658,6 +711,37 @@ mod tests {
     use ed25519_dalek::{Signature, Verifier as _};
 
     use super::*;
+
+    #[test]
+    fn offline_developer_catalog_has_a_separate_trust_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut input = source(dir.path());
+        let digest = hex::encode(Sha256::digest(b"deterministic runtime fixture\n"));
+        input.runtimes[0].artifact.url = format!("offline:sha256:{digest}");
+        let key = SigningKey::from_bytes(&[11; 32]);
+        assert!(compile(input.clone(), dir.path(), &key).is_err());
+        let mut production = input.clone();
+        production.production = true;
+        assert!(compile_mode(production, dir.path(), &key, true).is_err());
+        let (mut signed, trust) = compile_mode(input.clone(), dir.path(), &key, true).unwrap();
+        let cat = dir.path().join("catalog.json");
+        let keys = dir.path().join("keys.json");
+        fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
+        fs::write(&keys, serde_json::to_vec(&trust).unwrap()).unwrap();
+        assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_err());
+        assert!(
+            local_model_service::catalog::VerifiedCatalog::load_developer_offline(&cat, &keys)
+                .is_ok()
+        );
+        signed.payload.runtimes[0].release.artifact.sha256 = "d".repeat(64);
+        fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
+        assert!(
+            local_model_service::catalog::VerifiedCatalog::load_developer_offline(&cat, &keys)
+                .is_err()
+        );
+        input.runtimes[0].artifact.url = format!("offline:sha256:{}", "d".repeat(64));
+        assert!(compile_mode(input, dir.path(), &key, true).is_err());
+    }
 
     fn artifact(dir: &Path, name: &str, bytes: &[u8]) -> ArtifactSource {
         let path = dir.join(name);

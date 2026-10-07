@@ -40,6 +40,7 @@ use system_extension::{AcceptedExtension, ExtensionKind};
 use thiserror::Error;
 
 pub mod catalog;
+pub mod developer;
 #[cfg(target_os = "linux")]
 pub mod speech;
 
@@ -52,6 +53,14 @@ const MAX_SNAPSHOT_PATH_BYTES: usize = 1024;
 /// provides the already-open private partial file, so transports never choose
 /// arbitrary filesystem destinations.
 pub trait HttpsTransport {
+    /// Validate a transfer pin. The default production transport accepts HTTPS
+    /// only; the explicit developer transport also accepts offline receipts.
+    /// # Errors
+    /// Rejects invalid or unsupported artifact identities.
+    fn validate_pin(&self, artifact: &PinnedArtifact) -> Result<(), ServiceError> {
+        validate_artifact(artifact)
+    }
+
     /// Append the bytes of `url` from offset `start` to `destination`, never
     /// more than `maximum_bytes`, and return how many were written.
     ///
@@ -451,7 +460,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// larger than the pin, a transfer or I/O failure, an incomplete
     /// download, or a digest mismatch.
     pub fn fetch_verified(&mut self, artifact: &PinnedArtifact) -> Result<PathBuf, ServiceError> {
-        validate_artifact(artifact)?;
+        self.transport.validate_pin(artifact)?;
         let final_path = self.object_path(&artifact.sha256)?;
         if final_path.exists() {
             verify_file(&final_path, artifact)?;
@@ -701,7 +710,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         artifact: &PinnedArtifact,
         progress: &mut dyn FnMut(TransferEvent),
     ) -> Result<PathBuf, ServiceError> {
-        validate_artifact(artifact)?;
+        self.transport.validate_pin(artifact)?;
         let final_path = self.object_path(&artifact.sha256)?;
         if final_path.exists() {
             progress(TransferEvent::Received(artifact.size_bytes));
@@ -1255,6 +1264,125 @@ mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
     use std::io::{Cursor, Write as _};
+
+    #[test]
+    fn offline_developer_fetch_uses_signed_identity_and_existing_hash_gate() {
+        let bytes = b"actual offline fixture";
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("inputs");
+        fs::create_dir(&input).unwrap();
+        let mut release = model(bytes);
+        release.artifact.url = format!("offline:sha256:{}", release.artifact.sha256);
+        let payload = catalog::CatalogPayload {
+            schema: 1,
+            models: vec![release.clone()],
+            runtimes: vec![],
+            recommendation: release.id.clone(),
+        };
+        let pin = &release.artifact;
+        fs::write(input.join(&pin.sha256), bytes).unwrap();
+        let store = dir.path().join("store");
+        let mut service = LocalModelService::open(
+            &store,
+            developer::OfflineTransport::new(&input, &payload).unwrap(),
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        fs::write(
+            store.join("partial").join(format!("{}.part", pin.sha256)),
+            &bytes[..3],
+        )
+        .unwrap();
+        let object = service.fetch_verified(pin).unwrap();
+        assert_eq!(fs::read(&object).unwrap(), bytes);
+        let mut unknown = pin.clone();
+        unknown.url = "offline:sha256:unknown".into();
+        assert!(service.fetch_verified(&unknown).is_err());
+        fs::remove_file(&object).unwrap();
+        fs::write(input.join(&pin.sha256), vec![b'x'; bytes.len()]).unwrap();
+        assert!(matches!(
+            service.fetch_verified(pin),
+            Err(ServiceError::DigestMismatch)
+        ));
+        assert!(!object.exists());
+        let mut normal = LocalModelService::open(
+            dir.path().join("normal"),
+            Transport {
+                bytes: bytes.to_vec(),
+                starts: vec![],
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            normal.fetch_verified(pin),
+            Err(ServiceError::NonHttpsArtifact)
+        ));
+        assert!(normal.transport.starts.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn offline_developer_fetch_refuses_links_and_wrong_sizes() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("inputs");
+        fs::create_dir(&input).unwrap();
+        let bytes = b"source";
+        let mut release = model(bytes);
+        release.artifact.url = format!("offline:sha256:{}", release.artifact.sha256);
+        let pin = release.artifact.clone();
+        let payload = catalog::CatalogPayload {
+            schema: 1,
+            models: vec![release],
+            runtimes: vec![],
+            recommendation: String::new(),
+        };
+        let real = dir.path().join("real");
+        fs::write(&real, bytes).unwrap();
+        symlink(&real, input.join(&pin.sha256)).unwrap();
+        let mut service = LocalModelService::open(
+            dir.path().join("store"),
+            developer::OfflineTransport::new(&input, &payload).unwrap(),
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        fs::remove_file(input.join(&pin.sha256)).unwrap();
+        fs::write(input.join(&pin.sha256), b"short").unwrap();
+        assert!(matches!(
+            service.fetch_verified(&pin),
+            Err(ServiceError::InvalidArtifact)
+        ));
+        fs::write(input.join(&pin.sha256), bytes).unwrap();
+        let linked = dir.path().join("linked-inputs");
+        symlink(&input, &linked).unwrap();
+        let mut linked_service = LocalModelService::open(
+            dir.path().join("linked-store"),
+            developer::OfflineTransport::new(&linked, &payload).unwrap(),
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(linked_service.fetch_verified(&pin).is_err());
+        assert!(
+            !dir.path()
+                .join("linked-store/sha256")
+                .join(&pin.sha256)
+                .exists()
+        );
+    }
 
     #[test]
     fn signed_execution_builds_bounded_engine_argv_and_rejects_layout_mismatch() {
