@@ -80,7 +80,7 @@ def probe(uid, name, proc=Path("/proc"), selection=None):
             raise RuntimeError("resident SDK mappings unobservable or exceed bound")
         executable = None
         executable_identity = None
-        if name == "calculator" or (name == "browser" and selection is not None):
+        if name == "calculator" or selection is not None:
             executable_identity = fingerprint((process / "exe").stat())
             executable = hash_backing(process / "exe", 2 * 1024 * 1024 * 1024 - total_bytes)
             total_bytes += executable["bytes"]

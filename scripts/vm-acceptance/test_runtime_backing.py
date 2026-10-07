@@ -54,6 +54,7 @@ class Backing(unittest.TestCase):
             for selection in [(123, "12346"), (456, "12345")]:
                 with self.assertRaises(RuntimeError):
                     probe.probe(SUBJECT_UID, "store", root, selection)
+            (root / "123" / "exe").symlink_to(root / "resident")
             value = probe.probe(SUBJECT_UID, "store", root, (123, "12345"))
             self.assertEqual([row["pid"] for row in value["processes"]], [123])
 
@@ -66,6 +67,7 @@ class Backing(unittest.TestCase):
             if os.getuid() == 0: os.chown(old, SUBJECT_UID, -1)
             (old / "comm").write_text("store")
             (old / "stat").write_text("456 (store) " + " ".join(["1"] * 19 + ["987"]))
+            (root / "123" / "exe").symlink_to(root / "resident")
             value = probe.probe(SUBJECT_UID, "store", root, (123, "12345"))
             self.assertEqual([row["pid"] for row in value["processes"]], [123])
             self.assertEqual(value["unrelated_processes"], [{"pid": 456, "start_time_ticks": "987",
@@ -80,6 +82,28 @@ class Backing(unittest.TestCase):
             (process/"exe").symlink_to(resident)
             value=probe.probe(SUBJECT_UID,"browser",root,(123,"12345"))
             self.assertEqual(value["processes"][0]["executable"]["sha256"],hashlib.sha256(resident.read_bytes()).hexdigest())
+
+    def test_selected_notes_hashes_executable_fd_and_refuses_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process, resident, namespace = self.fixture(root)
+            (process / "comm").write_text("notes\n")
+            (process / "exe").symlink_to(resident)
+            selected = (123, "12345")
+            value = probe.probe(SUBJECT_UID, "notes", root, selected)
+            executable = value["processes"][0]["executable"]
+            self.assertEqual(executable["sha256"], hashlib.sha256(resident.read_bytes()).hexdigest())
+            self.assertNotEqual(executable["sha256"], hashlib.sha256(namespace.read_bytes()).hexdigest())
+            original = probe.hash_backing
+            def replaced(path, remaining):
+                result = original(path, remaining)
+                if path.name == "exe":
+                    path.unlink()
+                    path.symlink_to(namespace)
+                return result
+            with patch.object(probe, "hash_backing", side_effect=replaced):
+                with self.assertRaisesRegex(RuntimeError, "executable changed"):
+                    probe.probe(SUBJECT_UID, "notes", root, selected)
 
     def test_calculator_uses_same_exact_backing_protocol(self):
         with tempfile.TemporaryDirectory() as directory:
