@@ -1262,6 +1262,7 @@ pub struct NavShell {
     /// The app or the person chose the front screen.
     pane_chosen: bool,
     resize: Option<Resize>,
+    resize_focused: bool,
     last_cursor: Point,
     last_tick: Option<Instant>,
     /// Reduced motion: the sidebar and drawers fade in instead of sliding.
@@ -1281,6 +1282,53 @@ impl Default for NavShell {
 }
 
 impl NavShell {
+    fn sidebar_resize_target(&self) -> String {
+        format!(
+            "{}.sidebar-resize",
+            self.id.as_deref().unwrap_or("nav-shell")
+        )
+    }
+
+    fn sidebar_resize_handle(&self) -> Option<super::resizable_split::SplitHandle> {
+        use super::resizable_split::{SplitHandle, SplitOrientation, SplitRatio};
+        let area = self.geometry.resize_handle;
+        if self.resize.is_some()
+            || self.animating
+            || area.width() <= 0.0
+            || area.height() <= 0.0
+            || self.rect.width() <= 0.0
+        {
+            return None;
+        }
+        let inputs = self.inputs.borrow();
+        let required = if inputs.has_overview {
+            inputs.metrics.overview + inputs.metrics.detail_min
+        } else {
+            inputs.metrics.content_min
+        };
+        let extent = self.rect.width();
+        let maximum = inputs.metrics.sidebar_max.min((extent - required).max(0.0));
+        let mut ratio =
+            SplitRatio::default().with_bounds(0.0, crate::num::f32_of_f64(maximum / extent));
+        ratio.set(crate::num::f32_of_f64(
+            self.geometry.sidebar_column.width() / extent,
+        ));
+        let mut handle = SplitHandle::new(SplitOrientation::Horizontal, ratio);
+        handle.set_bounds(Rect::new(self.rect.x0, area.y0, self.rect.x1, area.y1));
+        handle.set_focused(self.resize_focused);
+        Some(handle)
+    }
+
+    fn adopt_sidebar_resize(&mut self, width: f64) {
+        self.drag_sidebar_to(
+            Resize {
+                start_x: 0.0,
+                start_width: 0.0,
+            },
+            width,
+        );
+    }
+
     /// An empty shell; give it columns with the builders.
     pub fn new() -> Self {
         let requests = Rc::new(Requests::default());
@@ -1342,6 +1390,7 @@ impl NavShell {
             last_stack: None,
             pane_chosen: false,
             resize: None,
+            resize_focused: false,
             last_cursor: Point::ZERO,
             last_tick: None,
             fade: 1.0,
@@ -2833,6 +2882,9 @@ impl NavShell {
             }
         }
         self.paint_rules(f.scene, f.transform, f.theme, &g);
+        if self.resize_focused && self.sidebar_resize_handle().is_some() {
+            crate::widget::paint_focus_ring(f.scene, f.transform, g.resize_handle, 2.0, f.theme);
+        }
 
         // Drawers over the columns, behind their scrim, under the header
         // row; the row's buttons stay above everything.
@@ -3622,7 +3674,56 @@ impl Widget for NavShell {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         let key = self.id.as_deref().unwrap_or("nav-shell");
-        Some(AccessNode::new(Role::Group).with_semantic_key(format!("{key}.window")))
+        let children = self
+            .sidebar_resize_handle()
+            .map(|handle| {
+                let target = self.sidebar_resize_target();
+                handle
+                    .accessibility()
+                    .with_name(crate::i18n::widget_format("widget-sidebar-resize", &[]))
+                    .with_action_target(target.clone())
+                    .with_hashed_key(&target)
+                    .with_bounds(self.geometry.resize_handle)
+            })
+            .into_iter()
+            .collect();
+        Some(
+            AccessNode::new(Role::Group)
+                .with_semantic_key(format!("{key}.window"))
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        if target != self.sidebar_resize_target() {
+            return false;
+        }
+        let Some(mut handle) = self.sidebar_resize_handle() else {
+            return false;
+        };
+        if matches!(action, crate::a11y::Action::Focus) {
+            self.resize_focused = true;
+            self.invalidate();
+            return true;
+        }
+        if !handle.perform_action(action) {
+            return false;
+        }
+        self.adopt_sidebar_resize(handle.ratio().first_extent(self.rect.width()));
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if !focused && self.resize_focused {
+            self.resize_focused = false;
+            self.invalidate();
+        }
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -3843,6 +3944,21 @@ impl NavShell {
     }
 
     fn handle_key(&mut self, key: &Key, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+        if self.resize_focused
+            && let Some(mut handle) = self.sidebar_resize_handle()
+        {
+            let action = match key {
+                Key::Named(NamedKey::ArrowLeft) => Some(crate::a11y::Action::Decrement),
+                Key::Named(NamedKey::ArrowRight) => Some(crate::a11y::Action::Increment),
+                _ => None,
+            };
+            if let Some(action) = action {
+                if handle.perform_action(&action) {
+                    self.adopt_sidebar_resize(handle.ratio().first_extent(self.rect.width()));
+                }
+                return true;
+            }
+        }
         let modifiers = ctx.modifiers.state();
         let command = self.conventions.command_modifier_down(modifiers);
         if command && let Key::Character(c) = key {
@@ -3890,6 +4006,10 @@ impl NavShell {
     }
 
     fn handle_press(&mut self) -> bool {
+        if self.resize_focused {
+            self.resize_focused = false;
+            self.invalidate();
+        }
         let p = self.last_cursor;
         let g = &self.geometry;
         if g.resize_handle.contains(p) {

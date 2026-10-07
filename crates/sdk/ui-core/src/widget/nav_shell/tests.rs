@@ -1124,3 +1124,125 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
         "opening the drawer paints the retained animation"
     );
 }
+
+#[test]
+fn mounted_sidebar_resize_semantics_follow_the_real_pointer_width() {
+    let mut semantic = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut semantic, 1400, 800);
+    let controls = semantic.controls();
+    let resize = controls
+        .iter()
+        .find(|control| control.name.as_deref() == Some("Resize sidebar"))
+        .expect("the actual mounted resize handle is an accessible control");
+    assert!(resize.verbs.iter().any(|verb| verb == "set-value"));
+    semantic
+        .operate_control(
+            &resize.id,
+            &crate::headless::ControlInput::SetValue("25%".into()),
+        )
+        .expect("the same public action door resizes the sidebar");
+    settle(&mut semantic, 1400, 800);
+    let resized = geometry(&semantic).sidebar_column.width();
+    assert!(
+        (resized - 350.0).abs() < 1.0,
+        "actual laid out width {resized}"
+    );
+
+    let mut pointer = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut pointer, 1400, 800);
+    let edge = geometry(&pointer).resize_handle.center();
+    let device = winit::event::DeviceId::dummy();
+    let move_to = |h: &mut FrameHarness, x| {
+        h.dispatch_to_root(&WindowEvent::CursorMoved {
+            device_id: device,
+            position: winit::dpi::PhysicalPosition::new(x, edge.y),
+        })
+    };
+    move_to(&mut pointer, edge.x);
+    assert!(pointer.dispatch_to_root(&WindowEvent::MouseInput {
+        device_id: device,
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    }));
+    assert!(move_to(&mut pointer, 350.0));
+    pointer.dispatch_to_root(&WindowEvent::MouseInput {
+        device_id: device,
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    });
+    settle(&mut pointer, 1400, 800);
+    assert!((geometry(&pointer).sidebar_column.width() - resized).abs() < 1.0);
+}
+
+#[test]
+fn mounted_sidebar_resize_resource_action_rejects_invalid_and_hidden_handles() {
+    let mut h = harness(mail_shell(), 1400, 800, Theme::light());
+    settle(&mut h, 1400, 800);
+    let resources = h.resources();
+    let resource = resources
+        .iter()
+        .find(|resource| resource.label == "Resize sidebar")
+        .expect("the mounted separator is published through the shared resource door");
+    assert!(
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == "set-value")
+    );
+    let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "set-value");
+    let before = geometry(&h).sidebar_column.width();
+    let invalid = serde_json::Map::from_iter([("value".into(), serde_json::json!("NaN%"))]);
+    assert!(h.invoke_action(&address, &invalid, false, None).is_err());
+    settle(&mut h, 1400, 800);
+    assert_eq!(geometry(&h).sidebar_column.width(), before);
+    let valid = serde_json::Map::from_iter([("value".into(), serde_json::json!("25%"))]);
+    h.invoke_action(&address, &valid, false, None)
+        .expect("the declared resource action resizes");
+    settle(&mut h, 1400, 800);
+    assert!((geometry(&h).sidebar_column.width() - 350.0).abs() < 1.0);
+    settle(&mut h, 400, 800);
+    assert!(
+        !h.resources()
+            .iter()
+            .any(|resource| resource.label == "Resize sidebar")
+    );
+    assert!(
+        h.invoke_action(&address, &valid, false, None).is_err(),
+        "the old handle cannot resize a modal sidebar"
+    );
+}
+
+#[test]
+fn mounted_sidebar_resize_focus_adjusts_width_and_yields_to_pointer_focus() {
+    let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let id = h
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Resize sidebar"))
+        .expect("real separator control")
+        .id;
+    h.operate_control(&id, &crate::headless::ControlInput::Focus)
+        .expect("focus the separator");
+    assert!(h.root::<NavShell>().resize_focused);
+    let before = geometry(&h).sidebar_column.width();
+    let right =
+        crate::synthetic_input::key_event(&Key::Named(NamedKey::ArrowRight), ElementState::Pressed);
+    assert!(h.dispatch_to_root(&right));
+    settle(&mut h, 1400, 800);
+    assert!(geometry(&h).sidebar_column.width() > before);
+    let content = geometry(&h).content_column.center();
+    h.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(content.x, content.y),
+    });
+    h.dispatch_to_root(&WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+    assert!(
+        !h.root::<NavShell>().resize_focused,
+        "child pointer focus must stop separator keyboard interception"
+    );
+}
