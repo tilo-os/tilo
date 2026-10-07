@@ -11441,10 +11441,12 @@ pub fn run() {
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
         // Is there room in the pipe? Building another scene while the render
-        // thread is behind would only grow the queue (and input-to-photon latency); capped at `QUEUE_DEPTH + 1`, the tick still services input/clients without rendering.
+        // thread is behind would grow latency. Fast presenters retain one
+        // pending frame; after an over-budget completion build only when idle.
+        // Input, action and model servicing above remain independent of this gate.
         let pipe_ready = present_pipe
             .as_ref()
-            .is_none_or(super::present::PresentPipe::has_capacity);
+            .is_none_or(|pipe| pipe.has_capacity_for_interval(frame_clock.interval()));
         credit_transition_hold = present_hold_credit(
             !pipe_ready,
             frame_builder.host().transition_present_pending(),

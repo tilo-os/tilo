@@ -74,9 +74,12 @@ document in `handle_event`" model is untouched.
   reads its rendered bytes back immediately after the submit, and an
   asynchronous present would make every headless harness racy.
 
-The pipe admits one frame beyond the one being presented. When it is full
-the paint gate declines to build — capping input-to-photon at two frame
-intervals — rather than growing a queue the display can never drain.
+The pipe admits one frame beyond the one being presented while actual completed
+presentation fits the current display interval. After an over-budget completion,
+the native paint gate waits for idle capacity and then builds from current state;
+fast presentation restores overlap. Input, actions and model servicing continue
+while paint admission is withheld. No submitted frame is replaced or discarded,
+and no GPU or KMS wait is shortened.
 Resize and DPMS travel the same channel as frames, so a blank cannot
 overtake a frame already queued.
 

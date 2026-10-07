@@ -146,6 +146,8 @@ pub struct PresentPipe {
     /// associate an old time with a newer frame.
     last_retirement: Arc<Mutex<Option<(u64, Instant)>>>,
     physical_results: Arc<Mutex<VecDeque<PhysicalOutcome>>>,
+    /// Actual completed presenter duration, published before the retirement wake.
+    last_render_nanos: Arc<AtomicU64>,
     /// Ticks on which the paint gate declined because the pipe was full. Surfaced in the paint stats — a large number means the GPU is the bottleneck, a different diagnosis from a slow scene build.
     backpressured: u64,
     /// Set by the render thread just before it returns; lets [`Self::shutdown`] tell "finished" from "wedged" without committing to a `join` that might never return.
@@ -326,6 +328,18 @@ mod phase_record_tests {
 /// Generous enough to cover a frame in flight on any real display (a 24 Hz mode is 42 ms) plus a slow driver's teardown, short enough that a wedged GPU cannot hold the session open.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
+fn shared_render_counter() -> (Arc<AtomicU64>, Arc<AtomicU64>) {
+    let counter = Arc::new(AtomicU64::new(0));
+    (counter.clone(), counter)
+}
+
+fn note_render(latest: &AtomicU64, render: Duration) {
+    latest.store(
+        u64::try_from(render.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Release,
+    );
+}
+
 impl PresentPipe {
     /// Move `presenter` onto a dedicated thread named `tilo-present` (identifiable in `perf`/`top` output and backtraces).
     ///
@@ -335,6 +349,7 @@ impl PresentPipe {
     pub fn spawn(mut presenter: Box<dyn Presenter>, on_retire: RetireSignal) -> Self {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
+        let (last_render_nanos, thread_last_render_nanos) = shared_render_counter();
         let presented_frames = Arc::new(AtomicU64::new(0));
         let submitted_frames = Arc::new(AtomicU64::new(0));
         let last_retirement = Arc::new(Mutex::new(None));
@@ -375,6 +390,7 @@ impl PresentPipe {
                             super::capture_timing::PipeTiming::retire(observed, serial);
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
+                            note_render(&thread_last_render_nanos, render);
                             log_frame_lifecycle(
                                 serial,
                                 frame.revision,
@@ -434,6 +450,7 @@ impl PresentPipe {
             submitted: submitted_frames,
             last_retirement,
             physical_results,
+            last_render_nanos,
             backpressured: 0,
             finished,
             handle,
@@ -452,6 +469,25 @@ impl PresentPipe {
     /// Whether another frame may be built and handed over.
     pub fn has_capacity(&self) -> bool {
         self.inflight.load(Ordering::Acquire) <= QUEUE_DEPTH
+    }
+
+    /// Keep overlap for presenters meeting the current cadence. After a slow
+    /// completion, wait for the active frame to retire before building from
+    /// current model/input state, rather than queueing another already-old scene.
+    /// Submitted frames and control messages retain their original FIFO order.
+    pub fn has_capacity_for_interval(&self, interval: Duration) -> bool {
+        if self.is_finished() {
+            return self.has_capacity();
+        }
+        if interval.is_zero() {
+            return self.has_capacity();
+        }
+        let completed_render = Duration::from_nanos(self.last_render_nanos.load(Ordering::Acquire));
+        if completed_render > interval {
+            self.inflight.load(Ordering::Acquire) == 0
+        } else {
+            self.has_capacity()
+        }
     }
 
     /// Count a tick on which the paint gate declined for lack of capacity.
@@ -726,6 +762,213 @@ mod tests {
             "returning from a presenter cannot prove physical scanout"
         );
         plain.shutdown();
+    }
+
+    #[test]
+    fn slow_presenter_admission_waits_for_retirement_without_dropping_frames() {
+        struct Controlled {
+            started: Sender<u64>,
+            release: Receiver<()>,
+        }
+        impl Presenter for Controlled {
+            fn present(&mut self, _: &Scene, _: OutputId) {}
+            fn present_frame(&mut self, frame: &FramePaint, _: OutputId) {
+                if frame.revision == 1 {
+                    std::thread::sleep(Duration::from_millis(20));
+                } else {
+                    let _ = self.started.send(frame.revision);
+                    let _ = self.release.recv_timeout(Duration::from_secs(3));
+                }
+            }
+        }
+        let (started_tx, started_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let (wake_tx, wake_rx) = channel();
+        let mut pipe = PresentPipe::spawn(
+            Box::new(Controlled {
+                started: started_tx,
+                release: release_rx,
+            }),
+            Box::new(move || {
+                let _ = wake_tx.send(());
+            }),
+        );
+        let mut warm = FramePaint::full(Scene::new());
+        warm.revision = 1;
+        let first = pipe.submit_frame(warm, OutputId(0)).unwrap();
+        let warm_retired = wake_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+        let mut latest = FramePaint::full(Scene::new());
+        latest.revision = 2;
+        let second = pipe.submit_frame(latest, OutputId(0)).unwrap();
+        let started = started_rx.recv_timeout(Duration::from_secs(3));
+        let slow_capacity = pipe.has_capacity_for_interval(Duration::from_millis(1));
+        let normal_capacity = pipe.has_capacity_for_interval(Duration::from_secs(60));
+        let withheld_serial = pipe.submitted();
+        // Withheld admission leaves model/input work on the producer; the next
+        // accepted scene is built from that latest state, never a dropped FIFO item.
+        let mut newest = FramePaint::full(Scene::new());
+        newest.revision = 3;
+        let _ = release_tx.send(());
+        let second_retired = wake_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+        let resumed = pipe.has_capacity_for_interval(Duration::from_millis(1));
+        let third = pipe.submit_frame(newest, OutputId(0)).unwrap();
+        let newest_started = started_rx.recv_timeout(Duration::from_secs(3));
+        let _ = release_tx.send(());
+        let third_retired = wake_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+        let results = pipe.take_physical_results();
+        pipe.shutdown();
+        assert!(warm_retired && second_retired && third_retired);
+        assert_eq!(started.unwrap(), 2);
+        assert!(
+            !slow_capacity,
+            "a completed slow presenter must not queue stale scenes behind active render"
+        );
+        assert!(
+            normal_capacity,
+            "normal cadence retains the existing overlap"
+        );
+        assert_eq!(
+            withheld_serial, second,
+            "withholding must not submit or discard a serial"
+        );
+        assert!(
+            resumed,
+            "retirement wakes the producer after capacity returns"
+        );
+        assert_eq!(newest_started.unwrap(), 3);
+        assert_eq!(results, vec![(first, None), (second, None), (third, None)]);
+    }
+
+    #[test]
+    fn slow_presenter_failure_still_exposes_the_closed_submit_path() {
+        struct FailAfterSlow;
+        impl Presenter for FailAfterSlow {
+            fn present(&mut self, _: &Scene, _: OutputId) {}
+            fn present_frame(&mut self, frame: &FramePaint, _: OutputId) {
+                if frame.revision == 1 {
+                    std::thread::sleep(Duration::from_millis(20));
+                } else {
+                    panic!("test presenter fails after an actual slow completion");
+                }
+            }
+        }
+        let mut pipe = spawn_with_retire(Box::new(FailAfterSlow));
+        let mut warm = FramePaint::full(Scene::new());
+        warm.revision = 1;
+        let first = pipe.submit_frame(warm, OutputId(0)).unwrap();
+        tilo_test_env::wait_until("slow warm frame retires", || pipe.presented() == first);
+        let mut failed = FramePaint::full(Scene::new());
+        failed.revision = 2;
+        let _ = pipe.submit_frame(failed, OutputId(0)).unwrap();
+        tilo_test_env::wait_until("actual presenter unwind closes the pipe", || {
+            pipe.is_finished()
+        });
+        let capacity = pipe.has_capacity_for_interval(Duration::from_millis(1));
+        let submission = pipe.submit_frame(FramePaint::full(Scene::new()), OutputId(0));
+        let retired = pipe.presented();
+        let outcomes = pipe.take_physical_results();
+        pipe.shutdown();
+        assert!(
+            capacity,
+            "slow admission must still expose the ordinary closed-channel fallback"
+        );
+        assert!(
+            submission.is_none(),
+            "a failed presenter cannot accept another frame"
+        );
+        assert_eq!(retired, first, "failed frames do not retire");
+        assert_eq!(outcomes, vec![(first, None)]);
+    }
+
+    struct AdmissionBenchmarkPresenter {
+        sent: Arc<Mutex<std::collections::BTreeMap<u64, Instant>>>,
+        queued: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl Presenter for AdmissionBenchmarkPresenter {
+        fn present(&mut self, _: &Scene, _: OutputId) {}
+        fn present_frame(&mut self, frame: &FramePaint, _: OutputId) {
+            let elapsed = self
+                .sent
+                .lock()
+                .unwrap()
+                .get(&frame.revision)
+                .unwrap()
+                .elapsed();
+            self.queued.lock().unwrap().push(elapsed);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn measure_pipe_admission(
+        capacity: fn(&PresentPipe) -> bool,
+    ) -> (Vec<Duration>, usize, Duration) {
+        let sent = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+        let queued = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = channel();
+        let mut pipe = PresentPipe::spawn(
+            Box::new(AdmissionBenchmarkPresenter {
+                sent: sent.clone(),
+                queued: queued.clone(),
+            }),
+            Box::new(move || {
+                let _ = tx.send(());
+            }),
+        );
+        let mut maximum_inflight = 0;
+        let started = Instant::now();
+        for revision in 1..=7 {
+            while !capacity(&pipe) {
+                rx.recv_timeout(Duration::from_secs(3))
+                    .expect("real retirement wake");
+            }
+            let mut frame = FramePaint::full(Scene::new());
+            frame.revision = revision;
+            sent.lock().unwrap().insert(revision, Instant::now());
+            assert!(pipe.submit_frame(frame, OutputId(0)).is_some());
+            maximum_inflight = maximum_inflight.max(pipe.inflight());
+            if revision == 1 {
+                rx.recv_timeout(Duration::from_secs(3))
+                    .expect("warm presenter retirement");
+            }
+        }
+        while pipe.inflight() != 0 {
+            rx.recv_timeout(Duration::from_secs(3))
+                .expect("all admitted frames retire");
+        }
+        let elapsed = started.elapsed();
+        pipe.shutdown();
+        let samples = queued.lock().unwrap().clone();
+        (
+            samples.into_iter().skip(1).collect(),
+            maximum_inflight,
+            elapsed,
+        )
+    }
+
+    #[test]
+    fn adaptive_admission_measures_slow_pipe_queue_without_changing_work() {
+        let (mut overlap, overlap_inflight, overlap_elapsed) =
+            measure_pipe_admission(PresentPipe::has_capacity);
+        let (mut adaptive, adaptive_inflight, adaptive_elapsed) =
+            measure_pipe_admission(|pipe| pipe.has_capacity_for_interval(Duration::from_millis(1)));
+        overlap.sort();
+        adaptive.sort();
+        eprintln!(
+            "PIPE-ADMISSION-BENCH scope=controlled-20ms-presenter samples={} overlap_queue_median_us={} adaptive_queue_median_us={} overlap_inflight={overlap_inflight} adaptive_inflight={adaptive_inflight} overlap_elapsed_us={} adaptive_elapsed_us={}",
+            overlap.len(),
+            overlap.get(3).unwrap().as_micros(),
+            adaptive.get(3).unwrap().as_micros(),
+            overlap_elapsed.as_micros(),
+            adaptive_elapsed.as_micros(),
+        );
+        assert_eq!(overlap.len(), 6);
+        assert_eq!(adaptive.len(), 6, "every accepted frame still rendered");
+        assert_eq!(overlap_inflight, 2);
+        assert_eq!(
+            adaptive_inflight, 1,
+            "slow cadence admits only actual idle capacity"
+        );
     }
 
     // Declaration order in the gate-holding tests below: each spawns the pipe *before* taking the
