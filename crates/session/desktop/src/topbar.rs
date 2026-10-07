@@ -33,6 +33,9 @@ use ui::widget::ButtonRole;
 use ui::widget::Widget;
 use ui::widget::drag::{DragController, ListMetrics};
 
+mod responsive;
+use responsive::ResponsiveBar;
+
 /// Persistent chrome is deliberately a little taller than the original
 /// concept's 40 px sketch.  Forty pixels forced the navigation and status
 /// controls down to 18--22 px targets; 48 px leaves a consistent 32 px target
@@ -499,6 +502,7 @@ enum BarVariant {
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
 pub struct TopBarChrome {
+    responsive: ResponsiveBar,
     explicit_local_user: Option<String>,
     rect: Rect,
     /// The compact bar a display other than the primary carries: workspace
@@ -867,6 +871,7 @@ impl TopBarChrome {
 
     fn from_tree_with_identity(tree: &DesktopTree, explicit_local_user: Option<String>) -> Self {
         let mut this = Self {
+            responsive: ResponsiveBar::new(),
             explicit_local_user,
             rect: Rect::ZERO,
             variant: BarVariant::Full,
@@ -1675,6 +1680,19 @@ impl TopBarChrome {
     }
 
     fn control_rect(&self, target: &str) -> Rect {
+        if self.responsive.active
+            && !matches!(
+                target,
+                Self::CONTROL_REMOVE_CLOCK
+                    | Self::CONTROL_REMOVE_MONITOR
+                    | Self::CONTROL_REMOVE_CALENDAR
+                    | Self::CONTROL_ADD_CLOCK
+                    | Self::CONTROL_ADD_MONITOR
+                    | Self::CONTROL_ADD_CALENDAR
+            )
+        {
+            return self.responsive.rect_for(target);
+        }
         match target {
             Self::CONTROL_OVERVIEW => self.overview_btn_rect,
             Self::CONTROL_WORKSPACE_UP => self.up_btn_rect,
@@ -1731,6 +1749,7 @@ impl TopBarChrome {
 
     fn control_name(&self, target: &str) -> String {
         match target {
+            Self::CONTROL_WIDGET_EDITOR => t("topbar-editor-title"),
             Self::CONTROL_OVERVIEW => t("topbar-open-overview"),
             Self::CONTROL_WORKSPACE_UP => t("topbar-previous-workspace"),
             Self::CONTROL_WORKSPACE_DOWN => t("topbar-next-workspace"),
@@ -4052,6 +4071,11 @@ impl TopBarChrome {
             return self.activate_editor_control(target);
         }
         match target {
+            Self::CONTROL_WIDGET_EDITOR => {
+                self.widget_editing = true;
+                self.cache_fp = CacheFingerprint::default();
+                true
+            }
             Self::CONTROL_CENTER_CLOCK
             | Self::CONTROL_CENTER_MONITOR
             | Self::CONTROL_CENTER_CALENDAR => {
@@ -4934,7 +4958,8 @@ impl Widget for TopBarChrome {
         Some(self)
     }
 
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let responsive_changed = self.consume_responsive(state, path);
         // The time is read when drawing, so nothing else marks the bar
         // dirty when the minute turns over on an idle desktop.
         let time_changed = self.take_time_wake();
@@ -4951,7 +4976,7 @@ impl Widget for TopBarChrome {
                 return true;
             }
         }
-        time_changed
+        time_changed || responsive_changed
     }
 
     /// The end of the time reading on screen. Only a future instant: once
@@ -4963,12 +4988,13 @@ impl Widget for TopBarChrome {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // A client-requested fullscreen owns the whole output. User maximize
         // still fills the workspace, but keeps the OS-owned top bar available
         // for navigation and session controls.
+        self.responsive.theme = theme.clone();
         let fullscreen = self
             .chrome
             .as_ref()
@@ -4990,7 +5016,14 @@ impl Widget for TopBarChrome {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let node = match taffy.new_leaf(style) {
+        self.responsive.configure(self.responsive_specs());
+        let toolbar_node = self.responsive.toolbar.build_layout(taffy, theme, node_map);
+        let mut toolbar_style = taffy.style(toolbar_node).expect("new toolbar node").clone();
+        toolbar_style.position = taffy::style::Position::Absolute;
+        taffy
+            .set_style(toolbar_node, toolbar_style)
+            .expect("new toolbar node");
+        let node = match taffy.new_with_children(style, &[toolbar_node]) {
             Ok(node) => node,
             Err(err) => {
                 // `TaffyTree::new_leaf` only ever returns `Ok` for a
@@ -5023,6 +5056,10 @@ impl Widget for TopBarChrome {
         if let Some(at) = self.placement {
             self.rect = Rect::new(at.x0, at.y0, at.x1, at.y0 + self.rect.height());
         }
+        let theme = self.responsive.theme.clone();
+        ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+            self.prepare_responsive(&theme, text);
+        });
     }
 
     fn draw(
@@ -5031,7 +5068,7 @@ impl Widget for TopBarChrome {
         out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         // Zero-height (fullscreen) paints nothing; without this guard
         // the encode below still runs at intrinsic size, overflowing
@@ -5044,7 +5081,7 @@ impl Widget for TopBarChrome {
         self.refresh_status_and_media_state();
         self.schedule_time_wake();
         let fp = self.current_fingerprint();
-        if fp == self.cache_fp && fp.rect_px.2 > 0 {
+        if fp == self.cache_fp && fp.rect_px.2 > 0 && !self.responsive.dirty {
             out_scene.append(&self.cached, Some(out_transform));
             return;
         }
@@ -5060,22 +5097,30 @@ impl Widget for TopBarChrome {
         let transform = Affine::IDENTITY;
         let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
 
-        let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
-        self.draw_workspace_pill(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            after_chevrons,
-        );
+        if self.use_responsive(theme) {
+            self.draw_responsive(scene, text_renderer, theme, presence);
+        } else {
+            let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
+            self.draw_workspace_pill(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                center_y,
+                after_chevrons,
+            );
 
-        self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-        if !self.is_compact() {
-            self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
+            if !self.is_compact() {
+                self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            }
         }
-        self.draw_activity_badge(scene, transform, theme, text_renderer);
-        self.draw_focus_indicator(scene, transform, theme);
+        if !self.responsive.active {
+            self.draw_activity_badge(scene, transform, theme, text_renderer);
+        }
+        if !self.responsive.active || self.widget_editing {
+            self.draw_focus_indicator(scene, transform, theme);
+        }
         self.draw_widget_editor(scene, transform, text_renderer, theme);
         let clock_activity = self.chrome.as_ref().and_then(|chrome| {
             let snapshot = chrome.snapshot();
@@ -5085,6 +5130,12 @@ impl Widget for TopBarChrome {
             self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
         }
 
+        if self.responsive.active {
+            self.responsive
+                .toolbar
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        self.responsive.dirty = false;
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_fp = fp;
@@ -5092,6 +5143,25 @@ impl Widget for TopBarChrome {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.responsive.active {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.last_cursor = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
+            }
+            if self.responsive.toolbar.traps_focus() {
+                self.responsive.toolbar.handle_event(event, ctx);
+                self.responsive.dirty = true;
+                return;
+            }
+            if !self.widget_editing && self.clock_overlay_rect.is_zero_area() {
+                self.responsive.toolbar.handle_event(event, ctx);
+                self.responsive.dirty |= *ctx.handled;
+                return;
+            }
+        }
+
         if self.is_compact() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.last_cursor = Some(Point::new(
@@ -5140,7 +5210,36 @@ impl Widget for TopBarChrome {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.clock_drag_offset.is_some() || self.widget_edit_drag.is_pending()
+        self.clock_drag_offset.is_some()
+            || self.widget_edit_drag.is_pending()
+            || (self.responsive.active && self.responsive.toolbar.wants_pointer_capture())
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.responsive.active {
+            vec![&self.responsive.toolbar]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.responsive.active {
+            vec![&mut self.responsive.toolbar]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.responsive.active && self.responsive.toolbar.traps_focus()
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.responsive
+            .active
+            .then(|| self.responsive.toolbar.modal_capture())
+            .flatten()
     }
 
     fn name(&self) -> &'static str {
@@ -5242,6 +5341,23 @@ impl Widget for TopBarChrome {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if self.responsive.active {
+            let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::Toolbar)
+                .with_semantic_key("topbar")
+                .with_name(t("topbar-desktop-navigation"));
+            node.children.push(
+                ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
+                    .with_hashed_key("topbar-clock-reading")
+                    .with_name(self.live_clock().clock)
+                    .with_bounds(self.responsive.clock_rect),
+            );
+            if let Some(clock) = self.clock_accessibility_node() {
+                node.children
+                    .push(clock.with_hashed_key("topbar-clock-overlay"));
+            }
+            return Some(node);
+        }
+
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut children: Vec<AccessNode> = self
             .control_targets()
@@ -5314,6 +5430,9 @@ impl Widget for TopBarChrome {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        if self.responsive.active {
+            return self.responsive.toolbar.synthetic_accessibility_rect(path);
+        }
         let index = *path.first()?;
         self.control_targets()
             .get(index)
@@ -5321,6 +5440,10 @@ impl Widget for TopBarChrome {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        if self.responsive.active {
+            self.responsive.dirty = true;
+            return self.responsive.toolbar.focus_synthetic_accessibility(path);
+        }
         let Some(index) = path.first().copied() else {
             return false;
         };
@@ -5335,9 +5458,17 @@ impl Widget for TopBarChrome {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
+        if self.responsive.active {
+            let performed = self
+                .responsive
+                .toolbar
+                .perform_semantic_action(target, action, state, path);
+            self.responsive.dirty |= performed;
+            return performed;
+        }
         if !matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -5365,6 +5496,11 @@ impl Widget for TopBarChrome {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.responsive.active
+            && let Some(cursor) = self.responsive.toolbar.cursor_shape(point)
+        {
+            return Some(cursor);
+        }
         if self.clock_drag_offset.is_some() {
             return Some(winit::window::CursorIcon::Grabbing);
         }
@@ -5394,6 +5530,7 @@ impl Widget for TopBarChrome {
 
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+        self.responsive.toolbar.set_focus(focused);
         if focused && self.focused_control.is_none() {
             self.focused_control = self
                 .control_targets()
@@ -5409,6 +5546,9 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_redraw(&self) -> bool {
+        if self.responsive.active && self.responsive.dirty {
+            return true;
+        }
         // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
         if self.cache_fp.rect_px.2 == 0 {
             return true;
@@ -7193,6 +7333,160 @@ mod fixture {
                 _ => {}
             }
             true
+        }
+    }
+}
+
+#[cfg(test)]
+mod responsive_tests {
+    use super::*;
+    use ui::headless::Framed;
+
+    fn fixture_bar() -> TopBarChrome {
+        let workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Design review");
+        let tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let mut bar = TopBarChrome::from_tree_with_local_user(&tree, "fixture-person".into());
+        bar.clock = ClockSnapshot {
+            clock: "09:41".into(),
+            ..ClockSnapshot::default()
+        };
+        bar
+    }
+
+    #[test]
+    fn responsive_primary_bar_visible_targets_do_not_overlap_at_320() {
+        let frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
+        let bar = &*frame;
+        let visible: Vec<_> = bar
+            .control_targets()
+            .into_iter()
+            .map(|target| (target, bar.control_rect(target)))
+            .filter(|(_, rect)| !rect.is_zero_area())
+            .collect();
+        assert!(
+            !visible.is_empty(),
+            "the actual bar must expose visible controls"
+        );
+        for (index, (left, a)) in visible.iter().enumerate() {
+            assert!(a.x0 >= 0.0 && a.x1 <= 320.0, "{left} escapes: {a:?}");
+            for (right, b) in visible.iter().skip(index + 1) {
+                assert!(
+                    a.intersect(*b).is_zero_area(),
+                    "{left} {a:?} overlaps {right} {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn responsive_primary_bar_overflow_native_actions_cancel_and_resize() {
+        use ui::a11y::Action;
+        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
+        let audit = Framed::harness(&frame).native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        assert!(frame.responsive.toolbar.has_overflow());
+        for _ in 0..3 {
+            Framed::harness_mut(&mut frame)
+                .perform_named("toolbar.overflow", &Action::Activate)
+                .expect("admitted overflow");
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert!(frame.responsive.toolbar.is_overflow_open());
+            Framed::harness_mut(&mut frame).key("Escape");
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert!(
+                !frame.responsive.toolbar.is_overflow_open(),
+                "Escape must close the menu"
+            );
+        }
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.overflow", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        Framed::harness_mut(&mut frame).resize((1000, 480)).unwrap();
+        assert!(!frame.responsive.active);
+        assert!(!frame.responsive.toolbar.is_overflow_open());
+        Framed::harness_mut(&mut frame).resize((320, 480)).unwrap();
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.overflow", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        Framed::harness_mut(&mut frame).click_at(10.0, 450.0);
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(
+            !frame.responsive.toolbar.is_overflow_open(),
+            "outside click cancels"
+        );
+    }
+
+    #[test]
+    fn responsive_primary_bar_delivers_pointer_and_semantic_intents_once() {
+        use ui::a11y::Action;
+        let workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Design review");
+        let tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let bar = TopBarChrome::from_tree_with_local_user(&tree, "fixture-person".into())
+            .with_chrome(chrome.clone());
+        let mut frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
+        let rect = frame.control_rect(TopBarChrome::CONTROL_OVERVIEW);
+        assert!(!rect.is_zero_area());
+        Framed::harness_mut(&mut frame).click_at(rect.center().x, rect.center().y);
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(chrome.borrow().intents.len(), 1);
+        assert!(matches!(
+            chrome.borrow().intents[0],
+            ChromeIntent::ToggleOverview
+        ));
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.item.0", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(chrome.borrow().intents.len(), 2);
+        assert!(
+            !chrome.borrow().overlays.overview,
+            "repeated activation toggles closed"
+        );
+        let audit = Framed::harness(&frame).native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+    }
+
+    #[test]
+    fn responsive_primary_bar_production_capture_matrix_is_written() {
+        let out = std::env::var_os("TILO_PRIMARY_BAR_SHOTS").map_or_else(
+            || std::path::PathBuf::from("target/primary-bar-shots"),
+            std::path::PathBuf::from,
+        );
+        std::fs::create_dir_all(&out).expect("capture directory");
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+            ("large-text", Theme::dark().with_text_scale(2.0)),
+            (
+                "ui-text-scaled",
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            ),
+        ] {
+            let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), theme);
+            let path = out.join(format!("{name}-row.png"));
+            Framed::harness(&frame).render_png(&path);
+            assert!(path.is_file(), "missing actual production capture");
+            Framed::harness_mut(&mut frame)
+                .perform_named("toolbar.overflow", &ui::a11y::Action::Activate)
+                .unwrap();
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            let path = out.join(format!("{name}-overflow.png"));
+            Framed::harness(&frame).render_png(&path);
+            assert!(path.is_file(), "missing actual overflow capture");
         }
     }
 }
