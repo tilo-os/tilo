@@ -18,7 +18,9 @@ fail-fast = false
 # Timing-sensitive tests pin their clock or wait on the production signal;
 # a retry would record that race as FLAKY and let the shard pass.
 retries = 0
-status-level = "slow"
+# Name leaked subprocess handles as well as slow and failed tests. JUnit's
+# passing test records do not identify leaks, and ordinary passes stay quiet.
+status-level = "leak"
 final-status-level = "flaky"
 
 [profile.ci.junit]
