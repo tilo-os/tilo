@@ -48,6 +48,9 @@ impl NativeOwnerCommitService {
             network,
         }
     }
+    pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
+        self.owner.clone()
+    }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
@@ -81,6 +84,12 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
                     return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
                         .await;
                 }
+            }
+            if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+            ) {
+                return owner.commit_workspace_task_command(request, std::time::SystemTime::now());
             }
             if matches!(
                 request.operation,
@@ -1850,6 +1859,23 @@ mod tests {
                 .unwrap_err(),
             "native certificate policy origin changed"
         );
+    }
+
+    #[test]
+    fn native_certificate_policy_time_never_replaces_an_unavailable_origin() {
+        use tilo_action_broker::peer_actions::CertificateAuthority as _;
+        let certificates = NativeCertificates {
+            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+        };
+        for _ in 0..2 {
+            assert!(matches!(certificates.policy_time(), Err(error)
+                if error == tilo_action_broker::peer_actions::PolicyClockError.to_string()));
+        }
+        let certificates = NativeCertificates::default();
+        let captured = certificates.policy_time().unwrap().unwrap();
+        certificates.origin.as_ref().unwrap().invalidate();
+        assert!(certificates.policy_time().is_err());
+        assert!(captured.now_ns().is_err());
     }
 
     /// Content keyed by `(room, hash)`, standing in for the content store's
