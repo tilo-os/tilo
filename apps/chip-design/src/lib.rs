@@ -25,3 +25,6 @@ mod tests;
 
 #[cfg(test)]
 mod operator_graph_tests;
+
+#[cfg(test)]
+mod matrix_graph_tests;

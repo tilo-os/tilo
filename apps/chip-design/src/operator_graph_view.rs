@@ -8,7 +8,7 @@ use ui::i18n::I18nManager;
 use ui::tilo_resource::{ActionRef, Invoke};
 use ui::tokens::TextRole;
 use ui::widget::{
-    Button, Column, Container, Element, GraphCanvas, GraphCanvasConnection, GraphCanvasNode,
+    Button, Column, Container, Element, Field, GraphCanvas, GraphCanvasConnection, GraphCanvasNode,
     Property, PropertyList, Row, ScrollAxis, Scrollable, Text,
 };
 
@@ -56,12 +56,20 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selecti
         let node = OperatorNode {
             id,
             kind,
-            shape: if kind == OperatorKind::NormWeightInput {
+            shape: if matches!(
+                kind,
+                OperatorKind::NormWeightInput | OperatorKind::MatrixWeightInput
+            ) {
                 vec![8]
             } else {
                 vec![4, 8]
             },
             normalization_width: 8,
+            output_width: matches!(
+                kind,
+                OperatorKind::MatrixWeightInput | OperatorKind::LinearProjection
+            )
+            .then_some(8),
             x: (n % 4).saturating_mul(280),
             y: (n / 4).saturating_mul(320),
         };
@@ -137,6 +145,15 @@ fn node_view(
     targets: &[ui::graph_editor::ConnectionTarget],
 ) -> GraphCanvasNode {
     let visual = node.visual();
+    let displayed_shape = if node.kind == OperatorKind::MatrixWeightInput {
+        format!(
+            "[{}, {}]",
+            node.output_width.unwrap_or(0),
+            node.normalization_width
+        )
+    } else {
+        format!("{:?}", node.shape)
+    };
     let mut content = Column::new()
         .push(Box::new(effect_button(
             cx,
@@ -149,7 +166,7 @@ fn node_view(
         .push(Box::new(
             Text::new(&I18nManager::format(
                 "chip-tensor-shape",
-                &[("shape", format!("{:?}", node.shape).into())],
+                &[("shape", displayed_shape.into())],
             ))
             .with_role(TextRole::Caption),
         ));
@@ -216,16 +233,23 @@ fn node_view(
 }
 
 fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorState) -> Element {
-    let properties = PropertyList::new(vec![
+    let properties = vec![
         Property::new(tr("chip-graph-node"), node.id.clone()),
-        Property::new(tr("chip-graph-shape"), format!("{:?}", node.shape)),
         Property::new(
-            tr("chip-graph-norm-width"),
+            tr(if node.output_width.is_some() {
+                "chip-graph-input-width"
+            } else {
+                "chip-graph-norm-width"
+            }),
             node.normalization_width.to_string(),
         ),
         Property::new(tr("chip-graph-position"), format!("{}, {}", node.x, node.y)),
-    ]);
-    let mut column = Column::new().push(Box::new(properties));
+    ];
+    let mut column = Column::new().push(Box::new(PropertyList::new(properties)));
+    column = column.push(shape_field(cx, node));
+    if let Some(field) = output_width_field(cx, node) {
+        column = column.push(field);
+    }
     let mut moves = Row::new();
     for (key, x, y) in [
         ("chip-graph-left", node.x.saturating_sub(32), node.y),
@@ -276,6 +300,60 @@ fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorStat
     ))))
 }
 
+fn shape_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Element {
+    let read_node = node.id.clone();
+    let edit_node = node.id.clone();
+    let action: ActionRef<ChipProject, ProjectAction> =
+        ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]);
+    let input = cx
+        .input(
+            move |state| {
+                state
+                    .operator_graph
+                    .nodes
+                    .get(&read_node)
+                    .map_or_else(String::new, |node| format!("{:?}", node.shape))
+            },
+            action.map(move |value: String| ProjectAction::EditGraph {
+                edit: OperatorAction::SetShape {
+                    node: edit_node.clone(),
+                    shape: serde_json::from_str(&value).unwrap_or_default(),
+                },
+            }),
+        )
+        .with_id(&format!("chip-operator-shape-{}", node.id));
+    Box::new(Field::new(tr("chip-graph-shape"), input))
+}
+
+fn output_width_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Option<Element> {
+    node.output_width?;
+    {
+        let read_node = node.id.clone();
+        let edit_node = node.id.clone();
+        let action: ActionRef<ChipProject, ProjectAction> =
+            ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]);
+        let input = cx
+            .input(
+                move |state| {
+                    state
+                        .operator_graph
+                        .nodes
+                        .get(&read_node)
+                        .and_then(|node| node.output_width)
+                        .map_or_else(String::new, |width| width.to_string())
+                },
+                action.map(move |value: String| ProjectAction::EditGraph {
+                    edit: OperatorAction::SetOutputWidth {
+                        node: edit_node.clone(),
+                        width: value.parse().unwrap_or(0),
+                    },
+                }),
+            )
+            .with_id(&format!("chip-matrix-output-width-{}", node.id));
+        Some(Box::new(Field::new(tr("chip-graph-output-width"), input)) as Element)
+    }
+}
+
 pub fn scenario() -> Vec<Invoke<ChipProject>> {
     let kinds = [
         ("input", OperatorKind::Input, 0, 0),
@@ -294,12 +372,16 @@ pub fn scenario() -> Vec<Invoke<ChipProject>> {
                 node: OperatorNode {
                     id: id.into(),
                     kind,
-                    shape: if kind == OperatorKind::NormWeightInput {
+                    shape: if matches!(
+                        kind,
+                        OperatorKind::NormWeightInput | OperatorKind::MatrixWeightInput
+                    ) {
                         vec![8]
                     } else {
                         vec![4, 8]
                     },
                     normalization_width: 8,
+                    output_width: None,
                     x,
                     y,
                 },
