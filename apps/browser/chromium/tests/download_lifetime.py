@@ -157,6 +157,20 @@ class Lifetime(unittest.TestCase):
         done = self.terminal(host, approved["id"], "complete")
         self.assertEqual(Path(done["path"]).read_bytes(), PAYLOAD)
 
+    def test_consented_filename_survives_later_progress_and_completion(self):
+        host = self.host()
+        host.send(op="download_start", url=self.url + "?case=filename")
+        prompt = host.until(lambda event: event["event"] == "download_prompt")
+        self.assertEqual(prompt["name"], "lifetime.txt")
+        host.send(op="download_decision", id=prompt["id"], allow=True)
+        done = self.terminal(host, prompt["id"], "complete")
+        self.assertEqual(Path(done["path"]).read_bytes(), PAYLOAD)
+        self.assertEqual(Path(done["path"]).name, prompt["name"])
+        updates = [event for event in host.seen
+                   if event.get("event") == "download" and event.get("id") == prompt["id"]]
+        self.assertGreater(len(updates), 0)
+        self.assertTrue(all(event["name"] == prompt["name"] for event in updates), updates)
+
     def test_post_retry_is_refused_while_accepting_then_cancel_all_acknowledges(self):
         host = self.host()
         host.send(op="navigate", tab=1, url=f"http://127.0.0.1:{self.server.server_port}/post-start")
