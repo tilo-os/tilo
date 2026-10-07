@@ -258,7 +258,7 @@ pub struct LiveAppActionsProvider {
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
     service_pages: RefCell<HashMap<ServiceCacheKey, CataloguePage>>,
     service_pending: RefCell<HashMap<ServiceCacheKey, PendingDirectoryPage>>,
-    service_context: RefCell<Option<(String, String, u64)>>,
+    service_context: RefCell<Option<(String, String, u64, u64)>>,
     /// One bit per closed observation, bounded by the same service-page keys.
     /// Repeated headless catalogue surveys must not flood the production log.
     service_diagnostics: RefCell<HashMap<ServiceCacheKey, u16>>,
@@ -986,6 +986,7 @@ impl LiveAppActionsProvider {
                     workspace.room.to_string(),
                     ctx.chrome.local_user_for_room(&workspace.room),
                     tree.desktop.external_revision,
+                    tree.desktop.room_epoch,
                 )
             })
         };
@@ -1004,7 +1005,7 @@ impl LiveAppActionsProvider {
             .retain(|(room, actor, _), _| {
                 current
                     .as_ref()
-                    .is_some_and(|(current_room, current_actor, _)| {
+                    .is_some_and(|(current_room, current_actor, _, _)| {
                         room == current_room && actor == current_actor
                     })
             });
@@ -1013,7 +1014,7 @@ impl LiveAppActionsProvider {
             .retain(|(room, actor, _), _| {
                 current
                     .as_ref()
-                    .is_some_and(|(current_room, current_actor, _)| {
+                    .is_some_and(|(current_room, current_actor, _, _)| {
                         room == current_room && actor == current_actor
                     })
             });
@@ -3489,6 +3490,66 @@ mod tests {
         chrome: &crate::shell::chrome_state::Chrome,
     ) -> crate::shell::collab_broker::AppActionBroker {
         crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
+    }
+
+    #[test]
+    fn room_epoch_change_retires_an_empty_workspace_service_page() {
+        use collab_types::{CapOverride, Verb};
+
+        fn profile_save_visible(
+            provider: &LiveAppActionsProvider,
+            chrome: &crate::shell::chrome_state::Chrome,
+            doc: &AutoCommit,
+        ) -> bool {
+            provider
+                .query_page(
+                    context("profile.save", &chrome.borrow(), doc),
+                    None,
+                    SearchBudget::PALETTE,
+                )
+                .results
+                .iter()
+                .any(|row| row.id.ends_with("\u{1f}profile.save"))
+        }
+
+        let chrome = chrome();
+        let local_user = chrome.borrow().active_local_user();
+        {
+            let handle = chrome.borrow().tree_handle();
+            let mut tree = handle.write();
+            let workspace = &mut tree.desktop.workspaces[0];
+            workspace.set_owner("remote-owner");
+            workspace.grant_capability(CapOverride::membership(
+                collab_types::Subject::person(local_user.clone()),
+                workspace.room.to_string(),
+                Verb::Write,
+            ));
+        }
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker_for(&chrome));
+        let doc = AutoCommit::new();
+
+        assert!(!profile_save_visible(&provider, &chrome, &doc));
+        assert!(!profile_save_visible(&provider, &chrome, &doc));
+        assert!(
+            !provider.service_pages.borrow().is_empty(),
+            "the denied Editor response is retained before native projection"
+        );
+
+        {
+            let handle = chrome.borrow().tree_handle();
+            let mut tree = handle.write();
+            tree.desktop.workspaces[0].set_owner(local_user);
+            // This is the cache boundary advanced by
+            // `WorkspaceTree::project_native_room`; the signed projection is
+            // covered at that owner's integration boundary.
+            tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
+        }
+
+        assert!(!profile_save_visible(&provider, &chrome, &doc));
+        assert!(
+            profile_save_visible(&provider, &chrome, &doc),
+            "the identical query must observe authority from the new native-room projection"
+        );
     }
 
     #[test]
