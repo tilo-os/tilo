@@ -937,3 +937,24 @@ above its existing budget. The additive dictation receipt follows the existing
 ratchet's measured 1% headroom rounded to 64 KiB; that is a merged-tree total,
 not an exclusive dictation cost. The native CEF caret adapter is excluded from
 wasm. No consent or caller-custody checks are removed to reduce the size.
+
+
+Exact integrated qualification completed all **39 actual CEF tests in
+235.234 seconds**, including real fixed warm/active lease expiry, without
+ignored tests or weakened assertions. The full matrix adds original email and
+number replacement, empty fields, same-origin iframe and open-shadow-host
+Unicode edits, native Undo/Redo, Cancel/repeated Start, focus/read-only/caret
+revocation, post-handler length restriction, numeric filtering refusal,
+sensitive-field recovery and malicious page-prototype isolation. The original
+legacy refusal and two-native-caret ambiguity assertions remain. The structured
+receipt records all four source digests and the raw result digest; remote
+source/fixture bytes match the integrated candidate exactly.
+
+Current-main integration preserved the exact saved resolved tree after
+normalizing all 20 task commit messages under the newly introduced policy.
+Both example targets and both EN/DE locale key sets remain; all commit/blob
+policy inspections pass. This is native insertion qualification, not a
+physical-microphone or universal custom-editor acceptance claim. The complete
+certified app-broker journey, cross-origin/closed author editor lifecycle and
+already-active composition still require qualification; microphone and release
+approval boundaries remain held.
