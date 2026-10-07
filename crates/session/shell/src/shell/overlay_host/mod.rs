@@ -8490,6 +8490,11 @@ impl ShellOverlayHost {
                     return;
                 }
                 let args = crate::shell::search::action_api::ActionArgs::none();
+                let previous_notice = chrome
+                    .borrow()
+                    .notifications()
+                    .last()
+                    .map(|notice| notice.id);
                 let outcome = if let Some(begin) = &result.on_begin_invoke {
                     begin(doc, root, &chrome, &args).map(|disposition| match disposition {
                         crate::shell::search::InvocationDisposition::Accepted(_) => (),
@@ -8506,10 +8511,31 @@ impl ShellOverlayHost {
                 let entered_resource_scope =
                     outcome.is_ok() && result.id.starts_with("directory-resource\u{1f}");
                 if let Err(err) = outcome {
-                    chrome.borrow_mut().push_warning_notification(
-                        t_args("host-action-cannot-run", &[("title", result.title.into())]),
-                        err.to_string(),
-                    );
+                    let reported_detail = chrome
+                        .borrow()
+                        .notifications()
+                        .last()
+                        .filter(|notice| {
+                            Some(notice.id) != previous_notice
+                                && matches!(
+                                    notice.severity,
+                                    tilo_desktop::notifications::NotificationSeverity::Warning
+                                        | tilo_desktop::notifications::NotificationSeverity::Error
+                                )
+                        })
+                        .map(|notice| notice.body.clone());
+                    let detail = reported_detail.unwrap_or_else(|| {
+                        let detail = err.to_string();
+                        chrome.borrow_mut().push_warning_notification(
+                            t_args("host-action-cannot-run", &[("title", result.title.into())]),
+                            detail.clone(),
+                        );
+                        detail
+                    });
+                    self.palette
+                        .set_selected_status(t("host-action-failed-status"), detail);
+                    self.palette_layout_dirty = true;
+                    return;
                 }
                 if entered_resource_scope {
                     let label = chrome.borrow().search_resource_scope.as_ref().map_or_else(
@@ -16241,18 +16267,22 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return true;
         }
-        // Keyboard Enter: fire the cursor-selected action.
+        // One activation per press. A held Enter must not repeat a failed
+        // invocation while its recovery context stays open.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
                     logical_key: Key::Named(NamedKey::Enter),
                     state: ElementState::Pressed,
+                    repeat,
                     ..
                 },
             ..
         } = event
         {
-            self.activate_selected_result(state, ctx.path);
+            if !repeat {
+                self.activate_selected_result(state, ctx.path);
+            }
             *ctx.handled = true;
             return true;
         }

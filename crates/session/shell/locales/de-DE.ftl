@@ -515,6 +515,7 @@ host-session-action-blocked = Sitzungsaktion blockiert
 host-action-started = „{ $title }“ gestartet
 host-action-admitted = Aktionsauftrag { $job } wurde angenommen
 host-action-cannot-run = „{ $title }“ kann nicht ausgeführt werden
+host-action-failed-status = Nicht ausgeführt
 launchpad-action-unanswered = Die App hat nicht geantwortet
 host-search-placeholder = Suchen …
 host-search-in = In { $scope } suchen …
