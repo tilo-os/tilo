@@ -235,6 +235,7 @@ install -Dpm 0644 license/LICENSE \
 cp -a apps/usr/. %{buildroot}%{_prefix}/
 install -Dpm 0644 apps/etc/tilo/runtime-bundle-trusted-publishers.txt \
                   %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+install -Dpm 0755 apps/bin/app %{buildroot}%{_bindir}/app
 install -Dpm 0755 apps/bin/tilo-install %{buildroot}%{_bindir}/tilo-install
 install -Dpm 0755 apps/bin/tilo-app-package %{buildroot}%{_bindir}/tilo-app-package
 install -Dpm 0755 apps/bin/tilo-runtime-bundle %{buildroot}%{_bindir}/tilo-runtime-bundle
@@ -342,6 +343,8 @@ done
 %license %{_datadir}/licenses/%{name}/LICENSE
 
 %files apps
+%{_bindir}/app
+%{_datadir}/tilo/trust/tilo-main-registry-owner.pub
 %{_bindir}/tilo-install
 %{_bindir}/tilo-app-package
 %{_bindir}/tilo-runtime-bundle
