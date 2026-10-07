@@ -3,6 +3,7 @@
 // model/stream creation. No confidence score is read or used.
 #include "recognizer.h"
 #include "wav_reader.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -42,6 +43,21 @@ int main(int argc, char** argv) try {
     config.batching.enabled = false;
     const auto load_started = std::chrono::steady_clock::now();
     nemo_speech::asr::Recognizer recognizer(config);
+    const std::string requested_language = argv[3];
+    const auto supported_languages = recognizer.supported_languages();
+    std::printf("ASR_LANGUAGE {\"requested\":%s,\"supported\":[", json_text(requested_language).c_str());
+    for (size_t i = 0; i < supported_languages.size(); ++i) {
+        if (i) std::putchar(',');
+        std::fputs(json_text(supported_languages[i]).c_str(), stdout);
+    }
+    std::puts("]}"); std::fflush(stdout);
+    // The pinned resolver silently falls back to auto for unknown tags.
+    // A selected-language comparison must fail rather than report that fallback.
+    if (std::find(supported_languages.begin(), supported_languages.end(), requested_language)
+            == supported_languages.end()) {
+        std::fputs("ASR_ERROR unsupported_language\n", stderr);
+        return 2;
+    }
     nemo_speech::asr::AsrRequestOptions options;
     options.language_code = std::string(argv[3]) == "auto" ? "" : argv[3];
     options.verbatim_transcripts = true;

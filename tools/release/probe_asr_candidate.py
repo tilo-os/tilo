@@ -180,7 +180,7 @@ def main():
     if nemo and args.nemo_api == 'cli' and args.mode == 'paced':
         parser.error('CLI file streaming is unpaced; native callback adapter required')
     binary = ((ROOT/'nemo-asr-review-v1/source/build/cpu-asr/bin/nemo-speech' if args.nemo_api == 'cli'
-               else ROOT/'asr-nemo-compare-v1/asr-nemo-compare') if nemo else
+               else ROOT/'asr-nemo-compare-v2/asr-nemo-compare') if nemo else
               ROOT/'asr-whisper-compare-v1/asr-whisper-compare')
     command = ['bwrap', '--unshare-all', '--die-with-parent', '--ro-bind', '/usr', '/usr',
                '--symlink', 'usr/lib64', '/lib64', '--symlink', 'usr/lib', '/lib',

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build remote-only ASR memory characterization fixtures; never change production limits.
 
-Run on the existing rcargo builder checkout after verifying free memory/pressure.
+Run on the existing remote builder checkout after verifying free memory/pressure.
 The pinned native archives must already exist. This script downloads nothing.
 """
 from pathlib import Path
