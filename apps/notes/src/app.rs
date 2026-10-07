@@ -3224,6 +3224,37 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn capture_draw_preserves_the_import_notification_lifetime() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining;
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(
+            app.transfer_toasts.iter().next().unwrap().ttl_remaining,
+            lifetime,
+            "the real Notes draw must preserve a capture's transient notification"
+        );
+        assert_eq!(
+            app.transfer_toasts
+                .accessibility()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("Imported Project brief")
+        );
+    }
+
+    #[test]
     fn published_block_range_selects_unicode_in_the_real_editor_without_editing() {
         use tilo_document::{RichText, RichTextAction};
         use ui::tilo_resource::Invoke;

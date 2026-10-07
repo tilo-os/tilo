@@ -554,13 +554,14 @@ jobs:
       # onto the image of commit X runs X's apps. It takes the published
       # collection only when that collection was built from a commit whose
       # app inputs are this commit's; otherwise the image build compiles the
-      # apps through the warm compiler cache. Releases and dispatches always
+      # apps through the warm compiler cache. Signed development-board dispatches
+      # use this same source check; production releases and other dispatches
       # take the pinned, independently published collection.
       - name: Materialize the pinned app collection
         env:
-          DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
+          DEV_BUILD: ${{ github.event_name == 'workflow_call' || needs.plan.outputs.signed-development-board == 'true' }}
           COLLECTION_SOURCE: ${{ needs.plan.outputs.app_collection_source }}
-          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
+          PACKAGE_TOKEN: ${{ (github.event_name == 'workflow_call' || needs.plan.outputs.signed-development-board == 'true') && secrets.REGISTRY_TOKEN || '' }}
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}

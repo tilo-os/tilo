@@ -66,6 +66,25 @@ class SignedBoard(unittest.TestCase):
         self.assertEqual(p['mode'], 'release')
         self.assertEqual(json.loads(p['boards']), [])
 
+    def test_signed_dev_uses_own_source_app_boundary_and_falls_back_to_compile(self):
+        step = WORKFLOW.split('      - name: Materialize the pinned app collection\n', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' || needs.plan.outputs.signed-development-board == 'true' }}", step)
+        actual = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root/'git'
+            fake.write_text('#!/bin/sh\ncase "$1" in fetch) exit 0 ;; diff) exit 1 ;; *) exit 90 ;; esac\n')
+            fake.chmod(0o755)
+            output = root/'env'
+            output.write_text('TILO_PREBUILT_APPS=0\n')
+            result = subprocess.run(['bash', '-c', actual], cwd=ROOT, capture_output=True, text=True,
+                env={**os.environ, 'PATH': str(root)+os.pathsep+os.environ['PATH'],
+                     'DEV_BUILD': 'true', 'COLLECTION_SOURCE': 'a'*40, 'GITHUB_SHA': 'b'*40,
+                     'GITHUB_ENV': str(output)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('app inputs changed', result.stdout)
+            self.assertEqual(output.read_text(), 'TILO_PREBUILT_APPS=0\n')
+
     def make_root(self, root):
         for directory in ['usr/lib/tilo', 'usr/share/tilo', 'etc/containers']:
             (root/directory).mkdir(parents=True)
