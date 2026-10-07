@@ -78,6 +78,9 @@ enum Cmd {
         /// Overwrite an existing installation with the same package id.
         #[arg(long)]
         force: bool,
+        /// Preserve an explicitly held user version during a development cohort update.
+        #[arg(long, requires = "force")]
+        preserve_held: bool,
         #[command(flatten)]
         trust: TrustFlags,
         #[command(flatten)]
@@ -738,25 +741,10 @@ fn install_checked(
     source: String,
     payload: Option<&dyn BlobFetcher>,
 ) -> Result<package_store::Installed, Error> {
-    let expected = checked.meta.id;
-    let attested_by = checked.attested_by.clone();
     store
         .install(
             candidate.reader()?,
-            move |meta| {
-                if meta.id != expected {
-                    return Err(format!(
-                        "the package changed while it was installed: {} instead of {expected}",
-                        meta.id
-                    ));
-                }
-                Ok(Admission {
-                    pinned,
-                    attested_by,
-                    source,
-                    held,
-                })
-            },
+            checked_admission(checked, pinned, held, source),
             payload,
         )
         .map_err(store_error)
@@ -777,6 +765,39 @@ fn runtime_status(checked: &Checked) -> Result<Option<(String, bool)>, Error> {
         .chain([system])
         .any(|p| p.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists());
     Ok(Some((version.to_string(), present)))
+}
+
+fn checked_admission(
+    checked: &Checked,
+    pinned: bool,
+    held: bool,
+    source: String,
+) -> impl FnOnce(&tilo_app_package::PackageMeta) -> Result<Admission, String> + Send {
+    let expected = checked.meta.id;
+    let attested_by = checked.attested_by.clone();
+    move |meta| {
+        if meta.id != expected {
+            return Err(format!(
+                "the package changed while it was installed: {} instead of {expected}",
+                meta.id
+            ));
+        }
+        Ok(Admission {
+            pinned,
+            attested_by,
+            source,
+            held,
+        })
+    }
+}
+
+fn print_cohort_selection(row: &InstalledPackage, preserved: bool) {
+    let receipt = serde_json::json!({
+        "id": row.id, "version": row.version, "root": row.package_id_hex,
+        "runtime": row.runtime, "pinned": row.pinned, "held": row.held,
+        "preserved": preserved,
+    });
+    println!("cohort-selection: {receipt}");
 }
 
 /// Refuse a package that requires a system interface version this OS does
@@ -882,9 +903,16 @@ fn replace_cli_shims(
 }
 
 /// How `install` treats a package beyond trust and runtime policy.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Replacement {
+    Refuse,
+    Replace,
+    PreserveHeld,
+}
+
 struct InstallOptions {
     pinned: bool,
-    force: bool,
+    replacement: Replacement,
     dry_run: bool,
     /// Where payload blobs the archive does not carry come from.
     payload_from: Option<app_registry::HttpBlobs>,
@@ -898,10 +926,12 @@ fn install(
 ) -> Result<(), Error> {
     let InstallOptions {
         pinned,
-        force,
+        replacement,
         dry_run,
         payload_from,
     } = options;
+    let force = replacement != Replacement::Refuse;
+    let preserve_held = replacement == Replacement::PreserveHeld;
     // 1. Read + verify, before the registry check, so a --dry-run plan
     //    describes a package we've actually seen and checked.
     let candidate = Candidate::File(tapp.to_path_buf());
@@ -938,18 +968,40 @@ fn install(
 
     // 4. Into the content store, materialised once; the registry row is the
     //    commit point.
-    let installed = install_checked(
-        &store,
-        &candidate,
-        &checked,
-        pinned,
-        held_below_image(&layers, checked.version()),
-        tapp.display().to_string(),
-        payload_from
-            .as_ref()
-            .map(|source| source as &dyn BlobFetcher),
-    )?;
+    let payload = payload_from
+        .as_ref()
+        .map(|source| source as &dyn BlobFetcher);
+    let held = held_below_image(&layers, checked.version());
+    let installed = if preserve_held {
+        let selected = store
+            .install_preserving_hold(
+                candidate.reader()?,
+                checked_admission(&checked, pinned, held, tapp.display().to_string()),
+                payload,
+            )
+            .map_err(store_error)?;
+        match selected {
+            package_store::InstallSelection::Installed(installed) => *installed,
+            package_store::InstallSelection::Preserved(row) => {
+                print_cohort_selection(&row, true);
+                return Ok(());
+            }
+        }
+    } else {
+        install_checked(
+            &store,
+            &candidate,
+            &checked,
+            pinned,
+            held,
+            tapp.display().to_string(),
+            payload,
+        )?
+    };
     replace_cli_shims(existing.as_ref(), &checked.manifest, checked.id())?;
+    if preserve_held {
+        print_cohort_selection(&installed.package, false);
+    }
 
     println!("installed: {} {}", checked.id(), checked.version());
     println!("  payload  : {}", installed.package.payload_root.display());
@@ -2202,6 +2254,7 @@ fn main() {
             tapp,
             pinned,
             force,
+            preserve_held,
             trust,
             runtime,
             dry_run,
@@ -2210,7 +2263,11 @@ fn main() {
             &tapp,
             InstallOptions {
                 pinned,
-                force,
+                replacement: match (force, preserve_held) {
+                    (false, _) => Replacement::Refuse,
+                    (true, false) => Replacement::Replace,
+                    (true, true) => Replacement::PreserveHeld,
+                },
                 dry_run,
                 payload_from: payload_from.map(app_registry::HttpBlobs::new),
             },

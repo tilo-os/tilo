@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 from pathlib import Path
 
 SOURCE = Path(__file__).with_name('assemble-app-runtime.py')
@@ -131,6 +133,25 @@ class AssemblyNamespaces(unittest.TestCase):
         for invalid in ('../terminal', 'terminal/..', 'not-a-real-app'):
             with self.assertRaises(ValueError):
                 ASSEMBLER.selected_applications(repo, invalid)
+
+    def test_complete_cohort_retains_signed_archives_without_restamping_versions(self):
+        with tempfile.TemporaryDirectory(prefix='cohort-pack-') as directory:
+            stage = Path(directory)
+            (stage / 'work').mkdir()
+            (stage / 'work/runtime-version').write_text('2026.07+native.' + 'a' * 32)
+            args = SimpleNamespace(repo=SOURCE.parents[2], target_dir=stage, stage=stage,
+                                   profile='thin-app', app=None)
+            with patch.object(ASSEMBLER, 'run') as run:
+                ASSEMBLER.package_inside(args)
+            environment = run.call_args.kwargs['env']
+            self.assertEqual(environment['COHORT_TAPP_DIR'], '/usr/share/tilo-apps/cohort')
+            self.assertNotIn('APP_VERSION', environment)
+            self.assertNotIn('VERSION_OVERRIDE', environment)
+            args.app = 'notes'
+            with patch.object(ASSEMBLER, 'run') as run:
+                ASSEMBLER.package_inside(args)
+            self.assertNotIn('COHORT_TAPP_DIR', run.call_args.kwargs['env'])
+            self.assertEqual(run.call_args.kwargs['env']['APP_DIR'], 'notes')
 
     def test_catalogue_uses_all_native_manifests_and_one_release(self):
         rows = ASSEMBLER.applications(SOURCE.parents[2])
