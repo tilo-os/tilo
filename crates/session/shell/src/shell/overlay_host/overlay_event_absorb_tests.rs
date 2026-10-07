@@ -2959,3 +2959,6 @@ fn notification_reader_native_capture_and_resize_keep_the_last_line_reachable() 
 
 #[path = "launcher_recovery_tests.rs"]
 mod launcher_recovery_tests;
+
+#[path = "launcher_ranking_tests.rs"]
+mod launcher_ranking_tests;
