@@ -39,18 +39,13 @@ use ui::widget::drag::{DragController, ListMetrics};
 /// while retaining substantially more room for content than a conventional
 /// desktop panel.
 ///
-/// Derived, not typed: every bar control is the §9.6 pointer floor
-/// (`metrics.min_pointer_target`, 32) and the bar gives it `s2` of air above
-/// and below. `metrics.bar_height` (40) describes an *app* toolbar whose
-/// controls are `bar_control_height` (28); the shell's bar hosts pointer-
-/// floor controls, which is why it is 48 and not 40 — the centre-lane tests
-/// (`large_text_activity_stays_single_line_inside_center_content_lane`,
-/// `compact_large_text_preserves_the_full_activity_sentence_and_detail_route`)
-/// are tuned to this height and pin the decision. Unscaled `BASE` values
-/// because the bar is laid out in logical pixels before any theme is in
-/// hand (`build_layout` sizes its node from this constant).
+/// Derived, not typed: every bar control retains the §9.6 pointer floor
+/// (`metrics.min_pointer_target`, 32), with `s1` of breathing room above
+/// and below. The compact bar is 40 logical pixels; its controls stay the
+/// same size as before rather than shrinking their hit targets.
+/// Unscaled `BASE` values because layout uses logical pixels.
 pub const TOPBAR_HEIGHT_PX: f32 =
-    ui::tokens::Metrics::BASE.min_pointer_target + 2.0 * ui::tokens::Spacing::BASE.s2;
+    ui::tokens::Metrics::BASE.min_pointer_target + 2.0 * ui::tokens::Spacing::BASE.s1;
 
 const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
 
@@ -5934,22 +5929,15 @@ mod tests {
         let spacing = tokens.spacing;
         assert_eq!(BAR_CONTROL_PX, f64::from(spacing.s8));
         assert_eq!(CENTER_DOT_PITCH_PX, f64::from(spacing.s8));
-        assert_eq!(TOPBAR_HEIGHT_PX, spacing.s12);
-        // The bar's density is the §9.6 pointer floor plus `s2` of air each
-        // side — derived from `tokens.metrics`, not restated. A bar of
-        // `metrics.bar_height` (40) would hold `bar_control_height` (28)
-        // controls, which the shell's bar deliberately does not: its
-        // controls are pointer targets. Recorded 2026-09-17 (S1 round two).
+        assert_eq!(TOPBAR_HEIGHT_PX, spacing.s8 + 2.0 * spacing.s1);
+        // Compact chrome keeps the full pointer target and derives all
+        // extra height from the same spacing tokens as its visual inset.
         assert_eq!(BAR_CONTROL_PX, f64::from(tokens.metrics.min_pointer_target));
         assert_eq!(
             TOPBAR_HEIGHT_PX,
-            tokens.metrics.min_pointer_target + 2.0 * spacing.s2
+            tokens.metrics.min_pointer_target + 2.0 * spacing.s1
         );
-        assert!(
-            TOPBAR_HEIGHT_PX > tokens.metrics.bar_height,
-            "a 32 px control cannot sit in a {} px bar with any air",
-            tokens.metrics.bar_height
-        );
+        assert_eq!(TOPBAR_HEIGHT_PX, tokens.metrics.bar_height);
     }
 
     #[test]
@@ -6937,6 +6925,35 @@ mod tests {
     }
 
     #[test]
+    fn compact_bar_keeps_pointer_targets_inside_light_dark_and_high_contrast_chrome() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_text_scale(1.3);
+            for width in [420.0, 1472.0] {
+                let tree = two_workspace_tree();
+                let mut bar = TopBarChrome::from_tree(&tree);
+                lay_out_and_draw_with_theme(&mut bar, width, &theme);
+                assert_eq!(bar.rect.height(), 40.0);
+                for rect in [bar.overview_btn_rect, bar.tray_pill_rect] {
+                    assert_eq!(
+                        rect.height(),
+                        f64::from(ui::tokens::Metrics::BASE.min_pointer_target)
+                    );
+                    assert!(
+                        bar.rect.contains_rect(rect),
+                        "painted pointer control must fit: {rect:?}"
+                    );
+                }
+                assert!(
+                    bar.overview_btn_rect.x1 <= bar.tray_pill_rect.x0,
+                    "leading and trailing controls must never overlap"
+                );
+                assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
+                assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);
+            }
+        }
+    }
+
+    #[test]
     fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
         let mut tree = DesktopTree {
             workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
@@ -6986,15 +7003,15 @@ mod tests {
             (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
-        assert_eq!(TOPBAR_HEIGHT_PX, 48.0);
+        assert_eq!(TOPBAR_HEIGHT_PX, 40.0);
         for (label, rect) in [
             ("overview", bar.overview_btn_rect),
             ("workspace", bar.ws_pill_rect),
             ("center", bar.center_rect),
             ("tray", bar.tray_pill_rect),
         ] {
-            assert_eq!(rect.y0 - bar.rect.y0, 8.0, "{label} top inset");
-            assert_eq!(bar.rect.y1 - rect.y1, 8.0, "{label} bottom inset");
+            assert_eq!(rect.y0 - bar.rect.y0, 4.0, "{label} top inset");
+            assert_eq!(bar.rect.y1 - rect.y1, 4.0, "{label} bottom inset");
         }
         assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
         assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);

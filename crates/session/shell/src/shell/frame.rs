@@ -7211,6 +7211,216 @@ mod tests {
         );
     }
 
+    #[test]
+    fn restored_maximize_does_not_override_a_pending_unowned_live_request() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let strip = {
+            let workspace = tree.desktop.active_workspace_mut().expect("workspace");
+            let strip = workspace.strips.first_mut().expect("strip");
+            strip.window_groups.first_mut().expect("group").maximized = true;
+            strip.id
+        };
+        let mut frame = FrameBuilder::with_tree(tree, (1472, 920));
+        frame.with_chrome(|chrome| chrome.set_maximized_group(Some(u64::MAX)));
+        let _ = frame.paint_settled();
+        assert_eq!(frame.chrome().maximized_group(), Some(u64::MAX));
+        assert!(!frame.chrome().is_fullscreen());
+        let bar = rect_named(&frame.widget_registry(), "TopBarChrome");
+        assert!(bar.height() > 0.0);
+        assert!(
+            frame
+                .host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("existing group")
+                .get_rect()
+                .height()
+                > 0.0,
+            "an unadopted request must not hide the current workspace"
+        );
+    }
+
+    #[test]
+    fn restored_maximize_reconciles_external_view_state_without_a_live_request() {
+        let mut frame = FrameBuilder::new((1472, 920));
+        let _ = frame.paint_settled();
+        let strip = frame.chrome().active_strip_id().expect("active strip");
+        let before = frame
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("active group")
+            .get_rect();
+        frame.with_chrome(|chrome| {
+            chrome
+                .tree_mut()
+                .desktop
+                .active_workspace_mut()
+                .expect("workspace")
+                .strips
+                .first_mut()
+                .expect("strip")
+                .window_groups
+                .first_mut()
+                .expect("group")
+                .maximized = true;
+        });
+        let _ = frame.paint_settled();
+        let bar = rect_named(&frame.widget_registry(), "TopBarChrome");
+        let maximized = frame
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("maximized group")
+            .get_rect();
+        assert!((maximized.y0 - bar.y1).abs() < 0.5);
+        assert!((maximized.y1 - 920.0).abs() < 0.5);
+        assert!((maximized.x1 - 1472.0).abs() < 0.5);
+        frame.with_chrome(|chrome| {
+            chrome
+                .tree_mut()
+                .desktop
+                .active_workspace_mut()
+                .expect("workspace")
+                .strips
+                .first_mut()
+                .expect("strip")
+                .window_groups
+                .first_mut()
+                .expect("group")
+                .maximized = false;
+        });
+        let _ = frame.paint_settled();
+        assert_eq!(frame.chrome().maximized_group(), None);
+        assert_eq!(
+            frame
+                .host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("restored group")
+                .get_rect(),
+            before
+        );
+    }
+
+    #[test]
+    fn restored_maximized_group_fills_the_work_area_on_first_frame() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let (strip, group) = {
+            let workspace = tree.desktop.active_workspace_mut().expect("workspace");
+            let strip = workspace.strips.first_mut().expect("strip");
+            let group = strip.window_groups.first_mut().expect("group");
+            assert!(
+                group.tabs.len() > 1,
+                "restore must preserve a multi-tab group"
+            );
+            group.maximized = true;
+            (strip.id, group.id)
+        };
+        let mut frame = FrameBuilder::with_tree(tree, (1472, 920));
+        let _ = frame.paint_settled();
+        let bar = rect_named(&frame.widget_registry(), "TopBarChrome");
+        let rect = frame
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("restored group widget")
+            .get_rect();
+        assert!(
+            bar.height() > 0.0,
+            "restore must retain the session controls"
+        );
+        assert!(
+            (rect.y0 - bar.y1).abs() < 0.5,
+            "restored maximize must meet the top bar: {rect:?} vs {bar:?}"
+        );
+        assert!(
+            (rect.y1 - 920.0).abs() < 0.5 && (rect.x1 - 1472.0).abs() < 0.5,
+            "restored maximize must fill the work area: {rect:?}"
+        );
+        assert_eq!(frame.chrome().maximized_group(), Some(group));
+        assert!(frame.host_mut().toggle_focused_group_maximized());
+        frame.host_mut().tick_pending_maximize_harvest_for_tests();
+        let _ = frame.paint_settled();
+        let restored = frame
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("restored tiled group")
+            .get_rect();
+        assert!(restored.width() < rect.width());
+        assert_eq!(frame.chrome().maximized_group(), None);
+    }
+
+    #[test]
+    fn live_maximize_fills_the_work_area_and_restore_recovers_tiled_geometry() {
+        for viewport in [(1472, 920), (960, 720)] {
+            let mut frame = FrameBuilder::new(viewport);
+            let _ = frame.paint_settled();
+            let (strip, index) = {
+                let chrome = frame.chrome();
+                let tree = &chrome.tree().desktop;
+                let strip_id = chrome.active_strip_id().expect("active strip");
+                let group = tree.active_group_for(strip_id).expect("active group");
+                let strip = tree
+                    .active_workspace()
+                    .expect("workspace")
+                    .strips
+                    .iter()
+                    .find(|strip| strip.id == strip_id)
+                    .expect("retained strip");
+                (
+                    strip_id,
+                    strip
+                        .window_groups
+                        .iter()
+                        .position(|item| item.id == group)
+                        .expect("retained group"),
+                )
+            };
+            let before = frame
+                .host_mut()
+                .group_at_for_tests(strip, index)
+                .expect("active widget")
+                .get_rect();
+            assert!(frame.host_mut().toggle_focused_group_maximized());
+            frame.host_mut().tick_pending_maximize_harvest_for_tests();
+            let _ = frame.paint_settled();
+            let bar = rect_named(&frame.widget_registry(), "TopBarChrome");
+            let maximized = frame
+                .host_mut()
+                .group_at_for_tests(strip, index)
+                .expect("maximized widget")
+                .get_rect();
+            assert!(
+                bar.height() > 0.0,
+                "maximize must preserve session controls"
+            );
+            assert!(
+                (maximized.y0 - bar.y1).abs() < 0.5,
+                "maximized content must meet the top bar: {maximized:?} vs {bar:?}"
+            );
+            assert!(
+                (maximized.y1 - f64::from(viewport.1)).abs() < 0.5,
+                "maximize must fill the work area vertically: {maximized:?}"
+            );
+            assert!(
+                (maximized.x1 - f64::from(viewport.0)).abs() < 0.5,
+                "maximize must reach the work area's trailing edge: {maximized:?}"
+            );
+            assert!(
+                maximized.width() > before.width(),
+                "the actual group geometry must expand, not only its flag"
+            );
+            assert!(frame.host_mut().toggle_focused_group_maximized());
+            frame.host_mut().tick_pending_maximize_harvest_for_tests();
+            let _ = frame.paint_settled();
+            let restored = frame
+                .host_mut()
+                .group_at_for_tests(strip, index)
+                .expect("restored widget")
+                .get_rect();
+            assert_eq!(
+                restored, before,
+                "restore must recover the original tiled slot"
+            );
+        }
+    }
+
     /// Look up a widget's rect by its *last* path segment
     /// (`.../TopBarChrome[0]` → `TopBarChrome`) — registry keys are full
     /// paths, so an exact-key lookup on a nested widget would miss. The

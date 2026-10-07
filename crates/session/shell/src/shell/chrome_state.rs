@@ -1161,8 +1161,27 @@ impl ChromeState {
         self.fullscreen_presentation = presented;
     }
 
+    /// A live request wins while its retained row is being adopted. After
+    /// startup or external view-state restoration, derive the presentation
+    /// from the persisted active group rather than requiring another toggle.
     pub fn maximized_group(&self) -> Option<u64> {
-        self.maximized_group
+        self.maximized_group.or_else(|| {
+            let tree = self.tree();
+            let desktop = &tree.desktop;
+            let workspace = desktop.active_workspace()?;
+            let strip = desktop
+                .active_strip
+                .get(&workspace.id)
+                .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
+                .or_else(|| workspace.strips.first())?;
+            let group = desktop
+                .active_group_for(strip.id)
+                .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
+                .or_else(|| strip.window_groups.first())?;
+            let maximized = group.maximized.then_some(group.id);
+            drop(tree);
+            maximized
+        })
     }
 
     #[must_use]
