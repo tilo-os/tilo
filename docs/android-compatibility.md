@@ -450,7 +450,7 @@ execution. The retained root has also now rendered the fixture surfaces natively
 with its staged schema/cache inputs; arbitrary acquisitions still need execution
 qualification before device use.
 
-On 2026-10-07, the existing native `rcargo-arm` builder reported `aarch64` and
+On 2026-10-07, the existing native ARM64 builder reported `aarch64` and
 kernel `6.18.54-talos`. Production shell and launcher built from main
 `e40be46f15fea4b2fe323c431d8ccf1389714310` ran all five unchanged signed fixture
 journeys with software Vulkan graphics. Every journey required fully enforced
