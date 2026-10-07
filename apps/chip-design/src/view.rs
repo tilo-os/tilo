@@ -435,6 +435,14 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
     if let Some(study) = &receipt.architecture_study {
         for variant in &study.variants {
             sections.push((variant.identity.clone(), study_variant_properties(variant)));
+            if let Some(synthesis) = &variant.synthesis {
+                for memory in &synthesis.memories {
+                    sections.push((
+                        format!("{} / {}", variant.identity, memory.name),
+                        study_memory_properties(&variant.identity, memory),
+                    ));
+                }
+            }
         }
     }
     PropertyList::sections(sections).with_id(format!("chip-verification-{id}"))
@@ -571,6 +579,35 @@ fn study_variant_properties(variant: &crate::verification::study::Variant) -> Ve
         ]);
     }
     rows
+}
+
+fn study_memory_properties(
+    variant: &str,
+    memory: &crate::verification::study::LogicalMemory,
+) -> Vec<Property> {
+    vec![
+        property(
+            "chip-study-memory-name",
+            &format!("{variant} / {}", memory.name),
+        ),
+        property("chip-study-memory-width", &memory.width_bits),
+        property("chip-study-memory-depth", &memory.depth_words),
+        property("chip-study-memory-bits", &memory.bits),
+        property("chip-study-memory-read-ports", &memory.read_ports),
+        property(
+            "chip-study-memory-clocked-reads",
+            &memory.clocked_read_ports,
+        ),
+        property("chip-study-memory-write-ports", &memory.write_ports),
+        property(
+            "chip-study-memory-initialized",
+            &tr(if memory.fully_initialized {
+                "chip-value-yes"
+            } else {
+                "chip-value-no"
+            }),
+        ),
+    ]
 }
 
 fn identities_for_operator_scope(

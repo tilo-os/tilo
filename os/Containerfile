@@ -2077,7 +2077,14 @@ COPY \
     os/usr/lib/systemd/system/tilo-device-key-init.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
+    os/usr/lib/systemd/system/tilo-firstboot-user.service \
+    os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
+    os/usr/lib/systemd/system/tilo-session-recovery.service \
     /usr/lib/systemd/system/
+# User provisioning is needed on the installed OS as well as live media.
+# disk-image.sh seeds these native units; custom installers additionally stage
+# their own /etc handoff so they can install older independently signed targets.
+COPY os/etc/greetd/config.toml /usr/share/tilo/greetd-config.toml
 # A measured installer UKI must not try to persist its transient TPM identity
 # to the read-only live ESP. These conditions stop both systemd setup phases
 # only while the sealed command line carries tilo.install.
@@ -2107,6 +2114,10 @@ COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
+    os/usr/libexec/tilo-firstboot-user \
+    os/usr/libexec/tilo-firstboot-autologin-cleanup \
+    os/usr/libexec/tilo-session-recovery \
+    os/usr/libexec/tilo-cage-session \
     /usr/libexec/
 # The graphical-session user target. (`systemctl --global enable` further down
 # resolves each unit file at build time, so a unit that was never copied in
@@ -2126,7 +2137,6 @@ COPY --from=remote-capture-files / /
 
 # greetd display manager config
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
-COPY --chmod=0755 os/usr/libexec/tilo-cage-session /usr/libexec/tilo-cage-session
 COPY --from=virtio-gallivm-cpu /virtio-gallivm-cpu.so /usr/lib/tilo/virtio-gallivm-cpu.so
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a

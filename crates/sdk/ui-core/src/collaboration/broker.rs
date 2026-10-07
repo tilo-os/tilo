@@ -780,6 +780,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             }
         }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
             meter.bytes(bytes);
@@ -1325,6 +1326,10 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.bytes(bytes);
         }
         CollabEvent::RealtimeCommandResult { result, .. } => match result {
+            Ok(reply) => serialized_bytes(reply, &mut meter),
+            Err(error) => meter.string_capacity(error),
+        },
+        CollabEvent::LocalFileClipboardResult { result, .. } => match result {
             Ok(reply) => serialized_bytes(reply, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -4069,6 +4074,7 @@ struct SettingsLink {
 impl Drop for SettingsLink {
     fn drop(&mut self) {
         self.follower.abort();
+        self.settings.disconnected();
     }
 }
 
@@ -4137,6 +4143,7 @@ async fn link_settings(
                     Ok(view) => view,
                     Err(error) => {
                         tracing::warn!(%error, "settings: following the shell's settings stopped");
+                        settings.disconnected();
                         break;
                     }
                 };
@@ -5600,6 +5607,19 @@ async fn dispatch_sdk_request(
                 .map_err(|error| error.to_string());
             let _ = inbound_tx
                 .send_durable(CollabEvent::NearbyTransferCommandResult { request_id, result });
+        }
+        CollabRequest::LocalFileClipboard {
+            request_id,
+            command,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .local_file_clipboard_command(&command, on_behalf_of.map(|id| *id.0.as_bytes()))
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx
+                .send_durable(CollabEvent::LocalFileClipboardResult { request_id, result });
         }
         CollabRequest::OpenWorkspaceControl {
             session_id,
@@ -8270,7 +8290,27 @@ mod tests {
             handle: None,
         }));
         manager.await_primary_route().unwrap();
-        assert!(manager.send(CollabRequest::document_incremental(b"refused".to_vec())));
+        let route = manager.primary_route().unwrap().route.clone();
+        let ready = broker_state(&manager)
+            .document_reads
+            .close_for_test(&route.channel_id());
+        assert!(
+            manager
+                .try_send_to_route(
+                    route,
+                    CollabRequest::document_incremental(b"refused".to_vec())
+                )
+                .is_ok()
+        );
+        let pending = manager.begin_document_publication_barrier().unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(
+            pending.try_complete(),
+            Ok(None),
+            "certified publication must still await exact route readiness"
+        );
+        assert!(captures.lock().unwrap().signed_ops.is_empty());
+        ready.store(true, Ordering::Release);
         // Signing may fail before the marker enqueue; either path must carry the cause.
         let error = match manager.begin_document_publication_barrier() {
             Ok(receipt) => receipt
