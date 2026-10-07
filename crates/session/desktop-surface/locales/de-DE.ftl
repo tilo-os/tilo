@@ -980,6 +980,7 @@ activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
     }
 activity-catch-up-waiting-detail = { $task } · { $who }
 
+notification-alarm-snoozed = Um 5 Minuten verschoben. Verwirf diesen Eintrag, um die ausstehende Erinnerung abzubrechen.
 notification-alarm-dismiss = Verwerfen
 notification-alarm-snooze = In 5 Minuten erneut erinnern
 notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden

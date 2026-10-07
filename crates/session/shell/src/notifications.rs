@@ -280,6 +280,14 @@ struct ScheduledActionController {
     changed: crate::idle_wake::IdleWake,
 }
 
+/// A pending snooze projected from the durable scheduler, independent of history.
+#[derive(Clone, Debug)]
+pub(crate) struct SnoozedAlarm {
+    pub app_id: String,
+    pub title: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+}
+
 #[derive(Default)]
 struct BridgeInner {
     /// `Notify` → compositor toast pump.
@@ -456,6 +464,26 @@ impl NotificationBridge {
         #[cfg(not(target_os = "linux"))]
         {
             false
+        }
+    }
+
+    pub(crate) fn snoozed_alarms(&self, room: &str) -> Vec<SnoozedAlarm> {
+        #[cfg(target_os = "linux")]
+        {
+            let store = self.inner.lock().ok().and_then(|inner| {
+                inner
+                    .schedule_controller
+                    .as_ref()
+                    .and_then(|controller| controller.store.upgrade())
+            });
+            store
+                .and_then(|store| store.lock().ok().map(|store| store.snoozed_alarms(room)))
+                .unwrap_or_default()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = room;
+            Vec::new()
         }
     }
 

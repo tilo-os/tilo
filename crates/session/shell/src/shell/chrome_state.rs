@@ -675,7 +675,8 @@ pub struct ChromeState {
     /// one the power flyout's rows reach.
     session_action_requests: Vec<os_actions::SessionAction>,
     notification_launch_requests: Vec<crate::shell::notification::NotificationLaunch>,
-    notification_action_requests: HashMap<u64, (u64, bool)>,
+    notification_action_requests:
+        HashMap<u64, (Option<u64>, bool, crate::notifications::ScheduledAction)>,
     notification_action_results: HashMap<u64, Result<(), String>>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
@@ -3022,23 +3023,79 @@ impl ChromeState {
             .is_some_and(crate::notifications::NotificationBridge::scheduled_actions_available)
     }
 
+    pub(crate) fn snoozed_alarms(&self, room: &str) -> Vec<crate::notifications::SnoozedAlarm> {
+        self.notification_bridge
+            .as_ref()
+            .map_or_else(Vec::new, |bridge| bridge.snoozed_alarms(room))
+    }
+
+    fn alarm_action_capacity(&self) -> Result<(), String> {
+        if self
+            .notification_action_requests
+            .len()
+            .saturating_add(self.notification_action_results.len())
+            >= 64
+        {
+            Err("too many pending alarm actions".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn alarm_target_authorized(
+        &self,
+        target: &tilo_desktop::notifications::ScheduledNotificationTarget,
+        address: &str,
+    ) -> bool {
+        self.tree().desktop.workspaces.iter().any(|workspace| {
+            if workspace.room.to_string() != target.room {
+                return false;
+            }
+            let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room));
+            crate::shell::search::providers::actions::shell_action_authorized_for(
+                workspace, &actor, address,
+            )
+        })
+    }
+
+    pub(crate) fn request_snoozed_alarm_dismiss(
+        &mut self,
+        source: &crate::notifications::SnoozedAlarm,
+    ) -> Result<u64, String> {
+        self.alarm_action_capacity()?;
+        let address = crate::shell::notification::snoozed_alarm_dismiss_id(&source.target);
+        if !source.target.valid()
+            || !source.target.calendar_alarm
+            || !self.alarm_target_authorized(&source.target, &address)
+        {
+            return Err("alarm's original workspace authority is unavailable".into());
+        }
+        let bridge = self
+            .notification_bridge
+            .as_ref()
+            .ok_or("alarm service unavailable")?;
+        let action = crate::notifications::ScheduledAction::Dismiss;
+        let request = bridge.request_scheduled_action(
+            source.app_id.clone(),
+            source.target.clone(),
+            action,
+        )?;
+        self.notification_action_requests
+            .insert(request, (None, true, action));
+        self.bump();
+        Ok(request)
+    }
+
     pub(crate) fn alarm_action_authorized(&self, notification: &Notification) -> bool {
         let Some(request) = crate::shell::notification::scheduled_launch(notification)
             .filter(|request| request.target.calendar_alarm)
         else {
             return false;
         };
-        self.tree().desktop.workspaces.iter().any(|workspace| {
-            if workspace.room.to_string() != request.target.room {
-                return false;
-            }
-            let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room));
-            crate::shell::search::providers::actions::shell_action_authorized_for(
-                workspace,
-                &actor,
-                &format!("notification.{}.snooze", notification.id),
-            )
-        })
+        self.alarm_target_authorized(
+            &request.target,
+            &format!("notification.{}.snooze", notification.id),
+        )
     }
 
     pub(crate) fn request_alarm_action(
@@ -3047,14 +3104,7 @@ impl ChromeState {
         action: crate::notifications::ScheduledAction,
         retain_result: bool,
     ) -> Result<u64, String> {
-        if self
-            .notification_action_requests
-            .len()
-            .saturating_add(self.notification_action_results.len())
-            >= 64
-        {
-            return Err("too many pending alarm actions".into());
-        }
+        self.alarm_action_capacity()?;
         let notification = self
             .notification_log
             .active()
@@ -3074,7 +3124,7 @@ impl ChromeState {
             .ok_or("alarm service unavailable")?;
         let request_id = bridge.request_scheduled_action(request.app_id, request.target, action)?;
         self.notification_action_requests
-            .insert(request_id, (id, retain_result));
+            .insert(request_id, (Some(id), retain_result, action));
         self.bump();
         Ok(request_id)
     }
@@ -3083,21 +3133,46 @@ impl ChromeState {
         self.notification_action_results.remove(&id)
     }
 
+    fn finish_alarm_card_action(&mut self, id: u64, action: crate::notifications::ScheduledAction) {
+        let removed = if let Some(removed) = self.notification_log.take_active(id) {
+            self.emit_closed(&removed, CloseReason::Dismissed);
+            Some(removed)
+        } else {
+            self.notification_log.take_history(id)
+        };
+        if action == crate::notifications::ScheduledAction::Snooze
+            && let Some(mut notice) = removed
+        {
+            if let Some(target) = notice.scheduled_target.as_mut() {
+                if !target.snoozed {
+                    let status = tilo_desktop::notifications::alarm_snoozed_label();
+                    notice.body = if notice.body.is_empty() {
+                        status
+                    } else {
+                        format!("{}\n\n{status}", notice.body)
+                    };
+                }
+                target.snoozed = true;
+            }
+            self.notification_log.retain(notice);
+        }
+    }
+
     fn pump_alarm_action_results(&mut self, bridge: &crate::notifications::NotificationBridge) {
         let requests: Vec<_> = self.notification_action_requests.keys().copied().collect();
         for request in requests {
             let Some(result) = bridge.take_scheduled_action_result(request) else {
                 continue;
             };
-            let Some((id, retain_result)) = self.notification_action_requests.remove(&request)
+            let Some((id, retain_result, action)) =
+                self.notification_action_requests.remove(&request)
             else {
                 continue;
             };
             if result.is_ok() {
-                if let Some(removed) = self.notification_log.take_active(id) {
-                    self.emit_closed(&removed, CloseReason::Dismissed);
+                if let Some(id) = id {
+                    self.finish_alarm_card_action(id, action);
                 }
-                self.notification_log.take_history(id);
             } else if let Err(error) = &result
                 && !retain_result
             {
