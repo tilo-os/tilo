@@ -277,7 +277,6 @@ impl Drop for HostOutput {
 mod tests {
     //! SDK wire scheduling fixtures, not proofs of native launcher custody or device output.
     use super::*;
-    use capnp::capability::Promise;
     use runtime_collab::collab_capnp::{channel_handle, collab_service};
     use std::{cell::RefCell, rc::Rc};
 
@@ -293,7 +292,7 @@ mod tests {
             let mut state = self.0.borrow_mut();
             state.2.push(command.clone());
             if state.1 {
-                return Promise::err(capnp::Error::failed("generation ended".into()));
+                return std::future::ready(Err(capnp::Error::failed("generation ended".into())));
             }
             match command {
                 Command::Flush { .. } => state.0 = true,
@@ -318,7 +317,7 @@ mod tests {
             results
                 .get()
                 .set_reply(&serde_json::to_vec(&snapshot).unwrap());
-            Promise::ok(())
+            std::future::ready(Ok(()))
         }
     }
     impl collab_service::Server for Peer {
@@ -330,7 +329,7 @@ mod tests {
             results
                 .get()
                 .set_handle(capnp_rpc::new_client(self.as_ref().clone()));
-            Promise::ok(())
+            std::future::ready(Ok(()))
         }
     }
 
