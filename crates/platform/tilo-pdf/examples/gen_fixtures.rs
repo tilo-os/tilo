@@ -1,4 +1,5 @@
-//! Regenerate the PDF fixtures under `tests/fixtures/`.
+//! Generate PDF review candidates under `target/pdf-fixture-candidates/`.
+//! `TILO_PDF_FIXTURE_OUT` selects another output directory; frozen pins are explicit.
 //!
 //! ```text
 //! cargo run --locked -p tilo-pdf --features fixture-gen --example gen_fixtures [NAME.pdf…]
@@ -259,7 +260,10 @@ fn stream(dict: &str, content: &str) -> String {
 }
 
 fn main() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let dir = std::env::var_os("TILO_PDF_FIXTURE_OUT").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/pdf-fixture-candidates"),
+        std::path::PathBuf::from,
+    );
     std::fs::create_dir_all(&dir).expect("fixture dir");
     // Naming fixtures on the command line regenerates only those, so adding
     // a fixture does not rewrite the others.

@@ -791,9 +791,34 @@ impl FrameHarness {
         inputs: crate::application::ComponentRunnerInputs,
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_with_root(component, viewport, inputs, notify, |root| root)
+    }
+
+    /// Observe the ordinary mounted component through a transparent root decorator.
+    /// The decorator participates in the same custody, layout, dispatch and draw loop.
+    /// # Errors
+    /// Preserves the ordinary component mounting and history validation errors.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_component_with_decorator(
+        component: crate::application::AppComponent,
+        viewport: (u32, u32),
+        inputs: crate::application::ComponentRunnerInputs,
+        decorate: impl FnOnce(Box<dyn Widget>) -> Box<dyn Widget>,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_with_root(component, viewport, inputs, || {}, decorate)
+    }
+
+    fn from_component_with_root(
+        component: crate::application::AppComponent,
+        viewport: (u32, u32),
+        inputs: crate::application::ComponentRunnerInputs,
+        notify: impl Fn() + Send + Sync + 'static,
+        decorate: impl FnOnce(Box<dyn Widget>) -> Box<dyn Widget>,
+    ) -> Result<Self, crate::launch::LaunchError> {
         let owner_queue = crate::owner_wake::OwnerWakeQueue::default();
         let (root, wake, history) =
             Self::mount_component(component, std::sync::Arc::new(notify), &owner_queue)?;
+        let root = decorate(root);
         let binding = wake.binding.clone();
         let mut harness = Self::with_inputs(
             State::new(),
@@ -2481,15 +2506,6 @@ impl FrameHarness {
     /// [`FrameHarness::render_rgba`] over a transparent background.
     pub fn render_rgba_transparent(&self) -> Vec<u8> {
         self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
-        self.drain_component_wakes();
-        let (w, h) = self.device_size();
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
-        renderer.set_backdrop(Some(self.backdrop.clone()));
-        renderer.render_resilient(&self.scene, background)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -13724,3 +13740,37 @@ mod owner_background_work;
 #[cfg(test)]
 #[path = "../../../browser/tilo-browser-runtime/src/mount_service_custody.rs"]
 mod owner_mount_service_custody;
+
+// Native capture owns synchronous GPU readback. Both the convenience path
+// and reusable-renderer oracle share this existing platform boundary.
+#[cfg(not(target_arch = "wasm32"))]
+impl FrameHarness {
+    fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
+        let (w, h) = self.device_size();
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        self.render_rgba_with(&mut renderer, background)
+    }
+
+    /// Rasterise the recorded frame and its captured backdrop with a caller-owned
+    /// renderer. Pixel oracles can reuse a renderer with stable preprocessing
+    /// without changing process-wide settings or the widget draw pipeline.
+    ///
+    /// # Panics
+    /// Panics if the renderer dimensions differ from the capture's device size,
+    /// or the GPU cannot produce the bounded consecutive valid submissions.
+    #[must_use]
+    pub fn render_rgba_with(
+        &self,
+        renderer: &mut crate::offscreen::OffscreenRenderer,
+        background: vello::peniko::Color,
+    ) -> Vec<u8> {
+        self.drain_component_wakes();
+        assert_eq!(
+            (renderer.width, renderer.height),
+            self.device_size(),
+            "the renderer must match the actual capture dimensions"
+        );
+        renderer.set_backdrop(Some(self.backdrop.clone()));
+        renderer.render_resilient(&self.scene, background)
+    }
+}

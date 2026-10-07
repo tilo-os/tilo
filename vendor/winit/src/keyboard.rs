@@ -1802,3 +1802,28 @@ mod modifiers_serde {
         }
     }
 }
+
+/// Immutable, configuration-only state of the ordinary focused Wayland keyboard.
+/// Symbols describe every physical position, never a typed input or compose buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardLayout {
+    pub depressed: u32,
+    pub latched: u32,
+    pub locked: u32,
+    pub group: u32,
+    pub keys: Vec<KeyboardLayoutKey>,
+}
+
+/// Effective native symbols at a physical position in the focused seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardLayoutKey {
+    pub physical: PhysicalKey,
+    pub symbols: Vec<KeyboardLayoutSymbol>,
+}
+
+/// Native keysym metadata independent of key presses or composed text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardLayoutSymbol {
+    pub name: String,
+    pub text: String,
+}

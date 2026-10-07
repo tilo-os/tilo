@@ -26,6 +26,7 @@ fixture = load('signal_release_assets', ROOT / 'tools/apps/signal_runtime_fixtur
 prepare = load('signal_release_source', ROOT / 'os/scripts/prepare-signal-provider.py')
 require = release.require
 RUNTIME = 'tilo-runtime/2026.10.1-signal'
+RUNTIME_ENTRYPOINT = 'lib/lib64/ld-linux-x86-64.so.2'
 
 
 mode = release.signal_mode
@@ -108,6 +109,9 @@ def compile_provider(out, source):
                         'org.asamk.signal.manager.config.SignalProviderProxyFixture', name],
                        env=environment, check=True)
     shutil.copytree(source_tree, payload / 'signal/tilo-source')
+    # Package executable metadata must change the payload-bound native identity:
+    # previously published bundles materialize this loader without execute bits.
+    (payload / 'runtime-entrypoint.txt').write_text(RUNTIME_ENTRYPOINT + '\n')
     proof['compiled'] = {'bin': inventory(binaries), 'payload': inventory(payload)}
     (out / 'build.json').write_text(json.dumps(proof, sort_keys=True) + '\n')
 
@@ -181,12 +185,13 @@ def verify(out, source, sequence, trusted_key):
         field = 'provides' if kind == 'runtime' else 'runtime'
         require(manifest['package'][field] == runtime_build and manifest['sandbox']['net']['mode'] == 'off',
                 'Signal package runtime/network declaration differs')
-        if kind == 'service':
+        if kind in ('service', 'runtime'):
             # Packing serializes Entrypoint's splash defaults into the signed
             # manifest. Match that canonical declaration, including the absence
             # of alternate CLI/GUI binaries, rather than the source TOML shape.
-            require(manifest['entrypoint'] == {
-                'bin': 'bin/tilo-signal-provider', 'type': 'cli',
+            require(manifest.get('entrypoint') == {
+                'bin': RUNTIME_ENTRYPOINT if kind == 'runtime' else 'bin/tilo-signal-provider',
+                'type': 'cli',
                 'splash-segments': [], 'splash-budget': 100,
             }, 'Signal executable declaration differs')
 

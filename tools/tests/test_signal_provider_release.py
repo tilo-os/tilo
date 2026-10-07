@@ -122,6 +122,7 @@ class SignalProviderRelease(unittest.TestCase):
                      'type = "cli"\n'
                      'splash-segments = []\n'
                      'splash-budget = 100\n')
+        runtime_entrypoint = canonical.replace('bin/tilo-signal-provider', release.RUNTIME_ENTRYPOINT)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             proof = release.provenance(source)
@@ -143,7 +144,7 @@ class SignalProviderRelease(unittest.TestCase):
                 return ('--- manifest.toml ---\n[package]\n' + declaration
                         + ' = "' + declared_runtime + '"\nversion = "' + version + '"\n'
                         + '[sandbox.net]\nmode = "off"\n'
-                        + ('' if runtime else '[entrypoint]\n' + entrypoint)
+                        + '[entrypoint]\n' + (runtime_entrypoint if runtime else entrypoint)
                         + '--- payload (0 files) ---\n')
 
             declared_runtime = runtime_build
@@ -170,6 +171,20 @@ class SignalProviderRelease(unittest.TestCase):
                         self.assertEqual(call.args[0][1:4], ['verify', '--trusted-key', trusted_key])
 
             entrypoint = canonical
+            for invalid in ('', runtime_entrypoint.replace(release.RUNTIME_ENTRYPOINT, 'lib/other'),
+                            runtime_entrypoint + 'cli-bin = "lib/other"\n'):
+                with self.subTest(runtime_entrypoint=invalid), \
+                        patch.object(release.release, 'head', return_value=source), \
+                        patch.object(release.subprocess, 'run'), \
+                        patch.object(release.subprocess, 'check_output', side_effect=inspected):
+                    saved = runtime_entrypoint
+                    runtime_entrypoint = invalid
+                    try:
+                        with self.assertRaisesRegex(ValueError, 'executable declaration differs'):
+                            release.verify(root, source, '1', trusted_key)
+                    finally:
+                        runtime_entrypoint = saved
+
             for declared_runtime in (release.RUNTIME,
                                      release.RUNTIME + '+native.' + 'b' * 32):
                 with self.subTest(declared_runtime=declared_runtime), \

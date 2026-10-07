@@ -2,7 +2,7 @@
 //!
 //! Every user close (the tab `✕`, Super+W, the tab menu, `tab.close`, or
 //! closing a whole window group from the palette) records where the tab lived
-//! and what it showed. `tab.reopen` (Super+Shift+T by default) and the
+//! and what it showed. `tab.reopen` (Ctrl+Shift+T by default) and the
 //! close toast's Undo put it back at the same group and index.
 //!
 //! A live client window cannot be revived once asked to exit, so a foreign
