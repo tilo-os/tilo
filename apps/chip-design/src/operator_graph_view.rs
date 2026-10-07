@@ -226,7 +226,6 @@ fn node_view(
 fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorState) -> Element {
     let properties = vec![
         Property::new(tr("chip-graph-node"), node.id.clone()),
-        Property::new(tr("chip-graph-shape"), format!("{:?}", node.shape)),
         Property::new(
             tr(if node.output_width.is_some() {
                 "chip-graph-input-width"
@@ -238,6 +237,7 @@ fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorStat
         Property::new(tr("chip-graph-position"), format!("{}, {}", node.x, node.y)),
     ];
     let mut column = Column::new().push(Box::new(PropertyList::new(properties)));
+    column = column.push(shape_field(cx, node));
     if let Some(field) = output_width_field(cx, node) {
         column = column.push(field);
     }
@@ -289,6 +289,31 @@ fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorStat
             node: node.id.clone(),
         }),
     ))))
+}
+
+fn shape_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Element {
+    let read_node = node.id.clone();
+    let edit_node = node.id.clone();
+    let action: ActionRef<ChipProject, ProjectAction> =
+        ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]);
+    let input = cx
+        .input(
+            move |state| {
+                state
+                    .operator_graph
+                    .nodes
+                    .get(&read_node)
+                    .map_or_else(String::new, |node| format!("{:?}", node.shape))
+            },
+            action.map(move |value: String| ProjectAction::EditGraph {
+                edit: OperatorAction::SetShape {
+                    node: edit_node.clone(),
+                    shape: serde_json::from_str(&value).unwrap_or_default(),
+                },
+            }),
+        )
+        .with_id(&format!("chip-operator-shape-{}", node.id));
+    Box::new(Field::new(tr("chip-graph-shape"), input))
 }
 
 fn output_width_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Option<Element> {

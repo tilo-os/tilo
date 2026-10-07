@@ -23,7 +23,8 @@ Matrix nodes store only a bounded shape descriptor, never the matrix payload.
 The weight port is FP32 `[output_width, input_width]`; a linear projection maps
 `[..., input_width]` to `[..., output_width]`. Public `add-node` requires
 `output_width` for these two kinds; `set-output-width` and the shared inspector
-field edit it. Changing a port shape retains incompatible connection candidates
+field edit it. `set-shape` and the shared shape field edit input dimensions;
+the last input axis sets the normalization width. Changing a port shape retains incompatible connection candidates
 as rejected edges, and undo restores the prior geometry and connections. Matrix
 and output descriptors admit at most 2^32 elements, with output width at most
 1,048,576. Existing activation-shape bounds remain in force. This is FP32
@@ -50,7 +51,7 @@ inside the application or Tilo source tree.
 The same resource tree and actions are available to people, assistive
 technology and agents. Inspect the live vocabulary with
 `tilo-control actions list` and the app's published resources. The `chip_design.operator_graph` child exposes `add-node`, `connect`,
-`disconnect`, `move-node`, `remove-node` and `set-output-width`. Its read view includes typed ports,
+`disconnect`, `move-node`, `remove-node`, `set-output-width` and `set-shape`. Its read view includes typed ports,
 active edges and rejected candidates.
 The app uses the existing workspace collaboration, permissions, attributed
 history, search and theme services. It opens no network socket of its own.
