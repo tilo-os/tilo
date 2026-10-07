@@ -259,7 +259,7 @@ microphone, and governor removal closed Bob's streams. Cleanup passed. Its
 `mode: native-voice-proof` receipt has no error and remains `qualified: false`
 because Follow and the combined pair were not exercised. Runs 65 and 66 stopped
 before desktop launch because the direct builder command lacked the toolchain
-PATH or shared-cache wrapper; the successful run used `rcargo --on-builder run`.
+PATH or shared-cache wrapper; the successful run used the configured remote Cargo runner.
 
 Run 68 added explicit semantic Mute: Bob's microphone stream disappeared while
 his playback stream remained, with no permission request. Unmute then required
