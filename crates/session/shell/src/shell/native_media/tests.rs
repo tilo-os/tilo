@@ -266,6 +266,43 @@ async fn every_pending_tick_requires_the_exact_existing_capture_binding() {
 }
 
 #[tokio::test]
+async fn unmute_during_reconnect_keeps_the_call_without_consent_or_deferred_capture() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.device.reconnecting.store(true, Ordering::SeqCst);
+    fixture.tick();
+    let pending = fixture.command(Command::SetMuted { muted: false });
+    assert_eq!(pending.state, State::Reconnecting);
+    assert!(pending.muted);
+    assert!(!pending.capture_active);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.device.closes.load(Ordering::SeqCst), 0);
+    fixture.device.reconnecting.store(false, Ordering::SeqCst);
+    fixture.tick();
+    let recovered = fixture.command(Command::Status);
+    assert_eq!(recovered.state, State::Live);
+    assert!(recovered.muted);
+    assert!(!recovered.capture_active);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+    fixture.unmute().await;
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 1);
+    fixture.lifecycle.set_locked(true);
+    assert!(
+        fixture
+            .service
+            .command_for(
+                fixture.caller.clone(),
+                fixture.request(Command::SetMuted { muted: false })
+            )
+            .is_err()
+    );
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    assert!(!fixture.command(Command::Status).capture_active);
+}
+
+#[tokio::test]
 async fn transport_recovery_pauses_then_resolves_the_same_lease_without_new_consent() {
     let fixture = Fixture::new();
     fixture.join().await;
