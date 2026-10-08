@@ -2957,6 +2957,10 @@ impl Backend for DrmBackend {
         true
     }
 
+    fn pixel_aligned_strip_pan(&self) -> bool {
+        cpu_present::cpu_render_reason().is_some()
+    }
+
     /// Inline presentation, reached only when the presenter hasn't been split off yet — kept so a caller that never splits still paints.
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
         let present_gate = self.inner.dispatch.present_gate.clone();
