@@ -15,6 +15,16 @@ spec.loader.exec_module(harness)
 
 
 class VmAcceptanceExitTests(unittest.TestCase):
+    def test_fixture_password_uses_supported_qmp_hyphen_key(self):
+        guest_source = (SCRIPT.parent / "guest.sh").read_text()
+        self.assertIn(f"password={harness.GUEST_PASSWORD}\n", guest_source)
+        qmp = harness.Qmp.__new__(harness.Qmp)
+        keys = []
+        qmp.keys = lambda *args: keys.extend(args)
+        qmp.type_text(harness.GUEST_PASSWORD)
+        self.assertEqual(keys.count("minus"), 2)
+        self.assertNotIn("-", keys)
+
     def exercise(self, app_state):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -26,7 +36,8 @@ class VmAcceptanceExitTests(unittest.TestCase):
                                    cpus=4, dwell=0, settle=0, work=str(root / "vm"),
                                    image_cache=str(root / "images"), apps="")
             noop = lambda *args, **kwargs: None
-            qmp = SimpleNamespace(keys=noop, type_text=noop, screendump=noop)
+            typed = []
+            qmp = SimpleNamespace(keys=noop, type_text=lambda text: typed.append(text), screendump=noop)
             guest = SimpleNamespace(
                 qmp=qmp, wait_ssh=noop, ssh=noop, scp_to=noop, stop=noop,
                 alive=lambda: False,
@@ -42,6 +53,8 @@ class VmAcceptanceExitTests(unittest.TestCase):
                     patch.object(harness.time, "sleep", noop), \
                     patch.object(harness.time, "monotonic", side_effect=lambda: next(ticks)):
                 status = harness.run_test(args)
+            self.assertEqual(typed[0], harness.GUEST_PASSWORD,
+                             "normal authentication must precede every app search")
             report = json.loads((root / "out/report.json").read_text())
             return status, report
 

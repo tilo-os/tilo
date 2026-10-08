@@ -105,7 +105,7 @@ class FailedRpmRetentionTests(unittest.TestCase):
     def test_failed_artifact_never_feeds_host_session_and_has_short_retention(self):
         workflow = (CI.parents[1] / ".forgejo/workflows/host-session-e2e.yml").read_text()
         failed = workflow.split("- name: Retain source-bound RPMs", 1)[1].split("  host-session:", 1)[0]
-        self.assertIn("failure() && !inputs.rpm-artifact", failed)
+        self.assertIn("failure() && !inputs.rpm-artifact && !inputs.rpm-source-run", failed)
         self.assertIn("retention-days: 2", failed)
         self.assertIn("github.run_attempt", failed)
         self.assertIn("/failed-rpms/*", failed)
