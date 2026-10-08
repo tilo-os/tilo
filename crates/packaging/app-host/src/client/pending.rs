@@ -106,6 +106,7 @@ impl BlockingClient {
                     runtime: manifest.package.runtime.unwrap_or_default(),
                     source: String::new(),
                     held: false,
+                    payload_bytes: entry.get_size_bytes(),
                     system: !entry.get_user_managed(),
                 });
             }

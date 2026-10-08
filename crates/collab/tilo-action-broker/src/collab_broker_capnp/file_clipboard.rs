@@ -100,6 +100,12 @@ impl CapnpChannelHandle {
                 .as_ref()
                 .and_then(|p| p.original.as_ref())
                 .map_or(local_action.as_str(), |data| data.clipboard_action());
+            // Local Files controls operate on the framework root resource.
+            // Continued actions retain their originally addressed resource.
+            let resource = original
+                .as_ref()
+                .and_then(|p| p.original.as_ref())
+                .map_or("files.folder", |data| data.clipboard_resource());
             let verb = match needed {
                 PermissionRequirement::Read => Verb::Read,
                 PermissionRequirement::Write => Verb::Write,
@@ -109,6 +115,7 @@ impl CapnpChannelHandle {
                 &actor.policy_in(space, now),
                 &ResourceRef::Action {
                     app: route.app_id.clone(),
+                    resource: resource.into(),
                     action: action.into(),
                 },
                 verb,
@@ -153,6 +160,7 @@ impl CapnpChannelHandle {
             Command::Undo { .. } => "undo",
             Command::Redo { .. } => "redo",
             Command::Recover { .. } => "recover-clipboard-transfers",
+            Command::RestoreTrash { .. } => "restore",
             Command::Paste { .. }
             | Command::Snapshot
             | Command::Observe { .. }

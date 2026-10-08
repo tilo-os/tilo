@@ -39,9 +39,9 @@
 //!   shortcuts) are [`ItemKind::Native`] with their `webViewLink`; Docs,
 //!   Sheets, Slides and Drawings export to office formats and PDF.
 //! - **Rate limits.** `403 userRateLimitExceeded`/`rateLimitExceeded` and
-//!   `429` are [`Error::RateLimited`] with the `Retry-After` delay, or the
-//!   first step of Google's documented exponential backoff when there is
-//!   none. Nothing is retried here; the daemon schedules retries.
+//!   `429` are [`Error::RateLimited`] with the `Retry-After` delay when the
+//!   server sent one. Nothing is retried here; the daemon schedules retries
+//!   and chooses the backoff.
 //! - **Credentials.** Every request asks the [`CredentialSource`] for a
 //!   Bearer token; a 401 reports [`CredentialSource::rejected`] so Settings
 //!   refreshes it.
@@ -58,15 +58,14 @@ mod feed;
 mod upload;
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use cloud_source::{
     Capabilities, ChangeFeed, ChangePage, CloudSource, Credential, CredentialSource, Cursor,
     Download, Error, ExportFormat, HashAlgorithm, Item, ItemId, Notify, Quota, Result, Revision,
-    RevisionInfo, Support, UploadSession, UploadState, UploadTarget, Wait,
+    RevisionInfo, Support, UploadSession, UploadState, UploadTarget, Wait, http,
 };
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE, RETRY_AFTER};
@@ -335,13 +334,10 @@ impl Inner {
             .headers()
             .get(RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(api::parse_retry_after);
+            .and_then(|v| http::parse_retry_after(v, SystemTime::now()));
         let body = read_bounded(response, ERROR_BODY_LIMIT).unwrap_or_default();
         if status == StatusCode::UNAUTHORIZED {
-            self.credentials.rejected();
-        }
-        if status.is_redirection() {
-            return Error::InvalidResponse("unexpected redirect");
+            return http::unauthorized(self.credentials.as_ref());
         }
         if paged
             && (status == StatusCode::GONE
@@ -472,51 +468,19 @@ impl Inner {
             );
         }
         let response = self.check(Self::send(builder)?)?;
-        let declared = response.content_length();
-        let partial = response.status() == StatusCode::PARTIAL_CONTENT;
-        let content_range = response
-            .headers()
-            .get(CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(api::parse_content_range);
-        let total = if partial {
-            content_range.as_ref().and_then(|(_, total)| *total)
-        } else {
-            declared
+        let served = http::Served {
+            partial: response.status() == StatusCode::PARTIAL_CONTENT,
+            content_range: response
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(http::parse_content_range),
+            declared: response.content_length(),
         };
-        let mut body = response;
-        let Some(wanted) = range else {
-            let body: Box<dyn Read + Send> = match declared {
-                Some(len) => Box::new(body.take(len)),
-                None => Box::new(body),
-            };
-            return Ok(Download {
-                body,
-                range: 0..declared.unwrap_or(u64::MAX),
-                total,
-                revision,
-            });
-        };
-        let end = total.map_or(wanted.end, |t| wanted.end.min(t));
-        let wanted = wanted.start..end.max(wanted.start);
-        if partial {
-            let (got, _) = content_range.ok_or(Error::InvalidResponse("content-range"))?;
-            if got.start != wanted.start || got.end < wanted.end {
-                return Err(Error::InvalidResponse("content-range"));
-            }
-        } else {
-            // The server sent the whole body: skip to the range.
-            let skipped = std::io::copy(&mut (&mut body).take(wanted.start), &mut std::io::sink())?;
-            if skipped != wanted.start {
-                return Err(Error::InvalidResponse("short body"));
-            }
-        }
-        let len = wanted.end.saturating_sub(wanted.start);
+        let download = http::ranged_body(Box::new(response), range, served)?;
         Ok(Download {
-            body: Box::new(body.take(len)),
-            range: wanted,
-            total,
             revision,
+            ..download
         })
     }
 
@@ -600,18 +564,8 @@ impl Inner {
 
 /// Read at most `limit` bytes of a body.
 pub(crate) fn read_bounded(response: Response, limit: usize) -> Result<Vec<u8>> {
-    let limit64 = u64::try_from(limit).unwrap_or(u64::MAX);
-    if response.content_length().is_some_and(|len| len > limit64) {
-        return Err(Error::TooLarge);
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(limit64.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > limit {
-        return Err(Error::TooLarge);
-    }
-    Ok(bytes)
+    let declared = response.content_length();
+    http::read_bounded(response, declared, limit)
 }
 
 impl CloudSource for GDrive {
@@ -791,7 +745,7 @@ impl CloudSource for GDrive {
             .into_iter()
             .map(|entry| RevisionInfo {
                 revision: Revision::new(entry.id),
-                modified: entry.modified_time.as_deref().and_then(api::parse_rfc3339),
+                modified: entry.modified_time.as_deref().and_then(http::parse_rfc3339),
                 size: entry.size,
                 author: entry
                     .last_modifying_user

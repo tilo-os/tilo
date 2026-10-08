@@ -153,6 +153,17 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .health()
     }
 
+    fn task_snapshot(
+        &self,
+        room: &str,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
+        let room = super::state::RoomId::parse(room).ok_or("invalid native task room")?;
+        self.owner
+            .as_ref()
+            .ok_or("native task owner unavailable")?
+            .workspace_task_snapshot(room)
+    }
+
     fn execute(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
@@ -169,14 +180,22 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                     return Err("workspace membership requires the governing owner".into());
                 }
             }
-            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
-                .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
-            let receipt = owner.commit_workspace_membership_command(
-                request,
-                &governor,
-                &key,
-                std::time::SystemTime::now(),
-            )?;
+            let receipt = if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+            ) {
+                owner.commit_workspace_task_command(request, std::time::SystemTime::now())?
+            } else {
+                let (key, governor) =
+                    tilo_identity_host::broker::trusted_current_device(&request.room)
+                        .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
+                owner.commit_workspace_membership_command(
+                    request,
+                    &governor,
+                    &key,
+                    std::time::SystemTime::now(),
+                )?
+            };
             if let Some(network) = network {
                 network.schedule_native_owner_publication(room);
             }
@@ -1004,10 +1023,12 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         {
             return Err("explicit confirmation is required".into());
         }
+        // The resource the action is invoked on, as the catalogue checked it.
         if workspace.decide(
             &caller,
             &super::state::ResourceRef::Action {
                 app: super::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                resource: resource.id.as_str().to_owned(),
                 action: request.action.into(),
             },
             super::state::Verb::Admin,
@@ -1088,21 +1109,25 @@ fn govern_elsewhere(
         Operation::GrantAppAction {
             app,
             target_app,
+            resource,
             action,
             lifetime,
         } => DesktopCommand::GrantAppAction {
             app,
             target_app,
+            resource,
             action,
             lifetime,
         },
         Operation::RevokeAppAction {
             app,
             target_app,
+            resource,
             action,
         } => DesktopCommand::RevokeAppAction {
             app,
             target_app,
+            resource,
             action,
         },
     };
@@ -1284,7 +1309,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             &request.room,
             &label(&request.app_id),
             &label(&request.target_app),
-            &request.action_label,
+            &format!("{} · {}", request.resource_label, request.action_label),
             answer.lifetime(),
         );
         let _ = tree.append_workspace_effect_receipt(

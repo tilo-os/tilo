@@ -2932,6 +2932,9 @@ pub struct TaskRunEnvelope {
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,
+    /// Only the broker may mint a policy from the native task owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     pub action_context: serde_json::Value,
 }
 
@@ -2998,6 +3001,7 @@ mod task_run_tests {
             run_id: 7,
             lease: "broker-lease".into(),
             planning: TaskRunPlanning::RulesOnly,
+            execution_budget: None,
             action_context: serde_json::json!({"purpose": "Review proposal"}),
         };
         let json = serde_json::to_string(&envelope).unwrap();
@@ -3919,6 +3923,7 @@ mod enrolled_tests {
                 run_id: 9,
                 lease: "lease-1".into(),
                 planning: TaskRunPlanning::Model,
+                execution_budget: None,
                 action_context: serde_json::json!({}),
             },
         }
@@ -3944,6 +3949,37 @@ mod enrolled_tests {
         changed.task.task_id = "other-task".into();
         assert!(custody.accept(&changed).is_err());
     }
+    #[test]
+    fn enrolled_budget_is_bounded_and_same_message_cannot_rewrite_it() {
+        use collab_types::task_budget::TaskExecutionBudget;
+        let mut first = envelope();
+        assert!(
+            serde_json::to_value(&first).unwrap()["task"]
+                .get("execution_budget")
+                .is_none()
+        );
+        first.task.execution_budget = Some(TaskExecutionBudget {
+            turn_ms: 900_000,
+            total_ms: 7_200_000,
+        });
+        let mut custody =
+            EnrolledRecipientCustody::new("agent-1", "launch-1", "epoch-1", "channel-1").unwrap();
+        assert!(custody.accept(&first).unwrap().execute);
+        assert!(!custody.accept(&first).unwrap().execute);
+        let mut changed = first.clone();
+        changed.task.execution_budget = Some(TaskExecutionBudget {
+            turn_ms: 1,
+            total_ms: 1,
+        });
+        assert!(custody.accept(&changed).is_err());
+        changed.task.execution_budget = Some(TaskExecutionBudget {
+            turn_ms: 900_001,
+            total_ms: 7_200_000,
+        });
+        assert!(changed.validate().is_err());
+        assert!(custody.accept(&changed).is_err());
+    }
+
     #[test]
     fn enrolled_full_private_input_and_retention_bounds_fail_closed() {
         let mut first = envelope();
@@ -4142,6 +4178,9 @@ impl EnrolledTaskEnvelope {
             || serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > Self::MAX_JSON_BYTES
         {
             return Err("invalid enrolled task envelope".into());
+        }
+        if let Some(budget) = self.task.execution_budget {
+            budget.validate().map_err(str::to_owned)?;
         }
         Ok(())
     }

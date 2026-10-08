@@ -765,6 +765,7 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
     ws.set_owner(owner.clone());
     let freeform = Scope::Action {
         app: "so.tilo.agent".into(),
+        resource: "agent.transform:freeform".into(),
         action: "freeform".into(),
     };
     let granted = ws
@@ -819,6 +820,7 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
                 &shell::shell::state::Actor::app("so.tilo.shortcuts").in_room(room),
                 &ResourceRef::Action {
                     app: "so.tilo.agent".into(),
+                    resource: "agent.transform:freeform".into(),
                     action: "freeform".into(),
                 },
                 Verb::Write,

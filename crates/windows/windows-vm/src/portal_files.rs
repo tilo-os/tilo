@@ -331,7 +331,7 @@ impl CapabilityBroker for PortalRailCapabilityBroker {
         // a partially-live lease.
         let shares = self.documents.materialize(&lease_id, request)?;
         let network_proxy = if request.grants.network {
-            match crate::GuestNetworkProxy::start(request.grants.network_hosts.clone()) {
+            match crate::GuestNetworkProxy::start(&request.grants.network_hosts) {
                 Ok(proxy) => Some(proxy),
                 Err(error) => {
                     let _ = self.documents.revoke_checked(&lease_id);

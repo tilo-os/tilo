@@ -18,6 +18,10 @@ use tilo_peer_state::join::{
     decode_and_verify_invitation, issue_invitation, issue_invitation_from, verify_join_proof,
     verify_membership_proof,
 };
+use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
+    RemoveMemberRequest, SetMemberRoleRequest,
+};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use tilo_peer_state::StatePeer;
@@ -30,78 +34,6 @@ const MAX_PENDING_CHALLENGES: usize = 4096;
 const CHALLENGE_LIFETIME_NS: u64 = 60_000_000_000;
 /// The longest an invitation may stay redeemable.
 const MAX_INVITATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
-
-/// Issue one invitation. A repeated `request_id` returns the invitation it
-/// issued, and fails if it named a different request.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssueInvitationRequest {
-    /// Caller-chosen idempotency key; never zero.
-    pub request_id: [u8; 32],
-    /// The role the redeeming person gets.
-    pub role: MemberRole,
-    /// Restrict redemption to devices of this person.
-    pub recipient_user_public_key: Option<[u8; 32]>,
-    /// How the invitation names its recipient to them.
-    pub invitee_name: Option<String>,
-    /// When the invitation stops being redeemable, at most 30 days ahead.
-    pub expires_at_ns: u64,
-    /// The name the inviting person gives, recorded in the invitation with
-    /// their user root.
-    pub inviter_name: Option<String>,
-}
-
-/// An issued invitation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssuedInvitation {
-    /// Digest of `signed_invitation`.
-    pub invite_id: [u8; 32],
-    /// The signed invitation a device redeems.
-    pub signed_invitation: Vec<u8>,
-}
-
-/// Cancel an unredeemed invitation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CancelInvitationRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The invitation to cancel.
-    pub invite_id: [u8; 32],
-}
-
-/// An invitation still redeemable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingInvitation {
-    /// Digest of the signed invitation.
-    pub invite_id: [u8; 32],
-    /// The role it grants.
-    pub role: MemberRole,
-    /// The only person who may redeem it, if restricted.
-    pub recipient_user_public_key: Option<[u8; 32]>,
-    /// How it names its recipient.
-    pub invitee_name: Option<String>,
-    /// When it expires.
-    pub expires_at_ns: u64,
-}
-
-/// Change a member's role.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetMemberRoleRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The member's person.
-    pub user_public_key: [u8; 32],
-    /// Their new role.
-    pub role: MemberRole,
-}
-
-/// Remove a member and every device of theirs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoveMemberRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The member's person.
-    pub user_public_key: [u8; 32],
-}
 
 /// Delegate one application's workspace authorship, with an idempotency key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

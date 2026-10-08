@@ -252,6 +252,12 @@ pub enum Command {
         /// Attested source inventory used to verify the builder inputs.
         #[arg(long)]
         source_inventory: Option<PathBuf>,
+        /// Content hashes the target has verified; at most eight.
+        #[arg(long)]
+        cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
     },
     /// Package one app on the architecture-configured remote builder.
     #[command(
@@ -967,7 +973,8 @@ pub struct CreateArgs {
     /// `[user@]host[:port]` when the adapter cannot discover it.
     #[arg(long)]
     pub ssh: Option<String>,
-    /// Host port forwarded to the guest's SSH (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH (libvirt, qemu, whpx).
+    /// Defaults to the first unregistered, available port from 2222.
     #[arg(long)]
     pub ssh_port: Option<u16>,
     /// UTM VM to clone.

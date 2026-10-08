@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use serde_json::{Map, Value};
 
 use super::{Committed, SessionSettings};
-use crate::{ChangeSignal, ConditionalUpdate, SettingsSource};
+use crate::{ChangeOrigin, ChangeSignal, ConditionalUpdate, SectionChange, SettingsSource};
 
 struct HostView {
     session: Arc<SessionSettings>,
@@ -61,6 +61,24 @@ impl SettingsSource for HostView {
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
         // Storage workers retain the original durable result/error contract.
         self.session.update_section(name, values)
+    }
+
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &ChangeOrigin,
+    ) -> std::io::Result<()> {
+        self.session.update_section_by(name, values, origin)
+    }
+
+    fn update_section_with(
+        &self,
+        name: &str,
+        origin: &ChangeOrigin,
+        change: &mut SectionChange<'_>,
+    ) -> std::io::Result<()> {
+        self.session.update_section_with(name, origin, change)
     }
 
     fn update_section_report(
