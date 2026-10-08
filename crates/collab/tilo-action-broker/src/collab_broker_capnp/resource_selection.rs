@@ -2,7 +2,7 @@
 use super::continuation_frame::CheckedContinuation;
 use super::{CapnpChannelHandle, Promise, Rc, channel_handle};
 use tilo_actions::remote::{
-    ActionHostError, CanonicalActionRoute, CatalogueQuery, RemoteActionFrame, RemoteActionMessage,
+    ActionHostError, CatalogueQuery, RemoteActionFrame, RemoteActionMessage,
     ResourceSelectionCandidate, ResourceSelectionFilter, ResourceSelectionPromptRequest,
     SelectedResource,
 };
@@ -135,13 +135,17 @@ async fn enumerate(
         )
         .await
         .ok_or(ActionHostError::NotPermitted)??;
+    if providers.stale_cursor {
+        return Err(ActionHostError::NotPermitted);
+    }
     let room = channel.route().cluster_id;
     let mut budget = CandidateBudget::default();
     let matching: Vec<_> = providers
         .providers
         .into_iter()
         .filter(|provider| {
-            provider.app_id == filter.app_id
+            provider.browsable
+                && provider.app_id == filter.app_id
                 && provider.room == room
                 && !provider.record_id.is_empty()
         })
@@ -152,31 +156,7 @@ async fn enumerate(
             .check_publication(channel)
             .await
             .map_err(|_| ActionHostError::NotPermitted)?;
-        let canonical = channel
-            .state
-            .action_query(
-                &continuation.caller,
-                &CatalogueQuery {
-                    canonical_route: Some(CanonicalActionRoute {
-                        room: discovered.room,
-                        app_id: discovered.app_id,
-                        record_id: discovered.record_id,
-                    }),
-                    max_results: 0,
-                    ..CatalogueQuery::default()
-                },
-            )
-            .await
-            .ok_or(ActionHostError::NotPermitted)??;
-        if canonical.providers.len() != 1 {
-            continue;
-        }
-        let provider = canonical
-            .providers
-            .into_iter()
-            .next()
-            .ok_or(ActionHostError::NotPermitted)?;
-        collect_provider(channel, continuation, filter, &provider, &mut budget).await?;
+        collect_provider(channel, continuation, filter, &discovered, &mut budget).await?;
     }
     Ok(budget)
 }
@@ -269,25 +249,7 @@ async fn revalidate_selection(
     continuation: &CheckedContinuation,
     selected: &SelectedResource,
 ) -> Result<(), ActionHostError> {
-    let current = channel
-        .state
-        .action_query(
-            &continuation.caller,
-            &CatalogueQuery {
-                canonical_route: Some(CanonicalActionRoute {
-                    room: selected.provider.room.clone(),
-                    app_id: selected.provider.app_id.clone(),
-                    record_id: selected.provider.record_id.clone(),
-                }),
-                max_results: 0,
-                ..CatalogueQuery::default()
-            },
-        )
-        .await
-        .ok_or(ActionHostError::NotPermitted)??;
-    if !current.providers.contains(&selected.provider) {
-        return Err(ActionHostError::NotPermitted);
-    }
+    revalidate_provider(channel, continuation, selected).await?;
     let target = selected.row.target().ok_or(ActionHostError::NotPermitted)?;
     let page = channel
         .state
@@ -302,6 +264,38 @@ async fn revalidate_selection(
         .await
         .map_err(|_| ActionHostError::NotPermitted)?;
     if page.stale_cursor || page.rows.len() != 1 || page.rows.first() != Some(&selected.row) {
+        return Err(ActionHostError::NotPermitted);
+    }
+    revalidate_provider(channel, continuation, selected).await?;
+    Ok(())
+}
+
+#[expect(
+    clippy::future_not_send,
+    reason = "catalogue capabilities run on the broker LocalSet"
+)]
+async fn revalidate_provider(
+    channel: &CapnpChannelHandle,
+    continuation: &CheckedContinuation,
+    selected: &SelectedResource,
+) -> Result<(), ActionHostError> {
+    let current = channel
+        .state
+        .action_query(
+            &continuation.caller,
+            &CatalogueQuery {
+                max_results: 0,
+                ..CatalogueQuery::default()
+            },
+        )
+        .await
+        .ok_or(ActionHostError::NotPermitted)??;
+    if current.stale_cursor
+        || !selected.provider.browsable
+        || selected.provider.record_id.is_empty()
+        || selected.provider.room != channel.route().cluster_id
+        || !current.providers.contains(&selected.provider)
+    {
         return Err(ActionHostError::NotPermitted);
     }
     Ok(())

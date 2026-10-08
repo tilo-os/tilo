@@ -1338,6 +1338,154 @@ async fn continuation_resource_selection_returns_original_authorized_row_and_ref
         .await;
 }
 
+struct NativeSelectionService;
+impl crate::services::ResourceSelectionServices for NativeSelectionService {
+    fn select(
+        &self,
+        context: crate::services::NativeDocumentReadContext,
+        request: tilo_actions::remote::ResourceSelectionPromptRequest,
+    ) -> crate::services::ResourceSelectionFuture {
+        Box::pin(async move {
+            context.revalidate()?;
+            Ok(request
+                .candidates
+                .iter()
+                .find(|candidate| candidate.selected.provider.provider == "904")
+                .map(|candidate| candidate.token))
+        })
+    }
+}
+
+async fn ordinary_selection_target(
+    env: &Environment,
+    rig: &Rig,
+) -> (Connection, runtime_collab::InvocationStream, CrdtRoute) {
+    let mut native_route = env.route.clone();
+    native_route.record_id = "ordinary-native-record".into();
+    // A genuine signed ordinary channel has no private WorkerBinding.
+    let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+    let (rpc, server, client) = rpc_pair(
+        rig.state.clone(),
+        904,
+        server,
+        client,
+        None,
+        rig.directories.clone(),
+    );
+    let mut native_cert = env.cert.clone();
+    native_cert.capabilities = tilo_user_identity::DeviceCapabilities::primary();
+    tilo_user_identity::sign_device_cert(&mut native_cert, &env.person).unwrap();
+    env.authority
+        .additional_certificates
+        .lock()
+        .unwrap()
+        .push(native_cert.clone());
+    let handle = rpc
+        .join_channel(
+            &native_route.channel_key(),
+            &presentation(&env.route.cluster_id, &native_cert, &env.key),
+        )
+        .await
+        .unwrap();
+    let native = Connection {
+        handle,
+        server,
+        client,
+    };
+    native
+        .handle
+        .publish_action_directory(
+            &env.route.app_id,
+            capnp_rpc::new_client(ContinuationDirectory {
+                state: directory_state("native-r1"),
+            }),
+        )
+        .await
+        .unwrap();
+    native
+        .handle
+        .publish_actions(&env.route.app_id, &[continuation_descriptor()])
+        .await
+        .unwrap();
+    let stream = native.handle.subscribe_stable_invocations().await.unwrap();
+    (native, stream, native_route)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_resource_selection_browses_ordinary_native_publication_without_canonical_custody()
+ {
+    use tilo_actions::remote::{CatalogueQuery, RemoteActionMessage, ResourceSelectionFilter};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = selection_host_environment();
+            let rig = Rig::with_services(
+                &env,
+                HostServices {
+                    resource_selections: Some(Arc::new(NativeSelectionService)),
+                    ..env.membership.services()
+                },
+            )
+            .await;
+            let (_, _, parent) = continuation_parent(&env, &rig).await;
+            let (native, stream, native_route) = ordinary_selection_target(&env, &rig).await;
+            let response = continuation_answer(
+                &rig,
+                RemoteActionMessage::CatalogueRequest {
+                    correlation: 82,
+                    query: CatalogueQuery {
+                        max_results: 0,
+                        ..Default::default()
+                    },
+                },
+                parent.invocation,
+            )
+            .await
+            .unwrap();
+            let RemoteActionMessage::CatalogueResponse { result, .. } = response else {
+                panic!("catalogue response expected")
+            };
+            let providers = result.unwrap().providers;
+            let provider = providers
+                .iter()
+                .find(|provider| provider.provider == "904")
+                .expect("ordinary native publisher is visible through original caller custody");
+            assert!(provider.browsable);
+            assert_eq!(provider.record_id, native_route.record_id);
+            assert!(
+                rig.state.host_workers.lock().unwrap().get(&904).is_none(),
+                "ordinary native channel must not acquire a private host worker registration"
+            );
+            let descriptor = continuation_descriptor();
+            let response = continuation_answer(
+                &rig,
+                RemoteActionMessage::SelectResource {
+                    correlation: 83,
+                    filter: ResourceSelectionFilter {
+                        app_id: env.route.app_id.clone(),
+                        resource_kind: descriptor.resource_kind,
+                        action: descriptor.action,
+                    },
+                },
+                parent.invocation,
+            )
+            .await
+            .unwrap();
+            let RemoteActionMessage::ResourceSelectionResponse { result, .. } = response else {
+                panic!("selection response expected")
+            };
+            let selected = result
+                .unwrap()
+                .expect("ordinary native resource must reach the broker chooser and re-resolution");
+            assert_eq!(&selected.provider, provider);
+            assert_eq!(selected.row.provider, "904");
+            assert!(selected.row.action.unwrap().semantic_identity.is_some());
+            drop(stream);
+            drop(native);
+            rig.stop().await;
+        })
+        .await;
+}
+
 struct HeldSelectionService {
     entered: Arc<tokio::sync::Notify>,
     dropped: Arc<std::sync::atomic::AtomicBool>,
