@@ -392,6 +392,22 @@ struct DiagnosticsCache {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct SymbolProjectionRevision {
+    heads: Vec<ChangeHash>,
+    /// Canonical resource identity and displayed path, sorted independently of
+    /// the local project tree's allocation and iteration order.
+    files: Vec<(String, String)>,
+}
+
+#[derive(Default)]
+struct ReopenPhases {
+    demand: u128,
+    symbols: u128,
+    search_entries: u128,
+    diagnostics: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
     /// Collaborative text and durable file metadata are authoritative in the
     /// CRDT, so its heads cheaply cover every remote/local document edit.
@@ -531,6 +547,8 @@ pub struct CodeApp {
     /// notify on an actual change.
     lsp_sent_text: String,
     diagnostics_cache: Option<DiagnosticsCache>,
+    /// At most two inactive exact-input lint snapshots and 16,384 records.
+    inactive_diagnostics: Vec<DiagnosticsCache>,
     #[cfg(test)]
     diagnostics_buffer_reads: usize,
     /// What the server is currently busy with, if anything. Shown in the status
@@ -571,6 +589,10 @@ pub struct CodeApp {
     /// `sync` compares this tiny value and does no project/body traversal.
     search_projection_revision: Option<SearchProjectionRevision>,
     search_projection_local_generation: Option<u64>,
+    /// Last actual phase costs, exposed only by the explicit native observer.
+    reopen_phase_micros: ReopenPhases,
+    symbol_projection_revision: Option<SymbolProjectionRevision>,
+    projected_search_results: Vec<actions::SearchResultRef>,
     #[cfg(test)]
     search_refresh_stats: SearchRefreshStats,
 
@@ -900,6 +922,7 @@ impl CodeApp {
             lsp_diagnostics: std::collections::HashMap::new(),
             lsp_sent_text: String::new(),
             diagnostics_cache: None,
+            inactive_diagnostics: Vec::new(),
             #[cfg(test)]
             diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
@@ -917,6 +940,9 @@ impl CodeApp {
             search_opener: ui::search::SearchOpener::new(),
             search_symbols: Vec::new(),
             search_entries: Vec::new(),
+            reopen_phase_micros: ReopenPhases::default(),
+            symbol_projection_revision: None,
+            projected_search_results: Vec::new(),
             search_projection_revision: None,
             search_projection_local_generation: Some(0),
             #[cfg(test)]
@@ -1145,12 +1171,14 @@ impl CodeApp {
         if open == self.demanded {
             return;
         }
+        let started = std::time::Instant::now();
         self.demanded.clone_from(&open);
         if let Some(live) = &self.live_state
             && let Err(error) = live.demand(doc, ui::tilo_resource::Demand::none().with_keys(open))
         {
             tracing::warn!(%error, "open files not read");
         }
+        self.reopen_phase_micros.demand = started.elapsed().as_micros();
     }
 
     /// Read a disk-backed file into its buffer the first time this session
@@ -1171,10 +1199,17 @@ impl CodeApp {
         let name = buffer.name.clone();
         match self.session.project.file_seed(node) {
             Ok((text, stamp)) => {
-                self.submit(&actions::CodeEditorAction::EnsureBuffer {
-                    key: self.buffer_key(node),
-                    seed: text.clone(),
-                });
+                let key = self.buffer_key(node);
+                let already_opened = self
+                    .live_state
+                    .as_ref()
+                    .is_some_and(|live| live.with(|state| state.opened_buffers.contains(&key)));
+                if !already_opened {
+                    self.submit(&actions::CodeEditorAction::EnsureBuffer {
+                        key,
+                        seed: text.clone(),
+                    });
+                }
                 let path = self.session.project.disk_path_of(node);
                 if let Some(buffer) = self.session.buffer_of_mut(node) {
                     buffer.path = path;
@@ -1285,6 +1320,10 @@ impl CodeApp {
         self.settings = Some(settings);
     }
 
+    pub(crate) fn set_highlight_waker(&mut self, wake: ui::WakeHandle) {
+        self.editor.set_highlight_waker(wake);
+    }
+
     fn project_files(&mut self, files: Vec<crate::doc::CollaborativeFile>) {
         let ordering: Vec<_> = files
             .iter()
@@ -1392,22 +1431,68 @@ impl CodeApp {
         use automerge::transaction::Transactable;
         // Heads identify committed CRDT content, including remote/history changes.
         // Even zero pending operations may hide an open empty transaction.
-        // Obtain the witness on a clone: get_heads must never close the caller's
-        // transaction or change its patch/history cursors. Pending edits bypass
+        // Read the committed witness without cloning or closing the caller's
+        // transaction or changing its patch/history cursors. Pending edits bypass
         // caching; an equal pending-operation count is not a content version.
-        let heads = (doc.pending_ops() == 0).then(|| doc.clone().get_heads());
+        let heads = (doc.pending_ops() == 0).then(|| doc.committed_heads());
         self.refresh_diagnostics_at(doc, heads);
+    }
+
+    fn retain_diagnostics(&mut self, cache: DiagnosticsCache) {
+        const RECORD_BUDGET: usize = 16_384;
+        if cache.local.len() > RECORD_BUDGET {
+            return;
+        }
+        self.inactive_diagnostics
+            .retain(|old| old.revision != cache.revision);
+        self.inactive_diagnostics.push(cache);
+        while self.inactive_diagnostics.len() > 2
+            || self
+                .inactive_diagnostics
+                .iter()
+                .map(|cache| cache.local.len())
+                .sum::<usize>()
+                > RECORD_BUDGET
+        {
+            self.inactive_diagnostics.remove(0);
+        }
+    }
+
+    fn restore_diagnostics(&mut self, revision: Option<&DiagnosticsRevision>) {
+        let Some(revision) = revision else {
+            // Pending observations remain completely uncached.
+            self.inactive_diagnostics.clear();
+            self.diagnostics_cache = None;
+            return;
+        };
+        if self
+            .diagnostics_cache
+            .as_ref()
+            .is_some_and(|cache| &cache.revision == revision)
+        {
+            return;
+        }
+        if let Some(index) = self
+            .inactive_diagnostics
+            .iter()
+            .position(|cache| &cache.revision == revision)
+        {
+            let restored = self.inactive_diagnostics.remove(index);
+            if let Some(previous) = self.diagnostics_cache.replace(restored) {
+                self.retain_diagnostics(previous);
+            }
+        }
     }
 
     fn refresh_diagnostics_at(&mut self, doc: &AutoCommit, heads: Option<Vec<ChangeHash>>) {
         let lsp_for_buffer = self
             .lsp_uri
             .as_ref()
-            .and_then(|uri| self.lsp_diagnostics.get(uri));
+            .is_some_and(|uri| self.lsp_diagnostics.contains_key(uri));
         // An empty publish still counts as an answer: it is the server saying
         // "this file is clean", which is exactly when a stale bracket warning
         // would be most confusing.
-        let scope = if lsp_for_buffer.is_some() {
+        let scope = if lsp_for_buffer {
             lint::Scope::TextualOnly
         } else {
             lint::Scope::Full
@@ -1427,14 +1512,17 @@ impl CodeApp {
                     scope,
                 })
         });
+        self.restore_diagnostics(revision.as_ref());
         let cached = revision.as_ref().and_then(|revision| {
             self.diagnostics_cache
                 .as_ref()
                 .filter(|cache| &cache.revision == revision)
         });
         let mut diagnostics = if let Some(cache) = cached {
+            self.reopen_phase_micros.diagnostics = 0;
             cache.local.clone()
         } else {
+            let started = std::time::Instant::now();
             let local = match active {
                 Some((key, language)) => {
                     #[cfg(test)]
@@ -1447,13 +1535,21 @@ impl CodeApp {
                 }
                 None => Vec::new(),
             };
+            self.reopen_phase_micros.diagnostics = started.elapsed().as_micros();
+            if let Some(previous) = self.diagnostics_cache.take() {
+                self.retain_diagnostics(previous);
+            }
             self.diagnostics_cache = revision.map(|revision| DiagnosticsCache {
                 revision,
                 local: local.clone(),
             });
             local
         };
-        if let Some(lsp) = lsp_for_buffer {
+        if let Some(lsp) = self
+            .lsp_uri
+            .as_ref()
+            .and_then(|uri| self.lsp_diagnostics.get(uri))
+        {
             diagnostics.extend(lsp.iter().map(super::lsp::LspDiagnostic::to_panel));
         }
         diagnostics.sort_by_key(|a| (a.line, a.col));
@@ -1534,8 +1630,24 @@ impl CodeApp {
             .collect()
     }
 
-    fn refresh_search_symbols(&mut self, doc: &AutoCommit) {
-        let files = self.search_file_entries();
+    fn refresh_search_symbols(&mut self, doc: &AutoCommit) -> bool {
+        use automerge::transaction::Transactable;
+        let mut files = self.search_file_entries();
+        files.sort_by(|a, b| a.resource_id.cmp(&b.resource_id).then(a.path.cmp(&b.path)));
+        // Pending transaction counts do not identify their content. Rebuild
+        // for every pending projection, including equal-count unrelated forks.
+        let revision = (doc.pending_ops() == 0).then(|| SymbolProjectionRevision {
+            heads: doc.committed_heads(),
+            files: files
+                .iter()
+                .map(|file| (file.resource_id.clone(), file.path.clone()))
+                .collect(),
+        });
+        if revision.is_some() && revision == self.symbol_projection_revision {
+            self.reopen_phase_micros.symbols = 0;
+            return false;
+        }
+        let started = std::time::Instant::now();
         #[cfg(test)]
         {
             self.search_refresh_stats.buffer_reads = self
@@ -1552,6 +1664,9 @@ impl CodeApp {
                     })
             })
             .collect();
+        self.symbol_projection_revision = revision;
+        self.reopen_phase_micros.symbols = started.elapsed().as_micros();
+        true
     }
 
     fn invalidate_search_projection(&mut self) {
@@ -1566,14 +1681,15 @@ impl CodeApp {
     /// typing, and unchanged frames do no filesystem, document, or LSP work.
     fn refresh_search_entries(&mut self, doc: &AutoCommit) {
         let revision = SearchProjectionRevision {
-            document_heads: doc.base_heads(),
+            document_heads: doc.committed_heads(),
             pending_ops: doc.pending_ops(),
             local_generation: self.search_projection_local_generation,
         };
         // Once the local identity space is exhausted there can be no safe
         // equality shortcut: reusing the old projection would let an obsolete
         // action directory masquerade as the current project.
-        if revision.local_generation.is_some()
+        if revision.pending_ops == 0
+            && revision.local_generation.is_some()
             && self.search_projection_revision.as_ref() == Some(&revision)
         {
             #[cfg(test)]
@@ -1583,9 +1699,18 @@ impl CodeApp {
             }
             return;
         }
-        self.refresh_search_symbols(doc);
+        let changed = self.refresh_search_symbols(doc);
+        let started = std::time::Instant::now();
         let results = self.search_result_refs();
-        self.search_entries = crate::search_entries::code_entries(&self.search_symbols, &results);
+        if changed
+            || results != self.projected_search_results
+            || revision.local_generation.is_none()
+        {
+            self.search_entries =
+                crate::search_entries::code_entries(&self.search_symbols, &results);
+            self.projected_search_results = results;
+        }
+        self.reopen_phase_micros.search_entries = started.elapsed().as_micros();
         self.search_projection_revision = Some(revision);
         #[cfg(test)]
         {
@@ -2686,6 +2811,10 @@ impl Widget for CodeApp {
         dyn ui::widget::Continuable
     );
 
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::text_operations::SNAPSHOT_READERS
+    }
+
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
             [rect.x0, rect.y0, rect.x1, rect.y1]
@@ -2700,6 +2829,13 @@ impl Widget for CodeApp {
         let editor_rect = self.editor.get_rect();
         let (offset_x, offset_y) = self.editor.native_scroll_offsets();
         let (caret_line, caret_column) = self.editor.primary_caret();
+        let (highlighted_rows, cached_buffers, inactive_source_bytes) =
+            self.editor.native_projection_stats();
+        let (cached_materializations, inactive_materialized_bytes) = self
+            .live_state
+            .as_ref()
+            .map(|live| live.with(crate::resource::ProjectState::cached_buffer_stats))
+            .unwrap_or_default();
         Some(serde_json::json!({
             "app": "so.tilo.code-editor",
             "editor_id": "editor_view",
@@ -2707,6 +2843,19 @@ impl Widget for CodeApp {
             "buffer_id": buffer_id,
             "body_hash": body.as_ref().map(|text| crate::native_fixture::hash(text.as_bytes())),
             "body_bytes": body.as_ref().map(String::len),
+            "highlighted_rows": highlighted_rows,
+            "cached_buffers": cached_buffers,
+            "cached_materializations": cached_materializations,
+            "inactive_materialized_bytes": inactive_materialized_bytes,
+            "cached_diagnostic_buffers": self.inactive_diagnostics.len(),
+            "inactive_diagnostic_records": self.inactive_diagnostics.iter().map(|cache| cache.local.len()).sum::<usize>(),
+            "reopen_phase_micros": {
+                "demand": self.reopen_phase_micros.demand,
+                "symbols": self.reopen_phase_micros.symbols,
+                "search_entries": self.reopen_phase_micros.search_entries,
+                "diagnostics": self.reopen_phase_micros.diagnostics,
+            },
+            "inactive_source_bytes": inactive_source_bytes,
             "editor_focused": self.editor.is_focused(),
             "caret_line": caret_line,
             "caret_column": caret_column,
@@ -3292,6 +3441,7 @@ impl Widget for CodeApp {
     /// Advance the explorer and drain the retained terminal before settlement.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.sidebar.update(state, path);
+        changed |= self.editor.update(state, path);
         if let Some(terminal) = self.terminal.as_mut() {
             changed |= terminal.widget_mut().update(state, path);
         }

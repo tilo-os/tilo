@@ -422,7 +422,11 @@ impl PersonalWorkspaces {
                 name: meta.name.clone(),
                 governor: meta.governor.clone(),
             };
-            if self.agreed.get(room) == Some(&entry) {
+            // An agreed room still unpinned — adopted before rooms pinned their
+            // governor from this list — is adopted again so the list pins it.
+            if self.agreed.get(room) == Some(&entry)
+                && tree.room_authority(*room) != RoomAuthority::Unpinned
+            {
                 continue;
             }
             let governor = match entry.governor.as_deref() {

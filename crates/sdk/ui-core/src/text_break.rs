@@ -363,8 +363,9 @@ impl OffsetMap {
 
 /// Extended grapheme clusters (UAX #29) paired with their starting byte
 /// offset, so combining marks, emoji modifiers, flags and ZWJ sequences stay
-/// whole.
-pub(crate) fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
+/// whole. Offsets address the original UTF-8 string and each slice is a
+/// complete UAX #29 cluster, using the same ICU rules as toolkit selection.
+pub fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
     use icu_segmenter::{GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed};
     const SEGMENTER: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
     let mut start = 0;
