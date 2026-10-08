@@ -169,3 +169,188 @@ fn a_withdrawn_admission_refuses_reads_and_writes() {
     });
     assert!(records.load().is_empty());
 }
+
+#[test]
+fn display_rpc_requires_explicit_origin_and_exact_published_uuid_before_host_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let record = calls.clone();
+    let delegate = Arc::new(
+        move |_: &[u8], _: runtime_collab::settings::DisplayOrigin| {
+            record.fetch_add(1, Ordering::SeqCst);
+            Ok(b"{}".to_vec())
+        },
+    );
+    run(async {
+        let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
+            AppSettingsServer::new("so.tilo.settings", session(dir.path()), admitted())
+                .with_display(Some(delegate)),
+        );
+        let mut missing = client.display_control_request();
+        missing
+            .get()
+            .set_command_json(br#"{"operation":"identify"}"#);
+        assert!(
+            missing.send().promise.await.is_err(),
+            "omitted origin cannot default to local intent"
+        );
+        for bytes in [vec![], vec![0; 15], vec![0; 17]] {
+            let mut request = client.display_control_request();
+            request
+                .get()
+                .set_origin(runtime_collab::collab_capnp::DisplayRequestOrigin::Published);
+            request.get().set_published_invocation(&bytes);
+            assert!(request.send().promise.await.is_err());
+        }
+        let mut invalid_local = client.display_control_request();
+        invalid_local
+            .get()
+            .set_origin(runtime_collab::collab_capnp::DisplayRequestOrigin::LocalHost);
+        invalid_local.get().set_published_invocation(&[0; 16]);
+        assert!(invalid_local.send().promise.await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let settings: AppSettingsHandle = client.into();
+        settings
+            .display_control(
+                br#"{"operation":"inspect"}"#,
+                runtime_collab::settings::DisplayOrigin::LocalHost,
+            )
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    });
+}
+
+fn revocable_admission(allowed: Arc<AtomicBool>) -> Revalidate {
+    Arc::new(move || {
+        if allowed.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(capnp::Error::failed("revoked".into()))
+        }
+    })
+}
+
+fn dictionary_handle(
+    app: &str,
+    source: Arc<dyn SettingsSource>,
+    permission: Revalidate,
+    owner: Option<[u8; 32]>,
+) -> AppSettingsHandle {
+    let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
+        AppSettingsServer::new(app, source, permission).with_dictionary_owner(owner),
+    );
+    client.into()
+}
+
+fn dictionary_snapshot(
+    reply: &runtime_collab::SettingsView,
+    app: &str,
+) -> settings_store::personal_dictionary::Snapshot {
+    let delivery: settings_store::personal_dictionary::host::Delivery = serde_json::from_value(
+        view(&reply.document_json)["app_device_local"][app]
+            [settings_store::personal_dictionary::host::VIEW_KEY]
+            .clone(),
+    )
+    .unwrap();
+    delivery.snapshot
+}
+
+#[test]
+fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
+    use settings_store::personal_dictionary::{Edit, Service, Word, host};
+    let dir = tempfile::tempdir().unwrap();
+    let records = session(dir.path());
+    let service = Arc::new(Service::new(dir.path().join("dictionary")).unwrap());
+    let source: Arc<dyn SettingsSource> = Arc::new(host::Host::new(
+        records.clone(),
+        service,
+        Arc::new(|| Some([1; 32])),
+    ));
+    let allowed = Arc::new(AtomicBool::new(true));
+    let permission = revocable_admission(Arc::clone(&allowed));
+    let settings = dictionary_handle(
+        "so.tilo.settings",
+        source.clone(),
+        permission,
+        Some([1; 32]),
+    );
+    let osk = dictionary_handle("so.tilo.osk", source.clone(), admitted(), Some([1; 32]));
+    let dictation = dictionary_handle(
+        "so.tilo.dictation",
+        source.clone(),
+        admitted(),
+        Some([1; 32]),
+    );
+    let visitor = dictionary_handle("so.tilo.settings", source, admitted(), None);
+    let command = |revision, edit| {
+        serde_json::to_vec(&json!({ "so.tilo.settings": { host::EDIT_KEY: host::Command { owner: [1; 32], revision, edit } } })).unwrap()
+    };
+    run(async {
+        let before = osk.read(0).await.unwrap();
+        let add = command(0, Edit::Add(Word::new("Tilo", None).unwrap()));
+        assert!(visitor.update("app_device_local", &add).await.is_err());
+        settings.update("app_device_local", &add).await.unwrap();
+        let after = osk.read(before.revision).await.unwrap();
+        assert!(after.revision > before.revision);
+        assert_eq!(
+            dictionary_snapshot(&after, "so.tilo.osk")
+                .hints("en")
+                .collect::<Vec<_>>(),
+            ["Tilo"]
+        );
+        let voice = dictation.read(0).await.unwrap();
+        assert_eq!(
+            dictionary_snapshot(&voice, "so.tilo.dictation"),
+            dictionary_snapshot(&after, "so.tilo.osk")
+        );
+        assert!(
+            view(&visitor.read(0).await.unwrap().document_json)
+                .get("app_device_local")
+                .is_none()
+        );
+        assert!(settings.update("app_device_local", &add).await.is_err());
+        settings
+            .update(
+                "app_device_local",
+                &command(
+                    1,
+                    Edit::Replace {
+                        old: Word::new("Tilo", None).unwrap(),
+                        new: Word::new("TiLo", None).unwrap(),
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+        let edited = dictation.read(voice.revision).await.unwrap();
+        assert_eq!(
+            dictionary_snapshot(&edited, "so.tilo.dictation")
+                .hints("nl")
+                .collect::<Vec<_>>(),
+            ["TiLo"]
+        );
+        settings
+            .update(
+                "app_device_local",
+                &command(2, Edit::Remove(Word::new("TiLo", None).unwrap())),
+            )
+            .await
+            .unwrap();
+        assert!(
+            dictionary_snapshot(&osk.read(after.revision).await.unwrap(), "so.tilo.osk")
+                .words
+                .is_empty()
+        );
+        allowed.store(false, Ordering::Release);
+        assert!(settings.read(0).await.is_err());
+        assert!(
+            settings
+                .update("app_device_local", &command(3, Edit::Reset))
+                .await
+                .is_err()
+        );
+    });
+    assert!(records.load().is_empty());
+    assert!(load_at(&records.paths().copy).is_empty());
+}

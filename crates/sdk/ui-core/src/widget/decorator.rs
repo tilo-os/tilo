@@ -194,6 +194,14 @@ pub trait Decorator {
         self.inner_mut().visit_components(request)
     }
 
+    #[doc(hidden)]
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        self.inner_mut().visit_retained_components(request)
+    }
+
     fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
         self.inner().provide(request);
     }
@@ -280,6 +288,10 @@ pub trait Decorator {
     ) {
         self.inner_mut()
             .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn observe_physical_input(&mut self, input: super::PhysicalInput) {
+        self.inner_mut().observe_physical_input(input);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -806,6 +818,14 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::visit_components(self, request)
     }
 
+    #[doc(hidden)]
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        Decorator::visit_retained_components(self, request)
+    }
+
     fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
         Decorator::provide(self, request);
     }
@@ -896,6 +916,10 @@ impl<T: Decorator + 'static> Widget for T {
         presence: &PresenceCtx,
     ) {
         Decorator::draw(self, scene, transform, text_renderer, theme, presence);
+    }
+
+    fn observe_physical_input(&mut self, input: super::PhysicalInput) {
+        Decorator::observe_physical_input(self, input);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

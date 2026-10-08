@@ -41,6 +41,49 @@ pub struct NativeStateRuntime(pub(super) Arc<Runtime>);
 #[derive(Clone)]
 pub(crate) struct NativeStateWitness(Weak<Runtime>);
 impl NativeStateWitness {
+    /// Borrow the protected ordinary-room writer for one host operation.
+    /// Enrolled rooms must instead borrow their committed native view.
+    pub(crate) fn with_current_ordinary<T>(
+        &self,
+        storage: &NativeAuthorityStorage,
+        observed: &NativeAuthorityStorage,
+        room: crate::shell::state::RoomId,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let runtime = self
+            .0
+            .upgrade()
+            .ok_or("The accepted desktop writer has retired.")?;
+        if storage.requires(room)
+            || !runtime.healthy.load(Ordering::Acquire)
+            || runtime.uncertain_rooms.read().contains(&room)
+        {
+            return Err("The ordinary desktop policy is not current.".into());
+        }
+        let expected = digest(storage).map_err(|error| error.to_string())?;
+        if digest(observed).map_err(|error| error.to_string())? != expected {
+            return Err("The accepted desktop authority has changed.".into());
+        }
+        let writer = runtime.writer.lock();
+        if writer.expected != Some(expected)
+            || writer.lease.is_none()
+            || writer
+                .owner
+                .as_ref()
+                .is_some_and(|(owner, _)| owner.upgrade().is_none())
+        {
+            return Err("The accepted desktop writer is unavailable or stale.".into());
+        }
+        let result = operation();
+        drop(writer);
+        drop(runtime);
+        result
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_owners(&self) -> usize {
+        self.0.strong_count()
+    }
     pub(crate) fn authority_is_current(
         &self,
         storage: &NativeAuthorityStorage,
@@ -58,6 +101,7 @@ impl std::fmt::Debug for NativeStateRuntime {
 }
 pub(super) struct Runtime {
     pub writer: Mutex<Writer>,
+    pub(super) local_filesystem_consents: Mutex<super::local_filesystem_consents::Consents>,
     pub healthy: AtomicBool,
     uncertain_rooms: RwLock<std::collections::BTreeSet<crate::shell::state::RoomId>>,
     /// Hands out [`StateSequence`]s; see [`NativeStateRuntime::next_sequence`].
@@ -70,6 +114,7 @@ impl Default for Runtime {
     fn default() -> Self {
         Self {
             writer: Mutex::new(Writer::default()),
+            local_filesystem_consents: Mutex::default(),
             healthy: AtomicBool::new(true),
             uncertain_rooms: RwLock::new(std::collections::BTreeSet::default()),
             sequence: AtomicU64::new(0),

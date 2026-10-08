@@ -1,0 +1,305 @@
+//! Real certified HTTPS submit/retry and a canonical retained receipt.
+use super::*;
+use ui::feedback::{Destination, Draft, Submission};
+
+async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
+    let route = DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: browser.room.clone(),
+        record: String::new(),
+    };
+    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    loop {
+        browser.pump();
+        if browser.documents.contains_key(&route) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "governor primary not received");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let source = browser.mount(&route);
+    assert_eq!(
+        source.wire_record(),
+        "",
+        "room-primary storage ids never cross the wire"
+    );
+    let mut doc = source.read(Clone::clone).unwrap();
+    assert!(
+        chat::doc::ChatDoc::list_workspaces(&doc)
+            .iter()
+            .any(|workspace| workspace.id == browser.room),
+        "the production seed uses its host-selected room"
+    );
+    chat::doc::ChatDoc::insert_category(&mut doc, "feedback-category", &browser.room, "Feedback");
+    chat::doc::ChatDoc::insert_channel(
+        &mut doc,
+        "feedback",
+        &browser.room,
+        "feedback-category",
+        "Feedback",
+        chat::model::ChannelKind::Text,
+    );
+    let mutation = collab_types::DocumentMutation::Snapshot(doc.save());
+    browser.peer.publish(route.clone(), &mutation).unwrap();
+    let (collab_types::DocumentMutation::Snapshot(bytes)
+    | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
+    browser
+        .documents
+        .entry(route.clone())
+        .or_default()
+        .push(([0; 32], bytes));
+    route
+}
+
+fn approved(route: &DocumentRoute) -> Submission {
+    let mut preview = Draft {
+        text: "The book failed to open; token=secret12345".into(),
+        // The fixture explicitly opts in to this field before reviewing it.
+        context: vec![ui::feedback::ReviewText {
+            node: "contact.name".into(),
+            sensitivity: ui::feedback::DeclaredSensitivity::Personal,
+            kind: Some(ui::feedback::RedactionCategory::Name),
+            origin: ui::feedback::TextOrigin::Semantic,
+            text: "Jana".into(),
+        }],
+    }
+    .preview()
+    .unwrap();
+    assert!(!preview.feedback().text.contains("secret12345"));
+    let reviewed = serde_json::to_string(preview.feedback()).unwrap();
+    assert!(!reviewed.contains("Jana"));
+    assert!(!reviewed.contains("contact.name"));
+    preview.approve();
+    preview
+        .submission(
+            "0123456789abcdef0123456789abcdef".into(),
+            Destination {
+                room: route.cluster_id.clone(),
+                provider: record_provider(route),
+                channel: "feedback".into(),
+            },
+        )
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
+    let (identity, _) = tilo_user_identity::UserIdentity::generate("Feedback visitor", 1);
+    let host = enrol(
+        &identity,
+        "temporary-node",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let device = enrol(&identity, "temporary-browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&identity, &host, state.path()).await;
+    let room = hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .create("Feedback fixture")
+        .await
+        .unwrap();
+    let mut browser = Browser::open_room(&hosted, &device, &host, &room.room).await;
+    let person = hex::encode(identity.verifying_key().to_bytes());
+    hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .prepare_application(&room.room, &host.cert, &common::catalogue(), "so.tilo.chat")
+        .await
+        .unwrap();
+    let route = create_feedback_record(&mut browser).await;
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let submission = approved(&route);
+    submit_local_participant(&mut browser, &route, &submission, &person);
+    submit_local_participant(&mut browser, &route, &submission, &person);
+    let read_address = ActionAddress::new(
+        format!("chat.feedback:{}", submission.id),
+        "read-feedback-receipt",
+    );
+    let output = retained_receipt(
+        &mut browser,
+        &submission.destination.provider,
+        &read_address,
+    )
+    .await;
+    let value = output.value.unwrap();
+    assert_eq!(value["record"]["roomId"], room.room);
+    assert_eq!(value["record"]["appId"], "so.tilo.chat");
+    assert_eq!(value["record"]["recordId"], "");
+    let receipt: ui::feedback::Receipt = serde_json::from_value(value["content"].clone()).unwrap();
+    assert_eq!(receipt.id, submission.id);
+    assert_eq!(receipt.digest, submission.digest().unwrap());
+    assert_eq!(receipt.destination, submission.destination);
+    let page = browser
+        .catalogue(CatalogueQuery {
+            provider: Some(record_provider(&route)),
+            target: Some(read_address.clone()),
+            max_results: 200,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        page.rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .any(|entry| entry.address == read_address)
+    );
+    let mut current = request(
+        &submission.destination.provider,
+        read_address.clone(),
+        InvokeArgument::None,
+    );
+    current.revision = Some(page.revision.clone());
+    assert!(matches!(
+        browser.invoke(current.clone()).await.status,
+        ReceiptStatus::Completed { .. }
+    ));
+    current.revision = Some("stale-source".into());
+    assert!(matches!(
+        browser.invoke(current).await.status,
+        ReceiptStatus::Rejected { .. }
+    ));
+    assert_one_report(&mut browser, &route, &submission, &person).await;
+    assert_local_only_report_is_not_a_receipt(&mut browser, &route, &submission).await;
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
+}
+
+async fn retained_receipt(
+    browser: &mut Browser,
+    provider: &str,
+    address: &ActionAddress,
+) -> tilo_actions::ActionOutput {
+    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    loop {
+        let receipt = browser
+            .invoke(request(provider, address.clone(), InvokeArgument::None))
+            .await;
+        if let ReceiptStatus::Completed { output } = receipt.status {
+            return output;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "canonical receipt unavailable: {receipt:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn assert_one_report(
+    browser: &mut Browser,
+    route: &DocumentRoute,
+    submission: &Submission,
+    person: &str,
+) {
+    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    loop {
+        let replica = browser.mount(route);
+        let reports = replica.read(chat::feedback::reports).unwrap().unwrap();
+        if !reports.is_empty() {
+            assert_eq!(reports.len(), 1);
+            let report = reports.first().unwrap();
+            assert_eq!(&report.submission, submission);
+            assert_eq!(report.author, person);
+            assert_eq!(
+                replica.read(|doc| chat::doc::ChatDoc::list_messages(doc, "feedback").len()),
+                Some(1)
+            );
+            return;
+        }
+        assert!(Instant::now() < deadline, "signed report not received");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn assert_local_only_report_is_not_a_receipt(
+    browser: &mut Browser,
+    route: &DocumentRoute,
+    submission: &Submission,
+) {
+    let mut local = browser.mount(route);
+    let mut unsubmitted = submission.clone();
+    unsubmitted.id = "1123456789abcdef0123456789abcdef".into();
+    local
+        .invoke(
+            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            serde_json::json!({"submission": unsubmitted})
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .unwrap();
+    assert!(
+        local
+            .read(|doc| chat::feedback::report(doc, &unsubmitted.id))
+            .unwrap()
+            .unwrap()
+            .is_some()
+    );
+    let receipt = browser
+        .invoke(request(
+            &submission.destination.provider,
+            ActionAddress::new(
+                format!("chat.feedback:{}", unsubmitted.id),
+                "read-feedback-receipt",
+            ),
+            InvokeArgument::None,
+        ))
+        .await;
+    assert!(
+        !matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "a private replica is not a retained destination receipt"
+    );
+}
+
+fn submit_local_participant(
+    browser: &mut Browser,
+    route: &DocumentRoute,
+    submission: &Submission,
+    person: &str,
+) {
+    browser.pump();
+    let changes = browser
+        .documents
+        .get(route)
+        .unwrap()
+        .iter()
+        .map(|(_, bytes)| bytes.clone())
+        .collect();
+    let mut replica = Replica::open(
+        &common::catalogue(),
+        &route.app_id,
+        &route.cluster_id,
+        person,
+        false,
+        Seed::Existing {
+            record: ui::record::RecordId::package_primary(),
+            changes,
+        },
+    )
+    .unwrap();
+    replica
+        .invoke(
+            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            serde_json::json!({"submission": submission})
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .unwrap();
+    if let Some(mutation) = replica.take_mutation() {
+        browser.peer.publish(route.clone(), &mutation).unwrap();
+        let (collab_types::DocumentMutation::Snapshot(bytes)
+        | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
+        browser
+            .documents
+            .entry(route.clone())
+            .or_default()
+            .push(([0; 32], bytes));
+    }
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+}

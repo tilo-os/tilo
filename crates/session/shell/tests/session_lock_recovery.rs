@@ -96,7 +96,8 @@ impl Session {
 }
 
 fn rpc(stream: &mut UnixStream, command: &serde_json::Value) -> serde_json::Value {
-    writeln!(stream, "{command}").unwrap();
+    let request = format!("{command}\n");
+    stream.write_all(request.as_bytes()).unwrap();
     let mut line = String::new();
     assert!(
         BufReader::new(stream.try_clone().unwrap())
@@ -120,7 +121,12 @@ fn authenticate(stream: &mut UnixStream, password: &str) {
     loop {
         let state = rpc(stream, &serde_json::json!({"op":"state_dump"}));
         let chrome = &state["state"]["chrome"];
-        if !chrome["lock_auth"]["verifying"].as_bool().unwrap()
+        let verifying = chrome["lock_auth"]["verifying"]
+            .as_bool()
+            .unwrap_or_else(|| {
+                panic!("state dump must expose lock authentication status: {state}")
+            });
+        if !verifying
             && (chrome["session_locked"] == false || chrome["lock_auth"]["error"].is_string())
         {
             return;

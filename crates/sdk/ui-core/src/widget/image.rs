@@ -483,43 +483,13 @@ impl Widget for Image {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
-    /// Path to the bundled fixture relative to the crate root.
-    const FIXTURE_PATH: &str = "tests/fixtures/test_image.png";
-
-    /// Generate the 16×16 four-quadrant fixture if it isn't already on
-    /// disk. Top-left red, top-right green, bottom-left blue,
-    /// bottom-right white. Idempotent: subsequent calls are no-ops.
-    fn build_fixture_if_missing() {
-        if Path::new(FIXTURE_PATH).exists() {
-            return;
-        }
-        std::fs::create_dir_all("tests/fixtures").unwrap();
-
-        let mut rgba = Vec::with_capacity(16 * 16 * 4);
-        for y in 0..16u32 {
-            for x in 0..16u32 {
-                let (r, g, b) = if y < 8 && x < 8 {
-                    (255, 0, 0) // top-left red
-                } else if y < 8 {
-                    (0, 255, 0) // top-right green
-                } else if x < 8 {
-                    (0, 0, 255) // bottom-left blue
-                } else {
-                    (255, 255, 255) // bottom-right white
-                };
-                rgba.extend_from_slice(&[r, g, b, 255]);
-            }
-        }
-
-        crate::png::write_rgba8(FIXTURE_PATH, 16, 16, &rgba).unwrap();
-    }
+    /// Original quadrant image decoded from the committed text fixture by the build.
+    const FIXTURE_PATH: &str = concat!(env!("OUT_DIR"), "/test_image.png");
 
     #[test]
     fn image_loads_fits_and_survives_missing_sources() {
         fn image_loads_from_encoded_bytes_and_reports_size() {
-            build_fixture_if_missing();
             let bytes = std::fs::read(FIXTURE_PATH).unwrap();
             let img = Image::from_encoded(&bytes).unwrap();
             assert_eq!(img.intrinsic_size(), (16, 16));

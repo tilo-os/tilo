@@ -212,6 +212,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         ShellNetwork::spawn_with(
             tree.clone(),
             &session_dir.join("device-private/keypair.bin"),
+            &session_dir.join("peer-sync"),
             Reach::Loopback,
             move |secret, _| {
                 let key = SigningKey::from_bytes(&secret.to_bytes());
@@ -408,6 +409,71 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         request.from.as_bytes(),
         &browser_device,
         "answered to the device the relay authenticated"
+    );
+
+    assert!(
+        net.peer_identities
+            .get(&crate::shell::state::PeerOrigin::peer(&request.from))
+            .is_none(),
+        "the browser has sent no legacy identity hello"
+    );
+    let presence = collab_types::PeerPresence {
+        key: postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+            id: acme.room.clone(),
+        })
+        .unwrap(),
+        payload: collab_types::PeerPresencePayload::Arrived,
+    };
+    let publisher = neighbour_wire::peer_handle(&browser_device);
+    let publish_presence = |topic, endpoint, publisher, cluster| {
+        net.dispatch_neighbour_msg(
+            topic,
+            endpoint,
+            None,
+            false,
+            neighbour_wire::NeighbourMsg::AppPresenceV2 {
+                peer: publisher,
+                app_id: NOTES.into(),
+                cluster_id: cluster,
+                presence: presence.clone(),
+                colour: None,
+            },
+        );
+    };
+    let inbound = net.inbound_app_presence_handle();
+    inbound.lock().unwrap().clear();
+    publish_presence(
+        acme.workspace_id,
+        request.from,
+        publisher,
+        acme.room.clone(),
+    );
+    let observed = inbound.lock().unwrap().pop().expect("admitted presence");
+    assert_eq!(observed.peer, publisher);
+    assert_eq!(observed.cluster_id, acme.room);
+    assert_eq!(observed.presence, presence);
+    publish_presence(
+        acme.workspace_id,
+        request.from,
+        publisher + 1,
+        acme.room.clone(),
+    );
+    let stranger = iroh::SecretKey::from_bytes(&[0x71; 32]).public();
+    publish_presence(
+        acme.workspace_id,
+        stranger,
+        neighbour_wire::peer_handle(stranger.as_bytes()),
+        acme.room.clone(),
+    );
+    publish_presence(
+        acme.workspace_id,
+        request.from,
+        publisher,
+        RoomId::new().to_string(),
+    );
+    assert!(
+        inbound.lock().unwrap().is_empty(),
+        "spoofed or cross-room presence was admitted"
     );
 
     // The relay carried both only as ciphertext.

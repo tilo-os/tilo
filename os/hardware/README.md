@@ -236,11 +236,30 @@ builds mainline U-Boot for `orangepi-3b-rk3566` and
 UKI. The first partition must start at or after LBA 32768; a closer partition
 is refused before any loader byte is written.
 
-CI builds this profile from an explicit `workflow_dispatch` with
-`hardware_profile=orangepi-3b-v2-1` on the native ARM64 runner. The image is
-one aarch64 disk at generation 1. It does not enter the generic `latest` /
-`genN` series. Dispatch it with publication left off; a signed board channel
-is separate from that disk build.
+The main development ARM lane builds an unsigned, unvalidated Orange Pi disk
+candidate. It is not a release or an accepted device update.
+
+A signed source-pinned board image uses Build / OS's explicit main-branch
+`workflow_dispatch` with `release=true` and `hardware_profile=orangepi-3b-v2-1`.
+Leave Lenovo firmware inputs empty: Orange Pi firmware and loader inputs are
+checksum-pinned in the repository. The native release ARM lane independently
+rebuilds, seals and disk-installs the board image, then uses the existing release
+signer, SBOM, freshness and provenance checks. Promotion verifies the exact
+source, aarch64 profile and hardware-definition hash before publishing
+`code.tilo.so/tilo/tilo:orangepi-3b-v2-1-<full-source-commit>` by preserved digest.
+Registry/signing access failures stop the lane; no development trust is accepted.
+Orange Pi uses the ordinary public Tilo image repository with repository-pinned
+firmware. The owner-visibility restriction applies to independently imported Lenovo
+firmware; selecting Orange Pi cannot admit those Lenovo firmware inputs.
+
+This is a generation-1 immutable board reference, outside generic `latest` /
+`genN`. It neither changes the generic rollback floor nor automatically updates
+an installed board. A board DTB cannot boot QEMU virt: disk-install/reproduction
+checks are not physical boot qualification. Before activating it on hardware,
+verify the existing device's profile/DTB, authenticated update route, runtime
+cohort, retained previous deployment and recovery path, then physically test
+cold boot, display/input and update/rollback. Preserve device identity and data.
+No flash or device update is performed by promotion.
 
 ```sh
 TILO_BUILD_ARCH=aarch64 TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 \
@@ -249,8 +268,8 @@ TILO_BUILD_ARCH=aarch64 TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 \
 ```
 
 `TILO_BUILD_ARCH` is only for an x86 builder that emulates aarch64. A native
-ARM builder leaves it unset. CI dispatches `hardware_profile=orangepi-3b-v2-1`
-with publication left off.
+ARM builder leaves it unset. Local builds do not publish; use the explicit protected release dispatch above
+for a signed image.
 
 The update-reference binding covers image construction and initial installation.
 It does not prove that a later image published at that reference preserves the

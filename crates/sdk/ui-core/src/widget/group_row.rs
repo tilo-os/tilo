@@ -426,6 +426,13 @@ pub struct Pan {
 }
 
 impl Pan {
+    /// Room a retained canvas keeps past each end of the content, so an
+    /// overscroll pans within it too: the rubber band never reaches
+    /// [`STRIP_OVERSCROLL_REACH_FRAC`] of the viewport.
+    fn canvas_pad(&self) -> f64 {
+        (self.viewport.width().max(0.0) * STRIP_OVERSCROLL_REACH_FRAC).ceil() + 1.0
+    }
+
     pub fn scroll_x(&self) -> f64 {
         self.scroll_x
     }
@@ -812,6 +819,13 @@ impl Lane {
     }
 }
 
+/// Whether a strip panned to `scroll` (whole pixels) can be drawn in canvas
+/// coordinates: the retained canvas spans the content from no pan to the
+/// furthest, plus `pad` past either end for the rubber band.
+pub fn pan_within_canvas(scroll: f64, max_scroll: f64, pad: f64) -> bool {
+    (-pad..=max_scroll.max(0.0) + pad).contains(&scroll)
+}
+
 impl GroupRow {
     /// Paint selected active app surfaces without the row's viewport clip.
     ///
@@ -916,9 +930,40 @@ impl GroupRow {
 
     /// Whether a group at `rect`, shifted by `dx`, paints anything inside
     /// the row, including its shadow sprites.
+    ///
+    /// A strip drawn in canvas coordinates draws the whole canvas: after
+    /// [`Self::offset_lane`] the rects are canvas coordinates, so the window
+    /// has to include every group a pan can reveal.
     fn paints_within_row(&self, rect: Rect, dx: f64) -> bool {
         let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
-        reach.x1 + dx > self.rect.x0 && reach.x0 + dx < self.rect.x1
+        let x1 = if crate::retained_present::unbake_scroll() {
+            self.rect.x1 + self.max_scroll_x() + 2.0 * self.canvas_pad()
+        } else {
+            self.rect.x1
+        };
+        reach.x1 + dx > self.rect.x0 && reach.x0 + dx < x1
+    }
+
+    /// Shift one lane from screen coordinates to canvas coordinates, or back.
+    fn offset_lane(&mut self, lane: usize, dx: f64) {
+        let in_lane: Vec<bool> = (0..self.groups.len())
+            .map(|index| self.lane_index_of(index) == lane)
+            .collect();
+        for (index, group) in self.groups.iter_mut().enumerate() {
+            if in_lane.get(index).copied().unwrap_or(false) {
+                group.offset_layout(dx);
+            }
+        }
+        for (index, handle) in self.handles.iter_mut().enumerate() {
+            let left = in_lane.get(index).copied().unwrap_or(false);
+            let right = in_lane
+                .get(index.saturating_add(1))
+                .copied()
+                .unwrap_or(false);
+            if left && right {
+                handle.offset_layout(dx);
+            }
+        }
     }
 
     /// Group to promote fullscreen, if `fullscreen_group` belongs to this
@@ -1103,6 +1148,24 @@ impl GroupRow {
 
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_idx().is_some()
+    }
+
+    /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
+    /// The viewport clips grips, and promoted or hidden groups have none.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        if self.hidden {
+            return None;
+        }
+        let (index, group) = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(_, group)| group.id == group_id)?;
+        if self.layout_hides_group(index) || self.fullscreen_group == Some(group_id) {
+            return None;
+        }
+        let rect = group.resize_grab_rect()?.intersect(self.rect);
+        (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
     }
 
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
@@ -1690,6 +1753,46 @@ impl GroupRow {
     /// [`Self::output_pan`] for any other display.
     pub fn scroll_x(&self) -> f64 {
         self.leading_pan().scroll_x
+    }
+
+    /// The pan as drawn, preserving fractional motion and input geometry.
+    pub fn drawn_scroll_x(&self) -> f64 {
+        self.scroll_x()
+    }
+
+    /// Where a strip whose viewport is `viewport` draws: the viewport and a
+    /// 16 px pad above and below it that keeps shadow and glow sprites
+    /// (ambient_pad=50, bloom_pad=120, see `TileHost::draw_steady_state`)
+    /// intact at the top and bottom.
+    pub fn drawn_bounds(viewport: Rect) -> Rect {
+        Rect::new(
+            viewport.x0,
+            viewport.y0 - 16.0,
+            viewport.x1,
+            viewport.y1 + 16.0,
+        )
+    }
+
+    /// How far a retained draw moves the row into canvas coordinates
+    /// ([`crate::retained_present::unbake_scroll`]): the drawn pan plus the
+    /// canvas's padding while it lies within the canvas, zero outside a
+    /// retained draw.
+    pub fn canvas_shift(&self) -> f64 {
+        let scroll = self.drawn_scroll_x();
+        let pad = self.canvas_pad();
+        if crate::retained_present::unbake_scroll()
+            && pan_within_canvas(scroll, self.max_scroll_x(), pad)
+        {
+            scroll + pad
+        } else {
+            0.0
+        }
+    }
+
+    /// Room a retained canvas keeps left of the content and right of the
+    /// furthest pan, in layout pixels.
+    pub fn canvas_pad(&self) -> f64 {
+        self.leading_pan().canvas_pad()
     }
 
     /// Set the real strip viewport to an absolute finite offset. Browser and
@@ -3484,12 +3587,33 @@ impl Widget for GroupRow {
             // 16px vertical pad keeps shadow/glow sprites (ambient_pad=50,
             // bloom_pad=120, see `TileHost::draw_steady_state`) intact at
             // top/bottom.
-            let clip = Rect::new(
-                viewport.x0,
-                viewport.y0 - 16.0,
-                viewport.x1,
-                viewport.y1 + 16.0,
-            );
+            // A retained strip draws the canvas, not the current pan. Layout
+            // placed the lane at its exact pan; shifting
+            // the rects back by the same amount gives canvas positions that
+            // do not change while the pan does. They are put back afterwards,
+            // so hit testing still sees screen positions. The canvas keeps
+            // room for the rubber band left of the content, so the content
+            // starts `pad` in and an overscroll pans like any other pan.
+            let pan = self.pan_of_lane(k);
+            let scroll = pan.scroll_x();
+            let max_scroll = pan.max_scroll_x();
+            let pad = pan.canvas_pad();
+            let unbake = crate::retained_present::unbake_scroll()
+                && pan_within_canvas(scroll, max_scroll, pad);
+            let clip_right = if unbake {
+                viewport.x1 + max_scroll + 2.0 * pad
+            } else {
+                viewport.x1
+            };
+            let shift = if unbake { scroll + pad } else { 0.0 };
+            let shifted = shift.abs() > f64::EPSILON;
+            if shifted {
+                self.offset_lane(k, shift);
+            }
+            let clip = Rect {
+                x1: clip_right,
+                ..Self::drawn_bounds(viewport)
+            };
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -3527,6 +3651,9 @@ impl Widget for GroupRow {
                 &in_run,
             );
             scene.pop_layer();
+            if shifted {
+                self.offset_lane(k, -shift);
+            }
         }
         self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
@@ -5126,6 +5253,98 @@ mod tests {
             .expect("taffy compute_layout");
         row.apply_layout(&taffy, root, Point::ORIGIN);
         (row, taffy, root)
+    }
+
+    /// A presenter pans a strip drawn in canvas coordinates. The encoded
+    /// scene must be the same at two pans, or every pan draws the strip
+    /// again.
+    #[test]
+    fn panning_a_strip_drawn_in_canvas_coordinates_does_not_change_its_scene() {
+        let specs: Vec<Vec<u64>> = (1..=12).map(|id| vec![id]).collect();
+        let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
+        let (mut row, taffy, root) = make_row_with_groups_on_display(&specs, 2400.0, 800.0);
+        assert!(
+            row.max_scroll_x() > 200.0,
+            "the fixture must be able to pan"
+        );
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut text = TextRenderer::new();
+        let mut draw_at = |row: &mut GroupRow, scroll: f64| {
+            row.reduce_motion = true;
+            row.set_scroll_x_for_test(scroll);
+            row.apply_layout(&taffy, root, Point::ORIGIN);
+            let mut scene = Scene::new();
+            row.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            scene
+        };
+        row.reduce_motion = true;
+        crate::retained_present::begin_retained_scene(true);
+        let _warm = draw_at(&mut row, 0.0);
+        let rested = draw_at(&mut row, 0.0);
+        let again = draw_at(&mut row, 0.0);
+        let panned = draw_at(&mut row, 200.0);
+        let shift = row.canvas_shift();
+        let on_screen = row.groups[0].get_rect().x0;
+        crate::retained_present::end_retained_scene();
+        row.set_scroll_x_for_test(0.0);
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        let at_rest = row.groups[0].get_rect().x0;
+        assert!(
+            rested.encoding_eq(&again),
+            "two settled frames at rest must match before a pan is meaningful"
+        );
+        assert!(
+            rested.encoding_eq(&panned),
+            "a pan must leave the strip's scene as it was"
+        );
+        assert_eq!(
+            shift,
+            200.0 + row.canvas_pad(),
+            "floating surfaces follow the same shift"
+        );
+        assert!(
+            (on_screen - at_rest).abs() > 1.0,
+            "drawing must put the windows back into screen coordinates"
+        );
+    }
+
+    #[test]
+    fn an_overscrolled_strip_pans_within_the_padded_canvas() {
+        let specs: Vec<Vec<u64>> = (1..=12).map(|id| vec![id]).collect();
+        let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
+        let (mut row, taffy, root) = make_row_with_groups_on_display(&specs, 2400.0, 800.0);
+        let max = row.max_scroll_x();
+        let pad = row.canvas_pad();
+        assert!(
+            pad > row.leading_pan().viewport().width() * STRIP_OVERSCROLL_REACH_FRAC,
+            "the pad holds the furthest rubber band"
+        );
+        assert!(pan_within_canvas(-pad, max, pad) && pan_within_canvas(max + pad, max, pad));
+        assert!(!pan_within_canvas(-pad - 1.0, max, pad));
+
+        row.reduce_motion = true;
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        // A rubber band in progress: the setters clamp to the content.
+        row.pan.scroll_x = -30.0;
+        crate::retained_present::begin_retained_scene(true);
+        let overscrolled = row.canvas_shift();
+        row.set_scroll_x_for_test(120.0);
+        let panned = row.canvas_shift();
+        crate::retained_present::end_retained_scene();
+        let outside = row.canvas_shift();
+        assert_eq!(
+            overscrolled,
+            pad - 30.0,
+            "a rubber band past the start pans within the canvas"
+        );
+        assert_eq!(panned, 120.0 + pad);
+        assert_eq!(outside, 0.0, "outside a retained draw nothing is shifted");
     }
 
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {

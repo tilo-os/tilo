@@ -658,6 +658,7 @@ pub enum ContinuitySemanticSchema {
     PublicationPositionV1,
     MediaPositionV1,
     RealtimeSessionV1,
+    TextPositionV1,
 }
 
 impl TrustAttestation {

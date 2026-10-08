@@ -17,6 +17,9 @@ use crate::shell::overlay_host::layers::{
 use ui::TextRole;
 use ui::paint::PaintCtx;
 use ui::widget::Interaction;
+use ui::widget::tooltip::{
+    TooltipHost, TooltipSide, chip_rect_on, chip_size_in_viewport, draw_chip,
+};
 use ui::widget::{ListRowFace, RowLeading};
 
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
@@ -37,10 +40,20 @@ pub(crate) enum PowerMenuClick {
     Execute(os_actions::SessionAction),
 }
 
+#[derive(Clone, Copy)]
+enum DetailInput {
+    None,
+    Keyboard,
+    Pointer(Point),
+}
+
 pub(crate) struct PowerMenu {
     open: bool,
     transition: ui::Transition,
     selected: usize,
+    detail_tip: TooltipHost,
+    detail_rect: Option<Rect>,
+    detail_input: DetailInput,
     /// Theme-resolved row geometry from the last frame, shared by paint,
     /// pointer targets and accessibility.
     resolved_metrics: PowerMenuMetrics,
@@ -156,6 +169,9 @@ impl PowerMenu {
             open: false,
             transition: ui::Transition::closed(),
             selected: 0,
+            detail_tip: TooltipHost::new(),
+            detail_rect: None,
+            detail_input: DetailInput::None,
             resolved_metrics: PowerMenuMetrics::for_text_scale(1.0),
             user_switching,
             owns_host_power: true,
@@ -168,6 +184,7 @@ impl PowerMenu {
         self.user_switching = false;
         self.owns_host_power = false;
         self.selected = 0;
+        self.clear_detail_tip();
     }
 
     /// The rows this session offers, in paint order. Paint, clicks, keys,
@@ -223,6 +240,7 @@ impl PowerMenu {
                         .map(|(index, (action, _))| {
                             AccessNode::new(Role::Button)
                                 .with_name(action.label())
+                                .with_action_target(action.semantic_name())
                                 .with_description(action.detail())
                                 .with_state(
                                     AccessState::new()
@@ -258,12 +276,14 @@ impl PowerMenu {
             return false;
         }
         self.selected = *index;
+        self.detail_input = DetailInput::Keyboard;
         true
     }
 
     pub(crate) fn open(&mut self) {
         self.open = true;
         self.selected = 0;
+        self.clear_detail_tip();
         self.transition
             .set_open(true, panel_open_duration(), ui::Curve::EaseOut);
     }
@@ -271,6 +291,7 @@ impl PowerMenu {
     pub(crate) fn close(&mut self) -> bool {
         let was_open = self.open;
         self.open = false;
+        self.clear_detail_tip();
         if was_open {
             self.transition
                 .set_open(false, panel_open_duration(), ui::Curve::EaseOut);
@@ -279,7 +300,7 @@ impl PowerMenu {
     }
 
     pub(crate) fn is_animating(&self, now: Instant) -> bool {
-        self.transition.is_animating(now)
+        self.transition.is_animating(now) || (self.open && self.detail_tip.needs_frame())
     }
 
     /// Pin the production modal at its resting state for deterministic visual
@@ -293,6 +314,9 @@ impl PowerMenu {
     pub(crate) fn click(&mut self, viewport: Rect, point: Point) -> PowerMenuClick {
         if !self.open {
             return PowerMenuClick::Ignored;
+        }
+        if self.detail_rect.is_some_and(|rect| rect.contains(point)) {
+            return PowerMenuClick::Consumed;
         }
         let stable_point = point;
         let painted_point = self.untransform_pointer(viewport, point, Instant::now());
@@ -358,6 +382,18 @@ impl PowerMenu {
             return PowerMenuClick::Ignored;
         }
         let count = self.row_count();
+        if matches!(
+            key,
+            Key::Named(
+                NamedKey::ArrowDown
+                    | NamedKey::ArrowUp
+                    | NamedKey::Tab
+                    | NamedKey::Home
+                    | NamedKey::End
+            )
+        ) {
+            self.detail_input = DetailInput::Keyboard;
+        }
         match key {
             Key::Named(NamedKey::Escape) => {
                 self.close();
@@ -458,8 +494,61 @@ impl PowerMenu {
         // scale them again (HIG §7a) — reset for this pass, as the shell's
         // immediate-mode chrome passes do, and restored afterwards.
         self.draw_panel(scene, modal_transform, text_renderer, theme, viewport);
+        self.draw_detail_tip(
+            viewport,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+        );
         text_renderer.set_text_scale(renderer_scale);
         scene.pop_layer();
+    }
+
+    fn clear_detail_tip(&mut self) {
+        self.detail_tip.dismiss();
+        self.detail_rect = None;
+        self.detail_input = DetailInput::None;
+    }
+
+    fn draw_detail_tip(&mut self, viewport: Rect, ctx: &mut PaintCtx<'_>) {
+        let now = ui::time::now();
+        let target = if !self.open {
+            None
+        } else if matches!(self.detail_input, DetailInput::Pointer(point)
+            if self.detail_rect.is_some_and(|rect| rect.contains(point)))
+        {
+            self.detail_tip
+                .visible()
+                .map(|(label, anchor)| (anchor, label.to_owned()))
+        } else {
+            let index = match self.detail_input {
+                DetailInput::Keyboard => Some(self.selected),
+                DetailInput::Pointer(point) => (0..self.row_count())
+                    .find(|index| self.action_rect(viewport, *index).contains(point)),
+                DetailInput::None => None,
+            };
+            index.and_then(|index| {
+                self.rows()
+                    .nth(index)
+                    .map(|(action, _)| (self.action_rect(viewport, index), action.detail()))
+            })
+        };
+        self.detail_tip.on_pointer(target, now);
+        self.detail_tip.tick(now);
+        self.detail_rect = None;
+        if let Some((label, anchor)) = self.detail_tip.visible() {
+            let size = chip_size_in_viewport(label, ctx.text, ctx.theme, viewport);
+            // Keep the hint outside the action panel whenever the output has room.
+            // Compact outputs still use the shared clamped placement and inert hit area.
+            let panel = self.panel_rect(viewport);
+            let gap = f64::from(ctx.theme.tokens.spacing.s4);
+            let placement_anchor = if panel.x0 - viewport.x0 >= size.0 + gap {
+                Rect::new(panel.x0, anchor.y0, panel.x1, anchor.y1)
+            } else {
+                anchor
+            };
+            let rect = chip_rect_on(TooltipSide::Beside, placement_anchor, size, viewport);
+            self.detail_rect = Some(rect);
+            draw_chip(ctx.scene, ctx.transform, ctx.text, ctx.theme, rect, label);
+        }
     }
 
     fn draw_panel(
@@ -588,6 +677,16 @@ impl ShellLayer for PowerMenu {
                 Some(point) => self.click(cx.geometry.viewport, point),
                 None => return Routed::Pass,
             },
+            WindowEvent::CursorMoved { .. } => {
+                self.detail_input = cx.cursor.map_or(DetailInput::None, DetailInput::Pointer);
+                cx.request(LayerIntent::Repaint);
+                return Routed::Consumed;
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.clear_detail_tip();
+                cx.request(LayerIntent::Repaint);
+                return Routed::Consumed;
+            }
             _ => return Routed::Pass,
         };
         match outcome {
@@ -621,6 +720,20 @@ impl ShellLayer for PowerMenu {
 
     fn focus_accessibility(&mut self, path: &[usize]) -> bool {
         self.focus_accessibility_path(path)
+    }
+
+    fn semantic_intent(&self, target: &str) -> Option<LayerIntent> {
+        if !self.open {
+            return None;
+        }
+        self.rows()
+            .find(|(action, _)| action.semantic_name() == target)
+            .map(|(action, _)| {
+                LayerIntent::Session(match action {
+                    PowerMenuAction::Lock => os_actions::SessionAction::Lock,
+                    PowerMenuAction::External(action) => *action,
+                })
+            })
     }
 
     fn dismiss(&mut self) -> bool {
@@ -842,6 +955,7 @@ fn at(transform: Affine, xy: (f64, f64)) -> Affine {
 mod tests {
     use super::*;
     use ui::ColorCompat;
+    use winit::keyboard::{Key, NamedKey};
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
@@ -1513,5 +1627,232 @@ mod tests {
                 e.b
             );
         }
+    }
+    #[test]
+    fn power_menu_detail_capture_matrix_is_written() {
+        use crate::shell::osd::review_offscreen::OffscreenRenderer;
+        use ui::widget::{Tooltip, Widget as _};
+        let out = std::env::var_os("TILO_POWER_DETAIL_SHOTS").map_or_else(
+            || std::path::PathBuf::from("target/power-menu-details"),
+            std::path::PathBuf::from,
+        );
+        std::fs::create_dir_all(&out).expect("capture output");
+        for (name, theme, width, height) in [
+            ("dark", Theme::dark(), 1280_u32, 800_u32),
+            ("light", Theme::light(), 1280, 800),
+            ("high-contrast", Theme::high_contrast(), 1280, 800),
+            ("large-text", Theme::dark().with_text_scale(2.0), 800, 700),
+            (
+                "ui-text-scaled",
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+                1280,
+                800,
+            ),
+            ("narrow", Theme::dark().with_text_scale(2.0), 320, 480),
+        ] {
+            let viewport = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let mut text = TextRenderer::new();
+            let mut menu = PowerMenu::default();
+            menu.open();
+            menu.force_settled_for_visual_test();
+            menu.key(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown),
+                false,
+            );
+            menu.draw(
+                viewport,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            std::thread::sleep(ui::widget::tooltip::HOVER_DWELL + Duration::from_millis(20));
+            let mut scene = Scene::new();
+            menu.draw(viewport, &mut scene, Affine::IDENTITY, &mut text, &theme);
+            let mut renderer = OffscreenRenderer::new(width, height);
+            renderer.render_png(
+                &scene,
+                theme.tokens.colors.surfaces.base,
+                out.join(format!("{name}-keyboard-description.png")),
+            );
+            let label = "Close applications and end this session, then return to the login screen.";
+            let mut tooltip =
+                Tooltip::new(label)
+                    .with_delay(Duration::ZERO)
+                    .with_anchor(Rect::new(
+                        viewport.x1 - 60.0,
+                        100.0,
+                        viewport.x1 - 20.0,
+                        132.0,
+                    ));
+            tooltip.on_hover_enter(Duration::ZERO);
+            let presence = ui::presence::PresenceCtx::default();
+            presence.viewport.set(Some(viewport));
+            scene.reset();
+            tooltip.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            renderer.render_png(
+                &scene,
+                theme.tokens.colors.surfaces.base,
+                out.join(format!("{name}-tooltip-wrap.png")),
+            );
+        }
+    }
+    fn paint_detail(menu: &mut PowerMenu, viewport: Rect, theme: &Theme) {
+        menu.draw(
+            viewport,
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+        );
+    }
+
+    #[test]
+    fn power_menu_complete_details_follow_focus_cancel_and_resize() {
+        let mut menu = PowerMenu {
+            detail_tip: TooltipHost::new().with_dwell(ui::time::Duration::ZERO),
+            ..PowerMenu::default()
+        };
+        menu.open();
+        menu.force_settled_for_visual_test();
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::ArrowDown), false),
+            PowerMenuClick::Consumed
+        );
+        let theme = Theme::dark().with_text_scale(2.0);
+        paint_detail(&mut menu, VIEWPORT, &theme);
+        let expected = PowerMenuAction::External(os_actions::SessionAction::Logout).detail();
+        assert_eq!(
+            menu.detail_tip.visible().map(|(label, _)| label),
+            Some(expected.as_str())
+        );
+        let wide_hint = menu.detail_rect.expect("wide-output description");
+        assert!(
+            wide_hint.x1 <= menu.panel_rect(VIEWPORT).x0,
+            "a wide-output hint must not cover another action"
+        );
+        let small = Rect::new(0.0, 0.0, 320.0, 480.0);
+        paint_detail(&mut menu, small, &theme);
+        let rect = menu.detail_rect.expect("complete focused description");
+        assert!(small.contains(rect.origin()) && rect.x1 <= small.x1 && rect.y1 <= small.y1);
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Escape), false),
+            PowerMenuClick::Consumed
+        );
+        assert!(menu.detail_tip.visible().is_none());
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Enter), false),
+            PowerMenuClick::Ignored
+        );
+        menu.open();
+        menu.force_settled_for_visual_test();
+        paint_detail(&mut menu, small, &theme);
+        assert!(
+            menu.detail_tip.visible().is_none(),
+            "reopening must clear the previous hint"
+        );
+    }
+
+    fn route_detail_pointer(
+        menu: &mut PowerMenu,
+        event: &WindowEvent,
+        cursor: Point,
+        viewport: Rect,
+    ) -> Vec<LayerIntent> {
+        let mut doc = automerge::AutoCommit::new();
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy.new_leaf(taffy::Style::default()).expect("leaf");
+        let modifiers = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let mut event_cx = ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: ui::widget::Edits::lend(&mut doc),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        };
+        let mut cx = LayerCx::new(
+            LayerGeometry {
+                viewport,
+                outputs: &[],
+                focused_output: None,
+            },
+            Some(cursor),
+            &mut event_cx,
+        );
+        assert_eq!(menu.handle_event(event, &mut cx), Routed::Consumed);
+        cx.into_intents()
+    }
+    #[test]
+    fn power_menu_hover_description_is_inert_and_preserves_semantic_actions() {
+        let mut menu = PowerMenu {
+            detail_tip: TooltipHost::new().with_dwell(ui::time::Duration::ZERO),
+            ..PowerMenu::default()
+        };
+        menu.open();
+        menu.force_settled_for_visual_test();
+        let viewport = Rect::new(0.0, 0.0, 320.0, 480.0);
+        let theme = Theme::dark().with_text_scale(2.0);
+        paint_detail(&mut menu, viewport, &theme);
+        let cursor = menu.action_rect(viewport, 1).center();
+        let hover = WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(cursor.x, cursor.y),
+        };
+        assert_eq!(
+            route_detail_pointer(&mut menu, &hover, cursor, viewport),
+            [LayerIntent::Repaint]
+        );
+        paint_detail(&mut menu, viewport, &theme);
+        let rect = menu.detail_rect.expect("hover hint");
+        assert_eq!(
+            route_detail_pointer(&mut menu, &hover, rect.center(), viewport),
+            [LayerIntent::Repaint]
+        );
+        paint_detail(&mut menu, viewport, &theme);
+        assert!(
+            menu.detail_tip.visible().is_some(),
+            "reading the hint keeps it visible"
+        );
+        let press = WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        for _ in 0..2 {
+            assert!(route_detail_pointer(&mut menu, &press, rect.center(), viewport).is_empty());
+        }
+        assert!(
+            menu.open,
+            "a hint click must not execute the row underneath"
+        );
+        assert!(matches!(
+            menu.semantic_intent("power_logout"),
+            Some(LayerIntent::Session(os_actions::SessionAction::Logout))
+        ));
+        let node = menu.accessibility_snapshot().expect("visible menu");
+        assert!(
+            node.children
+                .iter()
+                .any(|child| child.action_target.as_deref() == Some("power_logout"))
+        );
+        let leave = WindowEvent::CursorLeft {
+            device_id: winit::event::DeviceId::dummy(),
+        };
+        assert_eq!(
+            route_detail_pointer(&mut menu, &leave, rect.center(), viewport),
+            [LayerIntent::Repaint]
+        );
+        paint_detail(&mut menu, viewport, &theme);
+        assert!(menu.detail_tip.visible().is_none());
+        menu.detach_from_host();
+        assert!(menu.semantic_intent("power_restart").is_none());
+        assert!(menu.semantic_intent("power_switch_user").is_none());
+        menu.close();
+        assert!(menu.semantic_intent("power_logout").is_none());
     }
 }

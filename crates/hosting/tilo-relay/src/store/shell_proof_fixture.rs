@@ -415,7 +415,50 @@ fn shell_proof_fixture_generator_builds_the_asserted_scenario() {
 #[test]
 #[ignore = "rewrites the checked-in shell-proof fixture"]
 fn regenerate_shell_proof_fixture() {
-    let dir = super::shell_proof_tests::fixture();
-    write(&generate(), &dir);
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shell-proof");
+    let scratch = tempfile::tempdir().unwrap();
+    write(&generate(), scratch.path());
+    for stale in ["frames", "retained"] {
+        let path = dir.join(stale);
+        if path.exists() {
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+    write_text_tree(scratch.path(), &dir);
     println!("wrote the shell-proof fixture to {}", dir.display());
+}
+
+/// Explicit regeneration writes textual source, never raw binary fixtures.
+fn write_text_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if entry.file_type().unwrap().is_dir() {
+            write_text_tree(&path, &to.join(entry.file_name()));
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "postcard" || extension == "delta")
+        {
+            let bytes = fs::read(&path).unwrap();
+            let text = bytes
+                .chunks(16)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        + "\n"
+                })
+                .collect::<String>();
+            fs::write(
+                to.join(format!("{}.hex", entry.file_name().to_string_lossy())),
+                text,
+            )
+            .unwrap();
+        } else {
+            fs::copy(&path, to.join(entry.file_name())).unwrap();
+        }
+    }
 }

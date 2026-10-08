@@ -174,6 +174,8 @@ struct RevealAnim {
 #[derive(Clone, Debug)]
 struct ClosingTab {
     desc: TabDescriptor,
+    index: usize,
+    was_active: bool,
     /// Rect at close-start; the fade animates in place, not tracking the layout
     /// spring.
     pill_rect: Rect,
@@ -387,6 +389,32 @@ pub(crate) struct TabDragVisual {
 }
 
 impl TabBar {
+    /// Move the bar and every rectangle laid out in it by `dx`; see
+    /// [`super::window_group::WindowGroup::offset_layout`].
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.rect = shift_rect(self.rect, shift);
+        for rect in &mut self.tab_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.close_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.close_hit_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.max_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.search_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
+    }
+
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
     /// inactive but the slot still holds its place (no neighbour reflow).
     pub const SOURCE_PILL_DIM_ALPHA: f32 = 0.35;
@@ -1702,6 +1730,7 @@ impl TabBar {
         let close_rect = self.close_rects.get(idx).copied().unwrap_or(Rect::ZERO);
         self.pending_close = Some(id);
         self.snapshot_layout_for_spring();
+        let was_active = self.active_id == id;
         self.tabs.remove(idx);
         if self.active_id == id {
             // Prefer the tab that slid into this index; fall back to the
@@ -1714,10 +1743,31 @@ impl TabBar {
         }
         self.closing_tabs.push(ClosingTab {
             desc,
+            index: idx,
+            was_active,
             pill_rect,
             close_rect,
             started_at: crate::time::now(),
         });
+        true
+    }
+
+    /// Restore a requested close whose host still owns the live tab. No
+    /// metadata or focus is lost while the client asks for a save decision.
+    pub fn cancel_close(&mut self, id: u64) -> bool {
+        let Some(index) = self.closing_tabs.iter().position(|tab| tab.desc.id == id) else {
+            return false;
+        };
+        let tab = self.closing_tabs.remove(index);
+        if !self.tabs.iter().any(|live| live.id == id) {
+            self.tabs.insert(tab.index.min(self.tabs.len()), tab.desc);
+        }
+        if tab.was_active {
+            self.active_id = id;
+        }
+        if self.pending_close == Some(id) {
+            self.pending_close = None;
+        }
         true
     }
 

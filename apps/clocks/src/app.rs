@@ -8,7 +8,9 @@
 //! current. A capture or a past version does none of that.
 
 use crate::model::{Clocks, WeekdayKey, bounded_label};
-use crate::native_timers::{ALARMS_URI, TIMERS_URI, timer_id as native_timer_id};
+use crate::native_timers::{
+    ALARMS_URI, TIMERS_URI, alarm_id as native_alarm_id, timer_id as native_timer_id,
+};
 use crate::resource::ClocksEffect;
 use crate::schedule::{DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
@@ -20,6 +22,7 @@ use std::{
 use taffy::{NodeId, TaffyTree};
 use ui::framework::{Actions, Dispatcher, Setting};
 use ui::icons::Icon;
+use ui::prelude::Id;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
@@ -39,6 +42,7 @@ pub(crate) struct Shown {
     /// The moment wall clocks show, when a capture pins it; else the
     /// device's clock.
     pub(crate) pinned_now: Option<chrono::DateTime<Utc>>,
+    pub(crate) selected_alarm: Option<Id>,
 }
 
 impl Shown {
@@ -347,7 +351,9 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                 Text::new("No alarms yet. Set one for a future time.").dimmed(),
             ));
         }
-        for (id, alarm) in s.clocks.alarms.iter() {
+        let mut alarms: Vec<_> = s.clocks.alarms.iter().collect();
+        alarms.sort_by_key(|(id, _)| s.selected_alarm.as_ref() != Some(id));
+        for (id, alarm) in alarms {
             let repeat = repeat_summary(&alarm.weekdays());
             let row = Row::new()
                 .push(Box::new(
@@ -379,7 +385,10 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         Clocks::REMOVE_ALARM.with(id.clone()),
                     ),
                 ));
-            col = col.push(Box::new(clock_card(&alarm.label, Box::new(row))));
+            col = col.push(Box::new(
+                clock_card(&alarm.label, Box::new(row))
+                    .selected(s.selected_alarm.as_ref() == Some(id)),
+            ));
         }
         Box::new(col)
     });
@@ -895,7 +904,7 @@ fn surface(
         STOPWATCH => stopwatch_screen(&st, &page_controls),
         _ => timers_screen(&st, &page_controls, &timer_validation_error),
     });
-    let dismiss_notice = notice.clone();
+    let notice_controls = controls.clone();
     let due_notice = ModelView::from_state(notice, move |notice| {
         notice.as_ref().map_or_else(
             || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
@@ -910,10 +919,13 @@ fn surface(
                                     .with_padding_rhythm(None, None)
                                     .push(Box::new(Text::new(body)))
                                     .push(Box::new(Spacer::new()))
-                                    .push(button("clocks.notice.dismiss", "Dismiss", {
-                                        let dismiss_notice = dismiss_notice.clone();
-                                        move || dismiss_notice.set(None)
-                                    })),
+                                    .push(Box::new(
+                                        notice_controls.effect(
+                                            Button::new("clocks.notice.dismiss", "Dismiss")
+                                                .control_size(ui::widget::ControlSize::Large),
+                                            &ClocksEffect::DismissNotice,
+                                        ),
+                                    )),
                             ),
                         ))),
                 )
@@ -978,6 +990,8 @@ pub struct ClocksApp {
     /// Whether this window is one someone uses, which rings, schedules and
     /// talks to the shell.
     live: bool,
+    pub(crate) record: Option<ui::record::RecordId>,
+    pub(crate) opener: Option<ui::framework::OpenHere>,
     /// Whether the section was chosen from the first state presented.
     opened: bool,
     pub(crate) last_notification: Option<(String, String, String)>,
@@ -991,7 +1005,7 @@ pub struct ClocksApp {
     notifications: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
     pub(crate) pending_notifications: Vec<PendingNotification>,
     next_notification_attempt: ui::time::Instant,
-    last_scheduled_timers: Option<Vec<(String, Option<i64>)>>,
+    last_scheduled_clocks: Option<(Clocks, crate::schedule::Delivery, i32)>,
     next_schedule_attempt: ui::time::Instant,
     /// Activation URIs of clicked notifications, from any thread.
     activations: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -1005,6 +1019,7 @@ impl ClocksApp {
             clocks: Clocks::default(),
             device: device.get(),
             pinned_now: None,
+            selected_alarm: None,
         });
         let notice = ui::LocalState::new(None);
         let validation_error = ui::LocalState::new(None);
@@ -1034,6 +1049,8 @@ impl ClocksApp {
             dispatcher: controls.dispatcher,
             device,
             live,
+            record: None,
+            opener: None,
             opened: false,
             last_notification: None,
             notice,
@@ -1043,7 +1060,7 @@ impl ClocksApp {
             notifications: None,
             pending_notifications: Vec::new(),
             next_notification_attempt: ui::time::now(),
-            last_scheduled_timers: None,
+            last_scheduled_clocks: None,
             next_schedule_attempt: ui::time::now(),
             activations,
         }
@@ -1103,10 +1120,12 @@ impl ClocksApp {
                 id,
                 native_scheduled,
                 ..
-            } if ui::host_notifications::SUPPORTED => {
-                Some((native_timer_id(id.as_str()), *native_scheduled))
-            }
-            DueEvent::Timer { .. } | DueEvent::Alarm { .. } => None,
+            } => (native_timer_id(id.as_str()), *native_scheduled),
+            DueEvent::Alarm {
+                id,
+                native_scheduled,
+                ..
+            } => (native_alarm_id(id.as_str()), *native_scheduled),
         };
         let (title, body, activation) = match event {
             DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label, ALARMS_URI),
@@ -1114,15 +1133,16 @@ impl ClocksApp {
         };
         let notification_id = uuid::Uuid::new_v4().simple().to_string();
         if self.live {
-            let (tag, scheduled) =
-                native.unwrap_or_else(|| (notification_id.chars().take(16).collect(), false));
+            let (tag, scheduled) = native.clone();
             if !scheduled {
                 self.pending_notifications
                     .push((tag, title.clone(), body.clone(), activation));
             }
         }
         self.notice.set(Some((title.clone(), body.clone())));
-        self.last_notification = Some((notification_id, title, body));
+        if !native.1 {
+            self.last_notification = Some((notification_id, title, body));
+        }
     }
 
     /// The host's notifications, resolved once.
@@ -1163,37 +1183,64 @@ impl ClocksApp {
 
     /// Hand running timers to the platform's scheduler, where it keeps
     /// notifications for an app that is not running.
-    fn schedule_native_timers(&mut self, now: chrono::DateTime<Utc>) {
+    fn schedule_native_notifications(&mut self, now: chrono::DateTime<Utc>) {
         if !schedules_notifications() || ui::time::now() < self.next_schedule_attempt {
             return;
         }
-        let timers = self.state.with(|shown| {
-            shown
-                .clocks
-                .timers
-                .iter()
-                .map(|(id, timer)| (id.as_str().to_owned(), timer.ends_at_ms))
-                .collect::<Vec<_>>()
-        });
-        if self.last_scheduled_timers.as_ref() == Some(&timers) {
+        let clocks = self.state.with(|shown| shown.clocks.clone());
+        let mut delivery = self.device.get().delivery;
+        let offset = chrono::Local::now().offset().local_minus_utc();
+        if self.last_scheduled_clocks.as_ref() == Some(&(clocks.clone(), delivery.clone(), offset))
+        {
             return;
         }
         let host = self.notifier();
-        let clocks = self.state.with(|shown| shown.clocks.clone());
-        let mut delivery = self.device.get().delivery;
         let device = self.device.clone();
-        let result = crate::native_timers::reconcile(&clocks, &mut delivery, &*host, now, |d| {
-            device
-                .update(|device| device.delivery = d.clone())
-                .map_err(|error| error.to_string())
-        });
+        let result = crate::native_timers::reconcile(
+            self.record.as_ref(),
+            &clocks,
+            &mut delivery,
+            &*host,
+            now,
+            |d| {
+                device
+                    .update(|device| device.delivery = d.clone())
+                    .map_err(|error| error.to_string())
+            },
+        );
         self.refresh_device();
         match result {
-            Ok(()) => self.last_scheduled_timers = Some(timers),
+            Ok(()) => self.last_scheduled_clocks = Some((clocks, delivery, offset)),
             Err(error) => {
-                tracing::warn!(%error, "Clocks timer scheduling");
+                tracing::warn!(%error, "Clocks notification scheduling");
                 self.next_schedule_attempt = retry_at();
             }
+        }
+    }
+
+    fn restore_native_alarms(&mut self) {
+        if !schedules_notifications() || ui::time::now() < self.next_schedule_attempt {
+            return;
+        }
+        let offset = chrono::Local::now().offset().local_minus_utc();
+        if self
+            .last_scheduled_clocks
+            .as_ref()
+            .is_some_and(|(_, _, previous)| *previous == offset)
+        {
+            return;
+        }
+        let Ok(states) = self.notifier().alarm_states() else {
+            return;
+        };
+        if states.is_empty() {
+            return;
+        }
+        let clocks = self.state.with(|shown| shown.clocks.clone());
+        let mut delivery = self.device.get().delivery;
+        crate::native_timers::restore_alarms(&clocks, &mut delivery, &states);
+        if delivery != self.device.get().delivery {
+            self.update_device(|device| device.delivery = delivery);
         }
     }
 
@@ -1296,6 +1343,28 @@ impl ClocksApp {
     }
 
     /// Open the section a clicked notification names.
+    pub(crate) fn activate_uri(&self, uri: &str) {
+        if let Some(record) = crate::native_timers::activation_record(uri)
+            && self.record.as_ref() != Some(&record)
+        {
+            if let Some(opener) = &self.opener {
+                opener.open(&[uri.to_owned()]);
+            }
+            return;
+        }
+        if let Some(id) = crate::native_timers::activation_alarm(uri) {
+            self.dispatcher.effect(&ClocksEffect::OpenAlarm {
+                alarm: id.to_owned(),
+            });
+        } else {
+            match uri {
+                TIMERS_URI => self.set_mode(TIMERS),
+                ALARMS_URI => self.set_mode(ALARMS),
+                _ => {}
+            }
+        }
+    }
+
     fn apply_activations(&self) {
         let uris = self
             .activations
@@ -1303,11 +1372,7 @@ impl ClocksApp {
             .map(|mut pending| std::mem::take(&mut *pending))
             .unwrap_or_default();
         for uri in uris {
-            match uri.as_str() {
-                TIMERS_URI => self.set_mode(TIMERS),
-                ALARMS_URI => self.set_mode(ALARMS),
-                _ => {}
-            }
+            self.activate_uri(&uri);
         }
     }
 }
@@ -1340,8 +1405,9 @@ impl Widget for ClocksApp {
             for command in crate::transport::take_commands() {
                 self.apply_shell_command(command);
             }
-            self.schedule_native_timers(now);
+            self.restore_native_alarms();
             self.ring_due(now);
+            self.schedule_native_notifications(now);
             self.deliver_native_notifications();
             crate::transport::publish(&self.shell_snapshot(now));
         }

@@ -574,6 +574,8 @@ impl RetainedGpuTarget {
             return Err(BridgeError::DeviceLost(reason));
         }
         let (texture, view) = Self::allocate_texture(&gpu.device, width, height);
+        #[cfg(target_os = "linux")]
+        crate::shader_seed::observe_device(gpu.adapter.get_info());
         let seed = pipeline_seed_to_publish(gpu);
         let renderer = Renderer::new(
             &gpu.device,
@@ -911,6 +913,8 @@ impl RetainedGpuTarget {
         }
         match &result {
             Ok(_) => {
+                #[cfg(target_os = "linux")]
+                crate::shader_seed::after_frame();
                 self.retained_target_valid = true;
                 self.last_successful_revision = damage.map(|damage| damage.revision);
             }

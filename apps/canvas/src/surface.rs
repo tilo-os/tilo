@@ -3378,6 +3378,16 @@ impl Widget for CanvasSurface {
             .then(|| self.ime_caret.get().unwrap_or(self.rect))
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        // Still captures must await the requested image and paint work;
+        // asking for frames alone does not declare an unfinished placeholder.
+        let renderer = self.tools.renderer.borrow();
+        self.finding
+            || renderer.pictures.decoding()
+            || renderer.detail_pending()
+            || renderer.settling()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
         // drawing until it has caught up. A picture being chosen, or
@@ -3610,6 +3620,31 @@ mod tests {
 
     use super::*;
     use crate::panels::shortcuts::{GROUPS, tools};
+
+    #[test]
+    fn capture_waits_for_requested_artwork_painting() {
+        let mut doc = ui::tilo_resource::Doc::new();
+        <ArtworkResource as ui::tilo_resource::Resource>::initialize(&mut doc).unwrap();
+        for action in crate::sample::landscape() {
+            ui::tilo_actions::Action::apply(&action, &mut doc).unwrap();
+        }
+        let art = crate::doc::read(&doc);
+        assert!(art.layers.iter().any(|layer| !layer.medium.is_empty()));
+        assert!(!art.marks.is_empty());
+        let tools = Tools::default();
+        let mut surface = CanvasSurface::new(tools.clone());
+        surface.present(&Rc::new(art));
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(surface), (390, 844));
+        harness
+            .wait_for_visuals(std::time::Duration::from_secs(30))
+            .expect("the production capture wait completes");
+        let renderer = tools.renderer.borrow();
+        assert!(
+            !renderer.settling() && !renderer.detail_pending() && !renderer.pictures.decoding(),
+            "capture must await the requested painting, detail tiles and pictures"
+        );
+    }
 
     /// Keys the window's host answers (undo, redo, history, the palette)
     /// or that need the pointer: the canvas is not where they land.

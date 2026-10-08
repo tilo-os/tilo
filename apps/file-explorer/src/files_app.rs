@@ -43,7 +43,10 @@ use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
+mod clipboard_client;
+pub use clipboard_client::Receipt as ClipboardReceipt;
 mod selection_actions;
+mod shown_selection;
 
 /// The most lines a detail sheet lists.
 const COLLAB_PANEL_MAX_LINES: usize = 20;
@@ -142,6 +145,11 @@ enum OpFollowUp {
     /// Say how many of `count` were pasted; after Cut, take the moved ones
     /// off the clipboard (the ones that failed stay, to retry).
     Paste { count: usize, cut: bool },
+    /// Show a native receipt only after its document action has settled.
+    Clipboard {
+        completed: usize,
+        error: Option<String>,
+    },
 }
 
 /// The paths of the `wanted` entries in `listing` (row id, name, path),
@@ -516,6 +524,7 @@ impl HostedFileServices {
                 ui::widget::DocumentOpenCapability::issue(),
             ),
             open_with: None,
+            local_clipboard: true,
         }
     }
 
@@ -540,6 +549,9 @@ pub struct HostedFileServices {
     /// Lists and launches "Open with" applications; absent means the
     /// submenu offers nothing rather than guessing.
     pub open_with: Option<crate::open_with::SharedOpenWithRoute>,
+    /// The host supplies the existing native Files clipboard lane. This is
+    /// availability, never a filesystem grant or an invocation authority.
+    pub local_clipboard: bool,
 }
 
 enum FileServices {
@@ -561,6 +573,9 @@ pub struct FileExplorerWidget {
     entries: Vec<Entry>,
     /// Multi-selection over the displayed entry list.
     selection: SelectionModel,
+    shown_selection: shown_selection::ShownSelection,
+    shown_folder: Option<Arc<host_fs::RetainedObject>>,
+    local_clipboard: clipboard_client::Client,
     error: Option<String>,
     is_loading: bool,
     last_click: Option<(usize, Instant)>,
@@ -585,6 +600,7 @@ pub struct FileExplorerWidget {
     awaiting_ops: HashMap<String, OpFollowUp>,
     /// Operations already seen carried out, so each settles once here.
     settled_ops: std::collections::HashSet<String>,
+    ops_presented: bool,
     /// What operations came to when this window carried them out itself
     /// (no framework hosts it), for their reverts.
     local_outcomes: HashMap<String, crate::file_ops::Outcome>,
@@ -904,8 +920,10 @@ impl FileExplorerWidget {
     /// came to: the ones this window queued as it asked, any other (an
     /// agent's, another window's, an undo) as a refreshed listing.
     pub(crate) fn follow_ops(&mut self, ops: &[crate::file_ops::QueuedOp]) {
-        let first = self.settled_ops.is_empty();
+        let first = !self.ops_presented;
+        self.ops_presented = true;
         let mut changed = false;
+        let mut clipboard_status = None;
         for queued in ops {
             let Some(outcome) = &queued.outcome else {
                 continue;
@@ -913,14 +931,29 @@ impl FileExplorerWidget {
             if !self.settled_ops.insert(queued.id.clone()) || first {
                 continue;
             }
-            match self.awaiting_ops.remove(&queued.id) {
-                Some(follow) => self.settle_op(&queued.id, follow, outcome),
-                None => changed = true,
+            if let Some(follow) = self.awaiting_ops.remove(&queued.id) {
+                self.settle_op(&queued.id, follow, outcome);
+            } else {
+                for change in outcome.changes() {
+                    match change {
+                        crate::file_ops::Change::ClipboardUndo { .. } => {
+                            clipboard_status = Some("files-clipboard-undone");
+                        }
+                        crate::file_ops::Change::ClipboardTransfer { .. } => {
+                            clipboard_status = Some("files-clipboard-redone");
+                        }
+                        _ => {}
+                    }
+                }
+                changed = true;
             }
         }
         if changed {
             self.refresh();
             self.structure_dirty = true;
+        }
+        if let Some(key) = clipboard_status {
+            self.status = Some(t(key));
         }
     }
 
@@ -945,6 +978,7 @@ impl FileExplorerWidget {
                         self.displayed_entries().iter().position(|e| e.path == path)
                     }) {
                         self.selection.select_only(i);
+                        self.retain_shown_selection();
                         self.begin_rename();
                     }
                     self.status = Some(t("files-created-folder"));
@@ -1044,6 +1078,15 @@ impl FileExplorerWidget {
                         &[arg("count", fluent_count(outcome.changes().len()))],
                     ),
                     Some(error) => t_args("files-undo-trash-failed", &[arg("error", error)]),
+                });
+            }
+            OpFollowUp::Clipboard { completed, error } => {
+                self.status = Some(match error {
+                    None => t_args("files-pasted", &[arg("count", fluent_count(completed))]),
+                    Some(error) => t_args(
+                        "files-clipboard-partial",
+                        &[arg("count", fluent_count(completed)), arg("error", error)],
+                    ),
                 });
             }
         }
@@ -1547,6 +1590,7 @@ impl FileExplorerWidget {
                 thumbnails,
                 document_opener: DocumentOpenRoute::Unavailable,
                 open_with: None,
+                local_clipboard: false,
             }),
         );
         widget.templates_dir = Some(scene.home.join("Templates"));
@@ -1599,6 +1643,7 @@ impl FileExplorerWidget {
         let remote_accounts = inputs.remote_accounts;
         let remote_accounts_search =
             crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
+        let shown_folder = shown_selection::folder(&cwd);
         let mut entries = if injected {
             crate::model::read_dir_with_workspace_roots(&cwd, &workspace_roots)
         } else {
@@ -1641,6 +1686,8 @@ impl FileExplorerWidget {
             home_path: home,
             entries,
             selection: SelectionModel::new(),
+            shown_selection: shown_selection::ShownSelection::default(),
+            shown_folder,
             error: None,
             is_loading: false,
             last_click: None,
@@ -1656,6 +1703,7 @@ impl FileExplorerWidget {
             ops_drain: None,
             awaiting_ops: HashMap::new(),
             settled_ops: std::collections::HashSet::new(),
+            ops_presented: false,
             local_outcomes: HashMap::new(),
             status: None,
             next_metadata_refresh: ui::time::now() + metadata_refresh::LIVE_INTERVAL,
@@ -1737,6 +1785,7 @@ impl FileExplorerWidget {
             merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
             merge_preflight_pending: None,
             effect_reply: None,
+            local_clipboard: clipboard_client::Client::new(),
             accounts_root: None,
             accounts_cache: Vec::new(),
             host_intent: None,
@@ -1891,6 +1940,13 @@ impl FileExplorerWidget {
             .ok_or_else(|| t("files-recent-action-unavailable"))
     }
 
+    pub(crate) fn run_effect(
+        &mut self,
+        effect: crate::effects::FilesEffect,
+    ) -> Result<Ran, String> {
+        self.run_effect_for(effect, None)
+    }
+
     /// Do `effect`: show a folder, copy or paste, open or share a file. A job (sending to a nearby device, creating a share link)
     /// answers later through the reply [`Self::await_effect`] keeps.
     ///
@@ -1900,12 +1956,15 @@ impl FileExplorerWidget {
         clippy::too_many_lines,
         reason = "one match over the effect vocabulary keeps every caller's door in one auditable place"
     )]
-    pub(crate) fn run_effect(
+    pub(crate) fn run_effect_for(
         &mut self,
         effect: crate::effects::FilesEffect,
+        invocation: Option<tilo_actions::InvocationId>,
     ) -> Result<Ran, String> {
         use crate::effects::FilesEffect;
         let answer = match effect {
+            FilesEffect::ClipboardStatus => return self.snapshot_clipboard(invocation),
+            FilesEffect::RecoverClipboardTransfers => return self.recover_clipboard(invocation),
             FilesEffect::Refresh => {
                 self.refresh();
                 None
@@ -1921,10 +1980,17 @@ impl FileExplorerWidget {
             }
             FilesEffect::ClearSelection => {
                 self.selection.clear();
+                self.retain_shown_selection();
                 self.last_click = None;
                 Some(self.selection_answer())
             }
             FilesEffect::CopySelection | FilesEffect::CutSelection => {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+                    return self.publish_clipboard(
+                        invocation,
+                        matches!(effect, FilesEffect::CutSelection),
+                    );
+                }
                 if self.selected_paths().is_empty() {
                     return Err(t("files-selection-empty"));
                 }
@@ -1936,6 +2002,9 @@ impl FileExplorerWidget {
                 None
             }
             FilesEffect::Paste => {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+                    return self.paste_clipboard(invocation);
+                }
                 self.paste()?;
                 None
             }
@@ -2078,9 +2147,21 @@ impl FileExplorerWidget {
                 None
             }
             FilesEffect::Copy { entry } => {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+                    let target = self
+                        .visible_entry_path(&entry)
+                        .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                    return self.publish_clipboard_row(invocation, false, &target);
+                }
                 self.entry_command(&entry, |_, _| Some(FileCommand::Copy))?
             }
             FilesEffect::Cut { entry } => {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+                    let target = self
+                        .visible_entry_path(&entry)
+                        .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                    return self.publish_clipboard_row(invocation, true, &target);
+                }
                 self.entry_command(&entry, |_, _| Some(FileCommand::Cut))?
             }
             FilesEffect::Restore { entry } => self.entry_command(&entry, |files, _| {
@@ -2262,11 +2343,27 @@ impl FileExplorerWidget {
     }
 
     /// A job answers its caller later; one runs at a time.
-    fn refuse_while_answering(&self) -> Result<(), String> {
+    fn refuse_while_answering(&mut self) -> Result<(), String> {
+        self.retire_cancelled_effect();
         if self.effect_reply.is_some() {
             return Err("another file operation is still running".into());
         }
         Ok(())
+    }
+
+    /// A cancelled caller cannot acknowledge a transfer. Retire its local
+    /// polling state while the host retains the durable recovery receipt.
+    fn retire_cancelled_effect(&mut self) {
+        if self
+            .effect_reply
+            .as_ref()
+            .is_some_and(ui::framework::EffectReply::is_cancelled)
+        {
+            self.effect_reply.take();
+            self.local_clipboard.abandon();
+            self.status = Some(t("files-clipboard-cancelled"));
+            self.structure_dirty = true;
+        }
     }
 
     /// Keep `reply` until the job [`Self::run_effect`] started settles.
@@ -2289,6 +2386,7 @@ impl FileExplorerWidget {
             .position(|entry| entry.path == target)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
         self.selection.select_only(index);
+        self.retain_shown_selection();
         Ok(())
     }
 
@@ -2310,6 +2408,7 @@ impl FileExplorerWidget {
             .position(|candidate| candidate.path == target)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
         self.selection.select_only(index);
+        self.retain_shown_selection();
         if !self.apply_command(command) {
             return Err("file operation could not be applied".into());
         }
@@ -2365,6 +2464,7 @@ impl FileExplorerWidget {
             entry.record_id == Some(*record_id.as_bytes()) || entry.path == record.path
         }) {
             self.selection.select_only(index);
+            self.retain_shown_selection();
         }
         Ok(())
     }
@@ -3056,6 +3156,7 @@ impl FileExplorerWidget {
     fn load(&mut self, path: PathBuf) {
         self.is_loading = true;
         self.selection.clear();
+        self.retain_shown_selection();
         self.error = None;
         self.last_click = None;
         self.status = None;
@@ -3071,6 +3172,7 @@ impl FileExplorerWidget {
             let _ = fileops::ensure_trash_dir();
         }
         let recent = crate::recent::is_location(&path);
+        self.shown_folder = shown_selection::folder(&path);
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
             crate::archive::list_directory(&archive_path, &prefix)
                 .map(|archive_entries| {
@@ -3104,6 +3206,7 @@ impl FileExplorerWidget {
                                 share: None,
                                 history: None,
                                 rich_metadata: None,
+                                observed: None,
                             }
                         })
                         .collect()
@@ -3127,6 +3230,7 @@ impl FileExplorerWidget {
                 // Drop stale entries so the error view isn't backed by the old
                 // directory's contents.
                 self.entries.clear();
+                self.shown_folder = None;
                 self.error = Some(t_args("files-directory-read-failed", &[arg("error", e)]));
             }
         }
@@ -3275,6 +3379,7 @@ impl FileExplorerWidget {
         self.entries = entries;
         self.selection
             .replace_indices(selected_indices, primary_index);
+        self.retain_shown_selection();
         self.structure_dirty = true;
         true
     }
@@ -3299,6 +3404,7 @@ impl FileExplorerWidget {
             Some(i) => self.selection.select_only(i),
             None => self.selection.clear(),
         }
+        self.retain_shown_selection();
         self.last_click = idx.map(|i| (i, now));
         None
     }
@@ -3346,6 +3452,7 @@ impl FileExplorerWidget {
             .collect();
         self.selection
             .remap_indices(|old| remapped.get(&old).copied());
+        self.retain_shown_selection();
         self.renaming = self.renaming.and_then(|old| remapped.get(&old).copied());
         self.rename_rect.set(None);
         // A previous click's row cannot be used for double-click detection
@@ -3454,6 +3561,7 @@ impl FileExplorerWidget {
             FileCommand::MoveSelection { index, extend } => {
                 if index < self.displayed_entries().len() {
                     self.selection.move_to(index, extend);
+                    self.retain_shown_selection();
                     true
                 } else {
                     false
@@ -4296,6 +4404,7 @@ impl FileExplorerWidget {
             }
             FileCommand::SelectAll => {
                 self.selection.select_all(self.displayed_entries().len());
+                self.retain_shown_selection();
                 self.last_click = None;
                 true
             }
@@ -4327,9 +4436,13 @@ impl FileExplorerWidget {
             FileCommand::Copy => self.apply_copy(),
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
-                if !self.clipboard.is_empty() {
+                if self.can_paste_clipboard() {
                     self.perform(crate::effects::FilesEffect::Paste);
                 }
+                true
+            }
+            FileCommand::RecoverClipboardTransfers => {
+                self.perform(crate::effects::FilesEffect::RecoverClipboardTransfers);
                 true
             }
             FileCommand::ExtractHere => self.apply_extract_here(),
@@ -4456,6 +4569,7 @@ impl FileExplorerWidget {
     fn apply_click(&mut self, index: usize, ctrl: bool, shift: bool) -> bool {
         if ctrl || shift {
             self.selection.apply_click(index, ctrl, shift);
+            self.retain_shown_selection();
             self.last_click = None;
         } else {
             // Capture a multi-selection the press lands inside *before*
@@ -4489,6 +4603,7 @@ impl FileExplorerWidget {
             // Right-press on empty space clears the selection.
             None => self.selection.clear(),
         }
+        self.retain_shown_selection();
         self.last_click = None;
         true
     }
@@ -4654,6 +4769,7 @@ impl FileExplorerWidget {
                 self.refresh();
                 if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
                     self.selection.select_only(i);
+                    self.retain_shown_selection();
                     self.begin_rename();
                 }
                 self.status = Some(t("files-created-file"));
@@ -4816,6 +4932,10 @@ impl FileExplorerWidget {
 
     /// `FileCommand::Copy` — copy the selection into the clipboard.
     fn apply_copy(&mut self) -> bool {
+        if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+            self.perform(crate::effects::FilesEffect::CopySelection);
+            return true;
+        }
         self.clipboard = self.selected_paths();
         self.clipboard_cut = false;
         self.status = Some(t_args(
@@ -4827,6 +4947,10 @@ impl FileExplorerWidget {
 
     /// `FileCommand::Cut` — cut the selection into the clipboard.
     fn apply_cut(&mut self) -> bool {
+        if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+            self.perform(crate::effects::FilesEffect::CutSelection);
+            return true;
+        }
         self.clipboard = self.selected_paths();
         self.clipboard_cut = true;
         self.status = Some(t_args(
@@ -4891,8 +5015,10 @@ impl FileExplorerWidget {
             return false;
         };
         self.selection.clear();
+        self.retain_shown_selection();
         if let Some(index) = self.entries.iter().position(|entry| entry.path == archive) {
             self.selection.select_only(index);
+            self.retain_shown_selection();
             return self.apply_extract_here();
         }
         let parent = archive.parent().unwrap_or(&self.current_path).to_path_buf();
@@ -5183,6 +5309,7 @@ impl FileExplorerWidget {
                 self.selection.toggle(i);
             }
         }
+        self.retain_shown_selection();
         self.structure_dirty = true;
     }
 
@@ -5374,6 +5501,20 @@ impl FileExplorerWidget {
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         use crate::effects::FilesEffect;
         let mut statuses = Vec::new();
+        if !self.hosted_clipboard() {
+            statuses.push(Self::clipboard_unavailable(FilesEffect::CLIPBOARD_STATUS));
+            statuses.push(Self::clipboard_unavailable(
+                FilesEffect::RECOVER_CLIPBOARD_TRANSFERS,
+            ));
+            if matches!(self.services, FileServices::Hosted(_)) {
+                statuses.extend([
+                    Self::clipboard_unavailable(FilesEffect::COPY_SELECTION),
+                    Self::clipboard_unavailable(FilesEffect::CUT_SELECTION),
+                    Self::clipboard_unavailable(FilesEffect::COPY),
+                    Self::clipboard_unavailable(FilesEffect::CUT),
+                ]);
+            }
+        }
         if self.selected_paths().is_empty() {
             for id in [FilesEffect::COPY_SELECTION, FilesEffect::CUT_SELECTION] {
                 statuses.push(ui::framework::EffectStatus::unavailable(
@@ -6342,7 +6483,7 @@ impl FileExplorerWidget {
     )]
     fn context_menu_spec(&self, templates: &[PathBuf]) -> Vec<(String, Option<FileCommand>)> {
         let has_sel = !self.selection.is_empty();
-        let can_paste = !self.clipboard.is_empty();
+        let can_paste = self.can_paste_clipboard();
         let has_templates = !templates.is_empty();
         let in_trash = self.is_trash_view();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
@@ -6802,6 +6943,12 @@ impl FileExplorerWidget {
         }
         if can_paste {
             spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
+        }
+        if self.hosted_clipboard() {
+            spec.push((
+                t("files-menu-recover-transfers"),
+                Some(FileCommand::RecoverClipboardTransfers),
+            ));
         }
         spec.push((
             t("files-menu-open-terminal"),
@@ -7712,25 +7859,30 @@ impl FileExplorerWidget {
             Key::Named(NamedKey::ArrowDown) if len > 0 => {
                 let next = self.selection.primary().map_or(0, |i| (i + 1).min(len - 1));
                 self.selection.move_to(next, shift);
+                self.retain_shown_selection();
                 true
             }
             Key::Named(NamedKey::ArrowUp) if len > 0 => {
                 let next = self.selection.primary().map_or(0, |i| i.saturating_sub(1));
                 self.selection.move_to(next, shift);
+                self.retain_shown_selection();
                 true
             }
             Key::Named(NamedKey::Home) if len > 0 => {
                 self.selection.move_to(0, shift);
+                self.retain_shown_selection();
                 true
             }
             Key::Named(NamedKey::End) if len > 0 => {
                 self.selection.move_to(len - 1, shift);
+                self.retain_shown_selection();
                 true
             }
             // Escape clears the selection (when there is one); otherwise it is
             // left for the host so it never swallows a no-op.
             Key::Named(NamedKey::Escape) if !self.selection.is_empty() => {
                 self.selection.clear();
+                self.retain_shown_selection();
                 self.last_click = None;
                 true
             }
@@ -7750,6 +7902,7 @@ impl FileExplorerWidget {
             }
             Key::Character(s) if (s == "a" || s == "A") && ctrl => {
                 self.selection.select_all(len);
+                self.retain_shown_selection();
                 true
             }
             Key::Character(s) if (s == "c" || s == "C") && ctrl => {
@@ -8559,15 +8712,24 @@ impl FileExplorerWidget {
 
 impl Collaborative for FileExplorerWidget {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        self.retire_cancelled_effect();
         let now = ui::time::now();
+        if let Some(result) = self.local_clipboard.timeout(now) {
+            self.complete_clipboard_publication(result);
+        }
         self.nearby_send.poll_if_due(now);
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
         requests.extend(self.shortcut_menu.take_requests());
+        requests.extend(self.local_clipboard.take_request());
         requests
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.retire_cancelled_effect();
+        if let Some(result) = self.local_clipboard.event(event) {
+            self.complete_clipboard_publication(result);
+        }
         let mut changed = self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
@@ -8744,6 +8906,7 @@ impl Widget for FileExplorerWidget {
         Some(self.next_metadata_refresh.min(self.nearby_send.next_poll()))
             .into_iter()
             .chain(document_open_reply)
+            .chain(self.local_clipboard.next_wake())
             .chain(self.nav.next_wake_deadline())
             .min()
     }

@@ -22,6 +22,7 @@ const ENROLL_NOTE: &str = "Certifies the new device. The root secret stays on th
 pub enum SetupField {
     WifiSsid,
     WifiPsk,
+    SshKey,
     DeviceLabel,
 }
 
@@ -30,6 +31,7 @@ impl SetupField {
         match self {
             Self::WifiSsid => "Wi-Fi network",
             Self::WifiPsk => "Wi-Fi password",
+            Self::SshKey => "Owner SSH public key",
             Self::DeviceLabel => "Device name",
         }
     }
@@ -38,6 +40,7 @@ impl SetupField {
         match self {
             Self::WifiSsid => "imager.write-setup.wifi-ssid",
             Self::WifiPsk => "imager.write-setup.wifi-psk",
+            Self::SshKey => "imager.write-setup.ssh-key",
             Self::DeviceLabel => "imager.write-setup.device-label",
         }
     }
@@ -49,7 +52,7 @@ pub(crate) fn field_action(field: SetupField, value: String) -> Option<ImagerAct
     match field {
         SetupField::WifiSsid => Some(ImagerAction::SetWifiSsid { value }),
         SetupField::DeviceLabel => Some(ImagerAction::SetDeviceLabel { value }),
-        SetupField::WifiPsk => None,
+        SetupField::WifiPsk | SetupField::SshKey => None,
     }
 }
 
@@ -71,7 +74,12 @@ fn text_field(field: SetupField, value: &str, kind: TextInputKind, commands: &Co
 
 /// The network and identity section for `profile`, with the host-local
 /// passphrase `wifi_psk`.
-pub(crate) fn form(profile: &InstallProfile, wifi_psk: &str, commands: &Commands) -> Form {
+pub(crate) fn form(
+    profile: &InstallProfile,
+    wifi_psk: &str,
+    ssh_public_key: &str,
+    commands: &Commands,
+) -> Form {
     let sink = Rc::clone(commands);
     let enroll = Toggle::from_state(&LocalState::new(profile.enroll_local_identity))
         .with_id("imager.write-setup.enroll")
@@ -88,6 +96,12 @@ pub(crate) fn form(profile: &InstallProfile, wifi_psk: &str, commands: &Commands
                 SetupField::WifiPsk,
                 wifi_psk,
                 TextInputKind::Password,
+                commands,
+            ))
+            .field(text_field(
+                SetupField::SshKey,
+                ssh_public_key,
+                TextInputKind::Name,
                 commands,
             ))
             .field(text_field(

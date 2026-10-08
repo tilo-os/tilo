@@ -37,3 +37,12 @@ store-source-timeout = This source took too long to respond. Refresh to try agai
 store-refresh-in-progress = Sources are already refreshing. You can keep browsing.
 store-catalogue-loading = Loading more apps…
 store-catalogue-refreshed = Store refreshed.
+
+store-app-installed = App installed.
+store-app-updated = App updated.
+store-app-removed = App removed.
+
+store-operation-failed = Could not complete the operation
+store-error-refresh = Refresh apps
+store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
+store-build-version = Full build version

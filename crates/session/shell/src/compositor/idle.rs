@@ -177,6 +177,8 @@ enum Panel {
 pub struct SessionManager {
     config: IdleConfig,
     last_activity: Instant,
+    /// Explicit panel wake is not input: only the display timeout restarts.
+    last_display_wake: Option<Instant>,
     panel: Panel,
     locked: bool,
     /// Latched once the idle-suspend threshold fires, so `tick` emits [`SessionTransition::Suspend`]
@@ -190,6 +192,7 @@ impl SessionManager {
         Self {
             config,
             last_activity: now,
+            last_display_wake: None,
             panel: Panel::On,
             locked: false,
             suspended: false,
@@ -256,25 +259,40 @@ impl SessionManager {
         out
     }
 
+    /// Wake the display without input, authentication, or a new idle-lock episode.
+    /// The existing lock and suspend latch remain intact. A fresh display-only
+    /// deadline prevents the next tick from immediately blanking it again.
+    pub fn request_display_wake(&mut self, now: Instant) -> Vec<SessionTransition> {
+        self.last_display_wake = Some(now);
+        let mut out = Vec::new();
+        self.undim(&mut out);
+        self.wake(&mut out);
+        out
+    }
+
     /// Advance the timers to `now` and emit any timeout-driven transitions (dim, blank, auto-lock).
     /// A tick that lands past the blank without having seen the dim window blanks directly: the
     /// dim is a warning, and there is nothing left to warn about.
     /// Idempotent once a threshold has fired: a blanked/locked state stays that way until the boolean is cleared.
     pub fn tick(&mut self, now: Instant) -> Vec<SessionTransition> {
         let idle = self.idle_for(now);
+        let display_idle = now.saturating_duration_since(
+            self.last_activity
+                .max(self.last_display_wake.unwrap_or(self.last_activity)),
+        );
         let mut out = Vec::new();
         if self.panel == Panel::On
             && let Some(dim) = self.dim_timeout()
             && let Some(blank) = self.config.blank_timeout
-            && idle >= dim
-            && idle < blank
+            && display_idle >= dim
+            && display_idle < blank
         {
             self.panel = Panel::Dimmed;
             out.push(SessionTransition::Dimmed);
         }
         if !self.is_blanked()
             && let Some(t) = self.config.blank_timeout
-            && idle >= t
+            && display_idle >= t
         {
             self.panel = Panel::Off {
                 dimmed: self.panel == Panel::Dimmed,
@@ -426,6 +444,52 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_display_wake_preserves_lock_and_input_idle() {
+        let start = Instant::now();
+        let mut session = SessionManager::new(cfg(Some(10), Some(5)), start);
+        session.tick(start + Duration::from_secs(10));
+        assert!(session.is_blanked() && session.is_locked());
+        let now = start + Duration::from_secs(20);
+        let transitions = session.request_display_wake(now);
+        assert_eq!(transitions, vec![SessionTransition::Woke]);
+        assert!(session.is_locked());
+        assert!(!session.is_blanked());
+        assert_eq!(session.idle_for(now), Duration::from_secs(20));
+        assert!(session.tick(now).is_empty());
+        assert!(session.request_display_wake(now).is_empty());
+        assert!(
+            session
+                .tick(now + Duration::from_secs(10))
+                .contains(&SessionTransition::Blanked)
+        );
+        assert!(session.is_locked());
+    }
+
+    #[test]
+    fn display_wake_does_not_defer_authentication_or_clear_suspend() {
+        let start = Instant::now();
+        let mut config = cfg(Some(5), Some(10));
+        config.suspend_timeout = Some(Duration::from_secs(12));
+        let mut session = SessionManager::new(config, start);
+        session.tick(start + Duration::from_secs(5));
+        session.request_display_wake(start + Duration::from_secs(9));
+        assert_eq!(
+            session.tick(start + Duration::from_secs(10)),
+            vec![SessionTransition::Locked]
+        );
+        assert_eq!(
+            session.tick(start + Duration::from_secs(12)),
+            vec![SessionTransition::Dimmed, SessionTransition::Suspend]
+        );
+        session.request_display_wake(start + Duration::from_secs(13));
+        assert!(session.is_locked() && session.is_suspend_pending());
+        assert_eq!(
+            session.idle_for(start + Duration::from_secs(13)),
+            Duration::from_secs(13)
+        );
+    }
 
     fn cfg(blank: Option<u64>, lock: Option<u64>) -> IdleConfig {
         IdleConfig {

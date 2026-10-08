@@ -180,6 +180,7 @@ mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
+pub mod owner_wake;
 /// The session's read-only vello pipeline cache every app starts from.
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
@@ -222,6 +223,7 @@ pub mod standalone_history_pane;
 pub mod storage;
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
+pub mod personal_dictionary;
 pub mod text_assistance;
 pub mod text_break;
 pub mod text_detect;
@@ -246,6 +248,7 @@ pub mod remote_actions;
 pub mod render_thread;
 pub mod reorder;
 pub mod resources;
+pub mod retained_present;
 pub mod richtext;
 pub mod scale;
 pub mod screen_reader;
@@ -263,6 +266,7 @@ pub mod sysdirs;
 pub mod testing;
 pub mod text_edit;
 pub mod text_metrics;
+pub mod text_position;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
@@ -526,3 +530,5 @@ pub use control_custody::{
     ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
 };
 mod focus_navigation;
+
+pub use widget::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};

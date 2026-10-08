@@ -97,6 +97,7 @@ enum Command {
 }
 #[derive(Default)]
 struct Status {
+    stage: &'static str,
     transition: Option<String>,
     duration: u64,
     position: u64,
@@ -131,6 +132,7 @@ impl NativeAudio {
             cancel: cancel.clone(),
             next: next.clone(),
         };
+        shared.update(|state| state.stage = "credentials");
         tilo_rt::spawn_thread("music-spotify-audio", move || {
             let result = connection().and_then(|connection| {
                 tilo_rt::block_on(run(uri, account, output, receiver, &shared, connection))
@@ -227,6 +229,25 @@ impl NativeAudio {
     }
     pub fn sink(&self) -> Option<String> {
         self.status.lock().ok()?.sink.clone()
+    }
+    /// Non-secret startup observations; contains no account or grant data.
+    pub fn startup_stage(&self) -> &'static str {
+        self.status.lock().map_or("unavailable", |state| {
+            if state.error.is_some() {
+                "failed"
+            } else if state.eos {
+                "ended"
+            } else if self.frames.load(Ordering::Relaxed) > 0
+                && state
+                    .sink
+                    .as_ref()
+                    .is_some_and(|sink| !sink.contains("fakesink"))
+            {
+                if state.playing { "playing" } else { "paused" }
+            } else {
+                state.stage
+            }
+        })
     }
     pub fn error(&self) -> Option<String> {
         self.status.lock().ok()?.error.take()
@@ -335,6 +356,7 @@ async fn authorized_sink(
     shared: &Shared,
     output: &Output,
 ) -> Result<Option<PcmSink>, String> {
+    shared.update(|state| state.stage = "premium");
     let sink = verified_sink(
         session,
         &shared.cancel,
@@ -357,6 +379,7 @@ async fn run(
     shared: &Shared,
     connection: (SessionConfig, Credentials),
 ) -> Result<(), String> {
+    shared.update(|state| state.stage = "session");
     let session = connect_session(connection, &account).await?;
     let _shutdown = SessionShutdown(session.clone());
     if shared.cancel.load(Ordering::Acquire) {
@@ -372,32 +395,28 @@ async fn run(
     let source = sink.source.clone();
     let volume = sink.volume.clone();
     let actual_sink = sink.sink.clone();
-    let config = PlayerConfig {
-        bitrate: Bitrate::Bitrate320,
-        position_update_interval: Some(Duration::from_millis(250)),
-        ..PlayerConfig::default()
-    };
-    let player = Player::new(config, session.clone(), Box::new(NoOpVolume), move || {
-        Box::new(sink)
-    });
+    let governed_output = sink.governed_output.clone();
+    shared.update(|state| state.stage = "decoding");
+    let player = Player::new(
+        playback_config(),
+        session.clone(),
+        Box::new(NoOpVolume),
+        move || Box::new(sink),
+    );
     let mut events = player.get_player_event_channel();
     player.load(track, false, 0);
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let mut pending_transition = None;
     let mut pending_started: Option<tilo_clock::Instant> = None;
     loop {
-        if !matches!(premium_confirmed(&session), Ok(true)) {
-            shared.update(|state| {
-                state.error =
-                    Some("Spotify's native session no longer confirms Premium eligibility".into());
-                state.playing = false;
-            });
+        if !confirm_playback_session(&session, shared) {
             break;
         }
         tokio::select! {
             command = commands.recv() => match command {
-                Some(Command::Play) => player.play(), Some(Command::Pause) => player.pause(),
-                Some(Command::Seek(ms)) => player.seek(ms),
+                Some(Command::Play) => { if let Some(output) = &governed_output { output.pause(false); } player.play(); },
+                Some(Command::Pause) => { player.pause(); if let Some(output) = &governed_output { output.pause(true); } },
+                Some(Command::Seek(ms)) => { if let Some(output) = &governed_output { output.flush(); } player.seek(ms); },
                 Some(Command::Volume(value)) => volume.set_property("volume", f64::from(value)),
                 Some(Command::Preload(uri)) => {
                     if let Ok(uri) = SpotifyUri::from_uri(&uri) { player.preload(uri); }
@@ -422,6 +441,11 @@ async fn run(
                     if shared.status.lock().is_ok_and(|state| state.duration.saturating_sub(state.position) > 2_000) {
                         shared.update(|state| state.error = Some("Spotify audio ended before the track was decoded".into())); break;
                     }
+                    // EndOfTrack means the decoder is done; the clocked sink
+                    // may still hold its tail. Let that PCM finish first.
+                    source.end_of_stream().map_err(|_| "Spotify output could not finish the track".to_string())?;
+                    drain_output(&pipeline, &shared.cancel).await?;
+                    drain_governed_output(governed_output.as_deref(), &shared.cancel).await?;
                     let next = shared.next.lock().ok().and_then(|mut next| next.take());
                     if let Some(next) = next {
                         let uri = SpotifyUri::from_uri(&next).map_err(|_| "Invalid Spotify queue track".to_string())?;
@@ -430,10 +454,6 @@ async fn run(
                         player.load(uri, true, 0);
                         continue;
                     }
-                    // EndOfTrack means the decoder is done; the clocked sink
-                    // may still hold its tail. Let that PCM finish first.
-                    source.end_of_stream().map_err(|_| "Spotify output could not finish the track".to_string())?;
-                    drain_output(&pipeline, &shared.cancel).await?;
                     shared.update(|state| { state.eos = true; state.playing = false; }); break;
                 },
                 Some(PlayerEvent::Unavailable { .. }) => { shared.update(|state| state.error = Some("Spotify cannot play this track in your account or region".into())); break; },
@@ -442,6 +462,7 @@ async fn run(
             },
             _ = tick.tick() => {
                 if shared.cancel.load(Ordering::Acquire) { break; }
+                observe_governed_output(governed_output.as_deref(), shared)?;
                 if pending_started.is_some_and(|started| started.elapsed() > Duration::from_secs(30)) {
                     shared.update(|state| state.error = Some("Spotify did not start the next queued track".into())); break;
                 }
@@ -455,9 +476,69 @@ async fn run(
         }
     }
     let _ = pipeline.set_state(gst::State::Null);
+    if let Some(output) = &governed_output {
+        output.close();
+    }
     player.stop();
     session.shutdown();
     Ok(())
+}
+
+fn playback_config() -> PlayerConfig {
+    PlayerConfig {
+        bitrate: Bitrate::Bitrate320,
+        position_update_interval: Some(Duration::from_millis(250)),
+        ..PlayerConfig::default()
+    }
+}
+
+fn confirm_playback_session(session: &Session, shared: &Shared) -> bool {
+    if matches!(premium_confirmed(session), Ok(true)) {
+        return true;
+    }
+    shared.update(|state| {
+        state.error =
+            Some("Spotify's native session no longer confirms Premium eligibility".into());
+        state.playing = false;
+    });
+    false
+}
+
+fn observe_governed_output(
+    output: Option<&tilo_media::audio_output::gst::Bridge>,
+    shared: &Shared,
+) -> Result<(), String> {
+    let Some(output) = output else {
+        return Ok(());
+    };
+    if let Some(error) = output.error() {
+        return Err(error);
+    }
+    let observed = output.observation();
+    if observed.ready {
+        shared
+            .frames
+            .store(observed.rendered_frames, Ordering::Release);
+        shared.update(|state| state.sink = Some("tilo-governed-pipewire".into()));
+    }
+    Ok(())
+}
+
+async fn drain_governed_output(
+    output: Option<&tilo_media::audio_output::gst::Bridge>,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let Some(output) = output else {
+        return Ok(());
+    };
+    for _ in 0..30 {
+        let observed = output.refresh()?;
+        if observed.queued_frames == 0 || cancel.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Err("Governed Spotify output did not drain".into())
 }
 
 struct SessionShutdown(Session);
@@ -511,6 +592,8 @@ struct PcmSink {
     volume: gst::Element,
     sink: gst::Element,
     samples: u64,
+    rendered: Arc<AtomicU64>,
+    governed_output: Option<Arc<tilo_media::audio_output::gst::Bridge>>,
 }
 impl PcmSink {
     fn new(output: &Output, frames: &Arc<AtomicU64>) -> Result<Self, String> {
@@ -532,8 +615,20 @@ impl PcmSink {
         let volume = gst::ElementFactory::make("volume")
             .build()
             .map_err(|_| "Audio volume plugin is unavailable".to_string())?;
-        let (bin, sink) = build_audio_sink_bin(frames, output)
-            .ok_or_else(|| "System audio output is unavailable".to_string())?;
+        let (bin, sink, governed_output) = if matches!(output, Output::System)
+            && tilo_media::audio_output::is_governed()
+        {
+            let (bin, bridge) =
+                tilo_media::audio_output::gst::sink_bin("tilo_audiosink", "tilo_governed_gain")?;
+            let sink = bin
+                .by_name("tilo_audiosink")
+                .ok_or("Governed audio sink is unavailable")?;
+            (bin, sink, Some(bridge))
+        } else {
+            let (bin, sink) =
+                build_audio_sink_bin(frames, output).ok_or("System audio output is unavailable")?;
+            (bin, sink, None)
+        };
         pipeline
             .add_many([
                 source.upcast_ref::<gst::Element>(),
@@ -553,22 +648,31 @@ impl PcmSink {
             volume,
             sink,
             samples: 0,
+            rendered: frames.clone(),
+            governed_output,
         })
     }
 }
 impl Sink for PcmSink {
     fn start(&mut self) -> SinkResult<()> {
         self.samples = 0;
+        self.rendered.store(0, Ordering::Release);
         self.pipeline
             .set_state(gst::State::Playing)
             .map(|_| ())
             .map_err(|_| SinkError::StateChange("Cannot start system audio output".into()))
     }
     fn stop(&mut self) -> SinkResult<()> {
-        self.pipeline
+        let result = self
+            .pipeline
             .set_state(gst::State::Null)
             .map(|_| ())
-            .map_err(|_| SinkError::StateChange("Cannot stop system audio output".into()))
+            .map_err(|_| SinkError::StateChange("Cannot stop system audio output".into()));
+        if let Some(output) = &self.governed_output {
+            output.reset();
+        }
+        self.rendered.store(0, Ordering::Release);
+        result
     }
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
         let AudioPacket::Samples(samples) = packet else {
@@ -609,6 +713,9 @@ impl Sink for PcmSink {
 }
 impl Drop for PcmSink {
     fn drop(&mut self) {
+        if let Some(output) = &self.governed_output {
+            output.close();
+        }
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
