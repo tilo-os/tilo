@@ -47,6 +47,12 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         self.assertIn(old, text)
         path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
+    def test_shell_only_recipe_is_refused_before_deployment(self):
+        root = self.fixture()
+        entry = '  { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },'
+        self.edit(root / "os/components.toml", entry + "\n", "")
+        self.assertIn("shell must ship its matching mandatory PAM session wrapper", "\n".join(check.audit(root)))
+
     def test_component_manifest_is_the_only_source_of_builder_copies_and_layers(self):
         with self.subTest(phase='repository passes'):
             self.assertEqual(check.audit(REPO), [])
@@ -132,6 +138,37 @@ class InstallerTests(unittest.TestCase):
                     self.assertEqual(notice.read_bytes(), (REPO / license_source).read_bytes())
                     self.assertEqual(notice.stat().st_mode & 0o777, 0o644)
                     self.assertTrue((layer / "desktop-binaries/usr/bin/tilo-speech-worker").is_file())
+
+    def test_shell_layer_requires_and_installs_its_exact_startup_wrapper(self):
+        copies = [pair
+                  for instruction in check.instructions(REPO / "os/Containerfile")
+                  if instruction.stage == check.INSTALL_STAGE
+                  and instruction.words[0].upper() == "COPY"
+                  for pair in check.copy_pairs(instruction)[1]
+                  if pair[1].startswith("/tilo-components/")]
+        for include_wrapper in (True, False):
+            with self.subTest(staged_wrapper=include_wrapper), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for source, destination in copies:
+                    if not include_wrapper and source == "os/usr/libexec/tilo-session":
+                        continue
+                    target = root / destination.lstrip("/")
+                    if destination.endswith("/"):
+                        target /= Path(source).name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(REPO / source, target)
+                out = self.build_outputs(root)
+                layer = root / "layer"
+                with contextlib.redirect_stderr(io.StringIO()):
+                    status = self.run_installer(
+                        "--manifest", str(root / "tilo-components/components.toml"),
+                        "--from", str(out), "--dest", str(layer), "shell")
+                self.assertEqual(status, 0 if include_wrapper else 1)
+                if include_wrapper:
+                    wrapper = layer / "usr/libexec/tilo-session"
+                    self.assertEqual(wrapper.read_bytes(), (REPO / "os/usr/libexec/tilo-session").read_bytes())
+                    self.assertEqual(wrapper.stat().st_mode & 0o777, 0o755)
+                    self.assertTrue((layer / "usr/bin/shell").is_file())
 
     def build_outputs(self, root: Path) -> Path:
         out = root / "out"

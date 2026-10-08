@@ -524,6 +524,59 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
 #[test]
 #[cfg(feature = "audio")]
 #[serial_test::serial(audio_backend)]
+fn metadata_duration_does_not_cut_off_real_audio_before_eos() {
+    let (mut app, _) = app_with_doc();
+    app.lib.tracks.get_mut("tk_g1").unwrap().duration_s = 1;
+    app.pb.queue = vec!["tk_g1".into()];
+    app.pb.current = Some("tk_g1".into());
+    app.pb.playing = true;
+
+    // The real two-second PCM source outlasts its one-second catalogue entry.
+    // Unit-test output captures decoded PCM without opening a sound device.
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("longer-than-metadata.wav");
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&32036u32.to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&8000u32.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&32000u32.to_le_bytes());
+    wav.resize(32044, 0);
+    std::fs::write(&path, wav).unwrap();
+    app.audio
+        .load(&media::source::path_to_file_uri(&path).unwrap());
+    app.audio.play();
+
+    let deadline = tilo_test_env::hang_deadline();
+    let mut furthest_position = 0.0_f64;
+    while app.pb.playing {
+        app.tick();
+        assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
+        furthest_position = furthest_position.max(app.playhead_ms);
+        assert!(
+            ui::time::now() < deadline,
+            "the real source must reach EOS: {}",
+            app.audio.diagnostics()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        furthest_position >= 1800.0,
+        "metadata must not stop the two-second decoder at {furthest_position}ms"
+    );
+    assert_eq!(app.pb.queue_index, 0);
+}
+
+#[test]
+#[cfg(feature = "audio")]
+#[serial_test::serial(audio_backend)]
 fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
     let (mut app, _) = app_with_doc();
     let title = format!("handoff-init-{}", uuid::Uuid::new_v4());

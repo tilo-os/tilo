@@ -16,8 +16,10 @@
 //! output streams on stderr and its outcome is one [`JobLine`] on stdout.
 
 pub mod client;
+pub mod disk_unlock;
 pub mod display;
 pub mod input;
+pub mod layer_hash;
 pub mod manifest;
 
 use std::collections::BTreeMap;
@@ -26,6 +28,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use client::{Client, ClientError};
+pub use disk_unlock::{DeviceActions, DeviceUnlockEnrol, DeviceUnlockEnrolResult};
 pub use display::OutputSpec;
 pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
@@ -155,11 +158,17 @@ pub enum Request {
     BootConfirm(BootConfirm),
     #[serde(rename = "awake")]
     Awake(Awake),
+    #[serde(rename = "device.unlock.enrol")]
+    DeviceUnlockEnrol(disk_unlock::DeviceUnlockEnrol),
+    #[serde(rename = "device.actions")]
+    DeviceActions(disk_unlock::DeviceActions),
 }
 
 impl Request {
     pub fn method(&self) -> &'static str {
         match self {
+            Self::DeviceUnlockEnrol(_) => "device.unlock.enrol",
+            Self::DeviceActions(_) => "device.actions",
             Self::Hello(_) => "hello",
             Self::Status(_) => "status",
             Self::SlotCreate(_) => "slot.create",
@@ -229,6 +238,8 @@ call! {
     AppInstall => AppInstallResult,
     BootConfirm => BootConfirmResult,
     Awake => AwakeLease,
+    DeviceUnlockEnrol => DeviceUnlockEnrolResult,
+    DeviceActions => serde_json::Value,
 }
 
 // ---- requests ---------------------------------------------------------------

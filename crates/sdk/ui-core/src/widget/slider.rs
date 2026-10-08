@@ -98,6 +98,8 @@ pub struct Slider {
     /// by the tree builder.
     accessible_name: Option<String>,
     interaction: crate::interaction::InteractionEnvironment,
+    /// The target height encoded in the current layout style.
+    layout_target: Option<f32>,
 }
 
 impl Slider {
@@ -132,6 +134,7 @@ impl Slider {
             id_override: None,
             accessible_name: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            layout_target: None,
         }
     }
 
@@ -666,6 +669,18 @@ impl Widget for Slider {
         self.is_hovered &= environment.supports_hover();
     }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        if self
+            .layout_target
+            .is_some_and(|target| target.to_bits() != self.interaction.minimum_target().to_bits())
+        {
+            self.layout_target = None;
+            true
+        } else {
+            false
+        }
+    }
+
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(value) = binding.pull(state, root)
@@ -680,6 +695,7 @@ impl Widget for Slider {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_target = Some(self.interaction.minimum_target());
         // A slider fills its row but never collapses to a knob: the track
         // keeps six knob widths of travel.
         #[allow(
@@ -701,6 +717,13 @@ impl Widget for Slider {
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// Value, hover and drag change the paint, not this leaf's intrinsic size.
+    /// Theme and viewport changes rebuild the host layout; target changes
+    /// explicitly invalidate the authored style in `take_structure_dirty`.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1025,6 +1048,63 @@ impl crate::widget::controls::ActionControls for Slider {
 mod tests {
     use super::*;
     use automerge::{AutoCommit, ReadDoc};
+
+    #[test]
+    fn retained_slider_local_value_and_hover_do_not_remeasure_but_targets_and_viewport_do() {
+        let value = crate::LocalState::new(0.5);
+        let mut host = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(Slider::from_state(&value)),
+            (400, 80),
+        );
+        host.profile_frame();
+        assert!(!host.last_relayout().measured);
+        let rect = host
+            .targets()
+            .get("slider")
+            .copied()
+            .expect("the actual slider is mounted");
+        host.click_at(rect.x0 + rect.width() * 0.75, rect.center().y);
+        assert!(!host.last_relayout().measured, "value changes paint only");
+        host.verify_retained_geometry().unwrap();
+        assert!(
+            value.get() > 0.7 && value.get() < 0.8,
+            "the ordinary pointer changes the authoritative local value"
+        );
+        assert!(
+            host.state()
+                .doc
+                .get(automerge::ROOT, "volume")
+                .unwrap()
+                .is_none(),
+            "a value control never writes its document read source"
+        );
+        host.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+        assert!(host.last_relayout().rebuilt);
+        assert!(
+            host.targets()
+                .get("slider")
+                .copied()
+                .expect("the actual slider is mounted")
+                .height()
+                > rect.height()
+        );
+        host.verify_retained_geometry().unwrap();
+        host.resize((640, 120)).unwrap();
+        assert!(host.last_relayout().rebuilt);
+        assert!(
+            host.targets()
+                .get("slider")
+                .copied()
+                .expect("the actual slider is mounted")
+                .width()
+                > rect.width()
+        );
+        host.verify_retained_geometry().unwrap();
+        host.set_theme(crate::Theme::light());
+        assert!(host.last_relayout().rebuilt);
+        host.verify_retained_geometry().unwrap();
+    }
 
     /// In a crowded row a slider keeps a usable track instead of shrinking
     /// to its knob.

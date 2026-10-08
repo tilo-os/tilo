@@ -53,6 +53,8 @@ mod tests {
             "chat-voice-unavailable",
             "chat-attachment-import-unavailable",
             "chat-mention-agent-tag",
+            "chat-person-unnamed",
+            "chat-person-relative-name",
             "chat-identity-available",
             "chat-identity-in-voice",
             "chat-context-sharing",

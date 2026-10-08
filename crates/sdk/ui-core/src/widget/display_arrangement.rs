@@ -526,6 +526,12 @@ impl Widget for DisplayArrangement {
         node
     }
 
+    /// Value, hover and drag change the paint, not this leaf's intrinsic size.
+    /// Theme, viewport and input-capability changes rebuild the host layout.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
@@ -771,6 +777,39 @@ mod tests {
         let mut canvas = DisplayArrangement::new(displays(), moves, ui::LocalState::new(None));
         canvas.rect = Rect::new(0.0, 0.0, 600.0, 220.0);
         canvas
+    }
+
+    #[test]
+    fn retained_arrangement_hover_preserves_geometry_without_remeasurement() {
+        let mut host =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(canvas()), (800, 600));
+        host.profile_frame();
+        assert!(!host.last_relayout().measured);
+        let rect = host
+            .targets()
+            .get("display.arrangement")
+            .copied()
+            .expect("the actual arrangement is mounted");
+        host.send(&WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(rect.center().x, rect.center().y),
+        });
+        assert!(!host.last_relayout().measured);
+        host.verify_retained_geometry().unwrap();
+        host.resize((1200, 720)).unwrap();
+        assert!(host.last_relayout().rebuilt);
+        assert!(
+            host.targets()
+                .get("display.arrangement")
+                .copied()
+                .expect("the actual arrangement is mounted")
+                .width()
+                > rect.width()
+        );
+        host.verify_retained_geometry().unwrap();
+        host.set_theme(ui::Theme::light());
+        assert!(host.last_relayout().rebuilt);
+        host.verify_retained_geometry().unwrap();
     }
 
     #[test]
