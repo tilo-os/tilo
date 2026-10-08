@@ -2943,6 +2943,7 @@ pub(crate) fn run_with_context(
     // Connect only after cold runtime verification, loader preflight and host
     // preparation. The broker starts its executing-task deadline at handoff;
     // those checks must not consume the sandboxed app's response window.
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let package_id = manifest.package_id.as_str();
     let resolved = if let Some((services, _)) = enrolled.as_mut() {
         let binding = services.binding().clone();
@@ -2958,7 +2959,7 @@ pub(crate) fn run_with_context(
                 workspace_id: opts.workspace_id.as_deref(),
             },
         )?;
-        crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
+        crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
         if let Some(identity) =
             resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
         {
@@ -2996,7 +2997,6 @@ pub(crate) fn run_with_context(
     // Egress: a grant naming specific hosts runs a gate; `*` or bare `host`
     // mode shares the host network with no allowlist to enforce, so neither
     // needs a gate. Guard bound here (not in the `if let`) so it outlives the child.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
 
     // Pick the entrypoint bin per launch mode and build the initial argv.
@@ -3595,6 +3595,7 @@ fn run_with_capture_spawn<T>(
     let capabilities = resolve_capabilities(manifest, opts);
     // As in `run_with_context`, cold runtime checks precede service handoff.
     // Capture must not start the executing-task deadline during verification.
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
         &manifest.sandbox.services,
@@ -3604,7 +3605,7 @@ fn run_with_capture_spawn<T>(
             workspace_id: opts.workspace_id.as_deref(),
         },
     )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
+    crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
     if let Some(identity) =
         resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
     {
@@ -3632,7 +3633,6 @@ fn run_with_capture_spawn<T>(
     // Same egress decision as `run_with`: without the gate spliced in here
     // too, a host-scoped grant would be silently offline. No shim on this
     // path, so no loopback relay — ALL_PROXY has nothing listening behind it.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
     // Entrypoint + trailing arguments, resolved the same way `run_with`
     // does — both entries must agree on binary and arguments.

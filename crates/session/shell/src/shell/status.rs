@@ -22,6 +22,7 @@ use crate::shell::i18n::{t, t_args};
 use os_actions::{LinkKind, LinkStatus, VolumeState};
 use tilo_nm::{NetworkState, NmState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
+use ui::floating_surface::HostNetworkStatus;
 
 /// Between network changes, still refresh battery, volume and the Wi-Fi
 /// bars. Thirty seconds is slow enough that idle does not fork `wpctl`
@@ -144,11 +145,20 @@ impl SystemStatus {
 #[derive(Clone, Debug, Default)]
 pub struct StatusBridge {
     inner: Arc<Mutex<SystemStatus>>,
+    network: Arc<NetworkStatusSource>,
     /// So a second `spawn` is a no-op, not a second thread racing the first.
     polling: Arc<AtomicBool>,
     /// Set on the rising edge of a requested frame. The privacy worker
     /// parks on it instead of arming its own timer.
     frame_interest: Arc<FrameInterest>,
+}
+
+#[derive(Debug)]
+struct NetworkStatusSource(tokio::sync::watch::Sender<HostNetworkStatus>);
+impl Default for NetworkStatusSource {
+    fn default() -> Self {
+        Self(tokio::sync::watch::channel(HostNetworkStatus::default()).0)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -161,6 +171,22 @@ struct FrameInterest {
 impl StatusBridge {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn network_status(&self) -> HostNetworkStatus {
+        *self.network.0.borrow()
+    }
+
+    /// Wake the existing session loop only on sanitized network hint changes.
+    pub fn wake_network_changes(&self, wake: crate::session_runtime::Wake) {
+        let mut changes = self.network.0.subscribe();
+        if let Ok(runtime) = crate::session_runtime::runtime() {
+            runtime.spawn(async move {
+                while changes.changed().await.is_ok() {
+                    wake();
+                }
+            });
+        }
     }
 
     pub fn snapshot(&self) -> SystemStatus {
@@ -201,7 +227,11 @@ impl StatusBridge {
         }
         let (wake_tx, wake_rx) = mpsc::channel();
         let network = NetworkSlot::default();
-        spawn_network_follower(Arc::clone(&network), wake_tx.clone());
+        spawn_network_follower(
+            Arc::clone(&network),
+            wake_tx.clone(),
+            Arc::clone(&self.network),
+        );
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-status".to_string())
@@ -306,10 +336,10 @@ pub(crate) fn privacy_frame_interest(was_requested: bool, frame_requested: bool)
 /// Follow `NetworkManager` on the session runtime and wake the poller on
 /// each change. Never on the compositor thread: the frame loop only reads
 /// the poller's snapshot.
-fn spawn_network_follower(slot: NetworkSlot, wake: Sender<()>) {
+fn spawn_network_follower(slot: NetworkSlot, wake: Sender<()>, status: Arc<NetworkStatusSource>) {
     match crate::session_runtime::runtime() {
         Ok(runtime) => {
-            runtime.spawn(follow_network(slot, wake));
+            runtime.spawn(follow_network(slot, wake, status));
         }
         Err(error) => {
             tracing::warn!(target: "tilo::status", %error, "network status not followed");
@@ -317,15 +347,15 @@ fn spawn_network_follower(slot: NetworkSlot, wake: Sender<()>) {
     }
 }
 
-async fn follow_network(slot: NetworkSlot, wake: Sender<()>) {
+async fn follow_network(slot: NetworkSlot, wake: Sender<()>, status: Arc<NetworkStatusSource>) {
     loop {
         match tilo_nm::watch().await {
             Ok(mut watch) => {
-                if !publish_network(&slot, &wake, Some(watch.current())) {
+                if !publish_network(&slot, &wake, &status, Some(watch.current())) {
                     return;
                 }
                 while let Some(state) = watch.changed().await {
-                    if !publish_network(&slot, &wake, Some(state)) {
+                    if !publish_network(&slot, &wake, &status, Some(state)) {
                         return;
                     }
                 }
@@ -335,7 +365,7 @@ async fn follow_network(slot: NetworkSlot, wake: Sender<()>) {
             }
         }
         // No system bus, or it went away: draw no link rather than a guess.
-        if !publish_network(&slot, &wake, None) {
+        if !publish_network(&slot, &wake, &status, None) {
             return;
         }
         tokio::time::sleep(FALLBACK_INTERVAL).await;
@@ -343,11 +373,37 @@ async fn follow_network(slot: NetworkSlot, wake: Sender<()>) {
 }
 
 /// Store a reading and wake the poller. `false` once the poller is gone.
-fn publish_network(slot: &NetworkSlot, wake: &Sender<()>, state: Option<NetworkState>) -> bool {
+fn publish_network(
+    slot: &NetworkSlot,
+    wake: &Sender<()>,
+    status: &NetworkStatusSource,
+    state: Option<NetworkState>,
+) -> bool {
+    let hints = network_hints(state.as_ref());
+    status.0.send_if_modified(|last| {
+        if *last == hints {
+            false
+        } else {
+            *last = hints;
+            true
+        }
+    });
     if let Ok(mut current) = slot.lock() {
         *current = state;
     }
     wake.send(()).is_ok()
+}
+
+/// Project only connectivity and lossless metering, never primary link metadata.
+fn network_hints(state: Option<&NetworkState>) -> HostNetworkStatus {
+    HostNetworkStatus {
+        available: state.and_then(|state| match state.state {
+            NmState::Unknown | NmState::Connecting => None,
+            NmState::ConnectedSite | NmState::ConnectedGlobal => Some(true),
+            _ => Some(false),
+        }),
+        metered: state.and_then(|state| state.metered),
+    }
 }
 
 /// The top bar's link for a `NetworkManager` reading: the primary
@@ -392,6 +448,36 @@ pub fn link_bars(link: &LinkStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_hints_follow_lossless_host_state_and_transport_loss() {
+        let slot = NetworkSlot::default();
+        let (wake, _receiver) = mpsc::channel();
+        let status = NetworkStatusSource::default();
+        let mut changes = status.0.subscribe();
+        for metered in [None, Some(true), Some(false)] {
+            let mut state = NetworkState::unknown();
+            state.state = NmState::ConnectedGlobal;
+            state.metered = metered;
+            assert!(publish_network(&slot, &wake, &status, Some(state)));
+            assert_eq!(
+                *changes.borrow_and_update(),
+                HostNetworkStatus {
+                    available: Some(true),
+                    metered
+                }
+            );
+        }
+        assert!(publish_network(&slot, &wake, &status, None));
+        assert_eq!(*changes.borrow_and_update(), HostNetworkStatus::default());
+        assert!(publish_network(&slot, &wake, &status, None));
+        assert!(!changes.has_changed().unwrap(), "no change means no wake");
+        let mut state = NetworkState::unknown();
+        state.state = NmState::Disconnected;
+        assert_eq!(network_hints(Some(&state)).available, Some(false));
+        state.state = NmState::ConnectedLocal;
+        assert_eq!(network_hints(Some(&state)).available, Some(false));
+    }
 
     fn battery(percent: u8, state: BatteryState) -> BatterySnapshot {
         BatterySnapshot {
