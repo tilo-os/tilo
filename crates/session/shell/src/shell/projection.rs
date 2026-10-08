@@ -817,7 +817,10 @@ mod tests {
         let mut backend = SystemProjectionBackend::with_socket(Some(socket));
         let seen = notices.clone();
         backend.set_notice_sink(Arc::new(move |notice| seen.lock().unwrap().push(notice)));
-        assert_eq!(backend.discover().expect("discover"), [receiver.clone()]);
+        assert_eq!(
+            backend.discover().expect("discover"),
+            std::slice::from_ref(&receiver)
+        );
         let options = ProjectionOptions {
             credential: Some("4821".to_owned()),
             ..ProjectionOptions::default()
