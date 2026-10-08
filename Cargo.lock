@@ -8662,6 +8662,7 @@ dependencies = [
  "tilo-net",
  "tilo-sandbox-core",
  "tilo-xdg-paths",
+ "wasmi",
  "wire-frame",
  "workspace-hack",
  "zeroize",
