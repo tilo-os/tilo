@@ -509,19 +509,11 @@ pub struct TerminalWidget {
     /// Local input/output invalidates deferred speech even at the same caret.
     /// Exhaustion fails closed rather than reusing an epoch.
     input_epoch: std::cell::Cell<u64>,
-    #[cfg(target_os = "linux")]
     native_editor: Option<crate::native_editor::Client>,
-    #[cfg(target_os = "linux")]
     native_capture: Option<crate::native_editor::Capture>,
-    #[cfg(target_os = "linux")]
-    native_history: Option<(
-        ui::tilo_actions::InvocationId,
-        ui::webview::text_input::Receipt,
-    )>,
-    #[cfg(target_os = "linux")]
-    native_ime: Option<ui::webview::text_input::Receipt>,
-    #[cfg(target_os = "linux")]
-    native_ime_error: Option<ui::webview::text_input::Failure>,
+    native_history: Option<(ui::tilo_actions::InvocationId, ui::text_input::Receipt)>,
+    native_ime: Option<ui::text_input::Receipt>,
+    native_ime_error: Option<ui::text_input::Failure>,
     native_read_only: bool,
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -770,7 +762,6 @@ impl TerminalWidget {
         if self.native_read_only != read_only {
             self.native_read_only = read_only;
             self.invalidate_deferred_input();
-            #[cfg(target_os = "linux")]
             {
                 self.native_capture = None;
                 if let Some(editor) = &self.native_editor {
@@ -798,15 +789,10 @@ impl TerminalWidget {
         Self {
             rect: Rect::ZERO,
             input_epoch: std::cell::Cell::new(0),
-            #[cfg(target_os = "linux")]
             native_editor: None,
-            #[cfg(target_os = "linux")]
             native_capture: None,
-            #[cfg(target_os = "linux")]
             native_history: None,
-            #[cfg(target_os = "linux")]
             native_ime: None,
-            #[cfg(target_os = "linux")]
             native_ime_error: None,
             native_read_only: false,
             pty_write: writer,
@@ -998,9 +984,8 @@ impl TerminalWidget {
         if self.is_disconnected() {
             return Some(self.disconnected_message());
         }
-        #[cfg(target_os = "linux")]
         if let Some(failure) = self.native_ime_error {
-            use ui::webview::text_input::Failure;
+            use ui::text_input::Failure;
             let key = match failure {
                 Failure::Busy => "terminal-editor-busy",
                 Failure::Rejected => "terminal-editor-rejected",
@@ -1012,11 +997,10 @@ impl TerminalWidget {
     }
 
     fn poll_native_ime(&mut self) -> bool {
-        #[cfg(target_os = "linux")]
         if let Some(result) = self
             .native_ime
             .as_ref()
-            .and_then(ui::webview::text_input::Receipt::poll)
+            .and_then(ui::text_input::Receipt::poll)
         {
             self.native_ime = None;
             // A second refused commit is a different input; the first ACK
@@ -1029,19 +1013,17 @@ impl TerminalWidget {
 
     fn commit_ordinary_ime(&mut self, text: &str) {
         self.poll_native_ime();
-        #[cfg(target_os = "linux")]
         if self.native_ime.is_some() || self.native_read_only {
             self.native_ime_error = Some(if self.native_read_only {
-                ui::webview::text_input::Failure::Rejected
+                ui::text_input::Failure::Rejected
             } else {
-                ui::webview::text_input::Failure::Busy
+                ui::text_input::Failure::Busy
             });
             return;
         }
         if self.native_read_only {
             return;
         }
-        #[cfg(target_os = "linux")]
         if self.ime_requires_deferred_ack() {
             let receipt = self
                 .native_editor
@@ -1052,9 +1034,7 @@ impl TerminalWidget {
                         .map(|(capture, _)| editor.commit(capture, text.into()))
                 })
                 .unwrap_or_else(|| {
-                    ui::webview::text_input::Receipt::failed(
-                        ui::webview::text_input::Failure::Rejected,
-                    )
+                    ui::text_input::Receipt::failed(ui::text_input::Failure::Rejected)
                 });
             self.native_ime_error = None;
             self.native_ime = Some(receipt);
@@ -2026,7 +2006,6 @@ impl TerminalWidget {
             return Err("terminal input is unavailable because its PTY writer stopped".to_string());
         };
         if !bytes.is_empty() {
-            #[cfg(target_os = "linux")]
             if let Some(editor) = &self.native_editor {
                 editor.revoke();
             }
@@ -2183,7 +2162,6 @@ impl TerminalWidget {
     }
 
     pub(crate) fn inspect_editor(&self) -> serde_json::Value {
-        #[cfg(target_os = "linux")]
         if let Some(snapshot) = self
             .native_editor
             .as_ref()
@@ -2206,7 +2184,6 @@ impl TerminalWidget {
         text: String,
         reply: ui::framework::EffectReply,
     ) -> Result<(), String> {
-        #[cfg(target_os = "linux")]
         {
             if self.native_read_only
                 || (self
@@ -2244,11 +2221,6 @@ impl TerminalWidget {
                 reply,
             );
             Ok(())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (session, lease, text, reply);
-            Err("No qualified native editor is available".into())
         }
     }
 
@@ -3005,7 +2977,6 @@ impl Widget for TerminalWidget {
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
             self.invalidate_deferred_input();
-            #[cfg(target_os = "linux")]
             {
                 self.native_capture = None;
                 if let Some(editor) = &self.native_editor {
@@ -3039,7 +3010,6 @@ impl Widget for TerminalWidget {
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        #[cfg(target_os = "linux")]
         if self.focused
             && !self.context_menu.is_open()
             && !self.native_read_only
@@ -3061,8 +3031,7 @@ impl Widget for TerminalWidget {
         self.ime_purpose() == Some(winit::window::ImePurpose::Normal)
     }
 
-    fn start_deferred_text(&mut self) -> Option<ui::webview::text_input::Receipt> {
-        #[cfg(target_os = "linux")]
+    fn start_deferred_text(&mut self) -> Option<ui::text_input::Receipt> {
         {
             if !self.ime_requires_deferred_ack() {
                 return None;
@@ -3071,14 +3040,11 @@ impl Widget for TerminalWidget {
             self.native_capture = Some(capture);
             Some(receipt)
         }
-        #[cfg(not(target_os = "linux"))]
-        None
     }
 
-    fn commit_deferred_text(&mut self, text: &str) -> Option<ui::webview::text_input::Receipt> {
-        #[cfg(target_os = "linux")]
+    fn commit_deferred_text(&mut self, text: &str) -> Option<ui::text_input::Receipt> {
         {
-            use ui::webview::text_input::{Failure, Receipt};
+            use ui::text_input::{Failure, Receipt};
             let editor = self.native_editor.as_ref()?;
             let Some(capture) = self.native_capture.take() else {
                 return Some(Receipt::failed(Failure::Rejected));
@@ -3093,16 +3059,10 @@ impl Widget for TerminalWidget {
             }
             Some(editor.commit(capture, text.into()))
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = text;
-            None
-        }
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.ime_purpose()?;
-        #[cfg(target_os = "linux")]
         if let Some(snapshot) = self
             .native_editor
             .as_ref()
@@ -3308,13 +3268,9 @@ impl Widget for TerminalWidget {
 
 impl ui::undo::LocalUndo for TerminalWidget {
     fn local_undo_is_deferred(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        return self.native_editor.is_some();
-        #[cfg(not(target_os = "linux"))]
-        false
+        self.native_editor.is_some()
     }
     fn local_undo_status(&self) -> Option<ui::undo::LocalUndoStatus> {
-        #[cfg(target_os = "linux")]
         {
             if !self.focused || self.native_read_only || self.native_editor.is_none() {
                 return None;
@@ -3332,11 +3288,8 @@ impl ui::undo::LocalUndo for TerminalWidget {
                     }),
             )
         }
-        #[cfg(not(target_os = "linux"))]
-        None
     }
     fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
-        #[cfg(target_os = "linux")]
         if self.focused
             && !self.native_read_only
             && let Some(editor) = &self.native_editor
@@ -3348,8 +3301,7 @@ impl ui::undo::LocalUndo for TerminalWidget {
             let _ = editor.history(request);
             return true;
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = request;
+
         false
     }
     fn start_local_undo_operation(
@@ -3357,7 +3309,6 @@ impl ui::undo::LocalUndo for TerminalWidget {
         invocation: ui::tilo_actions::InvocationId,
         request: ui::undo::UndoRequest,
     ) -> Result<bool, String> {
-        #[cfg(target_os = "linux")]
         {
             if !self.focused || self.native_read_only {
                 return Ok(false);
@@ -3376,18 +3327,12 @@ impl ui::undo::LocalUndo for TerminalWidget {
             self.native_history = Some((invocation, editor.history(request)));
             Ok(true)
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (invocation, request);
-            Ok(false)
-        }
     }
     fn poll_local_undo_operation(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         cancellation_requested: bool,
     ) -> Option<ui::tilo_actions::InvocationUpdate> {
-        #[cfg(target_os = "linux")]
         {
             let (original, receipt) = self.native_history.as_ref()?;
             if *original != invocation {
@@ -3414,11 +3359,6 @@ impl ui::undo::LocalUndo for TerminalWidget {
                     },
                 },
             })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (invocation, cancellation_requested);
-            None
         }
     }
 }
@@ -6409,8 +6349,7 @@ pub struct TerminalBackend {
     /// For an environment on a relay: the session's id there, which
     /// re-attaches to it.
     pub relay_session: Option<String>,
-    #[cfg(target_os = "linux")]
-    native_editor: Option<runtime_portal::editor::Socket>,
+    native_editor: Option<crate::native_editor::Socket>,
     #[cfg(unix)]
     service_lifetime: Option<std::os::unix::net::UnixStream>,
     #[cfg(windows)]
@@ -6426,7 +6365,6 @@ impl TerminalBackend {
             master: Box::new(NullMaster),
             shell_name: "test".into(),
             relay_session: None,
-            #[cfg(target_os = "linux")]
             native_editor: None,
             service_lifetime: None,
         }
@@ -6530,7 +6468,6 @@ impl TerminalBackend {
             master: pair.master,
             shell_name,
             relay_session: None,
-            #[cfg(target_os = "linux")]
             native_editor: None,
             #[cfg(unix)]
             service_lifetime: None,
@@ -6919,8 +6856,7 @@ pub(crate) fn ush_request(
         "requested_by": requested_by.wire(),
     });
     if let Some(fields) = request.as_object_mut() {
-        #[cfg(target_os = "linux")]
-        if program.is_empty() && !target.is_host() {
+        if tilo_process::editor::supported() && program.is_empty() && !target.is_host() {
             fields.insert(
                 "editor_protocol".into(),
                 serde_json::json!(runtime_portal::editor::VERSION),
@@ -6939,7 +6875,6 @@ pub(crate) fn ush_request(
     Ok(request)
 }
 
-#[cfg(unix)]
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UshSessionReply {
@@ -7000,21 +6935,14 @@ pub(crate) fn ush_backend_on(
             "Invalid ush session descriptor roles".into(),
         ));
     }
-    #[cfg(target_os = "linux")]
     let native_editor = if response.editor_protocol.is_some() {
         let fd = descriptors
             .pop()
             .ok_or_else(|| OpenError::Failed("Missing editor descriptor".into()))?;
-        Some(runtime_portal::editor::Socket::adopt(fd).map_err(|e| failed(&e))?)
+        Some(crate::native_editor::Socket::adopt(fd).map_err(|e| failed(&e))?)
     } else {
         None
     };
-    #[cfg(not(target_os = "linux"))]
-    if response.editor_protocol.is_some() {
-        return Err(OpenError::Failed(
-            "Native editor is unavailable on this host".into(),
-        ));
-    }
     let fd = descriptors
         .pop()
         .ok_or_else(|| OpenError::Failed("Missing PTY descriptor".into()))?;
@@ -7022,16 +6950,7 @@ pub(crate) fn ush_backend_on(
     // `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
     // supervisor declares PTY first and, only after negotiation, editor second.
     let master = std::fs::File::from(fd);
-    #[cfg(target_os = "linux")]
-    {
-        let mut number = 0u32;
-        // SAFETY: an owned descriptor and initialized PTY number output.
-        if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGPTN, &raw mut number) } != 0 {
-            return Err(OpenError::Failed(
-                "The ush PTY role is not a master terminal".into(),
-            ));
-        }
-    }
+    tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
     let writer = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Write + Send>;
     Ok(TerminalBackend {
@@ -7040,7 +6959,6 @@ pub(crate) fn ush_backend_on(
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
-        #[cfg(target_os = "linux")]
         native_editor,
         service_lifetime: Some(stream.try_clone().map_err(|e| failed(&e))?),
     })
@@ -7169,8 +7087,7 @@ impl TerminalWidget {
     /// and lifetime replace the previous ones, a reader thread starts feeding
     /// the output channel, and the tab's screen is reset for the new process
     /// at the next sync.
-    #[cfg(target_os = "linux")]
-    fn attach_native_editor(&mut self, socket: Option<runtime_portal::editor::Socket>) {
+    fn attach_native_editor(&mut self, socket: Option<crate::native_editor::Socket>) {
         self.native_capture = None;
         self.native_history = None;
         self.native_ime = None;
@@ -7191,7 +7108,6 @@ impl TerminalWidget {
             Arc::new(Mutex::new("Session ended — input unavailable".into()));
         self.begin_local_session();
         let widget = self;
-        #[cfg(target_os = "linux")]
         widget.attach_native_editor(backend.native_editor);
         #[cfg(unix)]
         {

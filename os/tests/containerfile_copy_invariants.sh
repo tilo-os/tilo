@@ -130,7 +130,9 @@ containerfile="$repo/os/Containerfile"
 # the destination, source bytes and executable mode remain the same.
 # The disk-unlock polkit action and exact-command read rule ship beside the
 # existing policies. Their two rootfs payload rows are the intentional delta.
-expected_contract=e6f45d3a390bf7bd9fd63c96d811cab8f55c4feda6ae445d2c95cefe1037869a
+# The version-bound cooperative Bash editor at /usr/lib/tilo/ush/bash-editor.so
+# is an intentional ush component payload addition; no permission is activated.
+expected_contract=2d2f336b8e9c19cb565685ca094237994b5a5c93e28be4147fce918695ad7619
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

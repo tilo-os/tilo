@@ -15655,6 +15655,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-environment",
+ "tilo-process",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
@@ -17496,6 +17497,7 @@ name = "tilo-process"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "runtime-portal",
  "tempfile",
  "tilo-advisory-lock",
  "workspace-hack",

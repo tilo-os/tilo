@@ -90,10 +90,7 @@ mod native_editing_tests {
         );
         widget.commit_ordinary_ime("second");
         assert!(writes.try_recv().is_err(), "pending ACK fell back to PTY");
-        assert_eq!(
-            widget.native_ime_error,
-            Some(ui::webview::text_input::Failure::Busy)
-        );
+        assert_eq!(widget.native_ime_error, Some(ui::text_input::Failure::Busy));
         let mut receipt = packet[..editor::HEADER_BYTES].to_vec();
         receipt[5] = 0;
         receipt[6] = 3;
@@ -113,7 +110,7 @@ mod native_editing_tests {
         }
         assert_eq!(
             widget.native_ime_error,
-            Some(ui::webview::text_input::Failure::Unknown)
+            Some(ui::text_input::Failure::Unknown)
         );
         assert!(
             writes.try_recv().is_err(),
@@ -142,7 +139,7 @@ mod native_editing_tests {
         assert!(widget.start_deferred_text().is_none());
         assert!(matches!(
             widget.commit_deferred_text("must not move").unwrap().poll(),
-            Some(Err(ui::webview::text_input::Failure::Rejected))
+            Some(Err(ui::text_input::Failure::Rejected))
         ));
         widget.context_menu.close();
         widget.native_editor_read_only_changed(true);
@@ -157,5 +154,33 @@ mod native_editing_tests {
             packet[5], 6,
             "permission change did not revoke original lease"
         );
+    }
+    #[test]
+    fn canceled_original_capture_cannot_send_after_platform_handoff() {
+        let (mut widget, producer) = fixture();
+        let original = widget.start_deferred_text().unwrap();
+        original.cancel();
+        let receipt = widget.commit_deferred_text("private words").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while receipt.poll().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "canceled original capture did not complete"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(matches!(
+            receipt.poll(),
+            Some(Err(ui::text_input::Failure::Rejected))
+        ));
+        producer
+            .read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut packet = [0; editor::FRAME_BYTES];
+        let error = producer.receive(&mut packet).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
     }
 }

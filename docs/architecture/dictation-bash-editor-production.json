@@ -23,7 +23,7 @@
   "elf_hardening": "Passed production verify-elf-hardening.sh: PIE, full RELRO, noexecstack, no OpenSSL, SHSTK-marked, stack protector in linked C",
   "focused_tests": {
     "sdk_deferred_native_history": 2,
-    "terminal_native_boundaries": 3,
+    "terminal_native_boundaries": 4,
     "editor_codec": 2,
     "terminal_secret_effect_contract": 1,
     "terminal_existing_ime_accessibility": 1,
@@ -41,8 +41,15 @@
   ],
   "evidence_directory": "private dictation-vocabulary-dependent worktree; logs referenced by PR",
   "rust_validation": {
-    "strict_clippy": "Passed --all-targets -D warnings for terminal, ush, runtime-portal, tilo-ui and tilo-relay",
-    "shell_tests_check": "Earlier integration candidate passed; final attempt blocked before compilation by remote builder volume 95.3% full, above 80% admission watermark",
+    "strict_clippy": "Passed --all-targets -D warnings for terminal, ush, runtime-portal, tilo-ui and tilo-relay; final platform extraction separately passed terminal and tilo-process all targets",
+    "shell_tests_check": "Final CI-repair candidate passed check --locked -p shell --tests (1m 29s). Earlier capacity refusal is superseded, not reported as a pass.",
     "pre_commit": "Passed exact staged source checks; rerun after evidence update"
+  },
+  "ci_source_repairs": {
+    "platform_boundary": "Worker, native clocks, packet polling and PTY role validation moved to tilo-process::editor; Terminal has one API on all hosts, unsupported hosts expose no editor",
+    "private_receipts": "ui::text_input exposes only private completion receipts; no WebView capability requested",
+    "copy_contract": "Explicit intentional ush module payload recorded; exact digest and unique destination assertions retained",
+    "local_checks": "App portability, declared capabilities, generated web desktop, Containerfile copy invariants and sources passed; no baseline raised",
+    "image_blocker": "No signed RPM snapshot for set-4cee6ac4651b25573a4c65e1dba081d96f0ecc825daa76e7cfa53c0eed58a63c. build-rpms.yml signing and snapshot jobs require refs/heads/main. No merge or publication-gate change authorized."
   }
 }
