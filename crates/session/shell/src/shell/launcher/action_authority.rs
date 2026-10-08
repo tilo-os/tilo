@@ -87,6 +87,66 @@ impl Export {
     }
 }
 
+/// Host-only backend admission over the accepted room policy. No projection
+/// bytes or caller-supplied roles participate. The real tree and writer stay
+/// borrowed until the typed operation finishes, serializing revocation.
+pub(crate) fn with_ordinary_person_admin<T>(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+    person: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    with_ordinary_room_current(tree, room, |workspace| {
+        let now = tilo_clock::unix_now_ms() / 1000;
+        let actor = workspace.actor_for_person_at(&person.to_owned(), now);
+        if !workspace.allows_at(
+            &actor,
+            &collab_types::caps::ResourceRef::App("so.tilo.settings".into()),
+            collab_types::caps::Verb::Admin,
+            now,
+        ) {
+            return Err("The current owner policy does not permit display changes.".into());
+        }
+        operation()
+    })
+}
+
+/// Borrow accepted ordinary-room custody without assigning a role to the
+/// caller. Individual action contracts still apply their exact permissions.
+pub(crate) fn with_ordinary_room_current<T>(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+    operation: impl FnOnce(&crate::shell::state::Workspace) -> Result<T, String>,
+) -> Result<T, String> {
+    let tree = tree.read();
+    if tree.requires_native_owner(room) {
+        return Err("This room requires its current native owner.".into());
+    }
+    let workspace = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .ok_or("The admitted Settings room is unavailable.")?;
+    let published = lock(&PUBLISHED);
+    let policy = published
+        .rooms
+        .get(&room)
+        .ok_or("The accepted Settings room policy is unavailable.")?;
+    if workspace.owner != policy.owner || workspace.capabilities != policy.capabilities {
+        return Err("The accepted Settings room policy has changed.".into());
+    }
+    let result = policy.runtime.with_current_ordinary(
+        &policy.authority,
+        &tree.native_authority,
+        room,
+        || operation(workspace),
+    );
+    drop(published);
+    drop(tree);
+    result
+}
+
 fn authority_root() -> PathBuf {
     runtime_dir().join("tilo").join("action-authority")
 }
@@ -335,6 +395,75 @@ pub(crate) fn tick(now: Instant) {
 mod tests {
     use super::*;
     use collab_types::caps::{Principal, Verb};
+
+    #[test]
+    fn ordinary_display_backend_borrows_real_owner_policy_and_rejects_revocation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        tree.desktop.workspaces[0].set_owner("person-a");
+        tree.persist_path = Some(path);
+        let tree = tree.shared();
+        let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
+        Export::of(&tree.read()).publish();
+        let source = settings_store::HostDocument::new(serde_json::Map::default(), |_| Ok(()));
+        let observed: settings_store::hardware::DisplayHardwareSnapshot = serde_json::from_value(serde_json::json!({
+            "outputs":[{"descriptor":{"connector":"eDP-1","modes":[{"width":2944,"height":1840,"refresh_mhz":59999},{"width":2944,"height":1840,"refresh_mhz":89999}],"hdr":false,"vrr":false,"color_profiles":[],"monitor":null},"current_mode":{"width":2944,"height":1840,"refresh_mhz":59999},"scale":2.0,"builtin":true,"sink_hdr":false,"hdr_unavailable_reason":null,"sink_vrr":false,"vrr_unavailable_reason":null,"color_profile_labels":{}}],
+            "layout":[{"connector":"eDP-1","x":0,"y":0,"width":1472,"height":920}]
+        })).unwrap();
+        let candidate: settings_store::hardware::DisplayConfig = serde_json::from_value(serde_json::json!({"outputs":{"eDP-1":{"mode":{"width":2944,"height":1840,"refresh_mhz":89999},"scale":2.0}}})).unwrap();
+        let command = settings_store::display_control::DisplayCommand::Apply {
+            observed_set: settings_store::hardware::DisplaySet::of_descriptors(&[observed.outputs
+                [0]
+            .descriptor
+            .clone()]),
+            candidate,
+        };
+        let reply = with_ordinary_person_admin(&tree, room, "person-a", || {
+            settings_store::display_control::execute(&source, observed.clone(), command)
+        })
+        .unwrap();
+        let transaction = reply.transaction.unwrap();
+        assert_eq!(
+            transaction.state,
+            settings_store::hardware::DisplayTransactionState::Requested
+        );
+        assert_eq!(
+            transaction.previous.outputs["eDP-1"]
+                .mode
+                .unwrap()
+                .refresh_mhz,
+            59999
+        );
+        let revert = || {
+            settings_store::display_control::execute(
+                &source,
+                observed.clone(),
+                settings_store::display_control::DisplayCommand::Revert {
+                    transaction: transaction.id,
+                },
+            )
+        };
+        assert!(with_ordinary_person_admin(&tree, room, "person-b", revert).is_err());
+        // Revocation before its queued publication must already fail closed;
+        // neither stale accepted cache nor a fabricated UI role grants access.
+        tree.write().desktop.workspaces[0].owner = None;
+        tree.write().desktop.workspaces[0].capabilities.clear();
+        assert!(with_ordinary_person_admin(&tree, room, "person-a", revert).is_err());
+        tree.read().queue_save();
+        crate::shell::persist::wait_for_saves();
+        assert!(with_ordinary_person_admin(&tree, room, "person-a", revert).is_err());
+        assert_eq!(
+            settings_store::SettingsSource::load(&source)["display_transaction"]["state"],
+            "requested"
+        );
+        tree.write().desktop.workspaces[0].set_owner("person-a");
+        tree.read().queue_save();
+        crate::shell::persist::wait_for_saves();
+        drop(owner);
+        assert!(with_ordinary_person_admin(&tree, room, "person-a", revert).is_err());
+    }
 
     #[test]
     fn action_authority_export_releases_file_custody_and_revokes_dropped_runtime() {

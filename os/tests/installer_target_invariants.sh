@@ -498,6 +498,14 @@ else
   bad "live-medium SSH mask/enablement can leak into the target"
 fi
 
+if grep -Fq 'die "setup handoff contains the human root secret"' "$backend" \
+   && grep -Fq 'for public in user-identity/pubkey.bin device/cert.bin' "$backend" \
+   && grep -Fq 'find "$HANDOFF_VAR/lib/tilo/device/certs"' "$backend"; then
+  ok "installed handoff refuses the human root secret and keeps the enrolled identity's public files readable"
+else
+  bad "installed handoff can copy the human root secret or leave public identity files root-only"
+fi
+
 if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"' "$backend"; then
   ok "installed greeter configuration receives an enforcing-compatible /etc label"
 else

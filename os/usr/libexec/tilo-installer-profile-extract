@@ -181,6 +181,14 @@ while offset < len(payload):
     target.write_bytes(chunk)
     offset += size
 PY
+  # The human root secret never leaves the setup machine. A payload that
+  # carries it is refused whole, not filtered.
+  if [ -e "$unpack/var/lib/tilo/user-identity/privkey.bin" ] \
+     || [ -L "$unpack/var/lib/tilo/user-identity/privkey.bin" ]; then
+    rm -rf "$unpack"
+    report_error "The setup handoff contains the human root secret and was not used."
+    continue
+  fi
   handoffs=$((handoffs + 1))
   rm -rf "$handoff_dir"
   install -d -m 0700 "$handoff_dir"
