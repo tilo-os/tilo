@@ -46,6 +46,12 @@ pub struct Packed {
     pub toolchain: Option<String>,
     #[serde(default)]
     pub source_digest: Option<String>,
+    /// Canonical content identity, not the tar archive digest. Older builders omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_hash: Option<String>,
+    /// An explicit cache result; its framed stream must contain zero archive bytes.
+    #[serde(default)]
+    pub reused: bool,
 }
 
 /// The remote builder's `run` that builds and streams `component`'s layer:
@@ -89,7 +95,7 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
 /// # Errors
 /// An unknown component, a failed build or installer, I/O.
 pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError> {
-    pack_with_source(name, profile, extra, None)
+    pack_with_source(name, profile, extra, None, &[])
 }
 
 pub(crate) fn pack_with_source(
@@ -97,7 +103,13 @@ pub(crate) fn pack_with_source(
     profile: &str,
     extra: &[String],
     inventory: Option<&Path>,
+    cached: &[String],
 ) -> Result<(), CliError> {
+    if cached.len() > 8 || cached.iter().any(|hash| !valid_hash(hash)) {
+        return Err(CliError::InvalidInput(
+            "at most eight lowercase SHA-256 cached layer hashes are accepted".into(),
+        ));
+    }
     let root = std::env::current_dir().map_err(CliError::io("find the worktree"))?;
     let source_digest = inventory
         .map(|path| crate::source_inputs::verify(&root, path))
@@ -179,14 +191,38 @@ pub(crate) fn pack_with_source(
         target: facts.target,
         toolchain: facts.toolchain,
         source_digest,
+        ..Packed::default()
     };
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
+    write_layer(&tree, packed, cached, &mut out)
+}
+
+fn valid_hash(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// The canonical assembler output decides reuse, never the source revision alone.
+pub(crate) fn write_layer(
+    tree: &Path,
+    mut packed: Packed,
+    cached: &[String],
+    out: &mut impl Write,
+) -> Result<(), CliError> {
+    let hash = tilo_vm_protocol::layer_hash::tree_hash(tree)
+        .map_err(CliError::io("hash assembled remote layer"))?;
+    packed.reused = cached.contains(&hash);
+    packed.layer_hash = Some(hash);
     let header =
         serde_json::to_string(&packed).map_err(|e| CliError::InvalidInput(e.to_string()))?;
     writeln!(out, "{BEGIN}{header}").map_err(CliError::io("write the layer"))?;
-    let mut lines = Lines::new(&mut out);
-    build::pack_into(&tree, &mut lines)?;
+    let mut lines = Lines::new(out);
+    if !packed.reused {
+        build::pack_into(tree, &mut lines)?;
+    }
     let (sha256, bytes) = lines.finish().map_err(CliError::io("write the layer"))?;
     writeln!(out, "{END}{sha256} {bytes}").map_err(CliError::io("write the layer"))?;
     out.flush().map_err(CliError::io("write the layer"))
@@ -385,6 +421,7 @@ mod tests {
                 target: Some("aarch64-unknown-linux-gnu".into()),
                 toolchain: None,
                 source_digest: None,
+                ..Packed::default()
             })
             .unwrap()
         )

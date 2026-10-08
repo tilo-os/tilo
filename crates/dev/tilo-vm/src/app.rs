@@ -920,21 +920,9 @@ impl App {
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
-            Some(Command::LayerPack {
-                component,
-                profile,
-                features,
-                source_inventory,
-            }) => Self::packed(crate::builderlayer::pack_with_source(
-                &component,
-                &profile,
-                &features,
-                source_inventory.as_deref(),
-            )),
-            Some(Command::AppPack {
-                app,
-                source_inventory,
-            }) => Self::packed(crate::builderapp::pack(&app, &source_inventory)),
+            Some(command @ (Command::LayerPack { .. } | Command::AppPack { .. })) => {
+                Self::pack_command(command)
+            }
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
             Some(Command::Gc {
@@ -943,6 +931,29 @@ impl App {
                 keep_targets,
                 min_age,
             }) => self.gc(dry_run, keep, keep_targets, min_age),
+        }
+    }
+
+    fn pack_command(command: Command) -> Result<Outcome, CliError> {
+        match command {
+            Command::LayerPack {
+                component,
+                profile,
+                features,
+                source_inventory,
+                cached_layer,
+            } => Self::packed(crate::builderlayer::pack_with_source(
+                &component,
+                &profile,
+                &features,
+                source_inventory.as_deref(),
+                &cached_layer,
+            )),
+            Command::AppPack {
+                app,
+                source_inventory,
+            } => Self::packed(crate::builderapp::pack(&app, &source_inventory)),
+            _ => Err(CliError::InvalidInput("not a remote pack command".into())),
         }
     }
 
