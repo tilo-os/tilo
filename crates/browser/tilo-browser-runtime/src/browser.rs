@@ -24,6 +24,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as _};
 use winit::window::{Window, WindowId};
 
+use tilo_desktop::feedback::PrivateFeedback;
+
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
 
 thread_local! {
@@ -223,6 +225,7 @@ struct Mount {
     gpu: Option<Gpu>,
     pending: bool,
     background_retry: Option<ui::time::Instant>,
+    feedback_retry: Option<ui::time::Instant>,
     viewport: ViewportState,
     caps: SurfaceCaps,
     hidden: bool,
@@ -265,6 +268,12 @@ struct Desktop {
 
 impl Mount {
     fn service_owner_models(&mut self) {
+        self.feedback_retry = None;
+        if let Some(desktop) = &self.desktop
+            && let Some(feedback) = desktop.shared.feedback.borrow().as_ref()
+        {
+            let _ = feedback.pump();
+        }
         let p = crate::background_work::Presentation {
             hidden: self.hidden,
             suspended: self.viewport.suspended(),
@@ -728,6 +737,24 @@ impl ApplicationHandler<u64> for Runner {
         let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
         for id in ids {
             let _ = with_mount(id, |m| {
+                let feedback_due = m.desktop.as_ref().and_then(|desktop| {
+                    desktop
+                        .shared
+                        .feedback
+                        .borrow()
+                        .as_ref()
+                        .and_then(PrivateFeedback::next_wake_deadline)
+                });
+                if let Some(next) = feedback_due {
+                    let due = *m.feedback_retry.get_or_insert(next);
+                    if due <= now {
+                        model_wakes.push(id);
+                    } else {
+                        wake(due);
+                    }
+                } else {
+                    m.feedback_retry = None;
+                }
                 if m.frame.has_pending_owner_models() {
                     let due = m.background_retry.unwrap_or(now);
                     if due <= now {
@@ -902,6 +929,9 @@ fn present_component(
     dyn_store: Rc<dyn durable_store::DurableStore>,
     permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<Presentation, JsValue> {
+    if definition.app_id == tilo_desktop::feedback::PACKAGE {
+        return present_private_feedback(config);
+    }
     let record = RecordOwners::with_store(Rc::clone(&dyn_store))
         .open(definition.app_id, &config.room)
         .map_err(error)?;
@@ -998,6 +1028,19 @@ fn present_component(
         stores: Rc::new(RefCell::new(vec![record])),
         checkout: Some(checkout),
         images: loaders,
+        desktop: None,
+    })
+}
+
+fn present_private_feedback(config: &Config) -> Result<Presentation, JsValue> {
+    let component =
+        tilo_desktop::feedback::unconfigured(&config.device, &config.author(), config.instance)
+            .map_err(error)?;
+    Ok(Presentation {
+        root: Root::Component(Box::new(component)),
+        stores: Rc::default(),
+        checkout: None,
+        images: Rc::default(),
         desktop: None,
     })
 }
@@ -1154,6 +1197,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         gpu: None,
         pending: true,
         background_retry: None,
+        feedback_retry: None,
         viewport: ViewportState::with_caps(observed, caps),
         caps,
         hidden: false,

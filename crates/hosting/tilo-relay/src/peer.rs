@@ -357,10 +357,13 @@ impl ResumeLog {
 const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// The next lagging room this connection can resume: a `SubscribeFrom` at
-/// its current position, handled as if the device had sent it. Rooms
-/// without a resume log wait for their next subscribe.
-fn lag_resume(session: &SessionCtx<'_>) -> Option<Envelope> {
+/// its current position, handled as if the device had sent it. A current
+/// plain subscription catches up through the same authorized full replay.
+fn lag_resume(session: &SessionCtx<'_>, subscribed: &[u64]) -> Option<Envelope> {
     while let Some(workspace_id) = session.lag.next() {
+        if !subscribed.contains(&workspace_id) {
+            continue;
+        }
         if let Some(Envelope::Position { position, .. }) = resume_record(session, workspace_id, [])
         {
             return Some(Envelope::SubscribeFrom {
@@ -368,6 +371,7 @@ fn lag_resume(session: &SessionCtx<'_>) -> Option<Envelope> {
                 position: Some(position),
             });
         }
+        return Some(Envelope::Subscribe { workspace_id });
     }
     None
 }
@@ -559,7 +563,7 @@ where
                         if state_tx.capacity() < state_tx.max_capacity() || tx.capacity() < tx.max_capacity() {
                             continue;
                         }
-                        let resume = lag_resume(&session);
+                        let resume = lag_resume(&session, &subscribed);
                         catching_up = !lag.is_empty();
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
@@ -568,6 +572,7 @@ where
             };
             match frame {
                 EnvelopeV2::State(env) => {
+                    trace_native_publication("server_received", &env, None);
                     let prefix_len =
                         eligible_checkpoint_prefix(&env, backlog.iter().map(|(frame, _)| frame));
                     let mut prefix = vec![env];
@@ -622,7 +627,7 @@ where
                                 result = &mut operation => break result?,
                                 frame = reader.read_next(), if backlog.len() < 32 => {
                                     let Some(frame) = frame? else { return Ok(()); };
-                                    let can_route = private_may_overtake(&frame, blocked_room, backlog.iter().map(|(frame, _)| frame));
+                                    let can_route = private_may_overtake(&frame, blocked_room, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         // The state future may hold the authorization lane
                                         // needed by this private request. Keep polling it
@@ -702,7 +707,7 @@ where
                                 }
                                 frame = reader.read_next(), if backlog.len() < 32 => {
                                     let Some(frame) = frame? else { return Ok(()); };
-                                    let can_route = private_may_overtake(&frame, None, backlog.iter().map(|(frame, _)| frame));
+                                    let can_route = private_may_overtake(&frame, None, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
                                             send_private_reply(&private_tx, reply).await?;
@@ -778,6 +783,7 @@ where
                             &frame, v2,
                         )?)
                         .await?;
+                    trace_native_publication("written", &frame, Some(&peer.device_public_key));
                     private_burst = 0;
                     raw_turn = false;
                     continue;
@@ -882,8 +888,17 @@ fn control_room(frame: &EnvelopeV2) -> Option<u64> {
 fn private_may_overtake<'a>(
     frame: &EnvelopeV2,
     active_control: Option<u64>,
+    heartbeat_ready: bool,
     mut queued: impl Iterator<Item = &'a EnvelopeV2>,
 ) -> bool {
+    // A transport-only heartbeat cannot depend on state admission finishing:
+    // its silence deadline would otherwise replace an authorized live session.
+    // Preserve Ready and earlier capability/unsubscribe reply ordering.
+    if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
+        return heartbeat_ready
+            && active_control.is_none()
+            && queued.all(|frame| control_room(frame).is_none());
+    }
     let EnvelopeV2::Directed(action) = frame else {
         return false;
     };
@@ -891,6 +906,39 @@ fn private_may_overtake<'a>(
         return false;
     };
     active_control != Some(room) && queued.all(|frame| control_room(frame) != Some(room))
+}
+
+// Hash the same signed message bytes as the native publication cursor. This
+// target is opt-in: ordinary relay operation does not decode or hash for tracing.
+pub(crate) fn trace_native_publication(
+    phase: &str,
+    envelope: &Envelope,
+    recipient: Option<&[u8; 32]>,
+) {
+    if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+        return;
+    }
+    let Envelope::Delta {
+        workspace_id,
+        author_device_public_key,
+        delta,
+        ..
+    } = envelope
+    else {
+        return;
+    };
+    let Some(payload) = crate::coedit::CoeditPayload::decode(delta) else {
+        return;
+    };
+    let (kind, body) = match payload {
+        crate::coedit::CoeditPayload::Checkpoint { body, .. } => ("checkpoint", body),
+        crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
+    };
+    tracing::debug!(target: "tilo_relay::native_publication",
+        phase, id = %blake3::hash(&body), kind, workspace_id,
+        author = %hex::encode(&author_device_public_key[..4]),
+        recipient = ?recipient.map(|key| hex::encode(&key[..4])),
+        "native relay publication hop");
 }
 
 fn inbound_bytes(frame: &EnvelopeV2) -> usize {
@@ -1216,6 +1264,11 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                                 frame, session.v2,
                             )?)
                             .await?;
+                        trace_native_publication(
+                            "replay_written",
+                            frame,
+                            Some(&peer.device_public_key),
+                        );
                         // The position follows after `Ready`; a reconnect
                         // before it replays these frames once more.
                         let _ = resume_record(session, workspace_id, [frame]);
@@ -2127,8 +2180,8 @@ impl StateSession {
 /// disk (its pending queue and the retained log). Once the connection's
 /// queues drain it resumes each of them from its position, so the replay
 /// carries exactly what it missed; a lagging reader costs disk and latency,
-/// never its session. A subscription without a resume log catches up on its
-/// next subscribe instead.
+/// never its session. A subscription without a resume log catches up through
+/// its ordinary full retained replay, with current authorization checked again.
 #[derive(Default)]
 pub(crate) struct Lag {
     rooms: std::sync::Mutex<std::collections::BTreeSet<u64>>,
@@ -3700,6 +3753,17 @@ async fn publish_checkpoint_commit(
     metrics: &crate::metrics::Metrics,
     mut commit: StateCommit,
 ) -> Result<(), crate::store::StoreError> {
+    trace_native_publication(
+        if commit.activation_error.is_some() {
+            "prefix_activation_error"
+        } else if commit.publish {
+            "prefix_durable"
+        } else {
+            "prefix_suppressed"
+        },
+        &commit.envelope,
+        None,
+    );
     if !commit.publish {
         return Ok(());
     }
@@ -3927,6 +3991,9 @@ async fn enqueue_checkpoint_prefix(
     metrics: Arc<crate::metrics::Metrics>,
     inbound_budget: Vec<Option<Arc<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> Result<(), PeerError> {
+    for envelope in &envelopes {
+        trace_native_publication("prefix_received", envelope, None);
+    }
     let diagnostics = crate::persistence::diagnostics();
     let admitted_at = diagnostics.then(std::time::Instant::now);
     let message_units = u32::try_from(envelopes.len())
@@ -3993,6 +4060,20 @@ async fn enqueue_checkpoint_prefix(
                 }
                 let projection_elapsed_ms =
                     projection_started.map_or(0, |started| started.elapsed().as_millis());
+                if tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+                    for (index, input) in batch.inputs.iter().enumerate() {
+                        use crate::store::shell_selection::IncomingDisposition;
+                        let disposition = batch.projected.as_ref().and_then(|outcome| outcome.dispositions.get(index));
+                        let phase = match disposition {
+                            Some(IncomingDisposition::Covered) => "prefix_covered",
+                            Some(IncomingDisposition::Staged) => "prefix_staged",
+                            Some(IncomingDisposition::SelectedLive) => "prefix_selected_live",
+                            Some(IncomingDisposition::Original) => "prefix_original",
+                            None => "prefix_unclassified",
+                        };
+                        trace_native_publication(phase, &input.envelope, None);
+                    }
+                }
                 if diagnostics {
                     use crate::store::shell_selection::{
                         BatchProjectionReason, IncomingDisposition, Publication,
@@ -4382,17 +4463,21 @@ async fn enqueue_state_inner(
         tracing::info!(phase = "server_delta_admit", workspace_id, authored_at_ns);
     }
     let charge = delta.len().saturating_add(256).saturating_mul(3);
+    trace_native_publication("admission_started", &envelope, None);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
     if source
         .as_ref()
         .is_some_and(|source| !source.authorized(&runtime))
     {
+        trace_native_publication("admission_source_changed", &envelope, None);
         return Err(PeerError::Protocol(
             "state source authorization changed".into(),
         ));
     }
+    trace_native_publication("admission_authorized", &envelope, None);
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
+    trace_native_publication("persistence_admission_wait", &envelope, None);
     let workers = owner.workers();
     let workspace = workspace.clone();
     let failure = source.clone();
@@ -4672,6 +4757,17 @@ async fn enqueue_state_inner(
         move |result| async move {
             let result = async {
                 let mut commit = result?;
+                trace_native_publication(
+                    if commit.activation_error.is_some() {
+                        "activation_error"
+                    } else if commit.publish {
+                        "durable"
+                    } else {
+                        "suppressed"
+                    },
+                    &commit.envelope,
+                    None,
+                );
                 if !commit.publish {
                     return Ok(commit);
                 }
@@ -4805,6 +4901,8 @@ async fn enqueue_state_inner(
                             }
                         }
                     }
+                    #[cfg(test)]
+                    crate::store::test_barrier::signal(runtime.store.root(), "live-publication-complete");
                 }
                 Ok(())
                 }.await;
@@ -4928,6 +5026,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
             session.v2,
         )?)
         .await?;
+    trace_native_publication("written", &delivery.envelope, Some(&peer.device_public_key));
     if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
         write
             .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
@@ -4996,6 +5095,7 @@ async fn handle_delta(
         ));
     }
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
         // subscriber; a follow-up write must close rather than refuse twice.
         if !current_session(&*ws.lock().await, peer, session.outbound) {
@@ -5008,6 +5108,7 @@ async fn handle_delta(
             reason: "workspace membership changed".into(),
         }));
     };
+    trace_native_publication("server_authorized", &env, None);
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
         _ => None,
@@ -5465,6 +5566,9 @@ async fn handle_delta_prefix(
         ));
     }
     let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
+        for envelope in &envelopes {
+            trace_native_publication("server_source_refused", envelope, None);
+        }
         if !current_session(&*workspace.lock().await, peer, session.outbound) {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),
@@ -5475,6 +5579,9 @@ async fn handle_delta_prefix(
             reason: "workspace membership changed".into(),
         }));
     };
+    for envelope in &envelopes {
+        trace_native_publication("server_authorized", envelope, None);
+    }
     let governed_source = {
         let runtime = workspace.lock().await;
         checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source)
@@ -6108,6 +6215,7 @@ async fn handle_private(
     session: &SessionCtx<'_>,
 ) -> Result<Option<EnvelopeV2>, PeerError> {
     match frame {
+        EnvelopeV2::State(Envelope::Ping) => Ok(Some(EnvelopeV2::State(Envelope::Pong))),
         EnvelopeV2::EnableActions { room } => {
             if room.is_nil() || !current_action_peer(peer, session) {
                 return Err(PeerError::Protocol(
@@ -8371,7 +8479,7 @@ mod private_transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_releases_routing_lock() {
-        paused_state_private_roundtrip(true, false, false, false).await;
+        paused_state_private_roundtrip(true, false, false, false, None).await;
     }
 
     /// A peer that pipelines more private requests than the reply queue holds,
@@ -8468,22 +8576,38 @@ mod private_transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_allows_same_connection_private_roundtrip() {
-        paused_state_private_roundtrip(false, false, false, false).await;
+        paused_state_private_roundtrip(false, false, false, false, None).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_replay_cleanup_with_full_reply_queue_keeps_private_reader_and_writer_live() {
-        paused_state_private_roundtrip(false, true, false, false).await;
+        paused_state_private_roundtrip(false, true, false, false, None).await;
     }
 
     #[tokio::test]
     async fn full_control_backlog_backpressures_and_recovers_after_held_writer() {
-        paused_state_private_roundtrip(false, true, true, false).await;
+        paused_state_private_roundtrip(false, true, true, false, None).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn overtaking_private_keeps_held_state_authorization_future_pollable() {
-        paused_state_private_roundtrip(false, false, false, true).await;
+        paused_state_private_roundtrip(false, false, false, true, None).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn plain_subscription_recovers_retained_frame_after_live_budget_exhaustion() {
+        paused_state_private_roundtrip(false, false, false, false, Some(LagBoundary::Live)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn plain_subscription_discards_stale_lag_after_explicit_unsubscribe() {
+        paused_state_private_roundtrip(false, false, false, false, Some(LagBoundary::Unsubscribed))
+            .await;
+    }
+
+    enum LagBoundary {
+        Live,
+        Unsubscribed,
     }
 
     #[expect(
@@ -8495,6 +8619,7 @@ mod private_transport_tests {
         held_cleanup: bool,
         full_backlog: bool,
         held_authorization: bool,
+        plain_lag: Option<LagBoundary>,
     ) {
         let (root, user) = UserIdentity::generate("alice", 1);
         let (a, _) = certified_device(&root, user.public_key, "a");
@@ -8580,6 +8705,158 @@ mod private_transport_tests {
         }
         let (mut ar, mut aw) = wires.remove(0);
         let (mut br, mut bw) = wires.remove(0);
+        if let Some(boundary) = plain_lag {
+            let lag = workspace.lock().await.state_sessions[&b.device_public_key]
+                .lag
+                .as_ref()
+                .unwrap()
+                .clone();
+            let envelope = Envelope::Delta {
+                workspace_id: id,
+                author_device_public_key: a.device_public_key,
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: crate::coedit::CoeditPayload::RetainedDelta {
+                    channel: [3; 32],
+                    body: vec![4; 4096],
+                }
+                .encode()
+                .unwrap(),
+            };
+            let fault = crate::store::test_barrier::fail(store.root(), "live-delivery-budget");
+            let (publication_release, published) =
+                crate::store::test_barrier::install(store.root(), "live-publication-complete");
+            let (release, reached) =
+                crate::store::test_barrier::install(store.root(), "live-delivery-budget");
+            aw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            tilo_test_env::within("the retained publication to reach its live budget", reached)
+                .await
+                .expect("ordinary retained publication never reached live budget");
+            drop(release);
+            tilo_test_env::within("the missed live publication recipient fan-out", published)
+                .await
+                .expect("missed live publication never completed its recipient fan-out");
+            drop(publication_release);
+            let owner = crate::persistence::handle(&workspace).await;
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+            drop(fault);
+            assert!(
+                store
+                    .load_retained()
+                    .unwrap()
+                    .iter()
+                    .any(|bytes| { crate::transport::decode(&bytes[4..]).unwrap() == envelope }),
+                "missed live frame must remain durably retained"
+            );
+            let unsubscribed = matches!(boundary, LagBoundary::Unsubscribed);
+            if unsubscribed {
+                for frame in [Envelope::Unsubscribe { workspace_id: id }, Envelope::Ping] {
+                    bw.write_all(
+                        &tilo_delivery_protocol::transport_v2::encode_state(&frame, true).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                tilo_test_env::within("the explicit unsubscribe to complete", async {
+                    loop {
+                        match br.read_next().await.unwrap() {
+                            Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                            Some(EnvelopeV2::State(
+                                Envelope::Delta { .. } | Envelope::Ready { .. },
+                            )) => {}
+                            other => panic!("unexpected explicit-unsubscribe reply: {other:?}"),
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    !workspace
+                        .lock()
+                        .await
+                        .state_sessions
+                        .contains_key(&b.device_public_key)
+                );
+                // A queued hint may outlive the subscription that produced it.
+                // Its ordering is fixed here after the real unsubscribe reply.
+                lag.mark(id);
+            }
+            // Publication has completed, so the lag marker was made. Wait for
+            // its actual consumption rather than guessing the polling interval.
+            tilo_test_env::within("the peer to consume its lag marker", async {
+                while !lag.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            let mut frames = Vec::new();
+            let mut ready = 0_usize;
+            tilo_test_env::within("retained catch-up before the next peer reply", async {
+                loop {
+                    match br.read_next().await.unwrap() {
+                        Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                        Some(EnvelopeV2::State(Envelope::Ready { .. })) => {
+                            ready = ready.checked_add(1).unwrap();
+                        }
+                        Some(EnvelopeV2::State(frame @ Envelope::Delta { .. })) => {
+                            frames.push(frame);
+                        }
+                        other => panic!("unexpected lag-recovery frame: {other:?}"),
+                    }
+                }
+            })
+            .await;
+            if !unsubscribed {
+                assert!(
+                    workspace.lock().await.state_sessions[&b.device_public_key]
+                        .live
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    "ordinary byte backpressure must preserve the authorized subscription"
+                );
+            }
+            for task in tasks {
+                task.abort();
+                let _ = task.await;
+            }
+            if unsubscribed {
+                assert!(
+                    frames.is_empty(),
+                    "a stale lag hint reopened an explicitly closed subscription"
+                );
+                assert_eq!(
+                    ready, 0,
+                    "an explicitly closed subscription cannot become ready again"
+                );
+                assert!(
+                    !workspace
+                        .lock()
+                        .await
+                        .state_sessions
+                        .contains_key(&b.device_public_key)
+                );
+            } else {
+                assert_eq!(
+                    frames,
+                    vec![envelope],
+                    "plain subscription lost its committed retained frame"
+                );
+                assert_eq!(
+                    ready, 1,
+                    "catch-up must complete its actual replay boundary"
+                );
+            }
+            return;
+        }
         let envelope = Envelope::Delta {
             workspace_id: id,
             author_device_public_key: a.device_public_key,
@@ -8824,6 +9101,16 @@ mod private_transport_tests {
         }
     }
 
+    #[tokio::test]
+    async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
+        capability_control_lookahead(false, 3).await;
+    }
+
+    #[tokio::test]
+    async fn heartbeat_does_not_overtake_queued_capability_control() {
+        capability_control_lookahead(false, 4).await;
+    }
+
     async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         let (root, user) = UserIdentity::generate("owner", 1);
         let (a, _) = certified_device(&root, user.public_key, "a");
@@ -8940,7 +9227,143 @@ mod private_transport_tests {
             wires.push((reader, write));
         }
         let (mut ar, mut aw) = wires.remove(0);
-        let (mut br, _bw) = wires.remove(0);
+        let (mut br, mut bw) = wires.remove(0);
+        if control >= 3 {
+            let gated = control == 4;
+            let (release, reached) =
+                crate::store::test_barrier::install(store.root(), "membership-read");
+            let envelope = Envelope::Delta {
+                workspace_id: ids[2],
+                author_device_public_key: a.device_public_key,
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: crate::coedit::CoeditPayload::RetainedDelta {
+                    channel: [3; 32],
+                    body: vec![4; 4096],
+                }
+                .encode()
+                .unwrap(),
+            };
+            aw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            tilo_test_env::within("the state admission membership read", reached)
+                .await
+                .unwrap();
+            assert!(store.load_retained().unwrap().is_empty());
+            let request = DirectedAction {
+                room: rooms[1],
+                request_id: uuid::Uuid::from_u128(77),
+                source: a.device_public_key,
+                target: b.device_public_key,
+                message: ActionMessage::CatalogueRefresh { scope: None },
+            };
+            if gated {
+                aw.write_all(
+                    &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
+                        room: rooms[0],
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            }
+            for frame in [
+                EnvelopeV2::State(Envelope::Ping),
+                EnvelopeV2::Directed(request.clone()),
+            ] {
+                aw.write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
+                    .await
+                    .unwrap();
+            }
+            let Some(EnvelopeV2::Delivered { action, .. }) =
+                tilo_test_env::within("the unrelated-room private request", br.read_next())
+                    .await
+                    .unwrap()
+            else {
+                panic!("unrelated private request stalled during state admission")
+            };
+            assert_eq!(action, request);
+            let response = DirectedAction {
+                source: b.device_public_key,
+                target: a.device_public_key,
+                ..request
+            };
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(
+                    response.clone(),
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            // A real later private response proves this reader and writer are
+            // live. Only an earlier control may hold the heartbeat behind it.
+            let first =
+                tilo_test_env::within("the heartbeat or later private reply", ar.read_next())
+                    .await
+                    .unwrap();
+            let later = if !gated && first == Some(EnvelopeV2::State(Envelope::Pong)) {
+                tilo_test_env::within("the private response after the heartbeat", ar.read_next())
+                    .await
+                    .unwrap()
+            } else {
+                None
+            };
+            assert!(store.load_retained().unwrap().is_empty());
+            drop(release);
+            let owner = crate::persistence::handle(&held_workspace).await;
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+            let delivered_state =
+                tilo_test_env::within("the state delivery after admission release", br.read_next())
+                    .await
+                    .unwrap();
+            assert_eq!(delivered_state, Some(EnvelopeV2::State(envelope)));
+            let after_control = if gated
+                && matches!(&first, Some(EnvelopeV2::Delivered { action, .. }) if action == &response)
+            {
+                let ready = tilo_test_env::within("the queued capability reply", ar.read_next())
+                    .await
+                    .unwrap();
+                let pong = tilo_test_env::within("the heartbeat after its control", ar.read_next())
+                    .await
+                    .unwrap();
+                Some((ready, pong))
+            } else {
+                None
+            };
+            for task in tasks {
+                task.abort();
+                let _ = task.await;
+            }
+            if gated {
+                assert!(
+                    matches!(first, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+                    "a heartbeat crossed its earlier capability control"
+                );
+                let (ready, pong) = after_control.unwrap();
+                assert!(matches!(
+                    ready,
+                    Some(EnvelopeV2::ActionsReady { room, .. }) if room == rooms[0]
+                ));
+                assert_eq!(pong, Some(EnvelopeV2::State(Envelope::Pong)));
+            } else {
+                assert_eq!(
+                    first,
+                    Some(EnvelopeV2::State(Envelope::Pong)),
+                    "a live transport withheld its heartbeat behind unrelated state admission"
+                );
+                assert!(
+                    matches!(later, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+                    "heartbeat progress lost the authorized private response"
+                );
+            }
+            return;
+        }
         let (release, reached) = crate::store::test_barrier::install(
             store.root(),
             if reply_wait {
@@ -9886,6 +10309,7 @@ mod private_transport_tests {
             !private_may_overtake(
                 &EnvelopeV2::Directed(action.clone()),
                 Some(id),
+                false,
                 std::iter::empty(),
             ),
             "private traffic must not overtake its room's state control"

@@ -90,6 +90,12 @@ pub fn identity_paths() -> IdentityPaths {
         Ok(v) if !v.is_empty() => IdentityPaths::under(PathBuf::from(v)),
         _ => IdentityPaths::default_system(),
     };
+    // The unit's device-key credential comes from the machine identity root.
+    // A caller-selected root is a complete identity: keep its key with its
+    // certificate rather than combining it with that unrelated credential.
+    if paths.device_privkey != IdentityPaths::default_system().device_privkey {
+        return paths;
+    }
     with_device_key_credential(paths, std::env::var_os("CREDENTIALS_DIRECTORY"))
 }
 
@@ -574,6 +580,94 @@ mod tests {
                 load_workspace_share_issuer(&paths, &certified.credentials)
                     .unwrap()
                     .is_none()
+            );
+        }
+    }
+
+    fn credential_fixture(root: &std::path::Path) -> PathBuf {
+        let directory = root.join("credentials");
+        std::fs::create_dir(&directory).unwrap();
+        tilo_user_identity::persist::write_device_key(
+            &directory.join(DEVICE_KEY_CREDENTIAL),
+            &ed25519_dalek::SigningKey::from_bytes(&[53; 32]),
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn explicit_identity_root_keeps_its_certified_device_with_machine_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("isolated");
+        let paths = IdentityPaths::under(&root);
+        let device = install_fixed_device(&paths);
+        let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
+        write_device_cert(&paths.device_cert, &cert).unwrap();
+        let credential = credential_fixture(tmp.path());
+        let before_key = std::fs::read(&paths.device_privkey).unwrap();
+        let before_cert = std::fs::read(&paths.device_cert).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(IDENTITY_ROOT_ENV, &root);
+        env.set("CREDENTIALS_DIRECTORY", &credential);
+
+        let selected = identity_paths();
+        let certified = load_certified_mount_identity(&selected, NOW_NS).unwrap();
+        assert_eq!(selected.device_privkey, paths.device_privkey);
+        assert_eq!(
+            certified.credentials.device_public_key(),
+            cert.device_public_key
+        );
+        assert!(!certified.mount.created);
+        assert_eq!(std::fs::read(paths.device_privkey).unwrap(), before_key);
+        assert_eq!(std::fs::read(paths.device_cert).unwrap(), before_cert);
+    }
+
+    #[test]
+    fn explicit_identity_root_never_repairs_a_wrong_certificate_with_machine_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("isolated");
+        let paths = IdentityPaths::under(&root);
+        install_fixed_device(&paths);
+        let credential = credential_fixture(tmp.path());
+        let machine = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
+        let cert = signed_cert(machine.verifying_key().to_bytes(), NOW_NS - 1, None);
+        write_device_cert(&paths.device_cert, &cert).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(IDENTITY_ROOT_ENV, &root);
+        env.set("CREDENTIALS_DIRECTORY", &credential);
+
+        assert!(matches!(
+            load_certified_mount_identity(&identity_paths(), NOW_NS),
+            Err(CertifiedIdentityError::DeviceKeyMismatch)
+        ));
+    }
+
+    #[test]
+    fn default_identity_root_retains_the_service_manager_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let credential = credential_fixture(tmp.path());
+        let default = IdentityPaths::default_system();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("CREDENTIALS_DIRECTORY", &credential);
+        for value in [None, Some(""), Some("/var/lib/tilo")] {
+            if let Some(value) = value {
+                env.set(IDENTITY_ROOT_ENV, value);
+            } else {
+                env.remove(IDENTITY_ROOT_ENV);
+            }
+            let selected = identity_paths();
+            assert_eq!(selected.device_cert, default.device_cert);
+            assert_eq!(
+                selected.device_privkey,
+                credential.join(DEVICE_KEY_CREDENTIAL)
+            );
+            let loaded = load_mount_identity(&selected).unwrap();
+            assert!(!loaded.created);
+            assert_eq!(
+                loaded.public,
+                ed25519_dalek::SigningKey::from_bytes(&[53; 32])
+                    .verifying_key()
+                    .to_bytes()
             );
         }
     }

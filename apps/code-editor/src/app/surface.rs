@@ -30,6 +30,15 @@ impl CodeApp {
             return self.answer_command(command, cx);
         }
         match effect {
+            CodeEditorEffect::ReadText {
+                file,
+                start_chars,
+                max_chars,
+            } => {
+                let document = cx.document().ok_or("current document is unavailable")?;
+                return crate::text_operations::read(&document, &file, start_chars, max_chars)
+                    .map(Effected::value);
+            }
             CodeEditorEffect::Open { file } => {
                 let node = self.file_node(&file)?;
                 self.open_node(node);
@@ -301,7 +310,15 @@ impl CodeApp {
         )
         .effect(&CodeEditorEffect::Open {
             file: item.resource_id.clone(),
-        });
+        })
+        .operation(
+            CodeEditorEffect::ReadText {
+                file: item.resource_id.clone(),
+                start_chars: 0,
+                max_chars: 1024,
+            }
+            .bound_asking(&["start_chars", "max_chars"]),
+        );
         if self
             .session
             .buffer_of(node)

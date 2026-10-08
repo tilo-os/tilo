@@ -671,7 +671,14 @@ pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf,
                 )));
             }
             let mut file = std::fs::File::open(&path)?;
-            let actual = content.ingest(file.metadata()?.len(), &mut file)?;
+            let len = file.metadata()?.len();
+            // A previous interrupted import may already hold this signed blob.
+            // Cache completeness selects reuse; it does not verify the source.
+            let actual = if content.len(expected)? == Some(len) {
+                BlobHash::of_reader(&mut file)?.0
+            } else {
+                content.ingest(len, &mut file)?
+            };
             if actual != *expected {
                 return Err(StoreError::Payload(format!(
                     "{relative}: image payload does not match its signed hash"
