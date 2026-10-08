@@ -84,9 +84,9 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, action_input, blob_stream, channel_handle,
-    collab_service, context_stream, invocation_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
+    OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle, collab_service,
+    context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
+    presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
