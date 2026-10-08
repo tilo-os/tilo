@@ -225,6 +225,139 @@ async fn continuation_parent_cancellation_requests_its_actual_owned_child_to_sto
         .await;
 }
 
+struct ContinuationShortcutLibrary(tokio::runtime::Handle);
+
+impl crate::services::ShortcutLibraryServices for ContinuationShortcutLibrary {
+    fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
+        settings_store::hardware::ShortcutConfig::default()
+    }
+
+    fn store(&self, _: &crate::services::ShortcutLibraryRequest<'_>) -> Result<(), String> {
+        Err("this fixture never changes the saved shortcut".into())
+    }
+
+    fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
+        Ok(self.0.clone())
+    }
+}
+
+fn continuation_shortcut(env: &Environment) -> crate::services::HostServices {
+    let step = |id| {
+        tilo_automation::Step::new(
+            id,
+            tilo_automation::StepKind::Invoke {
+                app_id: env.route.app_id.clone(),
+                resource: tilo_automation::Selector::Fixed("workspace:atlas".into()),
+                action: "open".into(),
+                args: std::collections::BTreeMap::new(),
+            },
+        )
+    };
+    env.membership
+        .write()
+        .workspaces
+        .first_mut()
+        .expect("the actual fixture workspace exists")
+        .shortcuts
+        .push(tilo_automation::Shortcut {
+            id: "continued-watch".into(),
+            name: "Continued watch".into(),
+            inputs: Vec::new(),
+            steps: vec![step("held"), step("later")],
+            output: None,
+            grant: vec![collab_types::PermissionProfileRule::grant(
+                collab_types::Scope::App(env.route.app_id.clone()),
+                collab_types::Verb::Write,
+            )],
+            triggers: Vec::new(),
+            consents: Vec::new(),
+            saved_by: None,
+        });
+    let mut services = env.membership.services();
+    services.shortcut_library = Some(Arc::new(ContinuationShortcutLibrary(
+        tokio::runtime::Handle::current(),
+    )));
+    services
+}
+
+async fn continuation_shortcut_child(rig: &Rig) -> runtime_collab::Invocation {
+    let read = rig.stream.as_ref().unwrap().read();
+    tokio::pin!(read);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            rig.state.drain_action_directory_bridge(&rig.directories);
+            tokio::select! {
+                result = &mut read => return result.unwrap(),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+    })
+    .await
+    .expect("the continued shortcut delivers its first actual step")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_shortcut_watch_wakes_and_refuses_later_steps_after_parent_retirement() {
+    use tilo_actions::remote::{RemoteActionMessage, RemoteActionTarget};
+    for retirement in ["cancel", "terminal"] {
+        tokio::task::LocalSet::new().run_until(async {
+            let env = Environment::new();
+            let rig = Rig::with_services(&env, continuation_shortcut(&env)).await;
+            let (caller, evidence, parent) = continuation_parent(&env, &rig).await;
+            let parent_wire = rig.state.remote_job(&caller, &parent.invocation).unwrap();
+            let original_context = rig.state.pending_invocations.lock().unwrap()
+                .get(&parent_wire).unwrap().context.clone();
+            let target = crate::automation::chord_target(&env.route.cluster_id, "continued-watch");
+            let mut run = local_host_request(false);
+            run.on_behalf_of = Some(parent.invocation);
+            run.target = RemoteActionTarget {
+                provider: target.provider,
+                address: tilo_actions::ActionAddress::new(target.resource, target.action),
+            };
+            let answer = continuation_round_trip(&rig,
+                &tilo_actions::remote::RemoteActionFrame::new(RemoteActionMessage::Invoke(run.clone()))
+                    .encode().unwrap()).await.unwrap();
+            assert!(matches!(tilo_actions::remote::RemoteActionFrame::decode(&answer).unwrap().message,
+                RemoteActionMessage::Receipt(receipt) if receipt.invocation == run.invocation));
+            let child = continuation_shortcut_child(&rig).await;
+            let child_id = tilo_actions::InvocationId(uuid::Uuid::from_bytes(child.invocation_uuid));
+            assert_ne!(child_id, parent.invocation);
+            assert_ne!(child_id, run.invocation);
+            assert_eq!(child.actor, super::BrokerActor::for_caller(&caller).id);
+            let context: tilo_actions::ActionContext = serde_json::from_str(&child.context_json).unwrap();
+            assert_eq!(context, original_context, "the child keeps the actual original caller context");
+            assert_eq!(tilo_actions::ActionInvoker::delivered(&child.actor, Some(&context)).participant,
+                Some(tilo_actions::ParticipantId::for_execution(caller.execution_id().unwrap())));
+            let mut changed = rig.state.action_next_change(&caller, &child_id,
+                rig.state.invocation_changes()).expect("original child has a real watcher");
+            assert!(matches!(changed.poll_ready(), tilo_actions::remote::PendingPoll::Waiting));
+            continuation_retire_parent(&rig, &caller, &evidence, parent.invocation, retirement).await;
+            tokio::time::timeout(Duration::from_millis(250), async {
+                loop {
+                    if matches!(changed.poll_ready(), tilo_actions::remote::PendingPoll::Ready(())) { break; }
+                    tokio::task::yield_now().await;
+                }
+            }).await.expect("retirement wakes the original child observer before its safety timer");
+            let finished = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    rig.state.drain_action_directory_bridge(&rig.directories);
+                    let finished = rig.state.take_finished_shortcut_runs();
+                    if !finished.is_empty() { break finished; }
+                    tokio::task::yield_now().await;
+                }
+            }).await.expect("the continued shortcut observes retirement");
+            assert_eq!(finished.len(), 1);
+            assert_ne!(finished[0].report.outcome, tilo_automation::RunOutcome::Completed);
+            assert!(rig.worker.handle.invocation_cancellation(child.id).await.unwrap(),
+                "retirement requests the linked pending step; this does not prove worker cleanup");
+            assert!(tokio::time::timeout(Duration::from_millis(100),
+                rig.stream.as_ref().unwrap().read()).await.is_err(),
+                "the second step must never be delivered after original retirement");
+            rig.stop().await;
+        }).await;
+    }
+}
+
 struct HeldContinuationChildDirectory {
     started: Rc<std::cell::Cell<bool>>,
     release: Rc<tokio::sync::Notify>,

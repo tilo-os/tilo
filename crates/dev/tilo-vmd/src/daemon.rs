@@ -606,6 +606,10 @@ impl Daemon {
                 to_value(&self.import(p.source, &p.provenance)?)
             }
             Request::LayerList(_) => to_value(&self.layers.list()?),
+            Request::LayerVerify(p) => {
+                let _vm = self.locks.vm_shared()?;
+                to_value(&self.layers.verify(&p.hash)?)
+            }
             Request::Swap(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
                 to_value(&self.swap(&p.slot, &p.component, &p.layer, p.info)?)

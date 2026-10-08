@@ -730,6 +730,20 @@ pub trait ActionHost {
     /// id this caller does not own.
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState>;
 
+    /// Resolves the next time invocation `id` (owned by `caller`) may have
+    /// changed state, so a waiter observes it again then instead of on a
+    /// timer. `None` when this host cannot tell; the caller then observes on
+    /// its own schedule.
+    ///
+    /// Wakeups may be spurious: the waiter must [`observe`](Self::observe)
+    /// again and tolerate finding nothing new. A host that answers `Some`
+    /// must eventually resolve it even when nothing changes, so a change it
+    /// failed to signal costs latency, never a stalled waiter.
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        let _ = (caller, id);
+        None
+    }
+
     /// Ask a running invocation to stop.
     ///
     /// # Errors

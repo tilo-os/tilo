@@ -1,5 +1,8 @@
 //! Host-local invocation custody. No wire caller can manufacture these checks.
 
+mod native_delivery;
+pub use native_delivery::NativeInvocationDelivery;
+
 /// A typed host check response, suitable for an existing effect worker.
 pub type ApprovedCheckFuture = std::pin::Pin<
     Box<
@@ -245,13 +248,44 @@ pub fn view_operation_permitted(
 
 /// Inert declaration retained by the actual host at original admission. This
 /// is not authority, and is never decoded from a caller's wire request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PublishedInvocationSpec {
     pub kind: tilo_actions::OperationKind,
     pub contract: tilo_actions::ActionContract,
     pub params: Vec<tilo_actions::ActionParam>,
     pub input: tilo_actions::InputSpec,
     pub directory_revision: Option<String>,
+}
+
+/// Inert original admission facts sent over the application's authenticated
+/// invocation stream. Decoding this declaration grants no authority: the
+/// broker retains and revalidates the actual original invocation separately.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedInvocationAdmission {
+    pub version: u8,
+    pub wire_id: u64,
+    pub invocation: tilo_actions::InvocationId,
+    pub spec: PublishedInvocationSpec,
+}
+
+impl PublishedInvocationAdmission {
+    pub const VERSION: u8 = 1;
+    pub const MAX_BYTES: usize = 16 * 1024;
+
+    /// Decode only the understood bounded declaration, without treating it as
+    /// permission or accepting a nil logical identity.
+    pub(crate) fn decode(bytes: &str) -> Result<Self, String> {
+        if bytes.is_empty() || bytes.len() > Self::MAX_BYTES {
+            return Err("original admission declaration size is invalid".into());
+        }
+        let admission: Self =
+            serde_json::from_str(bytes).map_err(|_| "original admission declaration is invalid")?;
+        if admission.version != Self::VERSION || admission.invocation.0.is_nil() {
+            return Err("original admission declaration version or identity is invalid".into());
+        }
+        Ok(admission)
+    }
 }
 
 /// An opaque check minted by the actual host for this exact invocation.
@@ -264,6 +298,7 @@ pub struct PublishedInvocationLease {
     check: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
     owner_token: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     dispatch_spec: Option<PublishedInvocationSpec>,
+    native_effect: bool,
 }
 impl PublishedInvocationLease {
     pub fn new(
@@ -277,6 +312,7 @@ impl PublishedInvocationLease {
             check,
             owner_token: None,
             dispatch_spec: None,
+            native_effect: false,
         }
     }
     /// Attach once from the host's immutable original offered declaration.
@@ -316,6 +352,7 @@ impl PublishedInvocationLease {
         self.request == other.request
             && self.route == other.route
             && self.dispatch_spec == other.dispatch_spec
+            && self.native_effect == other.native_effect
             && std::sync::Arc::ptr_eq(&self.check, &other.check)
             && match (&self.owner_token, &other.owner_token) {
                 (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
@@ -339,6 +376,7 @@ pub(crate) struct PublishedInvocationRuntime {
     pub(crate) required: bool,
     pub(crate) authorizer: Option<PublishedInvocationAuthorizer>,
     pub(crate) failure: Option<String>,
+    pub(crate) native_delivery: Option<Result<NativeInvocationDelivery, String>>,
 }
 
 use crate::{
@@ -441,11 +479,31 @@ pub struct ResourceInvocationScope {
 impl ResourceInvocationScope {
     pub(crate) fn for_owner(
         owner: HistoryOwner,
-        lease: PublishedInvocationLease,
+        mut lease: PublishedInvocationLease,
     ) -> Result<Self, String> {
         owner.validate().map_err(|error| error.to_string())?;
-        if lease.owner_token.is_none() {
+        if !lease.native_effect && lease.owner_token.is_none() {
             return Err("required invocation has no concrete final-owner custody token".into());
+        }
+        if lease.native_effect {
+            let crate::history_mode::owner::OwnerKind::Component(binding) = &owner.0 else {
+                return Err("native effect custody requires the actual component owner".into());
+            };
+            if lease.owner_token.is_some()
+                || lease.dispatch_spec()?.kind != tilo_actions::OperationKind::Effect
+            {
+                return Err(
+                    "native effect custody cannot carry final-owner mutation authority".into(),
+                );
+            }
+            let lifetime = binding.lifetime.clone();
+            let delivered = lease.check.clone();
+            lease.check = Arc::new(move || {
+                if !lifetime.is_active() {
+                    return Err("native effect record owner has retired".into());
+                }
+                delivered()
+            });
         }
         if owner.broker_route().as_ref() != Some(&lease.route) {
             return Err("invocation belongs to a different canonical record route".into());
@@ -457,7 +515,7 @@ impl ResourceInvocationScope {
         let provenance = store
             .invocation_provenance(&checkout.id)
             .map_err(|error| error.to_string())?;
-        if provenance.borrow().route.as_ref() != Some(&lease.route) {
+        if !lease.native_effect && provenance.borrow().route.as_ref() != Some(&lease.route) {
             return Err(
                 "canonical invocation provenance was not registered before construction".into(),
             );
@@ -725,8 +783,10 @@ impl ResourceInvocationScope {
     }
 
     /// Derive worker-thread effect custody from this actual admitted scope.
-    /// The host's original lease checks exact worker/origin liveness and current
-    /// caller permission. This carries no record loan and cannot mutate a Doc.
+    /// Hosted leases recheck original caller permission and worker liveness.
+    /// Native leases check only their authenticated delivery and owner lifecycle;
+    /// directed child admission still revalidates authority at the broker.
+    /// This carries no record loan and cannot mutate a Doc.
     pub fn effect_scope(&self) -> Result<ResourceEffectScope, String> {
         self.check()?;
         Ok(ResourceEffectScope {
@@ -757,6 +817,9 @@ impl ResourceInvocationScope {
         mutate: impl FnOnce(&mut AutoCommit) -> Result<R, String>,
     ) -> Result<R, String> {
         self.check()?;
+        if self.lease.native_effect {
+            return Err("native effect custody is not final-owner document authority".into());
+        }
         let (store, checkout) = self.owner.store_checkout();
         if !record_loan_matches(store, checkout, document)
             || !self.admission.matches(document, checkout)
@@ -772,6 +835,36 @@ impl ResourceInvocationScope {
             .end_mutation(document, &self.lease)?;
         // Retain metadata even if authority elapsed inside the callback.
         result.and_then(|value| self.check().map(|()| value))
+    }
+
+    pub(crate) fn is_native_effect(&self) -> bool {
+        self.lease.native_effect
+    }
+
+    /// Native effect dispatch lends only its exact current read loan. The
+    /// bound operation separately refuses undeclared document changes. Host
+    /// dispatch retains its existing contributor-aware mutation evaluation.
+    pub(crate) fn with_dispatch_document<R>(
+        &self,
+        document: &mut AutoCommit,
+        run: impl FnOnce(&mut AutoCommit) -> Result<R, crate::bound_dispatch::BoundActionError>,
+    ) -> Result<R, crate::bound_dispatch::BoundActionError> {
+        let refused = |error| {
+            crate::bound_dispatch::BoundActionError::Door(tilo_actions::DoorError::Failed(error))
+        };
+        if !self.lease.native_effect {
+            return self
+                .with_document_mutation(document, |document| Ok(run(document)))
+                .map_err(refused)?;
+        }
+        self.check_read_loan(document).map_err(refused)?;
+        let result = run(document);
+        // A mutation guard may already have retired this lease and returned
+        // its exact refusal. Preserve that cause; success still rechecks custody.
+        if result.is_ok() {
+            self.check_read_loan(document).map_err(refused)?;
+        }
+        result
     }
 }
 
@@ -789,7 +882,8 @@ pub struct ResourceEffectScope {
 impl ResourceEffectScope {
     /// Recheck immediately before the actual delayed worker-side effect.
     /// Call without holding the final owner's Store guard; this callback may
-    /// acquire that owner to evaluate the original caller's current permission.
+    /// acquire that owner to evaluate the hosted original caller's permission.
+    /// A native lease is only a delivery/lifecycle proxy, not that policy check.
     pub fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String> {
         if self.retired.load(Ordering::Acquire) {
             return Err("original invocation scope has retired".into());

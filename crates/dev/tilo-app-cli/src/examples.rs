@@ -188,6 +188,50 @@ pub fn examples_json() -> serde_json::Value {
     serde_json::Value::Array(ALL.iter().map(Example::to_json).collect())
 }
 
+/// One example, optionally with one of its embedded files. No checkout is needed.
+///
+/// # Errors
+/// Unknown example names or paths outside the example's embedded file list.
+pub fn details(name: &str, file: Option<&str>) -> Result<serde_json::Value> {
+    let example = find(name)?;
+    let mut result = serde_json::Map::from_iter([
+        ("example".into(), example.to_json()),
+        (
+            "create_command".into(),
+            serde_json::json!(format!("tilo-app new NAME --from-example {name}")),
+        ),
+    ]);
+    if let Some(path) = file {
+        let (_, content) = example
+            .files
+            .iter()
+            .find(|(embedded, _)| *embedded == path)
+            .with_context(|| {
+                let paths = example
+                    .files
+                    .iter()
+                    .map(|(path, _)| *path)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("the {name} example has no embedded file {path:?}; choose one of: {paths}")
+            })?;
+        result.insert("file".into(), serde_json::json!(path));
+        result.insert("content".into(), serde_json::json!(content));
+    } else {
+        result.insert(
+            "files".into(),
+            serde_json::json!(
+                example
+                    .files
+                    .iter()
+                    .map(|(path, _)| *path)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    Ok(serde_json::Value::Object(result))
+}
+
 /// Replace the files `new` rendered for a starter app with the example's,
 /// renamed to the new app's identity.
 pub(crate) fn overlay(

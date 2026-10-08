@@ -80,13 +80,23 @@ fn listed(package: InstalledPackage) -> Option<Listed> {
     // A row without a signed package root has no identity to hand out.
     let id = package.package_id()?;
     let manifest_text = std::fs::read_to_string(&package.manifest_path).ok()?;
-    let size_bytes = package_store::tree_size(&package.payload_root);
+    let size_bytes = payload_bytes(&package);
     Some(Listed {
         package,
         id,
         manifest_text,
         size_bytes,
     })
+}
+
+/// Bytes of `package`'s payload tree: the size recorded at install, or —
+/// for a row written before sizes were recorded — the tree measured on disk.
+fn payload_bytes(package: &InstalledPackage) -> u64 {
+    if package.payload_bytes > 0 {
+        package.payload_bytes
+    } else {
+        package_store::tree_size(&package.payload_root)
+    }
 }
 
 /// The visible package with signed root `id`.
@@ -494,7 +504,7 @@ fn spawn_detached(mut command: std::process::Command) -> Result<String, Error> {
         .map_err(|error| Error::failed(format!("launch failed: {error}")))
 }
 
-fn safe_host_diagnostic(bytes: &[u8]) -> String {
+pub(crate) fn safe_host_diagnostic(bytes: &[u8]) -> String {
     const MAX_DIAGNOSTIC_BYTES: usize = 4096;
     // Invalid UTF-8 expands to a three-byte replacement character. Limit the
     // source window accordingly so even adversarial bytes stay under the RPC
@@ -655,6 +665,59 @@ impl app_host::Server for AppHostServer {
             })
             .await
         }
+    }
+
+    async fn review_local(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::ReviewLocalParams,
+        mut results: app_host::ReviewLocalResults,
+    ) -> Result<(), Error> {
+        let p = params.get().map_err(failed)?;
+        let handed = p.get_tapp_bytes().map_err(failed)?;
+        if handed.len() > crate::local_package::MAX_LOCAL_BYTES {
+            return Err(Error::failed(
+                "Local package exceeds the file size limit".into(),
+            ));
+        }
+        let bytes = handed.to_vec();
+        let review = blocking(move || crate::local_package::review(&bytes).map_err(failed)).await?;
+        let json = serde_json::to_string(&review).map_err(failed)?;
+        results.get().set_review_json(&json);
+        Ok(())
+    }
+
+    async fn install_local(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::InstallLocalParams,
+        mut results: app_host::InstallLocalResults,
+    ) -> Result<(), Error> {
+        let p = params.get().map_err(failed)?;
+        let handed = p.get_tapp_bytes().map_err(failed)?;
+        if handed.len() > crate::local_package::MAX_LOCAL_BYTES {
+            return Err(Error::failed(
+                "Local package exceeds the file size limit".into(),
+            ));
+        }
+        let bytes = handed.to_vec();
+        let root = p
+            .get_reviewed_root()
+            .map_err(failed)?
+            .to_string()
+            .map_err(failed)?;
+        let hash = p
+            .get_reviewed_archive_hash()
+            .map_err(failed)?
+            .to_string()
+            .map_err(failed)?;
+        let id = blocking(move || {
+            let root = crate::local_package::install(&bytes, &root, &hash).map_err(failed)?;
+            format!("tapp:{root}")
+                .parse::<PackageId>()
+                .map_err(|_| Error::failed("Invalid local package root".into()))
+        })
+        .await?;
+        results.get().set_id(id.as_bytes());
+        Ok(())
     }
 
     fn install(

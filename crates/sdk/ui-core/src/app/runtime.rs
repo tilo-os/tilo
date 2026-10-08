@@ -139,6 +139,9 @@ pub(super) struct ActionRuntime {
         tilo_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
     >,
+    /// Refused native callbacks whose original workers still need cancellation
+    /// polling. Targets stay in the existing bound invocation lifecycle table.
+    pub(super) refused_bound_invocations: std::collections::HashSet<tilo_actions::InvocationId>,
     pub(super) local_resource_cache: RefCell<Option<LocalResourceCache>>,
     pub(super) open_resource_search_cache: RefCell<Option<OpenResourceSearchCache>>,
     pub(super) resource_generation: Cell<u64>,
@@ -208,6 +211,7 @@ impl ActionRuntime {
             action_directory_stamp: None,
             action_directory_snapshot: None,
             bound_invocations: std::collections::HashMap::new(),
+            refused_bound_invocations: std::collections::HashSet::new(),
             local_resource_cache: RefCell::new(None),
             open_resource_search_cache: RefCell::new(None),
             resource_generation: Cell::new(0),

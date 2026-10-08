@@ -1027,7 +1027,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
         spec: &ActionSpec,
     ) -> SemanticAction {
         let kind = match &spec.input {
-            ActionInput::Immediate(enc) => SemanticActionKind::App(enc.clone()),
+            ActionInput::Immediate(enc) => SemanticActionKind::App(enc.as_ref().clone()),
             ActionInput::Deferred { .. } => SemanticActionKind::AppDeferred {
                 address: tilo_actions::ActionAddress::new(resource, &spec.id),
             },

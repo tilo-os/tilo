@@ -2450,14 +2450,22 @@ impl App {
                 ambient,
                 scope,
             },
-        )
-        .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        );
+        if matches!(
+            started,
+            Err(crate::bound_dispatch::BoundActionError::NativeAcceptedRefusal(_))
+        ) {
+            // No execution/continuation authority survives this refusal. Retain
+            // only the original worker's existing target for cancellation ticks.
+            self.actions.bound_invocations.insert(id, target.clone());
+            self.actions.refused_bound_invocations.insert(id);
+        }
         // A post-delivery fault retains canonical writes and must still refresh
         // the host projection. Generation is advanced by the checked frame.
         self.needs_sync = true;
         self.layout.layout_dirty = true;
         self.invalidate_widget_resource_cache();
-        let started = started?;
+        let started = started.map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         if actor == self.collaboration.local_author.0 {
             self.take_over_owner_view();
         }
@@ -3768,6 +3776,49 @@ impl App {
         changed
     }
 
+    /// Continue only cancellation for already-refused native callbacks. Handler
+    /// updates release lifecycle custody; they cannot revise the original result.
+    fn poll_refused_bound_invocations(&mut self) -> bool {
+        let invocations = self
+            .actions
+            .refused_bound_invocations
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for invocation in invocations {
+            let finished = match self.actions.bound_invocations.get(&invocation) {
+                None => true,
+                Some(target) => match crate::bound_dispatch::poll_resource_operation(
+                    self.root_widget.as_mut(),
+                    &self.state.doc,
+                    target,
+                    invocation,
+                    true,
+                ) {
+                    Ok(Some(update)) => update.invocation() == invocation && update.is_terminal(),
+                    // The actual target lifetime has ended; its component owns
+                    // CLOSED teardown. This is not an observed worker terminal.
+                    Err(
+                        crate::bound_dispatch::BoundDispatchError::ClosedLifetime
+                        | crate::bound_dispatch::BoundDispatchError::Record(
+                            crate::record::RecordOpenError::Retired,
+                        ),
+                    ) => true,
+                    // A busy or foreign loan cannot establish retirement and
+                    // must not discard this already-admitted worker's cleanup.
+                    Ok(None) | Err(_) => false,
+                },
+            };
+            if finished {
+                self.actions.refused_bound_invocations.remove(&invocation);
+                self.actions.bound_invocations.remove(&invocation);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Give retained widgets a non-blocking lifecycle tick and forward every
     /// progress/item/terminal update to the broker. A terminal update removes
     /// the job before it is sent, making terminal delivery at-most-once even
@@ -3780,7 +3831,8 @@ impl App {
         // A broker disconnect cannot leave an admitted launcher action
         // Accepted forever. Draining the bounded table also makes late or
         // duplicate receipts inert because their request ids are gone.
-        let mut changed = self.fail_pending_application_launches_on_disconnect();
+        let mut changed = self.poll_refused_bound_invocations();
+        changed |= self.fail_pending_application_launches_on_disconnect();
         let invocations = self
             .actions
             .directed_invocations

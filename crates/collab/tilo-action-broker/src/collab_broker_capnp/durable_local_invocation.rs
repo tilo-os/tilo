@@ -157,7 +157,7 @@ impl<'a> DurableContext<'a> {
             Self::Local { caller, .. } | Self::Enrolled { caller, .. } => caller.origin(),
         }
     }
-    pub(super) fn network(self) -> Option<tilo_relay::client::CertifiedAction> {
+    pub(super) fn network(self) -> Option<tilo_relay_session::client::CertifiedAction> {
         match self {
             Self::Peer(c, _) => c.network.clone(),
             Self::Local { .. } | Self::Enrolled { .. } => None,

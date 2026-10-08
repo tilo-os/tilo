@@ -1282,6 +1282,7 @@ pub struct InvocationEnvelope {
     argument: Option<String>,
     pub actor: String,
     context: Option<tilo_actions::ActionContext>,
+    admission_json: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1333,7 +1334,7 @@ struct PendingInvocation {
     caller: Option<ContinuingCaller>,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
-    network_evidence: Option<tilo_relay::client::CertifiedAction>,
+    network_evidence: Option<tilo_relay_session::client::CertifiedAction>,
     original: Option<Arc<OriginalInvocationData>>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     journal_key: Option<InvocationKey>,
@@ -1371,7 +1372,7 @@ struct PreparedEffectCommit {
 pub(crate) struct VerifiedActionCaller {
     room: String,
     presentation: Vec<u8>,
-    network: Option<tilo_relay::client::CertifiedAction>,
+    network: Option<tilo_relay_session::client::CertifiedAction>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     admitted: AdmittedJoinIdentity,
 }
@@ -2914,8 +2915,9 @@ pub struct CapnpBrokerState {
     /// Steps of interactive shortcut runs waiting for their person.
     step_prompts: crate::automation::StepPrompts,
     /// Bumped whenever a pending or completed invocation changes, so hosts
-    /// can refresh retained invocation projections exactly when needed.
-    invocation_generation: AtomicU64,
+    /// can refresh retained invocation projections exactly when needed and
+    /// a waiter on a running invocation wakes when it may have moved.
+    invocation_generation: tokio::sync::watch::Sender<u64>,
     execution_activity: ActivityBus,
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.
@@ -3405,7 +3407,7 @@ impl CapnpBrokerState {
     ) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
             while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
                 let Some(oldest) = completed.keys().min().copied() else {
                     break;
@@ -3701,7 +3703,7 @@ impl CapnpBrokerState {
                 app_action_consent: RwLock::new(None),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 step_prompts: crate::automation::StepPrompts::default(),
-                invocation_generation: AtomicU64::new(0),
+                invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
@@ -5173,6 +5175,30 @@ impl CapnpBrokerState {
         if let Some(ambient) = &context {
             receipt_context = receipt_context.enriched_by(ambient);
         }
+        let original = OriginalInvocationData::capture(
+            ui::invocation_scope::PublishedInvocationRequest {
+                wire_id: id,
+                invocation,
+                address: tilo_actions::ActionAddress {
+                    resource: offered.1.resource.clone(),
+                    action: offered.1.action.clone(),
+                },
+                argument: argument.map(str::to_string),
+                actor: actor.id.clone(),
+                participant: invoker::invoker_participant(context.as_ref()),
+            },
+            offered.0.route.clone(),
+            &offered.1,
+            revision,
+            durable.map(DurableContext::origin).or(origin),
+            policy_time.clone(),
+            execution.as_ref().map(ExecutionScope::lease),
+        );
+        let admission_json = original
+            .as_ref()
+            .map(|original| original.admission_json())
+            .transpose()?
+            .unwrap_or_default();
         let journal_key = if let Some(journal) = journal.as_mut() {
             let key = InvocationKey {
                 room: offered.0.route.cluster_id.clone(),
@@ -5210,28 +5236,10 @@ impl CapnpBrokerState {
             PendingInvocation {
                 continuation,
                 caller: continuing,
-                activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
+                activity: ActivityTarget::new(execution, actor, &offered.0, &offered.1),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
-                original: OriginalInvocationData::capture(
-                    ui::invocation_scope::PublishedInvocationRequest {
-                        wire_id: id,
-                        invocation,
-                        address: tilo_actions::ActionAddress {
-                            resource: offered.1.resource.clone(),
-                            action: offered.1.action.clone(),
-                        },
-                        argument: argument.map(str::to_string),
-                        actor: actor.id.clone(),
-                        participant: invoker::invoker_participant(context.as_ref()),
-                    },
-                    offered.0.route.clone(),
-                    &offered.1,
-                    revision,
-                    durable.map(DurableContext::origin).or(origin),
-                    policy_time.clone(),
-                    execution.as_ref().map(ExecutionScope::lease),
-                ),
+                original,
                 policy_time,
                 journal_key,
                 peer_id,
@@ -5263,7 +5271,7 @@ impl CapnpBrokerState {
                 cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
-        self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        self.invocation_changed();
         if sender
             .send(InvocationEnvelope {
                 id,
@@ -5273,13 +5281,14 @@ impl CapnpBrokerState {
                 argument: argument.map(str::to_string),
                 actor: actor.id.clone(),
                 context,
+                admission_json,
             })
             .is_err()
         {
             self.retire_continuation_descendants_locked(&mut registry, id);
             let removed = registry.remove(&id);
             drop(registry);
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
             if let Some(pending) = removed {
                 let _ = self.persist_invocation(
                     &pending,
@@ -5313,7 +5322,20 @@ impl CapnpBrokerState {
     /// Changes whenever a pending or completed invocation changes.
     #[must_use]
     pub fn invocations_generation(&self) -> u64 {
-        self.invocation_generation.load(Ordering::Relaxed)
+        *self.invocation_generation.borrow()
+    }
+
+    /// Record that a pending or completed invocation changed, waking every
+    /// [`Self::invocation_changes`] waiter.
+    fn invocation_changed(&self) {
+        self.invocation_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// A receiver that sees every later invocation change; what it has seen
+    /// so far counts as seen.
+    pub(crate) fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.invocation_generation.subscribe()
     }
 
     /// Read one current receipt without surveying or disclosing another
@@ -5470,7 +5492,7 @@ impl CapnpBrokerState {
                 job.activity.as_ref(),
                 ExecutionStatus::CancellationRequested,
             );
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
         }
         let descendants = self.request_continuation_descendants_locked(&mut pending, id);
         if let Err(error) = &descendants {
@@ -5533,7 +5555,7 @@ impl CapnpBrokerState {
                         entry.activity.as_ref(),
                         ExecutionStatus::CancellationRequested,
                     );
-                    self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+                    self.invocation_changed();
                 }
                 self.cancellation_requests
                     .lock()
@@ -11062,6 +11084,7 @@ impl invocation_stream::Server for InvocationStreamServer {
                 .map_err(|error| capnp::Error::failed(error.to_string()))?
                 .unwrap_or_default();
             result.set_context_json(&context);
+            result.set_admission_json(&invocation.admission_json);
             Ok(())
         })
     }
@@ -16926,6 +16949,90 @@ pub mod tests {
         }
 
         #[tokio::test(flavor = "current_thread")]
+        async fn invocation_stream_retains_original_admission_after_publication_changes() {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let root = tempfile::tempdir().unwrap();
+                    let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                    let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
+                    let origin = clock.new_origin();
+                    let authority = signed_worker::CurrentHost::new(
+                        &fixture.route,
+                        caller.admitted.certificate.as_ref().unwrap(),
+                        Some(origin.capture().unwrap()),
+                    );
+                    assert!(fixture.state.certificate_authority.set(authority).is_ok());
+                    let caller = fixture
+                        .state
+                        .verify_action_caller(&fixture.cluster_id, &caller.presentation)
+                        .unwrap();
+                    let original_contract = fixture
+                        .state
+                        .surfaces
+                        .lock()
+                        .unwrap()
+                        .get(&71)
+                        .unwrap()
+                        .actions[0]
+                        .contract
+                        .clone();
+                    let admitted = fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .unwrap();
+                    fixture
+                        .state
+                        .surfaces
+                        .lock()
+                        .unwrap()
+                        .get_mut(&71)
+                        .unwrap()
+                        .actions[0]
+                        .contract
+                        .permission = tilo_actions::PermissionRequirement::Read;
+                    let (_, empty_rx) = mpsc::unbounded_channel();
+                    let stream: invocation_stream::Client =
+                        capnp_rpc::new_client(InvocationStreamServer {
+                            host_guard: None,
+                            rx: Rc::new(AsyncMutex::new(std::mem::replace(
+                                &mut fixture.invocation_rx,
+                                empty_rx,
+                            ))),
+                            delivered: None,
+                        });
+                    let response = stream.read_request().send().promise.await.unwrap();
+                    let delivered = response.get().unwrap();
+                    let admission: ui::invocation_scope::PublishedInvocationAdmission =
+                        serde_json::from_str(
+                            delivered.get_admission_json().unwrap().to_str().unwrap(),
+                        )
+                        .unwrap();
+                    assert_eq!(admission.version, 1);
+                    assert_eq!(admission.wire_id, admitted.wire_id);
+                    assert_eq!(admission.invocation, request.invocation);
+                    assert_eq!(admission.spec.contract, original_contract);
+                    assert_ne!(
+                        admission.spec.contract.permission,
+                        fixture
+                            .state
+                            .surfaces
+                            .lock()
+                            .unwrap()
+                            .get(&71)
+                            .unwrap()
+                            .actions[0]
+                            .contract
+                            .permission
+                    );
+                    assert!(
+                        delivered.get_admission_json().unwrap().len()
+                            <= ui::invocation_scope::PublishedInvocationAdmission::MAX_BYTES
+                    );
+                })
+                .await;
+        }
+
+        #[tokio::test(flavor = "current_thread")]
         async fn invocation_journal_real_effect_once_across_concurrent_duplicate_response_loss_and_restart()
          {
             tokio::task::LocalSet::new()
@@ -17351,6 +17458,7 @@ pub mod tests {
                         argument: None,
                         actor: "agent:assistant".into(),
                         context: None,
+                        admission_json: String::new(),
                     })
                     .unwrap();
                     stream.read_request().send().promise.await.unwrap();
@@ -17879,15 +17987,17 @@ impl CapnpBrokerState {
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
         state.publish_pending_activity(pending, &update);
-        state.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        state.invocation_changed();
         if update.is_terminal() {
             state.retire_continuation_descendants_locked(&mut registry, id);
             let completion = terminal_invocation_completion(&update)?;
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            drop(registry);
+            // Retire it before releasing the registry: a waiter woken by the
+            // change above must find it pending or completed, never neither.
             state.record_completion(id, pending.completion_owner(), update.clone());
+            drop(registry);
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }

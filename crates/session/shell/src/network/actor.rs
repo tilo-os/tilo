@@ -22,7 +22,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
-use tilo_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
+use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -191,6 +191,7 @@ pub enum NetCmd {
     /// Wake the compositor loop when legacy-window traffic arrives: an idle
     /// headless loop otherwise sleeps until something else wakes it.
     SetWake(LoopWake),
+    PrivateMessages(tokio::sync::oneshot::Sender<super::private_messages::Transport>),
     /// This device's own topology entries (`SyncResp`) for a room another
     /// device governs, to its workspace hosts as a retained delta: the
     /// governor admits them within this device's registered namespace.
@@ -213,8 +214,8 @@ pub enum NetCmd {
     RoomAdmin {
         relay: EndpointAddr,
         certificate: DeviceCert,
-        command: Box<tilo_relay::rooms::RoomCommand>,
-        reply: std::sync::mpsc::SyncSender<Result<tilo_relay::rooms::RoomReply, String>>,
+        command: Box<tilo_relay_session::rooms::RoomCommand>,
+        reply: std::sync::mpsc::SyncSender<Result<tilo_relay_session::rooms::RoomReply, String>>,
     },
     JoinWorkspace {
         ws: WorkspaceId,
@@ -537,7 +538,7 @@ struct SurfaceFanoutOutcome {
 enum HostEvent {
     NativeInput(native_ingress::Input),
     Ready,
-    Voice(tilo_relay::coedit::VoiceEvent),
+    Voice(tilo_relay_session::coedit::VoiceEvent),
     Live {
         from: [u8; 32],
         frame: Vec<u8>,
@@ -818,6 +819,7 @@ struct ActorState {
     endpoint: Endpoint,
     lookup: MemoryLookup,
     host_identity: Option<HostIdentity>,
+    private_messages: super::private_messages::Transport,
     native_media: super::native_media::Registry,
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
@@ -1027,6 +1029,9 @@ impl ActorState {
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
         match command {
+            Some(NetCmd::PrivateMessages(reply)) => {
+                let _ = reply.send(self.private_messages.clone());
+            }
             Some(NetCmd::NativeMedia(command)) => {
                 let sessions = &self.host_sessions;
                 self.native_media
@@ -1050,8 +1055,10 @@ impl ActorState {
                 command,
                 reply,
             }) => {
-                let client =
-                    tilo_relay::rooms::RoomAdminClient::new(self.endpoint.clone(), certificate);
+                let client = tilo_relay_session::rooms::RoomAdminClient::new(
+                    self.endpoint.clone(),
+                    certificate,
+                );
                 tokio::spawn(async move {
                     let answer = client.send(relay, *command).await;
                     let _ = reply.send(answer.map_err(|error| error.to_string()));
@@ -3333,8 +3340,10 @@ async fn run(
     let gossip = Gossip::builder()
         .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
         .spawn(endpoint.clone());
+    let private_messages = super::private_messages::Registry::new(endpoint.id());
     let router = Router::builder(endpoint.clone())
         .accept(GOSSIP_ALPN, gossip.clone())
+        .accept(super::private_messages::ALPN, private_messages.clone())
         .accept(
             SURFACE_STREAM_ALPN,
             SurfaceStreamProtocol {
@@ -3352,6 +3361,10 @@ async fn run(
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .spawn();
     let mut state = ActorState {
+        private_messages: super::private_messages::Transport::new(
+            endpoint.clone(),
+            private_messages,
+        ),
         endpoint,
         lookup,
         host_identity,
@@ -3810,7 +3823,9 @@ impl HostRouteScheduler<'_> {
     clippy::items_after_statements,
     reason = "the async write extension is local to the detached filesystem-registration worker and kept beside its only use"
 )]
-async fn register_content_peer(registration: tilo_relay::ContentPeerRegistration) -> bool {
+async fn register_content_peer(
+    registration: tilo_relay_protocol::transport::ContentPeerRegistration,
+) -> bool {
     if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }

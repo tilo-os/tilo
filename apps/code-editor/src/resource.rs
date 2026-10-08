@@ -8,7 +8,7 @@
 //! [`CodeEditorEffect`]s; what the surface shows that is not in the document —
 //! the files it can open or save, symbols, search results — are its live rows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -35,6 +35,10 @@ use crate::app::CodeApp;
 use crate::doc::{CollaborativeFile, EditorDoc};
 use crate::effects::CodeEditorEffect;
 
+#[path = "buffer_demand_cache.rs"]
+mod buffer_demand_cache;
+use buffer_demand_cache::BufferDemandCache;
+
 /// Stable id prefix for the published project root.
 pub const PROJECT_KIND: &str = <CodeEditor as Resource>::KIND;
 
@@ -47,8 +51,14 @@ pub struct ProjectState {
     /// are read: a project holds every file it has opened, and reading them
     /// all on every keystroke would cost what the project weighs.
     pub buffers: HashMap<String, String>,
+    /// Existing authoritative Text objects, without materializing their bodies.
+    /// Disk reopening can compare its saved baseline without resubmitting a
+    /// potentially large seed to a buffer that already exists.
+    pub opened_buffers: HashSet<String>,
     /// The embedded terminal's session, once the project has one.
     pub terminal: Option<SessionState>,
+    /// Private bounded projections; only `buffers` exposes demanded text.
+    buffer_cache: BufferDemandCache,
 }
 
 /// The project's embedded terminal, published as the terminal session it is.
@@ -81,26 +91,27 @@ impl Resource for CodeEditor {
     }
 
     fn read(doc: &Doc) -> Result<ProjectState, ModelError> {
+        let files: Vec<_> = EditorDoc::files(doc)
+            .into_iter()
+            .filter(|file| !file.deleted)
+            .collect();
+        let opened_buffers = files
+            .iter()
+            .filter(|file| EditorDoc::buffer_text_key(doc, &file.id).is_some())
+            .map(|file| file.id.clone())
+            .collect();
         Ok(ProjectState {
-            files: EditorDoc::files(doc)
-                .into_iter()
-                .filter(|file| !file.deleted)
-                .collect(),
+            files,
             buffers: HashMap::new(),
+            opened_buffers,
             terminal: EditorDoc::terminal_panel(doc).map(|panel| Terminal::read_under(doc, &panel)),
+            buffer_cache: BufferDemandCache::default(),
         })
     }
 
     /// The text of the demanded files (their ids are the demand's keys).
     fn load(state: &mut ProjectState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
-        state.buffers.retain(|id, _| demand.keys.contains(id));
-        for id in &demand.keys {
-            if !state.buffers.contains_key(id)
-                && let Some(text) = EditorDoc::read_buffer_key(doc, id)
-            {
-                state.buffers.insert(id.clone(), text);
-            }
-        }
+        state.load_buffers(doc, demand);
         Ok(())
     }
 
@@ -299,6 +310,7 @@ impl ResourceSurface<CodeEditor, CodeEditorEffect> for CodeApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<CodeEditor>) {
+        self.set_highlight_waker(cx.waker());
         self.attach_framework(
             cx.dispatcher(),
             cx.mode().is_live(),
@@ -740,6 +752,119 @@ mod tests {
                 .app
                 .read_document(|doc| EditorDoc::read_buffer_key(doc, &main))
                 .is_some_and(|text| text.contains("fn main"))
+        );
+    }
+    #[test]
+    fn reopening_disk_files_keeps_existing_authoritative_text_without_a_new_seed() {
+        let mut sample = sample();
+        sample.open("src/main.rs");
+        let id = file_id(&sample.app.state(), "ferris-cli/src/main.rs");
+        assert!(sample.app.state().opened_buffers.contains(&id));
+        sample.open("Cargo.toml");
+        std::fs::write(sample.root.join("src/main.rs"), "changed disk baseline").unwrap();
+        let before = sample.app.read_document(|doc| {
+            (
+                doc.committed_heads(),
+                EditorDoc::read_buffer_key(doc, &id).unwrap(),
+            )
+        });
+        sample.open("src/main.rs");
+        let after = sample.app.read_document(|doc| {
+            (
+                doc.committed_heads(),
+                EditorDoc::read_buffer_key(doc, &id).unwrap(),
+            )
+        });
+        assert_eq!(
+            after, before,
+            "reopening only changes the local saved baseline"
+        );
+        assert!(editor(&mut sample.app, |app| app
+            .session_for_test()
+            .active_buffer()
+            .unwrap()
+            .dirty));
+        assert!(
+            sample.app.state().buffers.is_empty(),
+            "metadata must not read buffer bodies"
+        );
+    }
+    #[test]
+    fn hosted_tab_and_shift_tab_indent_through_the_document_door_without_leaving_focus() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("indent.rs");
+        let original = "fn example() {}";
+        std::fs::write(&file, original).unwrap();
+        let mut app = TestApp::<CodeEditorShell>::launched(&[file.to_str().unwrap()]).unwrap();
+        app.harness().click_named("editor_view").unwrap();
+        app.harness().key("Home");
+        let observed = app.harness().native_input_snapshot().unwrap();
+        assert_eq!(
+            observed
+                .get("caret_line")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            observed
+                .get("caret_column")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        let id = observed
+            .get("buffer_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+            .to_string();
+        app.harness().key("Tab");
+        app.settle();
+        let indented = format!(
+            "{}{original}",
+            " ".repeat(crate::model::Language::Rust.indent_width())
+        );
+        assert_eq!(
+            app.read_document(|doc| EditorDoc::read_buffer_key(doc, &id))
+                .as_deref(),
+            Some(indented.as_str())
+        );
+        assert_eq!(
+            app.harness()
+                .native_input_snapshot()
+                .unwrap()
+                .get("editor_focused")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        app.undo();
+        app.settle();
+        assert_eq!(
+            app.read_document(|doc| EditorDoc::read_buffer_key(doc, &id))
+                .as_deref(),
+            Some(original)
+        );
+        app.redo();
+        app.settle();
+        assert_eq!(
+            app.read_document(|doc| EditorDoc::read_buffer_key(doc, &id))
+                .as_deref(),
+            Some(indented.as_str())
+        );
+        app.harness().set_modifiers(&["shift".to_string()]);
+        app.harness().key("Tab");
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        assert_eq!(
+            app.read_document(|doc| EditorDoc::read_buffer_key(doc, &id))
+                .as_deref(),
+            Some(original)
+        );
+        assert_eq!(
+            app.harness()
+                .native_input_snapshot()
+                .unwrap()
+                .get("editor_focused")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
         );
     }
 }
