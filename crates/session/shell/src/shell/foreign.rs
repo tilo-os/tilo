@@ -4050,8 +4050,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn presentation_capture_state_distinguishes_exact_pending_from_completed_pixels() {
         let frames = ForeignFrameStore::default();
-        let primary = (900_u64 << 32) | 101;
-        let child = (900_u64 << 32) | 102;
+        let primary = (900_u64 << 32) | 0x0065;
+        let child = (900_u64 << 32) | 0x0066;
         assert_eq!(frames.presentation_capture_state(primary), (None, false));
         frames.publish_rgba(primary, &[1, 2, 3, 4], 1, 1);
         frames.publish_rgba(child, &[5, 6, 7, 8], 1, 1);

@@ -118,6 +118,14 @@ type DesiredShares = HashMap<
     ),
 >;
 
+fn observed_frame_sequence(
+    store: &crate::compositor::foreign::ForeignFrameStore,
+    surface: u64,
+    pixels: Option<(u64, u64)>,
+) -> u64 {
+    pixels.map_or_else(|| store.frame_seq(surface), |(seq, _)| seq)
+}
+
 fn insert_preedit_route(row: &mut serde_json::Value, route: &str, source: u64) {
     if let Some(object) = row.as_object_mut() {
         object.insert("input_route".into(), route.into());
@@ -3004,8 +3012,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                                 "rect": { "x": r.x0, "y": r.y0, "w": r.width(), "h": r.height() },
                             })
                         }).collect::<Vec<_>>(),
-                        "frame_seq": pixels.map_or_else(
-                            || store.frame_seq(tab.surface_id), |(seq, _)| seq),
+                        "frame_seq": observed_frame_sequence(store, tab.surface_id, pixels),
                         "last_error": store.last_error(tab.surface_id),
                         "rect": placement.map(&rect_json),
                         // The exact content box and surface-local origin used by
@@ -3047,8 +3054,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "surface_id": surface.surface_id,
                     "app_id": surface.app_id,
                     "floating_id": surface.public_id,
-                    "frame_seq": pixels.map_or_else(
-                        || store.frame_seq(surface.surface_id), |(seq, _)| seq),
+                    "frame_seq": observed_frame_sequence(store, surface.surface_id, pixels),
                     "last_error": store.last_error(surface.surface_id),
                     "rect": {
                         "x": surface.rect.x0, "y": surface.rect.y0,
