@@ -520,8 +520,6 @@ pub mod synthetic_input;
 pub mod bound_dispatch;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod native_gpu_trace;
-#[cfg(not(target_arch = "wasm32"))]
 mod presentation_feedback;
 
 /// Emission-time local control custody.
