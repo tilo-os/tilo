@@ -107,6 +107,17 @@ jobs:
           name: fedora-44-amd64
           path: dist/ci-output/fedora-44-amd64/*
           if-no-files-found: error
+          retention-days: 7
+      # Failed RPMs are diagnostic inputs only, never the accepted artifact
+      # consumed by host-session. Collection is capped at three RPMs / 4 GiB.
+      - name: Retain source-bound RPMs after packaging failure
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: ${{ failure() && !inputs.rpm-artifact }}
+        with:
+          name: failed-fedora-44-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/ci-output/fedora-44-amd64/failed-rpms/*
+          if-no-files-found: warn
+          retention-days: 2
 
   host-session:
     needs: [builder, rpms]
