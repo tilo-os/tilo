@@ -3317,8 +3317,8 @@ mod write_stage_tests {
                 let (done_tx, done) = std::sync::mpsc::channel();
                 let other = scope.spawn(move || {
                     let _runtime = handle.enter();
-                    let Some(BufferedRead::Staged(Ok(StagedRead::Ready(read)))) =
-                        fs.read_buffered(small, 0, 64)
+                    let ReadPlan::Buffered(BufferedRead::Staged(Ok(StagedRead::Ready(read)))) =
+                        fs.plan_read(small, 0, 0, 64)
                     else {
                         panic!("the small file is staged and complete");
                     };
@@ -3402,8 +3402,8 @@ mod write_stage_tests {
         let allocated = allocation_count::allocated_by(|| {
             let mut offset = 0_u64;
             while offset < size {
-                match fs.read_buffered(doc, offset, CHUNK) {
-                    Some(BufferedRead::Shared(bytes, range)) => {
+                match fs.plan_read(doc, 0, offset, CHUNK) {
+                    ReadPlan::Buffered(BufferedRead::Shared(bytes, range)) => {
                         read.extend_from_slice(&bytes[range]);
                     }
                     _ => panic!("a document read is served from its export"),
@@ -3426,6 +3426,234 @@ mod write_stage_tests {
         assert_eq!(fs.flush_inode(doc), Ok(()));
         fs.settle_last_close(doc, true);
         assert!(!Arc::ptr_eq(&exported, &fs.document_export(doc).unwrap()));
+        drop(fs);
+        endpoint.close().await;
+    }
+}
+
+/// A FUSE `read` and `getattr` of a local file read the inode under one
+/// namespace lock, and that single read still enforces every visibility
+/// rule the separate lookups did: ACL revocation, a move out of the view,
+/// unlink, and the open-handle exception for an unlinked inode.
+#[cfg(test)]
+mod read_lock_tests {
+    use super::*;
+    use crate::acl::WorkspaceAcl;
+    use crate::namespace::ROOT_INO;
+    use crate::store::ContentStore;
+    use iroh::endpoint::{Endpoint, presets};
+
+    const ME: [u8; 32] = [0xB7; 32];
+    const BYTES: &[u8] = b"local bytes served without a peer";
+
+    struct Fixture {
+        endpoint: Endpoint,
+        namespace: Arc<Mutex<Namespace>>,
+        fs: QuickFS,
+        shared: u64,
+        file: u64,
+    }
+
+    /// A mount over a namespace holding `/shared/a.txt`, whose content is
+    /// already in the local store.
+    async fn fixture() -> Fixture {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hash = store.write_content(BYTES).await.unwrap().unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+        let (shared, file) = {
+            let mut ns = lock_namespace(&namespace);
+            let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
+            let file = ns
+                .create_file(shared, "a.txt", Some(&hash), BYTES.len() as u64, 1)
+                .unwrap();
+            drop(ns);
+            (shared, file)
+        };
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+        Fixture {
+            endpoint,
+            namespace,
+            fs,
+            shared,
+            file,
+        }
+    }
+
+    fn shared_read_policy() -> WorkspaceAcl {
+        let mut acl = WorkspaceAcl::new();
+        acl.grant_read(ME, "/shared");
+        acl
+    }
+
+    fn locks(fs: &QuickFS) -> usize {
+        fs.namespace_locks.load(Ordering::Relaxed)
+    }
+
+    /// What the FUSE `read` callback would reply with.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Reply {
+        Data(Vec<u8>),
+        Errno(i32),
+    }
+
+    fn data() -> Reply {
+        Reply::Data(BYTES.to_vec())
+    }
+
+    /// The whole file through the production read planner.
+    fn read_all(fs: &QuickFS, ino: u64, fh: u64) -> Reply {
+        match fs.plan_read(ino, fh, 0, 4096) {
+            ReadPlan::Local(data) => Reply::Data(data),
+            ReadPlan::Error(errno) => Reply::Errno(errno),
+            ReadPlan::Buffered(_) => panic!("a file with no stage was answered from a buffer"),
+            ReadPlan::Remote(_) => panic!("locally stored content was sent to a peer"),
+        }
+    }
+
+    fn lock_namespace(namespace: &Arc<Mutex<Namespace>>) -> std::sync::MutexGuard<'_, Namespace> {
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_takes_namespace_lock_once() {
+        // Without an ACL, and with one (the path is then built and checked).
+        for acl in [None, Some(shared_read_policy())] {
+            let Fixture {
+                endpoint, fs, file, ..
+            } = fixture().await;
+            let fs = match acl {
+                Some(acl) => fs.with_acl(acl, ME),
+                None => fs,
+            };
+            let before = locks(&fs);
+            assert_eq!(read_all(&fs, file, 0), data());
+            assert_eq!(
+                locks(&fs) - before,
+                1,
+                "a read of local content takes the namespace lock exactly once"
+            );
+            drop(fs);
+            endpoint.close().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn getattr_of_a_file_takes_namespace_lock_once() {
+        let Fixture {
+            endpoint, fs, file, ..
+        } = fixture().await;
+        let fs = fs.with_acl(shared_read_policy(), ME);
+        let before = locks(&fs);
+        let (attr, is_doc) = fs.attr_for_request(file, None).unwrap();
+        assert_eq!(locks(&fs) - before, 1);
+        assert_eq!(attr.size, BYTES.len() as u64);
+        assert_eq!(attr.kind, FileType::RegularFile);
+        assert!(!is_doc);
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_after_acl_revoke_is_enoent() {
+        let Fixture {
+            endpoint, fs, file, ..
+        } = fixture().await;
+        let handle = AclHandle::new(shared_read_policy());
+        let fs = fs.with_acl(handle.clone(), ME);
+        assert_eq!(read_all(&fs, file, 0), data());
+
+        handle.replace(WorkspaceAcl::new());
+        assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
+        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_after_rename_out_of_view_is_enoent() {
+        let Fixture {
+            endpoint,
+            namespace,
+            fs,
+            shared,
+            file,
+        } = fixture().await;
+        let fs = fs.with_acl(shared_read_policy(), ME);
+        assert_eq!(read_all(&fs, file, 0), data());
+
+        assert!(lock_namespace(&namespace).rename(shared, "a.txt", ROOT_INO, "a.txt", 2));
+        assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
+        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+
+        assert!(lock_namespace(&namespace).rename(ROOT_INO, "a.txt", shared, "a.txt", 3));
+        assert_eq!(
+            read_all(&fs, file, 0),
+            data(),
+            "moving back into the view makes the file readable again"
+        );
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unlinked_file_reads_only_through_its_open_handle() {
+        let Fixture {
+            endpoint,
+            namespace,
+            fs,
+            file,
+            ..
+        } = fixture().await;
+        let fs = fs.with_acl(shared_read_policy(), ME);
+        let fh = 7;
+        fs.open_file_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                fh,
+                OpenFileHandleState {
+                    ino: file,
+                    opened_path: "/shared/a.txt".to_string(),
+                    writable: false,
+                },
+            );
+        assert!(lock_namespace(&namespace).remove(file));
+
+        assert_eq!(
+            read_all(&fs, file, fh),
+            data(),
+            "the handle opened before the unlink keeps reading"
+        );
+        assert_eq!(
+            fs.attr_for_request(file, Some(fh))
+                .map(|(attr, _)| attr.size),
+            Ok(BYTES.len() as u64)
+        );
+        assert_eq!(
+            read_all(&fs, file, 0),
+            Reply::Errno(ENOENT),
+            "no handle, no read"
+        );
+        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_of_a_directory_is_eisdir() {
+        let Fixture {
+            endpoint,
+            fs,
+            shared,
+            ..
+        } = fixture().await;
+        let fs = fs.with_acl(shared_read_policy(), ME);
+        assert_eq!(read_all(&fs, shared, 0), Reply::Errno(EISDIR));
         drop(fs);
         endpoint.close().await;
     }
