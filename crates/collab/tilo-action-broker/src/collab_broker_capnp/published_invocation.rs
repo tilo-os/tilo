@@ -535,6 +535,22 @@ impl OriginalInvocation {
         }
         Ok((caller, context))
     }
+    /// Derive a child from actual retained caller custody, never request metadata.
+    /// Native-seat correlation uses the child chosen by the existing action door.
+    pub(super) fn continuation_origin(
+        &self,
+        state: &CapnpBrokerState,
+        child: tilo_actions::InvocationId,
+    ) -> Result<(InvocationCaller, tilo_actions::ActionContext), String> {
+        if child == self.data.request.invocation || child.0.is_nil() {
+            return Err("continuation requires a distinct nonempty child identity".into());
+        }
+        let (mut origin, context) = self.source_origin(state)?;
+        if let InvocationCaller::NativePerson { invocation, .. } = &mut origin {
+            *invocation = child;
+        }
+        Ok((origin, context))
+    }
     pub fn request(&self) -> &PublishedInvocationRequest {
         &self.data.request
     }

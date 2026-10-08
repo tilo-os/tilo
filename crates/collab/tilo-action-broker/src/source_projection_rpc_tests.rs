@@ -248,15 +248,130 @@ async fn projection_parent(
 
 #[tokio::test(flavor = "current_thread")]
 async fn source_projection_person_reads_through_actual_native_published_dispatch() {
-    projection_read_through_native_dispatch(false).await;
+    projection_read_through_native_dispatch(false, false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn source_projection_native_seat_reads_and_refuses_retired_original_identity() {
-    projection_read_through_native_dispatch(true).await;
+    projection_read_through_native_dispatch(true, false).await;
 }
 
-async fn projection_read_through_native_dispatch(native_seat: bool) {
+#[tokio::test(flavor = "current_thread")]
+async fn source_projection_continued_native_seat_keeps_actual_original_origin() {
+    projection_read_through_native_dispatch(true, true).await;
+}
+
+async fn projection_continued_parent(
+    state: &Arc<CapnpBrokerState>,
+    directories: &Rc<LocalActionDirectoryRegistry>,
+    connection: &signed_worker::Connection,
+    stream: &runtime_collab::InvocationStream,
+    parent: &runtime_collab::Invocation,
+) -> (
+    runtime_collab::approved_checks::Request,
+    runtime_collab::Invocation,
+) {
+    let child = tilo_actions::InvocationId::new();
+    let original = tilo_actions::InvocationId(uuid::Uuid::from_bytes(parent.invocation_uuid));
+    let request = tilo_actions::remote::InvokeRequest {
+        invocation: child,
+        on_behalf_of: Some(original),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: "903".into(),
+            address: tilo_actions::ActionAddress::new(
+                "workspace:atlas",
+                runtime_collab::approved_checks::ACTION_ID,
+            ),
+        },
+        argument: tilo_actions::remote::InvokeArgument::Text(r#"{"check_id":"regression"}"#.into()),
+        context: Some(tilo_actions::ActionContext {
+            purpose: Some("untrusted child context".into()),
+            ..Default::default()
+        }),
+        confirmation: None,
+        revision: None,
+    };
+    for invalid in [original, tilo_actions::InvocationId(uuid::Uuid::nil())] {
+        let mut refused = request.clone();
+        refused.invocation = invalid;
+        let response = projection_continued_reply(state, directories, connection, refused).await;
+        assert!(
+            matches!(response, tilo_actions::remote::RemoteActionMessage::Receipt(ref receipt)
+            if receipt.invocation == invalid && matches!(receipt.status,
+                tilo_actions::remote::ReceiptStatus::Rejected { error: tilo_actions::remote::ActionHostError::NotPermitted })),
+            "{response:?}"
+        );
+    }
+    let response = projection_continued_reply(state, directories, connection, request).await;
+    assert!(
+        matches!(response, tilo_actions::remote::RemoteActionMessage::Receipt(ref receipt)
+        if receipt.invocation == child && receipt.status == tilo_actions::remote::ReceiptStatus::Accepted),
+        "{response:?}"
+    );
+    let delivered = stream.read().await.unwrap();
+    assert_ne!(delivered.id, parent.id);
+    assert_eq!(delivered.invocation_uuid, child.0.into_bytes());
+    assert_eq!(delivered.actor, parent.actor);
+    let context: tilo_actions::ActionContext =
+        serde_json::from_str(&delivered.context_json).unwrap();
+    let mut parent_context: tilo_actions::ActionContext =
+        serde_json::from_str(&parent.context_json).unwrap();
+    // The admitted dispatcher adds the canonical target labels. Retained
+    // original attribution and custody remain exact, not child-supplied.
+    parent_context.action_label = "Open Atlas".into();
+    parent_context.app = Some(tilo_actions::ActionApp {
+        id: "so.tilo.word-processor".into(),
+        label: "so.tilo.word-processor".into(),
+    });
+    parent_context.resource = Some(tilo_actions::ActionResource {
+        id: "workspace:atlas".into(),
+        kind: "workspace".into(),
+        label: "Atlas".into(),
+    });
+    assert_eq!(context, parent_context);
+    assert_ne!(context.purpose.as_deref(), Some("untrusted child context"));
+    (
+        runtime_collab::approved_checks::Request {
+            version: 1,
+            invocation: child.0.to_string(),
+            check_id: "regression".into(),
+        },
+        delivered,
+    )
+}
+
+async fn projection_continued_reply(
+    state: &Arc<CapnpBrokerState>,
+    directories: &Rc<LocalActionDirectoryRegistry>,
+    connection: &signed_worker::Connection,
+    request: tilo_actions::remote::InvokeRequest,
+) -> tilo_actions::remote::RemoteActionMessage {
+    let frame = tilo_actions::remote::RemoteActionFrame::new(
+        tilo_actions::remote::RemoteActionMessage::Invoke(request),
+    )
+    .encode()
+    .unwrap();
+    let request = connection.handle.remote_action(&frame);
+    tokio::pin!(request);
+    let bytes = tilo_test_env::within(
+        "continued native seat needs the production owner turn",
+        async {
+            loop {
+                state.drain_action_directory_bridge(directories);
+                tokio::select! {
+                    result = &mut request => break result.unwrap(),
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        },
+    )
+    .await;
+    tilo_actions::remote::RemoteActionFrame::decode(&bytes)
+        .unwrap()
+        .message
+}
+
+async fn projection_read_through_native_dispatch(native_seat: bool, continued: bool) {
     tokio::task::LocalSet::new()
         .run_until(async {
             let room = signed_worker::OriginalRoom::new(
@@ -306,7 +421,10 @@ async fn projection_read_through_native_dispatch(native_seat: bool) {
                     argument: tilo_actions::remote::InvokeArgument::Text(
                         r#"{"check_id":"regression"}"#.into(),
                     ),
-                    context: None,
+                    context: continued.then(|| tilo_actions::ActionContext {
+                        purpose: Some("original admitted context".into()),
+                        ..Default::default()
+                    }),
                     confirmation: None,
                     revision: None,
                 };
@@ -340,6 +458,9 @@ async fn projection_read_through_native_dispatch(native_seat: bool) {
             } else {
                 projection_parent(&connection, &room, &descriptors, 997).await
             };
+            let (request, parent) = if continued {
+                projection_continued_parent(&state, &directories, &connection, &stream, &parent).await
+            } else { (request, parent) };
             let result = {
             let read = async {
                 let child = stream.read().await.unwrap();

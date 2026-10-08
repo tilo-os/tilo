@@ -102,19 +102,28 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
     fn invoke(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
+        mut request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         // Consent may have completed after the original caller retired.
         // Recheck retained custody at dispatch, not just at frame admission.
+        let mut origin = self.origin.clone();
         if let Some(parent) = request.on_behalf_of {
-            let valid = self.continuation.as_ref().is_some_and(|original| {
-                original.request().invocation == parent
-                    && original.check_lifecycle().is_ok()
-                    && original.check_execution_frontier(&self.state).is_ok()
-            });
-            if !valid {
+            let Some(original) = self.continuation.as_ref() else {
+                return Pending::ready(Err(ActionHostError::NotPermitted));
+            };
+            if original.request().invocation != parent
+                || original.check_lifecycle().is_err()
+                || original.check_execution_frontier(&self.state).is_err()
+            {
                 return Pending::ready(Err(ActionHostError::NotPermitted));
             }
+            let Ok((retained, context)) =
+                original.continuation_origin(&self.state, request.invocation)
+            else {
+                return Pending::ready(Err(ActionHostError::NotPermitted));
+            };
+            origin = retained;
+            request.context = Some(context);
         }
         let launch = self
             .launch_connection
@@ -128,7 +137,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
             caller,
             Some(self.own_peer),
             launch.as_ref(),
-            Some(&self.origin),
+            Some(&origin),
             &request,
         )
     }
