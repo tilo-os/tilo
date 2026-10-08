@@ -89,6 +89,17 @@ and passes its stdout through as text lines:
 3. the layer records `builder = "remote"`, and the target and rustc read
    from the binary on the builder.
 
+A repeated remote build offers at most eight content hashes that the target
+has verified for that component and architecture. The builder still assembles
+and checks the requested source; when its canonical content matches an offer,
+it sends only a checked cache result and no archive. The target verifies the
+stored bytes again before reuse. The receipt records `upload = "skipped"`
+and `layer_reused`. Changed content takes the ordinary streaming/import path.
+Older daemons without `layer.verify` also use that path. Cache loss during the
+build causes one retry without reuse; a damaged existing content-addressed
+layer is refused rather than activated or silently overwritten. The first
+transfer is still required.
+
 Which builder serves which architecture is set once in `vms.toml`, as the
 drop-in's command line up to the cargo subcommand:
 
