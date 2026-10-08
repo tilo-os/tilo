@@ -7919,9 +7919,7 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_path: None,
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
-        personal_focus_recency: Mutex::new(
-            crate::shell::continuity_suggestion::FocusRecency::default(),
-        ),
+        personal_focus_recency: Mutex::default(),
         continuity_policy_override: Some(
             crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
                 serde_json::json!({
