@@ -1664,7 +1664,7 @@ impl DeviceFabricRuntime {
         let fabric = network.device_fabric();
         if let Err(error) = publish_roaming_provenance(
             &fabric,
-            policy.permits(ContinuityCapability::WifiSettings),
+            policy,
             &mut self.roaming_provenance_fingerprint,
             None,
         ) {
@@ -1676,11 +1676,11 @@ impl DeviceFabricRuntime {
             merge_shared_clipboard_history(selection, &entries);
         }
 
-        let records = if policy.permits(ContinuityCapability::WifiSettings) {
-            fabric.merged_setting_records()
-        } else {
-            BTreeMap::new()
-        };
+        let records: BTreeMap<_, _> = fabric
+            .merged_setting_records()
+            .into_iter()
+            .filter(|(key, _)| permits_roaming_setting(policy, key))
+            .collect();
         let fingerprint = serde_json::to_vec(&records)
             .ok()
             .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -6570,18 +6570,16 @@ fn build_local_snapshot(
     } else {
         Vec::new()
     };
-    let (settings, wifi) = if policy.permits(ContinuityCapability::WifiSettings) {
-        (
-            reconcile_roaming_settings(
-                roaming_setting_values(),
-                previous,
-                applied_remote_settings,
-                stamp,
-            ),
-            previous.map_or_else(Vec::new, |state| state.wifi.clone()),
-        )
+    let settings = reconcile_roaming_settings(
+        permitted_roaming_setting_values(&settings_store::load(), policy),
+        previous,
+        applied_remote_settings,
+        stamp,
+    );
+    let wifi = if policy.permits(ContinuityCapability::WifiSettings) {
+        previous.map_or_else(Vec::new, |state| state.wifi.clone())
     } else {
-        (Vec::new(), Vec::new())
+        Vec::new()
     };
     let display = if policy.permits(ContinuityCapability::DisplayInput) {
         local.display.map(|rect| DisplayPlacement {
@@ -6638,7 +6636,8 @@ fn policy_capabilities(
             || policy.permits(ContinuityCapability::DisplayInput))
             && local.display.is_some(),
         clipboard: policy.permits(ContinuityCapability::Clipboard),
-        roaming_settings: policy.permits(ContinuityCapability::WifiSettings),
+        roaming_settings: policy.permits(ContinuityCapability::WifiSettings)
+            || policy.permits(ContinuityCapability::DisplayInput),
         secret_store: policy.permits(ContinuityCapability::WifiSettings),
         app_continuation: policy.permits(ContinuityCapability::AppContinuations),
         audio_group: policy.permits(ContinuityCapability::Media) && local.audio_output,
@@ -6760,15 +6759,36 @@ fn roaming_setting_values_from(document: &Map<String, Value>) -> BTreeMap<String
     settings_store::continuity::personal_values(document)
 }
 
+fn permitted_roaming_setting_values(
+    document: &Map<String, Value>,
+    policy: ContinuityPolicySnapshot,
+) -> BTreeMap<String, Value> {
+    roaming_setting_values_from(document)
+        .into_iter()
+        .filter(|(key, _)| permits_roaming_setting(policy, key))
+        .collect()
+}
+
+fn permits_roaming_setting(policy: ContinuityPolicySnapshot, key: &str) -> bool {
+    let capability = if key == settings_store::person_displays::ARRANGEMENT_KEY {
+        ContinuityCapability::DisplayInput
+    } else {
+        ContinuityCapability::WifiSettings
+    };
+    policy.permits(capability)
+}
+
 fn roaming_provenance(
     fabric: &DeviceFabric,
-    enabled: bool,
+    policy: ContinuityPolicySnapshot,
 ) -> settings_store::roaming_provenance::RoamingProvenance {
     use settings_store::roaming_provenance::{
         Origin, RoamingProvenance, SettingResolution, WifiResolution,
     };
 
-    if !enabled {
+    if !policy.permits(ContinuityCapability::WifiSettings)
+        && !policy.permits(ContinuityCapability::DisplayInput)
+    {
         return RoamingProvenance::default();
     }
     let origin = |stamp: &FabricStamp| Origin {
@@ -6784,7 +6804,10 @@ fn roaming_provenance(
         .snapshots()
         .values()
         .flat_map(|snapshot| &snapshot.settings)
-        .filter(|setting| settings_store::continuity::is_personal(&setting.key))
+        .filter(|setting| {
+            settings_store::continuity::is_personal(&setting.key)
+                && permits_roaming_setting(policy, &setting.key)
+        })
     {
         settings_by_key
             .entry(&setting.key)
@@ -6819,6 +6842,7 @@ fn roaming_provenance(
         .snapshots()
         .values()
         .flat_map(|snapshot| &snapshot.wifi)
+        .filter(|_| policy.permits(ContinuityCapability::WifiSettings))
     {
         wifi_by_network
             .entry(credential.network_id)
@@ -6856,11 +6880,11 @@ fn roaming_provenance(
 
 fn publish_roaming_provenance(
     fabric: &DeviceFabric,
-    enabled: bool,
+    policy: ContinuityPolicySnapshot,
     previous_fingerprint: &mut Option<[u8; 32]>,
     path: Option<&Path>,
 ) -> Result<bool, settings_store::roaming_provenance::ProvenanceError> {
-    let mut projection = roaming_provenance(fabric, enabled);
+    let mut projection = roaming_provenance(fabric, policy);
     let fingerprint = serde_json::to_vec(&projection)
         .ok()
         .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -7307,6 +7331,71 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    fn roaming_test_policy(wifi_settings: bool, display_input: bool) -> ContinuityPolicySnapshot {
+        ContinuityPolicySnapshot::from_document(
+            serde_json::json!({
+                "continuity": { "enabled": true, "wifi_settings": wifi_settings,
+                    "display_input": display_input }
+            })
+            .as_object()
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn display_arrangement_policy_keeps_settings_and_credentials_independent() {
+        let device = DeviceId::new("desktop").unwrap();
+        let mut snapshot = provenance_snapshot(device, "Desktop", 1, Some(Value::Bool(true)));
+        let arrangement_key = settings_store::person_displays::ARRANGEMENT_KEY;
+        snapshot.settings.push(RoamingSetting {
+            key: arrangement_key.into(),
+            value: settings_store::person_displays::Arrangement::default().to_value(),
+            stamp: snapshot.presence.stamp.clone(),
+        });
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(snapshot).unwrap();
+        for (wifi, displays) in [(false, false), (true, false), (false, true), (true, true)] {
+            let policy = roaming_test_policy(wifi, displays);
+            let document = serde_json::json!({
+                "display": { "arrangement": { "displays": [] } },
+                "appearance": { "mode": true }
+            });
+            let records = permitted_roaming_setting_values(document.as_object().unwrap(), policy);
+            assert_eq!(records.contains_key(arrangement_key), displays);
+            assert_eq!(records.contains_key("tilo.appearance.mode"), wifi);
+            let projection = roaming_provenance(&fabric, policy);
+            assert_eq!(
+                projection
+                    .settings
+                    .iter()
+                    .any(|item| item.key == arrangement_key),
+                displays
+            );
+            assert_eq!(
+                projection
+                    .settings
+                    .iter()
+                    .any(|item| item.key == "tilo.appearance.mode"),
+                wifi
+            );
+            let caps = policy_capabilities(
+                policy,
+                LocalFabricCapabilities {
+                    display: None,
+                    pointer: false,
+                    keyboard: false,
+                    audio_output: false,
+                },
+            );
+            assert_eq!(caps.roaming_settings, wifi || displays);
+            assert_eq!(caps.secret_store, wifi);
+        }
+        assert!(!permits_roaming_setting(
+            ContinuityPolicySnapshot::default(),
+            arrangement_key
+        ));
+    }
 
     fn drag_snapshot(device: DeviceId, x: i32) -> DeviceFabricSnapshot {
         let mut snapshot = provenance_snapshot(device.clone(), "Laptop", 7, None);
@@ -8571,7 +8660,7 @@ mod tests {
                 ))
                 .unwrap();
 
-            let projection = roaming_provenance(&fabric, true);
+            let projection = roaming_provenance(&fabric, roaming_test_policy(true, false));
             assert_eq!(projection.settings.len(), 1);
             assert_eq!(projection.settings[0].winner.device_label, "Laptop");
             assert_eq!(projection.settings[0].winner.counter, 5);
@@ -8580,7 +8669,11 @@ mod tests {
                 projection.settings[0].alternatives[0].device_label,
                 "Desktop"
             );
-            assert!(roaming_provenance(&fabric, false).settings.is_empty());
+            assert!(
+                roaming_provenance(&fabric, ContinuityPolicySnapshot::default())
+                    .settings
+                    .is_empty()
+            );
         }
 
         fn unchanged_provenance_is_not_rewritten_and_settings_can_reload_it() {
@@ -8599,13 +8692,25 @@ mod tests {
                 .join(settings_store::roaming_provenance::FILE_NAME);
             let mut fingerprint = None;
             assert!(
-                publish_roaming_provenance(&fabric, true, &mut fingerprint, Some(&path)).unwrap()
+                publish_roaming_provenance(
+                    &fabric,
+                    roaming_test_policy(true, false),
+                    &mut fingerprint,
+                    Some(&path)
+                )
+                .unwrap()
             );
             let first =
                 settings_store::roaming_provenance::RoamingProvenance::load_at(&path).unwrap();
             assert_eq!(first.settings[0].winner.device_label, "Laptop");
             assert!(
-                !publish_roaming_provenance(&fabric, true, &mut fingerprint, Some(&path)).unwrap()
+                !publish_roaming_provenance(
+                    &fabric,
+                    roaming_test_policy(true, false),
+                    &mut fingerprint,
+                    Some(&path)
+                )
+                .unwrap()
             );
             let second =
                 settings_store::roaming_provenance::RoamingProvenance::load_at(&path).unwrap();
@@ -8654,7 +8759,7 @@ mod tests {
             fabric.upsert(first_snapshot).unwrap();
             fabric.upsert(second_snapshot).unwrap();
 
-            let projection = roaming_provenance(&fabric, true);
+            let projection = roaming_provenance(&fabric, roaming_test_policy(true, false));
             assert_eq!(projection.wifi.len(), 1);
             assert_eq!(projection.wifi[0].ssid, "Home");
             assert_eq!(projection.wifi[0].winner.device_label, "Laptop");

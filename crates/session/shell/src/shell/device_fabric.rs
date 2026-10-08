@@ -1493,6 +1493,11 @@ impl RoamingSetting {
         {
             return Err(FabricError::SettingTooLarge);
         }
+        if self.key == settings_store::person_displays::ARRANGEMENT_KEY
+            && settings_store::person_displays::Arrangement::from_value(&self.value).is_none()
+        {
+            return Err(FabricError::InvalidRoamingSetting);
+        }
         Ok(())
     }
 }
@@ -2204,10 +2209,13 @@ impl DeviceFabric {
         self.cross_edge(from, DisplayEdge::Right, right.checked_sub(1)?, local_y)
     }
 
-    /// Resolve each roaming key to its newest authenticated authored record.
+    /// Resolve roaming keys from authenticated authored records. Display
+    /// arrangements merge per display; other keys keep their newest record.
     /// Keeping the stamp and author lets runtimes distinguish a remote apply
     /// from a fresh local edit instead of echoing every received preference.
     pub fn merged_setting_records(&self) -> BTreeMap<String, RoamingSetting> {
+        use settings_store::person_displays::{ARRANGEMENT_KEY, Arrangement};
+
         let mut winners: BTreeMap<&str, &RoamingSetting> = BTreeMap::new();
         for item in self
             .snapshots
@@ -2221,10 +2229,25 @@ impl DeviceFabric {
                 winners.insert(item.key.as_str(), item);
             }
         }
-        winners
+        let mut merged: BTreeMap<_, _> = winners
             .into_iter()
             .map(|(key, item)| (key.to_string(), item.clone()))
-            .collect()
+            .collect();
+        if let Some(record) = merged.get_mut(ARRANGEMENT_KEY) {
+            let arrangements = self
+                .snapshots
+                .values()
+                .flat_map(|snapshot| &snapshot.settings)
+                .filter(|setting| setting.key == ARRANGEMENT_KEY)
+                .filter_map(|setting| {
+                    Arrangement::from_value(&setting.value)
+                        .map(|arrangement| (setting.stamp.device.as_str(), arrangement))
+                });
+            // Keep the newest authored record for provenance and echo suppression,
+            // but resolve each display independently so concurrent edits survive.
+            record.value = Arrangement::merge(arrangements).to_value();
+        }
+        merged
     }
 
     pub fn merged_settings(&self) -> BTreeMap<String, Value> {
@@ -2626,6 +2649,85 @@ mod tests {
             }),
             unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
+        }
+    }
+
+    fn arranged_setting(device: &str, counter: u64, displays: Value) -> RoamingSetting {
+        let mut value = serde_json::Map::new();
+        value.insert("displays".into(), displays);
+        RoamingSetting {
+            key: settings_store::person_displays::ARRANGEMENT_KEY.into(),
+            value: Value::Object(value),
+            stamp: stamp(device, counter),
+        }
+    }
+
+    #[test]
+    fn display_arrangements_merge_concurrent_edits_in_both_delivery_orders() {
+        let entry = |output: &str, x: i32, rev: u64| {
+            serde_json::json!({
+                "device": "desktop", "output": output, "enabled": true,
+                "order": 0, "placed": true, "x": x, "y": 0, "rev": rev
+            })
+        };
+        let mut desktop = snapshot("desktop", 9, 0, FabricCapabilities::default());
+        desktop.settings.push(arranged_setting(
+            "desktop",
+            9,
+            serde_json::json!([entry("DP-1", 100, 3), entry("DP-2", 0, 1)]),
+        ));
+        let mut laptop = snapshot("laptop", 10, 1000, FabricCapabilities::default());
+        laptop.settings.push(arranged_setting(
+            "laptop",
+            10,
+            serde_json::json!([entry("DP-1", 0, 1), entry("DP-2", 200, 3)]),
+        ));
+        let mut first = DeviceFabric::default();
+        first.upsert(desktop.clone()).unwrap();
+        first.upsert(laptop.clone()).unwrap();
+        let mut second = DeviceFabric::default();
+        second.upsert(laptop).unwrap();
+        second.upsert(desktop).unwrap();
+        let records = first.merged_setting_records();
+        assert_eq!(records, second.merged_setting_records());
+        let record = &records[settings_store::person_displays::ARRANGEMENT_KEY];
+        assert_eq!(record.stamp, stamp("laptop", 10));
+        let arrangement =
+            settings_store::person_displays::Arrangement::from_value(&record.value).unwrap();
+        assert_eq!(arrangement.displays.len(), 2);
+        assert_eq!(arrangement.displays[0].x, 100);
+        assert_eq!(arrangement.displays[1].x, 200);
+        // A later fabric publication must not beat a newer per-display edit.
+        let mut stale = snapshot("tablet", 100, 2000, FabricCapabilities::default());
+        stale.settings.push(arranged_setting(
+            "tablet",
+            100,
+            serde_json::json!([entry("DP-1", -300, 2)]),
+        ));
+        first.upsert(stale).unwrap();
+        assert_eq!(
+            first.merged_settings()[settings_store::person_displays::ARRANGEMENT_KEY],
+            record.value
+        );
+    }
+
+    #[test]
+    fn display_arrangements_reject_malformed_fabric_records() {
+        for displays in [
+            serde_json::json!(false),
+            serde_json::json!([{
+                "device": "desktop", "output": "DP-1", "enabled": true,
+                "order": 0, "placed": true, "x": i32::MIN, "y": 0, "rev": 1
+            }]),
+        ] {
+            let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
+            source
+                .settings
+                .push(arranged_setting("desktop", 1, displays));
+            assert_eq!(
+                DeviceFabric::default().upsert(source),
+                Err(FabricError::InvalidRoamingSetting)
+            );
         }
     }
 
