@@ -219,6 +219,8 @@ mod tests {
             target: Some("aarch64-unknown-linux-gnu".into()),
             source_digest: Some("verified inventory".into()),
             toolchain: Some("actual compiler".into()),
+            layer_hash: None,
+            reused: false,
         };
         validate_member(&packed, &component, "verified inventory", "aarch64").unwrap();
         for altered in [
