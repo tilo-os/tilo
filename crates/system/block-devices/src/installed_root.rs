@@ -19,6 +19,22 @@ pub fn with_written_root(
     mountpoint: &Path,
     copy: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<bool> {
+    with_written_root_observed(device, mountpoint, copy, |_| {})
+}
+
+/// Visit the root while recording the actual loop attachment outcome.
+/// The observer runs after the bounded losetup attempt, even when it fails
+/// to start; direct block-device roots do not need a loop and emit no event.
+///
+/// # Errors
+/// Returns the same discovery, mount and copy errors as `with_written_root`.
+#[cfg(target_os = "linux")]
+pub fn with_written_root_observed(
+    device: &Path,
+    mountpoint: &Path,
+    copy: impl FnOnce(&Path) -> io::Result<()>,
+    observed: impl FnOnce(bool),
+) -> io::Result<bool> {
     // A real target disk already has partition nodes. A file image is not a
     // block device: `lsblk` cannot see its partitions, and treating that
     // failure as fatal would skip the loop mount that exposes them.
@@ -65,11 +81,16 @@ pub fn with_written_root(
         }
     }
     let loop_dev = {
-        let output = match Tool::new("losetup")
+        let attachment = Tool::new("losetup")
             .args(["-fP", "--show"])
             .arg(device)
-            .output()
-        {
+            .output();
+        observed(
+            attachment
+                .as_ref()
+                .is_ok_and(|output| output.status.success()),
+        );
+        let output = match attachment {
             Ok(output) if output.status.success() => output,
             _ => {
                 if nodes_never_appeared {
