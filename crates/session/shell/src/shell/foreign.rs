@@ -1630,16 +1630,24 @@ impl ForeignFrameStore {
 
     /// Exact completed pixel generation; pending/superseded captures are not proof.
     pub fn presentation_pixels(&self, id: SurfaceId) -> Option<(u64, u64)> {
+        self.presentation_capture_state(id).0
+    }
+
+    /// Observe completed pixels and an exact surface's pending capture under
+    /// one lock. Pending capture is neither pixels nor presentation authority.
+    pub fn presentation_capture_state(&self, id: SurfaceId) -> (Option<(u64, u64)>, bool) {
         let entries = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = entries.get(&id)?;
-        let result =
-            (!entry.capturing() && entry.last_error.is_none() && entry.mapped && entry.seq != 0)
-                .then_some((entry.seq, entry.shm_done));
+        let Some(entry) = entries.get(&id) else {
+            return (None, false);
+        };
+        let pending = entry.capturing();
+        let pixels = (!pending && entry.last_error.is_none() && entry.mapped && entry.seq != 0)
+            .then_some((entry.seq, entry.shm_done));
         drop(entries);
-        result
+        (pixels, pending)
     }
 
     pub fn begin_presentation_frame(&self, viewport: Rect) {
@@ -4036,6 +4044,62 @@ mod tests {
     /// Distinct ids per test so the process-wide store can't leak state between parallel test threads.
     fn sid(n: u64) -> SurfaceId {
         900_000u64.saturating_add(n)
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn presentation_capture_state_distinguishes_exact_pending_from_completed_pixels() {
+        let frames = ForeignFrameStore::default();
+        let primary = (900_u64 << 32) | 101;
+        let child = (900_u64 << 32) | 102;
+        assert_eq!(frames.presentation_capture_state(primary), (None, false));
+        frames.publish_rgba(primary, &[1, 2, 3, 4], 1, 1);
+        frames.publish_rgba(child, &[5, 6, 7, 8], 1, 1);
+        let primary_pixels = frames.presentation_pixels(primary).unwrap();
+        let child_pixels = frames.presentation_pixels(child).unwrap();
+
+        frames.with_entry(child, |entry| entry.shm_queued = 1);
+        assert!(frames.capturing_for_client(900));
+        assert_eq!(frames.presentation_capture_state(child), (None, true));
+        assert_eq!(
+            frames.presentation_capture_state(primary),
+            (Some(primary_pixels), false),
+            "another surface's capture cannot explain missing primary pixels"
+        );
+        frames.note_shm_done(child, 1);
+        assert_eq!(
+            frames.presentation_capture_state(child),
+            (Some((child_pixels.0, 1)), false)
+        );
+
+        frames.with_entry(primary, |entry| entry.capture_tokens.push_back(7));
+        assert_eq!(frames.presentation_capture_state(primary), (None, true));
+        let mut captured = vec![9, 10, 11, 12];
+        frames.stage_dmabuf_capture(
+            primary,
+            7,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut captured,
+            None,
+        );
+        assert_eq!(
+            frames.presentation_capture_state(primary),
+            (None, true),
+            "a completed worker result is still pending until its commit applies"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(primary),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        let (pixels, pending) = frames.presentation_capture_state(primary);
+        assert!(!pending);
+        assert!(pixels.unwrap().0 > primary_pixels.0);
+        assert_eq!(frames.snapshot(primary).unwrap().rgba, vec![9, 10, 11, 12]);
+
+        frames.note_failure(primary, "bounded fixture capture failure".into());
+        assert_eq!(frames.presentation_capture_state(primary), (None, false));
+        frames.clear_frame(child);
+        assert_eq!(frames.presentation_capture_state(child), (None, false));
     }
 
     #[test]

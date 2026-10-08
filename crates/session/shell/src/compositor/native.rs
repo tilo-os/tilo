@@ -2978,6 +2978,8 @@ impl ControlState for FrameBuilderControlState<'_> {
             crate::compositor::foreign::foreign_tabs(&chrome.tree())
                 .into_iter()
                 .map(|tab| {
+                    let (pixels, capture_pending) =
+                        store.presentation_capture_state(tab.surface_id);
                     // The rect the widget tree laid this tab into, so a harness can aim at it.
                     let placement = store.placement(tab.surface_id);
                     let content_rect = placement.map(|rect| store.target_box(tab.surface_id, rect));
@@ -3002,7 +3004,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                                 "rect": { "x": r.x0, "y": r.y0, "w": r.width(), "h": r.height() },
                             })
                         }).collect::<Vec<_>>(),
-                        "frame_seq": store.frame_seq(tab.surface_id),
+                        "frame_seq": pixels.map_or_else(
+                            || store.frame_seq(tab.surface_id), |(seq, _)| seq),
                         "last_error": store.last_error(tab.surface_id),
                         "rect": placement.map(&rect_json),
                         // The exact content box and surface-local origin used by
@@ -3014,7 +3017,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "keyboard_focused": keyboard_focus == Some(tab.surface_id),
                         // Whether the shell is painting this window yet.
                         "presented": store.is_presented(tab.surface_id),
-                        "pixels_ready": store.presentation_pixels(tab.surface_id).is_some(),
+                        "pixels_ready": pixels.is_some(),
+                        "capture_pending": capture_pending,
                         // And, while it is not, whether the placeholder card is up — without this
                         // a harness can't tell an empty desktop from one announcing an app is on its way.
                         "opening": store.is_opening(tab.surface_id),
@@ -3030,7 +3034,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                 .collect();
         if let Some(seat) = self.seat {
             frames.extend(seat.floating_toplevels.iter().map(|surface| {
-                let pixels = store.presentation_pixels(surface.surface_id);
+                let (pixels, capture_pending) =
+                    store.presentation_capture_state(surface.surface_id);
                 let input_source = seat.floating_preedit_source_for(surface.surface_id);
                 // A mapped client or a retained transfer image is not proof
                 // that its secondary surface is currently being presented.
@@ -3042,7 +3047,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "surface_id": surface.surface_id,
                     "app_id": surface.app_id,
                     "floating_id": surface.public_id,
-                    "frame_seq": store.frame_seq(surface.surface_id),
+                    "frame_seq": pixels.map_or_else(
+                        || store.frame_seq(surface.surface_id), |(seq, _)| seq),
                     "last_error": store.last_error(surface.surface_id),
                     "rect": {
                         "x": surface.rect.x0, "y": surface.rect.y0,
@@ -3060,6 +3066,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                         .map(|(w, h)| serde_json::json!({ "w": w, "h": h })),
                     "presented": visible,
                     "pixels_ready": pixels.is_some(),
+                    "capture_pending": capture_pending,
                     "keyboard_focused": keyboard_focus == Some(surface.surface_id),
                     "suspended": surface.suspended,
                     "transferring": surface.transfer_source.is_some(),
@@ -16434,6 +16441,7 @@ mod tests {
             .expect("native secondary surface");
         assert_eq!(row["floating_id"], "chat.agent-direct:scribe");
         assert_eq!(row["pixels_ready"], false);
+        assert_eq!(row["capture_pending"], false);
         assert_eq!(row["presented"], false);
         assert!(row.get("token").is_none());
         assert!(row.get("connection").is_none());
@@ -16448,6 +16456,11 @@ mod tests {
             .find(|row| row["surface_id"] == surface_id)
             .expect("presented secondary surface");
         assert_eq!(row["pixels_ready"], true);
+        assert_eq!(row["capture_pending"], false);
+        assert_eq!(
+            row["frame_seq"],
+            store.presentation_pixels(surface_id).unwrap().0
+        );
         assert_eq!(row["presented"], true);
         assert_eq!(row["buffer"], serde_json::json!({"w": 2, "h": 2}));
         seat.floating_toplevels[0].suspended = true;
@@ -16537,6 +16550,12 @@ mod tests {
 
         let before = row(observe(&seat));
         assert_eq!(before["keyboard_focused"], false);
+        assert_eq!(before["pixels_ready"], true);
+        assert_eq!(before["capture_pending"], false);
+        assert_eq!(
+            before["frame_seq"],
+            store.presentation_pixels(surface_id).unwrap().0
+        );
         assert_eq!(
             before["content_rect"],
             serde_json::json!({"x": 300.0, "y": 50.0, "w": 600.0, "h": 600.0})

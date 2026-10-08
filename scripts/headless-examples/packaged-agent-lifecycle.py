@@ -1482,13 +1482,16 @@ def wait_for_floating_keyboard_seat(socket, previous, output, process):
 
 
 def wait_for_return_editor_continuity(socket, output, primary, child, expected, process,
-                                      keyboard=False):
+                                      keyboard=False, semantic=False):
     """Observe real Return adoption/focus publication without repairing editor state."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
 
     def observe():
         sample = dict.fromkeys(("observation_valid", "same_chat_process",
                                 "exact_primary_present", "primary_keyboard_focused",
+                                "primary_presented", "primary_pixels_ready",
+                                "primary_capture_pending", "pending_primary_pixels",
+                                "primary_error_present", "child_error_present",
                                 "exact_child_exists", "child_keyboard_focused",
                                 "child_presented", "child_suspended", "child_transferring",
                                 "ordinary_route", "pending_adoption", "pending_focus_publication",
@@ -1518,6 +1521,13 @@ def wait_for_return_editor_continuity(socket, output, primary, child, expected, 
                 raise RuntimeError("Return's native adoption state is malformed or stale")
             sample.update({
                 "primary_keyboard_focused": current["keyboard_focused"],
+                "primary_presented": current["presented"],
+                "primary_pixels_ready": current["pixels_ready"],
+                "primary_capture_pending": current.get("capture_pending") is True,
+                "pending_primary_pixels": not current["pixels_ready"]
+                    and current.get("capture_pending") is True,
+                "primary_error_present": current.get("last_error") is not None,
+                "child_error_present": returned_child.get("last_error") is not None,
                 "child_keyboard_focused": returned_child["keyboard_focused"],
                 "child_presented": returned_child["presented"],
                 "child_suspended": returned_child["suspended"],
@@ -1526,7 +1536,9 @@ def wait_for_return_editor_continuity(socket, output, primary, child, expected, 
                                       and row.get("input_source_surface_id") is None
                                       for row in (current, returned_child)),
             })
-            if not current["presented"] or not current["pixels_ready"] \
+            if not current["presented"] \
+                    or (not current["pixels_ready"] and not sample["pending_primary_pixels"]) \
+                    or (current["pixels_ready"] and sample["primary_capture_pending"]) \
                     or any(row.get("last_error") is not None for row in (current, returned_child)) \
                     or not sample["ordinary_route"] or not returned_child["suspended"] \
                     or returned_child["presented"]:
@@ -1562,13 +1574,15 @@ def wait_for_return_editor_continuity(socket, output, primary, child, expected, 
                 raise RuntimeError("Return's private editor continuity is malformed")
             if current["keyboard_focused"]:
                 sample["pending_focus_publication"] = not continuity["accessibility_focus_equal"]
-                sample["accepted"] = continuity["accessibility_focus_equal"]
+                sample["accepted"] = continuity["accessibility_focus_equal"] \
+                    and current["pixels_ready"]
             return (current, access, attached) if sample["accepted"] else None
         finally:
             if evidence["initial"] is None:
                 evidence["initial"] = sample.copy()
             evidence["last"] = sample
-            receipt = "keyboard-return-editor-adoption-observations.json" if keyboard \
+            receipt = "semantic-return-editor-adoption-observations.json" if semantic \
+                else "keyboard-return-editor-adoption-observations.json" if keyboard \
                 else "return-editor-adoption-observations.json"
             (output / receipt).write_text(
                 json.dumps(evidence, indent=2, allow_nan=False) + "\n")
@@ -1592,11 +1606,103 @@ def floating_surface_presenting(response, app_id, floating_id):
     return bool(rows and rows[0]["presented"])
 
 
-def native_semantic_float_return(socket, room, record, draft, previous, process):
+def semantic_editor_continuity_observation(before, after, response, child, same_process):
+    """Closed semantic handoff observations carry no private values or native IDs."""
+    native = dict.fromkeys(("observation_valid", "same_chat_process", "exact_child_exists",
+                           "child_frame_nonregressing", "child_keyboard_focused",
+                           "child_presented", "child_pixels_ready", "child_suspended",
+                           "child_transferring", "child_error_present", "ordinary_child_route"), False)
+    native["same_chat_process"] = same_process is True
+    rows = [row for row in foreign_frames(response)
+            if row.get("app_id") == child["app_id"]
+            and row.get("floating_id") == child["floating_id"]
+            and row.get("surface_id") == native_surface_id(child)]
+    native["exact_child_exists"] = len(rows) == 1
+    if len(rows) == 1:
+        current = rows[0]
+        fields = ("keyboard_focused", "presented", "pixels_ready", "suspended", "transferring")
+        native["child_frame_nonregressing"] = type(current.get("frame_seq")) is int \
+            and current["frame_seq"] >= child["frame_seq"]
+        native.update({"child_" + name: current.get(name) is True for name in fields})
+        native["child_error_present"] = current.get("last_error") is not None
+        native["ordinary_child_route"] = current.get("input_route") is None \
+            and current.get("input_source_surface_id") is None
+        native["observation_valid"] = native["child_frame_nonregressing"] \
+            and all(type(current.get(name)) is bool for name in fields)
+    return {"editor": closed_editor_continuity(before, after), "native": native}
+
+
+def wait_for_semantic_float_editor_continuity(socket, output, child, expected, process):
+    """Require exact adopted child ownership and original editor state without input."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        sample = dict.fromkeys(("native_observation_valid", "exact_child_exists",
+                                "child_keyboard_focused", "child_presented", "child_pixels_ready",
+                                "child_suspended", "child_transferring", "child_error_present",
+                                "ordinary_child_route", "same_chat_process", "accessibility_observable",
+                                "pending_accessibility_publication", "pending_focus_publication",
+                                "content_matches", "caret_equal", "selection_equal",
+                                "accessibility_focus_equal", "accessibility_focused_before",
+                                "accessibility_focused_after", "accepted"), False)
+        evidence["observation_count"] += 1
+        try:
+            response = call(socket, {"op": "foreign_frames"})
+            current = current_same_floating_presentation(response, child)
+            sample["exact_child_exists"] = current is not None
+            if current is None:
+                raise RuntimeError("semantic Float lost its exact presented native child")
+            fields = ("keyboard_focused", "presented", "pixels_ready", "suspended", "transferring")
+            if any(type(current.get(name)) is not bool for name in fields):
+                raise RuntimeError("semantic Float's native ownership is malformed")
+            sample.update({"child_" + name: current[name] for name in fields})
+            sample["child_error_present"] = current.get("last_error") is not None
+            sample["ordinary_child_route"] = current.get("input_route") is None \
+                and current.get("input_source_surface_id") is None
+            if not current["keyboard_focused"] or not current["presented"] \
+                    or not current["pixels_ready"] or current["suspended"] \
+                    or current["transferring"] or sample["child_error_present"] \
+                    or not sample["ordinary_child_route"]:
+                raise RuntimeError("semantic Float has no exact adopted ordinary child seat")
+            sample["native_observation_valid"] = True
+            access = agent_conversation_accessibility(expected["access"]["agent"], detached=True)
+            if access is None:
+                sample["pending_accessibility_publication"] = True
+                return None
+            sample["accessibility_observable"] = True
+            sample["same_chat_process"] = access["process"] == expected["access"]["process"]
+            if not sample["same_chat_process"] or access.get("detached") is not True \
+                    or access.get("agent") != expected["access"]["agent"]:
+                raise RuntimeError("semantic Float replaced the exact private editor owner or route")
+            detached = private_editor_observation(access, expected["draft"])
+            continuity = closed_editor_continuity(expected["observation"], detached)
+            sample.update(continuity)
+            if not all(continuity[name] for name in (
+                    "content_matches", "caret_equal", "selection_equal")):
+                raise RuntimeError("semantic Float changed private editor content, caret or selection")
+            if type(detached.get("accessibility_focused")) is not bool:
+                raise RuntimeError("semantic Float's editor focus is unobservable")
+            sample["accepted"] = detached == expected["observation"] \
+                and detached["accessibility_focused"] is True
+            sample["pending_focus_publication"] = not sample["accepted"]
+            return (current, access, detached) if sample["accepted"] else None
+        finally:
+            if evidence["initial"] is None:
+                evidence["initial"] = sample.copy()
+            evidence["last"] = sample
+            (output / "semantic-float-editor-adoption-observations.json").write_text(
+                json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+
+    return wait_for("semantic Float's exact retained editor focus publication", observe, process)
+
+
+def native_semantic_float_return(socket, room, record, draft, previous, process, output):
     """Exercise the published automation door without replacing native paint proof."""
     access = wait_for("semantic Float's attached editor",
                       lambda: agent_conversation_accessibility("Tide"), process)
     before = private_editor_observation(access, draft)
+    chat_process = access["process"]
+    expected = {"access": access, "draft": draft, "observation": before}
     float_action = wait_for("published Tide Float action", lambda: offered_agent_action(
         socket, room, record, "tide", "float-agent-conversation"), process)
     wait_terminal(socket, invoke(socket, float_action, {}), process)
@@ -1604,9 +1710,14 @@ def native_semantic_float_return(socket, room, record, draft, previous, process)
                      fresh_floating_presentation(presented_floating_frame(
                          call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), previous),
                      process)
-    access = wait_for("semantic Float's detached editor", lambda:
-                      agent_conversation_accessibility("Tide", detached=True), process)
-    if private_editor_observation(access, draft) != before:
+    frame, access, detached = wait_for_semantic_float_editor_continuity(
+        socket, output, frame, expected, process,
+    )
+    (output / "semantic-float-editor-continuity.json").write_text(json.dumps(
+        semantic_editor_continuity_observation(
+            before, detached, call(socket, {"op": "foreign_frames"}), frame,
+            access["process"] == chat_process), indent=2) + "\n")
+    if detached != before:
         raise RuntimeError("semantic Float changed the retained private editor state")
     return_action = wait_for("published Tide Return action", lambda: offered_agent_action(
         socket, room, record, "tide", "return-agent-conversation"), process)
@@ -1616,11 +1727,18 @@ def native_semantic_float_return(socket, room, record, draft, previous, process)
     wait_terminal(socket, invoke(socket, return_action, {}), process)
     wait_for("semantic Return's native withdrawal", lambda: not floating_surface_presenting(
         call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]), process)
-    wait_for("semantic Return's primary repaint", lambda:
+    returned_primary = wait_for("semantic Return's primary repaint", lambda:
              fresh_primary_presentation(call(socket, {"op": "foreign_frames"}), primary), process)
-    access = wait_for("semantic Return's attached editor", lambda:
-                      agent_conversation_accessibility("Tide"), process)
-    if private_editor_observation(access, draft) != before:
+    if native_surface_id(returned_primary) != native_surface_id(primary):
+        raise RuntimeError("semantic Return replaced Chat's exact native primary surface")
+    returned_primary, access, returned = wait_for_return_editor_continuity(
+        socket, output, returned_primary, frame, expected, process, semantic=True,
+    )
+    (output / "semantic-return-editor-continuity.json").write_text(json.dumps(
+        semantic_editor_continuity_observation(
+            before, returned, call(socket, {"op": "foreign_frames"}), frame,
+            access["process"] == chat_process), indent=2) + "\n")
+    if returned != before:
         raise RuntimeError("semantic Return changed the retained private editor state")
     return {"semantic_float": True, "semantic_return": True}
 
@@ -2103,7 +2221,7 @@ def native_float_return(socket, room, record, output, size, process):
     if keyboard_attached != keyboard_detached:
         raise RuntimeError("keyboard Float/Return changed private editor state")
     semantic = native_semantic_float_return(
-        socket, room, record, draft, keyboard_frame, process)
+        socket, room, record, draft, keyboard_frame, process, output)
     (output / "float-return.json").write_text(json.dumps({
         **semantic,
         "physical_typing": True, "physical_selection": True, "physical_undo": True,
