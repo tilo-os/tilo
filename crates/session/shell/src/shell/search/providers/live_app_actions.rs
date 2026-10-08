@@ -1488,7 +1488,13 @@ impl LiveAppActionsProvider {
         needle: &str,
         scope: &str,
         resume: &AuxiliaryResume,
+        local_after: usize,
     ) -> SearchPage {
+        let after = if local_after == 0 {
+            after.to_string()
+        } else {
+            format!("{after}:{local_after}")
+        };
         SearchPage {
             revision: revision.clone(),
             results,
@@ -1502,6 +1508,35 @@ impl LiveAppActionsProvider {
             exhausted: false,
             stale_cursor: false,
             budget_exhausted: true,
+        }
+    }
+
+    // Local progress belongs to the same validated search revision as the
+    // retained remote continuation. Completing a directory reply still stales it.
+    fn local_page_with_pending(
+        revision: String,
+        results: Vec<SearchResult>,
+        local_after: usize,
+        needle: &str,
+        scope: &str,
+        pending: Option<(usize, AuxiliaryResume)>,
+        exhausted: bool,
+    ) -> SearchPage {
+        if let Some((position, resume)) = pending {
+            return Self::live_aux_page(
+                revision,
+                results,
+                position,
+                needle,
+                scope,
+                &resume,
+                local_after,
+            );
+        }
+        if exhausted {
+            SearchPage::exhausted(revision, results)
+        } else {
+            Self::live_page(revision, results, "local", local_after, needle, scope)
         }
     }
 
@@ -2658,7 +2693,7 @@ impl SearchProvider for LiveAppActionsProvider {
         self.poll_directory_pages();
         let revision = self.search_revision(&ctx);
         let scope = Self::surface_scope(&ctx);
-        let (stage, after, resume) = match cursor {
+        let (stage, after, resume, local_after) = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
             Some(cursor) => {
                 let Some(token) = cursor.token.strip_prefix("live:") else {
@@ -2681,15 +2716,23 @@ impl SearchProvider for LiveAppActionsProvider {
                 if query != needle || cursor_scope != scope || !matches!(stage, "aux" | "local") {
                     return SearchPage::stale(revision);
                 }
-                let (after, resume) = if stage == "aux" {
-                    let Some(position) = after.parse::<usize>().ok() else {
+                let (after, resume, local_after) = if stage == "aux" {
+                    let Some((position, local_after)) = after.split_once(':').map_or_else(
+                        || after.parse::<usize>().ok().map(|position| (position, 0)),
+                        |(position, local)| {
+                            position
+                                .parse::<usize>()
+                                .ok()
+                                .zip(local.parse::<usize>().ok())
+                        },
+                    ) else {
                         return SearchPage::stale(revision);
                     };
                     let Some(resume) = encoded_resume.and_then(Self::decode_auxiliary_resume)
                     else {
                         return SearchPage::stale(revision);
                     };
-                    (position, resume)
+                    (position, resume, local_after)
                 } else if stage == "local" && after == "-" {
                     (
                         usize::MAX,
@@ -2697,6 +2740,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             root_after: None,
                             directory: None,
                         },
+                        0,
                     )
                 } else {
                     let Some(after) = after.parse::<usize>().ok() else {
@@ -2708,9 +2752,10 @@ impl SearchProvider for LiveAppActionsProvider {
                             root_after: None,
                             directory: None,
                         },
+                        0,
                     )
                 };
-                (stage, after, resume)
+                (stage, after, resume, local_after)
             }
             None => (
                 "aux",
@@ -2719,6 +2764,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     root_after: None,
                     directory: None,
                 },
+                0,
             ),
         };
 
@@ -2732,6 +2778,7 @@ impl SearchProvider for LiveAppActionsProvider {
         let mut bytes = 0usize;
         let mut results = Vec::new();
         let mut work = 0usize;
+        let mut deferred_auxiliary = None;
         if stage == "aux" {
             let snapshot = self.auxiliary_snapshot.borrow();
             let Some(snapshot) = snapshot.as_ref() else {
@@ -2823,6 +2870,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     &needle,
                     &scope,
                     &snapshot.resume,
+                    local_after,
                 );
             }
             if let Some(next) = snapshot.pending_directory.first() {
@@ -2840,22 +2888,49 @@ impl SearchProvider for LiveAppActionsProvider {
                     &next.cursor,
                     &next.parent_resource,
                 );
+                let pending = AuxiliaryResume {
+                    root_after: snapshot.resume.root_after,
+                    directory: Some(next.clone()),
+                };
+                if ctx.action_scope.is_none()
+                    && ctx.chrome.search_resource_scope.is_none()
+                    && next.cursor.is_empty()
+                    && next.parent_resource.is_empty()
+                    && next.ancestors.is_empty()
+                    && next.row_offset == 0
+                {
+                    // A cold root must not hide already indexed local actions.
+                    // Keep its exact remote owner and carry local progress in
+                    // the same revision-bound cursor, rather than replaying it.
+                    deferred_auxiliary = Some((position, pending));
+                } else {
+                    return Self::live_aux_page(
+                        revision,
+                        results,
+                        position,
+                        &needle,
+                        &scope,
+                        &pending,
+                        local_after,
+                    );
+                }
+            }
+            if deferred_auxiliary.is_none()
+                && let Some(next) = snapshot.next_resume.clone()
+            {
                 return Self::live_aux_page(
                     revision,
                     results,
-                    position,
+                    0,
                     &needle,
                     &scope,
-                    &AuxiliaryResume {
-                        root_after: snapshot.resume.root_after,
-                        directory: Some(next.clone()),
-                    },
+                    &next,
+                    local_after,
                 );
             }
-            if let Some(next) = snapshot.next_resume.clone() {
-                return Self::live_aux_page(revision, results, 0, &needle, &scope, &next);
-            }
-            if results.len() == budget.max_results || work == budget.max_work {
+            if deferred_auxiliary.is_none()
+                && (results.len() == budget.max_results || work == budget.max_work)
+            {
                 return Self::live_page(revision, results, "local", usize::MAX, &needle, &scope);
             }
         }
@@ -2867,30 +2942,73 @@ impl SearchProvider for LiveAppActionsProvider {
         let local_offset = if stage == "local" && after != usize::MAX {
             after
         } else {
-            0
+            local_after
         };
+        if local_offset == usize::MAX {
+            return Self::local_page_with_pending(
+                revision,
+                results,
+                local_offset,
+                &needle,
+                &scope,
+                deferred_auxiliary,
+                true,
+            );
+        }
         let local_limit = budget.max_results.saturating_sub(results.len());
         let local_work = budget.max_work.saturating_sub(work);
         if local_limit == 0 || local_work == 0 {
-            return Self::live_page(revision, results, "local", local_offset, &needle, &scope);
+            return Self::local_page_with_pending(
+                revision,
+                results,
+                local_offset,
+                &needle,
+                &scope,
+                deferred_auxiliary,
+                false,
+            );
         }
         let (found, candidates) = {
             let snapshot = self.surface_snapshot.borrow();
             let Some(snapshot) = snapshot.as_ref() else {
-                return SearchPage::exhausted(revision, results);
+                return Self::local_page_with_pending(
+                    revision,
+                    results,
+                    local_offset,
+                    &needle,
+                    &scope,
+                    deferred_auxiliary,
+                    true,
+                );
             };
             // A completed projection may belong to the preceding palette scope
             // while its replacement builds. Never publish those rows in the
             // new scope, even when their current permission is unchanged.
             if snapshot.scope != scope {
-                return SearchPage::exhausted(revision, results);
+                return Self::local_page_with_pending(
+                    revision,
+                    results,
+                    local_offset,
+                    &needle,
+                    &scope,
+                    deferred_auxiliary,
+                    true,
+                );
             }
             let Some(index) = (if ctx.include_programmatic {
                 &snapshot.machine_index
             } else {
                 &snapshot.index
             }) else {
-                return SearchPage::exhausted(revision, results);
+                return Self::local_page_with_pending(
+                    revision,
+                    results,
+                    local_offset,
+                    &needle,
+                    &scope,
+                    deferred_auxiliary,
+                    true,
+                );
             };
             let found = index.search(
                 &needle,
@@ -2941,10 +3059,26 @@ impl SearchProvider for LiveAppActionsProvider {
             considered = considered.saturating_add(1);
         }
         if !found.more && considered == found.hits.len() {
-            return SearchPage::exhausted(revision, results);
+            return Self::local_page_with_pending(
+                revision,
+                results,
+                usize::MAX,
+                &needle,
+                &scope,
+                deferred_auxiliary,
+                true,
+            );
         }
         let next = local_offset.saturating_add(considered);
-        Self::live_page(revision, results, "local", next, &needle, &scope)
+        Self::local_page_with_pending(
+            revision,
+            results,
+            next,
+            &needle,
+            &scope,
+            deferred_auxiliary,
+            false,
+        )
     }
 }
 
@@ -3499,6 +3633,131 @@ mod tests {
         assert!(restored.results.iter().any(|row| {
             row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[0])
         }));
+    }
+
+    #[test]
+    fn cold_directory_keeps_local_progress_until_reply_stales_the_cursor() {
+        for budget in [
+            SearchBudget::PALETTE,
+            SearchBudget {
+                max_results: 1,
+                max_work: 1,
+                ..SearchBudget::PALETTE
+            },
+        ] {
+            let chrome = chrome();
+            let broker = broker_for(&chrome);
+            let state = chrome.borrow();
+            let cluster_id = state.tree().desktop.workspaces[0].room.to_string();
+            let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
+            let surface = PublishedSurface {
+                peer_id: 7,
+                app_id: "so.tilo.fixture".into(),
+                route: CrdtRoute::app("so.tilo.fixture", &cluster_id),
+                actions: vec![
+                    local_action("Inspect playback", "inspect"),
+                    local_action("Inspect playback", "inspect-other"),
+                ],
+                live: true,
+            };
+            broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+            broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+                peer_id: surface.peer_id,
+                app_id: surface.app_id.clone(),
+                cluster_id,
+                record_id: surface.route.record_id.clone(),
+            }]);
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+            let doc = AutoCommit::new();
+            let ctx = context("Inspect playback", &state, &doc);
+            *provider.surface_snapshot.borrow_mut() =
+                Some(LiveAppActionsProvider::build_local_snapshot(
+                    &broker,
+                    &LiveAppActionsProvider::build_scope(&ctx),
+                    &provider.build_probe,
+                ));
+            let key: DirectoryCacheKey = (
+                7,
+                actor,
+                "inspect playback".into(),
+                Vec::new(),
+                String::new(),
+            );
+            // An actual pending receiver, never a seeded or synthetic cache page.
+            let reply = pending_directory_reply(&provider, key.clone());
+            let first = provider.query_page(ctx, None, budget);
+            assert_eq!(first.results.len(), budget.max_results.min(2));
+            assert!(!first.exhausted);
+            let first_cursor = first.next_cursor.clone().expect("retain the cold root");
+            assert!(provider.directory_pending.borrow().contains_key(&key));
+            let mut ids = first
+                .results
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>();
+            let mut cursor = first_cursor.clone();
+            for _ in 0..2 {
+                let next = provider.query_page(ctx, Some(&cursor), budget);
+                assert!(!next.stale_cursor);
+                assert!(!next.exhausted);
+                assert!(next.results.len() <= budget.max_results);
+                for row in next.results {
+                    assert!(
+                        !ids.contains(&row.id),
+                        "pending pages cannot replay local rows"
+                    );
+                    ids.push(row.id);
+                }
+                cursor = next
+                    .next_cursor
+                    .expect("the actual remote reply is still pending");
+            }
+            assert_eq!(ids.len(), 2);
+            for action in &surface.actions {
+                assert!(ids.contains(&LiveAppActionsProvider::result_id(&surface, action)));
+            }
+            reply.complete(Ok(page(
+                vec![CatalogueRow {
+                    provider: "7".into(),
+                    app_id: surface.app_id.clone(),
+                    parent_resource: String::new(),
+                    resource: CatalogueResource {
+                        id: "resource:inspect".into(),
+                        kind: "fixture".into(),
+                        label: "Fixture".into(),
+                        presentation: None,
+                    },
+                    action: Some(exported("Inspect playback", "inspect")),
+                    has_children: false,
+                    visibility: None,
+                }],
+                Vec::new(),
+            )));
+            provider.poll_directory_pages();
+            assert!(provider.directory_pending.borrow().is_empty());
+            let stale = provider.query_page(ctx, Some(&first_cursor), budget);
+            assert!(
+                stale.stale_cursor,
+                "a completed reply still invalidates the old revision"
+            );
+            assert!(stale.results.is_empty());
+            let fresh = provider.query_page(ctx, None, SearchBudget::PALETTE);
+            assert_eq!(fresh.results.len(), 2);
+            assert_eq!(
+                fresh
+                    .results
+                    .iter()
+                    .filter(|row| row.id.starts_with("directory\u{1f}"))
+                    .count(),
+                1,
+            );
+            assert!(fresh.results.iter().any(|row| {
+                row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[1])
+            }));
+            assert!(!fresh.results.iter().any(|row| {
+                row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[0])
+            }));
+        }
     }
 
     #[test]
