@@ -115,6 +115,9 @@ containerfile="$repo/os/Containerfile"
 # The public /usr/bin/ush symlink deliberately exposes the same confined
 # runtime already installed at /usr/libexec/tilo-ush.
 # The confined speech worker and its full MIT notice are deliberate additions.
+# The tilo-projector.service and .socket user units, which run the projection
+# broker as a socket-activated service in place of per-command helper runs, are
+# deliberate additions.
 # Cisco requires the complete OpenH264 binary license notice in a licensing
 # information location. Only that text is added to extension-files; Cisco
 # binaries remain separately downloaded by opted-in devices.
@@ -127,7 +130,7 @@ containerfile="$repo/os/Containerfile"
 # the destination, source bytes and executable mode remain the same.
 # The disk-unlock polkit action and exact-command read rule ship beside the
 # existing policies. Their two rootfs payload rows are the intentional delta.
-expected_contract=d62c84fe149b06832c2a75201c6e30a2cef878031d2aa6a349b92e8a8351f96c
+expected_contract=e6f45d3a390bf7bd9fd63c96d811cab8f55c4feda6ae445d2c95cefe1037869a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
