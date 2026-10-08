@@ -110,6 +110,9 @@ pub(crate) struct AgentSubmission {
     pub(crate) intent: AgentComposerIntent,
     pub(crate) message: Option<AgentMessageSubmission>,
     pub(crate) give_up_at: std::time::Instant,
+    /// Stable owner-poll anchor. Deadline getters must not move an outstanding
+    /// catalogue poll into the future every time the native loop inspects it.
+    pub(crate) next_poll_at: Option<std::time::Instant>,
     pub(crate) pages_remaining: u16,
 }
 
@@ -117,6 +120,26 @@ pub(crate) use ui::agent_message_action::{AgentMessagePoll, AgentMessageSubmissi
 pub(crate) const AGENT_MESSAGE_RESOLVE_WINDOW: std::time::Duration =
     ui::agent_message_action::RESOLVE_WINDOW;
 pub(crate) const AGENT_MESSAGE_MAX_PAGES: u16 = ui::agent_message_action::MAX_PAGES;
+
+type AgentSubmissionKey = (Id, Id);
+type AgentMessageWakeUpdate = (AgentSubmissionKey, Option<ui::time::Instant>);
+type AgentMessageAdvanceUpdate = (
+    AgentSubmissionKey,
+    Box<AgentMessageSubmission>,
+    u16,
+    Option<ui::time::Instant>,
+);
+
+enum AgentTaskSubmissionOutcome {
+    Pending,
+    Succeeded,
+    Failed,
+}
+
+enum AgentMessageWakeDecision {
+    Unchanged,
+    Replace(Option<ui::time::Instant>),
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct AgentConversationDrag {
@@ -2737,12 +2760,119 @@ impl ChatApp {
         )
     }
 
-    fn settle_agent_submissions(&mut self) {
+    fn agent_message_next_wake(
+        &self,
+        submission: &AgentSubmission,
+        message: &AgentMessageSubmission,
+    ) -> Option<ui::time::Instant> {
+        submission
+            .next_poll_at
+            .into_iter()
+            .chain(ui::agent_message_action::next_wake_deadline(
+                &self.agent_task_actions,
+                message,
+                submission.give_up_at,
+            ))
+            .min()
+    }
+
+    fn agent_message_wake_update(
+        &self,
+        submission: &AgentSubmission,
+        message: &AgentMessageSubmission,
+        now: ui::time::Instant,
+    ) -> AgentMessageWakeDecision {
+        let typed = ui::agent_message_action::next_wake_deadline(
+            &self.agent_task_actions,
+            message,
+            submission.give_up_at,
+        );
+        let retained = submission.next_poll_at;
+        let replace = retained.is_some_and(|deadline| deadline <= now)
+            || match (retained, typed) {
+                (Some(current), Some(candidate)) => candidate < current,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+        if replace {
+            AgentMessageWakeDecision::Replace(typed)
+        } else {
+            AgentMessageWakeDecision::Unchanged
+        }
+    }
+
+    fn agent_task_submission_outcome(
+        &self,
+        key: &AgentSubmissionKey,
+        submission: &AgentSubmission,
+    ) -> AgentTaskSubmissionOutcome {
         use ui::agent_task_frontier::{AgentDirectionState, AgentQueueState};
 
+        let Some(tasks) = self.agent_tasks.get(key) else {
+            return AgentTaskSubmissionOutcome::Pending;
+        };
+        let tasks = tasks.borrow();
+        let succeeded = match submission.intent {
+            AgentComposerIntent::Message => false,
+            AgentComposerIntent::Queue => {
+                matches!(tasks.queue_state(), AgentQueueState::Queued { .. })
+            }
+            AgentComposerIntent::Steer => matches!(
+                tasks.direction_state(),
+                AgentDirectionState::Saved { .. } | AgentDirectionState::Applied { .. }
+            ),
+        };
+        let failed = match submission.intent {
+            AgentComposerIntent::Message => false,
+            AgentComposerIntent::Queue => matches!(tasks.queue_state(), AgentQueueState::Failed),
+            AgentComposerIntent::Steer => matches!(
+                tasks.direction_state(),
+                AgentDirectionState::NeedsRefresh(_)
+            ),
+        };
+        if succeeded {
+            AgentTaskSubmissionOutcome::Succeeded
+        } else if failed {
+            AgentTaskSubmissionOutcome::Failed
+        } else {
+            AgentTaskSubmissionOutcome::Pending
+        }
+    }
+
+    fn apply_agent_submission_updates(
+        &self,
+        settled: &[AgentSubmissionKey],
+        wake_updates: Vec<AgentMessageWakeUpdate>,
+        message_updates: Vec<AgentMessageAdvanceUpdate>,
+    ) {
+        if !message_updates.is_empty() || !wake_updates.is_empty() {
+            self.agent_submissions.update(|pending| {
+                for (key, next_poll_at) in wake_updates {
+                    if let Some(submission) = pending.get_mut(&key) {
+                        submission.next_poll_at = next_poll_at;
+                    }
+                }
+                for (key, message, pages_remaining, next_poll_at) in message_updates {
+                    if let Some(submission) = pending.get_mut(&key) {
+                        submission.message = Some(*message);
+                        submission.pages_remaining = pages_remaining;
+                        submission.next_poll_at = next_poll_at;
+                    }
+                }
+            });
+        }
+        if !settled.is_empty() {
+            self.agent_submissions
+                .update(|pending| pending.retain(|key, _| !settled.contains(key)));
+        }
+    }
+
+    fn settle_agent_submissions(&mut self) {
         let pending = self.agent_submissions.get();
         let mut settled = Vec::new();
         let mut message_updates = Vec::new();
+        let mut wake_updates = Vec::new();
+        let now = ui::time::now();
         for (key, submission) in &pending {
             if submission.intent == AgentComposerIntent::Message {
                 let Some(message) = submission.message.as_ref() else {
@@ -2750,12 +2880,28 @@ impl ChatApp {
                     continue;
                 };
                 match self.poll_agent_message_submission(&key.0, &key.1, submission, message) {
-                    AgentMessagePoll::Waiting => {}
+                    AgentMessagePoll::Waiting => {
+                        if let AgentMessageWakeDecision::Replace(next_poll_at) =
+                            self.agent_message_wake_update(submission, message, now)
+                        {
+                            wake_updates.push((key.clone(), next_poll_at));
+                        }
+                    }
                     AgentMessagePoll::Advance {
-                        submission,
+                        submission: advanced,
                         pages_remaining,
                     } => {
-                        message_updates.push((key.clone(), Box::new(submission), pages_remaining));
+                        let next_poll_at = ui::agent_message_action::next_wake_deadline(
+                            &self.agent_task_actions,
+                            &advanced,
+                            submission.give_up_at,
+                        );
+                        message_updates.push((
+                            key.clone(),
+                            Box::new(advanced),
+                            pages_remaining,
+                            next_poll_at,
+                        ));
                     }
                     AgentMessagePoll::Succeeded => {
                         self.composer_main.clear_private_for_revision(
@@ -2779,58 +2925,21 @@ impl ChatApp {
                 }
                 continue;
             }
-            let Some(tasks) = self.agent_tasks.get(key) else {
-                continue;
-            };
-            let tasks = tasks.borrow();
-            let succeeded = match submission.intent {
-                AgentComposerIntent::Message => false,
-                AgentComposerIntent::Queue => {
-                    matches!(tasks.queue_state(), AgentQueueState::Queued { .. })
+            match self.agent_task_submission_outcome(key, submission) {
+                AgentTaskSubmissionOutcome::Succeeded => {
+                    let (workspace, agent) = key;
+                    self.composer_main.clear_private_for_revision(
+                        workspace,
+                        agent,
+                        submission.draft_revision,
+                    );
+                    settled.push(key.clone());
                 }
-                AgentComposerIntent::Steer => matches!(
-                    tasks.direction_state(),
-                    AgentDirectionState::Saved { .. } | AgentDirectionState::Applied { .. }
-                ),
-            };
-            let failed = match submission.intent {
-                AgentComposerIntent::Message => false,
-                AgentComposerIntent::Queue => {
-                    matches!(tasks.queue_state(), AgentQueueState::Failed)
-                }
-                AgentComposerIntent::Steer => {
-                    matches!(
-                        tasks.direction_state(),
-                        AgentDirectionState::NeedsRefresh(_)
-                    )
-                }
-            };
-            if succeeded {
-                let (workspace, agent) = key;
-                self.composer_main.clear_private_for_revision(
-                    workspace,
-                    agent,
-                    submission.draft_revision,
-                );
-                settled.push(key.clone());
-            } else if failed {
-                settled.push(key.clone());
+                AgentTaskSubmissionOutcome::Failed => settled.push(key.clone()),
+                AgentTaskSubmissionOutcome::Pending => {}
             }
         }
-        if !message_updates.is_empty() {
-            self.agent_submissions.update(|pending| {
-                for (key, message, pages_remaining) in message_updates {
-                    if let Some(submission) = pending.get_mut(&key) {
-                        submission.message = Some(*message);
-                        submission.pages_remaining = pages_remaining;
-                    }
-                }
-            });
-        }
-        if !settled.is_empty() {
-            self.agent_submissions
-                .update(|pending| pending.retain(|key, _| !settled.contains(key)));
-        }
+        self.apply_agent_submission_updates(&settled, wake_updates, message_updates);
     }
 
     pub(crate) fn float_agent_conversation(
@@ -5403,14 +5512,10 @@ impl Widget for ChatApp {
                     submission
                         .message
                         .as_ref()
-                        .and_then(|message| {
-                            ui::agent_message_action::next_wake_deadline(
-                                &self.agent_task_actions,
-                                message,
-                                submission.give_up_at,
-                            )
+                        .map_or(submission.give_up_at, |message| {
+                            self.agent_message_next_wake(submission, message)
+                                .unwrap_or(submission.give_up_at)
                         })
-                        .unwrap_or(submission.give_up_at)
                 })
                 .min()
         });

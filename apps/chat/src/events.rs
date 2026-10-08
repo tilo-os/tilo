@@ -1668,6 +1668,14 @@ impl ChatApp {
                 return;
             }
             let message = ui::agent_message_action::begin(&self.agent_task_actions, &key.0);
+            let give_up_at = std::time::Instant::now()
+                .checked_add(crate::app::AGENT_MESSAGE_RESOLVE_WINDOW)
+                .unwrap_or_else(std::time::Instant::now);
+            let next_poll_at = ui::agent_message_action::next_wake_deadline(
+                &self.agent_task_actions,
+                &message,
+                give_up_at,
+            );
             self.agent_submission_errors
                 .update(|errors| _ = errors.remove(&key));
             self.agent_submissions.update(|pending| {
@@ -1678,9 +1686,8 @@ impl ChatApp {
                         draft_revision,
                         intent,
                         message: Some(message),
-                        give_up_at: std::time::Instant::now()
-                            .checked_add(crate::app::AGENT_MESSAGE_RESOLVE_WINDOW)
-                            .unwrap_or_else(std::time::Instant::now),
+                        give_up_at,
+                        next_poll_at,
                         pages_remaining: crate::app::AGENT_MESSAGE_MAX_PAGES,
                     },
                 );
@@ -1708,6 +1715,7 @@ impl ChatApp {
                         give_up_at: std::time::Instant::now()
                             .checked_add(crate::app::AGENT_MESSAGE_RESOLVE_WINDOW)
                             .unwrap_or_else(std::time::Instant::now),
+                        next_poll_at: None,
                         pages_remaining: crate::app::AGENT_MESSAGE_MAX_PAGES,
                     },
                 );
@@ -2830,6 +2838,7 @@ mod tests {
             intent: AgentComposerIntent::Message,
             message: None,
             give_up_at: std::time::Instant::now(),
+            next_poll_at: None,
             pages_remaining: 0,
         };
         let message = AgentMessageSubmission::Invoke { invocation, call };
@@ -3435,8 +3444,25 @@ mod tests {
         );
     }
 
+    fn suspend_agent_observers(app: &ChatApp) {
+        for tasks in app.agent_tasks.values() {
+            tasks.borrow_mut().set_observation_active(false);
+        }
+        assert!(
+            app.agent_tasks
+                .values()
+                .all(|tasks| tasks.borrow().next_wake_deadline().is_none())
+        );
+        app.agent_message_progress.borrow_mut().cancel();
+        assert_eq!(app.agent_task_actions.next_observation_deadline(), None);
+        assert_eq!(
+            app.agent_message_progress.borrow().next_wake_deadline(),
+            None
+        );
+    }
+
     #[test]
-    fn idle_agent_message_catalogue_wakes_before_its_bounded_expiry() {
+    fn idle_agent_message_catalogue_keeps_and_advances_its_poll_deadline() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
@@ -3461,20 +3487,7 @@ mod tests {
         // A settled post-Stop conversation has no task-reader wake to mask the
         // Message catalogue's own cadence. Releasing progress-view demand is
         // the production inactive state and cannot settle this submission.
-        for tasks in app.agent_tasks.values() {
-            tasks.borrow_mut().set_observation_active(false);
-        }
-        assert!(
-            app.agent_tasks
-                .values()
-                .all(|tasks| tasks.borrow().next_wake_deadline().is_none())
-        );
-        app.agent_message_progress.borrow_mut().cancel();
-        assert_eq!(app.agent_task_actions.next_observation_deadline(), None);
-        assert_eq!(
-            app.agent_message_progress.borrow().next_wake_deadline(),
-            None
-        );
+        suspend_agent_observers(&app);
         let pending = app.agent_submissions.get();
         let submission = pending
             .get(&("ws_home".into(), "scribe".into()))
@@ -3483,26 +3496,14 @@ mod tests {
             submission.message.as_ref(),
             Some(AgentMessageSubmission::Providers(_))
         ));
-        let message = submission
-            .message
-            .as_ref()
-            .expect("the production Message retains its typed submission");
-        let before = ui::time::now();
-        let message_wake = ui::agent_message_action::next_wake_deadline(
-            &app.agent_task_actions,
-            message,
-            submission.give_up_at,
-        )
-        .expect("the pending catalogue has a bounded polling deadline");
-        let wake = ui::Widget::next_wake_deadline(&app)
+        let retained = submission
+            .next_poll_at
+            .expect("the production Message retains its polling deadline");
+        let first = ui::Widget::next_wake_deadline(&app)
             .expect("the pending catalogue publishes a native wake");
-        let after = ui::time::now();
-        let cadence = std::time::Duration::from_millis(50);
-        for deadline in [message_wake, wake] {
-            assert!(deadline >= before + cadence);
-            assert!(deadline <= after + cadence);
-        }
-        assert!(wake < submission.give_up_at);
+        let second = ui::Widget::next_wake_deadline(&app).expect("getter remains armed");
+        assert_eq!([first, second], [retained, retained]);
+        assert!(retained < submission.give_up_at);
         drop(pending);
 
         let requests = ui::widget::Collaborative::take_collab_requests(&mut app);
@@ -3520,6 +3521,33 @@ mod tests {
         assert!(providers[0].canonical_route.as_ref().is_some_and(|route| {
             route.room == "ws_home" && route.app_id == "so.tilo.chat" && route.record_id.is_empty()
         }));
+
+        std::thread::sleep(
+            retained
+                .saturating_duration_since(ui::time::now())
+                .saturating_add(std::time::Duration::from_millis(2)),
+        );
+        app.poll_agent_tasks();
+        suspend_agent_observers(&app);
+        let advanced = app.agent_submissions.get()[&("ws_home".into(), "scribe".into())]
+            .next_poll_at
+            .expect("an actual due poll rearms the pending catalogue");
+        assert!(advanced > retained);
+        assert_eq!(ui::Widget::next_wake_deadline(&app), Some(advanced));
+
+        app.agent_submissions.update(|pending| {
+            let submission = pending.values_mut().next().expect("pending Message");
+            submission.next_poll_at = Some(submission.give_up_at);
+        });
+        app.poll_agent_tasks();
+        suspend_agent_observers(&app);
+        let earlier = app.agent_submissions.get()[&("ws_home".into(), "scribe".into())]
+            .next_poll_at
+            .expect("an earlier typed deadline replaces the retained fallback");
+        assert!(
+            earlier < app.agent_submissions.get()[&("ws_home".into(), "scribe".into())].give_up_at
+        );
+        assert_eq!(ui::Widget::next_wake_deadline(&app), Some(earlier));
     }
 
     #[test]
