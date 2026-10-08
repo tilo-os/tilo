@@ -14306,6 +14306,7 @@ dependencies = [
  "signal-hook-registry",
  "smithay",
  "smithay-client-toolkit",
+ "store",
  "sysinfo 0.32.1",
  "taffy",
  "tar",

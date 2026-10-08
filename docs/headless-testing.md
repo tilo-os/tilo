@@ -8,6 +8,26 @@ Three layers, each useful on its own:
 2. **`TILO_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
 3. **`--backend headless` — live compositor without a window** (the same binary that boots on a real display, running through the same code paths, but rendering into an off-screen wgpu texture)
 
+Native application publication also has compositor-free integration fixtures:
+
+```bash
+cargo test --locked -p shell --lib shell::in_process::tests::authorized_
+cargo test --locked -p tilo-action-broker --lib collab_broker_capnp::tests::certified_join_rejects_other_workspace_revoked_and_unenrolled_device -- --exact
+```
+
+The Browser and Store fixtures provision a disposable identity and run the actual
+identity service, collaboration broker, original application factory and directory
+RPC. Browser retains its primary document, browsing history and address book. All
+three use the certified person's own room, so publication must wait for their
+initial joins to become ready. Store must publish `inspect-catalogue` through the
+same authorized context. No application action is invoked.
+
+This qualifies matching-room publication. It does not qualify an application
+spanning a foreground workspace and a separate person room: a certification for
+one room cannot authorize the other. The broker's cross-workspace rejection stays
+covered independently. Installed control-socket timeouts require separate runtime
+evidence; an empty query alone does not establish absent publication.
+
 ## Layer 1: `shots` — pre-written scenarios
 
 Best for: regression captures, golden-image diffs, video walkthroughs of known UX flows.
