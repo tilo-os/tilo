@@ -25,6 +25,9 @@ use crate::surface::OskSurface;
 pub struct OskPreferences {
     /// The letter layout text fields open in.
     pub layout: String,
+    /// Configured letter layouts, in their user-selected switching order.
+    /// An absent list preserves the historic bundled letter layouts.
+    pub layouts: Vec<String>,
     /// Whether the suggestion bar offers words.
     pub suggestions: bool,
     /// Whether the keyboard adapts to what this person types.
@@ -37,6 +40,7 @@ impl Default for OskPreferences {
     fn default() -> Self {
         Self {
             layout: LETTER_LAYOUTS[0].0.to_owned(),
+            layouts: Vec::new(),
             suggestions: true,
             personalization: true,
             emoji_recents: Vec::new(),

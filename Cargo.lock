@@ -10586,6 +10586,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-keyboard-map",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -17053,6 +17054,8 @@ dependencies = [
 name = "tilo-keyboard-map"
 version = "0.1.0"
 dependencies = [
+ "tilo-app",
+ "tilo-vello",
  "tilo-winit",
  "workspace-hack",
  "xkbcommon",
