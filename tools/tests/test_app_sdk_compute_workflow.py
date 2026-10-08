@@ -36,7 +36,7 @@ class AppSdkComputeWorkflowTests(unittest.TestCase):
     def test_release_gate_qualifies_uploaded_bytes_without_blocking_dev_mount(self):
         source = WORKFLOW.read_text()
         web, release = job(source, "web"), job(source, "web-size")
-        self.assertIn("needs: [builder, policy, web-tool]", web)
+        self.assertIn("needs: [builder, policy]", web)
         self.assertNotIn("web-size", web)
         condition = "needs.builder.outputs.affected == 'true' }}"
         self.assertIn(condition, web)
@@ -55,7 +55,14 @@ class AppSdkComputeWorkflowTests(unittest.TestCase):
         self.assertIn("actions/download-artifact@", release)
         self.assertIn("name: app-sdk-release-compute", release)
         self.assertIn("path: ${{ runner.temp }}/release-compute-downloaded", release)
-        self.assertNotIn("continue-on-error", release)
+        self.assertEqual(release.count("continue-on-error: true"), 1)
+        self.assertIn("id: download-tool", release)
+        import yaml
+        steps = yaml.safe_load(source)['jobs']['web-size']['steps']
+        for step in steps:
+            self.assertEqual(bool(step.get('continue-on-error', False)),
+                             step.get('id') == 'download-tool', step.get('name'))
+        self.assertIn("cargo build --locked -p tilo-app-cli --bin tilo-app", release)
         self.assertIn('"$RUNNER_TEMP/release-compute-downloaded" "$RUNNER_TEMP/compute-qualification" --no-sandbox', release)
 
     def test_exact_layout_hash_binding_and_product_preservation(self):

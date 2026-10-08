@@ -53,5 +53,23 @@ class CiMeasureTests(unittest.TestCase):
             self.assertIn("cgroup_memory_peak=4294967296", result.stdout)
 
 
+    def test_inner_cpu_envelope_and_counters_bracket_the_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cgroup = Path(directory)
+            (cgroup / "cpu.max").write_text("600000 100000\n")
+            (cgroup / "cpuset.cpus.effective").write_text("0-39\n")
+            (cgroup / "cpu.stat").write_text("usage_usec 100\nnr_throttled 1\n")
+            result = subprocess.run(
+                ["bash", str(MEASURE), "fixture", "--", "bash", "-c",
+                 'printf "usage_usec 200\\nnr_throttled 3\\n" > "$1/cpu.stat"', "--", str(cgroup)],
+                cwd=ROOT, env=os.environ | {"TILO_CGROUP_ROOT": str(cgroup)},
+                text=True, capture_output=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("cgroup_cpu_max=600000 100000", result.stdout)
+        self.assertIn("cgroup_cpuset_cpus_effective=0-39", result.stdout)
+        self.assertIn("cgroup_cpu_stat_before=usage_usec 100 nr_throttled 1", result.stdout)
+        self.assertIn("cgroup_cpu_stat_after=usage_usec 200 nr_throttled 3", result.stdout)
+
 if __name__ == "__main__":
     unittest.main()

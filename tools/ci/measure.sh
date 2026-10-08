@@ -18,6 +18,11 @@ if [ -r "$cgroup_root/memory.events" ]; then
   memory_events_before="$(cat "$cgroup_root/memory.events")"
 fi
 
+cpu_stat_before="unavailable"
+if [ -r "$cgroup_root/cpu.stat" ]; then
+  cpu_stat_before=$(tr '\n' ' ' < "$cgroup_root/cpu.stat")
+fi
+
 status=0
 if command -v /usr/bin/time >/dev/null 2>&1; then
   /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" "$@" || status=$?
@@ -27,6 +32,22 @@ else
   printf 'wall_seconds=%s\nuser_seconds=unavailable\nsystem_seconds=unavailable\nmax_rss_kib=unavailable\n' \
     "$(( $(date +%s) - start ))" > "$timing"
 fi
+
+# Record the actual inner job envelope. Pod/QEMU metrics cannot establish
+# Docker's quota or allowed CPU set, and interactive CRI exec may be unavailable.
+for cpu_file in cpu.max cpuset.cpus.effective; do
+  cpu_value="unavailable"
+  if [ -r "$cgroup_root/$cpu_file" ]; then
+    cpu_value=$(cat "$cgroup_root/$cpu_file")
+  fi
+  printf 'cgroup_%s=%s\n' "${cpu_file//./_}" "$cpu_value" >> "$timing"
+done
+printf 'cgroup_cpu_stat_before=%s\n' "$cpu_stat_before" >> "$timing"
+cpu_stat_after="unavailable"
+if [ -r "$cgroup_root/cpu.stat" ]; then
+  cpu_stat_after=$(tr '\n' ' ' < "$cgroup_root/cpu.stat")
+fi
+printf 'cgroup_cpu_stat_after=%s\n' "$cpu_stat_after" >> "$timing"
 
 # The container's peak memory so far, success or not: the headroom job
 # parallelism is tuned against.
