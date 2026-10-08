@@ -689,6 +689,85 @@ impl InitialSources {
     }
 }
 
+enum ControlRequest {
+    Timer(bool),
+    Schedule(String),
+    Metered(bool),
+    Rollback,
+}
+
+enum ControlCompletion {
+    Timer {
+        requested: bool,
+        result: Result<(), String>,
+        observed: Option<bool>,
+    },
+    Schedule {
+        requested: String,
+        result: Result<(), String>,
+        observed: Option<String>,
+    },
+    Metered {
+        requested: bool,
+        result: Result<(), String>,
+        observed: Option<bool>,
+    },
+    Rollback {
+        result: Result<(), String>,
+        observed: Option<Result<Option<String>, String>>,
+    },
+}
+
+impl ControlRequest {
+    fn operation(&self) -> &'static str {
+        match self {
+            Self::Timer(_) => UpdatesEffect::SET_AUTOMATIC_UPDATES.id,
+            Self::Schedule(_) => UpdatesEffect::SET_UPDATE_SCHEDULE.id,
+            Self::Metered(_) => UpdatesEffect::SET_METERED_UPDATES.id,
+            Self::Rollback => UpdatesEffect::ROLL_BACK.id,
+        }
+    }
+
+    fn execute(self, control: &dyn UpdateControl) -> ControlCompletion {
+        match self {
+            Self::Timer(requested) => {
+                let result = control.set_timer(requested);
+                ControlCompletion::Timer {
+                    requested,
+                    result,
+                    observed: control.timer_enabled(),
+                }
+            }
+            Self::Schedule(requested) => {
+                let result = control.set_schedule(&requested);
+                ControlCompletion::Schedule {
+                    requested,
+                    result,
+                    observed: control.schedule(),
+                }
+            }
+            Self::Metered(requested) => {
+                let result = control.set_allow_metered(requested);
+                ControlCompletion::Metered {
+                    requested,
+                    result,
+                    observed: control.allow_metered(),
+                }
+            }
+            Self::Rollback => {
+                let result = control.roll_back();
+                let observed = result.as_ref().ok().map(|()| control.rollback_target());
+                ControlCompletion::Rollback { result, observed }
+            }
+        }
+    }
+}
+
+struct PendingControl {
+    operation: &'static str,
+    receiver: Receiver<ControlCompletion>,
+}
+
 enum InitialRead {
     Ready,
     Pending(Receiver<InitialSnapshot>),
@@ -740,6 +819,7 @@ fn now_stamp() -> String {
 )]
 pub struct UpdatesModel {
     initial: InitialRead,
+    control_pending: Option<PendingControl>,
     status: UpdateStatus,
     details: UpdateDetails,
     prefs: UpdatePrefs,
@@ -916,6 +996,7 @@ impl UpdatesModel {
         }
         Self {
             initial: InitialRead::Ready,
+            control_pending: None,
             status,
             details: UpdateDetails::default(),
             prefs: prefs.clone(),
@@ -2150,25 +2231,101 @@ impl UpdatesModel {
         }
     }
 
+    fn start_control(&mut self, request: ControlRequest) {
+        let operation = request.operation();
+        if self.check_pending {
+            self.operation_failed(operation, t("upd-policy-busy"));
+            return;
+        }
+        let control = self.control.clone();
+        let wake = self.wake.clone();
+        let (sender, receiver) = mpsc::channel();
+        match ui::background::Background::current().spawn("update_policy", move || {
+            let completion = request.execute(control.as_ref());
+            if sender.send(completion).is_ok() {
+                wake.wake();
+            }
+        }) {
+            Ok(()) => {
+                self.control_pending = Some(PendingControl {
+                    operation,
+                    receiver,
+                });
+            }
+            Err(error) => self.operation_failed(operation, error.to_string()),
+        }
+        self.changed = true;
+    }
+
+    fn drain_control(&mut self) {
+        let Some(pending) = &self.control_pending else {
+            return;
+        };
+        let outcome = match pending.receiver.try_recv() {
+            Ok(completion) => Ok(completion),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(t("upd-policy-disconnected")),
+        };
+        let operation = pending.operation;
+        self.control_pending = None;
+        match outcome {
+            Ok(ControlCompletion::Timer {
+                requested,
+                result,
+                observed,
+            }) => self.finish_automatic(requested, result, observed),
+            Ok(ControlCompletion::Schedule {
+                requested,
+                result,
+                observed,
+            }) => self.finish_schedule(&requested, result, observed),
+            Ok(ControlCompletion::Metered {
+                requested,
+                result,
+                observed,
+            }) => self.finish_metered(requested, result, observed),
+            Ok(ControlCompletion::Rollback { result, observed }) => {
+                self.finish_rollback(result, observed);
+            }
+            Err(error) => {
+                self.notice = Some(error.clone());
+                self.operation_failed(operation, error);
+                self.changed = true;
+            }
+        }
+    }
+
     /// Automatic updates → drive the timer, then report what the timer
     /// actually says. Persisting the preference happens only once the
     /// machine agrees, so the stored value never claims a state the timer
     /// isn't actually in.
     fn set_automatic(&mut self, b: bool) {
-        let operation = UpdatesEffect::SET_AUTOMATIC_UPDATES.id;
-        if b == self.last_prefs.auto {
-            self.operation_succeeded(operation, "automatic-update timer was already selected");
+        if self.timer_enabled == Some(b) {
+            self.operation_succeeded(
+                UpdatesEffect::SET_AUTOMATIC_UPDATES.id,
+                "automatic-update timer was already selected",
+            );
             return;
         }
-        self.last_prefs.auto = b;
-        match self.control.set_timer(b) {
+        self.start_control(ControlRequest::Timer(b));
+    }
+
+    fn finish_automatic(&mut self, b: bool, result: Result<(), String>, observed: Option<bool>) {
+        let operation = UpdatesEffect::SET_AUTOMATIC_UPDATES.id;
+        match result {
             Ok(()) => {
                 // Read it back rather than assuming. `systemctl enable`
                 // can succeed on a unit that is masked or static, and
                 // the switch has to show what the machine will do.
-                self.timer_enabled = self.control.timer_enabled();
-                let effective = self.timer_enabled.unwrap_or(b);
+                self.timer_enabled = observed;
+                let Some(effective) = self.timer_enabled else {
+                    self.notice = Some(t("upd-policy-unobserved"));
+                    self.operation_failed(operation, t("upd-policy-unobserved"));
+                    self.changed = true;
+                    return;
+                };
                 self.prefs.auto = effective;
+                self.last_prefs.auto = effective;
                 self.notice = (effective != b).then(|| {
                     format!(
                         "Automatic updates are still {}. The system did \
@@ -2190,7 +2347,7 @@ impl UpdatesModel {
                 warn!(target: "tilo::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
                 self.notice = Some(t_args("upd-notice-auto", &[("error", e.as_str().into())]));
                 // Put the switch back where the machine actually is.
-                self.timer_enabled = self.control.timer_enabled();
+                self.timer_enabled = observed;
                 let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
                 self.prefs.auto = effective;
                 self.last_prefs.auto = effective;
@@ -2221,12 +2378,25 @@ impl UpdatesModel {
             }
             return;
         }
-        match self.control.set_schedule(&requested) {
+        self.start_control(ControlRequest::Schedule(requested));
+    }
+
+    fn finish_schedule(
+        &mut self,
+        requested: &str,
+        result: Result<(), String>,
+        observed: Option<String>,
+    ) {
+        let operation = UpdatesEffect::SET_UPDATE_SCHEDULE.id;
+        self.schedule = observed;
+        match result {
             Ok(()) => {
-                self.schedule = match self.control.schedule() {
-                    Some(schedule) => Some(schedule),
-                    None => Some(requested),
-                };
+                if self.schedule.as_deref() != Some(requested) {
+                    self.notice = Some(t("upd-policy-unobserved"));
+                    self.operation_failed(operation, t("upd-policy-unobserved"));
+                    self.changed = true;
+                    return;
+                }
                 self.notice = None;
                 self.operation_succeeded(operation, "update schedule changed");
             }
@@ -2259,9 +2429,27 @@ impl UpdatesModel {
             );
             return;
         }
-        match self.control.set_allow_metered(requested) {
+        self.start_control(ControlRequest::Metered(requested));
+    }
+
+    fn finish_metered(
+        &mut self,
+        requested: bool,
+        result: Result<(), String>,
+        observed: Option<bool>,
+    ) {
+        self.allow_metered = observed;
+        match result {
             Ok(()) => {
-                self.allow_metered = self.control.allow_metered().or(Some(requested));
+                if self.allow_metered != Some(requested) {
+                    self.notice = Some(t("upd-policy-unobserved"));
+                    self.operation_failed(
+                        UpdatesEffect::SET_METERED_UPDATES.id,
+                        t("upd-policy-unobserved"),
+                    );
+                    self.changed = true;
+                    return;
+                }
                 self.notice = None;
                 self.operation_succeeded(
                     UpdatesEffect::SET_METERED_UPDATES.id,
@@ -2293,14 +2481,23 @@ impl UpdatesModel {
     }
 
     fn roll_back(&mut self) {
+        self.start_control(ControlRequest::Rollback);
+    }
+
+    fn finish_rollback(
+        &mut self,
+        result: Result<(), String>,
+        observed: Option<Result<Option<String>, String>>,
+    ) {
         {
-            match self.control.roll_back() {
+            match result {
                 Ok(()) => {
                     self.rollback_armed = false;
                     self.notice = Some(t("upd-notice-rollback-ok"));
                     // The target moves once the order changes, so re-read it
                     // rather than showing the value from before the action.
-                    self.rollback_target = self.control.rollback_target();
+                    self.rollback_target =
+                        observed.unwrap_or_else(|| Err(t("upd-policy-unobserved")));
                     self.operation_succeeded(
                         UpdatesEffect::ROLL_BACK.id,
                         "previous system image selected for next boot",
@@ -2371,6 +2568,22 @@ pub enum UpdatesEffect {
 impl UpdatesModel {
     /// Start `effect`; `reply` is told how it ends.
     pub(crate) fn run(&mut self, effect: UpdatesEffect, reply: Option<EffectReply>) {
+        self.drain_control();
+        if self.control_pending.is_some()
+            && matches!(
+                effect,
+                UpdatesEffect::SetAutomaticUpdates { .. }
+                    | UpdatesEffect::SetUpdateSchedule { .. }
+                    | UpdatesEffect::SetMeteredUpdates { .. }
+                    | UpdatesEffect::RollBack
+                    | UpdatesEffect::CheckForUpdates
+            )
+        {
+            if let Some(reply) = reply {
+                reply.finish(Err(t("upd-policy-busy")));
+            }
+            return;
+        }
         if let Some(reply) = reply {
             self.replies.wait(effect.id(), reply);
         }
@@ -2475,12 +2688,14 @@ impl UpdatesArea {
         let mut model = model.borrow_mut();
         model.poll_initial();
         let reason = match &model.initial {
+            InitialRead::Ready if model.control_pending.is_some() => t("upd-policy-busy"),
             InitialRead::Ready => return Vec::new(),
             InitialRead::Pending(_) => t("upd-reading"),
             InitialRead::Failed(error) => {
                 t_args("upd-read-error", &[("error", error.as_str().into())])
             }
         };
+        let pending_control = matches!(model.initial, InitialRead::Ready);
         [
             UpdatesEffect::CHECK_FOR_UPDATES.id,
             UpdatesEffect::RESTART_TO_UPDATE.id,
@@ -2496,10 +2711,25 @@ impl UpdatesArea {
             UpdatesEffect::SET_METERED_UPDATES.id,
         ]
         .into_iter()
+        .filter(|id| {
+            !pending_control
+                || [
+                    UpdatesEffect::CHECK_FOR_UPDATES.id,
+                    UpdatesEffect::ROLL_BACK.id,
+                    UpdatesEffect::SET_AUTOMATIC_UPDATES.id,
+                    UpdatesEffect::SET_UPDATE_SCHEDULE.id,
+                    UpdatesEffect::SET_METERED_UPDATES.id,
+                ]
+                .contains(id)
+        })
         .map(|id| {
             ui::framework::EffectStatus::unavailable(
                 ui::tilo_resource::ActionRef::<crate::effects::SettingsEffect, ()>::new(id, &[]),
-                "pending_updates_read",
+                if pending_control {
+                    "pending_update_policy"
+                } else {
+                    "pending_updates_read"
+                },
                 reason.clone(),
             )
         })
@@ -2545,6 +2775,7 @@ impl crate::panes::model::PaneModel for UpdatesModel {
         if !matches!(self.initial, InitialRead::Ready) {
             return std::mem::take(&mut self.changed);
         }
+        self.drain_control();
         self.drain_check_events();
         self.drain_firmware_refresh_events();
         self.drain_firmware_events();
@@ -2818,6 +3049,352 @@ mod tests {
             history: Arc::new(|| Ok(Vec::new())),
             codec: Arc::new(CodecPackStatus::default),
         }
+    }
+
+    #[derive(Clone, Copy)]
+    enum HeldPolicyKind {
+        Timer,
+        Schedule,
+        Metered,
+        Rollback,
+    }
+
+    struct HeldPolicyControl {
+        timer: Mutex<bool>,
+        schedule: Mutex<String>,
+        metered: Mutex<bool>,
+        target: Mutex<Option<String>>,
+        entered: mpsc::Sender<std::thread::ThreadId>,
+        gate: Mutex<Option<Receiver<()>>>,
+        unread_after_write: bool,
+        written: AtomicBool,
+    }
+
+    impl HeldPolicyControl {
+        fn wait(&self) {
+            self.entered.send(std::thread::current().id()).unwrap();
+            let gate = self.gate.lock().unwrap().take();
+            gate.unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+    }
+
+    impl UpdateControl for HeldPolicyControl {
+        fn timer_enabled(&self) -> Option<bool> {
+            if self.unread_after_write && self.written.load(Ordering::Acquire) {
+                return None;
+            }
+            Some(*self.timer.lock().unwrap())
+        }
+        fn set_timer(&self, on: bool) -> Result<(), String> {
+            self.wait();
+            self.written.store(true, Ordering::Release);
+            *self.timer.lock().unwrap() = on;
+            Ok(())
+        }
+        fn schedule(&self) -> Option<String> {
+            if self.unread_after_write && self.written.load(Ordering::Acquire) {
+                return None;
+            }
+            Some(self.schedule.lock().unwrap().clone())
+        }
+        fn set_schedule(&self, value: &str) -> Result<(), String> {
+            self.wait();
+            self.written.store(true, Ordering::Release);
+            *self.schedule.lock().unwrap() = value.into();
+            Ok(())
+        }
+        fn allow_metered(&self) -> Option<bool> {
+            if self.unread_after_write && self.written.load(Ordering::Acquire) {
+                return None;
+            }
+            Some(*self.metered.lock().unwrap())
+        }
+        fn set_allow_metered(&self, value: bool) -> Result<(), String> {
+            self.wait();
+            self.written.store(true, Ordering::Release);
+            *self.metered.lock().unwrap() = value;
+            Ok(())
+        }
+        fn rollback_target(&self) -> Result<Option<String>, String> {
+            Ok(self.target.lock().unwrap().clone())
+        }
+        fn roll_back(&self) -> Result<(), String> {
+            self.wait();
+            *self.target.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    fn install_policy_model(app: &mut TestApp<SettingsShell>, control: Arc<HeldPolicyControl>) {
+        app.surface::<SettingsApp, _>(|app| {
+            let model = pane_with_control(control);
+            app.updates_mut()
+                .model
+                .set(std::rc::Rc::new(std::cell::RefCell::new(model)))
+                .unwrap_or_else(|_| panic!("fresh Updates model required"));
+        })
+        .unwrap();
+    }
+
+    fn assert_held_published_policy(kind: HeldPolicyKind) {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let (entered, entry) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let control = Arc::new(HeldPolicyControl {
+            timer: Mutex::new(true),
+            schedule: Mutex::new("System schedule".into()),
+            metered: Mutex::new(false),
+            target: Mutex::new(Some("actual previous deployment".into())),
+            entered,
+            gate: Mutex::new(Some(gate)),
+            unread_after_write: false,
+            written: AtomicBool::new(false),
+        });
+        install_policy_model(&mut app, control);
+        app.effect(&SettingsEffect::from(NavigationEffect::OpenPane {
+            pane: "updates".into(),
+        }))
+        .unwrap();
+        let effect = SettingsEffect::from(match kind {
+            HeldPolicyKind::Timer => UpdatesEffect::SetAutomaticUpdates { on: false },
+            HeldPolicyKind::Schedule => UpdatesEffect::SetUpdateSchedule {
+                schedule: "Daily".into(),
+            },
+            HeldPolicyKind::Metered => UpdatesEffect::SetMeteredUpdates { allowed: true },
+            HeldPolicyKind::Rollback => UpdatesEffect::RollBack,
+        });
+        if matches!(kind, HeldPolicyKind::Rollback) {
+            assert!(
+                app.effect(&effect).is_err(),
+                "rollback still requires the existing destructive confirmation"
+            );
+            assert!(
+                entry.try_recv().is_err(),
+                "unconfirmed rollback cannot reach the backend"
+            );
+        }
+        let reader_task = std::thread::spawn(move || {
+            let reader = entry.recv_timeout(Duration::from_secs(3)).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            release.send(()).unwrap();
+            reader
+        });
+        let instance = app.harness().component_instance_id().unwrap();
+        let address = ui::bound_dispatch::BoundActionAddress {
+            instance_id: instance,
+            address: tilo_actions::ActionAddress::new(
+                <crate::resource::Settings as tilo_resource::Resource>::KIND,
+                effect.id(),
+            ),
+        };
+        let started = std::time::Instant::now();
+        let (invocation, receipt) = app
+            .harness()
+            .start_bound_job_for(None, &address, &effect.arguments(), true)
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(
+            app.surface::<SettingsApp, _>(|app| app.updates().statuses().len())
+                .unwrap(),
+            5
+        );
+        assert!(
+            app.effect_confirmed(&effect).is_err(),
+            "a second mutation must not steal the pending original receipt"
+        );
+        let reader = reader_task.join().unwrap();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "actual published Updates policy job blocked its mounted UI: {elapsed:?}, reader={reader:?}"
+        );
+        assert_ne!(reader, std::thread::current().id());
+        assert!(
+            receipt.completed().is_none(),
+            "held system action cannot already have acknowledged"
+        );
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| h
+                    .job_updates(invocation)
+                    .iter()
+                    .any(tilo_actions::InvocationUpdate::is_terminal))
+        );
+        assert!(
+            matches!(app.harness().job_updates(invocation).last(),Some(tilo_actions::InvocationUpdate::Succeeded{invocation:id,..}) if *id==invocation)
+        );
+        app.surface::<SettingsApp, _>(|app| {
+            let model = app.updates().model().borrow();
+            match kind {
+                HeldPolicyKind::Timer => assert_eq!(model.timer_enabled(), Some(false)),
+                HeldPolicyKind::Schedule => assert_eq!(model.schedule.as_deref(), Some("Daily")),
+                HeldPolicyKind::Metered => assert_eq!(model.allow_metered, Some(true)),
+                HeldPolicyKind::Rollback => assert_eq!(model.rollback_target(), None),
+            }
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn published_timer_job_does_not_wait_on_the_ui_thread() {
+        assert_held_published_policy(HeldPolicyKind::Timer);
+    }
+    #[test]
+    fn published_schedule_job_does_not_wait_on_the_ui_thread() {
+        assert_held_published_policy(HeldPolicyKind::Schedule);
+    }
+    #[test]
+    fn published_metered_job_does_not_wait_on_the_ui_thread() {
+        assert_held_published_policy(HeldPolicyKind::Metered);
+    }
+    #[test]
+    fn published_rollback_job_does_not_wait_on_the_ui_thread() {
+        assert_held_published_policy(HeldPolicyKind::Rollback);
+    }
+
+    fn assert_unobserved_policy(kind: HeldPolicyKind) {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let (entered, entry) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let control = Arc::new(HeldPolicyControl {
+            timer: Mutex::new(true),
+            schedule: Mutex::new("System schedule".into()),
+            metered: Mutex::new(false),
+            target: Mutex::new(None),
+            entered,
+            gate: Mutex::new(Some(gate)),
+            unread_after_write: true,
+            written: AtomicBool::new(false),
+        });
+        app.surface::<SettingsApp, _>(|app| {
+            app.updates_mut()
+                .model
+                .set(std::rc::Rc::new(std::cell::RefCell::new(
+                    pane_with_control(control.clone()),
+                )))
+                .unwrap_or_else(|_| panic!("fresh Updates model required"));
+        })
+        .unwrap();
+        let effect = match kind {
+            HeldPolicyKind::Timer => UpdatesEffect::SetAutomaticUpdates { on: false },
+            HeldPolicyKind::Schedule => UpdatesEffect::SetUpdateSchedule {
+                schedule: "Daily".into(),
+            },
+            HeldPolicyKind::Metered => UpdatesEffect::SetMeteredUpdates { allowed: true },
+            HeldPolicyKind::Rollback => {
+                panic!("rollback acknowledges its actual command separately")
+            }
+        };
+        let invocation = app.start_effect(&SettingsEffect::from(effect)).unwrap();
+        assert_ne!(
+            entry.recv_timeout(Duration::from_secs(3)).unwrap(),
+            std::thread::current().id()
+        );
+        release.send(()).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| h
+                    .job_updates(invocation)
+                    .iter()
+                    .any(tilo_actions::InvocationUpdate::is_terminal))
+        );
+        assert!(
+            matches!(app.harness().job_updates(invocation).last(),Some(tilo_actions::InvocationUpdate::Failed{invocation:id,..}) if *id==invocation)
+        );
+        app.surface::<SettingsApp, _>(|app| {
+            let model = app.updates().model().borrow();
+            match kind {
+                HeldPolicyKind::Timer => {
+                    assert_eq!(model.timer_enabled(), None);
+                    assert!(
+                        model.prefs.auto,
+                        "an unread policy cannot overwrite stored state with the request"
+                    );
+                }
+                HeldPolicyKind::Schedule => assert_eq!(model.schedule, None),
+                HeldPolicyKind::Metered => assert_eq!(model.allow_metered, None),
+                HeldPolicyKind::Rollback => unreachable!(),
+            }
+            assert!(model.notice().unwrap().contains("not confirmed"));
+        })
+        .unwrap();
+        match kind {
+            HeldPolicyKind::Timer => assert!(!*control.timer.lock().unwrap()),
+            HeldPolicyKind::Schedule => {
+                assert_eq!(control.schedule.lock().unwrap().as_str(), "Daily");
+            }
+            HeldPolicyKind::Metered => assert!(*control.metered.lock().unwrap()),
+            HeldPolicyKind::Rollback => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn timer_ack_without_observed_policy_fails_the_actual_job() {
+        assert_unobserved_policy(HeldPolicyKind::Timer);
+    }
+    #[test]
+    fn schedule_ack_without_observed_policy_fails_the_actual_job() {
+        assert_unobserved_policy(HeldPolicyKind::Schedule);
+    }
+    #[test]
+    fn metered_ack_without_observed_policy_fails_the_actual_job() {
+        assert_unobserved_policy(HeldPolicyKind::Metered);
+    }
+
+    #[test]
+    fn policy_completion_wakes_the_actual_mounted_owner_without_animation_polling() {
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        let _scope = scope.enter();
+        let (entered, entry) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let control = Arc::new(HeldPolicyControl {
+            timer: Mutex::new(true),
+            schedule: Mutex::new("System schedule".into()),
+            metered: Mutex::new(false),
+            target: Mutex::new(None),
+            entered,
+            gate: Mutex::new(Some(gate)),
+            unread_after_write: false,
+            written: AtomicBool::new(false),
+        });
+        let model = std::rc::Rc::new(std::cell::RefCell::new(pane_with_control(control)));
+        model
+            .borrow_mut()
+            .run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
+        let pane = crate::panes::model::ModelPane::new(model.clone());
+        assert!(!pane.needs_animation_frame());
+        assert!(pane.next_wake_deadline().is_none());
+        assert_ne!(
+            entry.recv_timeout(Duration::from_secs(3)).unwrap(),
+            std::thread::current().id()
+        );
+        assert_eq!(
+            model.borrow().timer_enabled(),
+            Some(true),
+            "the held backend has not acknowledged a new state"
+        );
+        release.send(()).unwrap();
+        wakes.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut harness = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            pane,
+            (1200, 1000),
+            ui::theme::Theme::dark(),
+        );
+        assert!(harness.wait_until(ui::time::Duration::from_secs(3), |_| {
+            model.borrow().control_pending.is_none()
+        }));
+        assert_eq!(model.borrow().timer_enabled(), Some(false));
+        assert!(
+            !harness
+                .root::<crate::panes::model::ModelPane<UpdatesModel>>()
+                .needs_animation_frame()
+        );
     }
 
     fn test_cx() -> PaneCx {
@@ -3333,6 +3910,7 @@ mod tests {
 
             // Second click: it acts.
             pane.run(UpdatesEffect::RollBack, None);
+            settle(&mut pane, |pane| pane.control_pending.is_some());
             pane.poll();
             assert_eq!(*control.rollbacks.lock().unwrap(), 1);
             let notice = pane.notice().expect("the result has to be shown");
@@ -3351,6 +3929,7 @@ mod tests {
             let mut pane = pane_with_control(control);
             pane.poll();
             pane.run(UpdatesEffect::RollBack, None);
+            settle(&mut pane, |pane| pane.control_pending.is_some());
             pane.poll();
             let notice = pane.notice().expect("a failed rollback must be visible");
             assert!(
@@ -3564,7 +4143,7 @@ mod tests {
         }
     }
 
-    fn pane_with_control(control: Arc<FakeControl>) -> UpdatesModel {
+    fn pane_with_control<C: UpdateControl + 'static>(control: Arc<C>) -> UpdatesModel {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: None,
@@ -3629,6 +4208,7 @@ mod tests {
             pane.poll();
 
             pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
+            settle(&mut pane, |pane| pane.control_pending.is_some());
             pane.poll();
 
             assert_eq!(
@@ -3659,6 +4239,7 @@ mod tests {
             pane.poll();
 
             pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
+            settle(&mut pane, |pane| pane.control_pending.is_some());
             pane.poll();
 
             assert_eq!(

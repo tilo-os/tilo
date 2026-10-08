@@ -2044,3 +2044,7 @@ settings-disk-unlock-gone = Diese Festplatte entsperrt nicht mehr mit deinen and
 settings-disk-unlock-bad-request = Diese Anfrage nennt keine nutzbare Festplatte und kein nutzbares Netzwerk.
 settings-disk-unlock-too-many = Die Antwort nennt mehr Festplatten, als dieser Computer haben kann.
 settings-disk-unlock-malformed = Die Antwort zum Entsperren der Festplatte war nicht lesbar: { $error }
+
+upd-policy-busy = Eine andere Aktualisierungsänderung wird noch ausgeführt.
+upd-policy-unobserved = Das System hat die angeforderte Aktualisierungsrichtlinie nicht bestätigt.
+upd-policy-disconnected = Der Dienst für Aktualisierungsrichtlinien antwortet nicht mehr.

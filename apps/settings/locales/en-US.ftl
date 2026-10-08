@@ -2044,3 +2044,7 @@ settings-disk-unlock-gone = That disk no longer unlocks with your other devices.
 settings-disk-unlock-bad-request = That request names no usable disk or network.
 settings-disk-unlock-too-many = The disk unlock answer lists more disks than this computer can have.
 settings-disk-unlock-malformed = The disk unlock answer could not be read: { $error }
+
+upd-policy-busy = Another update policy operation is still running.
+upd-policy-unobserved = The system has not confirmed the requested update policy.
+upd-policy-disconnected = The update policy worker stopped answering.
