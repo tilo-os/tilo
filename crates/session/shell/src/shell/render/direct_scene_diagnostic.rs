@@ -162,7 +162,8 @@ fn owned_qs_overview_and_solid_direct_target_diagnostic() {
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
     let mut experiment = DirectExperiment::new();
-    let solid = rect_scene(DIAGNOSTIC_WIDTH, DIAGNOSTIC_HEIGHT, Color::WHITE);
+    let theme = ui::theme::Theme::dark().with_reduce_motion(true);
+    let solid = rect_scene(DIAGNOSTIC_WIDTH, DIAGNOSTIC_HEIGHT, theme.text_primary);
     // Warm shader/bump allocations without including their startup work in repeated samples.
     let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
     experiment
@@ -179,10 +180,7 @@ fn owned_qs_overview_and_solid_direct_target_diagnostic() {
     for revision in 2..=4 {
         experiment.sample("solid", &solid, version(revision, None, None), None);
     }
-    let mut frame = PopulatedShellFixture::new(
-        (DIAGNOSTIC_WIDTH, DIAGNOSTIC_HEIGHT),
-        ui::theme::Theme::dark().with_reduce_motion(true),
-    );
+    let mut frame = PopulatedShellFixture::new((DIAGNOSTIC_WIDTH, DIAGNOSTIC_HEIGHT), theme);
     frame.relayout();
     let _ = frame.paint();
     let mut document = AutoCommit::new();
