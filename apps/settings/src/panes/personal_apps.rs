@@ -261,6 +261,7 @@ pub struct PersonalAppsPane {
     /// The app each kind's chooser shows, by kind.
     shown: HashMap<ResourceKind, LocalState<String>>,
     composed: Option<Box<dyn Widget>>,
+    composition_revision: u64,
     rect: Rect,
 }
 
@@ -279,6 +280,7 @@ impl PersonalAppsPane {
             prefs,
             shown,
             composed: None,
+            composition_revision: 0,
             rect: Rect::ZERO,
         };
         pane.show();
@@ -441,6 +443,8 @@ impl Widget for PersonalAppsPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.prefs.refresh() {
             self.show();
+            // Chooser placeholders are copied from the current defaults.
+            self.composed = None;
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -453,7 +457,15 @@ impl Widget for PersonalAppsPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
+        let revision = ui::i18n::I18nManager::revision();
+        let mut composed = match self.composed.take() {
+            Some(composed) if self.composition_revision == revision => composed,
+            _ => self.build_composition(),
+        };
+        // Resolving this pane's catalogue can itself update the revision.
+        self.composition_revision = ui::i18n::I18nManager::revision();
+        // Shared controls sample the live theme on every layout and draw.
+        // Keep their hover/press state across ordinary host relayouts.
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
         let node = taffy
@@ -668,6 +680,84 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn mounted_workspace_apps_button_survives_relayout_between_press_and_release() {
+        if !tool_child(
+            "panes::personal_apps::tests::mounted_workspace_apps_button_survives_relayout_between_press_and_release",
+            true,
+        ) {
+            return;
+        }
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::DefaultApps);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        let effect = SettingsEffect::from(DefaultAppsEffect::OpenWorkspaceAppsFiles);
+        let address = ui::tilo_actions::ActionAddress::new(
+            <Settings as tilo_resource::Resource>::KIND,
+            effect.id(),
+        );
+        assert!(app.harness().control_failures().is_empty());
+        assert!(
+            app.harness()
+                .active_bound_jobs()
+                .iter()
+                .all(|(_, target)| target.address != address)
+        );
+        let started = std::time::Instant::now();
+        let target = app.harness().targets()["open-workspace-app-defaults"];
+        let center = target.center();
+        app.harness().send(&WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+        });
+        app.harness().send(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        });
+        // A host layout between normal pointer events must not replace the
+        // shared button and discard the gesture it is already handling.
+        app.harness().request_layout();
+        app.harness().relayout();
+        app.harness().send(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: winit::event::ElementState::Released,
+            button: winit::event::MouseButton::Left,
+        });
+        app.settle();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "mounted Apps & Files blocked on the actual tool ACK: {elapsed:?}"
+        );
+        let jobs: Vec<_> = app
+            .harness()
+            .active_bound_jobs()
+            .into_iter()
+            .filter(|(_, target)| target.address == address)
+            .collect();
+        assert_eq!(jobs.len(), 1, "the real click starts exactly one tool job");
+        let invocation = jobs.first().unwrap().0;
+        // Retain the original caller until this pointer-originated job observes
+        // its actual service reply, rather than closing after a guessed delay.
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| {
+                    h.active_bound_jobs()
+                        .iter()
+                        .all(|(active, _)| *active != invocation)
+                }),
+            "the clicked tool job must observe its actual ACK within the contract"
+        );
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "the clicked tool job must complete without a bound-control failure"
+        );
+    }
+
+    #[cfg(unix)]
     fn published_workspace_tool(accepted: bool, test: &str) {
         use ui::tilo_actions::InvocationUpdate;
         if !tool_child(test, accepted) {
@@ -808,6 +898,57 @@ mod tests {
         );
     }
 
+    fn layout_pane(pane: &mut PersonalAppsPane, theme: &Theme) {
+        pane.build_layout(&mut TaffyTree::new(), theme, &mut HashMap::new());
+    }
+
+    fn presented_choice(widget: &dyn Widget) -> Option<String> {
+        if let Some(picker) = widget
+            .as_any()
+            .and_then(|value| value.downcast_ref::<Dropdown>())
+        {
+            return Some(picker.selected().to_owned());
+        }
+        widget.children().into_iter().find_map(presented_choice)
+    }
+
+    fn presented_names(widget: &dyn Widget, names: &mut Vec<String>) {
+        if let Some(node) = widget.accessibility()
+            && let Some(name) = node.name
+        {
+            names.push(name);
+        }
+        for child in widget.children() {
+            presented_names(child, names);
+        }
+    }
+
+    #[test]
+    fn personal_apps_retained_copy_follows_translation_changes() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = DefaultAppsArea {
+            prefs: RefCell::new(cx.follow::<DefaultApps>()),
+            candidates: OnceCell::from(vec![candidate("so.tilo.a", "pdf")]),
+            sample: true,
+        };
+        let mut pane = PersonalAppsPane::new(cx, &area);
+        layout_pane(&mut pane, &Theme::dark());
+        let label = t("settings-personal-apps-open-workspace");
+        let mut names = Vec::new();
+        presented_names(&pane, &mut names);
+        assert!(names.contains(&label));
+        ui::i18n::I18nManager::set_locale("de-DE");
+        layout_pane(&mut pane, &Theme::light().with_ui_scale(1.5));
+        let translated = t("settings-personal-apps-open-workspace");
+        let mut translated_names = Vec::new();
+        presented_names(&pane, &mut translated_names);
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_ne!(translated, label);
+        assert!(translated_names.contains(&translated));
+        assert!(!translated_names.contains(&label));
+    }
+
     /// The pane shows the resolver's pick until the person chooses, then
     /// follows the choice whoever made it.
     #[test]
@@ -825,6 +966,12 @@ mod tests {
         let pdf = ResourceKind::extension("pdf").unwrap();
         let mut pane = PersonalAppsPane::new(cx.clone(), &area);
         assert_eq!(pane.shown[&pdf].get(), "so.tilo.a — so.tilo.a");
+        layout_pane(&mut pane, &Theme::dark());
+        pane.sync(&ui::automerge::AutoCommit::new(), &ui::automerge::ROOT);
+        assert_eq!(
+            presented_choice(&pane).as_deref(),
+            Some("so.tilo.a — so.tilo.a")
+        );
         cx.settings::<DefaultApps>()
             .update(|apps| {
                 apps.handlers.insert(pdf.clone(), "so.tilo.b".into());
@@ -833,5 +980,11 @@ mod tests {
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);
         assert_eq!(pane.shown[&pdf].get(), "so.tilo.b — so.tilo.b");
+        layout_pane(&mut pane, &Theme::light());
+        pane.sync(&doc, &ui::automerge::ROOT);
+        assert_eq!(
+            presented_choice(&pane).as_deref(),
+            Some("so.tilo.b — so.tilo.b")
+        );
     }
 }
