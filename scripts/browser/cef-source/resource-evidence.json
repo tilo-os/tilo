@@ -176,7 +176,47 @@
     "native_smoke_scenarios": 1,
     "native_original_outer_harness_exit": 1,
     "native_evidence_parser_corrected_without_rerun": true,
-    "independent_B": "ACTIVE remote8CPU/100GiB caps; no A objects or LTO cache reused",
+    "independent_B": "PASS actual cold B and exact fullarchive/960-entry inventory byte equality",
     "published": false
+  },
+  "corrected_SDK_B": {
+    "source_patch_sha256": "40a39125d44e97d1e0373573fbe77a28ec1254d58f6bb7e2c14eb200614726fc",
+    "compile_final_receipt_sha256": "7f456d6f8f966306b0f202e3cc895010790dace11a23f73b4661c55a15b22c48",
+    "link_token": "f5a81e011b7f4c11bd32fd4fe056232b",
+    "link_seconds": 396.0764367619995,
+    "link_cgroup_peak_bytes": 16709951488,
+    "link_cap_bytes": 137438953472,
+    "resource_token": "20e85dfe2c3b467c8e2a1fe61355cc06",
+    "resource_seconds": 50.07737325599737,
+    "resource_cgroup_peak_bytes": 2221326336,
+    "packaging_token": "e0e7ceab26224fd2a82ee3879cb523a8",
+    "packaging_seconds": 40.54976459399768,
+    "packaging_cgroup_peak_bytes": 961818624,
+    "packaging_receipt_sha256": "7e854ff2d8155273690382ff6563c9a28991c1a87bf2f8ffa7dc55a8ed6d6428",
+    "public_packaging_CLI_actually_executed": true,
+    "archive_sha256": "cece35681a153ef16446214a8be35a766a2f9f64a5b9149c63c900857a70c57f",
+    "memory_pressure_OOM_events": 0,
+    "cleanup_verified": true,
+    "published": false
+  },
+  "corrected_mounted_reader": {
+    "mounted_token": "b3041e2acb9c4b7c8b794a14228ac753",
+    "mounted_scenarios": 48,
+    "mounted_cgroup_peak_bytes": 873357312,
+    "reader_token": "c97f13a1950a4438b6397f0db9c0e0eb",
+    "reader_seconds": 12.93398642539978,
+    "reader_cgroup_peak_bytes": 838516736,
+    "CPU_quota": 2,
+    "memory_cap_bytes": 8589934592,
+    "memory_pressure_OOM_events": 0,
+    "cleanup_verified": true
+  },
+  "package_B_CPU_admission_refusal": {
+    "shared_busy_cpus": 63.53,
+    "producer_started": false,
+    "recovery_sample_seconds": 5,
+    "recovery_busy_cpus": 37.19902518277823,
+    "original_8CPU_reserve_retained": true,
+    "limits_weakened": false
   }
 }
