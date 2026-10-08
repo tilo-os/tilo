@@ -2633,6 +2633,38 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertTrue(PROOF.stale_editor_transport(PROOF.atspi.GateError(
             "org.freedesktop.DBus.Error.UnknownObject")))
 
+    def test_recycled_text_heading_is_not_read_and_valid_editor_mismatch_is_not_retried(self):
+        cached = {"bus": "chat-bus", "process": 123, "agent": "Tide", "detached": True,
+                  "composer": "recycled-heading"}
+        fresh = {**cached, "composer": "message-editor"}
+        payload_paths = []
+        class Client:
+            def __init__(self, *_args):
+                pass
+            def property(self, path, _name):
+                return "(<'Unrelated heading'>,)" if path == "recycled-heading" \
+                    else "(<'Message composer'>,)"
+            def interfaces(self, _path):
+                return ["org.a11y.atspi.Text", "org.a11y.atspi.EditableText"]
+            def call(self, path, _method, *_args):
+                payload_paths.append(path)
+                if path == "recycled-heading":
+                    raise AssertionError("unrelated private payload must never be consumed")
+                return "('nihao',)"
+        with patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
+                patch.object(PROOF.atspi, "AtspiClient", Client), \
+                patch.object(PROOF, "process_program", return_value="chat"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=fresh.copy()) as resolve:
+            access = cached.copy()
+            self.assertTrue(PROOF.private_editor_value_matches(access, "nihao"))
+            self.assertEqual(payload_paths, ["message-editor"])
+            self.assertEqual(access, fresh)
+            resolve.assert_called_once_with("Tide", detached=True, stale_only=True)
+            resolve.reset_mock()
+            self.assertFalse(PROOF.private_editor_value_matches(access, "PRIVATE-CANARY"))
+            resolve.assert_not_called()
+            self.assertEqual(payload_paths, ["message-editor", "message-editor"])
+
     def test_keyboard_return_wait_requires_exact_ordinary_child_seat_before_enter(self):
         child = {"app_id": "so.tilo.chat", "surface_id": 11, "floating_id": "private",
                  "frame_seq": 22, "presented": True, "pixels_ready": True,

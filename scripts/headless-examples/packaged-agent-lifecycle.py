@@ -769,18 +769,32 @@ def stale_editor_transport(error):
         and "org.a11y.atspi.Text" in text)
 
 
+def chat_editor_contract(access):
+    client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
+    name = atspi.property_text(client.property(access["composer"], "Name"))
+    interfaces = client.interfaces(access["composer"])
+    return name == "Message composer" and all(interface in interfaces for interface in (
+        "org.a11y.atspi.Text", "org.a11y.atspi.EditableText"))
+
+
 def owned_editor_read(access, read, deadline=None):
-    """Retry only retired Text objects, revalidating the exact Chat route/owner."""
+    """Refresh retired transport or semantic targets, never a readable draft mismatch."""
     deadline = time.monotonic() + 30 if deadline is None else deadline
     while True:
         try:
-            return read()
+            # Other callers use the shell's separately observed quick composer.
+            # Only conversation descriptors carry this exact owned Chat route.
+            chat_route = all(key in access for key in ("process", "agent", "detached"))
+            if not chat_route or chat_editor_contract(access):
+                return read()
+            # A reused path naming another Text node is a retired semantic
+            # target. Do not consume that unrelated node's private payload.
         except atspi.GateError as error:
             if not stale_editor_transport(error):
                 raise
-            if type(access.get("process")) is not int or not access.get("agent") \
-                    or type(access.get("detached")) is not bool:
-                raise RuntimeError("stale private editor has no exact owned Chat route") from None
+        if type(access.get("process")) is not int or not access.get("agent") \
+                or type(access.get("detached")) is not bool:
+            raise RuntimeError("stale private editor has no exact owned Chat route") from None
         while time.monotonic() < deadline:
             if process_program(access["process"]) != "chat":
                 raise RuntimeError("stale private editor lost its original Chat process")
@@ -789,12 +803,8 @@ def owned_editor_read(access, read, deadline=None):
             if fresh is not None:
                 if any(fresh.get(key) != access[key] for key in ("process", "agent", "detached")):
                     raise RuntimeError("refreshed private editor belongs to a foreign Chat route")
-                client = atspi.AtspiClient(fresh.get("address") or atspi.atspi_address(), fresh["bus"])
                 try:
-                    name = atspi.property_text(client.property(fresh["composer"], "Name"))
-                    interfaces = client.interfaces(fresh["composer"])
-                    if name != "Message composer" or not all(interface in interfaces for interface in (
-                            "org.a11y.atspi.Text", "org.a11y.atspi.EditableText")):
+                    if not chat_editor_contract(fresh):
                         raise RuntimeError("refreshed private editor lacks its original semantic contract")
                 except atspi.GateError as error:
                     if not stale_editor_transport(error):
