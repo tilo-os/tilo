@@ -215,7 +215,7 @@ fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
     const ID: &'static str = "so.tilo.imager";
-    const TITLE: &'static str = "Disk Imager";
+    const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
     const FLAGS: &'static [&'static str] = &["--setup", "--import-folders"];
     // Only hosts with a local workspace runtime can attach the imager.
