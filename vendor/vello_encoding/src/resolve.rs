@@ -3,6 +3,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use peniko::{Extend, ImageData};
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -510,6 +511,13 @@ impl Resolver {
     }
 
     fn resolve_pending_images(&mut self) {
+        // Every appended section and expanded glyph is collected before image allocation.
+        // Protect later sections too, not just residents already visited in this pass.
+        let needed: HashSet<_> = self
+            .pending_images
+            .iter()
+            .map(|image| image.image.data.id())
+            .collect();
         'outer: loop {
             self.image_cache.restart_resolve_pass();
             // Loop over the images, attempting to allocate them all into the atlas.
@@ -528,8 +536,16 @@ impl Resolver {
                         // We were able to increase the atlas size. Restart the outer loop.
                         continue 'outer;
                     } else {
-                        // If the atlas is already maximum size, there's nothing we can do. Set
-                        // the xy field to None so this image isn't rendered and then carry on--
+                        // Renderer recordings submit before the next resolve. Replacement uploads
+                        // follow those submissions on the same queue, so previous unused residency
+                        // can be reclaimed while all current recording references stay protected.
+                        if self.image_cache.can_fit_image(&pending_image.image)
+                            && self.image_cache.evict_unneeded_entries(&needed)
+                        {
+                            continue 'outer;
+                        }
+                        // Current images that still cannot fit retain the bounded omission policy.
+                        // Set the xy field to None and carry on--
                         // other images might still fit. Record the omission so the renderer can
                         // report why the image is missing.
                         self.image_cache.record_omission();
@@ -652,4 +668,106 @@ fn size_to_words(byte_size: usize) -> u32 {
 
 fn align_up(len: usize, alignment: u32) -> usize {
     len + (len.wrapping_neg() & (alignment as usize - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Transform;
+    use peniko::kurbo::Rect;
+    use peniko::{Blob, Fill, ImageAlphaType, ImageBrush, ImageFormat};
+
+    fn image(width: u32, height: u32) -> ImageData {
+        ImageData {
+            data: Blob::new(Arc::new(vec![255; width as usize * height as usize * 4])),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width,
+            height,
+        }
+    }
+
+    fn encoding(images: &[ImageData]) -> Encoding {
+        let mut encoding = Encoding::new();
+        encoding.encode_transform(Transform::IDENTITY);
+        encoding.encode_fill_style(Fill::NonZero);
+        for image in images {
+            assert!(encoding.encode_shape(
+                &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
+                true
+            ));
+            encoding.encode_brush(&ImageBrush::new(image.clone()), 1.0);
+        }
+        encoding
+    }
+
+    #[test]
+    fn atlas_pressure_reclaims_superseded_image_and_keeps_later_section_resident() {
+        let small = image(64, 64);
+        let old = image(1024, 600);
+        let new = image(1024, 600);
+        let first = encoding(&[small.clone(), old]);
+        let mut changed = encoding(std::slice::from_ref(&new));
+        changed.append(&encoding(std::slice::from_ref(&small)), &None);
+        let mut resolver = Resolver::new();
+        resolver.set_image_atlas_max(1024);
+        let mut packed = Vec::new();
+        let (_, _, images) = resolver.resolve(&first, &mut packed);
+        assert_eq!(images.omitted, 0);
+        assert_eq!(images.images.len(), 2);
+        let (_, _, images) = resolver.resolve(&changed, &mut packed);
+        assert_eq!((images.width, images.height), (1024, 1024));
+        assert_eq!(
+            images.omitted, 0,
+            "superseded residency must not hide the current frame"
+        );
+        assert_eq!(images.evicted, 1);
+        assert_eq!(
+            images.images.len(),
+            1,
+            "later section stays resident instead of being reuploaded"
+        );
+        assert_eq!(images.images[0].0.data.id(), new.data.id());
+        let (_, _, images) = resolver.resolve(&first, &mut packed);
+        assert_eq!(
+            images.omitted, 0,
+            "an older owned scene remains renderable after eviction"
+        );
+        assert_eq!(images.evicted, 1);
+    }
+
+    #[test]
+    fn atlas_pressure_does_not_evict_images_needed_by_later_sections() {
+        let old = image(1024, 600);
+        let new = image(1024, 600);
+        let mut resolver = Resolver::new();
+        resolver.set_image_atlas_max(1024);
+        let mut packed = Vec::new();
+        let (_, _, images) = resolver.resolve(&encoding(std::slice::from_ref(&old)), &mut packed);
+        assert_eq!(images.omitted, 0);
+        let mut combined = encoding(&[new]);
+        combined.append(&encoding(&[old]), &None);
+        let (_, _, images) = resolver.resolve(&combined, &mut packed);
+        assert_eq!((images.width, images.height), (1024, 1024));
+        assert_eq!(
+            images.omitted, 1,
+            "two current images genuinely exceed the cap"
+        );
+        assert_eq!(
+            images.evicted, 0,
+            "a later segment is a current recording reference"
+        );
+    }
+
+    #[test]
+    fn atlas_pressure_preserves_true_oversized_image_omission() {
+        let mut resolver = Resolver::new();
+        resolver.set_image_atlas_max(1024);
+        let mut packed = Vec::new();
+        let (_, _, images) = resolver.resolve(&encoding(&[image(1025, 1)]), &mut packed);
+        assert_eq!((images.width, images.height), (1024, 1024));
+        assert_eq!(images.omitted, 1);
+        assert_eq!(images.evicted, 0);
+        assert!(images.images.is_empty());
+    }
 }
