@@ -265,8 +265,7 @@ mod tests {
 
     #[test]
     fn opening_a_video_answers_once_its_first_picture_decodes() {
-        let sample =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac.mp4");
+        let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
         app.effect(&VideoEffect::Open {
             path: Some(sample.display().to_string()),
@@ -318,8 +317,7 @@ mod tests {
 
     #[test]
     fn everyone_with_the_video_open_watches_it_together() {
-        let sample =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac.mp4");
+        let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
         app.effect(&VideoEffect::Open {
             path: Some(sample.display().to_string()),

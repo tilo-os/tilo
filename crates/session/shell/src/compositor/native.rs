@@ -1264,6 +1264,16 @@ fn pump_floating_surface_service(
                     }
                     changed = true;
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::MoveDeviceDisplay {
+                    request,
+                    placement,
+                } => {
+                    let result = frame_builder
+                        .host_mut()
+                        .request_device_display_move(&app_id, placement);
+                    service.send(connection, &ui::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult { request, result });
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
                     if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
                         if let Some(writer) = service.reply_writer(connection) {
@@ -5032,7 +5042,8 @@ fn pump_test_control_conn(
             }
             Ok(Some(())) => {
                 let mut scope: Option<AgentScope> = None;
-                let (resp, actions) = match parse_request(&line) {
+                let mut diagnostic_query = None;
+                let (mut resp, actions) = match parse_request(&line) {
                     Ok(request)
                         if conn.admin
                             && (request.agent.is_some()
@@ -5092,6 +5103,26 @@ fn pump_test_control_conn(
                             }
                             continue;
                         }
+                        if conn.admin && agent.is_none() && !session.is_locked() {
+                            if let test_control::Command::ActionsEnumerate { query, .. } =
+                                &request.command
+                            {
+                                diagnostic_query = Some(query.clone());
+                            }
+                            if let Some(response) =
+                                super::diagnostic_actions::dispatch(&request.command)
+                            {
+                                let progress = queue_test_control_response(conn, &response);
+                                if matches!(
+                                    progress,
+                                    PendingConnectionProgress::Closed
+                                        | PendingConnectionProgress::OutputPending
+                                ) {
+                                    return injected_input;
+                                }
+                                continue;
+                            }
+                        }
                         match agent {
                             Some(_)
                                 if session.is_locked()
@@ -5145,6 +5176,9 @@ fn pump_test_control_conn(
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
+                if let Some(query) = diagnostic_query.as_deref() {
+                    super::diagnostic_actions::append_catalogue(&mut resp, query);
+                }
                 if let Some(scope) = &scope {
                     state.client_input.set_participant(Some(scope.peer));
                     ctx.snapshot_crop = Some(scope.viewport);
@@ -6317,6 +6351,12 @@ fn install_device_fabric_bridge(
                 return Ok(view.clone());
             }
             match action {
+                DeviceFabricUiAction::MoveDisplay(request) => {
+                    crate::shell::device_fabric_runtime::move_device_display(
+                        &fabric_net,
+                        &request,
+                    )?;
+                }
                 DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
                 DeviceFabricUiAction::WakeDevice { device } => {
                     crate::shell::device_wake::request_wake(&fabric_net, &device)?;
@@ -6634,10 +6674,7 @@ fn spawn_session_peer_sync(
     state: &mut State,
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<Arc<crate::shell::network::ShellNetwork>> {
-    match crate::shell::network::ShellNetwork::spawn(
-        tree_handle.clone(),
-        &crate::shell::network::peer_key_path(),
-    ) {
+    match crate::shell::network::ShellNetwork::spawn_for_session(tree_handle.clone()) {
         Ok(handle) => Some(install_session_peer_sync(
             frame_builder,
             state,
@@ -6661,11 +6698,8 @@ fn start_session_peer_sync(
 ) -> crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork> {
     match crate::session_runtime::runtime() {
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
-            crate::shell::network::ShellNetwork::spawn(
-                tree_handle,
-                &crate::shell::network::peer_key_path(),
-            )
-            .map_err(|error| error.to_string())
+            crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
+                .map_err(|error| error.to_string())
         }),
         Err(error) => crate::session_runtime::PendingStart::finished(Err(format!(
             "the session runtime is unavailable: {error}"
@@ -6836,6 +6870,9 @@ fn attach_collab_broker_bridges(
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
+    }
+    if let Some(review) = broker.task_review() {
+        frame_builder.host_mut().attach_task_review(review);
     }
     if let Some(realtime) = broker.realtime_fabric_bridge() {
         frame_builder
@@ -8326,6 +8363,8 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    state.output_management.set_wake(Arc::clone(&session_wake));
+    crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     notif_bridge.set_wake(Arc::clone(&session_wake));
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
@@ -8333,6 +8372,12 @@ pub fn run() {
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_messaging_record_wake(Arc::clone(&session_wake));
+        }
+    });
     let chooser_attended = Arc::new(AtomicBool::new(false));
     let mut published_room = PublishedRoom::new();
     let chooser_service = start_chooser_service(
@@ -9821,6 +9866,9 @@ pub fn run() {
         input_steps.step("focus-persist");
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
+        if state.output_management.poll_staging() {
+            settings_written.store(true, Ordering::Release);
+        }
         if settings_written.swap(false, Ordering::AcqRel) {
             settings_watch.check_now();
         }
@@ -9831,8 +9879,7 @@ pub fn run() {
             input_steps.step("settings-keyboard");
             backend.reload_input_settings();
             input_steps.step("settings-input-devices");
-            // The backend has now reconciled any staged display plan; tell
-            // the output-management clients that asked for it how it went.
+            // Preserve Keep/Revert tracking after an Apply receipt was drained.
             state.output_management.resolve_transactions(
                 settings_store::hardware::DisplayTransaction::load().as_ref(),
             );
@@ -9889,6 +9936,14 @@ pub fn run() {
             input_steps.step("settings-power");
             input_methods.reload(&mut state);
             input_steps.step("settings-input-methods");
+        }
+        // Drain backend receipts even when the storage completion followed
+        // its file-change edge. Only the matching reconciled transaction
+        // acknowledges the admitted request.
+        if state.output_management.has_pending_apply() {
+            state.output_management.resolve_transactions(
+                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            );
         }
         input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
@@ -10305,6 +10360,14 @@ pub fn run() {
                     .collect(),
             );
             st.pump_dbus_notifications();
+            for request in st.take_notification_launch_requests() {
+                if let Err(error) = crate::shell::notification::launch_scheduled_notification(
+                    request,
+                    &st.tree_handle(),
+                ) {
+                    tracing::warn!(%error, "scheduled notification activation failed");
+                }
+            }
         });
         if let Some(network) = peer_sync.as_ref()
             && continuity_feed_polled
@@ -10329,6 +10392,9 @@ pub fn run() {
             // the normal desktop way; it is not a process kill.
             let mut close_requests = Vec::new();
             frame_builder.with_chrome(|chrome| {
+                if let Some(apps) = chrome.hosted_inputs.in_process() {
+                    apps.borrow_mut().pump_messaging_records();
+                }
                 for request in app_closes.drain() {
                     let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
                     eprintln!(
@@ -11485,6 +11551,7 @@ pub fn run() {
             let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
+            frame_builder.set_workspace_clip_supported(backend.supports_workspace_clip());
             frame_builder.set_session_locked(session.is_locked());
             let (scene_width, scene_height) = frame_builder.scene_size();
             foreign::store().begin_presentation_frame(Rect::new(
@@ -14987,6 +15054,74 @@ mod tests {
             matches!(socket_response(&mut reader),test_control::Response::Err{code,..} if code=="not_permitted")
         );
         assert!(session.is_locked());
+    }
+
+    #[test]
+    fn session_diagnostics_require_the_unlocked_authenticated_owner_connection() {
+        use std::io::Write as _;
+        let mut fb = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock =
+            LockController::new(std::sync::Arc::new(lock_auth::UnavailableVerifier), "owner");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+        let display: Display<State> = Display::new().unwrap();
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).unwrap();
+        let request = serde_json::json!({"op":"actions_invoke", "provider":"session-diagnostics", "id":"configure@session-diagnostics", "args":{"presentation":true,"gpu_stages":false,"gpu_timestamps":false,"gpu_dispatch_timestamps":false}});
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(matches!(
+            socket_response(&mut reader),
+            test_control::Response::Err { .. }
+        ));
+        assert!(
+            crate::shell::launcher::LaunchSession::current()
+                .diagnostics
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+        conn.admin = true; // Set by authenticated production accept, tested in admin_control.
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true)
+        );
+        writer
+            .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"session-diagnostics\"}\n")
+            .unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["actions"].as_array().unwrap().iter().any(|row| row["id"] == "configure@session-diagnostics"))
+        );
+        let mut agent = request.clone();
+        agent["agent"] = serde_json::json!("peer");
+        writer.write_all(format!("{agent}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Err { code, .. } if code == "not_permitted")
+        );
+        let _ = session.request_lock(Instant::now());
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(matches!(
+            socket_response(&mut reader),
+            test_control::Response::Err { .. }
+        ));
     }
 
     /// A driver's request often lands after its connection was accepted and

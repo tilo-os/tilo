@@ -71,6 +71,7 @@ pub mod effects;
 pub mod host;
 pub mod i18n;
 pub(crate) mod input_sources;
+pub mod keyboard_preview;
 pub mod panes;
 pub mod prefs;
 pub mod region;

@@ -566,6 +566,7 @@ pub struct BlockEditor {
     #[cfg(test)]
     painted_blocks: usize,
     dirty: bool,
+    paint_damage: crate::widget::paint_damage::PaintDamage,
     /// Which blocks the person may have changed since the owning model last
     /// asked ([`Self::take_edit_scope`]).
     edit_scope: EditScope,
@@ -775,6 +776,7 @@ impl BlockEditor {
             #[cfg(test)]
             painted_blocks: 0,
             dirty: true,
+            paint_damage: crate::widget::paint_damage::PaintDamage::default(),
             structure_dirty: true,
             edit_pending: false,
             edit_scope: EditScope::Anywhere,
@@ -1880,6 +1882,7 @@ impl BlockEditor {
             return;
         }
         self.find_visible = true;
+        self.structure_dirty = true;
         self.replace_field.set_focus(false);
         self.find_field.set_focused(true);
         self.find_field.select_all();
@@ -1892,6 +1895,7 @@ impl BlockEditor {
 
     fn close_find(&mut self) {
         self.find_visible = false;
+        self.structure_dirty = true;
         self.replace_field.set_focus(false);
         self.replace_requested.set(false);
         self.replace_all_requested.set(false);
@@ -7604,6 +7608,9 @@ impl Widget for BlockEditor {
             .map_or(0.0, |block| block.line.text_inset(theme));
         let find_node = self.find_field.build_layout(taffy, theme, node_map);
         let mut find_style = taffy.style(find_node).cloned().unwrap_or_default();
+        if !self.find_visible {
+            find_style.display = taffy::Display::None;
+        }
         find_style.position = taffy::Position::Absolute;
         find_style.inset.top = length(8.0_f32 * theme.text_scale);
         find_style.inset.right = length(108.0_f32 * theme.text_scale);
@@ -7625,6 +7632,9 @@ impl Widget for BlockEditor {
                 (all, 88.0_f32, 8.0_f32, 120.0_f32),
             ] {
                 let mut style = taffy.style(node).cloned().unwrap_or_default();
+                if !self.find_visible {
+                    style.display = taffy::Display::None;
+                }
                 style.position = taffy::Position::Absolute;
                 style.inset.top = length(top * theme.text_scale);
                 style.inset.right = length(right * theme.text_scale);
@@ -7898,6 +7908,17 @@ impl Widget for BlockEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let incoming = std::mem::take(scene);
+        let track_paragraphs = !self.blocks.is_empty()
+            && !self.has_open_popup()
+            && self.block_drag.is_none()
+            && self.document_selection.is_none()
+            && self.retained_block_selection.is_none()
+            && self.blocks.iter().all(|block| {
+                matches!(block.kind, BlockKind::Paragraph) && block.line.selection_range().is_none()
+            });
+        let mut paragraph_parts = Vec::new();
+        let mut paragraph_scene = Scene::new();
         let unit;
         let theme = if self.content_sized {
             unit = theme.at_unit_text_scale();
@@ -8059,6 +8080,7 @@ impl Widget for BlockEditor {
             focus: self.visual_formula_focus,
         };
 
+        let outside_prefix = track_paragraphs.then(|| std::mem::take(ctx.scene));
         let mut dragged_scene: Option<(Scene, Rect)> = None;
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             if !painted[idx] {
@@ -8188,6 +8210,17 @@ impl Widget for BlockEditor {
                         presence,
                     );
                 }
+            }
+            if track_paragraphs {
+                let drawn = std::mem::take(ctx.scene);
+                paragraph_scene.append(&drawn, None);
+                let rect = b.line.get_rect();
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::new(
+                    b.id.clone(),
+                    rect,
+                    drawn,
+                    vec![rect],
+                ));
             }
             if let Some(preceding) = preceding {
                 let preview = std::mem::replace(ctx.scene, preceding);
@@ -8414,6 +8447,29 @@ impl Widget for BlockEditor {
         // frame's block draw. Refreshing it before that draw made first-frame
         // style, scale, and BiDi changes unclickable.
         self.refresh_live_link_hits(theme);
+        if let Some(prefix) = outside_prefix {
+            let suffix = std::mem::take(scene);
+            let mut outside = prefix.clone();
+            outside.append(&suffix, None);
+            let mut complete = prefix;
+            complete.append(&paragraph_scene, None);
+            complete.append(&suffix, None);
+            *scene = complete;
+            self.paint_damage.record(
+                self.rect,
+                Some(crate::widget::paint_damage::PaintFrame::new(
+                    vec![self.rect, presence.viewport.get().unwrap_or(self.rect)],
+                    transform,
+                    theme,
+                    outside,
+                    paragraph_parts,
+                )),
+            );
+        } else {
+            self.paint_damage.record(self.rect, None);
+        }
+        let own = std::mem::replace(scene, incoming);
+        scene.append(&own, None);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -9555,8 +9611,22 @@ impl Widget for BlockEditor {
                 .any(|block| block.line.layout_needs_measure())
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.paint_damage.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {

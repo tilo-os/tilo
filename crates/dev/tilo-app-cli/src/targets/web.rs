@@ -33,7 +33,6 @@ use super::{
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const RUNTIME: &str = "crates/browser/tilo-browser-runtime";
 const DESKTOP: &str = "crates/browser/tilo-web-desktop";
-const FONTS: &str = "crates/sdk/ui-core/assets/fonts";
 const MOQ_BROWSER: &str = "scripts/moq-browser";
 const MOQ_LIBRARY: &str = "media-moq-library.mjs";
 
@@ -665,7 +664,9 @@ fn app_crate_source(project: &Project) -> Result<String> {
         .unwrap_or("src/lib.rs");
     let lib_source = std::fs::read_to_string(project.app_dir.join(lib_path))
         .with_context(|| format!("reading {lib_path}; the web target links the app's library"))?;
-    let definition = if lib_source.contains("pub fn definition(") {
+    let definition = if lib_source.contains("pub fn definition(")
+        || lib_source.contains("ui::dev_reload_entry!(")
+    {
         "app::definition()"
     } else if lib_source.contains("impl ResourceApp for App") {
         "ui::framework::definition::<app::App>()"
@@ -938,7 +939,7 @@ fn resource_entry_asset(name: &str) -> bool {
 /// The product fonts and `fonts.json`, as `build.sh` writes them. Fonts are
 /// linked, not copied: they are 40 MB and never change in place.
 fn copy_fonts(sdk_root: &Path, bundle: &Path) -> Result<()> {
-    let source = sdk_root.join(FONTS);
+    let source = crate::font_assets::prepared_fonts(sdk_root, "product")?;
     let manifest_source = std::fs::read_to_string(source.join("manifest.toml"))
         .context("reading the font manifest")?;
     let manifest: toml::Table = manifest_source
@@ -985,6 +986,7 @@ fn copy_fonts(sdk_root: &Path, bundle: &Path) -> Result<()> {
     }
     copy_tree(&source.join("LICENSES"), &fonts.join("LICENSES"))?;
     link_or_copy(&source.join("manifest.toml"), &fonts.join("manifest.toml"))?;
+    link_or_copy(&source.join("PROVENANCE.md"), &fonts.join("PROVENANCE.md"))?;
     let catalog = manifest
         .get("catalog_id")
         .and_then(toml::Value::as_str)
@@ -1320,6 +1322,42 @@ fn write_registry_zip(archive: &Path, output: &Path, manifest: &Path, digest: &s
 mod tests {
     use super::*;
 
+    #[test]
+    fn web_font_bundle_preserves_the_pinned_product_bytes_and_notices() {
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let bundle = tempfile::tempdir().unwrap();
+        copy_fonts(&sdk, bundle.path()).unwrap();
+        let descriptor: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(bundle.path().join("fonts.json")).unwrap())
+                .unwrap();
+        let assets = descriptor["assets"].as_array().unwrap();
+        assert_eq!(assets.len(), 35);
+        for asset in assets {
+            let name = asset["name"].as_str().unwrap();
+            let bytes = std::fs::read(bundle.path().join("fonts").join(name)).unwrap();
+            assert_eq!(
+                bytes.len() as u64,
+                asset["bytes"].as_u64().unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                hex_digest(&bytes),
+                asset["sha256"].as_str().unwrap(),
+                "{name}"
+            );
+        }
+        let source = sdk.join("crates/sdk/ui-core/assets/fonts");
+        for name in ["manifest.toml", "PROVENANCE.md", "LICENSES/UPSTREAM.md"] {
+            assert_eq!(
+                std::fs::read(bundle.path().join("fonts").join(name)).unwrap(),
+                std::fs::read(source.join(name)).unwrap(),
+                "{name}"
+            );
+        }
+        assert!(!bundle.path().join("fonts/NewCM10-Regular.otf").exists());
+        assert!(!bundle.path().join("fonts/AdwaitaSans-Regular.ttf").exists());
+    }
+
     fn file(name: &str, size: u64) -> VersionFile {
         VersionFile {
             name: name.into(),
@@ -1616,6 +1654,27 @@ mod tests {
             target_dir: root.join("target"),
             sdk_root: root.into(),
         }
+    }
+
+    #[test]
+    fn web_registers_the_reload_macros_existing_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project = packaging_project(root);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "ui::dev_reload_entry!(ChatShell);\n",
+        )
+        .unwrap();
+        let entry = app_crate_source(&project).unwrap();
+        assert!(entry.contains("registry::register(app::definition())"));
+        assert!(!entry.contains("definition::<app::App>()"));
     }
 
     fn packaging_request(root: &Path) -> TargetPackageRequest {

@@ -77,6 +77,31 @@ class SourceContentTests(unittest.TestCase):
         self.stage("fixture", b"\x00replacement")
         self.assertEqual(contract.audit(self.root, staged=True)[0], ["fixture: non-text content; new/modified non-text or non-LF blobs are forbidden"])
 
+    def test_merge_preserves_parent_asset_but_rejects_new_binary_bytes(self):
+        def commit(message):
+            self.git("-c", "user.name=Test", "-c", "user.email=test@example.org",
+                     "-c", "core.hooksPath=/dev/null", "commit", "-qm", message)
+
+        commit("test: base")
+        base = self.git("rev-parse", "HEAD").decode().strip()
+        self.git("checkout", "-qb", "asset-parent")
+        self.stage("fixture", b"\x00original")
+        oid = self.git("rev-parse", ":fixture").decode().strip()
+        self.manifest([{"path": "fixture", "oid": oid, "reason": "Required upstream asset"}])
+        commit("test: inherited upstream asset")
+        self.git("checkout", "-qb", "task", base)
+        self.stage("source", b"text\n")
+        commit("test: task source")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.org",
+                 "merge", "--no-commit", "asset-parent")
+        self.assertEqual(contract.audit(self.root, staged=True)[0], [])
+        # Even an updated exception cannot admit new bytes during a merge.
+        self.stage("fixture", b"\x00replacement")
+        replacement = self.git("rev-parse", ":fixture").decode().strip()
+        self.manifest([{"path": "fixture", "oid": replacement, "reason": "Changed asset"}])
+        self.assertEqual(contract.audit(self.root, staged=True)[0],
+                         ["fixture: non-text content; new/modified non-text or non-LF blobs are forbidden"])
+
     def test_duplicate_exception_fails(self):
         entry = {"path": "fixture", "oid": "0" * 40, "reason": "Test fixture"}
         self.manifest([entry, entry])

@@ -53,6 +53,7 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
 app-host = { path = "../../crates/packaging/app-host", features = ["test-support"] }
 capnp.workspace = true
 tempfile.workspace = true

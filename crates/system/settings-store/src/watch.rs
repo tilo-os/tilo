@@ -70,11 +70,105 @@ pub fn watch_settings_at(
     Ok(SettingsWatch { _watcher: watcher })
 }
 
+/// Watch the existing identity directory for selector and identity-record changes.
+/// Re-read the verified active owner after each notification.
+///
+/// # Errors
+///
+/// Fails if the directory does not exist or the platform watcher cannot start.
+pub fn watch_identity_at(
+    directory: &Path,
+    on_change: impl Fn() + Send + 'static,
+) -> std::io::Result<SettingsWatch> {
+    let root = directory.to_owned();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let Ok(event) = event else {
+            on_change();
+            return;
+        };
+        if matches!(event.kind, EventKind::Access(_)) {
+            return;
+        }
+        if event.paths.iter().any(|path| {
+            path.parent() == Some(root.as_path())
+                && (path.file_name().is_some_and(|name| name == "active")
+                    || path
+                        .extension()
+                        .is_some_and(|extension| extension == "json"))
+        }) {
+            on_change();
+        }
+    })
+    .map_err(std::io::Error::other)?;
+    watcher
+        .watch(directory, RecursiveMode::NonRecursive)
+        .map_err(std::io::Error::other)?;
+    Ok(SettingsWatch { _watcher: watcher })
+}
+
+/// Watch atomic account-dictionary publications, excluding temporary files and
+/// legacy ownership markers. The host creates the private directory first.
+pub(crate) fn watch_dictionary_at(
+    directory: &Path,
+    on_change: impl Fn() + Send + 'static,
+) -> std::io::Result<SettingsWatch> {
+    let root = directory.to_owned();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let Ok(event) = event else {
+            on_change();
+            return;
+        };
+        if matches!(event.kind, EventKind::Access(_)) {
+            return;
+        }
+        if event.paths.iter().any(|path| {
+            path.parent() == Some(root.as_path())
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+                && path
+                    .file_stem()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|stem| {
+                        stem.len() == 64 && stem.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+        }) {
+            on_change();
+        }
+    })
+    .map_err(std::io::Error::other)?;
+    watcher
+        .watch(directory, RecursiveMode::NonRecursive)
+        .map_err(std::io::Error::other)?;
+    Ok(SettingsWatch { _watcher: watcher })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn identity_switch_and_selected_record_removal_wake_consumers() {
+        let root = crate::tests::tmpdir();
+        let (sender, changes) = mpsc::channel();
+        let _watch = watch_identity_at(&root, move || {
+            let _ = sender.send(());
+        })
+        .unwrap();
+        std::fs::write(root.join("unrelated.txt"), "unrelated").unwrap();
+        assert!(changes.recv_timeout(Duration::from_millis(100)).is_err());
+        std::fs::write(root.join("active"), "work").unwrap();
+        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        while changes.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        std::fs::write(root.join("work.json"), "{}").unwrap();
+        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        while changes.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        std::fs::remove_file(root.join("work.json")).unwrap();
+        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn an_atomic_rewrite_is_reported_and_sibling_files_are_not() {

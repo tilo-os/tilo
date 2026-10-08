@@ -697,7 +697,7 @@ impl MusicApp {
                     code: "catalogue_search_failed".into(),
                     message,
                     details: None,
-                    retryable: true,
+                    retryable: false,
                 },
             },
         });
@@ -1314,18 +1314,39 @@ impl MusicApp {
         rows.push(self.source_row());
         rows.extend(self.spotify_device_rows());
         rows.extend(self.spotify_remote_rows());
+        // Catalogue tracks have not entered the shared document. Publish the
+        // same admitted live row that resolves search hits, so albums and
+        // remote searches offer playback to agents and assistive technology.
+        let mut tracks: Vec<_> = self
+            .live_hits
+            .iter()
+            .filter(|hit| !self.stored_library.tracks.contains_key(&hit.track.id))
+            .map(|hit| crate::actions::track_resource_id(&hit.track.id))
+            .collect();
+        tracks.sort();
+        tracks.dedup();
+        rows.extend(
+            tracks
+                .iter()
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
+                .filter_map(|id| self.device_row(id)),
+        );
         rows.extend(
             self.catalogue_rows()
                 .into_iter()
                 .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT),
         );
-        rows.extend(
-            self.device_cache
-                .iter()
-                .filter(|(_, state)| matches!(state, CacheState::Cached))
-                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
-                .filter_map(|(id, _)| self.offline_row(id)),
-        );
+        let offline_rows = self
+            .device_cache
+            .iter()
+            .filter(|(_, state)| matches!(state, CacheState::Cached))
+            .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
+            .filter_map(|(id, _)| self.offline_row(id));
+        for row in offline_rows {
+            if !rows.iter().any(|existing| existing.id() == row.id()) {
+                rows.push(row);
+            }
+        }
         rows
     }
 
@@ -1863,15 +1884,10 @@ impl MusicApp {
                     .unwrap_or_else(|| "this track could not be played".to_string());
                 let message = format!("Can\u{2019}t play: {msg}");
                 self.playback_error = Some(message.clone());
-                self.notify(ToastKind::Error, message);
+                self.notify(ToastKind::Error, message.clone());
                 self.pb.playing = false;
                 self.audio.stop();
-                self.fail_resource_stream(
-                    "music.audio_start_failed",
-                    "The audio pipeline failed after stream resolution.",
-                    None,
-                    true,
-                );
+                self.fail_resource_stream("music.audio_start_failed", &message, None);
                 return;
             }
             if !self.pb.playing || self.pb.current.is_none() {
@@ -1893,10 +1909,9 @@ impl MusicApp {
                 self.playhead_ms = pos as f64;
             }
         }
-        let dur = self.current_duration_ms();
-        if !self.audio.uses_spotify() && dur > 0 && self.playhead_ms >= dur as f64 {
-            self.auto_advance();
-        }
+        // Catalogue duration is display metadata, not an output completion
+        // receipt. Only the decoder's EOS (including governed output drain)
+        // above may advance; crossing the duration can still leave PCM queued.
     }
 
     // ---- transport --------------------------------------------------------
@@ -2972,7 +2987,6 @@ impl MusicApp {
             "music.stream_start_superseded",
             "A cached source replaced the pending playback request.",
             None,
-            true,
         );
         self.audio.load(&uri);
         if self.pb.playing {
@@ -3035,7 +3049,7 @@ impl MusicApp {
                         code: "music.offline_download_failed".into(),
                         message,
                         details: Some(serde_json::json!({"track_id": track_id})),
-                        retryable: true,
+                        retryable: false,
                     },
                 },
                 None => tilo_actions::InvocationUpdate::Succeeded {
@@ -3083,7 +3097,6 @@ impl MusicApp {
         code: &str,
         message: &str,
         details: Option<serde_json::Value>,
-        retryable: bool,
     ) {
         self.resource_stream_resume = None;
         if let Some((invocation, _, _, _)) = self.resource_stream_invocation.take() {
@@ -3094,7 +3107,9 @@ impl MusicApp {
                         code: code.into(),
                         message: message.into(),
                         details,
-                        retryable,
+                        // These effects are published at most once. A new user
+                        // invocation may retry, but this invocation must not.
+                        retryable: false,
                     },
                 });
         }
@@ -3112,7 +3127,6 @@ impl MusicApp {
                 "music.stream_start_superseded",
                 "A newer local playback choice superseded this stream start.",
                 Some(serde_json::json!({ "replacement_request": replacement_request })),
-                true,
             );
         }
     }
@@ -3147,7 +3161,6 @@ impl MusicApp {
             "music.stream_start_timed_out",
             message,
             Some(serde_json::json!({ "request_id": request_id })),
-            true,
         );
     }
 
@@ -3252,7 +3265,6 @@ impl MusicApp {
             "music.stream_start_superseded",
             "The selected audio source changed.",
             None,
-            true,
         );
     }
 
@@ -3508,7 +3520,7 @@ impl MusicApp {
                                         code: "music.source_failed".into(),
                                         message,
                                         details: None,
-                                        retryable: true,
+                                        retryable: false,
                                     },
                                 }
                             }
@@ -3591,7 +3603,6 @@ impl MusicApp {
                                 "music.spotify_audio_unavailable",
                                 &error,
                                 None,
-                                true,
                             );
                         }
                     }
@@ -3781,7 +3792,6 @@ impl MusicApp {
                 "music.stream_resolution_failed",
                 &format!("Could not start audio: {error}"),
                 Some(serde_json::json!({ "track_id": track_id })),
-                true,
             );
         }
     }

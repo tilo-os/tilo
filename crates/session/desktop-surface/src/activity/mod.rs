@@ -16,6 +16,8 @@ pub mod view_actions;
 pub use view_actions::WorkspaceViewRequest;
 mod pane;
 mod replay;
+mod task_review;
+pub use task_review::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
 #[cfg(test)]
 mod testing;
 pub use index::*;
@@ -176,6 +178,29 @@ pub trait ActivityHost {
     fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
         false
     }
+    /// Cached, asynchronously refreshed evidence from the admitted room owner.
+    /// `None` means loading; an error means unavailable, never an empty success.
+    fn task_review_required(&self, _room: &str) -> bool {
+        false
+    }
+
+    fn task_review_snapshot(
+        &self,
+        _room: &str,
+    ) -> Option<Result<std::sync::Arc<TaskReviewSnapshot>, String>> {
+        Some(Err(crate::i18n::t("activity-task-review-unavailable")))
+    }
+    /// Queue an authenticated owner command without blocking the paint/input thread.
+    ///
+    /// # Errors
+    /// The owner adapter is unavailable or its bounded queue is full.
+    fn submit_task_review(&self, _request: TaskReviewRequest) -> Result<(), String> {
+        Err(crate::i18n::t("activity-task-review-unavailable"))
+    }
+    /// A command is successful only after its durable owner receipt is verified.
+    fn poll_task_review(&self, _invocation: uuid::Uuid) -> Option<Result<(), String>> {
+        None
+    }
     /// Dispatch a workspace task to its agent.
     ///
     /// # Errors
@@ -198,6 +223,7 @@ impl ActivityHost for UnavailableActivityHost {}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityDeepLink {
+    pub task_id: Option<String>,
     pub author: Option<String>,
     pub group_id: Option<String>,
     pub entry_id: Option<[u8; 16]>,

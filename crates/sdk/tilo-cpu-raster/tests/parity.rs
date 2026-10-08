@@ -703,10 +703,7 @@ fn layers() -> Scene {
 }
 
 fn font(name: &str) -> FontData {
-    let path = format!(
-        "{}/../ui-core/assets/fonts/{name}",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let path = tilo_font_catalog::checkout_root().join(name);
     FontData::new(Blob::new(Arc::new(std::fs::read(path).unwrap())), 0)
 }
 

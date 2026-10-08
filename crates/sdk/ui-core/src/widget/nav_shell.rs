@@ -3672,6 +3672,17 @@ impl Widget for NavShell {
         self.for_each_owned_mut(|child| child.mark_drawn());
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // The shell's own geometry, materials and transitions can change
+        // outside a child's box. A settled shell can preserve local control
+        // damage rather than rasterising every pane for a hover.
+        if self.paint_dirty || self.animating || self.fade < 1.0 {
+            regions.push(self.rect);
+        } else {
+            self.for_each_owned(|child| child.collect_damage(regions));
+        }
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         self.take_requests();
         let mut dirty = std::mem::take(&mut self.structure_dirty);
