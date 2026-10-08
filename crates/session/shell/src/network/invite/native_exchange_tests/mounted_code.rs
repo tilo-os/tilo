@@ -562,6 +562,7 @@ fn committed_snapshot(owner: &NativeWorkspaceOwner) -> Option<serde_json::Value>
                     let body = cold_code::body(&document);
                     serde_json::json!({
                         "generation": view.generation(),
+                        "missing_dependencies": document.get_missing_deps(&[]).len(),
                         "causally_complete": view.peer().plaintext_complete_heads(APP, cold_code::RECORD).is_some(),
                         "body_hash": hex::encode(Sha256::digest(body.as_bytes())),
                         "body_bytes": body.len(),
