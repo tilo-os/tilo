@@ -2488,3 +2488,9 @@ task-review-provider = Task review
 
 shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
+
+resource-selection-title = Choose a resource
+resource-selection-dismiss = Cancel selection
+resource-selection-truncated = This request shows a bounded set of resources. More resources may exist.
+resource-selection-retired = This selection request has ended or belongs to another workspace.
+resource-selection-truncated-short = Limited results

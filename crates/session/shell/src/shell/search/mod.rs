@@ -1203,6 +1203,27 @@ impl SearchRegistry {
         merged.into_iter().map(|(r, _)| r).collect()
     }
 
+    /// Narrow an existing platform search to one pending host request provider.
+    /// Ranking, paging, preferences and rendering use the same search pipeline.
+    pub(crate) fn query_grouped_from(
+        &self,
+        provider_id: &str,
+        args: &QueryArgs<'_>,
+        row_budget: usize,
+    ) -> Vec<KindGroup> {
+        let narrowed = Self {
+            providers: self
+                .providers
+                .iter()
+                .filter(|provider| provider.id() == provider_id)
+                .cloned()
+                .collect(),
+            preferences: self.preferences.clone(),
+            provider_catalog: self.provider_catalog.clone(),
+        };
+        system::group(narrowed.query(args), row_budget)
+    }
+
     /// [`Self::query`], arranged into contiguous per-kind groups and
     /// trimmed to a `row_budget` shared round-robin: the palette paints
     /// ~10 rows, and an outscoring kind (forty file hits) can otherwise

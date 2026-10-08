@@ -43,6 +43,7 @@ mod native_media;
 mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
+mod resource_selection;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
 #[path = "workspace_tasks.rs"]

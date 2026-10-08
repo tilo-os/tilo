@@ -69,6 +69,18 @@ impl AgentParticipant {
                     result: Ok(self.catalogue(&query)),
                 }
             }
+            RemoteActionMessage::SelectResource { correlation, .. } => {
+                RemoteActionMessage::ResourceSelectionResponse {
+                    correlation,
+                    result: Err(ActionHostError::NotPermitted),
+                }
+            }
+            RemoteActionMessage::ResourceSelectionPrompt { correlation, .. } => {
+                RemoteActionMessage::ResourceSelectionPromptResponse {
+                    correlation,
+                    result: Err(ActionHostError::NotPermitted),
+                }
+            }
             RemoteActionMessage::Invoke(request) => {
                 RemoteActionMessage::Receipt(self.invoke_remote(request))
             }
@@ -90,7 +102,10 @@ impl AgentParticipant {
                     }),
                 }
             }
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::ResourceSelectionResponse { .. }
+            | RemoteActionMessage::ResourceSelectionPromptResponse { .. }
+            | RemoteActionMessage::ResourceSelectionPromptCancel { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }

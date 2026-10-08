@@ -142,6 +142,7 @@ pub mod remote_capture;
 pub mod remote_cursors;
 pub mod remote_use;
 pub mod render;
+pub(crate) mod resource_selection;
 pub mod room_activity;
 pub mod room_records;
 pub mod screenshot_send;

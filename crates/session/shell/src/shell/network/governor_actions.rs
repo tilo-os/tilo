@@ -209,6 +209,68 @@ impl ShellNetwork {
             _ => Err("effect governor returned an unexpected answer".into()),
         }
     }
+    /// Choose among inert original-host candidates over the existing room route.
+    pub(crate) async fn choose_original_resource(
+        self: &std::sync::Arc<Self>,
+        request: tilo_actions::remote::ResourceSelectionPromptRequest,
+    ) -> Result<Option<uuid::Uuid>, String> {
+        use crate::shell::remote_action_link::RemoteActionLink as _;
+        use tilo_actions::remote::RemoteActionMessage;
+        let room = RoomId::parse(&request.room).ok_or("resource selection room absent")?;
+        let route = self.governor_route(room)?;
+        let target =
+            iroh::EndpointId::from_bytes(&route.target).map_err(|error| error.to_string())?;
+        let correlation = uuid::Uuid::new_v4().as_u64_pair().0;
+        let guard = ResourceSelectionWithdrawal {
+            network: self.clone(),
+            room: request.room.clone(),
+            topic: route.ws,
+            target,
+            correlation,
+        };
+        let answer = if target == self.local_peer_id {
+            if !super::super::app_action_consent::session_attended() {
+                return Err("resource selection needs an attended desktop".into());
+            }
+            let chosen = super::super::portal_dialog::PortalDialogQueue::global()
+                .enqueue_resource_selection(*self.local_peer_id.as_bytes(), correlation, request)?;
+            self.wake_host_request();
+            tokio::time::timeout(GOVERNOR_TIMEOUT, chosen)
+                .await
+                .map_err(|_| "resource selection timed out")?
+                .ok_or("resource selection retired or disconnected")?
+        } else {
+            let response = self.request(
+                route.ws,
+                target,
+                RemoteActionMessage::ResourceSelectionPrompt {
+                    correlation,
+                    request,
+                },
+            )?;
+            let response = tokio::time::timeout(GOVERNOR_TIMEOUT, response)
+                .await
+                .map_err(|_| "resource selection timed out")?
+                .ok_or("resource selection host disconnected")?;
+            match response {
+                RemoteActionMessage::ResourceSelectionPromptResponse {
+                    correlation: got,
+                    result,
+                } if got == correlation => result.map_err(|error| error.to_string())?,
+                _ => return Err("resource selection host answered another request".into()),
+            }
+        };
+        let fresh = self.governor_route(room)?;
+        if fresh.source != route.source
+            || fresh.target != route.target
+            || fresh.governor_user != route.governor_user
+        {
+            return Err("resource selection host or selected device changed".into());
+        }
+        drop(guard);
+        Ok(answer)
+    }
+
     /// Discover one existing resource on the currently governed room's host,
     /// using the same authenticated remote-action transport as the palette.
     pub(crate) async fn discover_resource_view(
@@ -383,6 +445,35 @@ impl ShellNetwork {
             .as_ref()
             .map(|identity| identity.device_signing_key.clone())
             .ok_or_else(|| "this device has no identity".into())
+    }
+}
+
+/// Dropping the origin's existing request future withdraws its visible choice.
+struct ResourceSelectionWithdrawal {
+    network: std::sync::Arc<ShellNetwork>,
+    room: String,
+    topic: u64,
+    target: iroh::EndpointId,
+    correlation: u64,
+}
+impl Drop for ResourceSelectionWithdrawal {
+    fn drop(&mut self) {
+        if self.target == self.network.local_peer_id {
+            super::super::portal_dialog::PortalDialogQueue::global().withdraw_resource_selection(
+                &self.room,
+                *self.network.local_peer_id.as_bytes(),
+                self.correlation,
+            );
+            self.network.wake_host_request();
+        } else {
+            self.network.send_remote_action(
+                self.topic,
+                self.target,
+                tilo_actions::remote::RemoteActionMessage::ResourceSelectionPromptCancel {
+                    correlation: self.correlation,
+                },
+            );
+        }
     }
 }
 

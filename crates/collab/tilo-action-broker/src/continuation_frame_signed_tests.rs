@@ -1090,3 +1090,246 @@ async fn continuation_partial_cancel_failure_fences_original_parent_before_later
         }
     }
 }
+
+fn selection_host_environment() -> Environment {
+    let mut env = Environment::new();
+    env.cert.capabilities = tilo_user_identity::DeviceCapabilities::host();
+    tilo_user_identity::sign_device_cert(&mut env.cert, &env.person).unwrap();
+    *env.authority.certificate.lock().unwrap() = Some(env.cert.clone());
+    env
+}
+
+struct SelectionService {
+    seen: Arc<std::sync::Mutex<Vec<tilo_actions::remote::ResourceSelectionPromptRequest>>>,
+    foreign: bool,
+}
+impl crate::services::ResourceSelectionServices for SelectionService {
+    fn select(
+        &self,
+        context: crate::services::NativeDocumentReadContext,
+        request: tilo_actions::remote::ResourceSelectionPromptRequest,
+    ) -> crate::services::ResourceSelectionFuture {
+        let foreign = self.foreign;
+        let seen = self.seen.clone();
+        Box::pin(async move {
+            context.revalidate()?;
+            if context.route().cluster_id != request.room
+                || context.route().app_id != request.source_app_id
+                || context.route().record_id != request.source_record_id
+            {
+                return Err("selection lost admitted source route".into());
+            }
+            let token = if foreign {
+                Some(uuid::Uuid::new_v4())
+            } else {
+                request.candidates.first().map(|candidate| candidate.token)
+            };
+            seen.lock().unwrap().push(request);
+            Ok(token)
+        })
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_resource_selection_returns_original_authorized_row_and_refuses_foreign_token()
+{
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for foreign in [false, true] {
+                let env = selection_host_environment();
+                let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let rig = Rig::with_services(
+                    &env,
+                    HostServices {
+                        resource_selections: Some(Arc::new(SelectionService {
+                            seen: seen.clone(),
+                            foreign,
+                        })),
+                        ..env.membership.services()
+                    },
+                )
+                .await;
+                let (_, _, parent) = continuation_parent(&env, &rig).await;
+                let descriptor = continuation_descriptor();
+                let filter = tilo_actions::remote::ResourceSelectionFilter {
+                    app_id: env.route.app_id.clone(),
+                    resource_kind: descriptor.resource_kind,
+                    action: descriptor.action,
+                };
+                let unscoped = tilo_actions::remote::RemoteActionFrame::new(tilo_actions::remote::RemoteActionMessage::SelectResource { correlation: 70, filter: filter.clone() }).encode().unwrap();
+                let unscoped = continuation_round_trip(&rig, &unscoped).await.unwrap();
+                assert!(matches!(tilo_actions::remote::RemoteActionFrame::decode(&unscoped).unwrap().message, tilo_actions::remote::RemoteActionMessage::ResourceSelectionResponse { result: Err(tilo_actions::remote::ActionHostError::NotPermitted), .. }));
+                assert!(seen.lock().unwrap().is_empty(), "plain application request cannot mint an attended prompt without original custody");
+                let absent = continuation_answer(&rig, tilo_actions::remote::RemoteActionMessage::SelectResource { correlation: 69, filter: tilo_actions::remote::ResourceSelectionFilter { action: "does-not-exist".into(), ..filter.clone() } }, parent.invocation).await.unwrap();
+                assert!(matches!(absent, tilo_actions::remote::RemoteActionMessage::ResourceSelectionResponse { result: Err(tilo_actions::remote::ActionHostError::Unavailable { .. }), .. }));
+                assert!(seen.lock().unwrap().is_empty(), "absent semantic resource must not become a fabricated default selection");
+                let result = continuation_answer(
+                    &rig,
+                    tilo_actions::remote::RemoteActionMessage::SelectResource {
+                        correlation: 71,
+                        filter,
+                    },
+                    parent.invocation,
+                )
+                .await
+                .unwrap();
+                let prompts = seen.lock().unwrap();
+                assert_eq!(prompts.len(), 1);
+                assert!(
+                    !prompts[0].candidates.is_empty(),
+                    "actual signed directory must expose an authorized semantic row"
+                );
+                let tilo_actions::remote::RemoteActionMessage::ResourceSelectionResponse {
+                    correlation,
+                    result,
+                } = result
+                else {
+                    panic!("selection response expected")
+                };
+                assert_eq!(correlation, 71);
+                if foreign {
+                    assert_eq!(
+                        result,
+                        Err(tilo_actions::remote::ActionHostError::NotPermitted)
+                    );
+                } else {
+                    let selected = result.unwrap().unwrap();
+                    assert_eq!(selected, prompts[0].candidates[0].selected);
+                    assert_eq!(selected.provider.record_id, env.route.record_id);
+                    assert!(selected.row.action.unwrap().semantic_identity.is_some());
+                }
+                drop(prompts);
+                rig.stop().await;
+            }
+        })
+        .await;
+}
+
+struct HeldSelectionService {
+    entered: Arc<tokio::sync::Notify>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+struct SelectionWaitGuard(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for SelectionWaitGuard {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl crate::services::ResourceSelectionServices for HeldSelectionService {
+    fn select(
+        &self,
+        context: crate::services::NativeDocumentReadContext,
+        _: tilo_actions::remote::ResourceSelectionPromptRequest,
+    ) -> crate::services::ResourceSelectionFuture {
+        let entered = self.entered.clone();
+        let guard = SelectionWaitGuard(self.dropped.clone());
+        Box::pin(async move {
+            let _guard = guard;
+            context.revalidate()?;
+            entered.notify_one();
+            std::future::pending().await
+        })
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_resource_selection_parent_cancel_drops_actual_host_prompt_future() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = selection_host_environment();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let rig = Rig::with_services(
+                &env,
+                HostServices {
+                    resource_selections: Some(Arc::new(HeldSelectionService {
+                        entered: entered.clone(),
+                        dropped: dropped.clone(),
+                    })),
+                    ..env.membership.services()
+                },
+            )
+            .await;
+            let (caller, evidence, parent) = continuation_parent(&env, &rig).await;
+            let descriptor = continuation_descriptor();
+            let selection = continuation_answer(
+                &rig,
+                tilo_actions::remote::RemoteActionMessage::SelectResource {
+                    correlation: 72,
+                    filter: tilo_actions::remote::ResourceSelectionFilter {
+                        app_id: env.route.app_id.clone(),
+                        resource_kind: descriptor.resource_kind,
+                        action: descriptor.action,
+                    },
+                },
+                parent.invocation,
+            );
+            let cancel = async {
+                entered.notified().await;
+                let facade =
+                    crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+                let host = facade
+                    .certified_local_action_host(&caller, &evidence)
+                    .unwrap();
+                host.cancel(&caller, &parent.invocation).unwrap();
+            };
+            let (answer, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::join!(selection, cancel)
+            })
+            .await
+            .expect(
+                "actual host prompt must be observable before bounded original cancellation proof",
+            );
+            assert!(matches!(
+                answer.unwrap(),
+                tilo_actions::remote::RemoteActionMessage::ResourceSelectionResponse {
+                    result: Err(tilo_actions::remote::ActionHostError::NotPermitted),
+                    ..
+                }
+            ));
+            assert!(
+                dropped.load(std::sync::atomic::Ordering::SeqCst),
+                "actual pending host choice must be dropped when original parent retires"
+            );
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_resource_selection_preserves_actual_signed_agent_original_authority() {
+    tokio::task::LocalSet::new().run_until(async {
+        let env = selection_host_environment();
+        let primary = crate::test_owner::SessionOwner::open(&env.root.path().join("owner")).unwrap().peer().authority().clone();
+        env.authority.additional_certificates.lock().unwrap().push(primary.clone());
+        let grants: Vec<_> = [
+            CapOverride::membership(Subject::agent("scribe"), env.route.cluster_id.clone(), Verb::Write),
+            CapOverride::grant(Subject::agent("scribe"), collab_types::Scope::App(env.route.app_id.clone()), Verb::Write),
+        ].into_iter().map(|capability| env.membership.write().workspaces[0].grant_capability(capability)).collect();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rig = Rig::with_services(&env, HostServices { resource_selections: Some(Arc::new(SelectionService { seen: seen.clone(), foreign: false })), ..env.membership.services() }).await;
+        rig.worker.handle.publish_action_directory(&env.route.app_id, capnp_rpc::new_client(ContinuationDirectory { state: directory_state("original-r1") })).await.unwrap();
+        rig.worker.handle.publish_actions(&env.route.app_id, &[continuation_descriptor()]).await.unwrap();
+        let (_, binding) = rig.worker.handle.resolve_published_action_for_invocation(903, "original-r1", "workspace:atlas", "open").await.unwrap();
+        let (server_socket, client_socket) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (rpc, server, client) = rpc_pair(rig.state.clone(), 906, server_socket, client_socket, None, rig.directories.clone());
+        let agent_route = CrdtRoute::cluster(env.route.cluster_id.clone());
+        let agent = rpc.join_channel_as_kind(&agent_route.channel_key(), &presentation(&agent_route.cluster_id, &primary, &env.key), "scribe", "agent", "").await.unwrap();
+        let original = tilo_actions::InvocationId::new();
+        invoke(&agent, &binding, original).await.unwrap();
+        let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+        assert_eq!(delivered.actor, "agent:scribe");
+        let lease = (rig.authorize)(&ui::invocation_scope::PublishedInvocationRequest { wire_id: delivered.id, invocation: original, address: tilo_actions::ActionAddress { resource: delivered.resource, action: delivered.action }, argument: delivered.argument, actor: delivered.actor, participant: None }).unwrap();
+        lease.check().unwrap();
+        let descriptor = continuation_descriptor();
+        let selection = tilo_actions::remote::RemoteActionMessage::SelectResource { correlation: 75, filter: tilo_actions::remote::ResourceSelectionFilter { app_id: env.route.app_id.clone(), resource_kind: descriptor.resource_kind, action: descriptor.action } };
+        assert!(matches!(continuation_answer(&rig, selection.clone(), original).await.unwrap(), tilo_actions::remote::RemoteActionMessage::ResourceSelectionResponse { result: Ok(Some(_)), .. }));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        for grant in grants { env.membership.write().workspaces[0].revoke_capability(&grant); }
+        assert!(lease.check().is_err());
+        assert!(continuation_answer(&rig, selection, original).await.is_err());
+        assert_eq!(seen.lock().unwrap().len(), 1, "native Host producer cannot elevate a revoked signed Agent original to its own authority");
+        server.abort(); client.abort();
+        rig.stop().await;
+    }).await;
+}

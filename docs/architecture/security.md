@@ -339,6 +339,30 @@ or retired custody return unknown with that same child UUID; they never redispat
 App code presents the original Jobs and resources rather than copying their status
 into an application-owned scheduler or progress store.
 
+`PublishedActions::select_resource` is a pending platform choice, not an action
+grant. The originating broker enumerates at most 64 genuine candidates through
+128 bounded catalogue queries under the retained original caller. It keeps that
+custody while the attended governor's existing search palette chooses an inert
+token from those candidates. The governor never substitutes its own catalogue
+or receives delegated execution authority. The origin re-resolves the chosen
+canonical provider, address and semantic identity before returning the original
+typed reference. Missing resources, changed publication and retired custody
+refuse; a dismissed choice returns no reference and is never replayed.
+
+The installed handoff uses the existing authenticated room action connection.
+Its source retains native launcher or certified Host custody; a generic Worker
+does not acquire that custody by requesting a chooser. A normal launched app's
+producer identity remains distinct from the original person or signed Agent
+whose effect it serves. The existing portal request queue owns the reply, and
+platform search's semantic Select and Dismiss operations use the same reply as
+pointer and keyboard activation. Withdrawal is confined to the original room,
+device and correlation; a replacement request gets a fresh local identity.
+Enqueue and withdrawal wake the owning session through its existing room-event
+wake. The normal overlay update pump populates the same palette before layout.
+The current handoff has a 30-second deadline and explicitly marks truncated
+candidate sets. A passing Host fixture alone proves neither a normal installed
+application launch nor the attended cross-device handoff.
+
 Inspection is read-only. Mutations additionally require the session's protected
 claimed device owner, an exact match to its protected primary device certificate,
 and a current accepted person policy granting Settings Admin. An enrolled room

@@ -51,6 +51,17 @@ pub trait NativeResourceViews: Send + Sync {
     ) -> NativeResourceViewFuture;
 }
 
+/// An attended choice over inert, original-caller-authorized candidates.
+pub type ResourceSelectionFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<uuid::Uuid>, String>> + Send>>;
+pub trait ResourceSelectionServices: Send + Sync {
+    fn select(
+        &self,
+        context: NativeDocumentReadContext,
+        request: tilo_actions::remote::ResourceSelectionPromptRequest,
+    ) -> ResourceSelectionFuture;
+}
+
 /// Reads a fresh immutable projection from the host's committed authority.
 /// Mutations go back to that host; this interface owns no replica or persistence.
 pub trait WorkspaceAuthority: Send + Sync {
@@ -931,6 +942,7 @@ pub trait DisplayControlServices: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct HostServices {
+    pub resource_selections: Option<Arc<dyn ResourceSelectionServices>>,
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
     pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host

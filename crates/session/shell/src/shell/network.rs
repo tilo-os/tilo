@@ -2246,6 +2246,13 @@ impl ShellNetwork {
             .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
     }
 
+    /// Host request queues use the same owning session wake as room events.
+    pub(crate) fn wake_host_request(&self) {
+        if let Some(wake) = self.event_wake.get() {
+            wake();
+        }
+    }
+
     pub fn active_ws_for_publish(&self) -> u64 {
         let Ok(replica) = self.replica.lock() else {
             return DEFAULT_WS_TOPIC;
@@ -3433,7 +3440,12 @@ impl ShellNetwork {
             tracing::warn!(peer = %peer, "dropping malformed remote action frame");
             return;
         };
-        if frame.message.is_request() {
+        if frame.message.is_request()
+            || matches!(
+                frame.message,
+                tilo_actions::remote::RemoteActionMessage::ResourceSelectionPromptCancel { .. }
+            )
+        {
             if let tilo_actions::remote::RemoteActionMessage::Invoke(request) = &frame.message
                 && !identity.capabilities.foreign
                 && self
@@ -8911,6 +8923,83 @@ mod tests {
         assert_eq!(
             inbound[0].caller.room(),
             Some(enrolled.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn resource_selection_cancellation_uses_authenticated_room_request_lane() {
+        let signing_identity = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
+        let device = iroh::SecretKey::from_bytes(&[0xA2; 32]);
+        let person = crate::shell::collab_broker_capnp::principal_id_for_root(
+            signing_identity.verifying_key().to_bytes(),
+        );
+        let (workspace, room) = remote_action_room(&person, &person);
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let (mut net, _commands) = shell_network_for_test(tree.shared(), 1);
+        net.require_peer_identity = true;
+        let topic = room_topic_id(room);
+        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        authenticated_personal_peer_on_topic(&net, &signing_identity, &device, epoch, topic);
+        let cancellation =
+            tilo_actions::remote::RemoteActionMessage::ResourceSelectionPromptCancel {
+                correlation: 17,
+            };
+        assert!(
+            !cancellation.is_request(),
+            "one-way withdrawal promises no reply"
+        );
+        let frame = tilo_actions::remote::RemoteActionFrame::new(cancellation.clone())
+            .encode()
+            .expect("wire frame");
+        net.dispatch_neighbour_msg(
+            topic,
+            device.public(),
+            Some(epoch),
+            false,
+            NeighbourMsg::RemoteAction {
+                frame: frame.clone(),
+            },
+        );
+        let inbound = net
+            .inbound_remote_actions_handle()
+            .lock()
+            .expect("inbound")
+            .clone();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(inbound[0].message, cancellation);
+        assert_eq!(
+            inbound[0].caller.device_public_key(),
+            Some(device.public().as_bytes())
+        );
+        assert_eq!(inbound[0].caller.room(), Some(room.to_string().as_str()));
+        let stranger = iroh::SecretKey::from_bytes(&[0xA3; 32]);
+        net.dispatch_neighbour_msg(
+            topic,
+            stranger.public(),
+            Some(epoch),
+            false,
+            NeighbourMsg::RemoteAction { frame },
+        );
+        assert_eq!(
+            net.inbound_remote_actions_handle()
+                .lock()
+                .expect("inbound")
+                .len(),
+            1,
+            "unauthenticated withdrawal cannot reach the host request queue"
+        );
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+        net.set_wake(std::sync::Arc::new(move || {
+            wake_tx.send(()).expect("session wake receiver alive");
+        }));
+        assert!(super::super::resource_selection::answer_remote_prompt(
+            &std::sync::Arc::new(net),
+            &inbound[0],
+        ));
+        tilo_test_env::recv(
+            "authenticated withdrawal must wake the owning session",
+            &wake_rx,
         );
     }
 
