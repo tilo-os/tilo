@@ -6644,6 +6644,12 @@ mod tests {
         );
     }
 
+    #[cfg(all(target_os = "linux", feature = "direct-scene-diagnostic"))]
+    mod direct_scene_diagnostic {
+        use super::*;
+        include!("direct_scene_diagnostic.rs");
+    }
+
     const NATIVE_BENCHMARK_ACTION_TARGETS: [&str; 2] =
         ["topbar_tray_pill", "topbar_overview_button"];
 

@@ -8,6 +8,8 @@ publish.workspace = true
 license.workspace = true
 
 [features]
+# Opt-in native direct-target scene diagnostic; no production behavior.
+direct-scene-diagnostic = []
 # Explicit native RAM custody qualification: requires a qualified tmpfs backing
 # or permission to create a noswap fixture in a private mount namespace.
 signal-profile-native-test = []
