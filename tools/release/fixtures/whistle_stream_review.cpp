@@ -10,8 +10,11 @@ __attribute__((constructor(101))) static void early_phase() {
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <fstream>
 #include <iterator>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -23,6 +26,43 @@ using Clock = std::chrono::steady_clock;
 static double ms(Clock::time_point start) {
     return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
+// Optional startup diagnostic only; the external admission guard is unchanged.
+// No audio, transcripts or arbitrary process state are inspected here.
+static void emit_startup_tasks() {
+    const auto close_tasks = [](DIR * directory) { closedir(directory); };
+    std::unique_ptr<DIR, decltype(close_tasks)> tasks(opendir("/proc/self/task"), close_tasks);
+    if (!tasks) throw std::runtime_error("cannot observe owned native tasks");
+    unsigned count = 0;
+    while (auto * entry = readdir(tasks.get())) {
+        const std::string id(entry->d_name);
+        if (id.empty() || id.find_first_not_of("0123456789") != std::string::npos) continue;
+        if (++count > 64) throw std::runtime_error("bounded owned task snapshot");
+        const auto prefix = std::string("/proc/self/task/") + id + "/";
+        std::ifstream stat(prefix + "stat");
+        std::string line;
+        if (!std::getline(stat, line) || line.rfind(')') == std::string::npos)
+            throw std::runtime_error("cannot observe owned task accounting");
+        std::istringstream fields(line.substr(line.rfind(')') + 1));
+        char state = 0;
+        fields >> state;
+        std::string value;
+        for (int field = 4; field <= 13; ++field) fields >> value;
+        unsigned long long user_ticks = 0, system_ticks = 0;
+        fields >> user_ticks >> system_ticks;
+        std::ifstream sched(prefix + "schedstat"), wait(prefix + "wchan");
+        unsigned long long runtime_ns = 0, delay_ns = 0, slices = 0;
+        std::string wchan;
+        if (!fields || !(sched >> runtime_ns >> delay_ns >> slices) || !(wait >> wchan)
+            || wchan.size() > 80 || wchan.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != std::string::npos)
+            throw std::runtime_error("cannot observe owned task scheduling");
+        std::printf("WHISTLE_TASK {\"tid\":%s,\"state\":\"%c\",\"user_ticks\":%llu,\"system_ticks\":%llu,\"runtime_ns\":%llu,\"runqueue_delay_ns\":%llu,\"slices\":%llu,\"wchan\":\"%s\"}\n",
+                    id.c_str(), state, user_ticks, system_ticks, runtime_ns, delay_ns, slices, wchan.c_str());
+        std::fflush(stdout);
+    }
+    std::printf("WHISTLE_TASK_SNAPSHOT {\"tasks\":%u,\"clock_ticks_per_second\":%ld,\"online_cpus\":%ld}\n",
+                count, sysconf(_SC_CLK_TCK), sysconf(_SC_NPROCESSORS_ONLN));
+    std::fflush(stdout);
+}
 static void emit(const char * kind, int session, double wall, double inference,
                  const std::array<char, 65536> & output) {
     if (!std::memchr(output.data(), 0, output.size()))
@@ -33,7 +73,7 @@ static void emit(const char * kind, int session, double wall, double inference,
 }
 int main(int argc, char ** argv) try {
     std::puts("WHISTLE_PHASE main_entered"); std::fflush(stdout);
-    if (argc != 4) return 2;
+    if (argc != 4 && !(argc == 5 && std::strcmp(argv[4], "--startup-tasks") == 0)) return 2;
     const std::array<const char *, 7> languages{"en", "de", "fr", "es", "it", "nl", "pl"};
     if (std::none_of(languages.begin(), languages.end(), [&](const char * value) {
         return std::strcmp(value, argv[3]) == 0;
@@ -55,6 +95,7 @@ int main(int argc, char ** argv) try {
     if (needle_load(model.data(), model.size()) < 0 || !(needle_models() & NEEDLE_SPEECH)) return 6;
     std::printf("WHISTLE_LOAD {\"native_ms\":%.6f}\n", ms(loading));
     std::fflush(stdout);
+    if (argc == 5) emit_startup_tasks();
     std::array<char, 65536> output{};
     // Repeat in one actual native context, with a silence session in between.
     // Stop must reset the engine's stream rather than retain prior words.

@@ -8,6 +8,10 @@ streaming, microphone use or universal field insertion.
 
 The machine-readable receipts, limits and artifact digests are in
 [dictation-whistle-paced-review.json](dictation-whistle-paced-review.json).
+The [thread initialization follow-up](dictation-whistle-thread-review.md) traces
+the host-CPU fallback, distinguishes idle compute workers from support tasks,
+and compares the CLI's supported one- and two-thread settings without relaxing
+the native admission guard.
 Earlier failures remain in
 [dictation-whistle-native-review.json](dictation-whistle-native-review.json).
 
