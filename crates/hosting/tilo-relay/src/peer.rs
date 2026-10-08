@@ -357,10 +357,13 @@ impl ResumeLog {
 const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// The next lagging room this connection can resume: a `SubscribeFrom` at
-/// its current position, handled as if the device had sent it. Rooms
-/// without a resume log wait for their next subscribe.
-fn lag_resume(session: &SessionCtx<'_>) -> Option<Envelope> {
+/// its current position, handled as if the device had sent it. A current
+/// plain subscription catches up through the same authorized full replay.
+fn lag_resume(session: &SessionCtx<'_>, subscribed: &[u64]) -> Option<Envelope> {
     while let Some(workspace_id) = session.lag.next() {
+        if !subscribed.contains(&workspace_id) {
+            continue;
+        }
         if let Some(Envelope::Position { position, .. }) = resume_record(session, workspace_id, [])
         {
             return Some(Envelope::SubscribeFrom {
@@ -368,6 +371,7 @@ fn lag_resume(session: &SessionCtx<'_>) -> Option<Envelope> {
                 position: Some(position),
             });
         }
+        return Some(Envelope::Subscribe { workspace_id });
     }
     None
 }
@@ -559,7 +563,7 @@ where
                         if state_tx.capacity() < state_tx.max_capacity() || tx.capacity() < tx.max_capacity() {
                             continue;
                         }
-                        let resume = lag_resume(&session);
+                        let resume = lag_resume(&session, &subscribed);
                         catching_up = !lag.is_empty();
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
@@ -2167,8 +2171,8 @@ impl StateSession {
 /// disk (its pending queue and the retained log). Once the connection's
 /// queues drain it resumes each of them from its position, so the replay
 /// carries exactly what it missed; a lagging reader costs disk and latency,
-/// never its session. A subscription without a resume log catches up on its
-/// next subscribe instead.
+/// never its session. A subscription without a resume log catches up through
+/// its ordinary full retained replay, with current authorization checked again.
 #[derive(Default)]
 pub(crate) struct Lag {
     rooms: std::sync::Mutex<std::collections::BTreeSet<u64>>,
@@ -8451,7 +8455,7 @@ mod private_transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_releases_routing_lock() {
-        paused_state_private_roundtrip(true, false, false, false).await;
+        paused_state_private_roundtrip(true, false, false, false, None).await;
     }
 
     /// A peer that pipelines more private requests than the reply queue holds,
@@ -8548,22 +8552,38 @@ mod private_transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_allows_same_connection_private_roundtrip() {
-        paused_state_private_roundtrip(false, false, false, false).await;
+        paused_state_private_roundtrip(false, false, false, false, None).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_replay_cleanup_with_full_reply_queue_keeps_private_reader_and_writer_live() {
-        paused_state_private_roundtrip(false, true, false, false).await;
+        paused_state_private_roundtrip(false, true, false, false, None).await;
     }
 
     #[tokio::test]
     async fn full_control_backlog_backpressures_and_recovers_after_held_writer() {
-        paused_state_private_roundtrip(false, true, true, false).await;
+        paused_state_private_roundtrip(false, true, true, false, None).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn overtaking_private_keeps_held_state_authorization_future_pollable() {
-        paused_state_private_roundtrip(false, false, false, true).await;
+        paused_state_private_roundtrip(false, false, false, true, None).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn plain_subscription_recovers_retained_frame_after_live_budget_exhaustion() {
+        paused_state_private_roundtrip(false, false, false, false, Some(LagBoundary::Live)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn plain_subscription_discards_stale_lag_after_explicit_unsubscribe() {
+        paused_state_private_roundtrip(false, false, false, false, Some(LagBoundary::Unsubscribed))
+            .await;
+    }
+
+    enum LagBoundary {
+        Live,
+        Unsubscribed,
     }
 
     #[expect(
@@ -8575,6 +8595,7 @@ mod private_transport_tests {
         held_cleanup: bool,
         full_backlog: bool,
         held_authorization: bool,
+        plain_lag: Option<LagBoundary>,
     ) {
         let (root, user) = UserIdentity::generate("alice", 1);
         let (a, _) = certified_device(&root, user.public_key, "a");
@@ -8660,6 +8681,151 @@ mod private_transport_tests {
         }
         let (mut ar, mut aw) = wires.remove(0);
         let (mut br, mut bw) = wires.remove(0);
+        if let Some(boundary) = plain_lag {
+            let lag = workspace.lock().await.state_sessions[&b.device_public_key]
+                .lag
+                .as_ref()
+                .unwrap()
+                .clone();
+            let envelope = Envelope::Delta {
+                workspace_id: id,
+                author_device_public_key: a.device_public_key,
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: crate::coedit::CoeditPayload::RetainedDelta {
+                    channel: [3; 32],
+                    body: vec![4; 4096],
+                }
+                .encode()
+                .unwrap(),
+            };
+            let fault = crate::store::test_barrier::fail(store.root(), "live-delivery-budget");
+            let (release, reached) =
+                crate::store::test_barrier::install(store.root(), "live-delivery-budget");
+            aw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            reached
+                .await
+                .expect("ordinary retained publication never reached live budget");
+            drop(release);
+            let owner = crate::persistence::handle(&workspace).await;
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+            drop(fault);
+            assert!(
+                store
+                    .load_retained()
+                    .unwrap()
+                    .iter()
+                    .any(|bytes| { crate::transport::decode(&bytes[4..]).unwrap() == envelope }),
+                "missed live frame must remain durably retained"
+            );
+            let unsubscribed = matches!(boundary, LagBoundary::Unsubscribed);
+            if unsubscribed {
+                for frame in [Envelope::Unsubscribe { workspace_id: id }, Envelope::Ping] {
+                    bw.write_all(
+                        &tilo_delivery_protocol::transport_v2::encode_state(&frame, true).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                tilo_test_env::within("the explicit unsubscribe to complete", async {
+                    loop {
+                        match br.read_next().await.unwrap() {
+                            Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                            Some(EnvelopeV2::State(
+                                Envelope::Delta { .. } | Envelope::Ready { .. },
+                            )) => {}
+                            other => panic!("unexpected explicit-unsubscribe reply: {other:?}"),
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    !workspace
+                        .lock()
+                        .await
+                        .state_sessions
+                        .contains_key(&b.device_public_key)
+                );
+                // A queued hint may outlive the subscription that produced it.
+                // Its ordering is fixed here after the real unsubscribe reply.
+                lag.mark(id);
+            } else {
+                assert!(
+                    workspace.lock().await.state_sessions[&b.device_public_key]
+                        .live
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    "ordinary byte backpressure must preserve the authorized subscription"
+                );
+            }
+            // Publication has completed, so the lag marker was made. Wait for
+            // its actual consumption rather than guessing the polling interval.
+            tilo_test_env::within("the peer to consume its lag marker", async {
+                while !lag.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            let mut frames = Vec::new();
+            let mut ready = 0_usize;
+            tilo_test_env::within("retained catch-up before the next peer reply", async {
+                loop {
+                    match br.read_next().await.unwrap() {
+                        Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                        Some(EnvelopeV2::State(Envelope::Ready { .. })) => {
+                            ready = ready.checked_add(1).unwrap();
+                        }
+                        Some(EnvelopeV2::State(frame @ Envelope::Delta { .. })) => {
+                            frames.push(frame);
+                        }
+                        other => panic!("unexpected lag-recovery frame: {other:?}"),
+                    }
+                }
+            })
+            .await;
+            for task in tasks {
+                task.abort();
+                let _ = task.await;
+            }
+            if unsubscribed {
+                assert!(
+                    frames.is_empty(),
+                    "a stale lag hint reopened an explicitly closed subscription"
+                );
+                assert_eq!(
+                    ready, 0,
+                    "an explicitly closed subscription cannot become ready again"
+                );
+                assert!(
+                    !workspace
+                        .lock()
+                        .await
+                        .state_sessions
+                        .contains_key(&b.device_public_key)
+                );
+            } else {
+                assert_eq!(
+                    frames,
+                    vec![envelope],
+                    "plain subscription lost its committed retained frame"
+                );
+                assert_eq!(
+                    ready, 1,
+                    "catch-up must complete its actual replay boundary"
+                );
+            }
+            return;
+        }
         let envelope = Envelope::Delta {
             workspace_id: id,
             author_device_public_key: a.device_public_key,
