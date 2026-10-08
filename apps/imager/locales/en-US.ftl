@@ -1,3 +1,6 @@
+# Image write review. The remaining image contents are written unchanged.
+imager-review-setup-hostname = Written with hostname { $hostname }, then verified
+
 # Guided setup semantic resource and action labels.
 imager-setup-action-choose-experience = Choose setup experience
 imager-setup-placeholder-experience = desktop
