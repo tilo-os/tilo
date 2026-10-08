@@ -2629,6 +2629,111 @@ mod tests {
     }
 
     #[test]
+    fn completed_empty_search_offers_the_declared_filter_reset() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_worker_busy(false);
+        })
+        .unwrap();
+        app.effect(&StoreEffect::SetSearch {
+            query: "no-matching-app".into(),
+        })
+        .unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            store.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: "0 search results".into(),
+                query: Some("no-matching-app".into()),
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: None,
+            });
+        })
+        .unwrap();
+        for role in [ui::permissions::Role::Owner, ui::permissions::Role::Viewer] {
+            app.set_role(role);
+            let visible = app.harness().inspection_json().unwrap();
+            assert!(
+                visible.contains("No apps found"),
+                "empty completed search is not a missing catalogue: {visible}"
+            );
+            assert!(!visible.contains("Add or enable a catalogue"));
+            let reset = app
+                .harness()
+                .controls()
+                .into_iter()
+                .find(|control| control.name.as_deref() == Some("Clear filters"))
+                .expect("the empty result publishes its recovery control");
+            assert!(!reset.disabled);
+            let audit = app.harness().native_app_audit();
+            assert!(
+                !audit
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "stale-action-binding"),
+                "{audit:?}"
+            );
+        }
+        app.effect(&StoreEffect::ClearFilters).unwrap();
+        let snapshot = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(snapshot["query"], "");
+        app.with_surface(|store: &mut StoreApp| {
+            assert_eq!(store.pending_search.as_deref(), Some(""));
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn empty_search_preserves_loading_failure_and_unfiltered_empty_states() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.effect(&StoreEffect::SetSearch {
+            query: "no-matching-app".into(),
+        })
+        .unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: String::new(),
+                query: Some("no-matching-app".into()),
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: None,
+            });
+            store.set_worker_busy(true);
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("Loading apps"));
+        assert!(!visible.contains("No apps found"));
+        app.with_surface(|store: &mut StoreApp| {
+            store.set_worker_busy(false);
+            store.set_operation_error(Some("Repository unavailable".into()));
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("Catalogues offline"));
+        assert!(visible.contains("Repository unavailable"));
+        assert!(!visible.contains("No apps found"));
+        app.with_surface(|store: &mut StoreApp| store.set_operation_error(None))
+            .unwrap();
+        app.effect(&StoreEffect::ClearFilters).unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("No apps available"));
+        assert!(!visible.contains("No apps found"));
+    }
+
+    #[test]
     fn resizing_remotes_preserves_the_active_input_selection() {
         fn input(widget: &mut dyn Widget) -> Option<&mut dyn Widget> {
             if widget.test_id() == Some("store.remote.name") {
