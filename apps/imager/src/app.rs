@@ -1528,6 +1528,7 @@ impl ImagerApp {
                 &self.profile,
                 &self.wifi_psk,
                 &self.ssh_public_key,
+                !src.installable,
             )?
             .map(|stage| stage.root)
         };
@@ -1859,6 +1860,42 @@ impl ImagerApp {
                 Ok(Effected::Pending)
             }
             ImagerEffect::Status => Ok(Effected::value(self.status_value())),
+            ImagerEffect::CustomizeImage {
+                image,
+                hostname,
+                wifi_ssid,
+                wifi_psk_file,
+                ssh_keys_file,
+                home_files,
+            } => {
+                let mut args = vec!["imager".into(), "--customize-image".into(), image];
+                for (flag, value) in [
+                    ("--hostname", hostname),
+                    ("--wifi-ssid", wifi_ssid),
+                    ("--wifi-psk-file", wifi_psk_file),
+                    ("--ssh-keys-file", ssh_keys_file),
+                ] {
+                    if let Some(value) = value {
+                        args.extend([flag.into(), value]);
+                    }
+                }
+                for path in home_files {
+                    args.extend(["--home-file".into(), path]);
+                }
+                Ok(cx.thread(
+                    move |_| {
+                        crate::customize_image::maybe_run(&args).map_err(|error| error.to_string())
+                    },
+                    |app: &mut Self, result, _| {
+                        let code = result?.ok_or(
+                            "the image customization helper did not recognize its request",
+                        )?;
+                        app.set_status("Image customization complete");
+                        app.dirty = true;
+                        Ok(Effected::value(serde_json::json!({ "exit_code": code })))
+                    },
+                ))
+            }
             ImagerEffect::ChooseImage => {
                 self.set_status("Opening the file picker…");
                 self.dirty = true;

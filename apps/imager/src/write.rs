@@ -1152,6 +1152,32 @@ fn release_handoff_stage(req: &WriteRequest) {
     }
 }
 
+/// Customize only a regular disk image through the shared installed-root path.
+///
+/// # Errors
+/// Returns target metadata, mounted-root discovery, or copy errors.
+pub(crate) fn apply_handoff_stage_to_image_file(image: &Path, staged: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(image)?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "customization target must be a regular image file",
+        ));
+    }
+    let mountpoint = tempfile::Builder::new()
+        .prefix("tilo-imager-root-")
+        .tempdir()?;
+    if block_devices::installed_root::with_written_root(image, mountpoint.path(), |mnt| {
+        apply_handoff_stage_onto_mounted_root(mnt, staged)
+    })? {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "the image has no installed Tilo root; customization was not applied",
+        ))
+    }
+}
+
 /// Apply the staged tree through the shared native disk boundary.
 fn apply_handoff_stage_to_device(
     device: &Path,
@@ -3102,17 +3128,56 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn image_customization_does_not_fake_a_home_file_slack_success() {
+        let image = tempfile::NamedTempFile::new().unwrap();
+        let before = b"not-a-disk-image";
+        std::fs::write(image.path(), before).unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::create_dir(staged.path().join(crate::handoff::ACCOUNT_HOME_FILES)).unwrap();
+        std::fs::write(
+            staged
+                .path()
+                .join(crate::handoff::ACCOUNT_HOME_FILES)
+                .join("SETUP.md"),
+            b"private setup",
+        )
+        .unwrap();
+        let error = apply_handoff_stage_to_image_file(image.path(), staged.path())
+            .expect_err("a home-only request needs an installed root, not empty installer slack");
+        assert!(error.to_string().contains("installed"), "{error}");
+        assert_eq!(std::fs::read(image.path()).unwrap(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn image_file_is_not_rejected_before_the_loop_mount() {
         let staged = tempfile::tempdir().unwrap();
         std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
         let device = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(device.path(), b"not-a-disk-image").unwrap();
-        let result = apply_handoff_stage_to_device(device.path(), staged.path(), 16, 16);
-        if let Err(error) = result {
+        let before = b"not-a-disk-image";
+        std::fs::write(device.path(), before).unwrap();
+        let mountpoint = tempfile::tempdir().unwrap();
+        let observed = std::cell::Cell::new(None);
+        let result = block_devices::installed_root::with_written_root_observed(
+            device.path(),
+            mountpoint.path(),
+            |mnt| apply_handoff_stage_onto_mounted_root(mnt, staged.path()),
+            |attached| observed.set(Some(attached)),
+        );
+        // A message-based check mistakes a failed post-attachment partition
+        // probe for rejection before losetup. Observe the real bounded attempt.
+        let attached = observed
+            .get()
+            .expect("a regular file must reach the loop attachment attempt");
+        if attached {
+            let error = result.expect_err("an attached file without partitions must fail closed");
+            assert!(error.to_string().contains("installed root"), "{error}");
+        } else {
             assert!(
-                !error.to_string().contains("could not inspect"),
-                "a regular file was rejected before losetup: {error}"
+                matches!(result, Ok(false)),
+                "a failed loop attachment cannot report a copied root: {result:?}"
             );
         }
+        assert_eq!(std::fs::read(device.path()).unwrap(), before);
     }
 }
