@@ -401,6 +401,7 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
 #[test]
 fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
     let mut frame = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+    frame.set_workspace_clip_supported(true);
     frame.relayout();
     let warm = frame.paint_with_damage();
     assert!(
@@ -423,6 +424,21 @@ fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
     assert!(
         following.scene.encoding().is_empty() && following.workspace_hold,
         "the rest of the switch stays on the content clip"
+    );
+    // Hot-unplugging to a single scanout changes presenter capability while
+    // the same transition is in flight. Its next frame must be complete.
+    frame.set_workspace_clip_supported(false);
+    let single = frame.paint_with_damage();
+    assert!(!single.workspace_hold && single.workspace_clip.is_none());
+    assert!(
+        !single.scene.encoding().is_empty(),
+        "single-output presenter needs actual scene pixels"
+    );
+    frame.set_workspace_clip_supported(true);
+    let multiple = frame.paint_with_damage();
+    assert!(
+        multiple.workspace_hold && multiple.scene.encoding().is_empty(),
+        "restored multi-output replay capability keeps its clip optimisation"
     );
 }
 
@@ -650,6 +666,7 @@ fn sections(
         backdrop: Scene::new(),
         topbar: Scene::new(),
         workspace,
+        workspace_overlays: Scene::new(),
         topbar_bounds: None,
         quick_settings,
         above_quick_settings: Scene::new(),
@@ -667,6 +684,8 @@ fn previous_sections(
         backdrop: Scene::new(),
         topbar: Scene::new(),
         workspace,
+        workspace_overlays: Scene::new(),
+        strips: None,
         topbar_bounds: None,
         quick_settings,
         above_quick_settings: Scene::new(),
@@ -1159,4 +1178,292 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
         assert_foreign_pixel(&mut oracle, &changed, placement.center(), [0, 0, 255]);
         crate::shell::foreign::store().forget(surface);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn render_cpu(scene: &Scene, (width, height): (u32, u32)) -> Vec<u8> {
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    let mut target =
+        tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4).unwrap();
+    tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+        scene.encoding(),
+        &mut target,
+        None,
+        vello::peniko::Color::BLACK,
+    );
+    pixels
+}
+
+#[cfg(target_os = "linux")]
+fn assert_layer_cpu_pixels_match(composed: &Scene, dense: &Scene, size: (u32, u32)) {
+    let composed = render_cpu(composed, size);
+    let dense = render_cpu(dense, size);
+    let differing = composed
+        .chunks_exact(4)
+        .zip(dense.chunks_exact(4))
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 1))
+        .count();
+    let difference_bounds = composed
+        .chunks_exact(4)
+        .zip(dense.chunks_exact(4))
+        .enumerate()
+        .filter(|(_, (a, b))| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 1))
+        .fold(
+            None::<(usize, usize, usize, usize)>,
+            |bounds, (index, _)| {
+                let x = index % size.0 as usize;
+                let y = index / size.0 as usize;
+                Some(match bounds {
+                    None => (x, y, x, y),
+                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                })
+            },
+        );
+    assert!(
+        differing == 0,
+        "{differing} pixels differ between the composed and the dense scene at {difference_bounds:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn wide_retained_fixture(size: (u32, u32)) -> PopulatedShellFixture {
+    // The demo's window, twice more beside it: wider than the screen.
+    let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+    if let Some(strip) = tree
+        .desktop
+        .active_workspace_mut()
+        .and_then(|workspace| workspace.strips.first_mut())
+        && let Some(group) = strip.window_groups.first().cloned()
+    {
+        for _ in 0..2 {
+            let mut copy = group.clone();
+            copy.id = crate::shell::state::next_id();
+            for tab in &mut copy.tabs {
+                tab.id = crate::shell::state::next_id();
+            }
+            copy.active_tab = copy.tabs.first().map_or(0, |tab| tab.id);
+            strip.window_groups.push(copy);
+        }
+    }
+    tree.seed_doc_from_cache();
+    PopulatedShellFixture::with_tree(size, Theme::dark().with_reduce_motion(true), tree)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dense_capture_does_not_inherit_another_producers_canvas_policy() {
+    const SIZE: (u32, u32) = (1280, 720);
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut frame = wide_retained_fixture(SIZE);
+    frame.relayout();
+    let _ = frame.paint();
+    frame.host_mut().set_strip_scroll_for_test(120.0);
+    frame.relayout();
+    let _ = frame.paint();
+    let dense = frame.paint();
+    let outer = ui::retained_present::RetainedScene::begin(true);
+    let nested = frame.paint();
+    assert!(
+        ui::retained_present::unbake_scroll(),
+        "the enclosing presenter keeps its draw policy"
+    );
+    drop(outer);
+    assert_layer_cpu_pixels_match(&nested, &dense, SIZE);
+}
+
+#[cfg(target_os = "linux")]
+fn acknowledge_notes_saves(frame: &mut PopulatedShellFixture) {
+    let (apps, room) = {
+        let chrome = frame.chrome();
+        let room = chrome
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture workspace")
+            .room
+            .to_string();
+        let apps = chrome
+            .hosted_inputs()
+            .in_process()
+            .expect("fixture app owner")
+            .clone();
+        (apps, room)
+    };
+    assert_eq!(
+        apps.borrow_mut()
+            .flush_fixture_records(notes::definition().app_id, &room)
+            .expect("actual Notes startup writes acknowledged"),
+        3
+    );
+    // Durability is sampled after sync; the next sync presents that sample.
+    assert_eq!(frame.wake_mounted_components(), 3);
+    let _ = frame.paint_with_damage();
+    assert_eq!(frame.wake_mounted_components(), 3);
+    let _ = frame.paint_with_damage();
+}
+
+#[cfg(target_os = "linux")]
+fn assert_notes_startup_saved(frame: &mut PopulatedShellFixture) {
+    let saved = std::cell::RefCell::new(Vec::new());
+    let _ = frame.mounted_mut::<()>(|widget| {
+        if let Some(notes) = tilo_app::framework::testing::surface_in_root::<
+            notes::NotesShell,
+            notes::NotesApp,
+        >(widget)
+        {
+            saved
+                .borrow_mut()
+                .push(notes.status_bar_for_test().state().save_status);
+        }
+        None
+    });
+    assert_eq!(
+        *saved.borrow(),
+        vec![notes::status_bar::SaveStatus::Saved; 3],
+        "all three real Notes surfaces present their acknowledged startup state"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn acknowledged_notes_canvas(frame: &mut PopulatedShellFixture) -> FramePaint {
+    let mut at_rest = frame.paint_with_damage();
+    for _ in 0..8 {
+        frame.relayout();
+        let next = frame.paint_with_damage();
+        let settled = match (&next.cache, &at_rest.cache) {
+            (Some(next), Some(previous)) => next
+                .layers
+                .workspace
+                .encoding_eq(&previous.layers.workspace),
+            _ => false,
+        };
+        at_rest = next;
+        if settled {
+            break;
+        }
+    }
+    // Startup creates real records. A writer acknowledgment between the two
+    // encodings would change Saving to Saved and invalidate the pixel oracle.
+    acknowledge_notes_saves(frame);
+    at_rest = frame.paint_with_damage();
+    assert_notes_startup_saved(frame);
+    at_rest
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
+    const SIZE: (u32, u32) = (1280, 720);
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut frame = wide_retained_fixture(SIZE);
+    frame.relayout();
+    let _ = frame.paint();
+    assert!(
+        frame.paint_with_damage().cache.is_none(),
+        "no layers unless a presenter composites them"
+    );
+
+    frame.set_retained_layer_width(Some(8192));
+    // Settle: the first frames lay the tab bars out at their final widths.
+    let at_rest = acknowledged_notes_canvas(&mut frame);
+    let rest = at_rest.cache.as_ref().expect("the frame as layers");
+    let offsets = rest
+        .strips
+        .iter()
+        .map(|strip| strip.scroll_x)
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1, "the fixture has one retained strip");
+    assert!(
+        offsets[0] > 0,
+        "the canvas includes left rubber-band padding"
+    );
+    assert!(
+        rest.width > SIZE.0,
+        "the fixture's strip is wider than the screen: {}",
+        rest.width
+    );
+
+    frame.host_mut().set_strip_scroll_for_test(120.0);
+    frame.relayout();
+    let panned = frame.paint_with_damage();
+    let pan = panned.cache.as_ref().expect("the frame as layers");
+    assert_eq!(
+        pan.strips
+            .iter()
+            .map(|strip| strip.scroll_x)
+            .collect::<Vec<_>>(),
+        offsets
+            .iter()
+            .map(|offset| offset + 120)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        pan.layers.backdrop.encoding_eq(&rest.layers.backdrop),
+        "a pan leaves the backdrop"
+    );
+    assert!(
+        pan.layers.chrome.encoding_eq(&rest.layers.chrome),
+        "a pan leaves the chrome"
+    );
+    assert!(
+        pan.layers.workspace.encoding_eq(&rest.layers.workspace),
+        "a pan leaves the workspace in canvas coordinates"
+    );
+    assert!(
+        panned.damage_regions.is_none(),
+        "the scene moved where the layers did not"
+    );
+    assert!(
+        frame.paint_with_damage().damage_regions.is_none(),
+        "unchanged canvas offsets do not grant screen-space damage authority"
+    );
+
+    // The scene shows the strip where it is on screen, as a scene drawn
+    // without layers does.
+    frame.set_retained_layer_width(None);
+    // Encode both paths before rasterizing either: app status bubbles use
+    // monotonic linger deadlines, and CPU rendering may cross a deadline.
+    // Exercise the same late acknowledgment boundary that reproduced the
+    // historical 1,034-pixel failure; startup is already durable on both paths.
+    acknowledge_notes_saves(&mut frame);
+    let dense_scene = frame.paint();
+    assert_layer_cpu_pixels_match(&panned.scene, &dense_scene, SIZE);
+
+    frame.set_retained_layer_width(Some(8192));
+    let mut independent = PopulatedShellFixture::new(SIZE, Theme::dark().with_reduce_motion(true));
+    independent.relayout();
+    assert!(
+        independent.paint_with_damage().cache.is_none(),
+        "another producer has no live capability"
+    );
+
+    frame.host_mut().set_strip_scroll_for_test(120.5);
+    frame.relayout();
+    let fractional = frame.paint_with_damage();
+    assert!(
+        fractional
+            .cache
+            .as_ref()
+            .expect("baked layers remain eligible")
+            .strips
+            .is_empty()
+    );
+    let dense_scene = frame.paint();
+    assert_layer_cpu_pixels_match(&fractional.scene, &dense_scene, SIZE);
+
+    let mut external = fractional;
+    external.force_full();
+    assert!(
+        external.cache.is_none(),
+        "external scene changes invalidate layer authority"
+    );
+    frame.set_retained_layer_width(Some(64));
+    assert!(
+        frame.paint_with_damage().cache.is_none(),
+        "oversized outputs retain the dense path"
+    );
 }

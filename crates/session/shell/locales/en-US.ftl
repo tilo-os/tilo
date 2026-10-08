@@ -512,6 +512,7 @@ host-session-action-blocked = Session action blocked
 host-action-started = Started “{ $title }”
 host-action-admitted = Action job { $job } was admitted
 host-action-cannot-run = Can't run “{ $title }”
+host-action-failed-status = Couldn't run
 launchpad-action-unanswered = The app never answered
 host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
@@ -1021,14 +1022,14 @@ notification-remote-input-stopped-shares = { $count ->
    *[other] Remote control was removed from { $count } shares; sharing was stopped.
 }
 
-# Media codec pack notices
+# Media formats notices
 codec-hardware-ready = Hardware H.264/HEVC is ready
-codec-installed = Media codecs installed
-codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once RPM Fusion publishes a Mesa build matching this system.
-codec-failed = Media codecs could not be installed
+codec-installed = More video and audio formats are on
+codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once a matching driver is published.
+codec-failed = More video and audio formats could not be turned on
 codec-failed-retry = Open Settings, Updates, to try again.
 codec-failed-with-error = { $error } Open Settings, Updates, to try again.
-codec-app-name = Media codecs
+codec-app-name = Video and audio formats
 
 # Screen capture surfaces
 capture-live-alt = Live capture: { $title }
@@ -1779,31 +1780,25 @@ onboarding-done-system-care-body = Tilo checks signed system updates automatical
 onboarding-tour-take = Take a quick tour
 onboarding-finish = Continue to desktop
 
-# First-login setup: media codecs
-onboarding-codecs-title = Install media codecs?
-onboarding-codecs-body = H.264 and HEVC, the formats most videos, cameras and calls use, are patented and not part of Tilo. You can add them now with one click.
-onboarding-codecs-enables-title = What it enables
-onboarding-codecs-enables-hardware = Hardware-accelerated video on AMD and Intel graphics.
-onboarding-codecs-enables-playback = H.264 and HEVC playback in videos you open.
-onboarding-codecs-enables-encoding = H.264 and HEVC encoding for screen sharing, recording and calls.
-onboarding-codecs-source-title = Where it comes from
-onboarding-codecs-source = This computer downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo does not host or distribute them. You can remove them at any time in Settings, Updates. OpenH264 Video Codec provided by Cisco Systems, Inc. The complete Cisco binary license is in /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt and at https://www.openh264.org/BINARY_LICENSE.txt.
-onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when the codecs are ready.
+# First-login setup: more video and audio formats
+onboarding-codecs-title = Play more video and audio formats
+onboarding-codecs-note = Downloaded to this device from the formats' publishers. You can turn it off in Settings.
+onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when it is ready.
 onboarding-codecs-progress = Progress: { $percent }%
 onboarding-codecs-starting = Starting…
-onboarding-codecs-installing-title = Installing media codecs
-onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when the codecs are ready.
-onboarding-codecs-offline-title = Media codecs will install once you are online
-onboarding-codecs-offline-message = This computer is not connected to the internet. Your choice is saved: the codecs install automatically as soon as it is online, and you will get a notification.
-onboarding-codecs-installed-title = Media codecs installed
-onboarding-codecs-failed-title = Media codecs could not be installed
-onboarding-codecs-failed-message = Try again, or install them later from Settings, Updates.
-onboarding-codecs-failed-message-detail = { $error } Try again, or install them later from Settings, Updates.
-onboarding-codecs-installer-failed = The installer could not start: { $error }
+onboarding-codecs-installing-title = Installing more formats
+onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when it is ready.
+onboarding-codecs-offline-title = Installs once you are online
+onboarding-codecs-offline-message = This device is not connected to the internet. Your choice is saved: the download starts by itself once it is online, and you will get a notification.
+onboarding-codecs-installed-title = More video and audio formats are on
+onboarding-codecs-failed-title = Could not install more formats
+onboarding-codecs-failed-message = Try again, or later from Settings, Updates.
+onboarding-codecs-failed-message-detail = { $error } Try again, or later from Settings, Updates.
+onboarding-codecs-installer-failed = The download could not start: { $error }
 onboarding-codecs-skip = Skip
 onboarding-codecs-not-now = Not now
 onboarding-codecs-retry = Try again
-onboarding-codecs-install = Install media codecs
+onboarding-codecs-install = Install
 
 # Desktop tour
 onboarding-tour-eyebrow = Desktop tour
@@ -2453,3 +2448,35 @@ dictation-copy-failed = Clipboard unavailable. Your complete transcript is still
 search-action-tab-drag-cancel = Cancel tab drag
 search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
 search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
+
+display-confirm-answer-pending = Saving the display answer…
+display-confirm-answer-failed = Could not save the display answer: { $reason }
+
+display-sheet-saving-layout = Saving display layout…
+
+session-diagnostics-title = Session timing diagnostics
+session-diagnostics-configure = Configure timing for subsequent app launches
+session-diagnostics-inspect = Inspect session timing diagnostics
+session-diagnostics-presentation = Record content-free input and presentation timing
+session-diagnostics-gpu_stages = Record GPU stage timing
+session-diagnostics-gpu_timestamps = Enable GPU timestamps
+session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
+session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
+
+device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
+search-action-activity-acknowledge = Acknowledge viewed activity
+search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
+search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
+search-action-activity-tasks = Review workspace goals and agent work
+search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
+search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
+
+task-review-inspect = Inspect task evidence
+task-review-steer = Change task instructions
+task-review-cancel = Cancel task run
+task-review-retry = Retry task
+task-review-status = Inspect task review availability
+task-review-provider = Task review
+
+shell-launch-registry-unavailable = The app process registry is unavailable.
+shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.

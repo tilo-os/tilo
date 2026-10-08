@@ -247,6 +247,31 @@ impl ShellNetwork {
             })
             .ok()
     }
+
+    /// Native presence uses admitted governance, never the legacy hello cache.
+    pub(super) fn governed_presence_allows(
+        &self,
+        ws: u64,
+        device: iroh::EndpointId,
+        app: &str,
+        cluster: &str,
+    ) -> bool {
+        let Some(room) = self.unique_room_for_topic(ws) else {
+            return false;
+        };
+        if room.to_string() != cluster || app.is_empty() {
+            return false;
+        }
+        let Ok(owner) = self.native_owner() else {
+            return false;
+        };
+        owner
+            .with_current(room, |view| {
+                view.peer()
+                    .check_document_read(*device.as_bytes(), app, "", SystemTime::now())
+            })
+            .is_ok()
+    }
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).
     pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {

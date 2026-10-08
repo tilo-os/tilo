@@ -107,6 +107,12 @@ pub enum ImagerEffect {
         )]
         value: String,
     },
+    /// Set the owner SSH public key for the next write on this machine.
+    #[effect(permission = "admin")]
+    SetSshKey {
+        #[param("One OpenSSH public key, without authorized_keys options")]
+        value: String,
+    },
     /// Choose a disk image.
     #[effect(job)]
     ChooseImage,
@@ -510,6 +516,7 @@ mod tests {
             "status",
             "export-config",
             "set-wifi-psk",
+            "set-ssh-key",
             "rescan",
             "choose-drive",
             "choose-image",
@@ -616,6 +623,37 @@ mod tests {
             ),
             "the passphrase never reaches the document"
         );
+    }
+
+    #[test]
+    fn owner_ssh_key_effect_validates_and_stays_on_the_setup_machine() {
+        let mut app = customizing();
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
+        app.effect(&ImagerEffect::SetSshKey { value: key.into() })
+            .unwrap();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                assert_eq!(wizard.ssh_key_for_test(), key);
+            })
+            .expect("the hosted wizard");
+        assert!(
+            app.effect(&ImagerEffect::SetSshKey {
+                value: "no-pty ssh-ed25519 invalid".into()
+            })
+            .is_err()
+        );
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                assert_eq!(
+                    wizard.ssh_key_for_test(),
+                    key,
+                    "a rejected effect preserves the accepted key"
+                );
+            })
+            .expect("the hosted wizard");
+        assert!(app.read_document(|doc| {
+            !String::from_utf8_lossy(&doc.clone().save()).contains("owner@example")
+        }));
     }
 
     #[test]

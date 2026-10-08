@@ -20,14 +20,14 @@ use settings_store::hardware::{
     TouchpadScrollMethod,
 };
 use taffy::{NodeId, TaffyTree};
-use ui::framework::{ActionControl, EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{ActionControl, Effect as _, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::text_assistance::TextAssistancePrefs;
 use ui::theme::Theme;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Binds};
 use ui::widget::{
-    AppModel, Button, Dropdown, ModelPath, Row, Slider, Spacer, Text, Toggle, Widget,
+    AppModel, Button, Dropdown, ModelPath, Row, Slider, Spacer, Text, TextInput, Toggle, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -41,8 +41,8 @@ use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, choice_row, choice_row_described, error_caption, rows, setting_row,
-    setting_row_described,
+    El, caption, card, choice_row, choice_row_described, error_caption, field_row, rows,
+    setting_row, setting_row_described,
 };
 
 /// Bind a control to a Settings effect where it is built.
@@ -738,6 +738,12 @@ impl InputSections {
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum InputEffect {
+    /// Read configured input sources and the mounted Add language selector.
+    #[effect(returns, idempotent, device_only, permission = "read")]
+    InspectInputSources {
+        query: Option<String>,
+        page: Option<u32>,
+    },
     /// Turn the touchpad on or off on this device.
     #[effect(idempotent)]
     SetTouchpadEnabled { on: bool },
@@ -831,6 +837,32 @@ pub enum InputEffect {
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
+    /// Inspect this device's mounted keyboard map and current physical feedback.
+    #[effect(returns, idempotent, device_only, permission = "read")]
+    InspectKeyboardMap,
+    /// Inspect any installed XKB layout without changing what the keyboard types.
+    #[effect(idempotent)]
+    PreviewLayout { source: String },
+    /// Show the actual focused keyboard group and modifier state.
+    #[effect(idempotent)]
+    ShowLiveKeyboardMap,
+    /// Inspect XKB levels 5–8 when the selected layout supplies them.
+    #[effect(idempotent)]
+    SetPreviewExtraLevels { on: bool },
+    /// Inspect one of the compiled native modifier levels without applying it.
+    #[effect(idempotent)]
+    SetPreviewLevel { level: String },
+    /// Read a physical key’s complete legends without applying a layout.
+    #[effect(idempotent)]
+    InspectKeyboardKey { key: String },
+    /// Choose an explicit physical model for the preview and keyboard.
+    #[effect(idempotent)]
+    SetKeyboardModel {
+        #[param("The physical model", choices = ["pc104", "pc105", "jp106", "kr106"])]
+        model: String,
+    },
+    /// Type with the inspected layout, adding it when space is available.
+    ApplyPreview,
     /// Add an installed input source and type with it.
     AddSource {
         #[param("The source's id, such as `us` or `de`")]
@@ -857,6 +889,31 @@ pub enum InputEffect {
     /// Correct misspellings while typing, or stop.
     #[effect(idempotent)]
     SetAutoCorrect { on: bool },
+    /// Add an explicit word to this person's shared local dictionary.
+    AddDictionaryWord {
+        #[param("The spelling, including its intended capitalization")]
+        word: String,
+        #[param("Language tag, or empty for all languages")]
+        language: String,
+        #[param("The dictionary revision being edited")]
+        revision: u64,
+    },
+    /// Edit an existing personal word, preserving the chosen casing.
+    EditDictionaryWord {
+        old_word: String,
+        old_language: String,
+        word: String,
+        language: String,
+        revision: u64,
+    },
+    /// Remove one explicit addition from every local input consumer.
+    RemoveDictionaryWord {
+        word: String,
+        language: String,
+        revision: u64,
+    },
+    /// Reset this person's local dictionary. Other accounts are unchanged.
+    ResetDictionary { revision: u64 },
     /// Check spelling in one language, or the session's.
     #[effect(idempotent)]
     SetSpellingLanguage {
@@ -1028,6 +1085,92 @@ fn apply(
             }
             input.keyboard_layout = source;
         }
+        E::PreviewLayout { source } => {
+            if !installed(&source)
+                || settings_store::hardware::KeyboardInputSource::parse(&source).is_none()
+            {
+                return Err("the source is not an installed XKB layout".into());
+            }
+            input.keyboard_preview = Some(source);
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::ShowLiveKeyboardMap => {
+            input.keyboard_preview = None;
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::SetPreviewExtraLevels { on } => {
+            input
+                .keyboard_preview
+                .get_or_insert_with(|| input.keyboard_layout.clone());
+            input.keyboard_preview_extra_levels = on;
+            input.keyboard_preview_level = 0;
+        }
+        E::SetPreviewLevel { level } => {
+            let level = level
+                .parse::<usize>()
+                .ok()
+                .filter(|level| *level < 32)
+                .ok_or("invalid keyboard preview level")?;
+            let source = input
+                .keyboard_preview
+                .as_deref()
+                .unwrap_or(&input.keyboard_layout);
+            let map = crate::keyboard_preview::map_with_options(
+                source,
+                &input.keyboard_model,
+                String::new(),
+                Some(""),
+            )?;
+            if level >= map.level_count() {
+                return Err("the layout does not supply this level".into());
+            }
+            input.keyboard_preview = Some(source.to_owned());
+            input.keyboard_preview_level = level;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::InspectKeyboardKey { key } => {
+            let source = input
+                .keyboard_preview
+                .as_deref()
+                .unwrap_or(&input.keyboard_layout);
+            let map = crate::keyboard_preview::map_with_options(
+                source,
+                &input.keyboard_model,
+                String::new(),
+                Some(""),
+            )?;
+            if map.inspection_values(&key).is_none() {
+                return Err("the physical model does not supply this key".into());
+            }
+            input.keyboard_inspected_key = key;
+        }
+        E::SetKeyboardModel { model } => {
+            if !crate::keyboard_preview::valid_model(&model) {
+                return Err("unknown physical keyboard model".into());
+            }
+            input.keyboard_model = model;
+            input.keyboard_inspected_key = "AD01".into();
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::ApplyPreview => {
+            let source = input
+                .keyboard_preview
+                .clone()
+                .unwrap_or_else(|| input.keyboard_layout.clone());
+            let next = if input.keyboard_layouts.contains(&source) {
+                E::SetActiveSource { source }
+            } else {
+                E::AddSource { source }
+            };
+            apply(input, next, catalog)?;
+            input.keyboard_preview = None;
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+            return Ok(());
+        }
         E::AddSource { source } => {
             if !installed(&source) {
                 return Err(format!("`{source}` is not an installed input source"));
@@ -1130,7 +1273,15 @@ fn apply(
                 dial_for_id(&action).ok_or_else(|| format!("`{action}` is not a dial choice"))?;
             tablet_entry(input, &device)?.set_dial_action(dial, mode, action);
         }
-        E::SetSpellChecking { .. } | E::SetAutoCorrect { .. } | E::SetSpellingLanguage { .. } => {}
+        E::InspectInputSources { .. }
+        | E::InspectKeyboardMap
+        | E::SetSpellChecking { .. }
+        | E::SetAutoCorrect { .. }
+        | E::SetSpellingLanguage { .. }
+        | E::AddDictionaryWord { .. }
+        | E::EditDictionaryWord { .. }
+        | E::RemoveDictionaryWord { .. }
+        | E::ResetDictionary { .. } => {}
     }
     Ok(())
 }
@@ -1149,8 +1300,78 @@ pub(crate) fn answer(
     effect: InputEffect,
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if let InputEffect::InspectInputSources { query, page } = &effect {
+        return inspect_input_sources(app, query.as_deref(), page.unwrap_or(0))
+            .map(Effected::value);
+    }
+    if effect == InputEffect::InspectKeyboardMap {
+        return app.keyboard_inspection().map(Effected::value);
+    }
     let host = app.host();
     match effect {
+        InputEffect::AddDictionaryWord {
+            word,
+            language,
+            revision,
+        } => {
+            let word = ui::personal_dictionary::Word::new(
+                &word,
+                (!language.is_empty()).then_some(language.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            return ui::personal_dictionary::edit(
+                revision,
+                ui::personal_dictionary::Edit::Add(word),
+            )
+            .map(|()| Effected::done())
+            .map_err(|error| error.to_string());
+        }
+        InputEffect::EditDictionaryWord {
+            old_word,
+            old_language,
+            word,
+            language,
+            revision,
+        } => {
+            let old = ui::personal_dictionary::Word::new(
+                &old_word,
+                (!old_language.is_empty()).then_some(old_language.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            let new = ui::personal_dictionary::Word::new(
+                &word,
+                (!language.is_empty()).then_some(language.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            return ui::personal_dictionary::edit(
+                revision,
+                ui::personal_dictionary::Edit::Replace { old, new },
+            )
+            .map(|()| Effected::done())
+            .map_err(|error| error.to_string());
+        }
+        InputEffect::RemoveDictionaryWord {
+            word,
+            language,
+            revision,
+        } => {
+            let word = ui::personal_dictionary::Word::new(
+                &word,
+                (!language.is_empty()).then_some(language.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            return ui::personal_dictionary::edit(
+                revision,
+                ui::personal_dictionary::Edit::Remove(word),
+            )
+            .map(|()| Effected::done())
+            .map_err(|error| error.to_string());
+        }
+        InputEffect::ResetDictionary { revision } => {
+            return ui::personal_dictionary::edit(revision, ui::personal_dictionary::Edit::Reset)
+                .map(|()| Effected::done())
+                .map_err(|error| error.to_string());
+        }
         InputEffect::SetSpellChecking { on } => {
             return host.update(|text: &mut TextAssistancePrefs| text.check_spelling = on);
         }
@@ -1176,6 +1397,66 @@ pub(crate) fn answer(
         .set(&input)
         .map(|()| Effected::done())
         .map_err(|error| format!("the input settings could not be saved: {error}"))
+}
+
+fn input_picker_snapshot(widget: &dyn Widget) -> Option<serde_json::Value> {
+    if widget.test_id() == Some("input.source.add_picker") {
+        let dropdown = widget.as_any()?.downcast_ref::<Dropdown>()?;
+        let accessible = dropdown.accessibility();
+        return Some(serde_json::json!({
+            "selected": dropdown.selected(), "open": dropdown.is_open(),
+            "filter": dropdown.filter_query(),
+            "value": accessible.as_ref().and_then(|node| node.value.as_ref()),
+            "name": accessible.as_ref().and_then(|node| node.name.as_ref()),
+        }));
+    }
+    let mut result = None;
+    widget.for_each_child(&mut |child| {
+        if result.is_none() {
+            result = input_picker_snapshot(child);
+        }
+    });
+    result
+}
+
+/// Read the same bounded catalogue and shared selector the normal pane uses.
+fn inspect_input_sources(
+    app: &SettingsApp,
+    query: Option<&str>,
+    page: u32,
+) -> Result<serde_json::Value, String> {
+    let query = query.unwrap_or("");
+    if query.len() > 128 {
+        return Err("Input source query exceeds 128 bytes".into());
+    }
+    let query = query.to_lowercase();
+    let prefs = app.host().settings::<InputPrefs>().get();
+    let area = app.input();
+    let matches: Vec<_> = area
+        .catalog()
+        .iter()
+        .filter(|entry| {
+            entry.id.to_lowercase().contains(&query) || entry.label.to_lowercase().contains(&query)
+        })
+        .collect();
+    let total = matches.len();
+    let pages = total.div_ceil(32).max(1);
+    let page = usize::try_from(page).map_err(|_| "Input source page is out of range")?;
+    if page >= pages {
+        return Err("Input source page is out of range".into());
+    }
+    let sources: Vec<_> = matches.into_iter().skip(page * 32).take(32).map(|entry| {
+        let configured = prefs.keyboard_layouts.contains(&entry.id);
+        serde_json::json!({"id": entry.id, "label": entry.label, "configured": configured,
+            "can_add": !configured && crate::input_sources::has_room_for(&prefs.keyboard_layouts, &entry.id)})
+    }).collect();
+    let add_picker = (app.selected() == crate::categories::Category::MouseKeyboard)
+        .then(|| input_picker_snapshot(app))
+        .flatten();
+    Ok(serde_json::json!({"active_source": prefs.keyboard_layout,
+        "configured_sources": prefs.keyboard_layouts, "page": page, "pages": pages,
+        "total": total, "sources": sources, "catalogue_live": area.live,
+        "catalogue_error": area.catalog_error, "add_picker": add_picker}))
 }
 
 /// How often the attached-device snapshot is read again, so plugging a
@@ -1235,8 +1516,14 @@ impl InputArea {
 
     /// One live row per attached drawing tablet and pad, by device id.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let inspection = LiveRow::new(
+            "settings.keyboard-map",
+            "settings.keyboard-map",
+            t("input-map-title"),
+        )
+        .operation(crate::effects::SettingsEffect::from(InputEffect::InspectKeyboardMap).bound());
         let Some(devices) = self.devices() else {
-            return Vec::new();
+            return vec![inspection];
         };
         let row = |device: &InputDeviceSnapshot, id: String, kind: &str| {
             LiveRow::new(id, kind, device_title(device)).presentation(ResourcePresentation {
@@ -1244,15 +1531,20 @@ impl InputArea {
                 ..ResourcePresentation::default()
             })
         };
-        devices
-            .of_kind(InputDeviceKind::Tablet)
-            .into_iter()
-            .map(|device| row(device, tablet_resource_id(&device.key), "settings.tablet"))
+        std::iter::once(inspection)
             .chain(
                 devices
-                    .of_kind(InputDeviceKind::TabletPad)
+                    .of_kind(InputDeviceKind::Tablet)
                     .into_iter()
-                    .map(|device| row(device, pad_resource_id(&device.key), "settings.tablet-pad")),
+                    .map(|device| row(device, tablet_resource_id(&device.key), "settings.tablet"))
+                    .chain(
+                        devices
+                            .of_kind(InputDeviceKind::TabletPad)
+                            .into_iter()
+                            .map(|device| {
+                                row(device, pad_resource_id(&device.key), "settings.tablet-pad")
+                            }),
+                    ),
             )
             .collect()
     }
@@ -1279,10 +1571,28 @@ fn sample_catalog() -> Vec<CatalogEntry> {
     .to_vec()
 }
 
+type DictionaryKey = (String, Option<String>);
+type DictionaryFields = (ui::LocalState<String>, ui::LocalState<String>);
+
+pub(crate) struct KeyboardPreviewCache {
+    source: String,
+    model: String,
+    options: Option<String>,
+    map: ui::KeyboardMap,
+}
+
+pub(crate) type KeyboardPreviewCacheHandle =
+    std::rc::Rc<std::cell::RefCell<Option<KeyboardPreviewCache>>>;
+
 pub struct MouseKeyboardPane {
     cx: PaneCx,
     input: Followed<InputPrefs>,
     text: Followed<TextAssistancePrefs>,
+    dictionary: Option<ui::personal_dictionary::Snapshot>,
+    dictionary_identity: Option<[u8; 32]>,
+    dictionary_word: ui::LocalState<String>,
+    dictionary_language: ui::LocalState<String>,
+    dictionary_edits: RefCell<HashMap<DictionaryKey, DictionaryFields>>,
     /// The input section as shown: normalised.
     last: InputPrefs,
     catalog: Vec<CatalogEntry>,
@@ -1299,6 +1609,8 @@ pub struct MouseKeyboardPane {
     composed_text_growth_bits: u32,
     composed_locale_revision: u64,
     rect: Rect,
+    map_cache: KeyboardPreviewCacheHandle,
+    map_input: ui::KeyboardMapInput,
 }
 
 impl MouseKeyboardPane {
@@ -1312,6 +1624,12 @@ impl MouseKeyboardPane {
             cx,
             input,
             text,
+            dictionary: ui::personal_dictionary::snapshot().ok(),
+            dictionary_identity: ui::local_identity::bound()
+                .map(|identity| identity.group_public_key),
+            dictionary_word: ui::LocalState::new(String::new()),
+            dictionary_language: ui::LocalState::new(String::new()),
+            dictionary_edits: RefCell::new(HashMap::new()),
             last,
             catalog: area.catalog().to_vec(),
             catalog_error: area.catalog_error.clone(),
@@ -1323,10 +1641,197 @@ impl MouseKeyboardPane {
             composed_text_growth_bits: 1.0_f32.to_bits(),
             composed_locale_revision: ui::i18n::I18nManager::revision(),
             rect: Rect::ZERO,
+            map_cache: std::rc::Rc::default(),
+            map_input: ui::KeyboardMapInput::default(),
         };
         pane.observe_devices(area.devices().as_ref());
         pane.structure_dirty = false;
         pane
+    }
+
+    /// Share only ephemeral physical positions with the owning Settings page.
+    pub(crate) fn with_map_input(mut self, input: ui::KeyboardMapInput) -> Self {
+        self.map_input = input;
+        self
+    }
+
+    /// Retain one compiled preview while search reconstructs the page widgets.
+    pub(crate) fn with_map_cache(mut self, cache: KeyboardPreviewCacheHandle) -> Self {
+        self.map_cache = cache;
+        self
+    }
+
+    fn keyboard_preview(&self, source: &str) -> Result<ui::KeyboardMap, String> {
+        let options = settings_store::hardware::RichInputConfig {
+            compose_key: self.last.compose_key.clone(),
+            caps_lock: self.last.caps_lock.clone(),
+            ..Default::default()
+        }
+        .xkb_options()
+        .join(",");
+        let options = Some(options);
+        let mut cache = self.map_cache.borrow_mut();
+        if let Some(cache) = cache.as_ref()
+            && cache.source == source
+            && cache.model == self.last.keyboard_model
+            && cache.options == options
+        {
+            return Ok(cache.map.clone());
+        }
+        let map = crate::keyboard_preview::map_with_options(
+            source,
+            &self.last.keyboard_model,
+            t("input-map-title"),
+            options.as_deref(),
+        )?
+        .with_input(self.map_input.clone());
+        *cache = Some(KeyboardPreviewCache {
+            source: source.to_owned(),
+            model: self.last.keyboard_model.clone(),
+            options,
+            map: map.clone(),
+        });
+        Ok(map)
+    }
+
+    fn keyboard_inspection_controls(&self, map: ui::KeyboardMap) -> Vec<El> {
+        let mut content = Vec::new();
+        content.push(choice_row(
+            &t("input-map-level"),
+            Box::new(
+                id_dropdown(
+                    (0..map.level_count())
+                        .map(|level| {
+                            (
+                                level.to_string(),
+                                format!("{} {}", t("input-map-level"), level + 1),
+                            )
+                        })
+                        .collect(),
+                    &self.last.keyboard_preview_level.to_string(),
+                    "input.map.level",
+                    &t("input-map-level"),
+                )
+                .bound(&self.cx, effect(InputEffect::SET_PREVIEW_LEVEL)),
+            ),
+        ));
+        let inspected = self.last.keyboard_inspected_key.clone();
+        content.push(choice_row(
+            &t("input-map-inspect-key"),
+            Box::new(
+                id_dropdown(
+                    map.inspection_keys(),
+                    &inspected,
+                    "input.map.inspect-key",
+                    &t("input-map-inspect-key"),
+                )
+                .bound(&self.cx, effect(InputEffect::INSPECT_KEYBOARD_KEY)),
+            ),
+        ));
+        let details = map
+            .clone()
+            .with_live_layout(self.last.keyboard_preview.is_none());
+        let selected = inspected.clone();
+        let live = self.last.keyboard_preview.is_none();
+        content.push(Box::new(
+            Text::dynamic(move || match details.inspection_values(&selected) {
+                Some(values) if values.iter().any(|value| !value.is_empty()) => {
+                    format!(
+                        "{}\n{}",
+                        selected,
+                        values
+                            .iter()
+                            .enumerate()
+                            .map(|(level, value)| {
+                                if live {
+                                    format!("{}: {}", t("input-map-current-symbols"), value)
+                                } else {
+                                    format!("{} {}: {}", t("input-map-level"), level + 1, value)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                }
+                _ => t("input-map-inspection-unavailable"),
+            })
+            .with_id("input.keyboard-map.details"),
+        ));
+        content.push(Box::new(
+            map.with_inspected_key(&inspected)
+                .with_extra_levels(self.last.keyboard_preview_extra_levels)
+                .with_preview_level(self.last.keyboard_preview_level)
+                .with_live_layout(self.last.keyboard_preview.is_none())
+                .selectable()
+                .bound(&self.cx, effect(InputEffect::INSPECT_KEYBOARD_KEY)),
+        ));
+        content
+    }
+
+    fn keyboard_map_card(&self) -> El {
+        let source = self
+            .last
+            .keyboard_preview
+            .as_deref()
+            .unwrap_or(&self.last.keyboard_layout);
+        let choices = self
+            .catalog
+            .iter()
+            .filter(|entry| {
+                settings_store::hardware::KeyboardInputSource::parse(&entry.id).is_some()
+            })
+            .map(|entry| (entry.id.clone(), entry.label.clone()))
+            .collect();
+        let mut content = vec![
+            choice_row(
+                &t("input-map-layout"),
+                Box::new(
+                    id_dropdown(choices, source, "input.map.preview", &t("input-map-layout"))
+                        .bound(&self.cx, effect(InputEffect::PREVIEW_LAYOUT)),
+                ),
+            ),
+            choice_row(
+                &t("input-map-model"),
+                Box::new(
+                    id_dropdown(
+                        vec![
+                            ("pc104".into(), t("input-map-ansi")),
+                            ("pc105".into(), t("input-map-iso")),
+                            ("jp106".into(), t("input-map-jis")),
+                            ("kr106".into(), t("input-map-korean")),
+                        ],
+                        &self.last.keyboard_model,
+                        "input.map.model",
+                        &t("input-map-model"),
+                    )
+                    .bound(&self.cx, effect(InputEffect::SET_KEYBOARD_MODEL)),
+                ),
+            ),
+            caption(&t("input-map-instructions")),
+            caption(&t(if self.last.keyboard_preview.is_none() {
+                "input-map-live-description"
+            } else {
+                "input-map-preview-description"
+            })),
+        ];
+        match self.keyboard_preview(source) {
+            Ok(map) => content.extend(self.keyboard_inspection_controls(map)),
+            Err(_) => content.push(error_caption(&t("input-map-unavailable"))),
+        }
+        content.push(Box::new(self.cx.bind_invocation(
+            Button::new("input.map.live", &t("input-map-live")),
+            InputEffect::ShowLiveKeyboardMap,
+        )));
+        content.push(caption(&format!(
+            "{} {}",
+            t("input-map-levels"),
+            t("input-map-dead-keys")
+        )));
+        content.push(Box::new(self.cx.bind_invocation(
+            Button::new("input.map.apply", &t("input-map-apply")),
+            InputEffect::ApplyPreview,
+        )));
+        card(&t("input-map-title"), rows(content))
     }
 
     fn source_label(&self, id: &str) -> String {
@@ -1340,9 +1845,11 @@ impl MouseKeyboardPane {
         // The keyboard layout comes first: it is what most people open this
         // pane to change.
         let mut cards = vec![
+            self.keyboard_map_card(),
             self.input_sources_card(),
             self.keyboard_card(),
             self.spell_checker_card(),
+            self.dictionary_card(),
         ];
         if self.sections.touchpad {
             cards.push(self.touchpad_card());
@@ -1846,6 +2353,131 @@ impl MouseKeyboardPane {
         )
     }
 
+    fn dictionary_card(&self) -> Box<dyn Widget> {
+        let Some(snapshot) = &self.dictionary else {
+            return card(
+                &t("input-dictionary-title"),
+                rows(vec![caption(&t("input-dictionary-unavailable"))]),
+            );
+        };
+        let revision = snapshot.revision;
+        let word = self.dictionary_word.clone();
+        let language = self.dictionary_language.clone();
+        let add = self.cx.bind(
+            Button::new("dictionary.add", &t("input-dictionary-add")),
+            effect(InputEffect::ADD_DICTIONARY_WORD)
+                .map(move |()| (word.get(), language.get(), revision)),
+        );
+        let mut children = vec![
+            caption(&t("input-dictionary-caption")),
+            field_row(
+                &t("input-dictionary-word"),
+                Box::new(
+                    TextInput::from_state(&self.dictionary_word)
+                        .with_id("dictionary.word")
+                        .with_accessible_name(t("input-dictionary-word"))
+                        .with_placeholder(&t("input-dictionary-word-placeholder"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ),
+            ),
+            field_row(
+                &t("input-dictionary-language"),
+                Box::new(
+                    TextInput::from_state(&self.dictionary_language)
+                        .with_id("dictionary.language")
+                        .with_accessible_name(t("input-dictionary-language"))
+                        .with_placeholder(&t("input-dictionary-all-languages"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ),
+            ),
+            caption(&t("input-dictionary-language-caption")),
+            Box::new(add) as Box<dyn Widget>,
+        ];
+        for (index, entry) in snapshot.words.iter().enumerate() {
+            children.push(self.dictionary_word_row(index, entry, revision));
+        }
+        children.push(Box::new(
+            self.cx.bind_invocation(
+                Button::new("dictionary.reset", &t("input-dictionary-reset"))
+                    .with_enabled(!snapshot.words.is_empty()),
+                InputEffect::ResetDictionary { revision },
+            ),
+        ));
+        card(&t("input-dictionary-title"), rows(children))
+    }
+
+    fn dictionary_word_row(
+        &self,
+        index: usize,
+        entry: &ui::personal_dictionary::Word,
+        revision: u64,
+    ) -> Box<dyn Widget> {
+        let key = (entry.spelling.clone(), entry.language.clone());
+        let (word, language) = self
+            .dictionary_edits
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| {
+                (
+                    ui::LocalState::new(entry.spelling.clone()),
+                    ui::LocalState::new(entry.language.clone().unwrap_or_default()),
+                )
+            })
+            .clone();
+        let new_word = word.clone();
+        let new_language = language.clone();
+        let old_word = entry.spelling.clone();
+        let old_language = entry.language.clone().unwrap_or_default();
+        let save = self.cx.bind(
+            Button::new(
+                &format!("dictionary.{index}.save"),
+                &t("input-dictionary-save"),
+            ),
+            effect(InputEffect::EDIT_DICTIONARY_WORD).map(move |()| {
+                (
+                    old_word.clone(),
+                    old_language.clone(),
+                    new_word.get(),
+                    new_language.get(),
+                    revision,
+                )
+            }),
+        );
+        let remove = self.cx.bind_invocation(
+            Button::new(
+                &format!("dictionary.{index}.remove"),
+                &t("input-dictionary-remove"),
+            ),
+            InputEffect::RemoveDictionaryWord {
+                word: entry.spelling.clone(),
+                language: entry.language.clone().unwrap_or_default(),
+                revision,
+            },
+        );
+        Box::new(
+            Row::new()
+                .push(Box::new(
+                    TextInput::from_state(&word)
+                        .with_id(&format!("dictionary.{index}.word"))
+                        .with_accessible_name(t("input-dictionary-word"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ))
+                .push(Box::new(
+                    TextInput::from_state(&language)
+                        .with_id(&format!("dictionary.{index}.language"))
+                        .with_accessible_name(t("input-dictionary-language"))
+                        .with_placeholder(&t("input-dictionary-all-languages"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ))
+                .push(Box::new(save))
+                .push(Box::new(remove)),
+        )
+    }
+
     fn input_sources_card(&self) -> Box<dyn Widget> {
         let active_label = t("input-sources-active");
         let remove_label = t("input-sources-remove");
@@ -2125,6 +2757,29 @@ impl MouseKeyboardPane {
 
 impl Widget for MouseKeyboardPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        let identity = ui::local_identity::bound().map(|identity| identity.group_public_key);
+        let dictionary = ui::personal_dictionary::snapshot().ok();
+        if identity != self.dictionary_identity {
+            self.dictionary_word = ui::LocalState::new(String::new());
+            self.dictionary_language = ui::LocalState::new(String::new());
+            self.dictionary_edits.borrow_mut().clear();
+        }
+        if dictionary != self.dictionary || identity != self.dictionary_identity {
+            self.dictionary = dictionary;
+            self.dictionary_identity = identity;
+            self.dictionary_edits
+                .borrow_mut()
+                .retain(|(word, language), _| {
+                    self.dictionary.as_ref().is_some_and(|snapshot| {
+                        snapshot
+                            .words
+                            .iter()
+                            .any(|entry| &entry.spelling == word && &entry.language == language)
+                    })
+                });
+            self.structure_dirty = true;
+            self.composed = None;
+        }
         // The controls are built from the values: a change rebuilds them.
         if self.input.refresh() {
             let mut last = self.input.get().clone();
@@ -2260,6 +2915,140 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
+    #[test]
+    fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
+        use settings_store::personal_dictionary::{Service, Vocabulary, host::Host};
+        use std::sync::Arc;
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ui::local_identity::install_source(None);
+            }
+        }
+        let _guard = tilo_test_env::lock();
+        let _restore = Restore;
+        ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
+            ui::local_identity::LocalIdentity {
+                group_public_key: [1; 32],
+                display_name: String::new(),
+                avatar_color: [0; 3],
+            },
+        ))));
+        let profile = tempfile::tempdir().unwrap();
+        let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
+        let source = Arc::new(Host::new(
+            Arc::new(settings_store::HostDocument::new(
+                serde_json::Map::new(),
+                |_| Ok(()),
+            )),
+            service.clone(),
+            Arc::new(|| Some([1; 32])),
+        ));
+        let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
+        let mut host =
+            ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
+        app.harness().resize((1200, 2200)).unwrap();
+        let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
+        app.call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        app.harness().click_named("dictionary.word").unwrap();
+        app.harness().type_text("Tilo");
+        app.harness().click_named("dictionary.add").unwrap();
+        app.settle();
+        host.flush().unwrap();
+        app.settle();
+        let reader = service.reader().unwrap();
+        assert_eq!(
+            reader.snapshot().unwrap().hints("en").collect::<Vec<_>>(),
+            ["Tilo"]
+        );
+        app.effect(&SettingsEffect::Input(InputEffect::EditDictionaryWord {
+            old_word: "Tilo".into(),
+            old_language: String::new(),
+            word: "TiLo".into(),
+            language: "nl".into(),
+            revision: 1,
+        }))
+        .unwrap();
+        host.flush().unwrap();
+        app.settle();
+        assert_eq!(
+            reader.snapshot().unwrap().hints("nl").collect::<Vec<_>>(),
+            ["TiLo"]
+        );
+        let reopened = Service::new(profile.path().join("dictionary")).unwrap();
+        assert_eq!(
+            reopened.bind(Some([1; 32])).unwrap().snapshot().unwrap(),
+            reader.snapshot().unwrap()
+        );
+        if let Some(path) = std::env::var_os("TILO_DICTIONARY_LIVE_SCREENSHOT") {
+            app.harness().render_png(std::path::Path::new(&path));
+        }
+        app.harness().click_named("dictionary.0.remove").unwrap();
+        app.settle();
+        host.flush().unwrap();
+        app.settle();
+        assert!(reader.snapshot().unwrap().words.is_empty());
+        app.effect(&SettingsEffect::Input(InputEffect::AddDictionaryWord {
+            word: "Élodie".into(),
+            language: "fr".into(),
+            revision: 3,
+        }))
+        .unwrap();
+        host.flush().unwrap();
+        app.settle();
+        app.harness().click_named("dictionary.reset").unwrap();
+        app.settle();
+        host.flush().unwrap();
+        assert!(reader.snapshot().unwrap().words.is_empty());
+        ui::local_identity::install_source(Some(Arc::new(ui::local_identity::NoLocalIdentity)));
+        app.settle();
+        assert!(ui::personal_dictionary::snapshot().is_err());
+        assert!(!app.harness().targets().contains_key("dictionary.word"));
+        assert!(!app.harness().targets().contains_key("dictionary.0.word"));
+    }
+
+    #[test]
+    fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
+        use settings_store::personal_dictionary::{Edit, Service, Vocabulary, Word};
+        let profile = tempfile::tempdir().unwrap();
+        let service = Service::new(profile.path().join("dictionary")).unwrap();
+        let reader = service.bind(Some([1; 32])).unwrap();
+        for (word, language) in [("Tilo", None), ("Élodie", Some("fr")), ("東京", Some("ja"))] {
+            let revision = reader.snapshot().unwrap().revision;
+            service
+                .edit(
+                    &reader,
+                    revision,
+                    Edit::Add(Word::new(word, language).unwrap()),
+                )
+                .unwrap();
+        }
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = InputArea::new(&cx);
+        let mut pane = MouseKeyboardPane::new(cx, &area);
+        pane.dictionary = Some(reader.snapshot().unwrap());
+        let frame =
+            ui::headless::FrameHarness::new(ui::State::new(), pane.dictionary_card(), (1100, 760));
+        for control in [
+            "dictionary.word",
+            "dictionary.language",
+            "dictionary.add",
+            "dictionary.0.save",
+            "dictionary.0.remove",
+            "dictionary.reset",
+        ] {
+            assert!(
+                frame.targets().contains_key(control),
+                "missing shared dictionary control: {control}"
+            );
+        }
+        if let Some(path) = std::env::var_os("TILO_DICTIONARY_SCREENSHOT") {
+            frame.render_png(std::path::Path::new(&path));
+        }
+    }
+
     fn picker_node(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
         if node.test_id.as_deref() == Some("input.source.add_picker") {
             return Some(node);
@@ -2277,7 +3066,7 @@ mod tests {
         node.children.iter().find_map(spelling_language_value)
     }
 
-    fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
+    pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
         let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
         app.call_on(&address.resource, &address.action, serde_json::json!({}))
             .unwrap();
@@ -2663,6 +3452,265 @@ mod tests {
         assert_eq!(labels[1], ("areas".into(), "Bottom-right corner".into()));
     }
 
+    #[test]
+    fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let before = app.settings::<InputPrefs>().get();
+        let preview = InputEffect::PreviewLayout {
+            source: "de".into(),
+        };
+        let model = InputEffect::SetKeyboardModel {
+            model: "pc104".into(),
+        };
+        let levels = InputEffect::SetPreviewExtraLevels { on: true };
+        let effects = [
+            preview.clone(),
+            model.clone(),
+            levels.clone(),
+            InputEffect::SetPreviewLevel { level: "1".into() },
+            InputEffect::ShowLiveKeyboardMap,
+            InputEffect::ApplyPreview,
+        ];
+        let actions = app.actions().unwrap();
+        for effect in &effects {
+            assert!(
+                actions
+                    .iter()
+                    .any(|action| action.address.action == effect.id()),
+                "the actual Settings publisher must advertise {}",
+                effect.id()
+            );
+        }
+        assert!(set(&mut app, preview));
+        assert!(set(&mut app, model));
+        assert!(set(&mut app, levels));
+        let inspected = app.settings::<InputPrefs>().get();
+        assert_eq!(inspected.keyboard_layout, before.keyboard_layout);
+        assert_eq!(inspected.keyboard_layouts, before.keyboard_layouts);
+        assert_eq!(inspected.keyboard_model, "pc104");
+        assert_eq!(inspected.keyboard_preview.as_deref(), Some("de"));
+        assert!(inspected.keyboard_preview_extra_levels);
+        assert!(set(&mut app, InputEffect::ApplyPreview));
+        assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "de");
+        assert!(!set(
+            &mut app,
+            InputEffect::PreviewLayout {
+                source: "../../private".into()
+            }
+        ));
+        assert!(!set(
+            &mut app,
+            InputEffect::SetKeyboardModel {
+                model: "../../private".into()
+            }
+        ));
+        assert!(!set(
+            &mut app,
+            InputEffect::SetPreviewLevel { level: "99".into() }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::SetPreviewLevel { level: "1".into() }
+        ));
+        assert_eq!(app.settings::<InputPrefs>().get().keyboard_preview_level, 1);
+        assert!(set(&mut app, InputEffect::ShowLiveKeyboardMap));
+        let input = app.settings::<InputPrefs>().get();
+        assert!(input.keyboard_preview.is_none());
+        assert_eq!(input.keyboard_preview_level, 0);
+        assert_eq!(input.keyboard_layout, "de");
+    }
+
+    #[test]
+    fn keyboard_map_read_is_published_device_scoped_and_never_changes_preferences() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        let effect = InputEffect::InspectKeyboardMap;
+        let actions = app.actions().unwrap();
+        let action = actions
+            .iter()
+            .find(|action| action.address.action == effect.id())
+            .unwrap();
+        assert_eq!(
+            action.contract.permission,
+            ui::tilo_actions::PermissionRequirement::Read
+        );
+        assert!(
+            action
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
+        );
+        let address = action.address.clone();
+        let before = app.settings::<InputPrefs>().get();
+        let value = app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["page_visible"], false);
+        assert_eq!(value["pressed_physical_keys"], serde_json::json!([]));
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        let denied = app.call_by(
+            ui::tilo_actions::ActionInvoker {
+                actor: "unrelated-collaborator".into(),
+                participant: None,
+            },
+            &address.resource,
+            &address.action,
+            serde_json::json!({}),
+        );
+        assert!(
+            matches!(denied, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only")
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+    }
+
+    #[test]
+    fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let read = |app: &mut TestApp<SettingsShell>| {
+            app.call_on(
+                "settings.keyboard-map",
+                InputEffect::InspectKeyboardMap.id(),
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let open = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        assert!(set(
+            &mut app,
+            InputEffect::PreviewLayout {
+                source: "de".into()
+            }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::InspectKeyboardKey { key: "AD06".into() }
+        ));
+        let before = app.settings::<InputPrefs>().get();
+        app.harness().dispatch_to_root(&WindowEvent::Focused(true));
+        let preview = read(&mut app);
+        assert_eq!(preview["mode"], "preview");
+        assert_eq!(preview["available"], true);
+        assert_eq!(preview["source"], "de");
+        assert_eq!(preview["inspected_key"], "AD06");
+        assert!(
+            preview["selected_symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|symbol| symbol == "z")
+        );
+        let key = |state| WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            is_synthetic: false,
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::KeyY,
+                    ),
+                    state,
+                },
+                winit::keyboard::Key::Character("z".into()),
+                Some("z".into()),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                Some("z".into()),
+                winit::keyboard::Key::Character("z".into()),
+            ),
+        };
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Pressed));
+        assert_eq!(
+            read(&mut app)["pressed_physical_keys"],
+            serde_json::json!(["AD06"])
+        );
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Released));
+        assert_eq!(
+            read(&mut app)["pressed_physical_keys"],
+            serde_json::json!([])
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        assert!(set(&mut app, InputEffect::ShowLiveKeyboardMap));
+        let live = read(&mut app);
+        assert_eq!(live["mode"], "live");
+        assert_eq!(
+            live["available"], false,
+            "native evidence is mandatory, never preferred-layout fallback"
+        );
+        assert_eq!(live["selected_symbols"], serde_json::json!([]));
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Pressed));
+        app.harness().dispatch_to_root(&WindowEvent::Focused(false));
+        let blurred = read(&mut app);
+        assert_eq!(blurred["foreground"], false);
+        assert_eq!(blurred["pressed_physical_keys"], serde_json::json!([]));
+        let about = crate::effects::open_pane_address(crate::categories::Category::About);
+        app.call_on(&about.resource, &about.action, serde_json::json!({}))
+            .unwrap();
+        let off_page = read(&mut app);
+        assert_eq!(off_page["page_visible"], false);
+        assert_eq!(off_page["selected_symbols"], serde_json::json!([]));
+        assert_eq!(off_page["pressed_physical_keys"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn physical_key_inspection_is_published_validated_and_never_applies_layout() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let before = app.settings::<InputPrefs>().get();
+        let inspect = InputEffect::InspectKeyboardKey { key: "AD06".into() };
+        assert!(
+            app.actions()
+                .unwrap()
+                .iter()
+                .any(|action| action.address.action == inspect.id())
+        );
+        assert!(set(&mut app, inspect));
+        let inspected = app.settings::<InputPrefs>().get();
+        assert_eq!(inspected.keyboard_inspected_key, "AD06");
+        assert_eq!(inspected.keyboard_layout, before.keyboard_layout);
+        assert_eq!(inspected.keyboard_layouts, before.keyboard_layouts);
+        assert_eq!(inspected.keyboard_preview, before.keyboard_preview);
+        assert!(!set(
+            &mut app,
+            InputEffect::InspectKeyboardKey {
+                key: "../../private".into()
+            }
+        ));
+        assert!(!set(
+            &mut app,
+            InputEffect::InspectKeyboardKey { key: "AE13".into() }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::SetKeyboardModel {
+                model: "jp106".into()
+            }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::InspectKeyboardKey { key: "AE13".into() }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::SetKeyboardModel {
+                model: "pc104".into()
+            }
+        ));
+        assert_eq!(
+            app.settings::<InputPrefs>().get().keyboard_inspected_key,
+            "AD01",
+            "a model switch must not leave an absent JIS position selected"
+        );
+    }
+
     fn set(app: &mut TestApp<SettingsShell>, effect: InputEffect) -> bool {
         app.effect(&SettingsEffect::from(effect)).is_ok()
     }
@@ -2838,5 +3886,126 @@ mod tests {
             parse_dial_action_id(&dial_action_id(PadDial::Ring(2), 3)),
             Some(("ring", 2, 3))
         );
+    }
+}
+
+#[cfg(test)]
+mod input_inspection_tests {
+    use super::*;
+    use crate::resource::SettingsShell;
+    use ui::prelude::TestApp;
+
+    #[test]
+    fn installed_input_sources_have_a_bounded_device_read_without_mutating_preferences() {
+        let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        let action = app.actions().unwrap().into_iter()
+            .find(|action| action.address.action.ends_with("inspect-input-sources"))
+            .expect("the installed catalogue and active source must be readable through Settings' normal door");
+        assert_eq!(
+            action.contract.permission,
+            ui::tilo_actions::PermissionRequirement::Read
+        );
+        assert!(
+            action
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
+        );
+        let before = app.settings::<InputPrefs>().get();
+        let value = app
+            .call_on(
+                &action.address.resource,
+                &action.address.action,
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["active_source"], before.keyboard_layout);
+        assert_eq!(
+            value["configured_sources"],
+            serde_json::json!(before.keyboard_layouts)
+        );
+        assert_eq!(value["page"], 0);
+        assert!(value["sources"].as_array().unwrap().len() <= 32);
+        assert!(value["total"].as_u64().unwrap() > 0);
+        assert!(
+            value["add_picker"].is_null(),
+            "an off-page selector must not pretend to be mounted"
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        let refusal = app.call_by(
+            ui::tilo_actions::ActionInvoker {
+                actor: "unrelated-collaborator".into(),
+                participant: None,
+            },
+            &action.address.resource,
+            &action.address.action,
+            serde_json::json!({}),
+        );
+        assert!(
+            matches!(refusal, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only")
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+    }
+    #[test]
+    fn input_inspection_tracks_the_actual_unselected_open_shared_picker() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        super::tests::show_add_source(&mut app, (900, 700));
+        let address = app
+            .actions()
+            .unwrap()
+            .into_iter()
+            .find(|action| action.address.action.ends_with("inspect-input-sources"))
+            .unwrap()
+            .address;
+        let before = app.settings::<InputPrefs>().get();
+        let closed = app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed["add_picker"]["selected"], "");
+        assert_eq!(closed["add_picker"]["open"], false);
+        assert!(closed["add_picker"]["value"].is_null());
+        app.harness()
+            .click_named("input.source.add_picker")
+            .unwrap();
+        app.harness().type_text("French");
+        let open = app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(open["add_picker"]["selected"], "");
+        assert_eq!(open["add_picker"]["open"], true);
+        assert_eq!(open["add_picker"]["filter"], "French");
+        assert_eq!(open["add_picker"]["value"], "French");
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        let filtered = app
+            .call_on(
+                &address.resource,
+                &address.action,
+                serde_json::json!({"query":"French"}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["sources"][0]["id"], "fr");
+        assert!(
+            app.call_on(
+                &address.resource,
+                &address.action,
+                serde_json::json!({"page":1})
+            )
+            .is_err()
+        );
+        assert!(
+            app.call_on(
+                &address.resource,
+                &address.action,
+                serde_json::json!({"query":"x".repeat(129)})
+            )
+            .is_err()
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
     }
 }

@@ -43,6 +43,29 @@ static gchar *java_utf8(JNIEnv *env, jstring value, jsize limit) {
     return text;
 }
 
+// The entrypoint owns this launch-local anonymous descriptor. It conveys no
+// filesystem, notification, network or service privilege to a recovered child.
+JNIEXPORT void JNICALL Java_android_app_TiloChooser_recoveryJournalNative(
+        JNIEnv *env, jclass klass, jstring services) {
+    (void)klass;
+    const char *value = getenv("TILO_ANDROID_RECOVERY_FD");
+    char *end = NULL;
+    if (!value || !*value) return;
+    errno = 0;
+    long descriptor = strtol(value, &end, 10);
+    if (errno || !end || *end || descriptor < 3 || descriptor > INT32_MAX) return;
+    gchar *text = java_utf8(env, services, 4095);
+    if (!text) return;
+    size_t size = strlen(text);
+    if (ftruncate((int)descriptor, 0) ||
+            pwrite((int)descriptor, text, size, 0) != (ssize_t)size) {
+        ftruncate((int)descriptor, 0);
+        jclass error = (*env)->FindClass(env, "java/lang/IllegalStateException");
+        if (error) (*env)->ThrowNew(env, error, "foreground recovery journal unavailable");
+    }
+    g_free(text);
+}
+
 static jstring utf8_java(JNIEnv *env, const char *value) {
     if (!value) return NULL;
     glong length;

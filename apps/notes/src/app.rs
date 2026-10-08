@@ -311,7 +311,6 @@ pub struct NotesApp {
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
     transfer_toasts: ui::widget::toast::ToastStack,
-    last_toast_tick: ui::time::Instant,
     /// Shot-only override for the real save progress/failure presentation.
     /// Notes opens its workspace synchronously, so this does not alter live
     /// loading behavior or introduce a second production state source.
@@ -363,6 +362,7 @@ pub struct NotesApp {
     /// Forces a redraw when our own chrome changes without any child widget
     /// flagging itself dirty.
     self_dirty: bool,
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
@@ -589,7 +589,6 @@ impl NotesApp {
             save_surface: ui::SaveStatusSurface::new(),
             save_retry: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
-            last_toast_tick: ui::time::now(),
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
@@ -610,6 +609,7 @@ impl NotesApp {
             bound_page: None,
             laid_out: false,
             self_dirty: false,
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             canonical_synced: None,
             projection_adopted: false,
             dispatcher: None,
@@ -2423,6 +2423,7 @@ impl Widget for NotesApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let incoming = std::mem::take(scene);
         // No ground of our own: the window paints `surfaces.content`, and the
         // shell paints the sidebar's region.
         let drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
@@ -2437,6 +2438,7 @@ impl Widget for NotesApp {
         // note), then the page tree on the sidebar the shell painted.
         self.main
             .draw(scene, transform, text_renderer, theme, presence);
+        let main_scene = std::mem::take(scene);
         self.shell
             .draw(scene, transform, text_renderer, theme, presence);
         if self.sidebar_node.is_some() {
@@ -2453,10 +2455,6 @@ impl Widget for NotesApp {
         }
         // Transient floating status bubble (bottom-right).
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let now = ui::time::now();
-        self.transfer_toasts
-            .tick(now.saturating_duration_since(self.last_toast_tick));
-        self.last_toast_tick = now;
         // Toasts stand above the status bubble's corner.
         let gutter = f64::from(theme.tokens.spacing.s4);
         let lift = ui::status_bubble::pill_height(theme) + gutter;
@@ -2469,6 +2467,29 @@ impl Widget for NotesApp {
         self.transfer_toasts.place_bottom_right(toast_area, gutter);
         self.transfer_toasts
             .draw(scene, transform, text_renderer, theme, presence);
+        let outside = std::mem::take(scene);
+        let mut main_damage = Vec::new();
+        self.main.collect_damage(&mut main_damage);
+        self.paint_damage.record(
+            self.rect,
+            (!self.main.has_editor_popup()).then(|| {
+                ui::widget::paint_damage::PaintFrame::new(
+                    vec![self.rect, self.main.get_rect()],
+                    transform,
+                    theme,
+                    outside.clone(),
+                    vec![ui::widget::paint_damage::PaintPart::new(
+                        "note-main".into(),
+                        self.main.get_rect(),
+                        main_scene.clone(),
+                        main_damage,
+                    )],
+                )
+            }),
+        );
+        *scene = incoming;
+        scene.append(&main_scene, None);
+        scene.append(&outside, None);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2477,7 +2498,6 @@ impl Widget for NotesApp {
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
             || self.shell.needs_animation_frame()
-            || !self.transfer_toasts.is_empty()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -2652,7 +2672,21 @@ impl Widget for NotesApp {
             || self.shortcuts.needs_redraw()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
+        self.paint_damage.mark_drawn();
         self.self_dirty = false;
         self.shell.mark_drawn();
         self.sidebar.mark_drawn();
@@ -3234,6 +3268,37 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn capture_draw_preserves_the_import_notification_lifetime() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining;
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(
+            app.transfer_toasts.iter().next().unwrap().ttl_remaining,
+            lifetime,
+            "the real Notes draw must preserve a capture's transient notification"
+        );
+        assert_eq!(
+            app.transfer_toasts
+                .accessibility()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("Imported Project brief")
+        );
+    }
+
+    #[test]
     fn published_block_range_selects_unicode_in_the_real_editor_without_editing() {
         use tilo_document::{RichText, RichTextAction};
         use ui::tilo_resource::Invoke;
@@ -3379,7 +3444,7 @@ mod tests {
         eprintln!("phase images_beside_a_launched_file_join_the_notebook");
         {
             let source = TempDir::new().unwrap();
-            let bytes = include_bytes!("../../settings/shots/settings.png");
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
             std::fs::write(source.path().join("photo.png"), bytes).unwrap();
             std::fs::write(source.path().join("outside.png"), bytes).unwrap();
             let markdown = "![Portable](photo.png)\n![Kept](https://example.test/a.png)\n";
@@ -3397,7 +3462,11 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let image = tmp.path().join("image.png");
-            std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
+            std::fs::write(
+                &image,
+                include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")),
+            )
+            .unwrap();
             let markdown = "![Repeated](image.png)\n".repeat(10);
 
             let (imported, assets) =
@@ -3414,7 +3483,7 @@ mod tests {
         ui::i18n::I18nManager::init("en-US");
         let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
         let page = PageId::new_v4();
-        let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+        let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")).to_vec();
         let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
         for action in [
             actions::new_page_action(page, None, "a".into(), "Shots"),
@@ -3991,7 +4060,7 @@ mod tests {
     fn exported_notes_carry_their_images_and_import_them_again() {
         eprintln!("phase an_exported_note_carries_its_images_and_imports_them_again");
         {
-            let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")).to_vec();
             let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
             let assets = HashMap::from([(source.clone(), bytes.clone())]);
             let markdown = format!("Intro\n\n![Diagram]({source})\n![Elsewhere](asset:missing)\n");

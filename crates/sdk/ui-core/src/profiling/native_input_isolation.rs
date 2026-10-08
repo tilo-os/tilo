@@ -28,6 +28,7 @@ pub(super) fn dispatch(
                 | WindowEvent::MouseWheel { .. }
                 | WindowEvent::KeyboardInput { .. }
                 | WindowEvent::ModifiersChanged(_)
+                | WindowEvent::KeyboardLayoutChanged(_)
                 | WindowEvent::Ime(_)
                 | WindowEvent::Touch(_)
                 | WindowEvent::PinchGesture { .. }

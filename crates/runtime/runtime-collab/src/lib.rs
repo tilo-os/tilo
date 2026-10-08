@@ -45,6 +45,8 @@
 #[cfg(feature = "client")]
 use std::rc::Rc;
 
+pub mod file_clipboard;
+
 #[cfg(feature = "client")]
 use runtime_portal::NotAvailable;
 
@@ -65,6 +67,15 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+/// The host distinguishes local UI intent from continuation of a published action.
+/// A published id is resolved only against broker-retained original custody.
+#[derive(Clone, Copy, Debug)]
+pub enum DisplayOrigin {
+    LocalHost,
+    Published([u8; 16]),
+}
+
+pub mod audio_output;
 pub mod committed_document;
 #[cfg(feature = "client")]
 pub mod live_activity;
@@ -852,6 +863,37 @@ impl NearbyTransferReply {
 
 #[cfg(feature = "client")]
 impl ChannelHandle {
+    /// Send PCM or controls to this launched application's output-only service.
+    ///
+    /// # Errors
+    /// Fails closed when the authenticated output service is absent or refuses the command.
+    pub async fn audio_output_command(
+        &self,
+        command: &audio_output::Command,
+    ) -> Result<audio_output::Snapshot, NotAvailable> {
+        let bytes = command
+            .encode()
+            .map_err(|error| NotAvailable::Capnp(capnp::Error::failed(error.into())))?;
+        let mut request = self.inner.audio_output_command_request();
+        request.get().set_command(&bytes);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply()?;
+        if bytes.len() > audio_output::MAX_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "audio output reply too large".into(),
+            )));
+        }
+        let snapshot: audio_output::Snapshot = serde_json::from_slice(bytes).map_err(|_| {
+            NotAvailable::Capnp(capnp::Error::failed("invalid audio output reply".into()))
+        })?;
+        if !snapshot.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid audio output state".into(),
+            )));
+        }
+        Ok(snapshot)
+    }
+
     /// Read this channel's current committed history. Unsupported peers remain
     /// unavailable; only an explicit Legacy response selects legacy storage.
     ///
@@ -978,6 +1020,37 @@ impl ChannelHandle {
             )));
         }
         Ok(decoded)
+    }
+
+    /// Run a bounded local Files command under its original invocation, if any.
+    /// Submit a local Files command on this admitted channel.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed or unavailable commands and replies.
+    pub async fn local_file_clipboard_command(
+        &self,
+        command: &file_clipboard::Command,
+        parent: Option<[u8; 16]>,
+    ) -> Result<file_clipboard::Reply, NotAvailable> {
+        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
+        if !command.valid() {
+            return Err(failed("invalid local clipboard command".into()));
+        }
+        let bytes = serde_json::to_vec(command).map_err(|error| failed(error.to_string()))?;
+        if bytes.len() > file_clipboard::MAX_WIRE_BYTES {
+            return Err(failed("clipboard command exceeds bound".into()));
+        }
+        let mut request = self.inner.local_file_clipboard_request();
+        request.get().set_command_json(&bytes);
+        request
+            .get()
+            .set_on_behalf_of(parent.as_ref().map_or(&[], |id| id.as_slice()));
+        let response = request.send().promise.await?;
+        let bytes = response.get()?.get_reply_json()?;
+        if bytes.len() > file_clipboard::MAX_WIRE_BYTES {
+            return Err(failed("clipboard reply exceeds bound".into()));
+        }
+        serde_json::from_slice(bytes).map_err(|error| failed(error.to_string()))
     }
 
     /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated

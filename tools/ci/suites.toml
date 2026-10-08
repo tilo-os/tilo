@@ -37,6 +37,15 @@
 # `inputs` saying what they read. A [[cargo-exempt]] entry names a reading file
 # whose read CI never runs, with the reason.
 
+[[covered]]
+suite = "tools/test-assets.py"
+by = "tools/tests/test_test_assets.py"
+
+[[group]]
+name = "android-runtime-supervisor"
+inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "tools/android/test_sticky_entry.py"]
+suites = ["tools/android/test_sticky_entry.py"]
+
 [[group]]
 name = "session-diagnostics"
 inputs = ["dist/session/tilo-flight-recorder.py"]
@@ -46,6 +55,7 @@ suites = ["os/tests/flight_recorder_test.py"]
 name = "os"
 inputs = ["os/"]
 suites = [
+  "os/dev/test-assemble-app-runtime.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",
@@ -53,6 +63,7 @@ suites = [
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
+  "os/tests/board_release_promotion.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
@@ -71,6 +82,7 @@ suites = [
   "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
+  "os/tests/test_firstboot_credential_transport.py",
   "os/tests/boot_order_enlist_test.py",
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
@@ -126,6 +138,7 @@ suites = [
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
+  "os/tests/test_installer_firstboot_runtime.py",
   "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_code_refresh.py",
@@ -317,11 +330,11 @@ suites = ["apps/imager/packaging/test_build_desktop_catalog.py"]
 [[group]]
 name = "ntfs-helper"
 inputs = ["crates/session/tilo-ntfs-helper/"]
-suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py"]
+suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/session/tilo-ntfs-helper/tests/test_source_artifact.py"]
 
 [[group]]
 name = "dist"
-inputs = ["dist/"]
+inputs = ["dist/", "os/registry-runtime-publisher.hex"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
@@ -362,6 +375,10 @@ suites = [
   "scripts/vm-acceptance/test_ci_select.py",
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
+  "scripts/vm-acceptance/test_terminal_cohort.py",
+  "scripts/vm-acceptance/test_app_cohort.py",
+  "scripts/vm-acceptance/test_store_chooser.py",
+  "scripts/vm-acceptance/test_runtime_backing.py",
 ]
 
 [[group]]
@@ -484,6 +501,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-revocation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
 ]
@@ -513,11 +531,6 @@ suites = [
 # listed in the entry's optional `scope`: then only the scope's `filter`
 # (a nextest filterset) within its `test` target runs for that package.
 
-[[cargo]]
-package = "file-explorer"
-# Breadcrumb geometry shapes labels with the shipped toolkit font fixture.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/file-explorer/src/path_bar.rs"]
 
 [[cargo]]
 package = "tilo-ui"
@@ -532,8 +545,13 @@ inputs = [
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
   "crates/browser/paint-stream/tests/fixtures/",
+  "crates/browser/tilo-browser-runtime/src/background_work.rs",
+  "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
+  "tools/test-assets.py",
 ]
 readers = [
+  "crates/sdk/ui-core/src/headless.rs",
+  "crates/sdk/ui-core/build.rs",
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
@@ -548,17 +566,6 @@ scope = { inputs = [
   "crates/sdk/tilo-app/src/framework/app.rs",
 ], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
 
-[[cargo]]
-package = "ui-examples"
-# Gallery and type specimen shots render with the toolkit's checked-in fonts.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = [
-  "crates/dev/ui-examples/examples/gallery_shots.rs",
-  "crates/dev/ui-examples/examples/type_specimen_shots.rs",
-  "crates/dev/ui-examples/examples/distinct_letters_shots.rs",
-  "crates/dev/ui-examples/examples/distinct_letters_specimen.rs",
-  "crates/dev/ui-examples/examples/reading_face_shots.rs",
-]
 
 [[cargo]]
 package = "tilo-app-package"
@@ -576,8 +583,21 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
+inputs = [
+  "apps/*/tilo-app.toml",
+  "os/usr/lib/tilo/jit-entitled.conf",
+  "os/usr/lib/tilo/web-engine-entitled.conf",
+  "os/usr/share/tilo/system-interfaces.toml",
+  "tools/with-test-environment.sh",
+  "scripts/headless-examples/startup-frame-timeline.py",
+  "scripts/headless-examples/_control.py",
+]
+readers = [
+  "crates/packaging/launcher/src/manifest.rs",
+  "crates/packaging/launcher/src/seccomp.rs",
+  "crates/packaging/launcher/src/services.rs",
+  "crates/packaging/launcher/examples/startup_frame_timeline.rs",
+]
 
 [[cargo]]
 package = "tilo-vm"
@@ -704,9 +724,10 @@ readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 package = "tilo-fs"
 inputs = [
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
-  "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/sample.docx",
+  "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
+  "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
-readers = ["crates/system/fs/src/main.rs", "crates/system/fs/src/tests/mod.rs"]
+readers = ["crates/system/fs/src/main.rs", "crates/system/fs/build.rs"]
 
 [[cargo]]
 package = "system-extension"
@@ -759,9 +780,8 @@ readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
 package = "tilo-doc-codecs"
-inputs = ["crates/doc/fixtures/"]
-readers = ["crates/doc/tilo-doc-codecs/src/bulk_equivalence.rs", "crates/doc/tilo-doc-codecs/tests/office_roundtrip.rs",
-           "crates/doc/tilo-doc-codecs/tests/binary_inputs.rs", "crates/doc/tilo-doc-codecs/tests/office_fidelity.rs"]
+inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["crates/doc/tilo-doc-codecs/build.rs"]
 
 [[cargo]]
 package = "ush"
@@ -782,18 +802,13 @@ readers = ["crates/agent/local-model-service/src/main.rs"]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/sdk/font-catalog/src/lib.rs"]
+inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
+readers = ["crates/sdk/font-catalog/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
-# The reader's tests open the engine's typeset fixtures.
-inputs = ["crates/platform/tilo-pdf/tests/fixtures/"]
-readers = [
-  "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
-  "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",
-  "apps/pdf-viewer/tests/capture.rs",
-]
+inputs = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/pdf-viewer/build.rs"]
 
 [[cargo]]
 package = "tilo-agent-participant"
@@ -813,24 +828,25 @@ inputs = ["docs/app-model/formats.md"]
 readers = ["crates/doc/format-host/tests/integration.rs"]
 
 [[cargo]]
-package = "notes"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
-readers = [
-  "apps/notes/src/app.rs",
-  "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
-  "apps/notes/tests/effects.rs",
-]
+package = "tilo-projector"
+# The CI target compiles the exact production TLS source, including its tests.
+inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_auth/"]
+readers = ["crates/system/projector/tests/cast_tls.rs", "crates/system/projector/tests/cast_auth.rs"]
+scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/"], test = "cast_tls", filter = "binary(cast_tls)" }
 
 [[cargo]]
-package = "ebook"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/ebook/src/app/interaction_tests.rs"]
+package = "notes"
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs", "apps/settings/shots/artifacts.json"]
+readers = ["apps/notes/build.rs"]
+
 
 [[cargo]]
 package = "shell"
 inputs = [
   "apps/browser/tilo-app.toml",
+  "apps/file-explorer/tilo-app.toml",
   "tools/protocols/airdrop_sender.py",
+  "tools/test-assets.py",
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
@@ -839,31 +855,18 @@ inputs = [
   "scripts/headless-examples/",
 ]
 readers = [
+  "crates/session/shell/examples/files_clipboard_native.rs",
+  "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
-  "crates/session/shell/examples/support/populated_shell_fixture.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",
+  "crates/session/shell/tests/support/snapshot.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
-  "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
-  "crates/session/shell/src/shell/test_support.rs",
-  "crates/session/shell/tests/input_method_wire.rs",
 ]
 
-[[cargo]]
-package = "chat"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/chat/src/component_tests.rs"]
 
-[[cargo]]
-package = "word-processor"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/word-processor/tests/canonical_component.rs"]
 
-[[cargo]]
-package = "tilo-desktop"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
 package = "tilo-relay-protocol"
@@ -874,8 +877,8 @@ readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
 package = "tilo-browser-peer"
 # The actual microphone fixture serves the production web modules and pinned
 # MoQ bundle to two isolated Chromium profiles.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"]
-readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
+readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo-exempt]]
@@ -1392,6 +1395,18 @@ reason = "explicit root private-mount-namespace integration entrypoint; run with
 package = "runtime-bundle"
 inputs = [
   "tools/apps/browser_runtime_release.py",
+  "tools/apps/signal_runtime_fixture.py",
+  "tools/apps/signal_provider_release.py",
+  "tools/apps/signal_zero_runtime.py",
+  "os/dev/cache-github-assets.sh",
+  "tools/apps/pack-signal-provider.sh",
+  "os/scripts/prepare-signal-provider.py",
+  "os/signal-provider/java/",
+  "tools/tests/SignalProviderIdentityFixture.java",
+  "tools/tests/SignalProviderProxyFixture.java",
+  "os/scripts/stage-signal-runtime.py",
+  "os/external-assets/signal-runtime.json",
+  "os/external-assets/github-assets.tsv",
   "tools/apps/pack-runtime-package.sh",
   "scripts/browser/",
   "apps/browser/chromium/",
@@ -1401,4 +1416,46 @@ inputs = [
   "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
   "os/Containerfile",
 ]
-readers = ["crates/packaging/runtime-bundle/examples/browser_runtime_release.rs"]
+readers = [
+  "crates/packaging/runtime-bundle/examples/browser_runtime_release.rs",
+  "crates/packaging/runtime-bundle/examples/signal_runtime_fixture.rs",
+  "crates/packaging/runtime-bundle/examples/signal_provider_release.rs",
+]
+
+[[covered]]
+suite = "tools/font-catalog.py"
+by = "tools/tests/test_font_artifacts.py"
+
+[[cargo]]
+package = "ebook"
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/ebook/src/app/interaction_tests.rs", "apps/ebook/build.rs"]
+
+[[cargo]]
+package = "store"
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/store/build.rs"]
+
+[[cargo]]
+package = "tilo-pdf"
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["crates/platform/tilo-pdf/build.rs"]
+
+[[group]]
+name = "browser-fixture-assets"
+inputs = ["tools/web/fixture-assets.mjs", "tools/test-assets.py"]
+suites = ["tools/web/fixture-assets.test.mjs"]
+
+[[cargo]]
+package = "video-editor"
+inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+readers = ["apps/video-editor/build.rs"]
+
+[[cargo]]
+package = "video-player"
+inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+readers = ["apps/video-player/build.rs"]
+
+[[covered]]
+suite = "tools/android/mediation/prepare-res.py"
+by = "tools/tests/test_android_fixture_resources.py"

@@ -1264,6 +1264,16 @@ fn pump_floating_surface_service(
                     }
                     changed = true;
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::MoveDeviceDisplay {
+                    request,
+                    placement,
+                } => {
+                    let result = frame_builder
+                        .host_mut()
+                        .request_device_display_move(&app_id, placement);
+                    service.send(connection, &ui::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult { request, result });
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
                     if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
                         if let Some(writer) = service.reply_writer(connection) {
@@ -2254,6 +2264,7 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
     reader: BufReader<UnixStream>,
+    input: test_control::BoundedLineBuffer,
     /// Accepted on the agent-control socket: only
     /// [`test_control::Command::agent_permitted`] commands are served.
     agent: bool,
@@ -2313,6 +2324,7 @@ impl TestControlConn {
         }
         Some(Self {
             reader: BufReader::new(stream),
+            input: test_control::BoundedLineBuffer::default(),
             agent,
             admin: false,
             wake: None,
@@ -5020,14 +5032,18 @@ fn pump_test_control_conn(
             PendingConnectionProgress::Idle | PendingConnectionProgress::WroteResponse => {}
         }
         let mut line = zeroize::Zeroizing::new(String::new());
-        match read_bounded_line(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES) {
+        match conn
+            .input
+            .read(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES)
+        {
             Ok(None) => {
                 conn.closed = true;
                 return injected_input;
             }
             Ok(Some(())) => {
                 let mut scope: Option<AgentScope> = None;
-                let (resp, actions) = match parse_request(&line) {
+                let mut diagnostic_query = None;
+                let (mut resp, actions) = match parse_request(&line) {
                     Ok(request)
                         if conn.admin
                             && (request.agent.is_some()
@@ -5087,6 +5103,26 @@ fn pump_test_control_conn(
                             }
                             continue;
                         }
+                        if conn.admin && agent.is_none() && !session.is_locked() {
+                            if let test_control::Command::ActionsEnumerate { query, .. } =
+                                &request.command
+                            {
+                                diagnostic_query = Some(query.clone());
+                            }
+                            if let Some(response) =
+                                super::diagnostic_actions::dispatch(&request.command)
+                            {
+                                let progress = queue_test_control_response(conn, &response);
+                                if matches!(
+                                    progress,
+                                    PendingConnectionProgress::Closed
+                                        | PendingConnectionProgress::OutputPending
+                                ) {
+                                    return injected_input;
+                                }
+                                continue;
+                            }
+                        }
                         match agent {
                             Some(_)
                                 if session.is_locked()
@@ -5140,6 +5176,9 @@ fn pump_test_control_conn(
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
+                if let Some(query) = diagnostic_query.as_deref() {
+                    super::diagnostic_actions::append_catalogue(&mut resp, query);
+                }
                 if let Some(scope) = &scope {
                     state.client_input.set_participant(Some(scope.peer));
                     ctx.snapshot_crop = Some(scope.viewport);
@@ -5264,6 +5303,7 @@ fn apply_session_transition(
     pipe: Option<&present::PresentPipe>,
     local_session: Option<&LocalSessionLifecycle>,
     dimmer: &mut ScreenDimmer<impl Backlight>,
+    output_management: Option<&mut super::output_management::OutputManagementState>,
 ) {
     if let Some(local_session) = local_session {
         match transition {
@@ -5280,12 +5320,18 @@ fn apply_session_transition(
         SessionTransition::Dimmed => dimmer.dim(),
         SessionTransition::Undimmed => dimmer.restore(),
         SessionTransition::Blanked => {
+            if let Some(management) = output_management {
+                management.set_session_blanked(true);
+            }
             backend.set_dpms(false);
             if let Some(p) = pipe {
                 p.set_dpms(false);
             }
         }
         SessionTransition::Woke => {
+            if let Some(management) = output_management {
+                management.set_session_blanked(false);
+            }
             backend.set_dpms(true);
             if let Some(p) = pipe {
                 p.set_dpms(true);
@@ -5295,6 +5341,48 @@ fn apply_session_transition(
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
     }
+}
+
+/// Apply owner-session output power without turning it into input or unlock.
+/// A global idle blank also belongs to the presenter, so restoring only the
+/// connector cannot make a frame visible. Returns whether a paint is owed.
+fn apply_output_power_request(
+    request: (OutputId, bool),
+    session: &mut SessionManager,
+    backend: &mut dyn Backend,
+    pipe: Option<&present::PresentPipe>,
+    local_session: Option<&LocalSessionLifecycle>,
+    dimmer: &mut ScreenDimmer<impl Backlight>,
+    management: &mut super::output_management::OutputManagementState,
+    now: Instant,
+) -> bool {
+    let (output, on) = request;
+    if on {
+        let transitions = session.request_display_wake(now);
+        let woke = transitions.contains(&SessionTransition::Woke);
+        for transition in transitions {
+            apply_session_transition(
+                transition,
+                backend,
+                pipe,
+                local_session,
+                dimmer,
+                Some(&mut *management),
+            );
+        }
+        if !woke {
+            apply_session_transition(
+                SessionTransition::Woke,
+                backend,
+                pipe,
+                local_session,
+                dimmer,
+                Some(management),
+            );
+        }
+    }
+    backend.set_output_power(output, on);
+    on
 }
 
 fn publish_native_session_state(
@@ -6263,6 +6351,12 @@ fn install_device_fabric_bridge(
                 return Ok(view.clone());
             }
             match action {
+                DeviceFabricUiAction::MoveDisplay(request) => {
+                    crate::shell::device_fabric_runtime::move_device_display(
+                        &fabric_net,
+                        &request,
+                    )?;
+                }
                 DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
                 DeviceFabricUiAction::WakeDevice { device } => {
                     crate::shell::device_wake::request_wake(&fabric_net, &device)?;
@@ -6580,10 +6674,7 @@ fn spawn_session_peer_sync(
     state: &mut State,
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<Arc<crate::shell::network::ShellNetwork>> {
-    match crate::shell::network::ShellNetwork::spawn(
-        tree_handle.clone(),
-        &crate::shell::network::peer_key_path(),
-    ) {
+    match crate::shell::network::ShellNetwork::spawn_for_session(tree_handle.clone()) {
         Ok(handle) => Some(install_session_peer_sync(
             frame_builder,
             state,
@@ -6607,11 +6698,8 @@ fn start_session_peer_sync(
 ) -> crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork> {
     match crate::session_runtime::runtime() {
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
-            crate::shell::network::ShellNetwork::spawn(
-                tree_handle,
-                &crate::shell::network::peer_key_path(),
-            )
-            .map_err(|error| error.to_string())
+            crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
+                .map_err(|error| error.to_string())
         }),
         Err(error) => crate::session_runtime::PendingStart::finished(Err(format!(
             "the session runtime is unavailable: {error}"
@@ -6782,6 +6870,9 @@ fn attach_collab_broker_bridges(
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
+    }
+    if let Some(review) = broker.task_review() {
+        frame_builder.host_mut().attach_task_review(review);
     }
     if let Some(realtime) = broker.realtime_fabric_bridge() {
         frame_builder
@@ -8272,12 +8363,21 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    state.output_management.set_wake(Arc::clone(&session_wake));
+    crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
+    notif_bridge.set_wake(Arc::clone(&session_wake));
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
     }
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_messaging_record_wake(Arc::clone(&session_wake));
+        }
+    });
     let chooser_attended = Arc::new(AtomicBool::new(false));
     let mut published_room = PublishedRoom::new();
     let chooser_service = start_chooser_service(
@@ -8410,6 +8510,9 @@ pub fn run() {
     match crate::session_runtime::runtime() {
         Ok(rt) => {
             let bridge = notif_bridge.clone();
+            let notification_workspaces = portal_backend
+                .as_ref()
+                .map(|portal| portal.media_grants.clone());
             notif_handle = Some(crate::session_runtime::Registration::start(
                 rt.handle(),
                 "notifications",
@@ -8422,6 +8525,7 @@ pub fn run() {
                         crate::portal::CallerMap::new(),
                         conn.clone(),
                         priority_contacts,
+                        notification_workspaces,
                     );
                     let handle =
                         crate::notifications::serve_notifications(conn.clone(), service).await?;
@@ -9130,6 +9234,7 @@ pub fn run() {
                             present_pipe.as_ref(),
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
+                            Some(&mut state.output_management),
                         );
                     }
                     if let Some(steps) = key_steps.as_mut() {
@@ -9252,6 +9357,7 @@ pub fn run() {
                                         present_pipe.as_ref(),
                                         local_session_lifecycle.as_ref(),
                                         &mut screen_dimmer,
+                                        Some(&mut state.output_management),
                                     );
                                 }
                             }
@@ -9304,6 +9410,7 @@ pub fn run() {
                                 present_pipe.as_ref(),
                                 local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
+                                Some(&mut state.output_management),
                             );
                         }
                     } else if route == PriorityRoute::ToggleMouseKeys {
@@ -9536,6 +9643,7 @@ pub fn run() {
                                 present_pipe.as_ref(),
                                 local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
+                                Some(&mut state.output_management),
                             );
                         }
                         apply_shell_gesture(&mut frame_builder, action);
@@ -9692,6 +9800,7 @@ pub fn run() {
                     present_pipe.as_ref(),
                     local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
+                    Some(&mut state.output_management),
                 );
             }
         }
@@ -9757,6 +9866,9 @@ pub fn run() {
         input_steps.step("focus-persist");
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
+        if state.output_management.poll_staging() {
+            settings_written.store(true, Ordering::Release);
+        }
         if settings_written.swap(false, Ordering::AcqRel) {
             settings_watch.check_now();
         }
@@ -9767,8 +9879,7 @@ pub fn run() {
             input_steps.step("settings-keyboard");
             backend.reload_input_settings();
             input_steps.step("settings-input-devices");
-            // The backend has now reconciled any staged display plan; tell
-            // the output-management clients that asked for it how it went.
+            // Preserve Keep/Revert tracking after an Apply receipt was drained.
             state.output_management.resolve_transactions(
                 settings_store::hardware::DisplayTransaction::load().as_ref(),
             );
@@ -9826,12 +9937,17 @@ pub fn run() {
             input_methods.reload(&mut state);
             input_steps.step("settings-input-methods");
         }
+        // Drain backend receipts even when the storage completion followed
+        // its file-change edge. Only the matching reconciled transaction
+        // acknowledges the admitted request.
+        if state.output_management.has_pending_apply() {
+            state.output_management.resolve_transactions(
+                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            );
+        }
         input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
         input_methods.tick(&mut state);
-        for (output, on) in state.output_management.take_power_requests() {
-            backend.set_output_power(output, on);
-        }
         if let Some(rotation) = device_rotation
             .as_ref()
             .and_then(|changes| changes.try_iter().last())
@@ -9918,6 +10034,22 @@ pub fn run() {
                 metrics.set_target_period(interval);
             }
         }
+        // Remove disconnected heads before applying queued owner power requests.
+        for request in state.output_management.take_power_requests() {
+            if apply_output_power_request(
+                request,
+                &mut session,
+                backend.as_mut(),
+                present_pipe.as_ref(),
+                local_session_lifecycle.as_ref(),
+                &mut screen_dimmer,
+                &mut state.output_management,
+                Instant::now(),
+            ) {
+                force_first_paint = true;
+                session_changed = true;
+            }
+        }
         input_steps.step("outputs");
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
@@ -9957,6 +10089,7 @@ pub fn run() {
                     present_pipe.as_ref(),
                     local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
+                    Some(&mut state.output_management),
                 );
             }
             session_changed = true;
@@ -9986,6 +10119,7 @@ pub fn run() {
                     present_pipe.as_ref(),
                     local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
+                    Some(&mut state.output_management),
                 );
             }
             // Any session transition (blank/lock/suspend) changes what should be on screen — force a repaint.
@@ -10005,6 +10139,7 @@ pub fn run() {
                             present_pipe.as_ref(),
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
+                            Some(&mut state.output_management),
                         );
                     }
                 }
@@ -10020,6 +10155,7 @@ pub fn run() {
                             present_pipe.as_ref(),
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
+                            Some(&mut state.output_management),
                         );
                     }
                     sleep_lock_frame_pending = true;
@@ -10047,6 +10183,7 @@ pub fn run() {
                                 present_pipe.as_ref(),
                                 local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
+                                Some(&mut state.output_management),
                             );
                         }
                     }
@@ -10062,6 +10199,7 @@ pub fn run() {
                             present_pipe.as_ref(),
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
+                            Some(&mut state.output_management),
                         );
                     }
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
@@ -10134,6 +10272,7 @@ pub fn run() {
                     present_pipe.as_ref(),
                     local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
+                    Some(&mut state.output_management),
                 );
             }
         }
@@ -10155,6 +10294,7 @@ pub fn run() {
                         present_pipe.as_ref(),
                         local_session_lifecycle.as_ref(),
                         &mut screen_dimmer,
+                        Some(&mut state.output_management),
                     );
                 }
             }
@@ -10220,6 +10360,14 @@ pub fn run() {
                     .collect(),
             );
             st.pump_dbus_notifications();
+            for request in st.take_notification_launch_requests() {
+                if let Err(error) = crate::shell::notification::launch_scheduled_notification(
+                    request,
+                    &st.tree_handle(),
+                ) {
+                    tracing::warn!(%error, "scheduled notification activation failed");
+                }
+            }
         });
         if let Some(network) = peer_sync.as_ref()
             && continuity_feed_polled
@@ -10244,6 +10392,9 @@ pub fn run() {
             // the normal desktop way; it is not a process kill.
             let mut close_requests = Vec::new();
             frame_builder.with_chrome(|chrome| {
+                if let Some(apps) = chrome.hosted_inputs.in_process() {
+                    apps.borrow_mut().pump_messaging_records();
+                }
                 for request in app_closes.drain() {
                     let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
                     eprintln!(
@@ -11400,6 +11551,7 @@ pub fn run() {
             let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
+            frame_builder.set_workspace_clip_supported(backend.supports_workspace_clip());
             frame_builder.set_session_locked(session.is_locked());
             let (scene_width, scene_height) = frame_builder.scene_size();
             foreign::store().begin_presentation_frame(Rect::new(
@@ -11997,6 +12149,7 @@ pub fn run() {
                         present_pipe.as_ref(),
                         local_session_lifecycle.as_ref(),
                         &mut screen_dimmer,
+                        Some(&mut state.output_management),
                     );
                 }
             }
@@ -12501,6 +12654,108 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+
+    #[test]
+    fn explicit_display_wake_restores_backend_and_presenter_without_unlock_or_input() {
+        use crate::compositor::backend::{BackendEvent, Output};
+        use crate::compositor::idle::IdleConfig;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct PowerBackend {
+            dpms: Vec<bool>,
+            output_power: Vec<(OutputId, bool)>,
+            outputs: Vec<Output>,
+        }
+        impl Backend for PowerBackend {
+            fn submit_frame(&mut self, _scene: &vello::Scene, _output: OutputId) {}
+            fn poll_events(&mut self, _callback: &mut dyn FnMut(BackendEvent)) {}
+            fn outputs(&self) -> &[Output] {
+                &self.outputs
+            }
+            fn set_dpms(&mut self, on: bool) {
+                self.dpms.push(on);
+            }
+            fn set_output_power(&mut self, output: OutputId, on: bool) {
+                self.output_power.push((output, on));
+            }
+        }
+        struct PowerPresenter(Arc<Mutex<Vec<bool>>>);
+        impl present::Presenter for PowerPresenter {
+            fn present(&mut self, _scene: &vello::Scene, _output: OutputId) {}
+            fn set_dpms(&mut self, on: bool) {
+                self.0.lock().expect("power log").push(on);
+            }
+        }
+        struct NoBacklight;
+        impl Backlight for NoBacklight {
+            fn brightness(&self) -> Option<f32> {
+                None
+            }
+            fn set_brightness(&self, _fraction: f32) -> bool {
+                false
+            }
+        }
+        let display = smithay::reexports::wayland_server::Display::<State>::new().expect("display");
+        let mut management =
+            super::super::output_management::OutputManagementState::new(&display.handle());
+        let start = Instant::now();
+        let mut session = SessionManager::new(
+            IdleConfig {
+                blank_timeout: Some(Duration::from_secs(5)),
+                lock_timeout: Some(Duration::from_secs(2)),
+                suspend_timeout: None,
+            },
+            start,
+        );
+        let mut backend = PowerBackend::default();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut pipe = present::PresentPipe::spawn(
+            Box::new(PowerPresenter(Arc::clone(&recorded))),
+            Box::new(|| {}),
+        );
+        let mut dimmer = ScreenDimmer::new(NoBacklight);
+        for transition in session.tick(start + Duration::from_secs(5)) {
+            apply_session_transition(
+                transition,
+                &mut backend,
+                Some(&pipe),
+                None,
+                &mut dimmer,
+                Some(&mut management),
+            );
+        }
+        assert!(session.is_locked() && session.is_blanked());
+        for seconds in [6, 7] {
+            assert!(apply_output_power_request(
+                (OutputId(0), true),
+                &mut session,
+                &mut backend,
+                Some(&pipe),
+                None,
+                &mut dimmer,
+                &mut management,
+                start + Duration::from_secs(seconds)
+            ));
+        }
+        pipe.shutdown();
+        assert_eq!(backend.dpms, vec![false, true, true]);
+        assert_eq!(
+            *recorded.lock().expect("power log"),
+            vec![false, true, true]
+        );
+        assert_eq!(backend.output_power, vec![(OutputId(0), true); 2]);
+        assert!(session.is_locked() && !session.is_blanked());
+        assert_eq!(
+            session.idle_for(start + Duration::from_secs(7)),
+            Duration::from_secs(7)
+        );
+        assert!(
+            !session
+                .tick(start + Duration::from_secs(11))
+                .contains(&SessionTransition::Blanked)
+        );
+    }
 
     #[test]
     fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
@@ -13088,7 +13343,7 @@ mod tests {
                 SessionTransition::Locked,
                 SessionTransition::Unlocked,
             ] {
-                apply_session_transition(t, &mut backend, None, None, &mut dimmer);
+                apply_session_transition(t, &mut backend, None, None, &mut dimmer, None);
             }
             // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
             assert_eq!(backend.dpms_calls, vec![false, true]);
@@ -13100,6 +13355,7 @@ mod tests {
                 None,
                 None,
                 &mut dimmer,
+                None,
             );
             assert_eq!(dimmer.overlay_alpha(), None);
         }
@@ -14555,6 +14811,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fragmented_control_request_waits_for_its_complete_line() {
+        use std::io::{Read as _, Write as _};
+
+        let mut frame_builder = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        client.set_nonblocking(true).expect("nonblocking observer");
+        let mut conn = TestControlConn::new(server, false).expect("server connection");
+        client.write_all(b"{\"op\":").expect("request prefix");
+        pump_test_control_conn(
+            &mut conn,
+            &mut frame_builder,
+            &mut ctx,
+            &session,
+            &mut lock,
+            &mut state,
+        );
+        let mut probe = [0_u8; 1];
+        assert_eq!(
+            client.read(&mut probe).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "an incomplete request must not be dispatched"
+        );
+        client
+            .write_all(b"\"state_dump\"}\n")
+            .expect("request suffix");
+        pump_test_control_conn(
+            &mut conn,
+            &mut frame_builder,
+            &mut ctx,
+            &session,
+            &mut lock,
+            &mut state,
+        );
+        let response = socket_response(&mut BufReader::new(client));
+        let test_control::Response::State { chrome, .. } = response else {
+            panic!("a fragmented complete state request must be served: {response:?}")
+        };
+        assert_eq!(chrome["lock_auth"]["verifying"], false);
+    }
+
     /// The device admin's socket answers the action model and read-only
     /// state, and refuses synthetic input, fixtures and agent seats with an
     /// error that names the route that serves them.
@@ -14751,6 +15054,74 @@ mod tests {
             matches!(socket_response(&mut reader),test_control::Response::Err{code,..} if code=="not_permitted")
         );
         assert!(session.is_locked());
+    }
+
+    #[test]
+    fn session_diagnostics_require_the_unlocked_authenticated_owner_connection() {
+        use std::io::Write as _;
+        let mut fb = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock =
+            LockController::new(std::sync::Arc::new(lock_auth::UnavailableVerifier), "owner");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+        let display: Display<State> = Display::new().unwrap();
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).unwrap();
+        let request = serde_json::json!({"op":"actions_invoke", "provider":"session-diagnostics", "id":"configure@session-diagnostics", "args":{"presentation":true,"gpu_stages":false,"gpu_timestamps":false,"gpu_dispatch_timestamps":false}});
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(matches!(
+            socket_response(&mut reader),
+            test_control::Response::Err { .. }
+        ));
+        assert!(
+            crate::shell::launcher::LaunchSession::current()
+                .diagnostics
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+        conn.admin = true; // Set by authenticated production accept, tested in admin_control.
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true)
+        );
+        writer
+            .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"session-diagnostics\"}\n")
+            .unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["actions"].as_array().unwrap().iter().any(|row| row["id"] == "configure@session-diagnostics"))
+        );
+        let mut agent = request.clone();
+        agent["agent"] = serde_json::json!("peer");
+        writer.write_all(format!("{agent}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Err { code, .. } if code == "not_permitted")
+        );
+        let _ = session.request_lock(Instant::now());
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(matches!(
+            socket_response(&mut reader),
+            test_control::Response::Err { .. }
+        ));
     }
 
     /// A driver's request often lands after its connection was accepted and
@@ -15912,6 +16283,7 @@ mod tests {
                 None,
                 Some(&lifecycle),
                 &mut ScreenDimmer::default(),
+                None,
             );
             let locked = lifecycle.snapshot().expect("synchronous lock revoke");
             assert_eq!(
@@ -15926,6 +16298,7 @@ mod tests {
                 None,
                 Some(&lifecycle),
                 &mut ScreenDimmer::default(),
+                None,
             );
             let unlocked = lifecycle.snapshot().expect("fresh unlock");
             assert_eq!(

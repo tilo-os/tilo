@@ -58,7 +58,7 @@ TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
 
 # Product artwork is immutable alongside its tapp release.  The
 # metadata builder always emits an accessible owned icon, and adds
-# checked-in app screenshots where available, so a store card can
+# local or checksum-pinned archived app screenshots, so a store card can
 # never become a blank patch of UI again.
 registry_url=${TILO_REGISTRY_URL%/}
 [[ $registry_url == https://* && $registry_url != *'.svc.cluster.local'* ]] || {
@@ -85,6 +85,12 @@ while IFS= read -r media; do
 done < <(find "$registry_media" -maxdepth 1 -type f -printf '%f\n' | sort)
 TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
   tools/upload_immutable_packages.sh "$registry_media_uploads"
+
+# Archived screenshots are served directly through the existing public proxy.
+# Include them in the same availability/type gate before signing any entry.
+jq -r --arg base "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION/" \
+  '.images.en[] | select(.url | startswith($base) | not) | [(.url | split("/") | last), .url] | @tsv' \
+  "$registry_metadata"/*.json >> "$registry_media_urls"
 
 # Registry metadata is a public API contract.  Do not sign image
 # URLs into an entry until the public artifact endpoint can serve
@@ -115,6 +121,22 @@ check_media() {
       "$media_url" "$status" "${content_type:-no Content-Type}" "$expected_type" >&2
     return 1
   }
+  local version=${media_url%/*} archived_file actual_sha
+  version=${version##*/}
+  if [[ $version =~ ^[0-9a-f]{64}$ ]]; then
+    archived_file=$(mktemp "$RUNNER_TEMP/tilo-registry-archive.XXXXXX")
+    if ! curl --fail --silent --show-error --max-filesize 33554432 \
+      "$media_url" --output "$archived_file"; then
+      rm -f -- "$archived_file"
+      return 1
+    fi
+    actual_sha=$(sha256sum "$archived_file")
+    rm -f -- "$archived_file"
+    [[ ${actual_sha%% *} == "$version" ]] || {
+      printf 'archived registry screenshot SHA-256 mismatch: %s\n' "$media_url" >&2
+      return 1
+    }
+  fi
 }
 export -f check_media
 export RUNNER_TEMP
@@ -327,8 +349,12 @@ for index in release/*/index.json; do
     dist/apps/assemble-collection.sh
   bundle="$out/tilo-apps-$arch.tar.gz"
   digest_file="$bundle.sha256"
-  bundle_upload_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
-  bundle_url="$package_public_api/tilo-app-collections/$VERSION/${bundle##*/}"
+  # Runs for one source can select different apps and reuse different prior
+  # members. Their immutable collection address must identify the bytes too.
+  bundle_sha=$(sha256sum "$bundle" | cut -d' ' -f1)
+  collection_version="$VERSION-$bundle_sha"
+  bundle_upload_url="$package_api/tilo-app-collections/$collection_version/${bundle##*/}"
+  bundle_url="$package_public_api/tilo-app-collections/$collection_version/${bundle##*/}"
   if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
     python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
       --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
@@ -355,13 +381,13 @@ for index in release/*/index.json; do
     rm -f "$readback"
     printf '%s\t%s\n' \
       "$out/published-receipt.json" \
-      "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.receipt.json" \
+      "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.receipt.json" \
       "$out/published-receipt.upload.json" \
-      "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.upload.json" \
+      "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.upload.json" \
       >> "$metadata_uploads"
   fi
   printf '%s\t%s\n' "$digest_file" \
-    "$package_api/tilo-app-collections/$VERSION/${digest_file##*/}" \
+    "$package_api/tilo-app-collections/$collection_version/${digest_file##*/}" \
     >> "$metadata_uploads"
   TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=3 \
     tools/upload_immutable_packages.sh "$metadata_uploads"

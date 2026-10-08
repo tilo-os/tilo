@@ -174,3 +174,64 @@ fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
     );
     drop(env);
 }
+
+#[test]
+fn refused_cold_record_never_opens_a_default_or_binds_a_saved_view() {
+    let _reset = Reset(
+        crate::shell::personal_continuity_registry::replace_test_registry(Some(Arc::new(
+            Mutex::new(ContinuationRegistry::default()),
+        ))),
+    );
+    let data = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", data.path());
+    let room = crate::shell::state::RoomId::new();
+    let tab = next_id();
+    let (record, _) = kept_elsewhere(room);
+    let checkpoint = ui::app::with_continuation_record(
+        ui::app::compose_structural_continuation_metadata(ui::view::View::default(), None).unwrap(),
+        &record.id,
+    );
+    global_registry().lock().unwrap().store_remote_resume(
+        room,
+        AppInstanceId(tab),
+        APP.into(),
+        ResumeMetadata::new(
+            checkpoint.schema_version,
+            ResumeSensitivity::Syncable,
+            checkpoint.bytes,
+        )
+        .unwrap(),
+        AppInstanceId(RECORD_INSTANCE),
+    );
+    let device = Arc::new(Device::default());
+    set_source(Arc::clone(&device) as Arc<dyn RecordSource>);
+    let item = Pending {
+        tab,
+        app_id: APP.into(),
+        workspace: 0,
+        local: false,
+    };
+    assert_eq!(
+        bring_over_continued_record(&item, room),
+        Err(bringing_note())
+    );
+    device
+        .answer
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap()
+        .complete(Err("record access was revoked".into()));
+    assert_eq!(
+        bring_over_continued_record(&item, room),
+        Err("record access was revoked".into()),
+        "a rejected fetch must block the production launch path"
+    );
+    assert_eq!(device.asked.lock().unwrap().len(), 1);
+    let profile_dir = profile_root(data.path(), room, APP);
+    assert!(
+        !profile_dir.exists(),
+        "a refusal must not create an empty profile"
+    );
+}

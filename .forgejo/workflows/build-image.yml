@@ -1,6 +1,9 @@
 name: Release / OS
 
 # Two kinds of OS build run here. The plan job reports which as `mode`.
+# An explicit main signed_development_board dispatch uses the cached ARM dev
+# path, signs only its sealed board image in tilo-vm, and claims no independent
+# production reproduction. It never moves production or unsigned dev channels.
 #
 #   release  v* tags, the nightly main run and dispatches of main with
 #            `release` set. Each native lane is paired with an independent
@@ -43,12 +46,17 @@ on:
         type: boolean
         required: false
         default: false
+      signed_development_board:
+        description: "Main-only signed Orange Pi development image; never enters production channels"
+        type: boolean
+        required: false
+        default: false
       with_browser:
         description: "Include the Browser and its Chromium engine runtime (0 = omit)"
         required: false
         default: "1"
       hardware_profile:
-        description: "generic or lenovo-83ed; board builds require pinned firmware inputs"
+        description: "generic, lenovo-83ed or orangepi-3b-v2-1; board releases stay source-pinned"
         required: false
         default: "generic"
       firmware_candidate:
@@ -110,7 +118,7 @@ concurrency:
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}
+  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}
   # A pull request's dev build is superseded by its next commit. Every main
   # commit's dev build runs at once, side by side; its moving tags only move
   # forward (os/dev/move-tag-forward.sh). Board jobs wait on a small runner
@@ -134,6 +142,7 @@ jobs:
       skip: ${{ steps.matrix.outputs.skip }}
       hardware-profile: ${{ steps.matrix.outputs.hardware-profile }}
       boards: ${{ steps.matrix.outputs.boards }}
+      signed-development-board: ${{ steps.matrix.outputs.signed-development-board }}
       app_collection_source: ${{ github.event.inputs.app_collection_source || steps.pins.outputs.app_collection_source }}
       app_collection_url: ${{ steps.pins.outputs.app_collection_url }}
       app_collection_sha256: ${{ steps.pins.outputs.app_collection_sha256 }}
@@ -224,6 +233,7 @@ jobs:
           # channel fresh at bounded runner cost.
           CONTINUOUS_RELEASE: "0"
           REQUESTED_RELEASE: ${{ github.event.inputs.release }}
+          SIGNED_DEVELOPMENT_BOARD: ${{ github.event.inputs.signed_development_board }}
           DEV_ARCHES: ${{ inputs.arches }}
           PUBLISHED_REVISION: ${{ steps.published.outputs.revision }}
           INTEGRATION_REVISION: ${{ steps.published.outputs.integration-revision }}
@@ -238,6 +248,16 @@ jobs:
         run: |
           set -euo pipefail
           profile=${HARDWARE_PROFILE:-generic}
+          signed_dev=${SIGNED_DEVELOPMENT_BOARD:-false}
+          if [[ $signed_dev == true ]]; then
+            [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
+               && ${REQUESTED_RELEASE:-false} != true && $profile == generic ]] || {
+              echo '::error::signed development board requires a main dispatch, release=false and generic base'; exit 1;
+            }
+          elif [[ $signed_dev != false ]]; then
+            echo '::error::invalid signed development board flag'; exit 1
+          fi
+          echo "signed-development-board=$signed_dev" >> "$GITHUB_OUTPUT"
           case "$profile" in
             generic)
               [[ -z ${FIRMWARE_CANDIDATE:-} && -z ${FIRMWARE_MANIFEST_SHA256:-} ]] || {
@@ -251,6 +271,14 @@ jobs:
               [[ ${FIRMWARE_CANDIDATE:-} =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ \
                  && ${FIRMWARE_MANIFEST_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || {
                 echo '::error::Lenovo publication requires immutable firmware and reviewed manifest SHA-256'; exit 1;
+              } ;;
+            orangepi-3b-v2-1)
+              [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
+                 && ${REQUESTED_RELEASE:-false} == true ]] || {
+                echo '::error::Orange Pi publication requires an explicit main-branch publish dispatch'; exit 1;
+              }
+              [[ -z ${FIRMWARE_CANDIDATE:-} && -z ${FIRMWARE_MANIFEST_SHA256:-} ]] || {
+                echo '::error::Orange Pi uses repository-pinned public firmware, not Lenovo imports'; exit 1;
               } ;;
             *) echo '::error::unsupported hardware profile'; exit 1 ;;
           esac
@@ -278,12 +306,14 @@ jobs:
             fi
           fi
           # Build / OS dev: both native lanes, no reproduction lane.
-          if [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
+          if [[ $signed_dev == true ]]; then
+            matrix='{"include":[{"arch":"aarch64","runner":"runner-release-arm64"}]}'
+          elif [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
             [[ $profile == generic ]] || { echo '::error::dev builds are generic'; exit 1; }
             matrix="$(jq -c '{include: [.[] | if . == "x86_64" then {arch: ., runner: "runner-large"}
                                               elif . == "aarch64" then {arch: ., runner: "runner-large-arm64"}
                                               else error("unknown architecture \(.)") end]}' <<< "${DEV_ARCHES:-[\"x86_64\",\"aarch64\"]}")"
-          elif [[ $profile == lenovo-83ed ]]; then
+          elif [[ $profile != generic ]]; then
             # One ARM-only, immutable board image. It must not enter the generic
             # multiarch latest/genN channel or consume its rollback series.
             # It runs on the release class like a generic publication.
@@ -327,22 +357,22 @@ jobs:
           # Board dev images layer on a dev build's aarch64 dev image; the
           # Lenovo one needs its pinned firmware.
           boards='[]'
-          if [[ $GITHUB_EVENT_NAME == workflow_call && $skip != true ]] \
+          if [[ ( $GITHUB_EVENT_NAME == workflow_call || $signed_dev == true ) && $skip != true ]] \
              && jq -e 'any(.include[]; .arch == "aarch64")' <<< "$matrix" >/dev/null; then
             boards='["orangepi-3b-v2-1"]'
-            [[ -z ${LENOVO_FIRMWARE_REF:-} ]] || boards='["lenovo-83ed","orangepi-3b-v2-1"]'
+            [[ $signed_dev == true || -z ${LENOVO_FIRMWARE_REF:-} ]] || boards='["lenovo-83ed","orangepi-3b-v2-1"]'
           fi
           echo "boards=$boards" >> "$GITHUB_OUTPUT"
 
 
       - name: Checkout app input policy
-        if: github.event_name != 'workflow_call' && steps.matrix.outputs.skip != 'true'
+        if: github.event_name != 'workflow_call' && steps.matrix.outputs.skip != 'true' && steps.matrix.outputs.signed-development-board != 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Require the pinned apps to contain this commit's fixes
-        if: github.event_name != 'workflow_call' && steps.matrix.outputs.skip != 'true'
+        if: github.event_name != 'workflow_call' && steps.matrix.outputs.skip != 'true' && steps.matrix.outputs.signed-development-board != 'true'
         env:
           COLLECTION_SOURCE: ${{ github.event.inputs.app_collection_source || steps.pins.outputs.app_collection_source }}
           COLLECTION_URL_OVERRIDE: ${{ github.event.inputs.app_collection_url }}
@@ -362,21 +392,24 @@ jobs:
 
   signing-preflight:
     needs: plan
-    if: needs.plan.outputs.publish == 'true'
+    if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
     runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
       - name: Checkout signing policy
-        if: needs.plan.outputs.publish == 'true'
+        if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate signed board inputs before native build
+        if: needs.plan.outputs.signed-development-board == 'true'
+        run: python3 os/tests/test_signed_development_board.py
       - name: Install checksum-pinned Cosign
-        if: needs.plan.outputs.publish == 'true'
+        if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
         uses: ./.forgejo/actions/install-cosign
         with:
           cache-architecture: ${{ runner.arch }}
       - name: Bind OS signing authority to pinned release identity
-        if: needs.plan.outputs.publish == 'true'
+        if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -392,7 +425,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 180
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:
@@ -436,10 +469,10 @@ jobs:
     timeout-minutes: 180
     enable-openid-connect: true
     env:
-      # Board images carry private firmware: they stay in the forge's private
-      # registry, which anonymous clients cannot read. Every other OS image is
+      # Board release artifacts use the existing private board registry; Lenovo
+      # firmware requires it. Every generic OS image is
       # public on registry.tilo.so.
-      TILO_OS_REPOSITORY: ${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && 'code.tilo.so/tilo/tilo' || 'registry.tilo.so/tilo/tilo' }}
+      TILO_OS_REPOSITORY: ${{ needs.plan.outputs.hardware-profile != 'generic' && 'code.tilo.so/tilo/tilo' || 'registry.tilo.so/tilo/tilo' }}
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -524,13 +557,16 @@ jobs:
       # onto the image of commit X runs X's apps. It takes the published
       # collection only when that collection was built from a commit whose
       # app inputs are this commit's; otherwise the image build compiles the
-      # apps through the warm compiler cache. Releases and dispatches always
+      # apps through the warm compiler cache. Signed development-board dispatches
+      # use this same source check; production releases and other dispatches
       # take the pinned, independently published collection.
       - name: Materialize the pinned app collection
         env:
-          DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
+          DEV_BUILD: ${{ github.event_name == 'workflow_call' || needs.plan.outputs.signed-development-board == 'true' }}
           COLLECTION_SOURCE: ${{ needs.plan.outputs.app_collection_source }}
-          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
+          # Grouped credential expressions become Booleans in reusable jobs.
+          # Use the existing task-scoped token directly; gate its use below.
+          PACKAGE_TOKEN: ${{ github.token }}
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
@@ -599,8 +635,8 @@ jobs:
             auth="Bearer $jwt"
           else
             # A called workflow (Build / OS dev) receives no OIDC token. Its
-            # package read uses the CI account; the SHA-256 pins the bytes.
-            [[ -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no package token'; exit 1; }
+            # package read uses its task-scoped token; the SHA-256 pins the bytes.
+            [[ $DEV_BUILD == true && -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no allowed package token'; exit 1; }
             auth="token $PACKAGE_TOKEN"
           fi
           case "$COLLECTION_URL" in
@@ -679,7 +715,8 @@ jobs:
       - name: Materialize the pinned desktop payload
         env:
           PAYLOAD_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
-          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
+          PACKAGE_FALLBACK_ALLOWED: ${{ github.event_name == 'workflow_call' }}
+          PACKAGE_TOKEN: ${{ github.token }}
           PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
           PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
           PAYLOAD_URL_DEFAULT: ${{ needs.plan.outputs.desktop_payload_url }}
@@ -721,8 +758,8 @@ jobs:
             auth="Bearer $jwt"
           else
             # A called workflow (Build / OS dev) receives no OIDC token. Its
-            # package read uses the CI account; the SHA-256 pins the bytes.
-            [[ -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no package token'; exit 1; }
+            # package read uses its task-scoped token; the SHA-256 pins the bytes.
+            [[ $PACKAGE_FALLBACK_ALLOWED == true && -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no allowed package token'; exit 1; }
             auth="token $PACKAGE_TOKEN"
           fi
           case "$PAYLOAD_URL" in
@@ -788,6 +825,10 @@ jobs:
           echo "TILO_DESKTOP_PAYLOAD_SHA256=${PAYLOAD_SHA256,,}" >> "$GITHUB_ENV"
           echo '::notice::using pinned prebuilt desktop payload'
 
+      - name: Stage pinned Orange Pi release firmware
+        if: needs.plan.outputs.hardware-profile == 'orangepi-3b-v2-1'
+        run: ./os/dev/fetch-orangepi-wifi-firmware.sh
+
       # Every build input is anonymously readable. The login lets this run
       # export its layer cache and, on tags/dispatch, push the image (below).
       # A board build reads and writes its private cache and images on the
@@ -800,7 +841,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Log in to the private board registry
-        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        if: needs.plan.outputs.hardware-profile != 'generic'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: code.tilo.so
@@ -1059,7 +1100,7 @@ jobs:
       # A board build's layers include its private firmware, so its layer
       # cache must never reach the public registry.
       - name: Keep the board layer cache private
-        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        if: needs.plan.outputs.hardware-profile != 'generic'
         run: |
           if [[ $TILO_LAYER_CACHE_REGISTRY == registry.tilo.so ]]; then
             echo 'TILO_LAYER_CACHE_REGISTRY=code.tilo.so' >> "$GITHUB_ENV"
@@ -1156,6 +1197,9 @@ jobs:
           # Build / OS dev publishes images and nothing else: no disk install.
           fast=false
           if [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
+            [[ $publish != true ]]
+            fast=true
+          elif [[ "${{ needs.plan.outputs.signed-development-board }}" == true ]]; then
             [[ $publish != true ]]
             fast=true
           fi
@@ -1353,7 +1397,7 @@ jobs:
           HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
         run: |
           set -euo pipefail
-          if [[ ${HARDWARE_PROFILE:-generic} == lenovo-83ed ]]; then
+          if [[ ${HARDWARE_PROFILE:-generic} != generic ]]; then
             # Board artifacts have an immutable update reference and no automatic
             # upgrade series. Do not allocate a generic genN.
             echo 'TILO_GENERATION=1' >> "$GITHUB_ENV"
@@ -1404,7 +1448,7 @@ jobs:
           labels: |
             org.opencontainers.image.created=${{ env.SOURCE_DATE_ISO }}
           tags: |
-            type=raw,value=lenovo-83ed-${{ github.sha }},enable=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' }}
+            type=raw,value=${{ needs.plan.outputs.hardware-profile }}-${{ github.sha }},enable=${{ needs.plan.outputs.hardware-profile != 'generic' }}
             type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic' }}
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') && needs.plan.outputs.hardware-profile == 'generic' }}
@@ -1458,7 +1502,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1501,7 +1545,7 @@ jobs:
       # image assemble. The dev image step takes the result from the builder's
       # cache. A sampler records the builder's peak memory while they overlap.
       - name: Start the dev binaries compile
-        if: steps.release-mode.outputs.dev-fast == 'true'
+        if: steps.release-mode.outputs.dev-fast == 'true' && needs.plan.outputs.signed-development-board != 'true'
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           COMPILER_CACHE: ${{ steps.compiler-cache.outputs.mode }}
@@ -1585,7 +1629,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1645,7 +1689,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1707,7 +1751,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1764,7 +1808,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1833,7 +1877,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1902,7 +1946,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -2064,7 +2108,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -2231,6 +2275,9 @@ jobs:
           # install each board's flashable disk from these images.
           BOARDS: ${{ matrix.arch == 'aarch64' && needs.plan.outputs.boards || '[]' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TILO_SIGNED_DEVELOPMENT_BOARD: ${{ needs.plan.outputs.signed-development-board == 'true' && '1' || '0' }}
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           started=$(date +%s)
@@ -2254,57 +2301,71 @@ jobs:
           # tilo-vm refuses a base older than the VM's; its config carries
           # the fixed dev epoch, so the commit time orders dev bases.
           created="$SOURCE_DATE_ISO"
-          child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
-          cache=()
-          if [[ $COMPILER_CACHE == shared ]]; then
-            cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
-                   --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
+          digest=""
+          if [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]]; then
+            child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
+            cache=()
+            if [[ $COMPILER_CACHE == shared ]]; then
+              cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                     --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
+            fi
+            metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
+            docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+              -f os/Containerfile.dev \
+              --build-arg "BASE_IMAGE=$base" \
+              --build-arg "RPMS_REF=$RPMS_REF" \
+              --build-arg "BASE_REF=$BASE_REF" \
+              --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
+              --build-arg "TILO_BASE_CREATED=$created" \
+              --build-arg "TILO_CARGO_FRESHNESS=$TILO_CARGO_FRESHNESS" \
+              --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_JOBS:-$TILO_CARGO_JOBS}" \
+              --build-arg TILO_DEV_RUST_LTO=off \
+              --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+              "${cache[@]}" \
+              --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.base.name=$base" \
+              --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
+              --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
+              --label sh.tilo.dev.base-trust=integration \
+              --metadata-file "$metadata" \
+              --output "type=image,name=$child,push=true,compression=zstd,compression-level=1" \
+              .
+            digest="$(jq -er '."containerimage.digest"' "$metadata")"
+            echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
+            # No rewrite-timestamp above: the board builds take this image's
+            # layers from this builder, and rewritten ones would be different
+            # blobs, every one of which the boards would push again.
           fi
-          metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
-          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
-            -f os/Containerfile.dev \
-            --build-arg "BASE_IMAGE=$base" \
-            --build-arg "RPMS_REF=$RPMS_REF" \
-            --build-arg "BASE_REF=$BASE_REF" \
-            --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
-            --build-arg "TILO_BASE_CREATED=$created" \
-            --build-arg "TILO_CARGO_FRESHNESS=$TILO_CARGO_FRESHNESS" \
-            --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_JOBS:-$TILO_CARGO_JOBS}" \
-            --build-arg TILO_DEV_RUST_LTO=off \
-            --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
-            "${cache[@]}" \
-            --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.base.name=$base" \
-            --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
-            --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
-            --label sh.tilo.dev.base-trust=integration \
-            --metadata-file "$metadata" \
-            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1" \
-            .
-          digest="$(jq -er '."containerimage.digest"' "$metadata")"
-          echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
-          # No rewrite-timestamp above: the board builds take this image's
-          # layers from this builder, and rewritten ones would be different
-          # blobs, every one of which the boards would push again.
           board_pids=()
           for board in $(jq -r '.[]?' <<< "${BOARDS:-[]}"); do
             name="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-$board"
-            ( sealed="$(./os/dev/build-board-image.sh "$board" "registry.tilo.so/tilo/tilo-vm@$digest" "$name" \
+            if [[ $TILO_SIGNED_DEVELOPMENT_BOARD == 1 ]]; then
+              name="$name-signed"
+              # Retain production components; add only the maintenance SSH service.
+              board_base="$base"
+            else
+              board_base="registry.tilo.so/tilo/tilo-vm@$digest"
+            fi
+            ( sealed="$(./os/dev/build-board-image.sh "$board" "$board_base" "$name" \
                   2> "$RUNNER_TEMP/tilo-board-$board.log")" \
                 && grep -F "$board:" "$RUNNER_TEMP/tilo-board-$board.log" | sed 's/^/  /' \
-                && { [[ $GITHUB_REF != refs/heads/main ]] \
+                && { [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]] \
+                     || SOURCE_REVISION="$GITHUB_SHA" ./os/dev/sign-development-board.sh "registry.tilo.so/tilo/tilo-vm@$sealed" "$board"; } \
+                && { [[ $TILO_SIGNED_DEVELOPMENT_BOARD == 1 || $GITHUB_REF != refs/heads/main ]] \
                      || ./os/dev/move-tag-forward.sh "registry.tilo.so/tilo/tilo-vm@$sealed" "registry.tilo.so/tilo/tilo-vm:$board-ci"; } \
                 && echo "::notice::$board dev image sealed and published in $(( $(date +%s) - started ))s: tilo-vm:$DEV_SERIES-$board" \
                 || { tail -60 "$RUNNER_TEMP/tilo-board-$board.log"; echo "::error::the $board board image failed to build or seal"; exit 1; } ) &
             board_pids+=("$!")
           done
-          DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
-            DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
-            BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
-            BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
-            ./os/dev/publish-dev-disk.sh
-          echo "::notice::dev image published in $(( $(date +%s) - started ))s: registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci"
+          if [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]]; then
+            DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
+              DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
+              BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
+              BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
+              ./os/dev/publish-dev-disk.sh
+            echo "::notice::dev image published in $(( $(date +%s) - started ))s: registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci"
+          fi
           boards_ok=true
           for pid in "${board_pids[@]}"; do wait "$pid" || boards_ok=false; done
           # A broken board layer fails this lane after the generic dev image
@@ -2365,7 +2426,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -2525,7 +2586,7 @@ jobs:
           first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
           repro_image="$TILO_OS_REPOSITORY:repro-${GITHUB_SHA}"
 
-          if [[ $HARDWARE_PROFILE == lenovo-83ed ]]; then
+          if [[ $HARDWARE_PROFILE != generic ]]; then
             printf '%s' "$TILO_REGISTRY_TOKEN" | podman login code.tilo.so \
               --username "${{ github.actor }}" --password-stdin
           fi
@@ -2591,6 +2652,21 @@ jobs:
             ./os/dev/validation-access.sh prepare "$TILO_RUN/validation" "$TILO_IMAGE" "$RPMS_REF"
             export TILO_VALIDATION_ETC="$TILO_RUN/validation/etc"
             export TILO_VM_VALIDATION_SYSEXT="$TILO_RUN/validation/tilo-validation.raw"
+          fi
+          if [[ $HARDWARE_PROFILE == orangepi-3b-v2-1 ]]; then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+                bc bison curl device-tree-compiler flex gcc libc6-dev libgnutls28-dev libssl-dev make \
+                python3-dev python3-pyelftools python3-setuptools swig
+            else
+              sudo -n dnf install -y bc bison curl dtc flex gcc glibc-devel gnutls-devel make \
+                python3-devel python3-pyelftools python3-setuptools swig
+              # The loader helper checks the runner-provided native headers.
+              # Do not provision another crypto provider in this workflow.
+            fi
+            export TILO_ROCKCHIP_LOADER="$TILO_OUTPUT/rockchip-loader"
+            ./os/dev/build-orangepi-uboot.sh "$TILO_ROCKCHIP_LOADER"
+            export TILO_DISK_SIZE=16G
           fi
           ./os/dev/build-image.sh
 
@@ -2990,14 +3066,16 @@ jobs:
             ./os/dev/test-slow-frame-launch.sh --out "$TILO_RUN/slow-frames" --stall 50-130
           fi
           else
-            # A Lenovo DTB cannot describe QEMU virt hardware. The sealed
+            # A board DTB cannot describe QEMU virt hardware. The sealed
             # disk-install and independent reproduction above remain required;
             # the generic ARM VM gate covers the common desktop separately.
             # Physical boot remains a distinct acceptance test.
-            echo '::notice::Lenovo board image sealed and disk-installed; QEMU virt desktop boot is inapplicable'
+            echo "::notice::$HARDWARE_PROFILE board image sealed and disk-installed; QEMU virt desktop boot is inapplicable, physical acceptance remains required"
           fi
 
           if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
+            # Imported Lenovo firmware keeps its explicit owner-visibility gate.
+            # Orange Pi uses repository-pinned public inputs and normal release trust.
             if [[ '${{ needs.plan.outputs.hardware-profile }}' == lenovo-83ed ]]; then
               REGISTRY_TOKEN="$TILO_REGISTRY_TOKEN" \
                 python3 os/dev/require-private-oci-owner.py
@@ -3554,7 +3632,7 @@ jobs:
   # build-and-push: that would wait for the x86_64 lane too.
   board-wait:
     needs: [plan, ensure-rpms]
-    if: ${{ !cancelled() && needs.ensure-rpms.result == 'success' && needs.plan.outputs.boards != '' && needs.plan.outputs.boards != '[]' }}
+    if: ${{ !cancelled() && needs.plan.outputs.signed-development-board != 'true' && needs.ensure-rpms.result == 'success' && needs.plan.outputs.boards != '' && needs.plan.outputs.boards != '[]' }}
     runs-on: runner-quality
     # The wait ends when the aarch64 lane publishes or ends; that lane may
     # queue for a native slot before its own build, so allow the ceiling.
@@ -3805,11 +3883,11 @@ jobs:
           bash ./os/dev/publish-dev-disk-candidate.sh
 
   # Board images stay outside the generic multiarch latest/genN series. This
-  # publishes one immutable, source-bound ARM64 reference for an initial Lenovo
+  # publishes one immutable, source-bound ARM64 reference for an initial board
   # installation; it intentionally has no mutable upgrade channel yet.
-  promote-lenovo:
+  promote-board:
     needs: [plan, build-and-push]
-    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile != 'generic'
     runs-on: runner
     timeout-minutes: 60
     steps:
@@ -3837,8 +3915,9 @@ jobs:
           registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Verify and publish immutable Lenovo ARM64 image
+      - name: Verify and publish immutable board ARM64 image
         env:
+          HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
@@ -3846,13 +3925,17 @@ jobs:
           WINDOWS_GUEST_CANDIDATE: ${{ github.event.inputs.windows_guest_candidate }}
         run: |
           set -euo pipefail
-          python3 os/dev/require-private-oci-owner.py
+          case "$HARDWARE_PROFILE" in
+            lenovo-83ed) python3 os/dev/require-private-oci-owner.py ;;
+            orangepi-3b-v2-1) ;;
+            *) echo '::error::unsupported board publication profile'; exit 1 ;;
+          esac
           child=release-child/aarch64.json
           digest="$(jq -er --arg source "$GITHUB_SHA" '
             select(.architecture == "aarch64" and .sourceRevision == $source and .generation == 1)
             | .digest | select(test("^sha256:[0-9a-f]{64}$"))' "$child")"
           image="code.tilo.so/tilo/tilo@$digest"
-          target="code.tilo.so/tilo/tilo:lenovo-83ed-$GITHUB_SHA"
+          target="code.tilo.so/tilo/tilo:$HARDWARE_PROFILE-$GITHUB_SHA"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
           ./os/dev/verify-release-sbom.sh "$image"
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
@@ -3867,17 +3950,24 @@ jobs:
           provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$image")"
           printf '%s' "$provenance" | jq -e \
             --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
-            --arg digest "$digest" --arg firmware "$FIRMWARE_CANDIDATE" \
+            --arg digest "$digest" --arg profile "$HARDWARE_PROFILE" \
+            --arg definition "$(sha256sum "os/hardware/profiles/$HARDWARE_PROFILE.json" | cut -d' ' -f1)" \
+            --arg firmware "$FIRMWARE_CANDIDATE" \
             --arg manifest "$FIRMWARE_MANIFEST_SHA256" \
             --arg fex "$FEX_PAYLOAD_CANDIDATE" --arg guest "$WINDOWS_GUEST_CANDIDATE" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(.buildDefinition.internalParameters.expectedReleaseDigest == $digest
                     and .buildDefinition.externalParameters.generation == 1
-                    and .buildDefinition.externalParameters.hardwareProfile == "lenovo-83ed"
+                    and .buildDefinition.externalParameters.hardwareProfile == $profile
                     and .buildDefinition.externalParameters.architecture == "aarch64"
                     and .buildDefinition.externalParameters.firmwareManifestSha256 == $manifest
                     and any(.buildDefinition.resolvedDependencies[]?; .uri == $source)
-                    and any(.buildDefinition.resolvedDependencies[]?; .uri == $firmware)
+                    and (if $profile == "lenovo-83ed" then
+                           any(.buildDefinition.resolvedDependencies[]?; .uri == $firmware)
+                         elif $profile == "orangepi-3b-v2-1" then
+                           $firmware == "" and $manifest == ""
+                           and .buildDefinition.externalParameters.hardwareDefinitionSha256 == $definition
+                         else false end)
                     and (if $fex == "" and $guest == "" then
                            .buildDefinition.externalParameters.windowsProvider == null
                          else
@@ -3889,17 +3979,22 @@ jobs:
                            and any(.buildDefinition.resolvedDependencies[]?; .uri == $guest)
                          end))' >/dev/null
           actual_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
-          [[ $actual_arch == arm64 ]] || { echo '::error::Lenovo image is not ARM64'; exit 1; }
-          existing="$(skopeo inspect --raw "docker://$target" 2>/dev/null | sha256sum | awk '{print "sha256:" $1}')" || existing=''
+          [[ $actual_arch == arm64 ]] || { echo '::error::board image is not ARM64'; exit 1; }
+          existing=''
+          if skopeo inspect --raw "docker://$target" > tag-manifest.json 2> tag-error.log; then
+            existing="sha256:$(sha256sum tag-manifest.json | cut -d' ' -f1)"
+          elif ! grep -Eq 'manifest unknown|MANIFEST_UNKNOWN|name unknown|NAME_UNKNOWN' tag-error.log; then
+            echo '::error::cannot inspect immutable board tag; refusing promotion'; exit 1
+          fi
           [[ -z $existing || $existing == "$digest" ]] || {
-            echo '::error::immutable Lenovo tag already points to different bytes'; exit 1;
+            echo '::error::immutable board tag already points to different bytes'; exit 1;
           }
           if [[ -z $existing ]]; then
             skopeo copy --preserve-digests "docker://$image" "docker://$target"
           fi
           actual="$(skopeo inspect --raw "docker://$target" | sha256sum | awk '{print "sha256:" $1}')"
-          [[ $actual == "$digest" ]] || { echo '::error::Lenovo tag digest changed'; exit 1; }
-          echo "::notice::CI-built and signed Lenovo ARM64 image: $image; immutable update reference: $target"
+          [[ $actual == "$digest" ]] || { echo '::error::board tag digest changed'; exit 1; }
+          echo "::notice::CI-built and signed $HARDWARE_PROFILE ARM64 image: $image; immutable update reference: $target"
 
   # Integration images remain unsigned and outside the production tilo
   # repository. Publish a multi-architecture index once both native lanes
@@ -3909,7 +4004,7 @@ jobs:
   # the two finishes second promotes; a commit aarch64 skipped has none.
   promote-integration:
     needs: [plan, build-and-push]
-    if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
+    if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.signed-development-board != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
     runs-on: runner
     timeout-minutes: 60
     steps:

@@ -354,8 +354,8 @@ impl<R: Resource> ResourceRoot<R> {
     /// Apply a permission change made while the app runs: dispatchers stop
     /// (or resume) submitting, bound state and surfaces see the new value.
     fn refresh_access(&self) {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        let _profile = super::testing::phases::Scope::start("framework.access_refresh");
+        #[cfg(feature = "test-support")]
+        let _profile = super::profiling::Scope::start("framework.access_refresh");
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
             self.dispatch.set_read_only(!permissions.check(write));
         }
@@ -418,11 +418,11 @@ impl<R: Resource> ResourceRoot<R> {
     }
 
     fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        let _profile = super::testing::phases::Scope::start("framework.publication");
+        #[cfg(feature = "test-support")]
+        let _profile = super::profiling::Scope::start("framework.publication");
         let mut resource = {
-            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-            let _profile = super::testing::phases::Scope::start("framework.resource_tree");
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.resource_tree");
             tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
         };
         let mut bound = self.bindings.declarations(state);
@@ -452,8 +452,8 @@ impl<R: Resource> ResourceRoot<R> {
         }
         merge(&mut resource.children, rows);
         {
-            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-            let _profile = super::testing::phases::Scope::start("framework.row_declarations");
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.row_declarations");
             for child in &mut resource.children {
                 self.bind_row_declarations(child);
             }
@@ -509,6 +509,9 @@ impl<R: Resource> ResourceRoot<R> {
             {
                 resource = resource.with_action(spec);
             }
+        }
+        if self.effects.has_causal_drains() {
+            mark_document_jobs(&mut resource);
         }
         resource.children.extend(self.storage.person_resources());
         resource
@@ -673,6 +676,30 @@ impl<R: Resource> ResourceRoot<R> {
         self.live
             .with(|state| self.effects.drain_projections(state, revision));
         self.effects.poll_jobs();
+    }
+}
+
+fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
+    for spec in &mut resource.actions {
+        if spec.kind == tilo_actions::OperationKind::Document {
+            spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+            if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
+                spec.contract.result = tilo_actions::ResultSpec::Job;
+            }
+        }
+    }
+    for child in &mut resource.children {
+        mark_document_jobs(child);
+    }
+}
+
+impl<R: Resource> ui_core::widget::document_effects::DocumentEffects for ResourceRoot<R> {
+    fn start_document_effects(
+        &mut self,
+        operation: &ui_core::host_operation::ResourceOperation<'_>,
+        applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
+    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        self.effects.start_document_effects(operation, applied)
     }
 }
 
@@ -1040,7 +1067,7 @@ impl ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects; inner = content);
 
     type Inner = dyn Widget;
 

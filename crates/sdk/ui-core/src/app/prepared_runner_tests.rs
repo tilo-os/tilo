@@ -849,7 +849,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             .unwrap();
         let checkout = component.record().clone();
         let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            crate::font_catalog::checkout_root(),
             "de-DE",
         );
         let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();

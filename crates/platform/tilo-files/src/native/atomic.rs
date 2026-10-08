@@ -267,6 +267,15 @@ fn create_private_parent(path: &Path) -> io::Result<()> {
     let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) else {
         return Ok(());
     };
+    create_private_directory(dir)
+}
+
+/// Create and restrict a host-owned private directory before opening locks or
+/// watches. Unix directories have mode `0700`, including an existing directory.
+///
+/// # Errors
+/// The directory cannot be created or its permissions cannot be restricted.
+pub fn create_private_directory(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};

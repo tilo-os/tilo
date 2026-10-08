@@ -1088,6 +1088,20 @@ impl App {
         }
     }
 
+    /// Where a [`Widget::take_focus_reset`] puts focus: the control the new
+    /// content marks as its default (so Enter takes the encouraged action),
+    /// otherwise the first focusable.
+    fn reset_focus_target(&self) -> Option<taffy::NodeId> {
+        self.focusable_order
+            .iter()
+            .copied()
+            .find(|&id| {
+                self.inspect_node(id, |widget| widget.is_default_keyboard_focus())
+                    .unwrap_or(false)
+            })
+            .or_else(|| self.focusable_order.first().copied())
+    }
+
     /// Apply the native host's fallback for an Enter/Space press that the
     /// focused widget did not consume during normal event dispatch.
     fn initial_live_focus_target(&self) -> Option<taffy::NodeId> {
@@ -1830,18 +1844,28 @@ impl App {
 
     fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
         let witness = self.collaboration.manager.primary_route()?.clone();
-        witness
-            .route
-            .record
-            .as_deref()?
-            .strip_prefix("continuation:")?
-            .parse::<u64>()
-            .ok()?;
-        if self.continuation.last_private_route.as_ref() != Some(&witness) {
+        let instance = self.collaboration.manager.private_window_instance()?;
+        if self.continuation.last_private_route.as_ref() != Some(&witness)
+            || self.continuation.private_instance != Some(instance)
+        {
+            if self
+                .continuation
+                .last_private_route
+                .as_ref()
+                .is_some_and(|last| last.route != witness.route)
+                || self.continuation.private_instance != Some(instance)
+            {
+                self.continuation.owner_view = Default::default();
+            } else {
+                self.continuation.owner_view.pending = None;
+                self.continuation.owner_view.last_generation = 0;
+            }
             self.continuation.last_published = None;
+            self.continuation.publication_initialized = false;
             self.last_published_playback = None;
             self.last_playback_publish = None;
             self.continuation.last_private_route = Some(witness.clone());
+            self.continuation.private_instance = Some(instance);
         }
         Some(witness.route)
     }
@@ -2462,8 +2486,8 @@ impl App {
             && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
         {
             if focus_reset {
-                if let Some(&first) = self.focusable_order.first() {
-                    self.set_focused_node(Some(first));
+                if let Some(target) = self.reset_focus_target() {
+                    self.set_focused_node(Some(target));
                 }
             } else if let Some(idx) = prev_focus_idx {
                 let exact = self.focusable_order.get(idx).copied();

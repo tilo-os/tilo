@@ -463,7 +463,9 @@ impl ManagedRuntime {
         if options.allow_unsigned_runtime || options.allow_missing_runtime {
             return Err("managed runtime cannot bypass signature or availability policy".into());
         }
-        let publishers = crate::run::load_trusted_publisher_list().unwrap_or_default();
+        let publishers = crate::run::load_trusted_publisher_list()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
         if options.require_runtime_publisher.is_none() && publishers.is_empty() {
             return Err("managed runtime requires independently configured publisher trust".into());
         }
@@ -1157,6 +1159,16 @@ impl VerifiedManagedExit {
 }
 #[cfg(target_os = "linux")]
 pub(crate) trait EnrolledProcessObserver {
+    fn reviewed_network_hosts(&self) -> std::io::Result<Option<Vec<String>>> {
+        Ok(None)
+    }
+
+    fn namespace_init_fd(&self) -> Option<std::os::fd::RawFd> {
+        None
+    }
+    fn owns_process_group(&self) -> bool {
+        false
+    }
     fn before_spawn(&self) -> std::io::Result<()>;
     fn child_created(&self);
     fn supervise(&self, child: std::process::Child) -> std::io::Result<std::process::ExitStatus>;

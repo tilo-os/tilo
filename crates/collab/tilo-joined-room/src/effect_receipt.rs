@@ -149,57 +149,7 @@ fn decode(
     else {
         return Err("unsupported native effect commit family".into());
     };
-    let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
-        serde_json::from_slice(redacted).map_err(|_| "malformed redacted effect receipt")?;
-    if invocation.is_nil()
-        || receipt.invocation.0 != *invocation
-        || receipt.actor.trim().is_empty()
-        || receipt.actor.chars().count() > 160
-        || receipt.actor.chars().any(char::is_control)
-        || receipt.completed_at < 0
-        || !bounded_context(&receipt.context)
-        || matches!(&receipt.status, tilo_actions::EffectReceiptStatus::Failed { code }
-            if code.is_empty() || code.len() > 96 || !code.bytes().all(|byte|
-                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
-        || receipt.context.facets.len() != 2
-        || !receipt
-            .context
-            .facets
-            .iter()
-            .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
-        || !receipt
-            .context
-            .facets
-            .iter()
-            .any(|facet| facet.key == "tilo.invocation" && facet.value == invocation.to_string())
-        || serde_json::to_vec(&receipt).map_err(|error| error.to_string())? != *redacted
-    {
-        return Err("effect receipt is not the exact bounded broker terminal encoding".into());
-    }
-    Ok(receipt)
-}
-
-fn bounded_context(context: &tilo_actions::ActionContext) -> bool {
-    fn text(value: &str, max: usize) -> bool {
-        value.trim() == value
-            && value.chars().count() <= max
-            && !value.chars().any(char::is_control)
-    }
-    text(&context.action_label, 200)
-        && context
-            .app
-            .as_ref()
-            .is_none_or(|app| text(&app.id, 160) && text(&app.label, 160))
-        && context.resource.as_ref().is_none_or(|resource| {
-            text(&resource.id, 512) && text(&resource.kind, 160) && text(&resource.label, 200)
-        })
-        && context
-            .purpose
-            .as_ref()
-            .is_none_or(|purpose| !purpose.is_empty() && text(purpose, 512))
-        && context.group.as_ref().is_none_or(|group| {
-            text(&group.id, 160) && text(&group.label, 200) && text(&group.kind, 160)
-        })
+    tilo_peer_state::StatePeer::validate_workspace_effect_receipt_encoding(*invocation, redacted)
 }
 
 #[cfg(test)]
@@ -221,6 +171,33 @@ impl NativeWorkspaceOwner {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
+        self.commit_effect_receipt_for(request, governor, key, now, None)
+    }
+
+    /// Commit the authenticated member's audit with the same immutable ledger
+    /// and durable barrier as a local broker audit.
+    ///
+    /// # Errors
+    /// Refuses stale admission, impersonation, quota exhaustion or absent governor custody.
+    pub fn commit_member_effect_receipt(
+        &self,
+        request: &OwnerCommitRequest,
+        caller: &DeviceCert,
+        governor: &DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<OwnerCommitReceipt, String> {
+        self.commit_effect_receipt_for(request, governor, key, now, Some(caller))
+    }
+
+    fn commit_effect_receipt_for(
+        &self,
+        request: &OwnerCommitRequest,
+        governor: &DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+        caller: Option<&DeviceCert>,
+    ) -> Result<OwnerCommitReceipt, String> {
         let effect = decode(request)?;
         let binding = request.binding()?;
         let room = RoomId::parse(&request.room).ok_or("invalid effect room")?;
@@ -234,7 +211,18 @@ impl NativeWorkspaceOwner {
         }
         let id = effect.invocation.0.to_string();
         let mut checked = candidate.peer.clone();
-        let is_new = checked.apply_workspace_effect_receipt(&effect, key, now)?;
+        let is_new = if let Some(caller) = caller {
+            let CommitOperation::EffectReceipt {
+                invocation,
+                redacted,
+            } = &request.operation
+            else {
+                return Err("member request is not an effect receipt".into());
+            };
+            checked.apply_member_effect_receipt(caller, *invocation, redacted, key, now)?
+        } else {
+            checked.apply_workspace_effect_receipt(&effect, key, now)?
+        };
         // A received signed root without its exact retained owner history is not
         // an empty index. No creator authority is inferred from an unknown UUID.
         if candidate.peer.workspace_effect_history_root()? != candidate.record.effect_history_root {

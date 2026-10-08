@@ -25,7 +25,7 @@ fn name<A: ResourceApp>(state: &dyn std::any::Any) -> Option<String> {
 }
 
 /// Applies an app's seed to a new record, created by `me` on `device`.
-type Seed = fn(&mut Doc, &str, &str) -> Result<(), String>;
+type Seed = fn(&mut Doc, &str, &str, Option<&str>) -> Result<(), String>;
 
 /// Every framework app's kind whose definition this process created, and
 /// its seed.
@@ -40,11 +40,17 @@ pub(crate) fn register<A: ResourceApp>() {
     hosted.1.push((kind, seed::<A>));
 }
 
-fn seed<A: ResourceApp>(doc: &mut Doc, me: &str, device: &str) -> Result<(), String> {
+fn seed<A: ResourceApp>(
+    doc: &mut Doc,
+    me: &str,
+    device: &str,
+    room: Option<&str>,
+) -> Result<(), String> {
     let seed = A::seed(&SeedCx {
         me,
         device,
         host: None,
+        room,
     });
     apply_seed::<A>(doc, me, &seed)
 }
@@ -56,6 +62,31 @@ fn seed<A: ResourceApp>(doc: &mut Doc, me: &str, device: &str) -> Result<(), Str
 /// # Errors
 /// Returns why a seed action did not apply.
 pub fn seed_record(kind: &str, doc: &mut Doc, me: &str, device: &str) -> Result<(), String> {
+    seed_scoped(kind, doc, me, device, None)
+}
+
+/// Seed a new room record in its host-selected creation scope, without lending
+/// ambient device services. The route supplies context, not permission.
+///
+/// # Errors
+/// Returns why a seed action did not apply.
+pub fn seed_record_in_room(
+    kind: &str,
+    doc: &mut Doc,
+    me: &str,
+    device: &str,
+    room: &str,
+) -> Result<(), String> {
+    seed_scoped(kind, doc, me, device, Some(room))
+}
+
+fn seed_scoped(
+    kind: &str,
+    doc: &mut Doc,
+    me: &str,
+    device: &str,
+    room: Option<&str>,
+) -> Result<(), String> {
     let seed = HOSTED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -63,7 +94,7 @@ pub fn seed_record(kind: &str, doc: &mut Doc, me: &str, device: &str) -> Result<
         .iter()
         .find(|(known, _)| *known == kind)
         .map(|(_, seed)| *seed);
-    seed.map_or(Ok(()), |seed| seed(doc, me, device))
+    seed.map_or(Ok(()), |seed| seed(doc, me, device, room))
 }
 
 /// The resource type of every framework app this process has the definition

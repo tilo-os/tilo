@@ -29,6 +29,9 @@ use crate::shell::network::{
 #[cfg(test)]
 use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
+mod personal_session;
+pub(crate) use personal_session::{NativePersonalSession, NativePersonalSource};
+
 /// What a room calls the peers in it, keyed by the handle presence
 /// frames identify their sender by. Same shape as
 /// [`crate::shell::peer_presence::PeerLabels`].
@@ -131,7 +134,9 @@ pub use tilo_action_broker::collab_broker::{
 pub struct BrokerHandle {
     inner: tilo_action_broker::collab_broker::BrokerHandle,
     local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
+    _personal_source: Option<Arc<NativePersonalSource>>,
     native_media: Option<super::native_media::NativeMediaService>,
+    task_review: Option<super::task_review::NativeTaskReview>,
     realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
@@ -161,6 +166,10 @@ impl std::ops::Deref for BrokerHandle {
 }
 
 impl BrokerHandle {
+    pub(crate) fn task_review(&self) -> Option<super::task_review::NativeTaskReview> {
+        self.task_review.clone()
+    }
+
     pub(crate) fn native_media_service(&self) -> Option<super::native_media::NativeMediaService> {
         self.native_media.clone()
     }
@@ -261,6 +270,8 @@ pub fn spawn_native(
             crate::shell::record_hydration::NetworkSource(Arc::clone(network)),
         ));
     }
+    let task_review =
+        super::task_review::NativeTaskReview::new(membership.clone(), peer_sync.clone()).ok();
     let publisher = PeerPublisher::with_optional_owner_commit(
         peer_sync
             .clone()
@@ -270,14 +281,16 @@ pub fn spawn_native(
             peer_sync.clone(),
         )),
     );
-    spawn_inner(
+    let mut handle = spawn_inner(
         capnp_socket_path,
         peer_sync.as_ref(),
         &publisher,
         Some(membership),
         CertificateProvisioning::Production,
         None,
-    )
+    )?;
+    handle.task_review = task_review;
+    Ok(handle)
 }
 
 /// Spawn the production broker pipeline with an explicit enrolled-device set.
@@ -295,6 +308,32 @@ pub fn spawn_native_harness(
     spawn_inner(
         capnp_socket_path,
         None,
+        &publisher,
+        Some(membership),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        None,
+    )
+}
+
+/// Production owner/read pipeline with explicitly authorized synthetic devices.
+/// No enrollment or input grant is created by this test-only constructor.
+#[cfg(test)]
+pub(crate) fn spawn_native_owner_harness(
+    socket: PathBuf,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+    network: &Arc<ShellNetwork>,
+) -> std::io::Result<BrokerHandle> {
+    let publisher = PeerPublisher::with_optional_owner_commit(
+        Some(network.clone()),
+        Arc::new(super::broker_services::NativeOwnerCommitService::new(
+            membership.clone(),
+            Some(network.clone()),
+        )),
+    );
+    spawn_inner(
+        socket,
+        Some(network),
         &publisher,
         Some(membership),
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
@@ -419,6 +458,7 @@ impl DrainQueues {
         if let Some(service) = &self.channel_encryption {
             service.pump(&*self.net);
         }
+        self.drain_owner_views();
         self.drain_presence(labels, announced)
             && self.drain_documents(labels, announced)
             && self.drain_person_snapshot_requests()
@@ -426,6 +466,26 @@ impl DrainQueues {
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
             && self.drain_record_content()
+    }
+
+    fn drain_owner_views(&self) {
+        for (view, source_route) in self.net.pump_owner_views() {
+            let route = tilo_action_broker::route::CrdtRoute::record(
+                &view.app,
+                &view.room,
+                format!("continuation:{}", view.instance),
+            );
+            let event = CollabEvent::Handoff {
+                request: ui::collaboration::handoff::HandoffRequest::OwnerView { view },
+            };
+            if let Some(source) = source_route {
+                let _ = self.net.with_current_personal_route(&source, || {
+                    self.table.fanout_to_route(&event, u64::MAX, &route);
+                });
+            } else {
+                self.table.fanout_to_route(&event, u64::MAX, &route);
+            }
+        }
     }
 
     fn drain_record_content(&self) -> bool {
@@ -725,8 +785,12 @@ fn spawn_inner(
         tilo_action_broker::services::HostServices::default()
     };
     services.record_content = record_content;
+    services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
+        local_session.lifecycle(),
+    )));
     if certificate_provisioning.uses_harness_devices() && config.is_none() {
         services.native_certificates = None;
+        services.local_person = None;
     }
     let realtime_fabric = if config.is_none() {
         peer_sync.and_then(crate::shell::collab_broker_capnp::NativeRealtimeServices::from_network)
@@ -773,6 +837,7 @@ fn spawn_inner(
             tree.clone(),
         )) as tilo_action_broker::services::WorkspaceAuthorityHandle
     });
+    let personal_socket = capnp_socket_path.clone();
     let inner = match certificate_provisioning {
         CertificateProvisioning::Production => {
             tilo_action_broker::collab_broker::spawn_with_services(
@@ -815,9 +880,17 @@ fn spawn_inner(
             .try_send(crate::network::actor::NetCmd::AttachActionBroker { queue, host, rooms })
             .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
     }
+    let personal_source = inner
+        .app_action_broker()
+        .zip(peer_sync.and_then(|network| network.messaging_host_identity()))
+        .and_then(|(broker, host)| {
+            NativePersonalSource::install(personal_socket, broker, local_session.lifecycle(), host)
+        });
     Ok(BrokerHandle {
+        task_review: None,
         inner,
         local_session,
+        _personal_source: personal_source,
         native_media,
         realtime_fabric: realtime_fabric.map(|(_, bridge)| bridge),
         drain_thread,

@@ -514,7 +514,7 @@ impl AgentParticipant {
             seed,
         )
         .map_err(|error| error.to_string())?;
-        let route = route(app.record());
+        let route = route(app.wire_record());
         if let Some(mutation) = app.take_mutation() {
             self.peer.publish(route.clone(), &mutation)?;
         }

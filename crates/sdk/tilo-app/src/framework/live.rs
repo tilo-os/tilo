@@ -95,8 +95,8 @@ impl<R: Resource> Live<R> {
     /// # Errors
     /// Returns [`ModelError`] when the document no longer holds the resource.
     pub fn sync(&self, doc: &Doc) -> Result<bool, ModelError> {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        let _profile = super::testing::phases::Scope::start("framework.live_sync");
+        #[cfg(feature = "test-support")]
+        let _profile = super::profiling::Scope::start("framework.live_sync");
         self.inner.borrow_mut().sync(doc)
     }
 }
