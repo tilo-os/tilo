@@ -196,7 +196,7 @@ and informative links through the same normal undoable action door. Original
 Jobs remain canonical. A binding name retaining references after undo cannot
 be silently reused for another target; remove those links first.
 
-`run-experiment` resolves the exact current record custodian and action under
+`run-experiment` resolves the exact originally advertised publisher and action under
 its original caller, reads one bounded Code snapshot page, then invokes the
 existing Git `run-approved-check` action. It does not select commands, paths,
 permissions or sandbox limits. An earlier snapshot page does not pin the later
@@ -230,3 +230,13 @@ evidence, not substitutes for live execution custody.
 The semantic binding and detached-custody refusal tests do not establish an
 installed human-selection or process-cleanup result. Those require the shared
 platform selection bridge and an actual signed installed execution.
+
+Project links retain the provider token actually returned by the platform selector;
+that token and the original public resource address are descriptive, not grants.
+Before execution, the app uses the original caller's provider catalogue and bounded
+direct resource pages to find its exact action at an offered revision. It resolves
+that row and checks the publisher again, then invokes with the chosen browse revision;
+a Found resolution has no revision echo. Private host-worker canonical route lookup
+is not used for ordinary native apps. Missing or replaced publishers refuse, and
+legacy links without a publisher remain readable but require selection again before
+execution. A second publisher with the same app and record is never substituted.

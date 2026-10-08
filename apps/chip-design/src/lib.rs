@@ -7,6 +7,7 @@ mod operator_graph;
 mod operator_graph_view;
 mod placement_view;
 mod project_composition;
+mod project_discovery;
 mod project_links;
 mod project_setup;
 mod resource;

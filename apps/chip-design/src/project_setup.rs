@@ -62,6 +62,7 @@ fn link(selected: SelectedResource) -> Result<ActionLink, String> {
         return Err("selected resource is not its original record publication".into());
     }
     Ok(ActionLink {
+        provider: selected.provider.provider,
         route: CanonicalActionRoute {
             room: selected.provider.room,
             app_id: selected.provider.app_id,

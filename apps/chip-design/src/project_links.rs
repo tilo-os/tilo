@@ -12,6 +12,10 @@ const MAX_REFERENCES: usize = MAX_PROJECTS * 16;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionLink {
+    /// Original advertised publisher token; descriptive, never an access grant.
+    /// Legacy links remain readable but require selection again before execution.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
     pub route: CanonicalActionRoute,
     pub address: ActionAddress,
     pub resource: ViewResourceQuery,
@@ -95,7 +99,9 @@ impl Experiment {
 }
 impl ActionLink {
     fn validate(&self, app: &str, kind: &str, action: &str) -> Result<(), String> {
-        if self.route.app_id != app
+        if self.provider.len() > 1024
+            || self.provider.trim() != self.provider
+            || self.route.app_id != app
             || self.route.record_id.is_empty()
             || self.route.room.is_empty()
             || self.route.room.len() > 1024

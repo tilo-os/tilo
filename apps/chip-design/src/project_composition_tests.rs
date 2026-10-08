@@ -5,11 +5,13 @@ use ui::tilo_resource::Invoke;
 
 fn binding() -> serde_json::Value {
     serde_json::json!({"name":"test experiment","check_id":"test-check","source":{
+        "provider":"test-code-provider",
         "route":{"room":"test-room","app_id":"so.tilo.code-editor","record_id":"test-file-record"},
         "address":{"resource":"test-file","action":"read-text-snapshot"},
         "resource":{"id":"test-file","kind":"code_editor.file"},
         "semantic_identity":{"kind":"code_editor.file","key":"test-file"}
     },"check":{
+        "provider":"test-git-provider",
         "route":{"room":"test-room","app_id":"so.tilo.git-client","record_id":"test-repo-record"},
         "address":{"resource":"test-repository","action":"run-approved-check"},
         "resource":{"id":"test-repository","kind":"git_client.repo"},
@@ -52,6 +54,39 @@ fn named_project_links_use_the_public_action_and_undo_without_seeding() {
         .unwrap();
     assert_eq!(content["check_id"], "test-check");
     assert!(content["invocations"].as_array().unwrap().is_empty());
+    assert!(app.undo());
+    assert!(app.state().experiments.is_empty());
+}
+
+#[test]
+fn legacy_bindings_and_reported_links_preserve_their_original_serialized_history() {
+    let mut original = binding();
+    for field in ["source", "check"] {
+        original[field].as_object_mut().unwrap().remove("provider");
+    }
+    original["invocations"] = serde_json::json!([]);
+    original["references_truncated"] = serde_json::json!(false);
+    let experiment: crate::project_links::Experiment =
+        serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&experiment).unwrap(), original);
+    let reported = serde_json::json!({
+        "parent": InvocationId::new(), "invocation": InvocationId::new(),
+        "action": original["check"], "resources": []
+    });
+    let link: crate::project_links::InvocationLink =
+        serde_json::from_value(reported.clone()).unwrap();
+    assert_eq!(serde_json::to_value(link).unwrap(), reported);
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    bind(&mut app, &original).unwrap();
+    let content = app
+        .call_on(
+            "chip_design.experiment:test experiment",
+            "read",
+            serde_json::json!({}),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(content["source"].get("provider").is_none());
     assert!(app.undo());
     assert!(app.state().experiments.is_empty());
 }

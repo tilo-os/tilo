@@ -39,79 +39,20 @@ async fn page(actions: &PublishedActions, query: CatalogueQuery) -> Result<Catal
         PublishedActionAnswer::Answer(RemoteActionMessage::CatalogueResponse {
             result: Ok(page),
             ..
-        }) if !page.stale_cursor && !page.budget_exhausted => Ok(page),
+        }) if !page.stale_cursor => Ok(page),
         _ => Err("original action discovery unavailable; no invocation was issued".into()),
     }
 }
 
 async fn provider(actions: &PublishedActions, link: &ActionLink) -> Result<String, String> {
-    let providers = page(
-        actions,
-        CatalogueQuery {
-            canonical_route: Some(link.route.clone()),
-            max_results: 0,
-            ..Default::default()
-        },
-    )
-    .await?;
-    let mut matching = providers.providers.iter().filter(|provider| {
-        provider.room == link.route.room
-            && provider.app_id == link.route.app_id
-            && provider.record_id == link.route.record_id
-    });
-    let current = matching
-        .next()
-        .ok_or("original record has no current custodian")?;
-    if matching.next().is_some() {
-        return Err("original record custody is ambiguous".into());
-    }
-    Ok(current.provider.clone())
+    crate::project_discovery::provider(&|query| page(actions, query), link).await
 }
 
 async fn resolve(
     actions: &PublishedActions,
     link: &ActionLink,
 ) -> Result<(RemoteActionTarget, String), String> {
-    let provider = provider(actions, link).await?;
-    let target = RemoteActionTarget {
-        provider,
-        address: link.address.clone(),
-    };
-    let resolved = page(
-        actions,
-        CatalogueQuery {
-            provider: Some(target.provider.clone()),
-            target: Some(target.address.clone()),
-            max_results: 1,
-            ..Default::default()
-        },
-    )
-    .await?;
-    if resolved.rows.len() != 1 {
-        return Err("original action is no longer offered".into());
-    }
-    let row = resolved.rows.first().ok_or("original action is missing")?;
-    let descriptor = row
-        .action
-        .as_ref()
-        .ok_or("original action descriptor is missing")?;
-    if row.target().as_ref() != Some(&target)
-        || row.app_id != link.route.app_id
-        || descriptor.semantic_identity.as_ref() != Some(&link.semantic_identity)
-        || descriptor.resource_kind != link.semantic_identity.kind
-        || row.resource.id != link.resource.id
-        || row.resource.kind != link.resource.kind
-    {
-        return Err("original action semantic identity changed; bind a new experiment".into());
-    }
-    // Confirmation belongs to the existing platform door; never manufacture it.
-    if !matches!(
-        descriptor.contract.advertised_confirmation(),
-        ui::tilo_actions::ConfirmationPolicy::None
-    ) {
-        return Err("original action requires confirmation through its own platform action".into());
-    }
-    Ok((target, resolved.revision))
+    crate::project_discovery::resolve(&|query| page(actions, query), link).await
 }
 
 async fn execute(
@@ -278,6 +219,9 @@ pub fn open(name: &str, source: bool, cx: &mut EffectCx<ChipProject>) -> Result<
                 },
             )
             .await?;
+            if views.budget_exhausted || views.revision.is_empty() {
+                return Err("original resource view discovery is incomplete".into());
+            }
             let mut matching = views.rows.iter().filter(|row| {
                 row.provider == provider
                     && row.app_id == link.route.app_id
@@ -295,6 +239,7 @@ pub fn open(name: &str, source: bool, cx: &mut EffectCx<ChipProject>) -> Result<
                 return Err("original resource primary view is ambiguous".into());
             }
             let target = row.target().ok_or("original view action is missing")?;
+            crate::project_discovery::provider(&|query| page(&actions, query), &link).await?;
             let invocation = InvocationId::new();
             let request = InvokeRequest {
                 invocation,
