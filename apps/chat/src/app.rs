@@ -6057,8 +6057,11 @@ impl Widget for ChatApp {
         let hit = self
             .semantic_hits()
             .into_iter()
-            .find_map(|(_, hit, ..)| (hit.semantic_id() == target).then_some(hit));
-        let Some(hit) = hit else {
+            .enumerate()
+            .find_map(|(index, (_, hit, ..))| {
+                (hit.semantic_id() == target).then_some((index, hit))
+            });
+        let Some((hit_index, hit)) = hit else {
             return false;
         };
         // These immediate-mode editors are real TextInputs, even though their
@@ -6127,6 +6130,10 @@ impl Widget for ChatApp {
                 _ => return false,
             }
             self.set_composer_focus();
+            return true;
+        }
+        if matches!(action, ui::a11y::Action::Focus) {
+            self.focus_keyboard_target(hit_index, &hit);
             return true;
         }
         if !matches!(

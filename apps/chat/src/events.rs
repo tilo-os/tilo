@@ -1484,11 +1484,20 @@ impl ChatApp {
             None if backwards => targets.len() - 1,
             None => 0,
         };
-        self.keyboard_target = Some(next);
         let Some((_, hit, ..)) = targets.get(next) else {
             self.keyboard_target = None;
             return;
         };
+        self.focus_keyboard_target(next, hit);
+    }
+
+    /// Focus one control from Chat's painted immediate-mode keyboard ring.
+    /// Pointer, Tab, and accessibility focus all converge here so a later
+    /// physical Enter activates the same retained `Hit` on the same surface.
+    pub(crate) fn focus_keyboard_target(&mut self, index: usize, hit: &Hit) {
+        self.left_flap.set_resize_focused(false);
+        self.right_flap.set_resize_focused(false);
+        self.keyboard_target = Some(index);
         match hit {
             Hit::FocusMain => {
                 self.focus = Focus::Main;
@@ -4469,16 +4478,56 @@ mod tests {
         id: String,
     ) {
         let return_target = format!("agent-surface:{id}|{}", Hit::AgentWindow.semantic_id());
+        let parent_target = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
+            .expect("the parent keeps its own keyboard ring");
+        app.keyboard_target = Some(parent_target);
+        assert!(
+            !ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                app,
+                &id,
+                &format!("agent-surface:foreign|{}", Hit::AgentWindow.semantic_id()),
+                &ui::a11y::Action::Focus,
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+            ),
+            "a foreign surface target cannot focus the retained child"
+        );
+        assert!(
+            !ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                app,
+                &id,
+                &format!("agent-surface:{id}|chat.stale-return"),
+                &ui::a11y::Action::Focus,
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+            ),
+            "a stale child target cannot acquire keyboard focus"
+        );
         assert!(
             ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
                 app,
                 &id,
                 &return_target,
-                &ui::a11y::Action::Activate,
+                &ui::a11y::Action::Focus,
                 &mut ui::widget::Edits::lend(doc),
                 &automerge::ROOT,
             ),
-            "the detached accessibility tree returns through the same retained control"
+            "the detached accessibility tree focuses its retained Return control"
+        );
+        assert_eq!(
+            app.keyboard_target,
+            Some(parent_target),
+            "focusing the child does not contaminate the parent keyboard ring"
+        );
+        feed_root_mods(app, doc, &key_named(NamedKey::Enter), Modifiers::default());
+        assert!(
+            app.agent_surfaces
+                .values()
+                .any(|surface| surface.id == id && surface.placement.is_return_pending()),
+            "physical Enter activates the exact focused child Return control"
         );
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             app,
