@@ -2651,13 +2651,15 @@ mod tests {
             paused,
             capabilities: CloudCapabilities::default(),
         };
-        let dir = sample_directory();
-        let files = dir.views_of(AccountKind::Nextcloud)[0].id.clone();
-        let mail = dir.views_of(AccountKind::Mail)[0].id.clone();
         for paused in [false, true] {
             let (_scratch, root) = scratch_root();
-            let pane = AccountsPane::from_dir_in(root.clone(), sample_directory(), false)
-                .with_cloud_mounts(CloudMounts::known(vec![mount(&files, paused)]));
+            // Sample accounts take fresh ids each time: read them back.
+            let pane = AccountsPane::from_dir_in(root.clone(), sample_directory(), false);
+            let files = pane.directory().views_of(AccountKind::Nextcloud)[0]
+                .id
+                .clone();
+            let mail = pane.directory().views_of(AccountKind::Mail)[0].id.clone();
+            let pane = pane.with_cloud_mounts(CloudMounts::known(vec![mount(&files, paused)]));
             let composed = lay_out(&pane);
             let mut labels = Vec::new();
             button_labels(composed.as_ref(), &mut labels);
