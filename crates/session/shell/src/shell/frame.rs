@@ -1576,11 +1576,10 @@ impl FrameBuilder {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();
             let revisions = TreeRevisions::read(&chrome, &tree);
-            (
-                revisions,
-                self.peer_windows_quiet_at != Some(revisions)
-                    && crate::shell::peer_windows::any_pending(&tree),
-            )
+            let pending = self.peer_windows_quiet_at != Some(revisions)
+                && crate::shell::peer_windows::any_pending(&tree);
+            drop(tree);
+            (revisions, pending)
         };
         self.peer_windows_quiet_at = (!pending).then_some(revisions);
         let epoch = revisions.room_epoch;
