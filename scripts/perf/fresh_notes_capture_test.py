@@ -27,7 +27,9 @@ def state(entries):
         method="authenticated-wayland-peer", omitted=0, windows=[dict(
             room="room", tab_id=tab, surface_id=surface, package_id=fresh.APP,
             record_instance=record, peer_pid=100 + tab, peer_start_time_ticks="123",
-            adoption_id="12345678-1234-1234-1234-123456789abc")
+            adoption_id="12345678-1234-1234-1234-123456789abc",
+            certified_checkout=dict(application=fresh.APP, room="room",
+                                    record=f"saved:notes:{record}"))
             for tab, record, surface in entries])), workspace_tree=dict(
         local_app_records=mapping, workspaces=[dict(room="room", strips=[dict(
             window_groups=[dict(id=7, tabs=[dict(id=tab, tile=dict(Foreign=dict(
@@ -35,12 +37,12 @@ def state(entries):
 
 
 class FreshCaptureGuards(unittest.TestCase):
-    def test_existing_notes_preserved_and_record_resolved_from_public_association(self):
+    def test_existing_notes_preserved_and_current_certified_record_resolved(self):
         before = state([(1, 21, 31)])
         current = state([(1, 21, 31), (2, 99, 32)])
         binding = fresh.fresh_binding(current, fresh.tabs(before), cohort)
         self.assertEqual(binding["tab"], "2")
-        self.assertEqual(binding["record"], "derived:default@tab:0000000000000063")
+        self.assertEqual(binding["record"], "saved:notes:99")
         self.assertNotIn(binding["subject"]["peer_pid"], [101])
 
     def test_borrowed_record_ambiguous_launch_and_replaced_user_surface_refuse(self):
@@ -59,6 +61,17 @@ class FreshCaptureGuards(unittest.TestCase):
         current = state([(1, 21, 31), (2, 22, 32)])
         current["chrome"]["native_window_provenance"]["windows"][-1]["record_instance"] = 21
         with self.assertRaisesRegex(RuntimeError, "record/lifetime"):
+            fresh.fresh_binding(current, before, cohort)
+
+    def test_missing_or_mismatched_certified_checkout_never_uses_a_continuity_alias(self):
+        before = fresh.tabs(state([(1, 21, 31)]))
+        current = state([(1, 21, 31), (2, 22, 32)])
+        worker = current["chrome"]["native_window_provenance"]["windows"][-1]
+        worker.pop("certified_checkout")
+        self.assertIsNone(fresh.fresh_binding(current, before, cohort))
+        worker["certified_checkout"] = dict(application=fresh.APP, room="other",
+                                           record="saved:notes:22")
+        with self.assertRaisesRegex(RuntimeError, "certified checkout"):
             fresh.fresh_binding(current, before, cohort)
 
     def test_exact_keyboard_surface_never_routes_to_other_open_notes(self):

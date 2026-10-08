@@ -86,10 +86,9 @@ def fresh_binding(state, preserved, cohort):
             or association.get("room") != room
             or type(association.get("record_instance")) is not int):
         raise RuntimeError("Fresh Notes public record association unavailable")
-    record = cohort.mapped_record(state, (room, tab), APP)
     old_records = [old["association"].get("record_instance") for old in preserved.values()
                    if isinstance(old["association"], dict)]
-    if not record or association["record_instance"] in old_records:
+    if association["record_instance"] in old_records:
         raise RuntimeError("Fresh Notes would borrow an existing record")
     proof = state.get("chrome", {}).get("native_window_provenance", {})
     if (proof.get("method") != "authenticated-wayland-peer" or proof.get("omitted") != 0
@@ -112,6 +111,9 @@ def fresh_binding(state, preserved, cohort):
                                 str(subject.get("adoption_id")))
             or subject["adoption_id"] == "00000000-0000-0000-0000-000000000000"):
         raise RuntimeError("Native worker record/lifetime unavailable")
+    record = cohort.mapped_record(state, (room, tab, str(row["surface"])), APP)
+    if record is None:
+        return None  # Current worker has not published its certified checkout yet.
     return dict(room=room, tab=tab, group=row["group"], surface=row["surface"],
                 record=record, subject=subject)
 

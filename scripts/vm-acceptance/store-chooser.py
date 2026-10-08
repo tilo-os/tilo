@@ -151,28 +151,14 @@ def opened_subject(state, window):
     if not candidates:
         return None
     tab = candidates[0]
-    record = app.mapped_record(state, tab, window["package_id"])
-    if record is None:
+    worker = app.native_subject(state, tab, window["package_id"])
+    if worker is None:
         return None
-    proof = state.get("chrome", {}).get("native_window_provenance")
-    require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
-            and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
-            "current device-owner native worker provenance unavailable")
-    matches = [row for row in proof["windows"] if row.get("room") == tab[0]
-               and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
-    require(len(matches) <= 1, "ambiguous authenticated native worker")
-    if not matches:
-        return None
-    worker = matches[0]
     require(isinstance(window.get("adoption_id"), str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", window["adoption_id"])
             and window["adoption_id"] != "00000000-0000-0000-0000-000000000000"
             and worker.get("adoption_id") == window["adoption_id"],
             "opened surface resource lifetime changed or is unobservable")
-    require(worker.get("package_id") == window["package_id"]
-            and type(worker.get("record_instance")) is int
-            and record == f'derived:default@tab:{worker["record_instance"]:016x}',
-            "current native worker has a foreign record association")
-    return tab, record, worker
+    return tab, worker["certified_checkout"]["record"], worker
 
 
 def install_open(door, fixture, installed_before, out):
