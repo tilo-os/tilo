@@ -4850,13 +4850,29 @@ fn present_after_deadline_sync(model_or_layout_dirty: bool, needs_animation: boo
 /// observable result needs a frame. A deadline is demand to poll, not evidence
 /// that the presentation changed.
 fn sync_scheduled_deadline(app: &mut App) -> bool {
+    // A scheduled widget poll is the native runner's model frame. Preserve an
+    // in-flight pull-directory traversal across that frame only when a freshly
+    // published snapshot proves that the resource tree and every
+    // non-scheduling witness are unchanged. This is the same transaction the
+    // hosted model pump uses; retaining cursors without the comparison would
+    // let a real document or authority change reuse stale capability state.
+    let directory = app.begin_model_directory_refresh();
     let updated = app.update_model();
     let _ = app.sync_model(true);
     let structure = app.forget_replaced_widgets();
+    if directory.is_some() {
+        app.publish_action_surface_after_refresh();
+    }
+    app.finish_model_directory_refresh(directory);
     present_after_deadline_sync(
         updated || structure || app.layout.layout_dirty,
         app.root_widget.needs_animation_frame(),
     )
+}
+
+#[cfg(test)]
+pub(super) fn sync_scheduled_deadline_for_test(app: &mut App) -> bool {
+    sync_scheduled_deadline(app)
 }
 
 #[cfg(test)]

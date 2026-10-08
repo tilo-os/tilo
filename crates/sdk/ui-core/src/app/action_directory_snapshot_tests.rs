@@ -698,6 +698,65 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
 }
 
 #[cfg(all(unix, feature = "broker-transport"))]
+fn connected_nested_directory() -> App {
+    let (mut app, _) = declared_directory(2);
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "hierarchy", true)
+        .unwrap();
+    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.init_layout();
+    app.collaboration.manager.wait_for_commands_for_test();
+    app.pump_collab_presence();
+    app.publish_action_surface();
+    app.collaboration.manager.wait_for_commands_for_test();
+    app
+}
+
+#[cfg(all(unix, feature = "broker-transport"))]
+fn root_page(app: &mut App) -> runtime_collab::ActionDirectoryPage {
+    let page = app.action_directory_page(directory_query("", "", 8, 8192, 8));
+    assert_eq!(page.rows.len(), 1);
+    assert!(page.rows.first().expect("root row").has_children);
+    page
+}
+
+#[cfg(all(unix, feature = "broker-transport"))]
+fn child_page(app: &mut App, revision: &str) -> runtime_collab::ActionDirectoryPage {
+    app.action_directory_page(directory_query(revision, "declared:0", 8, 8192, 8))
+}
+
+#[cfg(all(unix, feature = "broker-transport"))]
+#[test]
+fn native_scheduled_sync_preserves_only_an_unchanged_nested_directory() {
+    let mut unchanged = connected_nested_directory();
+    let root = root_page(&mut unchanged);
+    super::native_runner::sync_scheduled_deadline_for_test(&mut unchanged);
+    let children = child_page(&mut unchanged, &root.revision);
+    assert!(!children.stale_cursor);
+    assert_eq!(children.rows.len(), 2);
+
+    let mut changed = connected_nested_directory();
+    let root = root_page(&mut changed);
+    changed
+        .state_mut_for_test()
+        .doc
+        .put(ROOT, "changed-contract", true)
+        .unwrap();
+    super::native_runner::sync_scheduled_deadline_for_test(&mut changed);
+    assert!(child_page(&mut changed, &root.revision).stale_cursor);
+
+    let mut revoked = connected_nested_directory();
+    let root = root_page(&mut revoked);
+    revoked.set_permission_ctx(PermissionContext::from_capabilities(
+        collab_types::caps::Actor::person(None, "restricted"),
+        Vec::new(),
+    ));
+    super::native_runner::sync_scheduled_deadline_for_test(&mut revoked);
+    assert!(child_page(&mut revoked, &root.revision).stale_cursor);
+}
+
+#[cfg(all(unix, feature = "broker-transport"))]
 #[test]
 fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
     // Case `a_manager_that_connects_after_launch_publishes_the_action_surface_once_ready`.

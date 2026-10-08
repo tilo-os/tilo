@@ -738,6 +738,10 @@ fn poll_rows(
             RemoteCall::Done(page) => page,
         };
         pages_remaining = pages_remaining.saturating_sub(1);
+        if page.stale_cursor {
+            observe_ingest_page(&page, agent);
+            return restart_stale_rows(&state, &page, pages_remaining);
+        }
         if let Err(class) = ingest_page(&mut state, page, agent) {
             return discovery_failed("rows", class);
         }
@@ -779,6 +783,58 @@ fn poll_rows(
     }));
     AgentMessagePoll::Advance {
         submission: AgentMessageSubmission::Rows(Box::new(state)),
+        pages_remaining,
+    }
+}
+
+fn restart_stale_rows(
+    state: &AgentMessageRows,
+    page: &CataloguePage,
+    pages_remaining: u16,
+) -> AgentMessagePoll {
+    if page.revision.is_empty()
+        || !page.rows.is_empty()
+        || !page.providers.is_empty()
+        || page.locator.is_some()
+        || !page.next_cursor.is_empty()
+        || page.exhausted
+        || page.budget_exhausted
+    {
+        return discovery_failed("rows", "malformed_stale_page");
+    }
+    let Some(provider) = state
+        .provider
+        .as_ref()
+        .filter(|provider| !provider.is_empty())
+    else {
+        return discovery_failed("rows", "stale_cursor");
+    };
+    if state.parent.is_none()
+        || !state.providers.is_empty()
+        || !state
+            .revision
+            .as_ref()
+            .is_some_and(|revision| !revision.is_empty())
+    {
+        return discovery_failed("rows", "stale_cursor");
+    }
+    if pages_remaining == 0 {
+        return discovery_failed("rows", "page_budget_exhausted");
+    }
+    tracing::debug!(target: "tilo_agent_delivery", phase = "rows", "native-message-stale-restart");
+    AgentMessagePoll::Advance {
+        submission: AgentMessageSubmission::Rows(Box::new(AgentMessageRows {
+            providers: VecDeque::new(),
+            provider: Some(provider.clone()),
+            parents: VecDeque::new(),
+            parent: Some(String::new()),
+            revision: None,
+            cursor: Vec::new(),
+            call: None,
+            matches: Vec::new(),
+            seen_requests: HashSet::new(),
+            seen_resources: HashSet::new(),
+        })),
         pages_remaining,
     }
 }
@@ -1457,7 +1513,7 @@ mod tests {
         cases.push((page, "empty_revision", "revision_changed"));
         let mut page = valid.clone();
         page.stale_cursor = true;
-        cases.push((page, "stale_cursor", "stale_cursor"));
+        cases.push((page, "malformed_stale_page", "stale_cursor"));
         let mut page = valid.clone();
         page.budget_exhausted = true;
         cases.push((page, "page_budget_exhausted", "page_budget_exhausted"));
@@ -1565,6 +1621,275 @@ mod tests {
                 assert_message_diagnostic(submission, result, cause, remote);
             }
         }
+    }
+
+    fn advance_discovery(
+        actions: &RemoteActions,
+        submission: &AgentMessageSubmission,
+        deadline: Instant,
+        pages: u16,
+    ) -> (AgentMessageSubmission, u16) {
+        let AgentMessagePoll::Advance {
+            submission,
+            pages_remaining,
+        } = poll(
+            actions,
+            "room-a",
+            "scribe",
+            "PRIVATE-TEXT",
+            submission,
+            deadline,
+            pages,
+        )
+        else {
+            panic!("expected an actual discovery advance")
+        };
+        (submission, pages_remaining)
+    }
+
+    fn answer_discovery(submission: &AgentMessageSubmission, page: CataloguePage) {
+        match submission {
+            AgentMessageSubmission::Rows(state) => {
+                state.call.as_ref().unwrap().set(RemoteCall::Done(page))
+            }
+            AgentMessageSubmission::Confirm { call, .. } => call.set(RemoteCall::Done(page)),
+            _ => panic!("expected a catalogue call"),
+        }
+    }
+
+    fn stale_discovery() -> CataloguePage {
+        CataloguePage {
+            revision: "new-revision".into(),
+            stale_cursor: true,
+            ..CataloguePage::default()
+        }
+    }
+
+    #[test]
+    fn stale_rows_restart_same_provider_and_confirm_only_fresh_target_once() {
+        use crate::collaboration::CollabRequest;
+        use crate::widget::Collaborative;
+        use tilo_actions::remote::RemoteActionMessage;
+        let mut actions = RemoteActions::session();
+        let deadline = crate::time::now() + RESOLVE_WINDOW;
+        let mut state = diagnostic_rows(RemoteCall::Pending);
+        state.call = None;
+        let initial = AgentMessageSubmission::Rows(Box::new(state));
+        let (pending, pages) = advance_discovery(&actions, &initial, deadline, MAX_PAGES);
+        let mut old = confirmed_page("scribe", "old-revision");
+        old.rows[0].has_children = true;
+        let old_target = old.rows[0].target().unwrap();
+        answer_discovery(&pending, old);
+        let (pending, pages) = advance_discovery(&actions, &pending, deadline, pages);
+        answer_discovery(&pending, stale_discovery());
+        let (restarted, pages) = advance_discovery(&actions, &pending, deadline, pages);
+        assert_eq!(pages, MAX_PAGES - 2);
+        let AgentMessageSubmission::Rows(state) = &restarted else {
+            panic!("expected Rows")
+        };
+        assert_eq!(state.provider.as_deref(), Some("chat-provider"));
+        assert_eq!(state.parent.as_deref(), Some(""));
+        assert!(state.providers.is_empty() && state.parents.is_empty() && state.matches.is_empty());
+        assert!(state.revision.is_none() && state.cursor.is_empty() && state.call.is_none());
+        assert!(state.seen_resources.is_empty() && state.seen_requests.is_empty());
+        let (pending, pages) = advance_discovery(&actions, &restarted, deadline, pages);
+        let mut fresh = confirmed_page("scribe", "new-revision");
+        fresh.rows[0].resource.id = "fresh-opaque-resource".into();
+        fresh.rows[0].action.as_mut().unwrap().address.resource = "fresh-opaque-resource".into();
+        let fresh_target = fresh.rows[0].target().unwrap();
+        answer_discovery(&pending, fresh.clone());
+        let (confirmed, pages) = advance_discovery(&actions, &pending, deadline, pages);
+        let AgentMessageSubmission::Confirm {
+            target, revision, ..
+        } = &confirmed
+        else {
+            panic!("expected Confirm")
+        };
+        assert_eq!(target, &fresh_target);
+        assert_ne!(target, &old_target);
+        assert_eq!(revision, "new-revision");
+        answer_discovery(&confirmed, fresh);
+        let (invoking, pages) = advance_discovery(&actions, &confirmed, deadline, pages);
+        assert_eq!(pages, MAX_PAGES - 4);
+        assert!(matches!(invoking, AgentMessageSubmission::Invoke { .. }));
+        let requests = actions.take_collab_requests();
+        let invokes = requests
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(request),
+                } => Some(request),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(invokes.len(), 1);
+        assert_eq!(invokes[0].target, fresh_target);
+        assert_eq!(
+            invokes[0].argument,
+            InvokeArgument::Text("PRIVATE-TEXT".into())
+        );
+        let queries = requests
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::CatalogueRequest { query, .. },
+                } => Some(query),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(queries.len(), 4);
+        assert!(
+            queries
+                .iter()
+                .all(|query| query.provider.as_deref() == Some("chat-provider")
+                    && query.canonical_route.is_none())
+        );
+        assert!(
+            queries[2].parent_resource.is_none()
+                && queries[2].revision.is_none()
+                && queries[2].cursor.is_empty()
+        );
+    }
+
+    #[test]
+    fn stale_rows_never_extend_budget_deadline_or_accept_malformed_route() {
+        use crate::widget::Collaborative;
+        let valid = stale_discovery();
+        let mut state = diagnostic_rows(RemoteCall::Done(valid.clone()));
+        state.revision = Some("old-revision".into());
+        let mut actions = RemoteActions::session();
+        let submission = AgentMessageSubmission::Rows(Box::new(state.clone()));
+        assert!(matches!(
+            poll(
+                &actions,
+                "room-a",
+                "scribe",
+                "PRIVATE-TEXT",
+                &submission,
+                crate::time::now() + RESOLVE_WINDOW,
+                1
+            ),
+            AgentMessagePoll::Failed
+        ));
+        assert!(matches!(
+            poll(
+                &actions,
+                "room-a",
+                "scribe",
+                "PRIVATE-TEXT",
+                &submission,
+                crate::time::now(),
+                MAX_PAGES
+            ),
+            AgentMessagePoll::Failed
+        ));
+        let mut malformed = Vec::new();
+        let mut page = valid.clone();
+        page.rows.push(message_row("scribe"));
+        malformed.push(page);
+        let mut page = valid.clone();
+        page.providers = complete_providers_page().providers;
+        malformed.push(page);
+        let mut page = valid.clone();
+        page.revision.clear();
+        malformed.push(page);
+        let mut page = valid.clone();
+        page.exhausted = true;
+        malformed.push(page);
+        let mut page = valid.clone();
+        page.budget_exhausted = true;
+        malformed.push(page);
+        let mut page = valid;
+        page.next_cursor = b"PRIVATE-CURSOR".to_vec();
+        malformed.push(page);
+        for page in malformed {
+            let mut state = state.clone();
+            state.call = Some(LocalState::new(RemoteCall::Done(page)));
+            assert!(matches!(
+                poll(
+                    &actions,
+                    "room-a",
+                    "scribe",
+                    "PRIVATE-TEXT",
+                    &AgentMessageSubmission::Rows(Box::new(state)),
+                    crate::time::now() + RESOLVE_WINDOW,
+                    MAX_PAGES
+                ),
+                AgentMessagePoll::Failed
+            ));
+        }
+        for changed in [0, 1, 2, 3] {
+            let mut state = state.clone();
+            match changed {
+                0 => state.provider = None,
+                1 => state.parent = None,
+                2 => state.providers.push_back("foreign-provider".into()),
+                _ => state.revision = None,
+            }
+            assert!(matches!(
+                poll(
+                    &actions,
+                    "room-a",
+                    "scribe",
+                    "PRIVATE-TEXT",
+                    &AgentMessageSubmission::Rows(Box::new(state)),
+                    crate::time::now() + RESOLVE_WINDOW,
+                    MAX_PAGES
+                ),
+                AgentMessagePoll::Failed
+            ));
+        }
+        assert!(actions.take_collab_requests().is_empty());
+    }
+
+    #[test]
+    fn continuously_stale_rows_consume_original_budget_without_invoking() {
+        use crate::collaboration::CollabRequest;
+        use crate::widget::Collaborative;
+        use tilo_actions::remote::RemoteActionMessage;
+        let mut actions = RemoteActions::session();
+        let deadline = crate::time::now() + RESOLVE_WINDOW;
+        let mut state = diagnostic_rows(RemoteCall::Pending);
+        state.call = None;
+        let mut submission = AgentMessageSubmission::Rows(Box::new(state));
+        let mut pages = 4;
+        for attempt in 0..2 {
+            (submission, pages) = advance_discovery(&actions, &submission, deadline, pages);
+            let mut root = confirmed_page("scribe", "old-revision");
+            root.rows[0].action = None;
+            root.rows[0].has_children = true;
+            answer_discovery(&submission, root);
+            (submission, pages) = advance_discovery(&actions, &submission, deadline, pages);
+            answer_discovery(&submission, stale_discovery());
+            let result = poll(
+                &actions,
+                "room-a",
+                "scribe",
+                "PRIVATE-TEXT",
+                &submission,
+                deadline,
+                pages,
+            );
+            if attempt == 0 {
+                let AgentMessagePoll::Advance {
+                    submission: advanced,
+                    pages_remaining,
+                } = result
+                else {
+                    panic!("first stale page should restart")
+                };
+                submission = advanced;
+                pages = pages_remaining;
+                assert_eq!(pages, 2);
+            } else {
+                assert!(matches!(result, AgentMessagePoll::Failed));
+            }
+        }
+        let requests = actions.take_collab_requests();
+        assert_eq!(requests.len(), 4);
+        assert!(requests.iter().all(|request| matches!(request,
+            CollabRequest::RemoteAction { message: RemoteActionMessage::CatalogueRequest { query, .. } }
+                if query.provider.as_deref() == Some("chat-provider") && query.canonical_route.is_none())));
     }
 
     fn message_row(agent: &str) -> CatalogueRow {
