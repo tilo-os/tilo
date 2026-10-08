@@ -93,6 +93,8 @@ class CheckAggregateTests(unittest.TestCase):
             "needs.select.outputs.check_required": "true",
             "needs.select.outputs.android_required": "true",
             "needs.select.outputs.wasm_required": "true",
+            "needs.policy.result": "success",
+            "needs.builder.outputs.affected": "true",
         }
 
         def admitted(job, cancelled=False, **changes):
@@ -134,6 +136,23 @@ class CheckAggregateTests(unittest.TestCase):
                     self.assertFalse(admitted(job, **{"needs.select.outputs.check_required": "false"}))
                 # Skipped native work cannot turn a failed security gate green.
                 self.assertNotEqual(self.aggregate(security="failure", affected="skipped")[0], 0)
+
+        sdk = (ROOT / ".forgejo/workflows/app-sdk.yml").read_text()
+        for name in ("linux", "web", "web-size"):
+            with self.subTest(sdk_job=name):
+                job = section(sdk, name, 2)
+                self.assertIn("needs: [builder, policy]", job)
+                self.assertTrue(admitted(job))
+                for status in ("failure", "cancelled", "skipped", "", "running"):
+                    self.assertFalse(admitted(job, **{"needs.policy.result": status}))
+                    self.assertTrue(admitted(job, **{"github.event_name": "push",
+                                                     "needs.policy.result": status}))
+                self.assertFalse(admitted(job, cancelled=True))
+                self.assertFalse(admitted(job, **{"needs.builder.outputs.affected": "false"}))
+                for event in ("pull_request", "push"):
+                    for status in ("failure", "cancelled", "skipped", ""):
+                        self.assertFalse(admitted(job, **{"github.event_name": event,
+                                                         "needs.builder.result": status}))
 
     def test_aggregate_passes_only_explained_skips_and_fails_every_other_outcome(self):
         with self.subTest(phase='intentional design skip passes with explanation'):
