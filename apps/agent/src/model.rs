@@ -1319,7 +1319,7 @@ mod tests {
                 tools::PLAN,
                 serde_json::json!({"reply":"Fixture response.","done":true,"steps":[]}),
             )],
-            vec![(tools::PLAN, finish.clone()), (tools::PLAN, finish.clone())],
+            vec![(tools::PLAN, finish.clone()), (tools::PLAN, finish)],
             vec![(
                 tools::PLAN,
                 serde_json::json!({"reply":"Fixture response.","done":"true"}),

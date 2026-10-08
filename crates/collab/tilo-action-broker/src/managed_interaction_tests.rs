@@ -179,9 +179,12 @@ async fn observe_managed_action(
     request.get().set_frame(&frame);
     let response = request.send().promise.await.unwrap();
     let reply = RemoteActionFrame::decode(response.get().unwrap().get_frame().unwrap()).unwrap();
-    let (answered, state) = match reply.message {
-        RemoteActionMessage::Update { invocation, state } => (invocation, state),
-        _ => return None,
+    let RemoteActionMessage::Update {
+        invocation: answered,
+        state,
+    } = reply.message
+    else {
+        return None;
     };
     assert_eq!(answered, invocation);
     state
