@@ -14,6 +14,8 @@ use vello::kurbo::{Point, Rect, Size, Vec2};
 use serde::{Deserialize, Serialize};
 #[doc(hidden)]
 pub mod handoff_diagnostics;
+#[doc(hidden)]
+pub mod marker_diagnostics;
 #[cfg(unix)]
 use std::collections::VecDeque;
 #[cfg(unix)]

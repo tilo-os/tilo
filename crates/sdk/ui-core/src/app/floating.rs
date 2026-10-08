@@ -352,13 +352,25 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
+        use crate::floating_surface::marker_diagnostics::{Stage, mark};
+
         let markers = self.current_agent_marker_publication();
-        if markers != self.floating.agent_marker_publication {
-            client.send(
+        if markers == self.floating.agent_marker_publication {
+            mark(Stage::CacheUnchanged);
+        } else {
+            if let Err(error) = client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::PublishAgentQuickComposerTargets {
                     markers: markers.clone(),
                 },
-            )?;
+            ) {
+                mark(Stage::SendFailed);
+                return Err(error);
+            }
+            mark(if markers.is_empty() {
+                Stage::EmptySent
+            } else {
+                Stage::TargetsSent
+            });
             self.floating.agent_marker_publication = markers;
             *changed = true;
         }
@@ -516,6 +528,8 @@ impl App {
     fn current_agent_marker_publication(
         &self,
     ) -> Vec<crate::floating_surface::AgentConversationNavigation> {
+        use crate::floating_surface::marker_diagnostics::{Stage, mark};
+
         let (Some(surface), Some(_viewport), Some(room)) = (
             self.window.agent_marker_surface.as_deref(),
             self.window.agent_marker_viewport,
@@ -525,10 +539,24 @@ impl App {
                     _ => None,
                 }),
         ) else {
+            mark(if self.window.agent_marker_surface.is_none() {
+                Stage::MissingSurface
+            } else if self.window.agent_marker_viewport.is_none() {
+                Stage::MissingViewport
+            } else {
+                Stage::MissingWorkspace
+            });
             return Vec::new();
         };
-        self.presence_ctx
-            .agent_marker_targets(surface, crate::time::now())
+        let targets = self
+            .presence_ctx
+            .agent_marker_targets(surface, crate::time::now());
+        mark(if targets.is_empty() {
+            Stage::NoPaintedTargets
+        } else {
+            Stage::PaintedTargets
+        });
+        targets
             .into_iter()
             .map(
                 |target| crate::floating_surface::AgentConversationNavigation {

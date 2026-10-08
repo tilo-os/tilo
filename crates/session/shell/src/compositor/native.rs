@@ -1189,12 +1189,79 @@ fn agent_marker_description(
         })
 }
 
+fn marker_projection_is_current(
+    frame_builder: &FrameBuilder,
+    target: &ui::floating_surface::AgentConversationNavigationTarget,
+    app_id: &str,
+    geometry: [Rect; 3],
+    now: ui::time::Instant,
+) -> bool {
+    use ui::floating_surface::marker_diagnostics::{HostChecks, SequenceClass, Stage, host};
+
+    let [app_rect, marker, locus] = geometry;
+    let inside = [
+        app_rect.contains(marker.origin()),
+        app_rect.contains(vello::kurbo::Point::new(marker.x1, marker.y1)),
+        app_rect.contains(locus.origin()),
+        app_rect.contains(vello::kurbo::Point::new(locus.x1, locus.y1)),
+    ];
+    let app_matches = target
+        .interaction
+        .action
+        .app
+        .as_ref()
+        .is_some_and(|source| source.id == app_id);
+    let actor_matches = frame_builder
+        .presence()
+        .authenticated_agent_id(&target.actor)
+        == Some(target.agent.as_str());
+    let current =
+        frame_builder
+            .presence()
+            .current_agent_interaction(&target.actor, target.invocation, now);
+    let current_matches = current == Some(&target.interaction);
+    let checks = HostChecks {
+        inside,
+        identity: [app_matches, actor_matches, current_matches],
+        interaction: [
+            current.is_some_and(|entry| entry.phase == target.interaction.phase),
+            current.is_some_and(|entry| entry.resource == target.interaction.resource),
+            current.is_some_and(|entry| entry.action == target.interaction.action),
+            current.is_some_and(|entry| entry.anchor == target.interaction.anchor),
+        ],
+        sequence: current.map_or(SequenceClass::Missing, |entry| {
+            match entry.sequence.cmp(&target.interaction.sequence) {
+                std::cmp::Ordering::Equal => SequenceClass::Same,
+                std::cmp::Ordering::Less => SequenceClass::Older,
+                std::cmp::Ordering::Greater => SequenceClass::Newer,
+            }
+        }),
+    };
+    let stage = if !inside.into_iter().all(|inside| inside) {
+        Stage::HostOutsideSource
+    } else if !app_matches {
+        Stage::HostAppMismatch
+    } else if !actor_matches {
+        Stage::HostActorMismatch
+    } else if current.is_none() {
+        Stage::HostCurrentMissing
+    } else if !current_matches {
+        Stage::HostCurrentMismatch
+    } else {
+        Stage::HostAccepted
+    };
+    host(stage, checks, geometry);
+    inside.into_iter().all(|inside| inside) && app_matches && actor_matches && current_matches
+}
+
 pub(crate) fn publish_agent_quick_composer_targets(
     frame_builder: &mut FrameBuilder,
     connection: u64,
     app_id: &str,
     markers: &[ui::floating_surface::AgentConversationNavigation],
 ) -> bool {
+    use ui::floating_surface::marker_diagnostics::{Stage, mark};
+
     let room = markers.first().map(|marker| marker.room.clone());
     let structurally_valid = markers.len() <= 16
         && markers.iter().all(|marker| {
@@ -1208,6 +1275,13 @@ pub(crate) fn publish_agent_quick_composer_targets(
     } else {
         None
     };
+    if markers.is_empty() {
+        mark(Stage::HostEmpty);
+    } else if !structurally_valid {
+        mark(Stage::HostMalformed);
+    } else if source.is_none() {
+        mark(Stage::HostSourceMissing);
+    }
     let now = ui::time::now();
     let validated = source.map(|(surface, app_rect)| {
         markers
@@ -1232,26 +1306,14 @@ pub(crate) fn publish_agent_quick_composer_targets(
                     ),
                     app_rect,
                 );
-                let inside = app_rect.contains(marker.origin())
-                    && app_rect.contains(vello::kurbo::Point::new(marker.x1, marker.y1))
-                    && app_rect.contains(locus.origin())
-                    && app_rect.contains(vello::kurbo::Point::new(locus.x1, locus.y1));
-                let exact = target
-                    .interaction
-                    .action
-                    .app
-                    .as_ref()
-                    .is_some_and(|source| source.id == app_id)
-                    && frame_builder
-                        .presence()
-                        .authenticated_agent_id(&target.actor)
-                        == Some(target.agent.as_str())
-                    && frame_builder.presence().current_agent_interaction(
-                        &target.actor,
-                        target.invocation,
-                        now,
-                    ) == Some(&target.interaction);
-                (inside && exact).then(|| {
+                marker_projection_is_current(
+                    frame_builder,
+                    target,
+                    app_id,
+                    [app_rect, marker, locus],
+                    now,
+                )
+                .then(|| {
                     let label = frame_builder.presence().display_name(&target.actor);
                     let description = agent_marker_description(frame_builder, target);
                     crate::shell::overlay_host::AccessibleAgentMarker {
