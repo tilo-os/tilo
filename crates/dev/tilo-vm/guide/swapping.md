@@ -20,6 +20,19 @@ Rolling back never deletes a generation, so `rollback --forward` (or
 `--to <n>`) goes forward again until `gc` prunes it; `tilo-vm slot show`
 lists them, generation 0 (the bare image) included.
 
+`tilo-vm --json slot show` includes `provenance`, keyed by selected component,
+read from each imported layer's metadata. Compare `source_commit`,
+`dirty_tree_hash`, `target`, `toolchain` and `cargo_lock_hash` with the selected
+`apps+runtime` cohort before qualifying a replacement. Profiles can differ.
+Older daemons/imports may omit provenance; that is unknown, not proof of a match.
+The import record is diagnostic metadata; package authenticity still comes from
+the existing signed installer and the OS publisher pins.
+
+For a captured fresh-slot replacement journey, the executable evidence contract
+is `scripts/vm-acceptance/component-replacement.py` (instructions in that suite's
+README). It checks successful activation, failed-candidate recovery, isolated
+fixture state and teardown, and never performs deployment itself.
+
 The one positional argument is the component; the slot is `--slot` and
 defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
