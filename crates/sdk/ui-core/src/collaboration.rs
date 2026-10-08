@@ -771,6 +771,9 @@ pub enum CollabEvent {
         /// resource and action remain authoritative; this only supplies the
         /// surrounding purpose and work-group for durable history.
         context: Option<Box<tilo_actions::ActionContext>>,
+        /// Private same-channel evidence attached by the authenticated native
+        /// stream. Inert declarations or action arguments cannot construct it.
+        native_delivery: Option<Result<crate::invocation_scope::NativeInvocationDelivery, String>>,
     },
     /// The invocation owner requested cooperative cancellation. Delivered at
     /// most once; the app-side job decides the next safe stopping boundary.

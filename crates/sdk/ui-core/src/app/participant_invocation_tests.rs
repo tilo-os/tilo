@@ -211,6 +211,7 @@ fn deliver(
         action: action.into(),
         argument: None,
         actor: actor.into(),
+        native_delivery: None,
         context: context.map(Box::new),
     });
 }

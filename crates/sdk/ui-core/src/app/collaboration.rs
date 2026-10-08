@@ -862,7 +862,9 @@ impl App {
                 argument,
                 actor,
                 context,
+                native_delivery,
             } => {
+                self.actions.published_invocations.native_delivery = native_delivery;
                 self.invoke_published_action(
                     id,
                     invocation,
@@ -872,6 +874,7 @@ impl App {
                     &actor,
                     context.as_deref(),
                 );
+                self.actions.published_invocations.native_delivery = None;
             }
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
@@ -1286,15 +1289,20 @@ impl App {
                 argument,
                 actor,
                 context,
-            } => self.invoke_published_action(
-                id,
-                invocation,
-                resource,
-                action,
-                argument.as_deref(),
-                &actor,
-                context.as_deref(),
-            ),
+                native_delivery,
+            } => {
+                self.actions.published_invocations.native_delivery = native_delivery;
+                self.invoke_published_action(
+                    id,
+                    invocation,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                    context.as_deref(),
+                );
+                self.actions.published_invocations.native_delivery = None;
+            }
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
             }

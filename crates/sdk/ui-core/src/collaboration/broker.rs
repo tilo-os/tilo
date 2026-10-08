@@ -1382,6 +1382,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             argument,
             actor,
             context,
+            native_delivery,
             ..
         } => {
             meter.string_capacity(resource);
@@ -1392,6 +1393,11 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.string_capacity(actor);
             if let Some(context) = context {
                 serialized_bytes(context.as_ref(), &mut meter);
+            }
+            match native_delivery {
+                Some(Ok(delivery)) => meter.add(delivery.meter_bytes()),
+                Some(Err(reason)) => meter.string_capacity(reason),
+                None => {}
             }
         }
         CollabEvent::InvocationCancellation { .. } => {}
@@ -4061,7 +4067,7 @@ async fn ensure_sdk_route(
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
         spawn_action_stream(&channel, inbound_tx),
-        spawn_invocation_stream(&channel, inbound_tx),
+        spawn_invocation_stream(&channel, spec.clone(), inbound_tx),
         spawn_realtime_stream(&channel, inbound_tx),
         async {
             // This intentionally fails quietly for person sessions. An
@@ -4285,21 +4291,58 @@ async fn spawn_action_stream(channel: &runtime_collab::ChannelHandle, inbound_tx
     }
 }
 
+struct NativeInvocationStreamLifetime(Arc<AtomicBool>);
+impl Drop for NativeInvocationStreamLifetime {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
+    spec: RouteSpec,
     inbound_tx: &InboundBridge,
 ) {
     if let Ok(stream) = channel.subscribe_stable_invocations().await {
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
+        let route = spec.clone();
         tokio::task::spawn_local(async move {
+            let stream_lifetime = NativeInvocationStreamLifetime(Arc::new(AtomicBool::new(true)));
             while let Ok(invocation) = stream.read().await {
                 let id = invocation.id;
                 let context = parse_invocation_context(id, &invocation.context_json);
+                let active = Arc::new(AtomicBool::new(true));
+                let native_delivery = (!invocation.admission_json.is_empty()).then(|| {
+                    let state = tx.state.clone();
+                    let live_stream = stream_lifetime.0.clone();
+                    let active = active.clone();
+                    crate::invocation_scope::NativeInvocationDelivery::from_stream(
+                        crate::invocation_scope::PublishedInvocationRequest {
+                            wire_id: id,
+                            invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(invocation.invocation_uuid)),
+                            address: tilo_actions::ActionAddress::new(&invocation.resource, &invocation.action),
+                            argument: invocation.argument.clone(),
+                            actor: invocation.actor.clone(),
+                            participant: crate::invocation_scope::PublishedInvocationRequest::delivered_participant(
+                                &invocation.actor, context.as_ref(),
+                            ),
+                        },
+                        route.clone(),
+                        &invocation.admission_json,
+                        Arc::new(move || {
+                            if !state.is_healthy() || !live_stream.load(Ordering::Acquire)
+                                || !active.load(Ordering::Acquire) {
+                                return Err("native original delivery has retired".into());
+                            }
+                            Ok(())
+                        }),
+                    )
+                });
                 if !tx.send_durable(CollabEvent::Invocation {
                     id,
                     invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
@@ -4310,6 +4353,7 @@ async fn spawn_invocation_stream(
                     argument: invocation.argument,
                     actor: invocation.actor,
                     context: context.map(Box::new),
+                    native_delivery,
                 }) {
                     break;
                 }
@@ -4321,13 +4365,17 @@ async fn spawn_invocation_stream(
                         match channel.invocation_cancellation(id).await {
                             Ok(false) => {}
                             Ok(true) => {
+                                active.store(false, Ordering::Release);
                                 let _ = cancellation_tx
                                     .send_durable(CollabEvent::InvocationCancellation { id });
                                 break;
                             }
                             // The broker removes terminal invocations, so an
                             // unknown-id error is also the watcher stop signal.
-                            Err(_) => break,
+                            Err(_) => {
+                                active.store(false, Ordering::Release);
+                                break;
+                            }
                         }
                     }
                 });

@@ -234,9 +234,9 @@ impl Widget for Probe {
         doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
-            return Ok(None);
-        };
+        op.check()?;
+        let (request, _) = op.with_custody();
+        let type_id = request.type_id;
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
                 self.actions
@@ -288,6 +288,25 @@ impl Widget for Probe {
                     mode == 10
                 );
             }
+            13..=16 => {
+                start_native_accepted_worker(request.invocation);
+                if mode != 14 {
+                    doc.document_mut()
+                        .put(ROOT, "accepted-unauthorized", true)
+                        .unwrap();
+                }
+            }
+            12 => {
+                let before = doc.document_mut().get_heads();
+                let mut remote = doc.document_mut().fork();
+                remote.put(ROOT, "orphan-dependency", true).unwrap();
+                let dependency = remote.get_last_local_change().unwrap().clone();
+                remote.put(ROOT, "undeclared-orphan", true).unwrap();
+                let orphan = remote.get_last_local_change().unwrap().clone();
+                doc.document_mut().apply_changes([orphan]).unwrap();
+                assert_eq!(doc.document_mut().get_heads(), before);
+                NATIVE_MISSING_DEPENDENCY.with_borrow_mut(|slot| *slot = Some(dependency));
+            }
             11 => {
                 doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
                 panic!("controlled compound unwind");
@@ -311,6 +330,11 @@ impl Widget for Probe {
     ) -> Option<tilo_actions::InvocationUpdate> {
         if !cancellation_requested {
             return None;
+        }
+        match poll_native_accepted_worker(invocation) {
+            NativeWorkerPoll::Absent => {}
+            NativeWorkerPoll::Pending => return None,
+            NativeWorkerPoll::Update(update) => return Some(update),
         }
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
@@ -990,6 +1014,7 @@ impl ActionFixture {
 include!("directory_permission_tests.rs");
 
 include!("invocation_locus_tests.rs");
+include!("native_effect_delivery_tests.rs");
 
 include!("owner_publication_tests.rs");
 

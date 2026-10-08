@@ -92,7 +92,11 @@ impl super::App {
         self.published_invocation_health().map_err(refused)?;
         let runtime = &self.actions.published_invocations;
         if !runtime.required {
-            return Ok(None);
+            return match &runtime.native_delivery {
+                Some(Ok(delivery)) => delivery.lease(request).map_err(refused),
+                Some(Err(reason)) => Err(refused(reason.clone())),
+                None => Ok(None),
+            };
         }
         let authorizer = runtime.authorizer.as_ref().ok_or_else(|| {
             refused("required published invocation authorizer is unavailable".into())

@@ -629,6 +629,7 @@ mod tests {
                 .map(|value| format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, value)),
             actor: "not-authority".into(),
             context: None,
+            admission_json: String::new(),
         }
     }
 
