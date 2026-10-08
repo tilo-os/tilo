@@ -351,7 +351,7 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
 /// the external path builds a different action.
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
     let (palette, supplied) = match (&spec.input, arg) {
-        (ActionInput::Immediate(encoded), None) => (encoded.clone(), Vec::new()),
+        (ActionInput::Immediate(encoded), None) => (encoded.as_ref().clone(), Vec::new()),
         (ActionInput::Deferred { build, .. }, None) => (build(), Vec::new()),
         (ActionInput::Prompted { build, .. }, Some(arg)) => (
             build(arg),

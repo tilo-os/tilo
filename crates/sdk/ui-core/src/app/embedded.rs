@@ -174,8 +174,12 @@ impl Widget for EmbeddedApp {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The app looks as the host does around it.
-        self.app.set_theme(theme.clone());
+        // The app looks as the host does around it. A new palette must
+        // replace its retained scene even when the region's size is unchanged.
+        if self.app.accessibility.base_theme != *theme {
+            self.app.set_theme(theme.clone());
+            self.wants_frame.set(true);
+        }
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
@@ -635,4 +639,78 @@ fn semantic_target(
             .clone();
     }
     (!key_path.is_empty()).then_some(current)
+}
+
+#[cfg(test)]
+mod theme_repaint_tests {
+    use super::*;
+
+    fn layout(tile: &mut EmbeddedApp, theme: &Theme) {
+        let mut taffy = TaffyTree::new();
+        let node = tile.build_layout(&mut taffy, theme, &mut HashMap::new());
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(300.0),
+                    height: taffy::AvailableSpace::Definite(100.0),
+                },
+            )
+            .unwrap();
+        tile.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    fn paint(tile: &mut EmbeddedApp, theme: &Theme) -> Vec<u32> {
+        let mut scene = Scene::new();
+        tile.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            &PresenceCtx::empty(),
+        );
+        scene.encoding().draw_data.clone()
+    }
+
+    #[test]
+    fn embedded_host_theme_change_repaints_an_idle_scene() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Text::new("Theme probe")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let light = Theme::light();
+        layout(&mut tile, &light);
+        let mut previous = Vec::new();
+        for _ in 0..4 {
+            previous = paint(&mut tile, &light);
+            if !tile.needs_redraw() {
+                break;
+            }
+        }
+        assert!(
+            !tile.needs_redraw(),
+            "the actual tile must settle before a theme change"
+        );
+        assert!(!previous.is_empty(), "the actual label must be painted");
+        layout(&mut tile, &light);
+        assert!(
+            !tile.needs_redraw(),
+            "an unchanged theme keeps the idle tile cached"
+        );
+        assert_eq!(paint(&mut tile, &light), previous);
+        for theme in [Theme::dark(), Theme::high_contrast()] {
+            layout(&mut tile, &theme);
+            assert!(
+                tile.needs_redraw(),
+                "a host theme change must repaint the retained scene"
+            );
+            let current = paint(&mut tile, &theme);
+            assert_ne!(
+                current, previous,
+                "the actual scene must contain the new theme's ink"
+            );
+            previous = current;
+        }
+    }
 }

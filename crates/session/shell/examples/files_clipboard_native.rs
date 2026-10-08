@@ -1,4 +1,7 @@
 //! Run the signed Files entrypoint journey in the existing remote test environment.
+//! Build `packaged_native_bootstrap` and `packaged_native_governor` alongside the
+//! normal shell/launcher/packaging binaries before invoking this wrapper. The
+//! Python proof checks these prerequisites before preparing a signed package.
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
