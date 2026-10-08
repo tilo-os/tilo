@@ -200,6 +200,12 @@ pub trait CollabTransport: Send {
         None
     }
 
+    /// Scope delivery capture waits to the App’s reconciled live document owners.
+    fn set_document_owner_routes(&mut self, _routes: Vec<RouteSpec>) {}
+
+    /// Release native capture turns after the owner applies its drained batch.
+    fn finish_event_batch(&mut self) {}
+
     /// Whether the remote end refused or failed an action-surface
     /// publication since the last call. The owner then republishes its
     /// current surface: a refused one must never count as published.

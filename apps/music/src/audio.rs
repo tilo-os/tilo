@@ -597,8 +597,8 @@ impl AudioEngine {
     }
     pub fn duration_ms(&self) -> Option<u64> {
         #[cfg(feature = "spotify-native")]
-        if self.native.is_some() {
-            return None;
+        if let Some(native) = &self.native {
+            return native.duration_ms();
         }
         self.backend.as_ref()?.duration_ms()
     }

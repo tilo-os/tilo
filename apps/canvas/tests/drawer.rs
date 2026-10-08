@@ -50,7 +50,10 @@ fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
     let mut app = TestApp::<App>::capture_at(None, (390, 844)).expect("blank artwork");
     assert!(
         app.harness()
-            .settle_for_capture(std::time::Duration::from_secs(2))
+            .settle_for_capture(std::time::Duration::from_secs(2)),
+        "blank window did not settle: {:?}; pending visuals: {}",
+        app.harness().frame_schedule(),
+        app.harness().root_widget().has_pending_visual_work()
     );
     let targets = app.harness().targets();
     let welcome = [
