@@ -9,11 +9,13 @@ from pathlib import Path
 import json,os,subprocess,sys,hashlib,argparse
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--native-review',action='store_true')
+parser.add_argument('--whisper-public-review',action='store_true',
+                    help='qualify pinned multilingual base with public fixtures; no installation')
 parser.add_argument('--lifecycle',action='store_true')
 parser.add_argument('--identity-review',action='store_true')
 PUBLIC_CASES=['en_us-0','de_de-0','fr_fr-0','es_419-0','ar_eg-0','cmn_hans_cn-0']
 parser.add_argument('--case',choices=PUBLIC_CASES,default='en_us-0')
-parser.add_argument('--native-language',choices=['auto','en','de','fr','es','ar','zh'])
+parser.add_argument('--native-language','--language',dest='native_language',choices=['auto','en','de','fr','es','ar','zh'])
 parser.add_argument('--append-case',action='append',choices=PUBLIC_CASES,default=[])
 parser.add_argument('--vocabulary',action='append',default=[])
 parser.add_argument('--native-phase',action='store_true')
@@ -25,12 +27,13 @@ parser.add_argument('--noise-snr-db',type=int,choices=[10,20])
 parser.add_argument('--frozen-evaluation-index',type=int,choices=range(32))
 parser.add_argument('--evaluation-profile',choices=['context160','context320'])
 args=parser.parse_args()
+if args.whisper_public_review and (args.native_review or args.lifecycle or args.identity_review or args.frozen_evaluation_index is not None or args.evaluation_profile or args.native_phase or args.native_low_latency or args.native_right_context!=1 or args.phase_repeat or args.resident_second_case):raise RuntimeError('public Whisper review excludes native, lifecycle and frozen evaluation options')
 if args.identity_review and not args.lifecycle:raise RuntimeError('identity review requires fixed native lifecycle')
 evaluation=args.frozen_evaluation_index is not None
 if evaluation and (not args.native_review or not args.evaluation_profile or args.case!='en_us-0' or args.lifecycle or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case or args.native_phase or args.native_low_latency or args.native_right_context!=1 or args.native_language or args.append_case):raise RuntimeError('frozen evaluation requires its fixed indexed journey')
 if not evaluation and args.evaluation_profile:raise RuntimeError('evaluation profile requires fixed index')
 if args.lifecycle and (not args.native_review or args.case!='en_us-0' or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case or args.native_phase or args.native_low_latency or args.native_right_context not in [1,3] or args.native_language or args.append_case):raise RuntimeError('native lifecycle requires its fixed public journey')
-if not args.native_review and (args.case!='en_us-0' or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case or args.native_phase or args.native_low_latency or args.native_right_context!=1 or args.native_language or args.append_case):raise RuntimeError('explicit native review required for alternate fixture')
+if not args.native_review and not args.whisper_public_review and (args.case!='en_us-0' or args.vocabulary or args.noise_snr_db is not None or args.phase_repeat or args.resident_second_case or args.native_phase or args.native_low_latency or args.native_right_context!=1 or args.native_language or args.append_case):raise RuntimeError('explicit public review required for alternate fixture')
 if args.resident_second_case and (args.case not in ['en_us-0','de_de-0'] or args.native_phase or args.native_low_latency or args.native_right_context!=1 or args.phase_repeat or args.vocabulary or args.noise_snr_db is not None or args.native_language or args.append_case):raise RuntimeError('resident review has fixed bounded public sessions')
 if args.append_case and args.native_language!='auto':raise RuntimeError('language transition requires explicit automatic recognition')
 root=Path(__file__).parent
@@ -85,6 +88,12 @@ if evaluation:
  with marker.open('x') as output:json.dump({'suite_sha256':stated,'case':args.case,'profile':args.evaluation_profile,'configuration_sha256':receipts['evaluation-freeze.json'],'purpose':'validation only; never tune on these references'},output)
  print('FROZEN_EVALUATION_EXPOSURE '+json.dumps({'case':args.case,'profile':args.evaluation_profile,'suite_sha256':stated,'configuration_sha256':receipts['evaluation-freeze.json']}),flush=True)
 command=['bwrap','--unshare-all','--die-with-parent','--ro-bind','/usr','/usr','--symlink','usr/lib64','/lib64','--symlink','usr/lib','/lib','--proc','/proc','--dev','/dev','--tmpfs','/tmp','--dir','/review','--ro-bind',str(root),'/review','--ro-bind',str(root/'worker'),'/review/tilo-speech-worker','--clearenv','--setenv','LANG','C.UTF-8','--setenv','MALLOC_ARENA_MAX','1','--setenv','OMP_NUM_THREADS','2','--setenv','LD_LIBRARY_PATH','/review','--setenv','TILO_TEST_PRIVATE_NAMESPACE','1','--setenv','PYTHONPATH','/review','--chdir','/','/usr/bin/time','-f','ASR_RESOURCE {"user":%U,"system":%S}','/usr/bin/python3','/review/probe.py','--manifest','/review/public/manifest.json','--qualifier','/review/qualifier','--worker','/review/tilo-speech-worker','--model','base','--case','en_us-0','--cpus','2','--first-draft-seconds','2']
+if args.whisper_public_review:
+ command[command.index('--case')+1]=args.case
+ if args.native_language:command.extend(['--language',args.native_language])
+ for case in args.append_case:command.extend(['--append-case',case])
+ for word in args.vocabulary:command.extend(['--vocabulary',word])
+ if args.noise_snr_db is not None:command.extend(['--noise-snr-db',str(args.noise_snr_db)])
 if args.native_review:
  i=command.index('--qualifier');del command[i:i+2]
  command[command.index('--case')+1]=args.case

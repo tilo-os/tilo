@@ -458,10 +458,55 @@ acceptance is introduced.
 
 ## Speech model candidates and protected release
 
-The candidate catalog keeps U²-Net unchanged and adds two MIT multilingual
-models at the same pinned revision: compact **Whisper tiny** (77,691,713 bytes)
-and **Whisper small-q5_1** (190,085,487 bytes). Small needs 2 GiB system memory;
-both workers retain the 1 GiB address-space cap and two CPU threads. Small
+The engineering baseline is **multilingual Whisper base**, pinned to revision
+`5359861c739e955e79d9a303bcbc70fb988958b1`: 147,951,465 bytes, SHA-256
+`60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe`, MIT.
+It uses the existing confined CPU worker, sealed descriptor loader, two threads,
+256 MiB artifact cap and 1 GiB address-space cap. This choice requires no account,
+paid service or new trust identity. It is the baseline for source integration and
+prerecorded qualification; it does not change an installed model or production
+default. Tiny remains a compact candidate; small remains a quality comparison.
+The shared personal dictionary and conservative transcript cleanup remain part
+of the same production recognition path, rather than a separate engine wrapper.
+
+“Shipping admission” means the existing protected authority reproduces and signs
+the exact reviewed catalogue, publishes receipt-checked weights and complete MIT
+notices, and delivers it through the normal image lifecycle. The per-model,
+version and digest licence acceptance remains an explicit Settings action before
+installation. These signing, publication, licence-acceptance and installation
+actions have not run. Model selection, source implementation, and isolated
+public-fixture evaluation do not wait for those actions or for microphone consent.
+
+`prepare_speech_benchmark.py --model base` stages only the selected weights while
+preserving pinned public FLEURS provenance. The sealed-scope tool's explicit
+`--whisper-public-review` path accepts the six bounded public language fixtures,
+public vocabulary, synthetic noise and assembled auto-language transitions under
+the unchanged scope limits. It excludes native-engine and frozen holdout modes.
+These are exposed development probes, never a fresh holdout or natural noisy
+speech claim. Actual execution and quality results must be recorded separately.
+
+The [baseline qualification ledger](dictation-baseline-qualification.json)
+records six actual production-worker sessions on pinned public audio after a
+fresh remote rebuild. All completed under the unchanged limits, with aggregate
+scope peaks of about 642–645 MB and first drafts around three seconds. Raw errors
+remain visible: English 1/19 words, German 6/18, French 7/20, Spanish 4/29,
+Arabic 8/15 and Mandarin 9/23 characters. These results qualify the multilingual
+worker integration, **not high-accuracy release acceptance**. The unspoken
+public dictionary hint “TiLo” appeared in neither German drafts nor final;
+this alone does not qualify personal names or the live shared dictionary.
+No cleanup was used to reduce the recorded error counts. Physical latency,
+microphone capture and browser/terminal insertion remain separate journeys.
+Two additional development sessions completed in the same scope: concatenated
+English/German automatic recognition recorded 9/37 word errors, and German with
+seeded 20 dB white noise recorded 6/18. The largest scope peak was 656 MB.
+Concatenation is not natural code-switching, and synthetic noise is not a noisy
+microphone recording. These results and their provenance remain in the ledger.
+
+The candidate catalog keeps U²-Net unchanged and adds three MIT multilingual
+models at the same pinned revision: compact **Whisper tiny** (77,691,713 bytes),
+**Whisper base** (147,951,465 bytes) and **Whisper small-q5_1** (190,085,487 bytes).
+Small needs 2 GiB system memory; all workers retain the 1 GiB address-space cap
+and two CPU threads. Small
 improves the public probes below, while tiny remains a lighter short-dictation
 option. Neither result establishes everyday reliability or Flow parity.
 The [pinned upstream model card](https://huggingface.co/ggerganov/whisper.cpp/blob/5359861c739e955e79d9a303bcbc70fb988958b1/README.md)
@@ -471,7 +516,7 @@ notice, SHA-256 `b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9
 No account, paid endpoint, extra runtime image or new trust identity is needed.
 
 `tools/release/prepare_speech_catalog.py` accepts only the unchanged subject
-release and these two exact speech recipes: immutable URLs, exact byte counts,
+release and these three exact speech recipes: immutable URLs, exact byte counts,
 hashes, full notices, CPU capability and hardware requirements. It rejects
 insecure transport, altered receipts, excess bytes and overwriting. Its output
 is staging, not installation or permission to record.
@@ -486,7 +531,7 @@ The existing protected `release-local-model-catalog.yml` has two explicit modes:
 2. Review those exact artifact bytes and commit the matching source and signed
    image catalog through the normal protected PR path. A development key or
    removal of the reproduction comparison cannot bootstrap a release.
-3. Default `publish` supports the prior U²-Net-only release or these exact three
+3. Default `publish` supports the prior U²-Net-only release or these exact four
    models. It stages verified speech inputs, publishes weights and full MIT
    notices using the existing `RELEASE_TOKEN`, and verifies anonymous readback
    before signing. Authentication, rate-limit or server read failures never
