@@ -3,6 +3,8 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 import sys
 import unittest
@@ -28,17 +30,32 @@ class QualifiedNativeTests(unittest.TestCase):
     def test_real_input_binding_falls_back_on_builder_workflow_or_source_change(self):
         receipt = json.loads((ROOT / "tools/ci/qualified-native.json").read_text())
         workflow = (ROOT / ".forgejo/workflows/check.yml").read_bytes()
-        env = {"HEAD_SHA": "fixture"}
-        with mock.patch.dict(os.environ, env), mock.patch.object(
-                qualified_native.subprocess, "check_output", return_value=workflow):
-            self.assertEqual(qualified_native.placement(ROOT, {"collab-types"}, "x86_64"),
-                             {"qualified_runner": "runner-quality", "qualified_builders": receipt["builders"]})
-            for names, arch in (({"collab-types", "tilo-ui"}, "x86_64"), ({"collab-types"}, "aarch64")):
-                self.assertFalse(qualified_native.placement(ROOT, names, arch))
-            with mock.patch.object(qualified_native.subprocess, "check_output", return_value=b"older workflow"):
-                self.assertFalse(qualified_native.placement(ROOT, {"collab-types"}, "x86_64"))
-            with mock.patch.object(qualified_native, "fingerprint", return_value="changed"):
-                self.assertFalse(qualified_native.placement(ROOT, {"collab-types"}, "x86_64"))
+        # CI merges newer main inputs before running policy tests. Qualify a
+        # bounded copy, then change an actual input: the production fingerprint
+        # and admission must agree without assuming main remains frozen.
+        parent = ROOT / ".task-tmp"
+        parent.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="native-binding-", dir=parent) as temporary:
+            root = Path(temporary)
+            for name in qualified_native.INPUTS:
+                destination = root / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / name, destination)
+            for name in qualified_native.PACKAGES:
+                shutil.copytree(ROOT / name, root / name)
+            receipt["input_sha256"] = qualified_native.fingerprint(root)
+            (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
+            with mock.patch.dict(os.environ, {"HEAD_SHA": "fixture"}), mock.patch.object(
+                    qualified_native.subprocess, "check_output", return_value=workflow):
+                self.assertEqual(qualified_native.placement(root, {"collab-types"}, "x86_64"),
+                                 {"qualified_runner": "runner-quality", "qualified_builders": receipt["builders"]})
+                for names, arch in (({"collab-types", "tilo-ui"}, "x86_64"), ({"collab-types"}, "aarch64")):
+                    self.assertFalse(qualified_native.placement(root, names, arch))
+                with mock.patch.object(qualified_native.subprocess, "check_output", return_value=b"older workflow"):
+                    self.assertFalse(qualified_native.placement(root, {"collab-types"}, "x86_64"))
+                helper = root / "tools/ci/clippy-check.sh"
+                helper.write_text(helper.read_text() + "\n# changed runtime input\n")
+                self.assertFalse(qualified_native.placement(root, {"collab-types"}, "x86_64"))
 
     def test_planner_preserves_tests_and_clippy_and_certifies_only_app_selections(self):
         spec = importlib.util.spec_from_file_location("ci_select_tests", ROOT / "tools/tests/test_ci_select.py")
