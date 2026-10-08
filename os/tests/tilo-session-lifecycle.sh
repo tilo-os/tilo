@@ -28,7 +28,8 @@ grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.targe
 grep -Fqx 'Wants=tilo-ush.service' "$target"
 for socket in \
   "$repo/os/usr/lib/systemd/user/tilo-models.socket" \
-  "$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket"; do
+  "$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket" \
+  "$repo/os/usr/lib/systemd/user/tilo-projector.socket"; do
   grep -Fqx 'PartOf=tilo-graphical-session.target' "$socket"
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
 done

@@ -1914,6 +1914,11 @@ impl MusicApp {
                 Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({
                         "track": self.pb.current,
+                        "queue": self.pb.queue,
+                        "queue_index": self.pb.queue_index,
+                        "volume": self.pb.volume,
+                        "shuffle": self.pb.shuffle,
+                        "repeat": self.pb.repeat.as_str(),
                         "requested_playing": self.pb.playing,
                         "confirmed_playing": self.audio.is_playing_real(),
                         "resolving": self.active_resolve_request.is_some(),
@@ -1922,7 +1927,7 @@ impl MusicApp {
                         "rendered_counter_unit": if media::audio_output::is_governed() { "host_pcm_frames" } else { "sink_buffers" },
                         "sink": self.audio.actual_audio_sink_name(),
                         "position_ms": self.audio.position_ms(),
-                        "duration_ms": self.audio.duration_ms(),
+                        "duration_ms": self.observed_duration_ms(),
                         "error": self.playback_error,
                     })),
                     resources: Vec::new(),

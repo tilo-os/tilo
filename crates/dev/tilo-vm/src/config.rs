@@ -107,7 +107,8 @@ pub struct VmEntry {
     /// offer the standard modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
-    /// Host port forwarded to the guest's SSH port (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH port (libvirt, qemu, whpx).
+    /// Creation records the selected port; older entries default to 2222.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_port: Option<u16>,
     /// libvirt connection URI.

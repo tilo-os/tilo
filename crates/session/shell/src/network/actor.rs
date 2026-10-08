@@ -191,6 +191,7 @@ pub enum NetCmd {
     /// Wake the compositor loop when legacy-window traffic arrives: an idle
     /// headless loop otherwise sleeps until something else wakes it.
     SetWake(LoopWake),
+    PrivateMessages(tokio::sync::oneshot::Sender<super::private_messages::Transport>),
     /// This device's own topology entries (`SyncResp`) for a room another
     /// device governs, to its workspace hosts as a retained delta: the
     /// governor admits them within this device's registered namespace.
@@ -818,6 +819,7 @@ struct ActorState {
     endpoint: Endpoint,
     lookup: MemoryLookup,
     host_identity: Option<HostIdentity>,
+    private_messages: super::private_messages::Transport,
     native_media: super::native_media::Registry,
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
@@ -1027,6 +1029,9 @@ impl ActorState {
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
         match command {
+            Some(NetCmd::PrivateMessages(reply)) => {
+                let _ = reply.send(self.private_messages.clone());
+            }
             Some(NetCmd::NativeMedia(command)) => {
                 let sessions = &self.host_sessions;
                 self.native_media
@@ -3333,8 +3338,10 @@ async fn run(
     let gossip = Gossip::builder()
         .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
         .spawn(endpoint.clone());
+    let private_messages = super::private_messages::Registry::new(endpoint.id());
     let router = Router::builder(endpoint.clone())
         .accept(GOSSIP_ALPN, gossip.clone())
+        .accept(super::private_messages::ALPN, private_messages.clone())
         .accept(
             SURFACE_STREAM_ALPN,
             SurfaceStreamProtocol {
@@ -3352,6 +3359,10 @@ async fn run(
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .spawn();
     let mut state = ActorState {
+        private_messages: super::private_messages::Transport::new(
+            endpoint.clone(),
+            private_messages,
+        ),
         endpoint,
         lookup,
         host_identity,

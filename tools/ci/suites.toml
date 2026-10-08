@@ -324,8 +324,8 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
-inputs = ["apps/imager/packaging/"]
-suites = ["apps/imager/packaging/test_build_desktop_catalog.py"]
+inputs = ["apps/imager/packaging/", "apps/imager/desktop-catalog.json", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
+suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py"]
 
 [[group]]
 name = "ntfs-helper"
@@ -337,6 +337,9 @@ name = "dist"
 inputs = ["dist/", "os/registry-runtime-publisher.hex"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
+  "dist/ci/tests/test_failed_rpm_retention.py",
+  "dist/ci/tests/test_host_session_rpm_replay.py",
+  "dist/session/tests/vm-e2e-exit-status.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
   "dist/local-models/u2net-subject/contract-test.sh",
@@ -346,6 +349,7 @@ suites = [
   "dist/rpm/test-host-update.sh",
   "dist/rpm/test-rename-contract.sh",
   "dist/rpm/test-rpmbuild-route.sh",
+  "dist/rpm/test-rpmlint-config.py",
 ]
 
 [[group]]
@@ -702,6 +706,8 @@ inputs = [
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/guide.rs",
+  # Focused source lookup verifies the embedded shared-checklist test bytes.
+  "crates/dev/tilo-app-cli/tests/json_output.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
   # Android packaging copies the standalone font catalog out of the SDK.

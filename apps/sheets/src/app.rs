@@ -4665,7 +4665,7 @@ pub(crate) mod tests {
                 let sheet1 = &resources[0].children[1];
                 let spec = sheet1.actions.iter().find(|a| a.id == "delete").unwrap();
                 match &spec.input {
-                    tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                    tilo_actions::ActionInput::Immediate(enc) => enc.as_ref().clone(),
                     tilo_actions::ActionInput::Prompted { .. }
                     | tilo_actions::ActionInput::Deferred { .. } => {
                         panic!("delete is an immediate action")

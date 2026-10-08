@@ -26,6 +26,8 @@
     reason = "native host runner: the GPU render worker is a dedicated thread"
 )]
 
+mod native_gpu_trace;
+
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
     Arc,
@@ -410,6 +412,10 @@ pub(crate) fn spawn_render_thread_for_window(
             let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
             let presentation = crate::presentation_feedback::Observer::from_env(window);
+            let mut gpu_trace = presentation
+                .as_ref()
+                .and_then(crate::presentation_feedback::Observer::worker_id)
+                .and_then(native_gpu_trace::Observer::from_environment);
             let native_timing = presentation.as_ref().filter(|_| timing::enabled());
             if let Some(observer) = native_timing {
                 observer.log_native_config(&surface);
@@ -430,7 +436,14 @@ pub(crate) fn spawn_render_thread_for_window(
             let mut backdrop_blur: Option<crate::backdrop::BackdropBlur> = None;
             let mut had_backdrop = false;
             loop {
-                let wait = bump_recovery.wait();
+                let gpu_poll = gpu_trace
+                    .as_ref()
+                    .is_some_and(native_gpu_trace::Observer::poll_pending);
+                let wait = match (bump_recovery.wait(), gpu_poll) {
+                    (Some(wait), true) => Some(wait.min(std::time::Duration::from_millis(5))),
+                    (None, true) => Some(std::time::Duration::from_millis(5)),
+                    (wait, false) => wait,
+                };
                 let (message, receive_bounds) =
                     timing::around(native_timing.is_some(), || match wait {
                         Some(timeout) => rx.recv_timeout(timeout),
@@ -441,6 +454,12 @@ pub(crate) fn spawn_render_thread_for_window(
                 let msg = match message {
                     Ok(msg) => msg,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if gpu_poll && let Some(observer) = gpu_trace.as_mut() {
+                            if let Some(device) = render_cx.devices.get(surface.dev_id) {
+                                let _ = device.device.poll(vello::wgpu::PollType::Poll);
+                            }
+                            observer.idle_poll(&mut renderer);
+                        }
                         if poll_bump_recovery(
                             &mut bump_recovery,
                             &mut renderer,
@@ -565,6 +584,9 @@ pub(crate) fn spawn_render_thread_for_window(
                     // Any whole-surface frame answers a pending overflow repaint.
                     worker_full_repaint.store(false, Ordering::SeqCst);
                 }
+                if let Some(observer) = gpu_trace.as_mut() {
+                    observer.observe(&mut renderer, None);
+                }
                 let render_start = present_dbg.then(crate::time::now);
                 let render_host_start = native_timing.and_then(|_| timing::capture());
                 let outcome = render_one_frame(
@@ -595,6 +617,9 @@ pub(crate) fn spawn_render_thread_for_window(
                     },
                 );
                 let render_host_end = native_timing.and_then(|_| timing::capture());
+                if let Some(observer) = gpu_trace.as_mut() {
+                    observer.frame(&mut renderer, frame_ix, cpu_frame_id);
+                }
                 timing::handoff::set(
                     &mut handoff,
                     timing::handoff::Stage::RenderEnd,

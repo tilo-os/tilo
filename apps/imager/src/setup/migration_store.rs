@@ -415,6 +415,10 @@ pub(super) struct MigrationStore {
     // The descriptor lock survives while any live worker owns this store.
     ownership: advisory_lock::FileLock,
     ownership_identity: Metadata,
+    // Fields drop in declaration order: report release after the descriptor
+    // lock closes, even when detached readers or writers own the final Arc.
+    #[cfg(test)]
+    ownership_released: test_support::OwnershipReleased,
 }
 
 impl MigrationStore {
@@ -479,6 +483,8 @@ impl MigrationStore {
             ownership_identity,
             root_path: path.to_path_buf(),
             root,
+            #[cfg(test)]
+            ownership_released: test_support::OwnershipReleased::default(),
         })
     }
 
@@ -915,6 +921,7 @@ pub(super) fn ensure_private_root(path: &Path) -> io::Result<Arc<PinnedDirectory
 
 #[cfg(test)]
 pub(super) mod test_support {
+    use super::MigrationStore;
     use std::{
         collections::HashMap,
         path::{Path, PathBuf},
@@ -922,6 +929,23 @@ pub(super) mod test_support {
     };
     type Hook = (usize, mpsc::Sender<()>, mpsc::Receiver<()>);
     static HOOKS: OnceLock<Mutex<HashMap<PathBuf, Hook>>> = OnceLock::new();
+    #[derive(Default)]
+    pub(super) struct OwnershipReleased(Mutex<Vec<mpsc::Sender<()>>>);
+
+    impl Drop for OwnershipReleased {
+        fn drop(&mut self) {
+            for observer in self.0.get_mut().unwrap().drain(..) {
+                let _ = observer.send(());
+            }
+        }
+    }
+
+    pub(crate) fn ownership_release(store: &MigrationStore) -> mpsc::Receiver<()> {
+        let (sender, receiver) = mpsc::channel();
+        store.ownership_released.0.lock().unwrap().push(sender);
+        receiver
+    }
+
     pub(crate) fn hold_save(path: &Path, nth: usize) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();

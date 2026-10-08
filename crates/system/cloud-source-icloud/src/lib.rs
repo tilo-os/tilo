@@ -8,10 +8,11 @@
 //!
 //! # Signing in
 //!
-//! [`auth`] turns an Apple ID into a [`auth::StoredSession`] (SRP sign-in,
-//! the two-factor code, the trust token, `accountLogin`) and keeps it alive.
-//! The session's cookies are the [`cloud_source::Credential::Session`] this
-//! source borrows per request. Accounts with Advanced Data Protection are
+//! Signing in (SRP, the two-factor code, the trust token, `accountLogin`)
+//! and keeping the session alive is credential custody's job
+//! (`account_custody::icloud`). What it produces is an
+//! [`auth::StoredSession`], whose cookies are the
+//! [`cloud_source::Credential::Session`] this source borrows per request. Accounts with Advanced Data Protection are
 //! refused with [`auth::AuthError::AdvancedDataProtection`]: their Drive keys
 //! never reach Apple's web servers.
 //!
@@ -50,8 +51,7 @@
 //! HTTP 401, 421 (`LOGIN_TOKEN_EXPIRED`), 450 (re-authentication required)
 //! and 423 (missing PCS grant) all mean the web session is no longer
 //! accepted: the credential is reported rejected and the call fails with
-//! [`Error::Unauthorized`], so Settings renews it (see
-//! [`auth::SessionCredentials`]). 429 and 503 with `Retry-After` are
+//! [`Error::Unauthorized`], so custody renews it. 429 and 503 with `Retry-After` are
 //! [`Error::RateLimited`].
 
 #![allow(
@@ -73,6 +73,7 @@ use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::HeaderMap;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 use zeroize::Zeroizing;
@@ -81,7 +82,7 @@ pub mod api;
 pub mod auth;
 #[cfg(feature = "fake-server")]
 pub mod fake;
-mod http;
+pub mod http;
 pub mod time;
 mod upload;
 
@@ -197,7 +198,7 @@ impl ICloudDrive {
             .find(|(name, _)| name.eq_ignore_ascii_case("cookie"))
             .map(|(_, value)| value.clone())
             .unwrap_or_default();
-        let fingerprint = auth::srp::hash(&[raw.as_bytes()]);
+        let fingerprint: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
         let mut cookies = Cookies::from_header(&raw);
         if let Ok(overlay) = self.inner.overlay.lock()
             && overlay.fingerprint == fingerprint

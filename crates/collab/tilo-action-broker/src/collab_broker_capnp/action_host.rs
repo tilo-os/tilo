@@ -34,6 +34,11 @@ use crate::automation;
 use crate::collab_broker::CrdtRoute;
 use tilo_automation::SHORTCUTS_APP_ID;
 
+/// The longest a waiter on a running invocation sleeps without a signalled
+/// change, so a change nothing signals (an idle expiry) costs latency, never
+/// a stalled shortcut run.
+const CHANGE_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Why an action's arguments are too large to pass, in words a caller can
 /// act on: how large they are, the most one action takes, and to split.
 fn oversized_argument(argument: &str) -> Option<String> {
@@ -146,6 +151,13 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         self.state.action_observe(caller, id)
     }
 
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        // A connection interleaves many invocations, so only a change after
+        // this call counts; the safety interval bounds a missed one.
+        self.state
+            .action_next_change(caller, id, self.state.invocation_changes())
+    }
+
     fn cancel(
         &self,
         caller: &Caller,
@@ -158,7 +170,19 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
 /// The broker's own door, as the [`ActionHost`](tilo_actions::remote::ActionHost)
 /// a shortcut run invokes its steps through. It stands for no connection:
 /// every step is admitted for the run's caller alone.
-struct BrokerDoor(Arc<CapnpBrokerState>);
+pub(super) struct BrokerDoor {
+    state: Arc<CapnpBrokerState>,
+    /// The invocation changes the run had seen when it last observed, so
+    /// a change between that observation and its next wait is not missed.
+    seen: std::sync::Mutex<tokio::sync::watch::Receiver<u64>>,
+}
+
+impl BrokerDoor {
+    pub(super) fn new(state: Arc<CapnpBrokerState>) -> Self {
+        let seen = std::sync::Mutex::new(state.invocation_changes());
+        Self { state, seen }
+    }
+}
 
 impl tilo_actions::remote::ActionHost for BrokerDoor {
     fn query(
@@ -166,7 +190,7 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.0.action_query(caller, &query)
+        self.state.action_query(caller, &query)
     }
 
     fn invoke(
@@ -174,11 +198,21 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        self.0.action_invoke(caller, None, None, &request)
+        self.state.action_invoke(caller, None, None, &request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.action_observe(caller, id)
+        // Marked before the snapshot: a change racing it wakes the next
+        // wait (spuriously at worst) instead of slipping past it.
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.mark_unchanged();
+        }
+        self.state.action_observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        let seen = self.seen.lock().ok()?.clone();
+        self.state.action_next_change(caller, id, seen)
     }
 
     fn cancel(
@@ -186,7 +220,7 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        self.0.action_cancel(caller, id)
+        self.state.action_cancel(caller, id)
     }
 }
 
@@ -2023,7 +2057,7 @@ impl CapnpBrokerState {
                     mode: automation::run_mode(request.confirmation.as_ref()),
                     inputs,
                 },
-                automation::DoorHooks::new(request.confirmation.clone()),
+                |runtime| automation::DoorHooks::new(request.confirmation.clone(), runtime),
             )
             .map_err(abandon)?;
         if let Ok(mut ledger) = self.remote_invocations.lock() {
@@ -2050,7 +2084,9 @@ impl CapnpBrokerState {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
             .ok_or(ActionHostError::UnknownAction)?;
-        let hooks = automation::SheetHooks::new(self.step_prompts.clone(), &shortcut.name);
+        let prompts = self.step_prompts.clone();
+        let name = shortcut.name.clone();
+        let hooks = |runtime| automation::SheetHooks::new(prompts, name, runtime);
         self.start_shortcut_run(
             caller,
             room,
@@ -2124,7 +2160,9 @@ impl CapnpBrokerState {
             }
         })?;
         if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
-            let hooks = automation::SheetHooks::new(self.step_prompts.clone(), &shortcut.name);
+            let prompts = self.step_prompts.clone();
+            let name = shortcut.name.clone();
+            let hooks = |runtime| automation::SheetHooks::new(prompts, name, runtime);
             return self.start_shortcut_run(
                 caller,
                 room,
@@ -2148,7 +2186,7 @@ impl CapnpBrokerState {
                 mode: tilo_automation::RunMode::Unattended,
                 inputs,
             },
-            automation::DoorHooks::new(None),
+            |runtime| automation::DoorHooks::new(None, runtime),
         )
     }
 
@@ -2180,7 +2218,7 @@ impl CapnpBrokerState {
         room: &str,
         shortcut: tilo_automation::Shortcut,
         start: automation::RunStart,
-        hooks: K,
+        hooks: impl FnOnce(tokio::runtime::Handle) -> K,
     ) -> Result<u64, ActionHostError>
     where
         K: tilo_automation::RunHooks + Send + 'static,
@@ -2192,6 +2230,7 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?
             .runtime()
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
+        let hooks = hooks(runtime.clone());
         let actor = BrokerActor::for_caller(caller).id;
         let job = self
             .invocation_id
@@ -2204,7 +2243,7 @@ impl CapnpBrokerState {
             },
             tilo_actions::InvocationUpdate::Accepted { invocation },
         );
-        let host = BrokerDoor(Arc::clone(self));
+        let host = BrokerDoor::new(Arc::clone(self));
         let consents = if shortcut.saved_by.as_deref() == Some(actor.as_str()) {
             shortcut.consents.clone()
         } else {
@@ -2434,6 +2473,30 @@ impl CapnpBrokerState {
         let job = self.remote_job(caller, id)?;
         self.invocation_status(job)
             .map(|update| InvocationState::new(*id, update))
+    }
+
+    /// Resolves once an invocation changes after what `seen` has seen, or
+    /// after [`CHANGE_SAFETY_INTERVAL`] without one — the
+    /// [`ActionHost::next_change`](tilo_actions::remote::ActionHost::next_change)
+    /// of the broker's hosts. `None` for an invocation `caller` did not
+    /// admit, or off a runtime, where the waiter polls on its own schedule.
+    pub(super) fn action_next_change(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+        mut seen: tokio::sync::watch::Receiver<u64>,
+    ) -> Option<Pending<()>> {
+        self.remote_job(caller, id)?;
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        let (changed, change) = pending();
+        runtime.spawn(async move {
+            tokio::select! {
+                _ = seen.changed() => {}
+                () = tilo_rt::sleep(CHANGE_SAFETY_INTERVAL) => {}
+            }
+            changed.complete(());
+        });
+        Some(change)
     }
 
     /// Ask an invocation `caller` admitted to stop.

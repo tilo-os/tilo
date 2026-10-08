@@ -40,6 +40,30 @@ pub struct NativeStateRuntime(pub(super) Arc<Runtime>);
 /// Policy observers must not retain the state writer or its exclusive file lease.
 #[derive(Clone)]
 pub(crate) struct NativeStateWitness(Weak<Runtime>);
+/// Static rejection categories contain no peer, capability, path or process data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AuthorityRejection {
+    WriterRetired,
+    WriterFenced,
+    RoomUncertain,
+    InvalidSnapshot,
+    StaleAcceptedSnapshot,
+    RoomOwnerRetired,
+    RoomOwnerNotCurrent,
+}
+impl AuthorityRejection {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::WriterRetired => "writer_retired",
+            Self::WriterFenced => "writer_fenced",
+            Self::RoomUncertain => "room_uncertain",
+            Self::InvalidSnapshot => "invalid_snapshot",
+            Self::StaleAcceptedSnapshot => "stale_accepted_snapshot",
+            Self::RoomOwnerRetired => "room_owner_retired",
+            Self::RoomOwnerNotCurrent => "room_owner_not_current",
+        }
+    }
+}
 impl NativeStateWitness {
     /// Borrow the protected ordinary-room writer for one host operation.
     /// Enrolled rooms must instead borrow their committed native view.
@@ -89,9 +113,15 @@ impl NativeStateWitness {
         storage: &NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
     ) -> bool {
-        self.0
-            .upgrade()
-            .is_some_and(|runtime| NativeStateRuntime(runtime).authority_is_current(storage, room))
+        self.authority_status(storage, room).is_ok()
+    }
+    pub(crate) fn authority_status(
+        &self,
+        storage: &NativeAuthorityStorage,
+        room: crate::shell::state::RoomId,
+    ) -> Result<(), AuthorityRejection> {
+        let runtime = self.0.upgrade().ok_or(AuthorityRejection::WriterRetired)?;
+        NativeStateRuntime(runtime).authority_status(storage, room)
     }
 }
 impl std::fmt::Debug for NativeStateRuntime {
@@ -188,28 +218,29 @@ impl NativeStateRuntime {
     }
     /// Read-only witness for host policy exports. A stale/fenced native
     /// authority must not renew an application action lease.
-    pub(crate) fn authority_is_current(
+    fn authority_status(
         &self,
         storage: &NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
-    ) -> bool {
-        if !self.healthy() || self.requires_uncertain(room) {
-            return false;
+    ) -> Result<(), AuthorityRejection> {
+        if !self.healthy() {
+            return Err(AuthorityRejection::WriterFenced);
         }
-        let Ok(expected) = digest(storage) else {
-            return false;
-        };
+        if self.requires_uncertain(room) {
+            return Err(AuthorityRejection::RoomUncertain);
+        }
+        let expected = digest(storage).map_err(|_| AuthorityRejection::InvalidSnapshot)?;
         let current = self.0.writer.lock().expected;
         if current.is_some_and(|current| current != expected) {
-            return false;
+            return Err(AuthorityRejection::StaleAcceptedSnapshot);
         }
         if storage.requires(room) {
-            let Some(owner) = self.owner() else {
-                return false;
-            };
-            return owner.with_current(room, |_| Ok(())).is_ok();
+            let owner = self.owner().ok_or(AuthorityRejection::RoomOwnerRetired)?;
+            return owner
+                .with_current(room, |_| Ok(()))
+                .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent);
         }
-        true
+        Ok(())
     }
     pub(super) fn healthy(&self) -> bool {
         self.0.healthy.load(Ordering::Acquire)

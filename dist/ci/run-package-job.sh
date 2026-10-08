@@ -321,6 +321,20 @@ record_failure() {
 }
 trap record_failure ERR
 
+# The outer helper copies /artifacts even when this userspace fails, before
+# removing its container. Keep diagnostic RPMs separate from install-tested
+# output; signing and release publication must never consume this directory.
+retain_failed_rpms() {
+    local status=$?
+    trap - EXIT
+    if (( status != 0 )) && [[ $distro == fedora-44 ]]; then
+        python3 dist/ci/retain-failed-rpms.py "$stage" "$status" || \
+            echo '::warning::failed RPMs could not be retained within the provenance/storage bounds' >&2
+    fi
+    exit "$status"
+}
+trap retain_failed_rpms EXIT
+
 stage=architecture-check
 dist/ci/assert-native-arch.sh "$execution_arch"
 

@@ -568,9 +568,14 @@ impl InputMethodServices {
 
     /// Re-read the preferences that decide the owner and apply the decision.
     pub fn reload(&mut self, state: &mut State) {
+        self.reload_for_scope(state, &settings_store::keyboard_sources::active_scope());
+    }
+
+    pub fn reload_for_scope(&mut self, state: &mut State, scope: &str) {
         let input = settings_store::hardware::RichInputConfig::from_section(
             &settings_store::load_section("input"),
         );
+        let input = settings_store::keyboard_sources::effective(&input, scope);
         self.primary_layout = input
             .sources()
             .first()
