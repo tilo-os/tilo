@@ -1660,12 +1660,14 @@ impl ShellDriver {
                     ssid: "Conference-room-very-long-5GHz-network-name".into(),
                     signal: 4,
                     secure: true,
+                    security: os_actions::WifiSecurity::Wpa2,
                     connected: true,
                 },
                 shell::shell::quick_settings::WifiNetwork {
                     ssid: "Café Gäste-WLAN mit einem außergewöhnlich langen Namen".into(),
                     signal: 2,
                     secure: false,
+                    security: os_actions::WifiSecurity::Open,
                     connected: false,
                 },
             ];
