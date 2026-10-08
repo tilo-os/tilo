@@ -5123,6 +5123,19 @@ fn pump_test_control_conn(
                                 continue;
                             }
                         }
+                        if let Some(response) =
+                            super::diagnostic_actions::owner_required(&request.command)
+                        {
+                            let progress = queue_test_control_response(conn, &response);
+                            if matches!(
+                                progress,
+                                PendingConnectionProgress::Closed
+                                    | PendingConnectionProgress::OutputPending
+                            ) {
+                                return injected_input;
+                            }
+                            continue;
+                        }
                         match agent {
                             Some(_)
                                 if session.is_locked()
@@ -15132,7 +15145,7 @@ mod tests {
         );
         assert!(matches!(
             socket_response(&mut reader),
-            test_control::Response::Err { .. }
+            test_control::Response::Err { code, .. } if code == "not_permitted"
         ));
         assert!(
             crate::shell::launcher::LaunchSession::current()
@@ -15148,6 +15161,13 @@ mod tests {
         );
         assert!(
             matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true)
+        );
+        writer.write_all(b"{\"op\":\"actions_invoke\",\"provider\":\"session-diagnostics\",\"id\":\"inspect@session-diagnostics\",\"args\":{}}\n").unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["launch_history"]["attempts"].is_array())
         );
         writer
             .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"session-diagnostics\"}\n")
