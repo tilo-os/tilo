@@ -1070,6 +1070,11 @@ mod tests {
                         panic!("resume did not succeed: {result:?}");
                     };
                     assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
+                    action
+                        .contract
+                        .result
+                        .validate(&output)
+                        .expect("real resumed PCM completion must match the published result");
                     assert!(app.audio.frames_rendered() >= before);
                     assert!(app.audio.is_playing_confirmed());
                     break;
