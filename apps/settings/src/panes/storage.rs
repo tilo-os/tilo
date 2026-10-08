@@ -182,10 +182,12 @@ pub struct StorageModel {
     cleanup_source: Arc<dyn StorageCleanupSource>,
     cleanup_job: Option<CleanupJob>,
     cleanup_notice: Option<String>,
+    storage_socket: std::path::PathBuf,
     sync_snapshot: Option<SyncStorageSnapshot>,
     sync_message: Option<String>,
     sync_busy: bool,
     sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
+    sync_reply: Option<EffectReply>,
     snapshot_result: Option<std::sync::mpsc::Receiver<Result<SyncStorageSnapshot, String>>>,
     replies: Replies,
     changed: bool,
@@ -246,10 +248,12 @@ impl StorageModel {
             cleanup_source: Arc::new(DeviceStorageCleanup),
             cleanup_job: None,
             cleanup_notice: None,
+            storage_socket: DEFAULT_STORAGE_SOCKET.into(),
             sync_snapshot: None,
             sync_message: None,
             sync_busy: false,
             sync_result: None,
+            sync_reply: None,
             snapshot_result: None,
             replies: Replies::default(),
             changed: false,
@@ -294,8 +298,9 @@ impl StorageModel {
 
     fn refresh_sync(&mut self) {
         let (sender, receiver) = std::sync::mpsc::channel();
+        let socket = self.storage_socket.clone();
         std::thread::spawn(move || {
-            let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+            let result = StorageClient::connect(socket)
                 .and_then(|mut client| client.snapshot())
                 .map_err(|error| error.to_string());
             let _ = sender.send(result);
@@ -312,20 +317,15 @@ impl StorageModel {
             self.clean_up_caches(reply);
             return;
         }
+        if matches!(effect, StorageEffect::FreeSyncedFiles) {
+            self.begin_sync_eviction(reply);
+            return;
+        }
         let id = effect.id();
         self.replies.wait(id, reply);
         self.changed = true;
-        if matches!(
-            effect,
-            StorageEffect::CleanUpCaches | StorageEffect::FreeSyncedFiles
-        ) && let Some(message) = self.initial_message()
-        {
-            self.replies.finish(id, Err(message));
-            return;
-        }
         match effect {
-            StorageEffect::CleanUpCaches => {}
-            StorageEffect::FreeSyncedFiles => self.free_synced_files(),
+            StorageEffect::CleanUpCaches | StorageEffect::FreeSyncedFiles => {}
             StorageEffect::OpenDisks => {
                 let result = os_actions::open_tool(ToolIntent::Disks {
                     route: DisksRoute::Overview,
@@ -419,14 +419,38 @@ impl StorageModel {
         }
     }
 
+    fn begin_sync_eviction(&mut self, reply: EffectReply) {
+        if let Some(message) = self.initial_message() {
+            reply.finish(Err(message));
+            return;
+        }
+        if self.sync_busy {
+            reply.finish(Err(t("settings-storage-reclaiming")));
+            return;
+        }
+        self.sync_reply = Some(reply);
+        self.changed = true;
+        self.free_synced_files();
+    }
+
+    fn finish_sync_eviction(&mut self, result: Result<(), String>) {
+        if let Some(reply) = self.sync_reply.take() {
+            reply.finish(result.map(|()| ui::tilo_actions::ActionOutput {
+                value: None,
+                resources: Vec::new(),
+            }));
+        }
+    }
+
     fn free_synced_files(&mut self) {
         if !self.sync_busy
             && let Some(snapshot) = &self.sync_snapshot
         {
             let selected = reclaimable_selections(snapshot);
             let (sender, receiver) = std::sync::mpsc::channel();
+            let socket = self.storage_socket.clone();
             std::thread::spawn(move || {
-                let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+                let result = StorageClient::connect(socket)
                     .and_then(|mut client| client.evict(selected))
                     .map_err(|error| error.to_string());
                 let _ = sender.send(result);
@@ -434,10 +458,7 @@ impl StorageModel {
             self.sync_busy = true;
             self.sync_result = Some(receiver);
         } else {
-            self.replies.finish(
-                StorageEffect::FREE_SYNCED_FILES.id,
-                Err(t("settings-storage-no-reclaimable")),
-            );
+            self.finish_sync_eviction(Err(t("settings-storage-no-reclaimable")));
         }
     }
 
@@ -680,6 +701,10 @@ impl StorageModel {
 }
 
 #[cfg(test)]
+#[path = "storage_sync_receipt_tests.rs"]
+mod sync_receipt_tests;
+
+#[cfg(test)]
 #[path = "storage_job_tests.rs"]
 mod job_tests;
 
@@ -752,10 +777,7 @@ impl PaneModel for StorageModel {
                                 ],
                             )
                         });
-                    self.replies.finish(
-                        StorageEffect::FREE_SYNCED_FILES.id,
-                        Ok(t("settings-storage-reclaim-done")),
-                    );
+                    self.finish_sync_eviction(Ok(()));
                 }
                 Ok(Err(error)) => {
                     self.sync_busy = false;
@@ -765,17 +787,13 @@ impl PaneModel for StorageModel {
                         &[("error", error.into())],
                     );
                     self.sync_message = Some(message.clone());
-                    self.replies
-                        .finish(StorageEffect::FREE_SYNCED_FILES.id, Err(message));
+                    self.finish_sync_eviction(Err(message));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.sync_busy = false;
                     self.sync_result = None;
                     self.sync_message = Some(t("settings-storage-request-ended"));
-                    self.replies.finish(
-                        StorageEffect::FREE_SYNCED_FILES.id,
-                        Err(t("settings-storage-service-ended")),
-                    );
+                    self.finish_sync_eviction(Err(t("settings-storage-service-ended")));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
