@@ -1291,6 +1291,23 @@ impl CapnpBrokerState {
                         .map_err(|error| refusal(error.to_string()))?,
                 )
             }
+            Some(super::published_invocation::InvocationCaller::NativePerson {
+                room: original_room,
+                certificate,
+                ..
+            }) => {
+                if original_room != room
+                    || caller.principal()
+                        != &tilo_actions::remote::CallerPrincipal::Person(
+                            super::principal_id_for_root(certificate.user_public_key),
+                        )
+                {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                self.current_native_person(room, certificate)
+                    .map_err(refusal)?;
+                None
+            }
             None => None,
         };
         if let Some(admitted) = admitted {
