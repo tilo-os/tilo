@@ -354,6 +354,9 @@ pub struct DirectScanoutTargets {
     /// cannot change the framebuffer format, so HDR targets become visible
     /// through one `set_crtc` before flips take over.
     crtc_bound: bool,
+    /// KMS accepted a frame rendered into one of these targets; until then the
+    /// CRTC still shows the dumb front.
+    presented: bool,
     state: DirectScanoutState,
 }
 
@@ -445,6 +448,7 @@ impl DirectScanoutTargets {
             buffers,
             format,
             crtc_bound: false,
+            presented: false,
             // The dumb-buffer front remains visible until the first complete
             // imported target is submitted, so index zero is merely the
             // initial ownership anchor; the first render uses index one.
@@ -459,6 +463,12 @@ impl DirectScanoutTargets {
     /// A queued flip onto one of these targets has not retired yet.
     pub fn flip_pending(&self) -> bool {
         self.state.pending.is_some()
+    }
+
+    /// KMS has accepted a frame from these targets, so the CRTC no longer shows
+    /// the dumb front.
+    pub fn presented(&self) -> bool {
+        self.presented
     }
 
     pub fn render_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
@@ -3217,6 +3227,7 @@ impl DrmScanout {
                 self.flip_pending = true;
                 if targets.state.submit(index) {
                     self.flip_submission = self.flip_submission.wrapping_add(1);
+                    targets.presented = true;
                     DirectSubmit::Queued
                 } else {
                     self.flip_pending = false;
@@ -3285,6 +3296,7 @@ impl DrmScanout {
             ));
         }
         targets.crtc_bound = true;
+        targets.presented = true;
         eprintln!(
             "tilo compositor: DRM HDR on connector={} path=direct format={:?}",
             u32::from(self.connector),

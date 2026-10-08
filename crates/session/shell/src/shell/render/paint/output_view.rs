@@ -128,6 +128,8 @@ impl<'a> OutputTarget<'a> {
 /// One output's retained pixels and the revision they hold: the parts of
 /// [`RetainedGpuTarget`] that differ between outputs.
 pub(super) struct OutputSurface {
+    /// The view these pixels were rendered through; another view needs a full render.
+    transform: Affine,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     band: Option<(wgpu::Texture, wgpu::TextureView, u32)>,
@@ -137,12 +139,14 @@ pub(super) struct OutputSurface {
 }
 
 impl OutputSurface {
-    fn new(device: &wgpu::Device, size: (u32, u32)) -> Result<Self, BridgeError> {
+    fn new(device: &wgpu::Device, view: &OutputView) -> Result<Self, BridgeError> {
+        let size = view.size;
         RetainedGpuTarget::validate_size(device, size.0, size.1)?;
-        let (texture, view) = RetainedGpuTarget::allocate_texture(device, size.0, size.1);
+        let (texture, texture_view) = RetainedGpuTarget::allocate_texture(device, size.0, size.1);
         Ok(Self {
+            transform: view.transform,
             texture,
-            view,
+            view: texture_view,
             band: None,
             size,
             retained_target_valid: false,
@@ -293,24 +297,71 @@ impl VelloDrmBridge {
     }
 
     /// The output's surface, removed from the list for the render; a new one when the
-    /// output has none or changed size.
+    /// output has none or changed size. A surface rendered through another view (the
+    /// output moved) keeps its texture but renders in full.
     fn take_output_surface(&mut self, view: &OutputView) -> Result<OutputSurface, BridgeError> {
         if let Some(index) = self
             .output_surfaces
             .iter()
             .position(|(id, _)| *id == view.id)
         {
-            let (_, surface) = self.output_surfaces.swap_remove(index);
+            let (_, mut surface) = self.output_surfaces.swap_remove(index);
             if surface.size == view.size {
+                if surface.transform != view.transform {
+                    surface.transform = view.transform;
+                    surface.invalidate();
+                }
                 return Ok(surface);
             }
         }
-        OutputSurface::new(&self.target.device, view.size)
+        OutputSurface::new(&self.target.device, view)
+    }
+
+    /// Whether an output that is not the whole scene can keep the image it shows for
+    /// `damage`: none of the damage falls on it and its surface holds the previous
+    /// revision through this view. Its surface then holds this revision too, so the
+    /// next frame's damage still repairs it sparsely.
+    pub fn keep_unchanged_output(&mut self, view: &OutputView, damage: SceneDamage<'_>) -> bool {
+        if view.covers_whole_scene(self.target.size) {
+            return false;
+        }
+        let (Some(regions), Some(previous)) = (damage.regions, damage.previous_revision) else {
+            return false;
+        };
+        if !view.damage(regions).is_some_and(|mapped| mapped.is_empty()) {
+            return false;
+        }
+        let Some((_, surface)) = self
+            .output_surfaces
+            .iter_mut()
+            .find(|(id, _)| *id == view.id)
+        else {
+            return false;
+        };
+        let current = surface.retained_target_valid
+            && surface.size == view.size
+            && surface.transform == view.transform
+            && surface.last_successful_revision == Some(previous);
+        if current {
+            surface.last_successful_revision = Some(damage.revision);
+        }
+        current
     }
 
     /// Release the surfaces of outputs that are gone.
     pub fn retain_output_views(&mut self, live: &[OutputId]) {
         self.output_surfaces.retain(|(id, _)| live.contains(id));
+    }
+
+    /// The output renders its next frame in full.
+    pub fn invalidate_output_view(&mut self, id: OutputId) {
+        for (_, surface) in self
+            .output_surfaces
+            .iter_mut()
+            .filter(|(surface_id, _)| *surface_id == id)
+        {
+            surface.invalidate();
+        }
     }
 
     /// Every output renders its next frame in full.
@@ -369,5 +420,20 @@ mod tests {
         );
         assert!(view_at((0, 0), (200, 100)).covers_whole_scene((200, 100)));
         assert!(!view.covers_whole_scene((200, 100)));
+    }
+
+    #[test]
+    fn damage_elsewhere_maps_to_nothing_on_this_output() {
+        let view = view_at((100, 0), (100, 100));
+        assert_eq!(
+            view.damage(&[FineDamageRect {
+                x: 10,
+                y: 10,
+                width: 20,
+                height: 20,
+            }]),
+            Some(Vec::new()),
+            "a caret on the other output leaves this one unchanged"
+        );
     }
 }

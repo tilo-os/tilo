@@ -28,6 +28,7 @@ pub mod session;
 mod tablet;
 mod xrgb_history;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -65,6 +66,11 @@ pub struct DrmBackend {
     /// True between a session pause and matching resume, for the inline path. Distinct from
     /// `blanked` ("screen should be off") — `paused` means these CRTCs belong to another session right now; presenting under either is wrong.
     paused: bool,
+    /// Some powered output presented through the combined readback in the
+    /// latest frame. Only that readback replays retained workspace pixels, so
+    /// clip-only transition frames are requested only while it is in use.
+    /// Shared with the presenter, which updates it after every frame.
+    readback_presenting: Arc<AtomicBool>,
     /// Signalling reports to the loop thread, held while scanouts are inline.
     signal_reports: Option<Sender<SignalReport>>,
 }
@@ -106,6 +112,7 @@ impl DrmBackend {
             refresh,
             commands,
             paused: false,
+            readback_presenting: Arc::new(AtomicBool::new(true)),
             signal_reports,
         })
     }
@@ -168,8 +175,18 @@ pub struct DrmPresenter {
     /// actionable even when its wrapper forgot the opt-in per-frame trace environment: one log
     /// record every two seconds is cheap enough for production and survives a hard reset.
     phase_window: PhaseWindow,
+    /// See [`DrmBackend::readback_presenting`].
+    readback_presenting: Arc<AtomicBool>,
     /// Signalling facts learned while presenting, for the loop thread.
     signal_reports: Option<Sender<SignalReport>>,
+}
+
+/// Publish whether any powered output presents through the combined readback.
+fn publish_readback_presenting(scanouts: &[ScanoutEntry], flag: &AtomicBool) {
+    flag.store(
+        scanouts.iter().any(|entry| entry.present_by_readback),
+        Ordering::Relaxed,
+    );
 }
 
 /// Send the loop thread every output's signalling status that changed since
@@ -410,15 +427,10 @@ impl PhaseWindow {
         }
     }
 
-    fn record_direct_submit(
-        &mut self,
-        render_us: u128,
-        sparse: bool,
-        timing: Option<paint::BridgePhaseTiming>,
-    ) {
-        if let Some(timing) = timing {
-            self.accumulate(timing);
-        }
+    /// One frame presented direct: `render_us` summed over its outputs, `sparse`
+    /// when every output repaired damage only. Each output's phases go to
+    /// [`Self::accumulate`] as it renders.
+    fn record_direct_frame(&mut self, render_us: u128, sparse: bool) {
         self.frames = self.frames.saturating_add(1);
         self.direct_frames = self.direct_frames.saturating_add(1);
         self.direct_us = self.direct_us.saturating_add(render_us);
@@ -536,18 +548,15 @@ mod phase_window_tests {
         // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
         {
             let mut window = PhaseWindow::default();
-            window.record_direct_submit(
-                7_000,
-                false,
-                Some(paint::BridgePhaseTiming {
-                    submit_us: 2,
-                    completed_readback_map_us: 4,
-                    settle_us: 6,
-                    backdrop_us: 14,
-                    ..Default::default()
-                }),
-            );
-            window.record_direct_submit(3_000, true, None);
+            window.accumulate(paint::BridgePhaseTiming {
+                submit_us: 2,
+                completed_readback_map_us: 4,
+                settle_us: 6,
+                backdrop_us: 14,
+                ..Default::default()
+            });
+            window.record_direct_frame(7_000, false);
+            window.record_direct_frame(3_000, true);
             window.record_direct_drop();
             window.record_flip_completions(2);
 
@@ -564,6 +573,28 @@ mod phase_window_tests {
             assert_eq!(window.flip_completions, 2);
             assert_eq!(window.readback_bytes, 0);
             assert_eq!(window.output_bytes, 0);
+        }
+        // Phase `two_direct_outputs_are_one_frame`.
+        {
+            let mut window = PhaseWindow::default();
+            let mut frame = DirectFrame::default();
+            frame.add(4_000, true);
+            frame.add(5_000, false);
+            frame.record(&mut window);
+            let mut sparse = DirectFrame::default();
+            sparse.add(1_000, true);
+            sparse.add(2_000, true);
+            sparse.record(&mut window);
+            DirectFrame::default().record(&mut window);
+
+            assert_eq!(window.frames, 2, "each frame counts once, not per output");
+            assert_eq!(window.direct_frames, 2);
+            assert_eq!(window.direct_us, 12_000);
+            assert_eq!(window.max_direct_us, 9_000);
+            assert_eq!(
+                window.direct_sparse_frames, 1,
+                "a frame is sparse only when every output repaired damage only"
+            );
         }
     }
 
@@ -788,6 +819,7 @@ impl DrmPresenter {
             },
             Some(&mut self.phase_window),
         );
+        publish_readback_presenting(&self.scanouts, &self.readback_presenting);
         if sample.direct_queued {
             let _ = self.retire_direct_flips();
         }
@@ -844,6 +876,7 @@ impl DrmPresenter {
             },
             Some(&mut self.phase_window),
         );
+        publish_readback_presenting(&self.scanouts, &self.readback_presenting);
         let retirement_started = self.profile_phases.then(Instant::now);
         let retirement_attempted = sample.direct_queued
             || (self.scanouts.len() == 1
@@ -894,11 +927,9 @@ impl DrmPresenter {
     /// output remain owned by KMS. Waiting for each output, rather than the
     /// first, keeps an output whose vblank trails another's from dropping every
     /// other frame; outputs at different rates pace to the slowest until
-    /// per-output pacing exists (TIL-256).
+    /// per-output pacing exists (TIL-256). Each output gets the whole timeout, so
+    /// one wedged output cannot spend a healthy sibling's budget and demote it.
     fn retire_direct_flips(&mut self) -> Option<crate::shell::present::PhysicalPresentation> {
-        let deadline = Instant::now()
-            .checked_add(DIRECT_RETIREMENT_TIMEOUT)
-            .unwrap_or_else(Instant::now);
         let mut proof = None;
         // Each pass retires or demotes one output; the bound is a backstop.
         for _ in 0..self.scanouts.len() {
@@ -910,8 +941,7 @@ impl DrmPresenter {
             }) else {
                 break;
             };
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let retired = self.retire_physical_flip(index, remaining);
+            let retired = self.retire_physical_flip(index, DIRECT_RETIREMENT_TIMEOUT);
             proof = proof.or(retired);
         }
         proof
@@ -1205,7 +1235,12 @@ fn apply_scanout_command(
         ScanoutCommand::SetOutputPower { output, on } => {
             for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
                 entry.powered_off = !on;
-                entry.direct_targets = None;
+                if entry.direct_targets.is_some() {
+                    // KMS may still scan out a target: the dumb front takes the
+                    // CRTC back before the targets are released.
+                    entry.scanout.restore_legacy_front();
+                    entry.direct_targets = None;
+                }
                 // While the session is blanked every panel is already off;
                 // the wake restores this one only if it is still wanted.
                 if !*blanked && !*paused {
@@ -1575,12 +1610,12 @@ fn paint_scanouts(
         let Some(bridge) = paint.as_mut() else {
             return PaintScanoutSample::default();
         };
-        let live: Vec<OutputId> = scanouts.iter().map(|entry| entry.id).collect();
-        bridge.retain_output_views(&live);
         let renderer = RendererIdentity::of(bridge);
+        let mut rendered = DirectFrame::default();
         for entry in scanouts.iter_mut() {
             if entry.powered_off {
                 entry.present_by_readback = false;
+                entry.readback_current = false;
                 continue;
             }
             let view = output_view(entry, outputs);
@@ -1594,15 +1629,30 @@ fn paint_scanouts(
             );
             entry.present_by_readback = outcome == DirectOutcome::Readback;
             match outcome {
-                DirectOutcome::Submitted { queued } => {
+                DirectOutcome::Submitted {
+                    queued,
+                    render_us,
+                    sparse,
+                } => {
                     direct.direct_queued |= queued;
+                    rendered.add(render_us, sparse);
                     entry.readback_current = false;
                 }
-                // KMS still owns both targets: the output keeps its current image.
-                DirectOutcome::Dropped => entry.readback_current = false,
+                // The output keeps its current image.
+                DirectOutcome::Dropped | DirectOutcome::Kept => entry.readback_current = false,
                 DirectOutcome::Readback => readback = true,
             }
         }
+        if let Some(window) = phase_window.as_deref_mut() {
+            rendered.record(window);
+        }
+        // Only outputs on the direct path keep a retained surface.
+        let live: Vec<OutputId> = scanouts
+            .iter()
+            .filter(|entry| !entry.powered_off && entry.direct_targets.is_some())
+            .map(|entry| entry.id)
+            .collect();
+        bridge.retain_output_views(&live);
     }
     if !readback {
         return direct;
@@ -1724,12 +1774,42 @@ fn output_view(entry: &ScanoutEntry, outputs: &[Output]) -> paint::OutputView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DirectOutcome {
     /// The frame went to KMS: a flip is queued (`queued`), or a modeset showed it.
-    Submitted { queued: bool },
+    /// `render_us` is the GPU frame's wall time; `sparse` that it repaired damage only.
+    Submitted {
+        queued: bool,
+        render_us: u128,
+        sparse: bool,
+    },
     /// KMS still owns both targets, or refused the flip as busy: the output keeps
     /// its current image this frame.
     Dropped,
+    /// Nothing new reaches this output (no damage falls on it, or the frame is a
+    /// clip that only the readback replays): it keeps its current image.
+    Kept,
     /// The output is not eligible, or its direct frame failed: the readback presents it.
     Readback,
+}
+
+/// The direct renders of one frame, recorded as one frame however many outputs it took.
+#[derive(Default)]
+struct DirectFrame {
+    outputs: usize,
+    render_us: u128,
+    sparse: bool,
+}
+
+impl DirectFrame {
+    fn add(&mut self, render_us: u128, sparse: bool) {
+        self.sparse = sparse && (self.outputs == 0 || self.sparse);
+        self.outputs = self.outputs.saturating_add(1);
+        self.render_us = self.render_us.saturating_add(render_us);
+    }
+
+    fn record(&self, window: &mut PhaseWindow) {
+        if self.outputs > 0 {
+            window.record_direct_frame(self.render_us, self.sparse);
+        }
+    }
 }
 
 /// Render one output straight into its own direct scanout target and hand it to KMS.
@@ -1843,6 +1923,27 @@ fn present_direct(
     let Some(targets) = entry.direct_targets.as_mut() else {
         return DirectOutcome::Readback;
     };
+    // A clip-only transition frame carries no scene: only the readback can replay
+    // retained workspace pixels, so a direct output keeps what it shows until the
+    // next complete frame, whose damage is relative to the last one it rendered.
+    if frame.scene.encoding().is_empty() {
+        // Targets that have not shown a frame leave the dumb front on the CRTC, and
+        // the readback is what can replay it.
+        return if targets.presented() {
+            DirectOutcome::Kept
+        } else {
+            DirectOutcome::Readback
+        };
+    }
+    // No damage falls on this output: its retained surface and front slot already
+    // hold this revision.
+    if frame.hdr_layers.is_empty()
+        && targets.presented()
+        && let Some(damage) = frame.damage
+        && bridge.keep_unchanged_output(view, damage)
+    {
+        return DirectOutcome::Kept;
+    }
     // A queued imported-buffer flip retires before a new render target is selected. With
     // two slots, a pending flip owns both.
     let Some((index, target)) = targets.render_slot() else {
@@ -1889,12 +1990,10 @@ fn present_direct(
     let render_us = render_started.elapsed().as_micros();
     match entry.scanout.submit_direct_target(targets, index) {
         submitted @ (scanout::DirectSubmit::Queued | scanout::DirectSubmit::Presented) => {
-            if let Some(window) = phase_window.as_deref_mut() {
-                window.record_direct_submit(
-                    render_us,
-                    stats.sparse_attempts > 0 && stats.full_attempts == 0,
-                    bridge.last_phase_timing(),
-                );
+            if let Some(window) = phase_window.as_deref_mut()
+                && let Some(timing) = bridge.last_phase_timing()
+            {
+                window.accumulate(timing);
             }
             let degradation = if want_hdr {
                 &mut entry.hdr_direct_degradation
@@ -1912,12 +2011,17 @@ fn present_direct(
             // The first HDR frame went up by modeset: no flip event to wait for.
             DirectOutcome::Submitted {
                 queued: matches!(submitted, scanout::DirectSubmit::Queued),
+                render_us,
+                sparse: stats.sparse_attempts > 0 && stats.full_attempts == 0,
             }
         }
         scanout::DirectSubmit::Busy => {
             if let Some(window) = phase_window.as_deref_mut() {
                 window.record_direct_drop();
             }
+            // The surface is ahead of the image KMS shows: the next frame must not
+            // count this output as unchanged.
+            bridge.invalidate_output_view(view.id);
             DirectOutcome::Dropped
         }
         scanout::DirectSubmit::Failed(error) => {
@@ -2884,13 +2988,17 @@ impl Backend for DrmBackend {
             },
             None,
         );
+        publish_readback_presenting(&self.inner.scanouts, &self.readback_presenting);
         report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
     }
 
     fn supports_workspace_clip(&self) -> bool {
-        // Only combined GPU readback implements workspace replay. Single-output
-        // direct and XRGB paths, and the CPU renderer, consume complete scenes.
-        self.outputs.len() > 1 && cpu_present::cpu_render_reason().is_none()
+        // Only combined GPU readback implements workspace replay. Direct
+        // outputs, the single-output XRGB path and the CPU renderer consume
+        // complete scenes; a clip frame reaching a direct output keeps its image.
+        self.outputs.len() > 1
+            && cpu_present::cpu_render_reason().is_none()
+            && self.readback_presenting.load(Ordering::Relaxed)
     }
 
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, _output: OutputId) {
@@ -2925,6 +3033,7 @@ impl Backend for DrmBackend {
             },
             None,
         );
+        publish_readback_presenting(&self.inner.scanouts, &self.readback_presenting);
         report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
     }
 
@@ -3008,6 +3117,7 @@ impl Backend for DrmBackend {
             frame_phases: None,
             profile_seq: 0,
             phase_window: PhaseWindow::default(),
+            readback_presenting: Arc::clone(&self.readback_presenting),
             signal_reports: self.signal_reports.take(),
         }))
     }
