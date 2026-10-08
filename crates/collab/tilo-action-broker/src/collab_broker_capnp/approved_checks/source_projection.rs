@@ -64,6 +64,16 @@ impl ReadOrigin {
             }
             Self::Person { state, caller, .. } => {
                 let admitted = match caller.as_ref() {
+                    crate::collab_broker_capnp::InvocationCaller::NativePerson {
+                        room,
+                        certificate,
+                        time,
+                        ..
+                    } => {
+                        state.checked_policy_time(Some(time))?;
+                        state.current_native_person(room, certificate)?;
+                        return Ok(state.certified_person(room, certificate));
+                    }
                     crate::collab_broker_capnp::InvocationCaller::Certified { caller, .. } => {
                         state.current_action_caller(caller)?
                     }
