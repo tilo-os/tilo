@@ -409,6 +409,69 @@ mod tests {
     }
 
     #[test]
+    fn a_signature_from_one_direction_is_never_a_proof_in_the_other() {
+        let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let relay = enrol(
+            &root_sk,
+            user.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
+        let client = enrol(
+            &root_sk,
+            user.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let revs = RevocationList::new();
+        // A server that signs whatever `client_nonce` it is
+        // handed must not thereby produce the `HelloAck2` another server
+        // expects from the same key. Feed a victim's server nonce in as a
+        // client nonce; the resulting server signature is not a client proof.
+        let victim_server_nonce = [9u8; 32];
+        let oracle = build_hello_ack(
+            relay.cert.clone(),
+            &relay.sk,
+            [3u8; 32],
+            &victim_server_nonce,
+        );
+        let reflected = HelloAck2 {
+            sig_over_server_nonce: oracle.sig_over_client_nonce,
+        };
+        assert!(
+            matches!(
+                verify_hello_ack2(
+                    &reflected,
+                    &relay.cert.device_public_key,
+                    &victim_server_nonce
+                ),
+                Err(AuthError::BadChallengeSig)
+            ),
+            "a server-direction signature must never verify as a client proof"
+        );
+        // And the other way round: a client's proof is not a server's.
+        let client_proof = build_hello_ack2(&client.sk, &victim_server_nonce);
+        let reflected_ack = HelloAck {
+            cert: client.cert,
+            server_nonce: [4u8; 32],
+            sig_over_client_nonce: client_proof.sig_over_server_nonce,
+        };
+        assert!(
+            matches!(
+                verify_hello_ack(
+                    &reflected_ack,
+                    &user.public_key,
+                    &revs,
+                    1000,
+                    &victim_server_nonce
+                ),
+                Err(AuthError::BadChallengeSig)
+            ),
+            "a client-direction signature must never verify as a server proof"
+        );
+    }
+
+    #[test]
     fn server_accepts_only_trusted_unrevoked_devices_and_completes_mutual_auth() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
         let relay = enrol(
@@ -447,52 +510,6 @@ mod tests {
         assert_eq!(client_peer.device_public_key, relay.cert.device_public_key);
         let ack2 = build_hello_ack2(&client.sk, &server_nonce);
         verify_hello_ack2(&ack2, &client.cert.device_public_key, &server_nonce).unwrap();
-
-        // Reflection: a server that signs whatever `client_nonce` it is
-        // handed must not thereby produce the `HelloAck2` another server
-        // expects from the same key. Feed a victim's server nonce in as a
-        // client nonce; the resulting server signature is not a client proof.
-        let victim_server_nonce = [9u8; 32];
-        let oracle = build_hello_ack(
-            relay.cert.clone(),
-            &relay.sk,
-            [3u8; 32],
-            &victim_server_nonce,
-        );
-        let reflected = HelloAck2 {
-            sig_over_server_nonce: oracle.sig_over_client_nonce,
-        };
-        assert!(
-            matches!(
-                verify_hello_ack2(
-                    &reflected,
-                    &relay.cert.device_public_key,
-                    &victim_server_nonce
-                ),
-                Err(AuthError::BadChallengeSig)
-            ),
-            "a server-direction signature must never verify as a client proof"
-        );
-        // And the other way round: a client's proof is not a server's.
-        let client_proof = build_hello_ack2(&client.sk, &victim_server_nonce);
-        let reflected_ack = HelloAck {
-            cert: client.cert.clone(),
-            server_nonce: [4u8; 32],
-            sig_over_client_nonce: client_proof.sig_over_server_nonce,
-        };
-        assert!(
-            matches!(
-                verify_hello_ack(
-                    &reflected_ack,
-                    &user.public_key,
-                    &revs,
-                    1000,
-                    &victim_server_nonce
-                ),
-                Err(AuthError::BadChallengeSig)
-            ),
-            "a client-direction signature must never verify as a server proof"
-        );
 
         // Wrong user: the relay is Alice's; the client presents Bob's cert.
         let (bob_root, bob) = UserIdentity::generate("Bob", 1);

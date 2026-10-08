@@ -13,7 +13,8 @@ use std::time::Duration;
 #[cfg(test)]
 use collab_types::DocumentMutation;
 use collab_types::caps::{
-    Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability, verb_for_opclass,
+    Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Verb, decide_capability,
+    verb_for_opclass,
 };
 use collab_types::{
     ArtifactKind, Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id,

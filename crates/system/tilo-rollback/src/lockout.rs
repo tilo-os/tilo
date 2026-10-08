@@ -351,9 +351,12 @@ mod tests {
     use std::sync::Mutex;
 
     /// Records every invocation and answers it as a success whose stdout is
-    /// the swtpm property dump, so `tighten` can `read` back afterwards.
+    /// the swtpm property dump, so `tighten` can `read` back afterwards. A
+    /// `file:` argument naming a file that does not exist while the tool
+    /// runs is recorded too, since the tool would have read nothing.
     struct Recorder {
         calls: Mutex<Vec<(String, Vec<String>)>>,
+        missing_files: Mutex<Vec<String>>,
     }
 
     impl Runner for Recorder {
@@ -367,12 +370,13 @@ mod tests {
                 .iter()
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect();
-            // The tool reads the file while it runs, so it must exist now.
             for spec in args.iter().filter_map(|a| a.strip_prefix("file:")) {
-                assert!(
-                    Path::new(spec).is_file(),
-                    "{program}: {spec} must exist while the tool runs"
-                );
+                if !Path::new(spec).is_file() {
+                    self.missing_files
+                        .lock()
+                        .unwrap()
+                        .push(format!("{program}: {spec}"));
+                }
             }
             self.calls.lock().unwrap().push((program.to_string(), args));
             Ok(crate::exec::Output {
@@ -388,32 +392,45 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let runner = Recorder {
             calls: Mutex::new(Vec::new()),
+            missing_files: Mutex::new(Vec::new()),
         };
         let secret = b"0123456789abcdef0123456789abcdef";
         let old = b"previous-authorisation";
         set_reset_auth(&runner, secret, Some(old), scratch.path()).unwrap();
         tighten(&runner, Target::default(), Some(secret), scratch.path()).unwrap();
 
-        let calls = runner.calls.lock().unwrap();
-        let argv: Vec<String> = calls.iter().flat_map(|(_, args)| args.clone()).collect();
+        let calls = runner.calls.lock().unwrap().clone();
+        let missing = runner.missing_files.lock().unwrap().clone();
+        assert!(
+            missing.is_empty(),
+            "every authorisation file must exist while its tool runs: {missing:?}"
+        );
+        let command_lines: Vec<String> = calls.iter().flat_map(|(_, args)| args.clone()).collect();
         for leaked in [secret.as_slice(), old.as_slice()] {
             let leaked = String::from_utf8_lossy(leaked);
             assert!(
-                argv.iter().all(|arg| !arg.contains(leaked.as_ref())),
-                "the authorisation must never appear on a command line: {argv:?}"
+                command_lines
+                    .iter()
+                    .all(|arg| !arg.contains(leaked.as_ref())),
+                "the authorisation must never appear on a command line: {command_lines:?}"
             );
         }
         assert!(
-            argv.iter().all(|arg| !arg.starts_with("str:")),
-            "no `str:` form may remain: {argv:?}"
+            command_lines.iter().all(|arg| !arg.starts_with("str:")),
+            "no `str:` form may remain: {command_lines:?}"
         );
-        let (program, args) = &calls[0];
-        assert_eq!(program, "tpm2_changeauth");
-        assert!(args.iter().filter(|a| a.starts_with("file:")).count() == 2);
-        let (program, args) = &calls[1];
-        assert_eq!(program, "tpm2_dictionarylockout");
+        let (tool, tool_args) = calls.first().expect("tpm2_changeauth ran");
+        assert_eq!(tool, "tpm2_changeauth");
+        assert_eq!(
+            tool_args.iter().filter(|a| a.starts_with("file:")).count(),
+            2,
+            "both the new and the old authorisation go by file"
+        );
+        let (tool, tool_args) = calls.get(1).expect("tpm2_dictionarylockout ran");
+        assert_eq!(tool, "tpm2_dictionarylockout");
         assert!(
-            args.windows(2)
+            tool_args
+                .windows(2)
                 .any(|w| w[0] == "--auth" && w[1].starts_with("file:"))
         );
         // The scratch files do not outlive the call.

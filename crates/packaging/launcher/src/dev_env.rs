@@ -164,9 +164,8 @@ mod tests {
                 })
                 .collect();
             let mut read = Vec::new();
-            for (at, _) in sources.match_indices("dev_override(") {
-                let arg = &sources[at + "dev_override(".len()..];
-                let arg = &arg[..arg.find(')').expect("a closing paren")];
+            for after in sources.split("dev_override(").skip(1) {
+                let arg = after.split(')').next().expect("a closing paren");
                 if let Some(name) = arg.rsplit("::").next()
                     && let Some(value) = consts.get(name)
                 {
