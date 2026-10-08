@@ -16,7 +16,7 @@ use sctk::shell::WaylandSurface;
 
 use tracing::warn;
 
-use crate::dpi::{LogicalSize, PhysicalPosition, PhysicalSize, Position, Size};
+use crate::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize, Position, Size};
 use crate::error::{ExternalError, NotSupportedError, OsError as RootOsError};
 use crate::event::{Ime, WindowEvent};
 use crate::event_loop::AsyncRequestSerial;
@@ -37,6 +37,16 @@ use super::{ActiveEventLoop, WaylandError, WindowId};
 pub(crate) mod state;
 
 pub use state::WindowState;
+
+fn ime_cursor_area_logical(
+    position: Position,
+    size: Size,
+    scale_factor: f64,
+) -> (LogicalPosition<i32>, LogicalSize<u32>) {
+    // Text-input-v3 positions are signed: a live composer may be projected
+    // outside the native surface retaining its protocol focus.
+    (position.to_logical(scale_factor), size.to_logical(scale_factor))
+}
 
 /// The Wayland window.
 pub struct Window {
@@ -630,8 +640,7 @@ impl Window {
         let window_state = self.window_state.lock().unwrap();
         if window_state.ime_allowed() {
             let scale_factor = window_state.scale_factor();
-            let position = position.to_logical(scale_factor);
-            let size = size.to_logical(scale_factor);
+            let (position, size) = ime_cursor_area_logical(position, size, scale_factor);
             window_state.set_ime_cursor_area(position, size);
         }
     }
@@ -785,6 +794,32 @@ impl TryFrom<&str> for Theme {
             Ok(Self::Light)
         } else {
             Err(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod ime_cursor_area_tests {
+    use super::*;
+
+    #[test]
+    fn signed_ime_cursor_area_preserves_logical_and_scaled_physical_positions() {
+        for scale in [1.0, 1.5, 2.0] {
+            for (x, y) in [(-112, 327), (-112, -20), (140, 454)] {
+                let expected = LogicalPosition::new(x, y);
+                let logical = ime_cursor_area_logical(
+                    LogicalPosition::new(x, y).into(),
+                    LogicalSize::new(2, 10).into(),
+                    scale,
+                );
+                assert_eq!(logical, (expected, LogicalSize::new(2, 10)));
+                let physical = ime_cursor_area_logical(
+                    PhysicalPosition::new(f64::from(x) * scale, f64::from(y) * scale).into(),
+                    PhysicalSize::new(2.0 * scale, 10.0 * scale).into(),
+                    scale,
+                );
+                assert_eq!(physical, (expected, LogicalSize::new(2, 10)));
+            }
         }
     }
 }

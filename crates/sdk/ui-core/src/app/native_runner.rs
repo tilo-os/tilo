@@ -81,7 +81,7 @@ struct AppHandler {
     a11y_proxy: EventLoopProxy<UserEvent>,
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
-    ime_state: Option<ImeWindowState>,
+    ime_state: Option<NativeImeWindowState>,
     /// A real preedit belongs to the primary Wayland text-input resource.
     /// During an exact compositor-authorised Float handoff, keep that
     /// protocol resource active and route only its keyboard/IME events to the
@@ -166,6 +166,7 @@ mod floating_source_focus_tests {
     struct FocusProbe {
         events: FocusEvents,
         request: Option<crate::floating_surface::FloatingSurfaceRequest>,
+        caret: Option<KurboRect>,
     }
 
     impl crate::widget::AppWidget for FocusProbe {
@@ -224,7 +225,8 @@ mod floating_source_focus_tests {
         fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, KurboRect)> {
             (id == "a").then_some((
                 winit::window::ImePurpose::Normal,
-                KurboRect::new(-700.0, 500.0, -699.0, 520.0),
+                self.caret
+                    .unwrap_or(KurboRect::new(-700.0, 500.0, -699.0, 520.0)),
             ))
         }
         fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
@@ -399,12 +401,55 @@ mod floating_source_focus_tests {
     }
 
     #[test]
+    fn compact_held_primary_caret_preserves_negative_local_position() {
+        let caret = KurboRect::new(140.0, 454.0, 141.0, 464.0);
+        let probe =
+            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(FocusProbe {
+                caret: Some(caret),
+                ..FocusProbe::default()
+            })));
+        let primary_origin = Vec2::new(252.0, 127.0);
+        let held = primary_floating_ime_state(&probe, "a", primary_origin).unwrap();
+        assert_eq!((held.x, held.y), (-112, 327));
+        assert_eq!(
+            Vec2::new(f64::from(held.x), f64::from(held.y)) + primary_origin,
+            caret.origin().to_vec2(),
+            "the genuine held primary resource must anchor the candidate at the compact editor"
+        );
+        assert_eq!((held.width, held.height), (1, 10));
+        assert!(primary_floating_ime_state(&probe, "foreign", primary_origin).is_none());
+    }
+
+    #[test]
+    fn native_ime_boundary_preserves_ordinary_intent_and_android_shared_contract() {
+        let shared = ImeWindowState {
+            purpose: winit::window::ImePurpose::Normal,
+            x: 140,
+            y: 454,
+            width: 1,
+            height: 10,
+        };
+        let native = NativeImeWindowState::from(shared);
+        assert_eq!((native.x, native.y), (140, 454));
+        assert_eq!((native.width, native.height), (shared.width, shared.height));
+        assert_eq!(native.purpose, shared.purpose);
+        assert_eq!(native.shared(), shared);
+        let outside = NativeImeWindowState::from_rect(
+            shared.purpose,
+            KurboRect::new(-112.0, -10.0, -111.0, 0.0),
+        );
+        assert_eq!((outside.x, outside.y), (-112, -10));
+        assert_eq!((outside.shared().x, outside.shared().y), (0, 0));
+        assert_eq!((outside.width, outside.height), (1, 10));
+    }
+
+    #[test]
     fn returned_child_caret_tracks_primary_layout_in_desktop_coordinates() {
         // The host's PrepareSurface offset is the primary desktop origin,
         // not an offset from the primary to the child's allocation.
         for (primary_origin, child_origin) in [
             (Vec2::new(266.0, 127.0), Vec2::new(16.0, 188.0)),
-            (Vec2::new(-800.0, 200.0), Vec2::new(-1600.0, 100.0)),
+            (Vec2::new(-800.0, 200.0), Vec2::new(80.0, -100.0)),
         ] {
             for (x, y) in [(124, 290), (482, 695)] {
                 let primary = ImeWindowState {
@@ -454,8 +499,8 @@ mod floating_source_focus_tests {
         .unwrap();
         assert_eq!(
             (returned.x, returned.y, returned.width, returned.height),
-            (0, 640, 2, 20),
-            "the shared unsigned IME contract clamps an unrepresentable negative child-local x"
+            (-780, 640, 2, 20),
+            "the native held child preserves a negative local caret outside its allocation"
         );
         assert!(primary_ime_state_for_held_child(None, Vec2::ZERO, Vec2::ZERO).is_none());
 
@@ -667,7 +712,7 @@ struct NativeFloatingWindow {
     adopted: bool,
     suspended: bool,
     a11y_adapter: Option<PrimaryA11yAdapter>,
-    ime_state: Option<ImeWindowState>,
+    ime_state: Option<NativeImeWindowState>,
     focused: bool,
     preedit_active: bool,
     preedit_clear_pending: bool,
@@ -765,10 +810,73 @@ fn dispatch_native_surface_accessibility(
     root.perform_floating_surface_accessibility_action(id, target, &action, state, path)
 }
 
+/// A held protocol resource can anchor an editor outside its native window.
+/// Wayland cursor positions are signed; the shared widget/browser contract
+/// stays unchanged, while native handoff translations must not clamp to zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NativeImeWindowState {
+    purpose: winit::window::ImePurpose,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl NativeImeWindowState {
+    fn from_rect(purpose: winit::window::ImePurpose, rect: KurboRect) -> Self {
+        let shared = ImeWindowState::from_rect(purpose, rect);
+        let signed = |value: f64| {
+            if value.is_finite() {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "rounded coordinate is bounded to the signed Wayland position range"
+                )]
+                {
+                    value
+                        .round()
+                        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+                }
+            } else {
+                0
+            }
+        };
+        Self {
+            purpose,
+            x: signed(rect.x0),
+            y: signed(rect.y0),
+            width: shared.width,
+            height: shared.height,
+        }
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    fn shared(self) -> ImeWindowState {
+        ImeWindowState::from_rect(
+            self.purpose,
+            KurboRect::from_origin_size(
+                (f64::from(self.x), f64::from(self.y)),
+                (f64::from(self.width), f64::from(self.height)),
+            ),
+        )
+    }
+}
+
+impl From<ImeWindowState> for NativeImeWindowState {
+    fn from(shared: ImeWindowState) -> Self {
+        Self::from_rect(
+            shared.purpose,
+            KurboRect::from_origin_size(
+                (f64::from(shared.x), f64::from(shared.y)),
+                (f64::from(shared.width), f64::from(shared.height)),
+            ),
+        )
+    }
+}
+
 fn apply_native_ime(
     window: &Window,
-    next: Option<ImeWindowState>,
-    previous: &mut Option<ImeWindowState>,
+    next: Option<NativeImeWindowState>,
+    previous: &mut Option<NativeImeWindowState>,
 ) {
     if next == *previous {
         return;
@@ -803,12 +911,12 @@ fn secondary_ime_state(
     id: &str,
     desktop_rect: KurboRect,
     focused: bool,
-) -> Option<ImeWindowState> {
+) -> Option<NativeImeWindowState> {
     if !focused {
         return None;
     }
     let (purpose, rect) = root.floating_surface_ime(id)?;
-    Some(ImeWindowState::from_rect(
+    Some(NativeImeWindowState::from_rect(
         purpose,
         rect - desktop_rect.origin().to_vec2(),
     ))
@@ -818,16 +926,19 @@ fn primary_floating_ime_state(
     root: &dyn Widget,
     id: &str,
     coordinate_offset: Vec2,
-) -> Option<ImeWindowState> {
+) -> Option<NativeImeWindowState> {
     let (purpose, rect) = root.floating_surface_ime(id)?;
-    Some(ImeWindowState::from_rect(purpose, rect - coordinate_offset))
+    Some(NativeImeWindowState::from_rect(
+        purpose,
+        rect - coordinate_offset,
+    ))
 }
 
 fn pending_floating_ime_state(
     app: &App,
     preedit_active: bool,
-    previous: Option<ImeWindowState>,
-) -> Option<ImeWindowState> {
+    previous: Option<NativeImeWindowState>,
+) -> Option<NativeImeWindowState> {
     preedit_active.then_some(())?;
     app.pending_floating_ime_source()?;
     previous
@@ -837,7 +948,7 @@ fn primary_ime_state_for_held_child(
     primary: Option<ImeWindowState>,
     primary_origin: Vec2,
     child_origin: Vec2,
-) -> Option<ImeWindowState> {
+) -> Option<NativeImeWindowState> {
     let primary = primary?;
     let rect = KurboRect::new(
         f64::from(primary.x),
@@ -846,7 +957,7 @@ fn primary_ime_state_for_held_child(
         f64::from(primary.y.saturating_add(primary.height)),
     ) + primary_origin
         - child_origin;
-    Some(ImeWindowState::from_rect(primary.purpose, rect))
+    Some(NativeImeWindowState::from_rect(primary.purpose, rect))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1700,7 +1811,7 @@ impl AppHandler {
         } else if self.floating_windows.iter().any(|surface| surface.focused) {
             None
         } else {
-            self.app.ime_window_state()
+            self.app.ime_window_state().map(NativeImeWindowState::from)
         };
         #[cfg(target_os = "android")]
         if super::android_text_input::bridge::installed() {
@@ -1715,7 +1826,7 @@ impl AppHandler {
                         .flatten()
                 });
                 super::android_text_input::bridge::update(
-                    next.as_ref(),
+                    next.map(NativeImeWindowState::shared).as_ref(),
                     surrounding.as_ref(),
                     window.scale_factor(),
                     restart,
