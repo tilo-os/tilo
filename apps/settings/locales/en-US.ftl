@@ -1986,3 +1986,6 @@ input-dictionary-remove = Remove
 input-dictionary-reset = Remove all words
 input-dictionary-word-placeholder = Enter a word
 input-dictionary-all-languages = All languages
+
+sound-reading-device = Reading audio devices…
+sound-read-failed = Audio devices could not be read.

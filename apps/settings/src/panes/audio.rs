@@ -512,7 +512,8 @@ impl AudioArea {
     /// One row per app stream, output and input, offering what can be done
     /// to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
-        let model = self.model().borrow();
+        let mut model = self.model().borrow_mut();
+        model.adopt_initial_read();
         let offer = |effect: AudioEffect| SettingsEffect::from(effect).bound();
         let mut rows = Vec::new();
         for stream in model
@@ -584,6 +585,8 @@ pub struct AudioModel {
     /// How often to re-enumerate the graph. `MAX` disables it.
     hotplug_interval: Duration,
     last_enum: Option<Instant>,
+    initial_read: Option<std::sync::mpsc::Receiver<AudioDeviceSnapshot>>,
+    graph_read: Option<std::sync::mpsc::Receiver<AudioGraph>>,
     runtime: Arc<dyn AudioRuntimeControl>,
     runtime_caps: RuntimeCapabilities,
     /// The person's audio preferences.
@@ -610,10 +613,21 @@ pub struct AudioModel {
     changed: bool,
 }
 
-impl AudioModel {
-    /// This device's audio, read now; a remembered physical route is
-    /// applied again when its device is present.
-    fn of_device(cx: PaneCx) -> Self {
+struct AudioDeviceSnapshot {
+    volume: os_actions::VolumeState,
+    volume_error: Option<String>,
+    input_volume: f32,
+    input_error: Option<String>,
+    devices: AudioDevices,
+    devices_error: Option<String>,
+    graph: AudioGraph,
+    runtime_caps: RuntimeCapabilities,
+    sound_themes: Vec<SoundTheme>,
+    event_sounds_available: bool,
+}
+
+impl AudioDeviceSnapshot {
+    fn read(prefs: &AudioPrefs) -> Self {
         let (initial, volume_error) = match os_actions::get_volume_state() {
             Ok(state) => (state, None),
             Err(error) => (
@@ -628,13 +642,12 @@ impl AudioModel {
             Ok(level) => (level, None),
             Err(error) => (0.0, Some(error)),
         };
-        let prefs = cx.follow::<AudioPrefs>();
         let (mut devices, mut devices_error) = match list_audio_devices() {
             Ok(devices) => (devices, None),
             Err(error) => (AudioDevices::default(), Some(error)),
         };
         let mut graph = media::audio::enumerate();
-        if let Some(name) = prefs.get().output_device.as_deref()
+        if let Some(name) = prefs.output_device.as_deref()
             && let Some(dev) = graph.sinks.iter().find(|d| d.description == name)
         {
             let id = dev.id;
@@ -644,7 +657,7 @@ impl AudioModel {
                 }
             }
         }
-        if let Some(name) = prefs.get().input_device.as_deref()
+        if let Some(name) = prefs.input_device.as_deref()
             && let Some(dev) = graph.sources.iter().find(|d| d.description == name)
         {
             let id = dev.id;
@@ -658,37 +671,97 @@ impl AudioModel {
             devices = devices_from_graph(&graph);
             devices_error = None;
         }
-        let runtime: Arc<dyn AudioRuntimeControl> = Arc::new(RealAudioRuntime);
+
         Self {
-            output: Arc::new(SystemOutput(dispatcher_or_real(None))),
-            input: Arc::new(RealInput),
-            device: Arc::new(RealDevice),
+            volume: initial,
+            volume_error,
+            input_volume,
+            input_error,
             devices,
+            devices_error,
             graph,
-            gctl: Arc::new(RealGraphControl),
-            enumerator: Arc::new(RealEnumerator),
-            hotplug_interval: HOTPLUG_INTERVAL,
-            last_enum: Some(ui::time::now()),
-            runtime_caps: runtime.capabilities(),
-            runtime,
-            prefs,
+            runtime_caps: RealAudioRuntime.capabilities(),
             sound_themes: media::event_sound::installed_themes(),
             event_sounds_available: media::event_sound::sound_backend()
                 != media::event_sound::SoundBackend::Unavailable,
-            tests_shown: false,
-            volume_error,
-            input_error,
-            devices_error,
-            runtime_notice: None,
-            channel_test: None,
-            mic_session: None,
-            mic_level: 0.0,
-            volume: initial.level,
-            input_volume,
-            muted: initial.muted,
-            changed: false,
-            cx,
         }
+    }
+}
+
+impl AudioModel {
+    /// Start reading this device without waiting in Settings publication or layout.
+    fn of_device(cx: PaneCx) -> Self {
+        Self::with_device_read(cx, AudioDeviceSnapshot::read)
+    }
+
+    fn with_device_read(
+        cx: PaneCx,
+        read: impl FnOnce(&AudioPrefs) -> AudioDeviceSnapshot + Send + 'static,
+    ) -> Self {
+        let mut model = Self::detached(cx);
+        model.output = Arc::new(SystemOutput(dispatcher_or_real(None)));
+        model.input = Arc::new(RealInput);
+        model.device = Arc::new(RealDevice);
+        model.gctl = Arc::new(RealGraphControl);
+        model.enumerator = Arc::new(RealEnumerator);
+        model.runtime = Arc::new(RealAudioRuntime);
+        model.hotplug_interval = HOTPLUG_INTERVAL;
+        let pending = t("sound-reading-device");
+        model.volume_error = Some(pending.clone());
+        model.input_error = Some(pending.clone());
+        model.devices_error = Some(pending);
+        let prefs = model.prefs.get().clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake = ui::WakeHandle::new();
+        match std::thread::Builder::new()
+            .name("settings-audio-read".into())
+            .spawn(move || {
+                if sender.send(read(&prefs)).is_ok() {
+                    wake.wake();
+                }
+            }) {
+            Ok(_) => model.initial_read = Some(receiver),
+            Err(_) => model.fail_initial_read(),
+        }
+        model.changed = true;
+        model
+    }
+
+    fn fail_initial_read(&mut self) {
+        let error = t("sound-read-failed");
+        self.volume_error = Some(error.clone());
+        self.input_error = Some(error.clone());
+        self.devices_error = Some(error);
+        self.changed = true;
+    }
+
+    fn adopt_initial_read(&mut self) {
+        let Some(receiver) = &self.initial_read else {
+            return;
+        };
+        let snapshot = match receiver.try_recv() {
+            Ok(snapshot) => snapshot,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.initial_read = None;
+                self.fail_initial_read();
+                return;
+            }
+        };
+        self.initial_read = None;
+        self.volume = snapshot.volume.level;
+        self.muted = snapshot.volume.muted;
+        self.volume_error = snapshot.volume_error;
+        self.input_volume = snapshot.input_volume;
+        self.input_error = snapshot.input_error;
+        self.devices = snapshot.devices;
+        self.devices_error = snapshot.devices_error;
+        self.graph = snapshot.graph;
+        self.runtime_caps = snapshot.runtime_caps;
+        self.sound_themes = snapshot.sound_themes;
+        self.event_sounds_available = snapshot.event_sounds_available;
+        self.last_enum = Some(ui::time::now());
+        self.changed = true;
     }
 
     /// A model over `cx`'s settings with no devices and controls that do
@@ -704,6 +777,8 @@ impl AudioModel {
             enumerator: Arc::new(StaticEnumerator(AudioGraph::default())),
             hotplug_interval: Duration::MAX,
             last_enum: Some(ui::time::now()),
+            initial_read: None,
+            graph_read: None,
             runtime: Arc::new(NoopAudioRuntime),
             runtime_caps: RuntimeCapabilities::default(),
             prefs: cx.follow::<AudioPrefs>(),
@@ -798,6 +873,10 @@ impl AudioModel {
         reason = "one arm per effect, each a short device or preference change"
     )]
     fn apply(&mut self, effect: &AudioEffect) -> Result<String, String> {
+        self.adopt_initial_read();
+        if self.initial_read.is_some() {
+            return Err(t("sound-reading-device"));
+        }
         self.changed = true;
         let percent = |value: f64| i64::from((value.clamp(0.0, 1.0) * 100.0).round() as u32);
         match effect {
@@ -1557,17 +1636,48 @@ impl AudioModel {
     /// tree so the next layout rebuilds with the new rows. Returns whether a
     /// structural change was adopted.
     fn poll_hotplug(&mut self) -> bool {
-        let due = match (self.hotplug_interval, self.last_enum) {
-            (i, _) if i == Duration::ZERO => true,
-            (i, _) if i == Duration::MAX => false,
-            (i, Some(t)) => t.elapsed() >= i,
-            (_, None) => true,
-        };
-        if !due {
+        if self.initial_read.is_some() {
             return false;
         }
+        let fresh = if let Some(receiver) = &self.graph_read {
+            match receiver.try_recv() {
+                Ok(graph) => graph,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.graph_read = None;
+                    self.last_enum = Some(ui::time::now());
+                    return false;
+                }
+            }
+        } else {
+            let due = match (self.hotplug_interval, self.last_enum) {
+                (i, _) if i == Duration::ZERO => true,
+                (i, _) if i == Duration::MAX => false,
+                (i, Some(t)) => t.elapsed() >= i,
+                (_, None) => true,
+            };
+            if due {
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let enumerator = Arc::clone(&self.enumerator);
+                let wake = ui::WakeHandle::new();
+                self.last_enum = Some(ui::time::now());
+                match std::thread::Builder::new()
+                    .name("settings-audio-hotplug".into())
+                    .spawn(move || {
+                        if sender.send(enumerator.enumerate()).is_ok() {
+                            wake.wake();
+                        }
+                    }) {
+                    Ok(_) => self.graph_read = Some(receiver),
+                    Err(error) => {
+                        warn!(target: "tilo::settings", %error, "audio read could not start");
+                    }
+                }
+            }
+            return false;
+        };
+        self.graph_read = None;
         self.last_enum = Some(ui::time::now());
-        let fresh = self.enumerator.enumerate();
         if fresh.topology_signature() == self.graph.topology_signature() {
             return false;
         }
@@ -1620,6 +1730,7 @@ impl PaneModel for AudioModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.adopt_initial_read();
         if self.prefs.refresh() {
             self.changed = true;
         }
@@ -1636,6 +1747,9 @@ impl PaneModel for AudioModel {
     }
 
     fn next_wake(&self) -> Option<Instant> {
+        if self.initial_read.is_some() || self.graph_read.is_some() {
+            return None;
+        }
         (self.hotplug_interval != Duration::MAX)
             .then(|| self.last_enum.unwrap_or_else(ui::time::now) + self.hotplug_interval)
     }
@@ -2146,7 +2260,13 @@ Video
             model.hotplug_interval = Duration::ZERO;
             model.last_enum = None;
             assert_eq!(model.graph().sinks.len(), 1, "starts with one sink");
-            assert!(model.poll(), "the plugged-in sink is adopted");
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let mut adopted = model.poll();
+            while !adopted && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(2));
+                adopted = model.poll();
+            }
+            assert!(adopted, "the plugged-in sink is adopted");
             assert_eq!(model.graph().sinks.len(), 2);
             assert!(model.devices().sinks.iter().any(|d| d.name == "Headphones"));
         }
@@ -2201,6 +2321,153 @@ Video
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn mounted_audio_hotplug_does_not_wait_for_the_device_read() {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+
+        struct DelayedGraph {
+            released: Arc<std::sync::atomic::AtomicBool>,
+            graph: G,
+            calls: Arc<AtomicUsize>,
+        }
+        impl AudioEnumerator for DelayedGraph {
+            fn enumerate(&self) -> G {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                while !self.released.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                self.graph.clone()
+            }
+        }
+        let model = Rc::new(RefCell::new(model()));
+        let mut app = Framed::new(
+            ui::State::new(),
+            ModelPane::new(Rc::clone(&model)),
+            viewport((1000.0, 1400.0)),
+            ui::Theme::dark(),
+        );
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        {
+            let mut model = model.borrow_mut();
+            model.enumerator = Arc::new(DelayedGraph {
+                released: Arc::clone(&released),
+                graph: graph_two_sinks_one_stream(),
+                calls: Arc::clone(&calls),
+            });
+            model.hotplug_interval = HOTPLUG_INTERVAL;
+            model.last_enum = None;
+        }
+        let release = Arc::clone(&released);
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            release.store(true, Ordering::SeqCst);
+        });
+        let result = Framed::harness_mut(&mut app)
+            .relayout_themed(viewport((1000.0, 1400.0)), ui::Theme::dark());
+        let returned_before_device = !released.load(Ordering::SeqCst);
+        for _ in 0..8 {
+            Framed::harness_mut(&mut app)
+                .relayout_themed(viewport((1000.0, 1400.0)), ui::Theme::dark())
+                .unwrap();
+        }
+        worker.join().unwrap();
+        result.unwrap();
+        assert!(
+            returned_before_device,
+            "mounted audio layout waited for the backend"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while model.borrow().graph.sinks.len() != 2 && std::time::Instant::now() < deadline {
+            Framed::harness_mut(&mut app)
+                .relayout_themed(viewport((1000.0, 1400.0)), ui::Theme::dark())
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            model.borrow().graph.sinks.len(),
+            2,
+            "completed read is adopted"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "one in-flight device read");
+    }
+
+    #[test]
+    fn cold_audio_publication_adopts_the_read_without_waiting_or_actuating() {
+        let (release, held) = std::sync::mpsc::channel();
+        let profile = tempfile::tempdir().unwrap();
+        let graph = graph_two_sinks_one_stream();
+        let devices = devices_from_graph(&graph);
+        let model = AudioModel::with_device_read(
+            PaneCx::in_file(profile.path().join("settings.json")),
+            move |_| {
+                held.recv_timeout(Duration::from_secs(2)).unwrap();
+                AudioDeviceSnapshot {
+                    volume: os_actions::VolumeState {
+                        level: 0.37,
+                        muted: true,
+                    },
+                    volume_error: None,
+                    input_volume: 0.42,
+                    input_error: None,
+                    devices,
+                    devices_error: None,
+                    graph,
+                    runtime_caps: RuntimeCapabilities::default(),
+                    sound_themes: Vec::new(),
+                    event_sounds_available: false,
+                }
+            },
+        );
+        let cx = model.cx.clone();
+        let shared = Rc::new(std::cell::RefCell::new(model));
+        let area = AudioArea {
+            cx,
+            model: std::cell::OnceCell::from(Rc::clone(&shared)),
+        };
+        let output = Arc::new(RecordingDispatcher::default());
+        shared.borrow_mut().output = Arc::new(SystemOutput(output.clone()));
+        let rows_while_pending = area.rows();
+        let refused = shared
+            .borrow_mut()
+            .apply(&AudioEffect::SetOutputMuted { muted: false });
+        release.send(()).unwrap();
+        assert!(
+            rows_while_pending.is_empty(),
+            "no fabricated device rows during read"
+        );
+        assert!(
+            refused.is_err(),
+            "an old initial snapshot cannot overwrite a new command"
+        );
+        assert!(
+            output.calls().is_empty(),
+            "nothing actuated before initial read"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while shared.borrow().initial_read.is_some() && std::time::Instant::now() < deadline {
+            area.rows();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let rows = area.rows();
+        assert!(
+            rows.iter()
+                .any(|row| row.id().to_string().contains("settings.audio-output"))
+        );
+        let model = shared.borrow();
+        assert!(
+            model.initial_read.is_none(),
+            "publication adopts completed device read"
+        );
+        assert_eq!(model.volume.to_bits(), 0.37_f32.to_bits());
+        assert!(model.muted);
+        assert_eq!(model.input_volume.to_bits(), 0.42_f32.to_bits());
+        assert!(model.volume_error.is_none());
+        assert_eq!(model.graph.sinks.len(), 2);
     }
 
     /// A scripted enumerator: each `enumerate()` yields the next graph in the
