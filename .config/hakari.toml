@@ -92,6 +92,11 @@ workspace-members = [
     "tilo-automerge",
     "tilo-clock",
     "tilo-desktop-model",
+    # Delegated ownership adds this identity graph to the shared model.
+    "tilo-user-identity",
+    "tilo-seal",
+    "tilo-files",
+    "tilo-paths",
     "wire-frame",
     # standalone registry-only build
     "tilo-crypto",

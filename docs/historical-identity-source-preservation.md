@@ -51,3 +51,8 @@ process tests fail if the required runner account cannot be observed.
 Main `ab64378df96da444c32bcf54a0480d8353942d52` is merged before
 publication, preserving its newer shell authority code. It already includes the
 Imager owner's repair, so that repair adds no independent PR delta.
+
+Delegated ownership now reaches the identity, sealing and file helpers from
+the shared desktop model. They join `.config/hakari.toml`'s documented
+exclusions, so the model built alone does not acquire the generated union's
+Tokio dependency. The production dependency boundary checker is unchanged.

@@ -108,8 +108,6 @@ tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
