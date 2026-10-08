@@ -287,6 +287,79 @@ mod tests {
         );
     }
 
+    const KAT_A: &str = concat!(
+        "24d1e3e550122e1dc571bcefd01f494de5ca82c5ff005ac469a843e5c5a2898b",
+        "4c3ea0bac3b9b8e552cef73254dceb5496f05eb1d82a97523ce07a43e4268468",
+        "328741403099f4f0f7a4f28c79a75d2d2b9c27744582063df5d31e5ff586fe1e",
+        "0266151a23549e9b61d93c8b575d28b188d045f7b97511afb36d73e6f8f8bc19",
+        "605ff47c2440fd378d4bb53580d81f01f6bd1c608d9def0b7fefe662b2d4a669",
+        "dcaceba2a2d8b3979371c0b74027231060f640a922b4374190333c4a102c6e76",
+        "0e5208f75c88b396af912509427875e9649ff390e3a19488157c1593cb951401",
+        "ccd848fc4bf779f86e5c06cf66f9b2ce0e8fbd26c96ac9b4d4662155f89b5d0f",
+    );
+
+    /// (protocol, B, M1, M2) for `a = [0x11; 32]`, password `correct horse`,
+    /// salt `[0x22; 16]`, 1000 iterations and the `B` a server with
+    /// `b = [0x33; 32]` sends for that password. Apple checks `M1` byte for
+    /// byte; the constant-time replacement must reproduce these exactly.
+    const KNOWN_ANSWERS: [(&str, &str, &str, &str); 2] = [
+        (
+            "s2k",
+            concat!(
+                "7e929f93d025663b903b239bfa14ac13d79f8a0e0d3c5aed417322f2eeb4bc88",
+                "15f38e224422dad86c574fa8e79ff206a608c7252ca0a56aef6c4099ccd355ef",
+                "52e13342b93e9a3a2dc0a06733516c9cbf6a7c868e4b8551828742bd1df79b3b",
+                "c451b970fa0824ffb22c96a5dbaa4d7d3ef093ac2217c53d80a59ba5e3b78d75",
+                "27a9f4d653f69a58eeac1459decaadd7ce56c5dbd1a21dddeef64a1475328d47",
+                "2c86aa41a99526eed7d707636f6319a99405d84c087cf881c53d29eb8cca5aaa",
+                "077580c88b4b20a3c33a0f84ab3d9603cbbb8a09d32db87102261653d330e798",
+                "14fd05d3fe16c79335af1763adc2585096780dd89a0a3475f77bb96def3bbaee",
+            ),
+            "609da1da8e3e8cf57a79117599acaef1f1e2f54a8358d66245b487d09371b9f7",
+            "f2a685b43eaea89f35da418823db608e57b05371fad6ddf70bad963289c46fcf",
+        ),
+        (
+            "s2k_fo",
+            concat!(
+                "830c7ea0e25834639bcda8634462d6fef0f77f4521fce94c95bb66e6cf03e8db",
+                "9096a50ddcc99663dcaacc7cd238edf2af763e2969641354908c5bfe87fa1d29",
+                "58d8f484677fb85d660f56359eff3d46ba82e1f3e5b3605573e77714078f85cd",
+                "aea2fab447b7649d824aaa78357bc79c3413f902b0da9da89680abe6e37a0db0",
+                "b148ad3a7cfaf83a9dd1900d87d422a8e83714f90e8b8078a5016e1d51cf9022",
+                "9500c687766a2f3ebf3ea387ab5165a650bb99c0fa02790743bc00f2ef6377bc",
+                "63a587ceae3b1372fe7c2d6ee156c2415d588eaccd1f40a507c58ab8e830a950",
+                "30c0b6a11a4e5e54106f2a50cd58e40d160a95cb2f06f26565940dcc3131f46f",
+            ),
+            "185a9221b74831f0488f3c482f36a59f9e0760a5e246405591788b174f9f1ad4",
+            "38d26d7ae00556a5faed7482f8b1c89b9ed3e9f3ad046904d015bb84fa3fbc13",
+        ),
+    ];
+
+    #[test]
+    fn apple_srp_known_answers() {
+        let g = group();
+        let salt = [0x22_u8; 16];
+        for (protocol, b_hex, m1, m2) in KNOWN_ANSWERS {
+            let derived = derive_password("correct horse", &salt, 1000, protocol).unwrap();
+            let verifier = g.g.modpow(&private_key(&salt, derived.as_slice()), &g.n);
+            let b = BigUint::from_bytes_be(&[0x33; 32]);
+            let b_pub = (&g.k * &verifier + g.g.modpow(&b, &g.n)) % &g.n;
+            assert_eq!(hex::encode(pad(&b_pub)), b_hex, "{protocol}");
+            let client = Client::with_secret(&[0x11; 32]);
+            assert_eq!(hex::encode(client.public()), KAT_A);
+            let proofs = client
+                .respond(
+                    "ada@example.com",
+                    derived.as_slice(),
+                    &salt,
+                    &hex::decode(b_hex).unwrap(),
+                )
+                .unwrap();
+            assert_eq!(hex::encode(proofs.m1), m1, "{protocol}");
+            assert_eq!(hex::encode(proofs.m2), m2, "{protocol}");
+        }
+    }
+
     #[test]
     fn group_elements_pad_to_256_bytes() {
         assert_eq!(pad(&BigUint::from(1_u32)).len(), 256);
