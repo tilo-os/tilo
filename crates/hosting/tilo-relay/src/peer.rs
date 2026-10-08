@@ -5737,11 +5737,13 @@ struct RemoteActionRoute {
 /// hand it to the addressed device's live connection, or — when addressed to
 /// this relay — to the app-serving plane. Never stored, never executed by the
 /// relay itself; every failure is answered as undeliverable so the sender
-/// need not wait out a timeout.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
+/// need not wait out a timeout, with a reason that leads with
+/// [`UnavailableReason::wire_token`].
+///
+/// Both ends are re-authorised on every frame under a fresh membership read
+/// with [`action_peer_admitted`], the rule the v2 private lane uses: the
+/// connection-local `subscribed` list alone goes stale the moment a device is
+/// removed, revoked, or its agent delegation lapses.
 async fn handle_remote_action(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -5749,38 +5751,71 @@ async fn handle_remote_action(
     route: RemoteActionRoute,
     frame: Vec<u8>,
 ) -> Option<Envelope> {
+    use UnavailableReason as U;
     let RemoteActionRoute {
         workspace_id,
         version,
         to,
     } = route;
-    let undeliverable = |reason: &str| {
+    let refuse = |reason: UnavailableReason, detail: &str| {
         Some(Envelope::RemoteActionUndeliverable {
             workspace_id,
             to_device_public_key: to,
-            reason: reason.to_string(),
+            reason: format!("{}: {detail}", reason.wire_token()),
         })
     };
     if version != crate::transport::REMOTE_ACTION_ENVELOPE_VERSION {
-        return undeliverable("unsupported remote action envelope version");
+        return refuse(
+            U::InvalidRequest,
+            "unsupported remote action envelope version",
+        );
     }
     if !subscribed.contains(&workspace_id) {
-        return undeliverable("sender is not subscribed to the workspace");
+        return refuse(
+            U::NotAuthorised,
+            "sender is not subscribed to the workspace",
+        );
     }
     if frame.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES {
-        return undeliverable("remote action frame exceeds the limit");
+        return refuse(U::InvalidRequest, "remote action frame exceeds the limit");
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refuse(U::NotAuthorised, "workspace is not bound on this relay");
+    };
+    let Ok(mut wr) = crate::workspace_io::fresh_membership(&ws).await else {
+        return refuse(
+            U::AdmissionUnavailable,
+            "workspace membership is unreadable",
+        );
+    };
+    if action_peer_admitted(&wr, peer, session, workspace_id).is_err()
+        || !current_session(&wr, peer, session.outbound)
+    {
+        return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
     if to == *session.own_device_public_key {
+        // Never hold the room across the plane: it may take its time.
+        drop(wr);
         let Some(plane) = session.app_serving else {
-            return undeliverable("this host does not serve apps");
+            return refuse(U::UnsupportedPeer, "this host does not serve apps");
         };
         return serve_locally(peer, session, plane.as_ref(), workspace_id, &frame)
-            .unwrap_or_else(undeliverable);
+            .unwrap_or_else(|(reason, detail)| refuse(reason, detail));
     }
-    let ws = {
-        let map = session.workspaces.lock().await;
-        map.get(&workspace_id).cloned()
+    // Every production subscription registers its authenticated peer beside
+    // its subscriber, so the addressee is re-authorised from it.
+    let Some(target) = wr.state_sessions.get(&to) else {
+        return refuse(
+            unavailable_target(&wr, &to),
+            "addressed device is not connected to the workspace",
+        );
     };
+    if action_peer_admitted(&wr, &target.peer, session, workspace_id).is_err() {
+        return refuse(
+            U::NotAuthorised,
+            "addressed device may not act in the workspace",
+        );
+    }
     let stamped = Envelope::RemoteAction {
         workspace_id,
         version,
@@ -5789,14 +5824,15 @@ async fn handle_remote_action(
         from_user_public_key: peer.user_public_key,
         frame,
     };
-    let delivered = match ws {
-        Some(ws) => ws.lock().await.route_directed(&to, stamped),
-        None => false,
-    };
+    let delivered = wr.route_directed(&to, stamped);
+    drop(wr);
     if delivered {
         None
     } else {
-        undeliverable("addressed device is not connected to the workspace")
+        refuse(
+            U::Offline,
+            "addressed device is not connected to the workspace",
+        )
     }
 }
 
@@ -5840,16 +5876,22 @@ async fn route_record_content(
 /// with the caller the connection authenticated. The answer is written to
 /// the connection whenever the plane has it, so a request that needs an
 /// application's help never stalls this peer's other traffic. `Err` when
-/// the frame cannot be used.
+/// the frame cannot be used. The caller was already admitted for the room
+/// by [`handle_remote_action`], agent delegation included.
 fn serve_locally(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     plane: &dyn crate::app_serving::AppServingPlane,
     workspace_id: u64,
     frame: &[u8],
-) -> Result<Option<Envelope>, &'static str> {
+) -> Result<Option<Envelope>, (UnavailableReason, &'static str)> {
     use tilo_actions::remote::{Caller, RemoteActionFrame};
-    let request = RemoteActionFrame::decode(frame).map_err(|_| "malformed remote action frame")?;
+    let request = RemoteActionFrame::decode(frame).map_err(|_| {
+        (
+            UnavailableReason::InvalidRequest,
+            "malformed remote action frame",
+        )
+    })?;
     let agent = session
         .agents
         .read()
@@ -5862,7 +5904,9 @@ fn serve_locally(
             peer.user_public_key,
             peer.device_public_key,
         ),
-        Some(None) => return Err("the agent was withdrawn"),
+        Some(None) => {
+            return Err((UnavailableReason::NotAuthorised, "the agent was withdrawn"));
+        }
         None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     };
     let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
@@ -6142,6 +6186,26 @@ fn current_member(wr: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedP
         || wr.admitted_users.contains(&peer.user_public_key)
 }
 
+/// May this connection originate (or receive) a remote action in this room
+/// right now? One rule for v1 `RemoteAction` and v2 `Directed`: a current,
+/// unrevoked, trusted device certificate; an agent only inside its live
+/// delegation; and current room membership. Whether it is the caller's own
+/// session is a separate check, since only the caller's channel is known.
+fn action_peer_admitted(
+    wr: &crate::workspace::WorkspaceRuntime,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    workspace_id: u64,
+) -> Result<(), UnavailableReason> {
+    if !current_action_peer(peer, session)
+        || agent_admits(session.agents, &peer.device_public_key, workspace_id).is_err()
+        || !current_member(wr, peer)
+    {
+        return Err(UnavailableReason::NotAuthorised);
+    }
+    Ok(())
+}
+
 fn unavailable_target(
     wr: &crate::workspace::WorkspaceRuntime,
     target: &[u8; 32],
@@ -6200,8 +6264,8 @@ async fn private_membership<'a>(
     failure: &str,
 ) -> Result<tokio::sync::MutexGuard<'a, crate::workspace::WorkspaceRuntime>, PeerError> {
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    if !current_action_peer(peer, session)
-        || !current_member(&runtime, peer)
+    let workspace_id = runtime.store.workspace_id();
+    if action_peer_admitted(&runtime, peer, session, workspace_id).is_err()
         || !current_session(&runtime, peer, session.outbound)
     {
         return Err(PeerError::Protocol(failure.into()));
@@ -6381,7 +6445,8 @@ async fn route_private(
         private_phase(action, "route_rejected_encoding");
         return Ok(Some(U::InvalidRequest));
     }
-    let Some(ws) = private_workspace(action.room, peer, session).await? else {
+    let Some((workspace_id, ws)) = private_workspace_binding(action.room, peer, session).await?
+    else {
         return Ok(Some(U::NotAuthorised));
     };
     #[cfg(test)]
@@ -6391,8 +6456,7 @@ async fn route_private(
     }
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     private_phase(action, "route_lock_acquired");
-    if !current_action_peer(peer, session)
-        || !current_member(&wr, peer)
+    if action_peer_admitted(&wr, peer, session, workspace_id).is_err()
         || !current_session(&wr, peer, session.outbound)
         || !wr
             .action_targets
@@ -6409,8 +6473,7 @@ async fn route_private(
     let Some(target) = wr.action_targets.get(&action.target) else {
         return Ok(Some(U::UnsupportedPeer));
     };
-    if !current_action_peer(&target.peer, session)
-        || !current_member(&wr, &target.peer)
+    if action_peer_admitted(&wr, &target.peer, session, workspace_id).is_err()
         || target.room != action.room
         || !target.state_tx.same_channel(&sub.tx)
     {
@@ -10009,6 +10072,251 @@ mod private_transport_tests {
                 denied,
                 "operation {operation} authorized a certificate revoked during its membership read"
             );
+        }
+    }
+
+    /// Counts what reaches the app-serving plane; needs no reply.
+    #[derive(Default)]
+    struct CountingPlane(std::sync::atomic::AtomicUsize);
+
+    impl crate::app_serving::AppServingPlane for CountingPlane {
+        fn serve(
+            &self,
+            _workspace_id: u64,
+            _caller: &tilo_actions::remote::Caller,
+            _message: tilo_actions::remote::RemoteActionMessage,
+        ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>>
+        {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_device_remote_action_is_refused() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (host, _) = certified_device(&root, user.public_key, "host");
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let id = 11;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut wr = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        wr.admit_device(a.device_public_key).unwrap();
+        let (atx, _arx) = mpsc::channel(2);
+        let (ap, _apr) = mpsc::channel(2);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        wr.add_subscriber(Subscriber {
+            device_public_key: a.device_public_key,
+            role: a.role,
+            tx: atx.clone(),
+            disconnect: disconnect.clone(),
+        });
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            id,
+            Arc::new(AsyncMutex::new(wr)),
+        )])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let counting = Arc::new(CountingPlane::default());
+        let plane: Arc<dyn crate::app_serving::AppServingPlane> = counting.clone();
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &user.public_key,
+            own_device_cert: &host.cert,
+            own_device_public_key: &host.cert.device_public_key,
+            app_serving: Some(&plane),
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &disconnect,
+            v2: false,
+            private_tx: &ap,
+            revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
+        };
+        let frame = tilo_actions::remote::RemoteActionFrame::new(
+            tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: tilo_actions::remote::CatalogueQuery::default(),
+            },
+        )
+        .encode()
+        .unwrap();
+        let route = || RemoteActionRoute {
+            workspace_id: id,
+            version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            to: host.device_public_key,
+        };
+        let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
+
+        // A current member reaches the plane through this very path.
+        assert_eq!(
+            handle_remote_action(&a, &session, &[id], route(), frame.clone()).await,
+            None
+        );
+        assert_eq!(served(), 1);
+
+        // Revoked while its session (and its `subscribed` list) is still live.
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: a.device_public_key,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        revocations.write().unwrap().insert(entry).unwrap();
+        let refused = handle_remote_action(&a, &session, &[id], route(), frame).await;
+        let Some(Envelope::RemoteActionUndeliverable {
+            reason,
+            to_device_public_key,
+            ..
+        }) = refused
+        else {
+            panic!("a revoked device is answered as undeliverable, got {refused:?}");
+        };
+        assert_eq!(to_device_public_key, host.device_public_key);
+        assert_eq!(
+            UnavailableReason::from_wire_reason(&reason),
+            Some(UnavailableReason::NotAuthorised),
+            "{reason}"
+        );
+        assert_eq!(served(), 1, "a revoked device never reaches the plane");
+    }
+
+    #[tokio::test]
+    async fn route_private_refuses_an_agent_whose_delegation_expired() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let (b, _) = certified_device(&root, user.public_key, "b");
+        let room = uuid::Uuid::from_u128(7);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut wr = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        wr.admit_device(a.device_public_key).unwrap();
+        wr.admit_device(b.device_public_key).unwrap();
+        let (atx, _arx) = mpsc::channel(2);
+        let (btx, _brx) = mpsc::channel(2);
+        let (ap, _apr) = mpsc::channel(2);
+        let (bp, mut bpr) = mpsc::channel(4);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        let (recipient_disconnect, _recipient_disconnect_rx) = mpsc::channel(1);
+        for (peer, tx, private, session_disconnect) in [
+            (&a, &atx, &ap, &disconnect),
+            (&b, &btx, &bp, &recipient_disconnect),
+        ] {
+            wr.add_subscriber(Subscriber {
+                device_public_key: peer.device_public_key,
+                role: peer.role,
+                tx: tx.clone(),
+                disconnect: session_disconnect.clone(),
+            });
+            wr.action_targets.insert(
+                peer.device_public_key,
+                ActionTarget {
+                    broker_host: None,
+                    broker_protocol: false,
+                    room,
+                    peer: peer.clone(),
+                    state_tx: tx.clone(),
+                    tx: private.clone(),
+                },
+            );
+        }
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            id,
+            Arc::new(AsyncMutex::new(wr)),
+        )])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let agents = AgentRegistry::default();
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &user.public_key,
+            own_device_cert: &a.cert,
+            own_device_public_key: &a.cert.device_public_key,
+            app_serving: None,
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &disconnect,
+            v2: true,
+            private_tx: &ap,
+            revocations: &revocations,
+            live_bridge: None,
+            agents: &agents,
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
+        };
+        let action = DirectedAction {
+            room,
+            request_id: uuid::Uuid::from_u128(8),
+            source: a.device_public_key,
+            target: b.device_public_key,
+            message: ActionMessage::CatalogueRefresh { scope: None },
+        };
+        // Signed for this room, already past its expiry: what a delegation
+        // looks like once its window closed under a live session.
+        let expired = |device: [u8; 32]| {
+            tilo_relay_protocol::agents::AgentDelegation::sign(
+                &root,
+                device,
+                "helper",
+                "Helper",
+                [1, 2, 3],
+                tilo_relay_protocol::agents::AgentScope {
+                    rooms: vec![room.to_string()],
+                    apps: Vec::new(),
+                    may_confirm: false,
+                },
+                1,
+                2,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
+        assert!(matches!(bpr.try_recv(), Ok(PrivateOutbound::Delivery(_))));
+
+        for agent in [a.device_public_key, b.device_public_key] {
+            agents.write().unwrap().clear();
+            agents.write().unwrap().insert(agent, Some(expired(agent)));
+            assert_eq!(
+                route_private(&action, &a, &session).await.unwrap(),
+                Some(UnavailableReason::NotAuthorised),
+                "an expired agent at either end is refused per frame"
+            );
+            assert!(bpr.try_recv().is_err(), "nothing reaches the target");
         }
     }
 
