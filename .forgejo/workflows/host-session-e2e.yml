@@ -142,13 +142,21 @@ jobs:
           set -euo pipefail
           cd "$WORK/rpms"
           python3 - <<'EOF'
-          import json, os, pathlib
+          import hashlib, json, os, pathlib
           rpms = sorted(p.name for p in pathlib.Path(".").glob("*.rpm"))
+          artifacts = {}
+          for name in rpms:
+              path = pathlib.Path(name)
+              digest = hashlib.sha256()
+              with path.open("rb") as package:
+                  while block := package.read(1024 * 1024):
+                      digest.update(block)
+              artifacts[name] = {"byte_size": path.stat().st_size, "sha256": digest.hexdigest()}
           pathlib.Path("source.json").write_text(json.dumps({
               "workflow": os.environ["WORKFLOW"],
               "run": int(os.environ["RUN_NUMBER"]), "run_id": int(os.environ["RUN_ID"]),
               "commit": os.environ["GITHUB_SHA"], "ref": os.environ["GITHUB_REF_NAME"],
-              "artifact": os.environ["ARTIFACT"], "rpms": rpms}, indent=1) + "\n")
+              "artifact": os.environ["ARTIFACT"], "rpms": rpms, "artifacts": artifacts}, indent=1) + "\n")
           EOF
           cat source.json
 
