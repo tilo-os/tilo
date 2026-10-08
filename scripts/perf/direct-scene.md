@@ -13,7 +13,7 @@ All scene/document state belongs to the test fixture; no desktop is contacted.
 From the candidate checkout, run the configured native builder normally:
 
 ```sh
-rcargo --no-fallback test \
+"${CARGO:-cargo}" test \
   --locked -p shell --lib --profile thin-app --features direct-scene-diagnostic \
   --config 'profile.thin-app.package.shell.codegen-units=16' \
   --config 'profile.thin-app.package.tilo-ui.debug-assertions=true' \
