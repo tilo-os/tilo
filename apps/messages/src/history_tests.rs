@@ -394,6 +394,72 @@ fn repeated_person_and_route_selection_preserves_private_drafts_and_history() {
 }
 
 #[test]
+fn forgotten_recipient_discards_draft_and_requires_explicit_route_selection() {
+    const DRAFT: &str = "private draft for the forgotten recipient";
+    let client = tilo_messaging::MessagingClient::new(
+        "11".repeat(32),
+        Arc::new(DelayedSend {
+            pending: Host::new(false, false),
+            error: tilo_messaging::SendError::Revoked,
+        }),
+    );
+    let mut app = crate::tests::live_messages_with_service(Some(client));
+    app.effect(&MessagesEffect::SelectRoute { choice: choice() })
+        .expect("original route");
+    app.effect(&MessagesEffect::ReadHistory { choice: choice() })
+        .expect("original history");
+    app.harness()
+        .perform_named(
+            "messages.composer",
+            &ui::a11y::Action::SetValue(DRAFT.into()),
+        )
+        .expect("private accessible draft");
+    let directory = app.shared_person::<ContactDirectory>().expect("contacts");
+    let person = Id::from_raw("00000000-0000-4000-8000-000000000001");
+    directory
+        .invoke(&ContactDirectory::FORGET_ENDPOINT.with((person.clone(), Id::from_raw("signal"))))
+        .expect("forget recipient");
+    app.settle();
+    assert!(
+        !app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.value() == Some(DRAFT)),
+        "forgetting the route must dispose of its private draft"
+    );
+    assert!(!has_text(&mut app, PRIVATE));
+    directory
+        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
+            person,
+            Id::from_raw("signal-restored"),
+            "signal".into(),
+            "fixture-signal-scope".into(),
+            "+12025550123".into(),
+            "fixture-signal-revision-restored".into(),
+        )))
+        .expect("new reviewed association fixture");
+    app.settle();
+    let restored = serde_json::json!({"service":"signal", "account":"fixture-signal", "recipient":"+12025550123",
+        "association":"signal-restored", "scope":"fixture-signal-scope", "revision":"fixture-signal-revision-restored"}).to_string();
+    assert!(
+        app.effect(&MessagesEffect::ReadHistory {
+            choice: restored.clone()
+        })
+        .is_err(),
+        "restoring metadata must not silently reselect a forgotten route"
+    );
+    app.effect(&MessagesEffect::SelectRoute { choice: restored })
+        .expect("explicit new selection");
+    assert!(
+        !app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.value() == Some(DRAFT))
+    );
+    assert!(!app.harness().dump_json().contains(DRAFT));
+}
+
+#[test]
 fn confirmed_account_change_clears_old_draft_and_invalidates_pending_send() {
     const DRAFT: &str = "draft for the previous service";
     let pending = Host::new(false, false);
