@@ -4663,17 +4663,31 @@ mod tests {
             Some(format!("workspace:{second_room}#ownership.propose")),
             "switching workspace rebuilds its governance rows"
         );
+    }
+
+    #[test]
+    fn catalogue_rebuilds_on_tree_mutations_and_per_desktop() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let (workspace_id, workspace_room) = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let workspace = tree.desktop.active_workspace().expect("fixture");
+            let located = (workspace.id, workspace.room);
+            drop(tree);
+            located
+        };
 
         // A tree mutation the chrome made, which it bumps the revision for.
         let switch_to = |provider: &ActionsProvider| {
             row(
                 &rows_for(provider, &chrome, ""),
-                &format!("workspace.select.{}", second.0),
+                &format!("workspace.select.{}", workspace_id.0),
             )
             .map(|row| row.title.clone())
             .expect("every workspace can be switched to")
         };
-        assert!(switch_to(&provider).contains("Second"));
+        assert!(switch_to(&provider).contains("Demo"));
         {
             let mut state = chrome.borrow_mut();
             state
@@ -4700,10 +4714,10 @@ mod tests {
         let other = {
             use crate::shell::state::Workspace;
             let mut tree = WorkspaceTree::default();
-            let mut workspace = Workspace::new(second, "Remote");
+            let mut workspace = Workspace::new(workspace_id, "Remote");
             workspace.set_owner("shell-fixture");
             tree.desktop.workspaces.push(workspace);
-            tree.desktop.active = second;
+            tree.desktop.active = workspace_id;
             tree.desktop.external_revision = chrome.borrow().tree().desktop.external_revision;
             ChromeState::new_with_fixture_handle(
                 Arc::new(RwLock::new(tree)),
@@ -4718,7 +4732,7 @@ mod tests {
             .active_workspace()
             .expect("fixture")
             .room;
-        assert_ne!(other_room, second_room);
+        assert_ne!(other_room, workspace_room);
         let other_proposal = rows_for(&provider, &other, "ownership")
             .into_iter()
             .find(|row| row.id.ends_with("#ownership.propose"))
@@ -4731,7 +4745,7 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_rebuilds_on_collaboration_quick_settings_and_search_sources() {
+    fn catalogue_rebuilds_on_collaboration_and_search_sources() {
         // Peer sync and the collaboration broker.
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -4747,6 +4761,44 @@ mod tests {
             .set_collab_unavailable("the broker could not start");
         assert!(!offers(&provider, "agent.invite"), "the broker went away");
 
+        // Search sources: one registered, and one turned off.
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        let provider = ActionsProvider::with_preferences_and_catalog(
+            registry.preferences_handle(),
+            registry.provider_catalog_handle(),
+        );
+        let chrome = chrome_rc();
+        let switch = |provider: &ActionsProvider, id: &str| {
+            row(
+                &rows_for(provider, &chrome, ""),
+                &format!("search.provider.toggle:{id}"),
+            )
+            .map(|row| row.title.clone())
+        };
+        let windows = super::super::desktop_windows::DesktopWindowsProvider::new();
+        let windows_id = windows.id().to_string();
+        let windows_name = windows.display_name();
+        assert_eq!(switch(&provider, &windows_id), None);
+        registry.register(Rc::new(windows));
+        let source: &[(&str, ui::i18n::ArgValue)] = &[
+            ("source", windows_name.into()),
+            ("id", windows_id.clone().into()),
+        ];
+        assert_eq!(
+            switch(&provider, &windows_id),
+            Some(t_args("search-action-provider-disable", source)),
+            "a newly registered source gets its switch"
+        );
+        registry.set_provider_enabled(&windows_id, false);
+        assert_eq!(
+            switch(&provider, &windows_id),
+            Some(t_args("search-action-provider-enable", source)),
+            "a source turned off is offered to turn back on"
+        );
+    }
+
+    #[test]
+    fn catalogue_rebuilds_on_quick_settings_backend_and_availability() {
         // The Quick Settings backend, what it can do, and a swap of either.
         let first = Rc::new(RecordingQsActions::default());
         let slot = Rc::new(SharedQsDispatcher::new(
@@ -4804,41 +4856,6 @@ mod tests {
             },
         );
         assert!(!volume_available(&provider), "the volume control went away");
-
-        // Search sources: one registered, and one turned off.
-        let mut registry = crate::shell::search::SearchRegistry::new();
-        let provider = ActionsProvider::with_preferences_and_catalog(
-            registry.preferences_handle(),
-            registry.provider_catalog_handle(),
-        );
-        let chrome = chrome_rc();
-        let switch = |provider: &ActionsProvider, id: &str| {
-            row(
-                &rows_for(provider, &chrome, ""),
-                &format!("search.provider.toggle:{id}"),
-            )
-            .map(|row| row.title.clone())
-        };
-        let windows = super::super::desktop_windows::DesktopWindowsProvider::new();
-        let windows_id = windows.id().to_string();
-        let windows_name = windows.display_name();
-        assert_eq!(switch(&provider, &windows_id), None);
-        registry.register(Rc::new(windows));
-        let source: &[(&str, ui::i18n::ArgValue)] = &[
-            ("source", windows_name.clone().into()),
-            ("id", windows_id.clone().into()),
-        ];
-        assert_eq!(
-            switch(&provider, &windows_id),
-            Some(t_args("search-action-provider-disable", source)),
-            "a newly registered source gets its switch"
-        );
-        registry.set_provider_enabled(&windows_id, false);
-        assert_eq!(
-            switch(&provider, &windows_id),
-            Some(t_args("search-action-provider-enable", source)),
-            "a source turned off is offered to turn back on"
-        );
     }
 
     #[test]
