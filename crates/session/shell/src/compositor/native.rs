@@ -5569,6 +5569,7 @@ fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
 #[derive(Clone, Debug)]
 struct SpatialControlSession {
     target: crate::shell::personal_continuity::DeviceId,
+    lease_nonce: [u8; 16],
     return_edge: crate::shell::device_fabric::DisplayEdge,
     x: f64,
     y: f64,
@@ -5585,9 +5586,10 @@ fn end_spatial_control(
         return;
     };
     for keycode in session.pressed_keys {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
             network,
             &session.target,
+            session.lease_nonce,
             crate::shell::device_fabric::FabricInputEvent::Key {
                 keycode,
                 pressed: false,
@@ -5596,9 +5598,10 @@ fn end_spatial_control(
         );
     }
     for button in session.pressed_buttons {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
             network,
             &session.target,
+            session.lease_nonce,
             crate::shell::device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: false,
@@ -5678,9 +5681,10 @@ fn move_spatial_pointer(
         }
         session.x = session.x.clamp(0.0, max_x);
         session.y = session.y.clamp(0.0, max_y);
-        if crate::shell::device_fabric_runtime::send_spatial_input(
+        if crate::shell::device_fabric_runtime::send_spatial_input_bound(
             network,
             &session.target,
+            session.lease_nonce,
             crate::shell::device_fabric::FabricInputEvent::PointerMotion {
                 x: spatial_coord(session.x),
                 y: spatial_coord(session.y),
@@ -5722,26 +5726,13 @@ fn move_spatial_pointer(
     let Some(transition) = fabric.cross_edge(&local, edge, local_x, local_y) else {
         return false;
     };
-    let pending_drag = file_explorer::external_drag::unclaimed();
-    let Ok(nearby_drop) =
-        nearby_drop_candidate(pending_drag.as_ref().map(|drag| drag.paths.as_slice()))
-    else {
-        // Keep unsupported Files drags local; crossing would otherwise swallow
-        // their release and strand the gesture on the source device.
+    let Some(session) = begin_spatial_control(network, transition, edge, (dx, dy)) else {
         return false;
     };
-    let session = SpatialControlSession {
-        target: transition.to,
-        return_edge: edge.opposite(),
-        x: f64::from(transition.target_x) + dx,
-        y: f64::from(transition.target_y) + dy,
-        pressed_keys: std::collections::BTreeSet::new(),
-        pressed_buttons: std::collections::BTreeSet::new(),
-        nearby_drop,
-    };
-    if crate::shell::device_fabric_runtime::send_spatial_input(
+    if crate::shell::device_fabric_runtime::send_spatial_input_bound(
         network,
         &session.target,
+        session.lease_nonce,
         crate::shell::device_fabric::FabricInputEvent::PointerMotion {
             x: spatial_coord(session.x),
             y: spatial_coord(session.y),
@@ -5753,6 +5744,31 @@ fn move_spatial_pointer(
     }
     *active = Some(session);
     true
+}
+
+fn begin_spatial_control(
+    network: &crate::shell::network::ShellNetwork,
+    transition: crate::shell::device_fabric::EdgeTransition,
+    edge: crate::shell::device_fabric::DisplayEdge,
+    delta: (f64, f64),
+) -> Option<SpatialControlSession> {
+    let pending_drag = file_explorer::external_drag::unclaimed();
+    // Unsupported Files drags stay local: losing their up edge would strand
+    // the gesture on the source device.
+    let nearby_drop =
+        nearby_drop_candidate(pending_drag.as_ref().map(|drag| drag.paths.as_slice())).ok()?;
+    let lease =
+        crate::shell::device_fabric_runtime::spatial_pointer_lease(network, &transition.to)?;
+    Some(SpatialControlSession {
+        target: transition.to,
+        lease_nonce: lease.nonce,
+        return_edge: edge.opposite(),
+        x: f64::from(transition.target_x) + delta.0,
+        y: f64::from(transition.target_y) + delta.1,
+        pressed_keys: std::collections::BTreeSet::new(),
+        pressed_buttons: std::collections::BTreeSet::new(),
+        nearby_drop,
+    })
 }
 
 fn spatial_departure_edge(
@@ -5940,10 +5956,15 @@ fn forward_spatial_window_event(
         }
         _ => return false,
     };
-    if crate::shell::device_fabric_runtime::send_spatial_input(network, &target, fabric_event)
-        .is_err()
+    if crate::shell::device_fabric_runtime::send_spatial_input_bound(
+        network,
+        &target,
+        session.lease_nonce,
+        fabric_event,
+    )
+    .is_err()
     {
-        *active = None;
+        end_spatial_control(network, active);
     } else if let Some(session) = active.as_mut() {
         match fabric_event {
             crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
@@ -10373,6 +10394,16 @@ pub fn run() {
                     spatial_control = None;
                 }
             }
+        }
+        // Authority may disappear without another physical input event. A
+        // replacement lease cannot inherit a running gesture or held inputs.
+        if let Some(network) = peer_sync.as_ref()
+            && spatial_control.as_ref().is_some_and(|control| {
+                crate::shell::device_fabric_runtime::spatial_pointer_lease(network, &control.target)
+                    .is_none_or(|lease| lease.nonce != control.lease_nonce)
+            })
+        {
+            end_spatial_control(network, &mut spatial_control);
         }
         prev_locked = session.is_locked();
         // The dimming overlay is part of the scene, so switching it needs a frame.

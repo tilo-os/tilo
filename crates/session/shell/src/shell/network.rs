@@ -577,17 +577,24 @@ pub(crate) struct AuthenticatedPersonalRoute {
 }
 
 impl AuthenticatedPersonalRoute {
-    #[cfg(test)]
     pub(crate) fn device(&self) -> &crate::shell::personal_continuity::DeviceId {
         &self.device
     }
 
     #[cfg(test)]
     pub(crate) fn for_test(device: crate::shell::personal_continuity::DeviceId) -> Self {
+        Self::for_test_epoch(device, 1)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_epoch(
+        device: crate::shell::personal_continuity::DeviceId,
+        epoch: u64,
+    ) -> Self {
         Self {
             workspace_topic: 1,
             endpoint_id: iroh::SecretKey::from_bytes(&[0xE7; 32]).public(),
-            membership_epoch: crate::network::actor::MembershipEpoch::for_test(1),
+            membership_epoch: crate::network::actor::MembershipEpoch::for_test(epoch),
             user_public_key: [0xE8; 32],
             device,
         }
