@@ -165,6 +165,7 @@ mod floating_source_focus_tests {
     #[derive(Default)]
     struct FocusProbe {
         events: FocusEvents,
+        request: Option<crate::floating_surface::FloatingSurfaceRequest>,
     }
 
     impl crate::widget::AppWidget for FocusProbe {
@@ -183,6 +184,15 @@ mod floating_source_focus_tests {
     }
 
     impl crate::widget::FloatingSurfaceProvider for FocusProbe {
+        fn take_floating_surface_request(
+            &mut self,
+        ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+            self.request.take()
+        }
+
+        fn active_floating_surface_ids(&self) -> Vec<String> {
+            vec!["a".into()]
+        }
         fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
             self.events
                 .borrow_mut()
@@ -299,6 +309,78 @@ mod floating_source_focus_tests {
             &mut crate::widget::Edits::lend(&mut state),
             &automerge::ROOT,
         ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pending_present_holds_only_live_editor_ime_until_prepare_refusal_or_disconnect() {
+        use crate::floating_surface::{
+            FloatingRole, FloatingSource, FloatingSurfaceHostMessage, FloatingSurfaceRequest,
+            FloatingSurfaceServiceClient,
+        };
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+
+        for outcome in 0..3 {
+            let (app_side, mut host_side) = UnixStream::pair().unwrap();
+            let rect = KurboRect::new(0.0, 0.0, 500.0, 500.0);
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(FocusProbe {
+                    request: Some(FloatingSurfaceRequest {
+                        id: "a".into(),
+                        title: String::new(),
+                        role: FloatingRole::Conversation,
+                        source: FloatingSource::AppElement {
+                            app_id: "probe".into(),
+                            element_id: "a".into(),
+                            region: rect,
+                        },
+                        preferred_size: rect.size(),
+                        aspect_ratio: None,
+                        initial_rect: Some(rect),
+                        presentation_rect: None,
+                        tracking_source: None,
+                    }),
+                    ..FocusProbe::default()
+                }),
+            );
+            app.floating.client =
+                Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+            let previous = primary_floating_ime_state(app.root_widget.as_ref(), "a", Vec2::ZERO);
+            assert!(previous.is_some());
+            assert!(pending_floating_ime_state(&app, true, previous).is_none());
+            app.pump_floating_surface_service();
+            assert_eq!(pending_floating_ime_state(&app, true, previous), previous);
+            assert!(pending_floating_ime_state(&app, false, previous).is_none());
+            assert!(pending_floating_ime_state(&app, true, None).is_none());
+            app.floating.pending_ime_ids.insert("unrelated".into());
+            app.floating.active_ids.insert("unrelated".into());
+            assert_eq!(pending_floating_ime_state(&app, true, previous), previous);
+            if outcome == 2 {
+                drop(host_side);
+                app.pump_floating_surface_service();
+            } else {
+                let message = if outcome == 0 {
+                    FloatingSurfaceHostMessage::PrepareSurface {
+                        id: "a".into(),
+                        token: "0123456789abcdef0123456789abcdef".into(),
+                        rect: [0.0, 0.0, 500.0, 500.0],
+                        content_rect: [0.0, 0.0, 500.0, 500.0],
+                        coordinate_offset: [0.0, 0.0],
+                        transfer_covered: true,
+                    }
+                } else {
+                    FloatingSurfaceHostMessage::Reattach { id: "a".into() }
+                };
+                let mut wire = serde_json::to_vec(&message).unwrap();
+                wire.push(b'\n');
+                host_side.write_all(&wire).unwrap();
+                app.pump_floating_surface_service();
+                assert_eq!(app.floating.prepared_ids.contains("a"), outcome == 0);
+            }
+            assert!(pending_floating_ime_state(&app, true, previous).is_none());
+        }
     }
 
     #[test]
@@ -697,6 +779,16 @@ fn primary_floating_ime_state(
 ) -> Option<ImeWindowState> {
     let (purpose, rect) = root.floating_surface_ime(id)?;
     Some(ImeWindowState::from_rect(purpose, rect - coordinate_offset))
+}
+
+fn pending_floating_ime_state(
+    app: &App,
+    preedit_active: bool,
+    previous: Option<ImeWindowState>,
+) -> Option<ImeWindowState> {
+    preedit_active.then_some(())?;
+    app.pending_floating_ime_source()?;
+    previous
 }
 
 fn primary_ime_state_for_held_child(
@@ -1500,6 +1592,16 @@ impl AppHandler {
         if self.floating_ime_continuation == next {
             return;
         }
+        if self.floating_ime_continuation.is_some() {
+            crate::floating_surface::handoff_diagnostics::mark(
+                crate::floating_surface::handoff_diagnostics::Stage::ContinuationEnded,
+            );
+        }
+        if next.is_some() {
+            crate::floating_surface::handoff_diagnostics::mark(
+                crate::floating_surface::handoff_diagnostics::Stage::ContinuationStarted,
+            );
+        }
         self.floating_ime_continuation = next;
         let id = self.floating_ime_continuation.clone();
         self.app
@@ -1518,8 +1620,16 @@ impl AppHandler {
             // Never route subsequent source events by a stale surface id.
             self.set_floating_ime_continuation(None);
         }
+        let pending =
+            pending_floating_ime_state(&self.app, self.primary_preedit_active, self.ime_state);
         let next = if continued.is_some() {
             continued
+        } else if pending.is_some() {
+            // Present was accepted on the live host connection, but Prepare
+            // has not arrived yet. Keep the real source protocol's existing
+            // caret while the exact retained editor still exports IME intent.
+            // Destination routing starts only after the host authorises it.
+            pending
         } else if self.floating_windows.iter().any(|surface| surface.focused) {
             None
         } else {
@@ -1555,21 +1665,25 @@ impl AppHandler {
         if next == self.ime_state {
             return;
         }
-        match next {
-            Some(intent) => {
-                // Apply purpose before enabling: winit's Wayland backend
-                // commits the enable immediately, so the first activation
-                // must already carry the right content type. Cursor geometry
-                // follows enable because winit intentionally ignores cursor
-                // updates while IME is disabled.
-                window.set_ime_purpose(intent.purpose);
-                window.set_ime_allowed(true);
-                window.set_ime_cursor_area(
-                    winit::dpi::LogicalPosition::new(intent.x, intent.y),
-                    winit::dpi::LogicalSize::new(intent.width, intent.height),
-                );
+        if let Some(intent) = next {
+            // Apply purpose before enabling: winit's Wayland backend
+            // commits the enable immediately, so the first activation
+            // must already carry the right content type. Cursor geometry
+            // follows enable because winit intentionally ignores cursor
+            // updates while IME is disabled.
+            window.set_ime_purpose(intent.purpose);
+            window.set_ime_allowed(true);
+            window.set_ime_cursor_area(
+                winit::dpi::LogicalPosition::new(intent.x, intent.y),
+                winit::dpi::LogicalSize::new(intent.width, intent.height),
+            );
+        } else {
+            if self.primary_preedit_active || self.floating_ime_continuation.is_some() {
+                crate::floating_surface::handoff_diagnostics::mark(
+                        crate::floating_surface::handoff_diagnostics::Stage::DisableIssuedWhileComposing,
+                    );
             }
-            None => window.set_ime_allowed(false),
+            window.set_ime_allowed(false);
         }
         self.ime_state = next;
     }
@@ -3440,6 +3554,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         if std::mem::take(&mut self.primary_preedit_clear_pending) {
             self.primary_preedit_active = false;
+            self.app.floating.pending_ime_ids.clear();
             self.set_floating_ime_continuation(None);
         }
         let mut cleared_return = false;
@@ -3523,7 +3638,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if retry_due {
             request_primary_redraw();
         }
-        self.sync_ime(&window);
         if self.last_primary_frame_presented > 0
             && let Some(scenario) = self.native_scenario.take()
         {
@@ -3561,6 +3675,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.app.invalidate_widget_resource_cache();
             request_primary_redraw();
         }
+        // PrepareSurface moves the same editor's IME intent into its exact
+        // source continuation. Apply that host lifecycle before comparing the
+        // primary window's intent, so an already-received handoff cannot emit
+        // a disable for the intermediate attached-widget projection.
+        self.sync_ime(&window);
         self.sync_native_floating_geometry();
         if self.recover_stalled_floating_windows() {
             request_primary_redraw();
@@ -4065,7 +4184,21 @@ impl AppHandler {
         window: &Arc<Window>,
         event: WindowEvent,
     ) {
+        if self.primary_preedit_active || self.floating_ime_continuation.is_some() {
+            use crate::floating_surface::handoff_diagnostics::{Stage, mark};
+            match &event {
+                WindowEvent::Focused(false) => mark(Stage::PrimaryFocusLostWhileComposing),
+                WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                    mark(Stage::DisabledReceivedWhileComposing);
+                }
+                WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) if text.is_empty() => {
+                    mark(Stage::EmptyPreeditWhileComposing);
+                }
+                _ => {}
+            }
+        }
         if matches!(event, WindowEvent::Focused(false)) {
+            self.app.floating.pending_ime_ids.clear();
             // The compositor deliberately keeps the source protocol focus
             // only across the exact Float handoff. A real unrelated focus
             // loss retires the local routing proxy immediately; a later IME
@@ -4100,6 +4233,7 @@ impl AppHandler {
                 }
             }
             if matches!(update, PrimaryPreeditUpdate::Finished) {
+                self.app.floating.pending_ime_ids.clear();
                 self.set_floating_ime_continuation(None);
             }
         }

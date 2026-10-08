@@ -17,6 +17,12 @@ pub enum Stage {
     PrepareReceived,
     NativeWindowCreated,
     FirstBufferPresented,
+    DisableIssuedWhileComposing,
+    DisabledReceivedWhileComposing,
+    PrimaryFocusLostWhileComposing,
+    EmptyPreeditWhileComposing,
+    ContinuationStarted,
+    ContinuationEnded,
 }
 
 impl Stage {
@@ -32,6 +38,12 @@ impl Stage {
             Self::PrepareReceived => (128, "prepare_received"),
             Self::NativeWindowCreated => (256, "native_window_created"),
             Self::FirstBufferPresented => (512, "first_buffer_presented"),
+            Self::DisableIssuedWhileComposing => (1024, "disable_issued_while_composing"),
+            Self::DisabledReceivedWhileComposing => (2048, "disabled_received_while_composing"),
+            Self::PrimaryFocusLostWhileComposing => (4096, "primary_focus_lost_while_composing"),
+            Self::EmptyPreeditWhileComposing => (8192, "empty_preedit_while_composing"),
+            Self::ContinuationStarted => (16384, "continuation_started"),
+            Self::ContinuationEnded => (32768, "continuation_ended"),
         }
     }
 }
@@ -72,6 +84,24 @@ mod tests {
             (Stage::PrepareReceived, "prepare_received"),
             (Stage::NativeWindowCreated, "native_window_created"),
             (Stage::FirstBufferPresented, "first_buffer_presented"),
+            (
+                Stage::DisableIssuedWhileComposing,
+                "disable_issued_while_composing",
+            ),
+            (
+                Stage::DisabledReceivedWhileComposing,
+                "disabled_received_while_composing",
+            ),
+            (
+                Stage::PrimaryFocusLostWhileComposing,
+                "primary_focus_lost_while_composing",
+            ),
+            (
+                Stage::EmptyPreeditWhileComposing,
+                "empty_preedit_while_composing",
+            ),
+            (Stage::ContinuationStarted, "continuation_started"),
+            (Stage::ContinuationEnded, "continuation_ended"),
         ];
         for (stage, label) in stages {
             assert_eq!(stage.properties().1, label);
@@ -80,6 +110,6 @@ mod tests {
                 assert!(!claim(&seen, stage));
             }
         }
-        assert_eq!(seen.load(Ordering::Relaxed).count_ones(), 10);
+        assert_eq!(seen.load(Ordering::Relaxed).count_ones(), 16);
     }
 }

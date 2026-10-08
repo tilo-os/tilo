@@ -41,6 +41,9 @@ pub(super) struct FloatingRuntime {
     pub presentations: HashMap<String, FloatingSurfacePresentation>,
     pub active_ids: HashSet<String>,
     pub prepared_ids: HashSet<String>,
+    /// Exact app-owned Present requests accepted on the current connection,
+    /// whose retained editors await the host's PrepareSurface response.
+    pub pending_ime_ids: HashSet<String>,
     pub coordinate_offsets: HashMap<String, Vec2>,
     pub suspended_ids: HashSet<String>,
     pub host_messages: Vec<FloatingSurfaceHostMessage>,
@@ -80,6 +83,7 @@ impl FloatingRuntime {
             presentations: HashMap::new(),
             active_ids: HashSet::new(),
             prepared_ids: HashSet::new(),
+            pending_ime_ids: HashSet::new(),
             coordinate_offsets: HashMap::new(),
             suspended_ids: HashSet::new(),
             host_messages: Vec::new(),
@@ -100,6 +104,17 @@ impl FloatingRuntime {
 }
 
 impl App {
+    #[cfg(feature = "native")]
+    fn pending_floating_ime_source(&self) -> Option<&str> {
+        self.floating.client.as_ref()?;
+        let mut sources = self.floating.pending_ime_ids.iter().filter(|id| {
+            self.floating.active_ids.contains(*id)
+                && self.root_widget.floating_surface_ime(id).is_some()
+        });
+        let source = sources.next()?;
+        sources.next().is_none().then_some(source.as_str())
+    }
+
     /// Withhold this app's windows from screenshots, recordings, screen
     /// sharing and remote viewers — for windows that show secrets, such as a
     /// password manager's. The local display is unaffected; captures show a
@@ -267,6 +282,9 @@ impl App {
             .active_floating_surface_ids()
             .into_iter()
             .collect();
+        self.floating
+            .pending_ime_ids
+            .retain(|id| self.floating.active_ids.contains(id));
         changed || geometry_changed
     }
 
@@ -278,6 +296,7 @@ impl App {
 
     #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
+        self.floating.pending_ime_ids.clear();
         let mut changed = false;
         // A local gesture is never replayed into a shell connected later.
         changed |= self.window.pending_agent_navigation.take().is_some();
@@ -469,6 +488,15 @@ impl App {
                     request: (&request).into(),
                 },
             )?;
+            if request.role.uses_app_owned_host()
+                && matches!(
+                    request.source,
+                    crate::floating_surface::FloatingSource::AppElement { .. }
+                )
+                && self.root_widget.floating_surface_ime(&request.id).is_some()
+            {
+                self.floating.pending_ime_ids.insert(request.id.clone());
+            }
             crate::floating_surface::handoff_diagnostics::mark(
                 crate::floating_surface::handoff_diagnostics::Stage::PresentSendAccepted,
             );
@@ -723,6 +751,7 @@ impl App {
                     coordinate_offset,
                     ..
                 } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.coordinate_offsets.insert(
                         id.clone(),
                         Vec2::new(coordinate_offset[0], coordinate_offset[1]),
@@ -740,11 +769,13 @@ impl App {
                 }
                 FloatingSurfaceHostMessage::Reattach { id }
                 | FloatingSurfaceHostMessage::Closed { id } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.prepared_ids.remove(id);
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.remove(id);
                 }
                 FloatingSurfaceHostMessage::Suspended { id } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.prepared_ids.remove(id);
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
@@ -799,6 +830,7 @@ impl App {
             .floating
             .presentations
             .keys()
+            .chain(self.floating.pending_ime_ids.iter())
             .chain(self.floating.suspended_ids.iter())
             .cloned()
             .collect::<std::collections::HashSet<_>>()
@@ -807,6 +839,7 @@ impl App {
         self.floating.presentations.clear();
         self.floating.active_ids.clear();
         self.floating.prepared_ids.clear();
+        self.floating.pending_ime_ids.clear();
         self.floating.coordinate_offsets.clear();
         self.floating.suspended_ids.clear();
         for id in ids {
