@@ -1557,7 +1557,11 @@ impl DeviceFabricRuntime {
             return;
         }
         self.last_sample = Some(now);
-        crate::shell::mpris::refresh_handoff_reports();
+        if policy.permits(ContinuityCapability::Media) {
+            crate::shell::mpris::refresh_handoff_reports();
+        } else {
+            crate::shell::mpris::withdraw_handoff_reports();
+        }
         let Some((device, label)) = network.local_device_fabric_identity() else {
             publish_device_displays(network, policy);
             return;
