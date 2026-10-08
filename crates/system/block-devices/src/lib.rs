@@ -10,6 +10,7 @@
 
 use std::path::Path;
 
+pub mod installed_root;
 pub mod lsblk;
 pub mod udisks;
 

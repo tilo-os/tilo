@@ -158,6 +158,57 @@ async fn invoke(
 }
 
 impl ShellNetwork {
+    /// Record a member audit at the exact admitted governor on the existing
+    /// certified action lane. No endpoint fallback or caller-selected authority.
+    pub(crate) async fn record_effect_at_governor(
+        &self,
+        room: RoomId,
+        invocation: uuid::Uuid,
+        redacted: Vec<u8>,
+    ) -> Result<(), String> {
+        let route = self.governor_route(room)?;
+        let invocation = tilo_actions::InvocationId(invocation);
+        let redacted = String::from_utf8(redacted).map_err(|_| "invalid effect encoding")?;
+        let answer = tokio::time::timeout(GOVERNOR_TIMEOUT, async {
+            loop {
+                let answer = route
+                    .ask(
+                        &self.cmd_tx,
+                        ActionMessage::RecordEffectReceipt {
+                            invocation,
+                            redacted: redacted.clone(),
+                        },
+                    )
+                    .await;
+                match answer {
+                    Err(reason)
+                        if reason == crate::network::actor::native_ingress::NOT_CONNECTED =>
+                    {
+                        // The actor refused before queueing a directed request.
+                        // Wait for the original native session, never a fallback.
+                        tokio::time::sleep(STATUS_INTERVAL).await;
+                    }
+                    answer => break answer,
+                }
+            }
+        })
+        .await
+        .map_err(|_| "effect governor did not answer in time; outcome unknown")??;
+        let fresh = self.governor_route(room)?;
+        if fresh.source != route.source
+            || fresh.target != route.target
+            || fresh.governor_user != route.governor_user
+        {
+            return Err("effect governor or selected device changed; outcome unknown".into());
+        }
+        match answer {
+            ActionMessage::EffectReceiptCommitted { invocation: got } if got == invocation => {
+                Ok(())
+            }
+            ActionMessage::Rejected { code } => Err(format!("effect governor refused: {code}")),
+            _ => Err("effect governor returned an unexpected answer".into()),
+        }
+    }
     /// Discover one existing resource on the currently governed room's host,
     /// using the same authenticated remote-action transport as the palette.
     pub(crate) async fn discover_resource_view(

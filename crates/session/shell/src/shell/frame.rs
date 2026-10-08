@@ -2220,9 +2220,10 @@ impl FrameBuilder {
             };
             let dest_x = scene_px(rect.x0);
             let dest_w = scene_px(rect.width()).max(1);
+            let pad = self.host.strip_canvas_pad(crate::shell::state::StripId(id));
             let right = dest_x
                 .saturating_add(dest_w)
-                .saturating_add(scene_px(max_scroll.ceil()));
+                .saturating_add(scene_px((max_scroll + 2.0 * pad).ceil()));
             if right > max_width {
                 // Too wide for the presenter: the pans stay in the scene.
                 return Some(StripPlan {
@@ -2240,7 +2241,7 @@ impl FrameBuilder {
                     strips: Vec::new(),
                 });
             }
-            if scroll > 0.0 && ui::widget::pan_within_canvas(scroll, max_scroll) {
+            if ui::widget::pan_within_canvas(scroll, max_scroll, pad) {
                 let pans = self
                     .host
                     .strip_pan_rect(crate::shell::state::StripId(id))
@@ -2252,7 +2253,7 @@ impl FrameBuilder {
                     dest_y,
                     dest_w,
                     dest_h: dest_y1.saturating_sub(dest_y).max(1),
-                    scroll_x: scene_px(scroll),
+                    scroll_x: scene_px(scroll + pad),
                 });
             }
         }

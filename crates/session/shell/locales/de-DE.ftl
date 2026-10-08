@@ -2494,3 +2494,6 @@ task-review-provider = Aufgabenprüfung
 
 dictation-vocabulary-changed = Das Diktat wurde beendet, weil sich dein persönliches Wörterbuch geändert hat. Starte ein neues Diktat, um die aktualisierten Wörter zu verwenden.
 dictation-vocabulary-draft-retained = Dein persönliches Wörterbuch hat sich geändert. Das Diktat wurde beendet. Du kannst den letzten Entwurf kopieren; er ist möglicherweise unvollständig.
+
+shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
+shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.

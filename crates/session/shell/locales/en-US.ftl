@@ -2491,3 +2491,6 @@ task-review-provider = Task review
 
 dictation-vocabulary-changed = Dictation stopped because your personal dictionary changed. Start a new session to use the updated words.
 dictation-vocabulary-draft-retained = Your personal dictionary changed. Dictation has stopped. You can copy the latest draft; it may be incomplete.
+
+shell-launch-registry-unavailable = The app process registry is unavailable.
+shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.

@@ -355,6 +355,7 @@ impl Plan {
 
 pub struct App {
     pub json: bool,
+    pub target: Option<String>,
     pub worktree: Option<Worktree>,
     pub registry_path: PathBuf,
     pub runner: SystemRunner,
@@ -606,8 +607,16 @@ impl App {
     /// # Errors
     /// No VM selected, or a name the registry does not know.
     pub fn resolve_vm(&self, explicit: Option<&str>) -> Result<Resolved, CliError> {
+        if let (Some(target), Some(name)) = (self.target.as_deref(), explicit)
+            && target != name
+        {
+            return Err(CliError::TargetConflict {
+                target: target.to_owned(),
+                name: name.to_owned(),
+            });
+        }
         let registry = self.registry()?;
-        let (name, source) = if let Some(name) = explicit {
+        let (name, source) = if let Some(name) = explicit.or(self.target.as_deref()) {
             (name.to_owned(), Source::Argument)
         } else {
             let file = self.worktree.as_ref().map(|w| w.root.join(WORKTREE_FILE));
@@ -1263,6 +1272,9 @@ impl App {
 
     fn vm(&mut self, command: VmCommand) -> Result<Outcome, CliError> {
         match command {
+            VmCommand::Actions { name, command } => {
+                self.vm_device_actions(name.as_deref(), command)
+            }
             VmCommand::List => self.vm_list(),
             VmCommand::Use { name, global } => self.vm_use(&name, global),
             VmCommand::Ssh {
@@ -4640,7 +4652,7 @@ impl App {
                     stderr: String::new(),
                 });
             }
-            build::pack(&staging.tree(), &staging.archive())
+            Ok(())
         });
         assembled?;
         // A build can outlast an idle SSH connection (a release shell takes
@@ -4654,6 +4666,37 @@ impl App {
             features,
             &staging.tree(),
         );
+        self.import_host_layer(remote, &staging, provenance)
+    }
+
+    /// Reuse an already imported content-identical layer before packing or sending it.
+    fn import_host_layer(
+        &mut self,
+        remote: &mut Remote,
+        staging: &build::Staging,
+        provenance: tilo_vm_protocol::Provenance,
+    ) -> Result<String, CliError> {
+        let hash = self.receipt.phase("digest", || {
+            tilo_vm_protocol::layer_hash::tree_hash(&staging.tree())
+                .map_err(CliError::io("hash assembled layer"))
+        })?;
+        let cached = self
+            .receipt
+            .phase("layer_lookup", || remote.call(LayerList {}))?;
+        if cached
+            .iter()
+            .any(|layer| layer.hash == hash && layer.provenance.component == provenance.component)
+        {
+            self.receipt.set("upload", "skipped");
+            self.receipt.set("layer_reused", &hash);
+            eprintln!(
+                "tilo-vm: device already holds layer {}; no pack or upload",
+                short(&hash)
+            );
+            return Ok(hash);
+        }
+        self.receipt
+            .phase("pack", || build::pack(&staging.tree(), &staging.archive()))?;
         let archive = staging.archive();
         let upload = self
             .receipt
@@ -4668,6 +4711,12 @@ impl App {
                 provenance: Box::new(provenance),
             })
         })?;
+        if imported.hash != hash {
+            return Err(CliError::InvalidInput(format!(
+                "imported layer {} does not match assembled layer {hash}",
+                imported.hash
+            )));
+        }
         Ok(imported.hash)
     }
 
@@ -6481,6 +6530,9 @@ fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
 }
 
 #[cfg(test)]
+mod host_layer_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -7176,6 +7228,7 @@ mod tests {
     fn app_with_empty_registry(dir: &Path) -> App {
         App {
             json: false,
+            target: None,
             worktree: None,
             registry_path: dir.join("vms.toml"),
             runner: SystemRunner { cwd: None },
@@ -7183,6 +7236,26 @@ mod tests {
             warnings: Vec::new(),
             peer: None,
         }
+    }
+
+    #[test]
+    fn explicit_target_refuses_unknown_and_conflicting_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        std::fs::write(&app.registry_path, "default = 'default-vm'\n[vms.default-vm]\nhypervisor = 'libvirt'\n[vms.review]\nhypervisor = 'libvirt'\n").unwrap();
+        app.target = Some("review".into());
+        let selected = app.resolve_vm(None).unwrap();
+        assert_eq!(selected.name, "review");
+        assert!(matches!(selected.source, Source::Argument));
+        assert!(matches!(
+            app.resolve_vm(Some("default-vm")),
+            Err(CliError::TargetConflict { .. })
+        ));
+        app.target = Some("unknown".into());
+        assert!(matches!(
+            app.resolve_vm(None),
+            Err(CliError::UnknownVm { .. })
+        ));
     }
 
     #[test]

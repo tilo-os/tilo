@@ -693,6 +693,8 @@ fn sync_dmabuf(fd: libc::c_int, flags: u64) {
 
 /// Per-surface capture + placement state.
 struct ForeignEntry {
+    /// A real compositor toplevel was adopted; a layout-only placeholder is not live.
+    adopted: bool,
     damage_history: commit_damage::History,
     #[cfg(any(test, target_os = "linux"))]
     capture_damage: HashMap<u64, u64>,
@@ -770,6 +772,7 @@ impl ForeignEntry {
 
     fn new() -> Self {
         Self {
+            adopted: false,
             damage_history: commit_damage::History::default(),
             #[cfg(any(test, target_os = "linux"))]
             capture_damage: HashMap::new(),
@@ -2567,7 +2570,18 @@ impl ForeignFrameStore {
     /// [`flush_configures`] and the presentation grace in
     /// [`Self::mark_presented`] — run from that instant.
     pub fn note_adopted(&self, id: SurfaceId) {
-        self.with_entry(id, |_| {});
+        self.with_entry(id, |entry| entry.adopted = true);
+    }
+
+    /// A real toplevel remains available to answer a close decision. The
+    /// compositor records adoption even before the first buffer and forgets
+    /// the entry on destruction; layout-only restored tabs remain placeholders.
+    pub fn is_adopted(&self, id: SurfaceId) -> bool {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .is_some_and(|entry| entry.adopted)
     }
 
     /// Whether this surface has waited longer than

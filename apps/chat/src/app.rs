@@ -1632,7 +1632,11 @@ impl ChatApp {
         if let Some(n) = self.room_names.get(id)
             && !n.trim().is_empty()
         {
-            return n.clone();
+            return if self.is_me(id) {
+                n.clone()
+            } else {
+                crate::identity::shared_name_label(id, n)
+            };
         }
         if let Some(agent) = self.agent_authors.get(id) {
             return agent.clone();
@@ -1640,7 +1644,11 @@ impl ChatApp {
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
-            return u.name.clone();
+            return if self.is_me(id) {
+                u.name.clone()
+            } else {
+                crate::identity::shared_name_label(id, &u.name)
+            };
         }
         // Your own name, which this had no way to reach until the room named
         // it: `me` is not necessarily a row in `users`, which is built from
@@ -1683,31 +1691,9 @@ impl ChatApp {
             .iter()
             .any(|u| u.id == id && u.name.trim() == named.trim());
         if (named != id || stored) && !named.trim().is_empty() {
-            return named;
+            return crate::identity::shared_name_label(id, &named);
         }
-        format!("Someone ({})", Self::unnamed_tag(id))
-    }
-
-    /// Enough of an unresolved id to tell two unnamed people apart.
-    ///
-    /// The tail rather than the head: these ids share a `peer@` prefix and
-    /// differ in their digits, so the first characters are the ones that
-    /// carry no information.
-    fn unnamed_tag(id: &str) -> String {
-        let body = id.rsplit(['@', ':']).next().unwrap_or(id);
-        let tail: String = body
-            .chars()
-            .rev()
-            .take(4)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        if tail.is_empty() {
-            id.to_string()
-        } else {
-            tail
-        }
+        crate::identity::unnamed_label(id)
     }
 
     /// The avatar monogram for `id`, derived from whatever the room calls them
@@ -4197,6 +4183,51 @@ mod identity_on_screen {
             status: crate::model::Presence::Online,
             is_agent,
         }
+    }
+
+    #[test]
+    fn a_remote_saved_you_name_is_not_the_current_reader() {
+        use ui::widget::Widget as _;
+        let mut app = ChatApp::new_ephemeral();
+        let mut state = ui::State::new();
+        let stranger = "peer@9007495404254172154";
+        ChatDoc::seed_starter(&mut state.doc, stranger, "You", "Y");
+        ChatDoc::push_message(
+            &mut state.doc,
+            "c_general",
+            crate::doc::NewMessage {
+                author: stranger.into(),
+                text: "Retained foreign message".into(),
+                ..crate::doc::NewMessage::default()
+            },
+        );
+        app.sync(&state.doc, &state.root);
+        assert_eq!(
+            app.user(stranger)
+                .expect("observe the actual foreign author in the production roster")
+                .name,
+            "You"
+        );
+        let shown = app.user_name(stranger);
+        assert_ne!(
+            shown, "You",
+            "another person's stored name must not read as the current reader"
+        );
+        assert_eq!(
+            app.display_name(stranger),
+            shown,
+            "mentions and message headers name the same foreign person"
+        );
+        assert!(
+            shown.contains("2154"),
+            "ambiguous names must distinguish the actual participant"
+        );
+        assert_eq!(app.user_name(&app.me.id), "You");
+        assert_eq!(
+            ChatDoc::list_users(&state.doc)[0].name,
+            "You",
+            "presentation must not rewrite saved person data"
+        );
     }
 
     #[test]
