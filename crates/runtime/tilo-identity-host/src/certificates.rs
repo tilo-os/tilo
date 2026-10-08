@@ -129,7 +129,7 @@ mod tests {
             let before = loads_on_this_thread();
             authorize_join(ROOM, &self.cert).expect("an enrolled device joins");
             authorize_join(ROOM, &self.cert).expect("an enrolled device joins again");
-            loads_on_this_thread() - before
+            loads_on_this_thread().saturating_sub(before)
         }
 
         fn revoke(&self) {
@@ -138,7 +138,7 @@ mod tests {
                     &self.identity_id,
                     self.cert.device_public_key,
                     RevocationReason::Lost,
-                    self.cert.issued_at_ns + 1,
+                    self.cert.issued_at_ns.saturating_add(1),
                 )
                 .expect("revoke");
         }
@@ -155,7 +155,11 @@ mod tests {
             .write(true)
             .open(path)
             .expect("open fleet file")
-            .set_modified(SystemTime::now() - Duration::from_secs(10))
+            .set_modified(
+                SystemTime::now()
+                    .checked_sub(Duration::from_secs(10))
+                    .expect("a time ten seconds ago"),
+            )
             .expect("date fleet file back");
     }
 
