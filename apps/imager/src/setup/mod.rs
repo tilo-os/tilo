@@ -34,7 +34,7 @@ mod migration_worker;
 pub mod model;
 mod nofollow;
 pub mod staging;
-mod strings;
+pub(crate) mod strings;
 #[cfg(all(test, target_os = "linux"))]
 mod test_support;
 pub mod view;
