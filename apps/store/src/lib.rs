@@ -75,6 +75,7 @@ pub mod flatpakref;
 pub mod images;
 pub mod model;
 pub mod moderation_client;
+pub mod package_import;
 pub mod registry_client;
 pub mod resource;
 pub mod search;

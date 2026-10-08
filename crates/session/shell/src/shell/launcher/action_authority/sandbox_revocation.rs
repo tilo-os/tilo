@@ -49,16 +49,21 @@ impl Sandbox {
     }
 
     pub(super) fn authorized(&self, published: &Published) -> bool {
+        self.authorization_status(published).is_ok()
+    }
+
+    fn authorization_status(&self, published: &Published) -> Result<(), &'static str> {
         if self.capabilities.is_empty() {
-            return true;
+            return Ok(());
         }
-        let Some(policy) = published.rooms.get(&self.binding.0).filter(|policy| {
-            policy
-                .runtime
-                .authority_is_current(&policy.authority, self.binding.0)
-        }) else {
-            return false;
-        };
+        let policy = published
+            .rooms
+            .get(&self.binding.0)
+            .ok_or("room_projection_missing")?;
+        policy
+            .runtime
+            .authority_status(&policy.authority, self.binding.0)
+            .map_err(crate::shell::native_workspace_owner::store::AuthorityRejection::reason)?;
         let now = Some(tilo_clock::unix_now_ms() / 1000);
         let app = Subject::app(&self.binding.1);
         let grants: Vec<_> = self
@@ -70,11 +75,11 @@ impl Sandbox {
             .iter()
             .any(|grant| !grant.is_live_at(now) || !policy.capabilities.contains(grant))
         {
-            return false;
+            return Err("captured_grant_withdrawn_or_expired");
         }
         // A new narrowing can cover a descendant of a granted directory.
         // Checking only the grant's root would miss that removed authority.
-        !policy.capabilities.iter().any(|restriction| {
+        if policy.capabilities.iter().any(|restriction| {
             if restriction.subject != app
                 || restriction.effect != Effect::Restrict
                 || !restriction.is_live_at(now)
@@ -92,7 +97,10 @@ impl Sandbox {
                 (path_covers(root, path) || path_covers(path, root))
                     && !restriction.verb.implies(grant.verb)
             })
-        })
+        }) {
+            return Err("new_narrowing_overlap");
+        }
+        Ok(())
     }
 
     fn interrupt(&self) {
@@ -160,12 +168,17 @@ pub(super) fn reconcile(published: &mut Published) {
     let revoked: Vec<_> = published
         .sandboxes
         .iter()
-        .filter_map(|(&pid, sandbox)| (!sandbox.authorized(published)).then_some(pid))
+        .filter_map(|(&pid, sandbox)| {
+            sandbox
+                .authorization_status(published)
+                .err()
+                .map(|reason| (pid, reason))
+        })
         .collect();
-    for pid in revoked {
+    for (pid, authority_rejection) in revoked {
         if let Some(sandbox) = published.sandboxes.remove(&pid) {
             sandbox.interrupt();
-            tracing::info!(room = %sandbox.binding.0, package_id = %sandbox.binding.1,
+            tracing::info!(room = %sandbox.binding.0, package_id = %sandbox.binding.1, authority_rejection,
                 "application interrupted after accepted filesystem authority withdrawal");
         }
     }
