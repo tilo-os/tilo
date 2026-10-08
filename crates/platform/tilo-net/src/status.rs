@@ -4,8 +4,36 @@
 //! [`Connectivity::Online`] means "worth trying", and a failed request
 //! remains the real answer. On the desktop it means a route to the public
 //! internet exists (IPv4 or IPv6); in a page it is `navigator.onLine`.
-//! Metering comes from `NetworkManager` on Linux and the Network Information
+//! Linux follows the session `NetworkMonitor` portal without subprocesses.
+//! Metering comes from that portal on Linux and the Network Information
 //! API in a page; macOS does not say.
+//!
+//! ```no_run
+//! # async fn background_downloads() {
+//! let mut network = tilo_net::status::watch();
+//! loop {
+//!     let status = network.last();
+//!     // Unknown metering is not permission for speculative downloads.
+//!     if status.online() && status.metered == Some(false) {
+//!         // Resume background downloads; requests still handle their errors.
+//!     }
+//!     network.changed().await;
+//! }
+//! # }
+//! ```
+//!
+//! Linux uses the existing session `NetworkMonitor` portal (version 3), through
+//! the launcher's filtered bus. It does not request system-bus access or change
+//! network permissions. If the portal refuses, disconnects or is unavailable,
+//! route checks remain available and metering becomes `None`. A healthy portal
+//! wakes only on configuration/owner changes; fallback checks retry every five
+//! seconds. These hints cannot establish that a particular server is reachable.
+//!
+//! The standard portal exposes metering as a boolean: `Some(false)` means the
+//! portal reports unmetered, not that the SDK independently established it.
+//! `GLib` can collapse unknown `NetworkManager` metering to false. Use the richer
+//! host-owned network state for policies requiring proven unmetered transport;
+//! this portable hint does not replace that policy or a network permission.
 
 /// Whether the device has a network path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -34,7 +62,9 @@ impl NetStatus {
     }
 }
 
-/// The status now.
+/// The latest status. Linux starts a shared background portal subscription on
+/// first use; until it answers, connectivity uses the route fallback and
+/// metering is unknown. This function never waits for D-Bus.
 #[must_use]
 pub fn current() -> NetStatus {
     imp::current()
@@ -60,7 +90,8 @@ impl std::fmt::Debug for Watch {
     }
 }
 
-/// Follow the status. The desktop re-checks every few seconds; a page wakes
+/// Follow the status. Linux follows portal events, with route checks only when
+/// the portal is unavailable. Other desktops re-check every few seconds; a page wakes
 /// on the browser's `online`, `offline` and connection-change events.
 #[must_use]
 pub fn watch() -> Watch {
@@ -99,7 +130,7 @@ mod imp {
     use super::{Connectivity, NetStatus};
 
     /// How often the desktop re-checks its routes.
-    const POLL: Duration = Duration::from_secs(5);
+    pub(super) const POLL: Duration = Duration::from_secs(5);
 
     /// Connecting a UDP socket sends nothing; it only asks the kernel for a
     /// route. These are documentation addresses, never contacted.
@@ -127,7 +158,7 @@ mod imp {
         }
     }
 
-    pub(super) fn current() -> NetStatus {
+    pub(super) fn fallback() -> NetStatus {
         let answers = PROBES.map(route);
         let connectivity = if answers.contains(&Some(true)) {
             Connectivity::Online
@@ -138,100 +169,22 @@ mod imp {
         };
         NetStatus {
             connectivity,
-            metered: metered::current(),
+            metered: None,
         }
     }
 
-    /// `NetworkManager`'s view of the active devices, asked through `nmcli`
-    /// at most once a minute (the watch polls every few seconds).
     #[cfg(target_os = "linux")]
-    pub(crate) mod metered {
-        use std::io::Read;
-        use std::process::{Command, Stdio};
-        use std::sync::Mutex;
-        use std::time::Duration;
+    pub(super) use super::linux::{Watch, current};
 
-        use tilo_clock::Instant;
-
-        const FRESH: Duration = Duration::from_secs(60);
-        const DEADLINE: Duration = Duration::from_secs(3);
-        const MAX_OUTPUT: u64 = 256 * 1024;
-
-        static LAST: Mutex<Option<(Instant, Option<bool>)>> = Mutex::new(None);
-
-        pub(super) fn current() -> Option<bool> {
-            let mut last = LAST
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((at, answer)) = *last
-                && at.elapsed() < FRESH
-            {
-                return answer;
-            }
-            let answer = ask();
-            *last = Some((tilo_clock::now(), answer));
-            answer
-        }
-
-        fn ask() -> Option<bool> {
-            let mut child = Command::new("nmcli")
-                .args(["-t", "-f", "GENERAL.METERED", "device", "show"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .ok()?;
-            let started = tilo_clock::now();
-            let status = loop {
-                if let Some(status) = child.try_wait().ok()? {
-                    break status;
-                }
-                if started.elapsed() > DEADLINE {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            };
-            let mut text = String::new();
-            child
-                .stdout
-                .take()?
-                .take(MAX_OUTPUT)
-                .read_to_string(&mut text)
-                .ok()?;
-            status.success().then(|| parse(&text)).flatten()
-        }
-
-        /// `yes`/`yes (guessed)` on any device is metered; `no`/`no
-        /// (guessed)` on at least one, and none metered, is not; only
-        /// `unknown` says nothing.
-        pub(crate) fn parse(text: &str) -> Option<bool> {
-            let mut saw_known = false;
-            for line in text.lines() {
-                let value = line
-                    .split_once(':')
-                    .map_or("", |(_, value)| value)
-                    .trim()
-                    .to_ascii_lowercase();
-                if value.starts_with("yes") {
-                    return Some(true);
-                }
-                saw_known |= value.starts_with("no");
-            }
-            saw_known.then_some(false)
-        }
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn current() -> NetStatus {
+        fallback()
     }
 
     #[cfg(not(target_os = "linux"))]
-    mod metered {
-        pub(super) const fn current() -> Option<bool> {
-            None
-        }
-    }
-
     pub(super) struct Watch;
 
+    #[cfg(not(target_os = "linux"))]
     impl Watch {
         pub(super) fn new() -> Self {
             Self
@@ -309,29 +262,17 @@ mod tests {
     #[test]
     fn the_route_probe_answers_without_sending() {
         // CI machines may be offline; the answer only has to be consistent.
-        let status = current();
-        #[cfg(not(target_os = "linux"))]
+        let status = imp::fallback();
         assert_eq!(status.metered, None);
         assert_eq!(
             status.online(),
             status.connectivity != Connectivity::Offline
         );
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(watch().last().connectivity, status.connectivity);
     }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn network_manager_answers_read_as_metered_or_not() {
-        use super::imp::metered::parse;
-        assert_eq!(
-            parse("GENERAL.METERED:no\nGENERAL.METERED:yes (guessed)\n"),
-            Some(true)
-        );
-        assert_eq!(
-            parse("GENERAL.METERED:no (guessed)\nGENERAL.METERED:unknown\n"),
-            Some(false)
-        );
-        assert_eq!(parse("GENERAL.METERED:unknown\n"), None);
-        assert_eq!(parse(""), None);
-    }
 }
+
+#[cfg(target_os = "linux")]
+#[path = "status_linux.rs"]
+mod linux;
