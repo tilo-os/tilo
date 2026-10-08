@@ -794,11 +794,13 @@ impl AppActionBroker {
 
     /// Whether `id` belongs to a retained remote invocation. This is an
     /// internal projection fence: callers learn no remote identity or handle.
+    /// `None` is authority unavailability, never permission for local fallback.
     #[must_use]
-    pub fn job_is_remotely_admitted(&self, id: u64) -> bool {
+    pub fn job_is_remotely_admitted(&self, id: u64) -> Option<bool> {
         self.state
             .while_live(|state| Ok(state.action_job_is_remote(id)))
-            .unwrap_or(false)
+            .ok()
+            .flatten()
     }
 
     pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {

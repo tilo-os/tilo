@@ -1550,7 +1550,7 @@ impl LiveAppActionsProvider {
             // A remote invocation may execute under an internal Local owner
             // (workspace services do). Never let that implementation detail
             // downgrade its exact certificate/device binding to actor text.
-            if self.broker.job_is_remotely_admitted(id) {
+            if self.broker.job_is_remotely_admitted(id) != Some(false) {
                 return page;
             }
             let Some(update) = self.broker.status_for_actor(id, &actor) else {

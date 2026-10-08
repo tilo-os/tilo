@@ -257,7 +257,7 @@ async fn fresh_exact_certified_caller_observes_and_cancels_its_published_job() {
                 facade.status_for_actor(job, &local_actor).is_some(),
                 "the internal Local owner would satisfy the legacy actor lookup"
             );
-            assert!(facade.job_is_remotely_admitted(job));
+            assert_eq!(facade.job_is_remotely_admitted(job), Some(true));
             assert!(rig.state.action_observe_job(&wrong_device, job).is_none());
             env.authority
                 .additional_certificates
@@ -280,6 +280,13 @@ async fn fresh_exact_certified_caller_observes_and_cancels_its_published_job() {
                     .certified_job_cancel(&fresh, &fresh_evidence, job)
                     .is_err()
             );
+            let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = rig.state.remote_invocations.lock().unwrap();
+                panic!("poison the retained remote invocation ledger");
+            }));
+            assert!(poisoned.is_err());
+            assert_eq!(rig.state.action_job_is_remote(job), None);
+            assert_eq!(facade.job_is_remotely_admitted(job), None);
             rig.stop().await;
         })
         .await;

@@ -2437,15 +2437,14 @@ impl CapnpBrokerState {
 
     /// Whether `job` is retained as a remotely admitted invocation. Local UI
     /// projections use this only to suppress their weaker actor-name fallback.
+    /// `None` means the authority ledger is unavailable and must fail closed.
     #[must_use]
-    pub(crate) fn action_job_is_remote(&self, job: u64) -> bool {
+    pub(crate) fn action_job_is_remote(&self, job: u64) -> Option<bool> {
         let Some(update) = self.invocation_status(job) else {
-            return false;
+            return Some(false);
         };
-        self.remote_invocations
-            .lock()
-            .ok()
-            .is_some_and(|ledger| ledger.contains_admitted(&update.invocation()))
+        let ledger = self.remote_invocations.lock().ok()?;
+        Some(ledger.contains_admitted(&update.invocation()))
     }
 
     #[must_use]
