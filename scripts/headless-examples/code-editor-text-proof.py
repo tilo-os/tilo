@@ -93,6 +93,9 @@ def source_snapshot():
         "crates/sdk/tilo-resource/src/resource.rs",
         "crates/sdk/tilo-resource/src/action.rs",
         "crates/sdk/tilo-resource/src/low_mutation.rs",
+        "crates/sdk/ui-core/src/semantic_document_read.rs",
+        "apps/code-editor/src/app.rs",
+        "crates/sdk/ui-core/src/invocation_scope.rs",
         "crates/sdk/tilo-app/src/framework/dispatch.rs",
         "crates/sdk/ui-core/src/collaboration/broker.rs",
         "crates/sdk/ui-core/src/collaboration/committed_document.rs",
@@ -312,6 +315,25 @@ def run_native(args, output, profile, env, observed_sources, observed_binaries):
             if observed["text"] != "β😀" or observed["text_sha256"] != digest(fixture) or observed["position_units"] != "unicode_scalar_values":
                 raise RuntimeError("actual Unicode range/current identity differs")
             resource = action["resource"]
+            snapshot_action, snapshot = perform("read-text-snapshot", {"start_chars": 0, "max_chars": 3}, "snapshot-first", resource)
+            heads = snapshot["basis"]["heads"]
+            if not heads or heads != sorted(set(heads)) or snapshot["content"]["text"] != "αβ😀":
+                raise RuntimeError("original committed snapshot first chunk differs")
+            _, remaining = perform("read-text-snapshot", {"start_chars": 3, "max_chars": 4096,
+                "expected_heads": json.dumps(heads)}, "snapshot-second", resource)
+            if remaining["basis"]["heads"] != heads or snapshot["content"]["text"] + remaining["content"]["text"] != initial:
+                raise RuntimeError("same-revision source chunks differ")
+            for name, chunk in (("snapshot-first", snapshot), ("snapshot-second", remaining)):
+                terminal = json.loads((output / (name + "-terminal.json")).read_text())
+                action = json.loads((output / (name + "-action.json")).read_text())
+                if chunk["record"]["roomId"] != action["room"] or chunk["record"]["appId"] != action["application"]:
+                    raise RuntimeError("source chunk differs from actual published workspace/app")
+                if chunk["record"]["recordId"] != action["record"]:
+                    raise RuntimeError("source chunk differs from actual published canonical record")
+                if chunk["content"]["file"] != action["semantic_identity"]["key"].removeprefix("code_editor.file:"):
+                    raise RuntimeError("source chunk differs from exact file target")
+                if not terminal["update"]["invocation"] or chunk["content"]["text_sha256"] != digest(fixture):
+                    raise RuntimeError("source chunk lacks original terminal or complete source identity")
             edit = {"expected_base_digest": observed["text_sha256"], "start_chars": 1,
                 "delete_chars": 2, "insert": "X", "deleted_text": observed["text"],
                 "before_context": observed["before_context"], "after_context": observed["after_context"]}
@@ -320,6 +342,18 @@ def run_native(args, output, profile, env, observed_sources, observed_binaries):
             expected = "αXγ\nfinal"
             if changed["text"] != expected or changed["text_sha256"] != hashlib.sha256(expected.encode()).hexdigest():
                 raise RuntimeError("public contextual edit did not yield expected current document")
+            stale_snapshot_action = bootstrap.wait_for("same file snapshot action", lambda: offered("read-text-snapshot", resource), shell)
+            stale_snapshot = bootstrap.invoke(socket, stale_snapshot_action, {"start_chars": 0, "max_chars": 1,
+                "expected_heads": json.dumps(heads)})
+            private_json(output / "snapshot-stale-accepted.json", stale_snapshot)
+            snapshot_failure = output / "snapshot-stale-failure.json"
+            try:
+                bootstrap.wait_terminal(socket, stale_snapshot, shell, public_failure_path=snapshot_failure)
+            except RuntimeError:
+                if not snapshot_failure.exists() or "stale_cursor" not in snapshot_failure.read_text():
+                    raise RuntimeError("terminal refusal does not prove exact-head snapshot staleness")
+            else:
+                raise RuntimeError("stale source snapshot unexpectedly succeeded")
             stale_action = bootstrap.wait_for("same file edit action", lambda: offered("edit-text", resource), shell)
             stale = bootstrap.invoke(socket, stale_action, edit)
             private_json(output / "stale-accepted.json", stale)
@@ -345,6 +379,8 @@ def run_native(args, output, profile, env, observed_sources, observed_binaries):
                 "original_public_actions_invoked": True, "unicode_range_observed": True,
                 "partial_edit_observed": True, "stale_overlap_refused": True,
                 "current_text_sha256": changed["text_sha256"], "disk_unchanged": True,
+                "same_committed_heads_chunks_observed": True,
+                "original_snapshot_admission_observed": True, "stale_snapshot_heads_refused": True,
                 "model_evaluation": False, "compiler_input_attestation": False})
         finally:
             for process in reversed(processes):
