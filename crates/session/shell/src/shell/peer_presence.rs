@@ -1681,6 +1681,8 @@ mod two_sessions {
             tree.set_room(ws, room),
             "the guest has to end up in the room it joined",
         );
+        // Its invite pins the host (hub 1) as the room's governor.
+        assert!(tree.pin_room_authority(room, PeerOrigin::hub(1)));
         let changes = host
             .export_room_changes_since(room, &[])
             .expect("the host is in the room it governs");

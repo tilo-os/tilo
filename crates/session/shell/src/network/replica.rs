@@ -770,6 +770,8 @@ mod tests {
                 guest_tree.set_room(guest_ws, room_a),
                 "the guest joins room A"
             );
+            // The invite names the host (hub 1) as room A's governor.
+            assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
             let tree_a = host_tree.shared();
             let tree_b = guest_tree.shared();
@@ -849,16 +851,18 @@ mod tests {
                 .expect("owner admits Carol");
             host_tree.sync_room_doc(room);
 
+            let authority_key = iroh::SecretKey::generate();
             let guest = |name: &str| {
                 let mut tree = WorkspaceTree::default();
                 let workspace = tree.append_empty_workspace(name);
                 assert!(tree.set_room(workspace, room));
+                // Each accepted the authority's invite, which pins it.
+                assert!(tree.pin_room_authority(room, PeerOrigin::peer(&authority_key.public())));
                 (tree.shared(), workspace)
             };
             let (bob_tree, bob_workspace) = guest("Bob local");
             let (carol_tree, carol_workspace) = guest("Carol local");
             let host_tree = host_tree.shared();
-            let authority_key = iroh::SecretKey::generate();
             let host = Arc::new(Mutex::new(
                 WorkspaceTreeReplica::new(1, host_tree.clone())
                     .with_origin(PeerOrigin::peer(&authority_key.public())),
@@ -939,6 +943,8 @@ mod tests {
                 guest_tree.set_room(guest_ws, room_a),
                 "the guest joins room A"
             );
+            // The invite names the host (hub 1) as room A's governor.
+            assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
             let tree_a = host_tree.shared();
             let tree_b = guest_tree.shared();
@@ -974,6 +980,7 @@ mod tests {
             let mut guest_tree = WorkspaceTree::default();
             let guest_ws = guest_tree.append_empty_workspace("Placeholder");
             assert!(guest_tree.set_room(guest_ws, room_a));
+            assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
             let tree_a = host_tree.shared();
             let tree_b = guest_tree.shared();

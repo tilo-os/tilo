@@ -4297,6 +4297,15 @@ pub fn set_pending_placement_for_identities(
     });
 }
 
+/// Automatic restoration waits for the preceding window of this app to map.
+/// The existing launch failure and expiry paths retire unanswered placements;
+/// claimed placements remain briefly for the compositor's second lookup.
+pub(crate) fn has_unclaimed_launch(app_id: &str) -> bool {
+    lock(&LaunchSession::current().pending)
+        .iter()
+        .any(|note| note.matches(app_id) && note.claimed_by.is_none())
+}
+
 /// The first surface to ask claims the note and gets the same answer on
 /// every later ask; a different surface retires it and gets `None`. `None`
 /// also covers: not launched by us, or nothing special asked.
@@ -5035,6 +5044,30 @@ mod tests {
             "Its window stopped without being closed. Open it again from Applications; \
              the desktop log says why."
         );
+    }
+
+    #[test]
+    fn automatic_restore_gate_is_released_by_the_existing_expiry_paths() {
+        let package = "dev.tilo.restore-expiry";
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(55));
+        assert!(has_unclaimed_launch(package));
+        assert!(has_unclaimed_launch("RESTORE-EXPIRY"));
+        assert!(!has_unclaimed_launch("dev.tilo.another-restore"));
+
+        // A clean parent exit retains its destination for the existing
+        // handoff grace. Expiry of that grace releases automatic siblings.
+        let now = Instant::now();
+        retire_pending_placement_at(package, now);
+        assert!(has_unclaimed_launch(package));
+        assert!(expire_pending_placements_at(now).is_empty());
+        assert!(!has_unclaimed_launch(package));
+
+        // A still-running but windowless parent also cannot pin restore.
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(66));
+        let deadline = lock(&LaunchSession::current().pending)[0].present_before;
+        assert_eq!(expire_pending_placements_at(deadline), vec![package]);
+        assert!(!has_unclaimed_launch(package));
+        clear_pending_placements();
     }
 
     /// The startup metrics of `package_id`'s launches. The metrics registry

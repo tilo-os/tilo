@@ -700,7 +700,12 @@ impl QuickFS {
         if attr.kind == FileType::Directory {
             return Err(EISDIR);
         }
-        if self.is_document(ino) || self.buffers().contains_key(&ino) {
+        if let Some(stage) = self.stage(ino) {
+            return self
+                .read_stage_blocking(&stage, offset, len)
+                .map_err(|e| to_errno(&e));
+        }
+        if self.is_document(ino) {
             let whole = self.read_full_blocking(ino).map_err(|e| to_errno(&e))?;
             let start = usize::try_from(offset)
                 .unwrap_or(usize::MAX)
@@ -770,7 +775,7 @@ impl QuickFS {
         let read = || std::fs::read(snapshot).map_err(|e| to_errno(&e));
         match self.lookup_kind(parent, name) {
             Some((ino, FileType::RegularFile)) if self.is_document(ino) => {
-                self.commit_buffer(ino, &read()?)
+                self.commit_bytes(ino, &read()?)
             }
             None => {
                 if let Some(codec) = self.new_document_codec(name) {
@@ -833,7 +838,7 @@ impl QuickFS {
         if data.is_empty() {
             return Ok(());
         }
-        let committed = self.commit_buffer(ino, data);
+        let committed = self.commit_bytes(ino, data);
         if committed.is_err() {
             // A document its codec refuses must not stay behind empty.
             let _ = self.delete_named(parent, name.as_bytes(), false);

@@ -17215,6 +17215,7 @@ impl Widget for ShellOverlayHost {
                 apps.bind_messaging_network_prompts(prompts.clone());
             }
             apps.pump_messaging_records();
+            apps.pump_feedback();
         }
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
@@ -19791,11 +19792,21 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 10] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
         [
+            (
+                "private-feedback",
+                self.chrome.as_ref().and_then(|chrome| {
+                    chrome
+                        .borrow()
+                        .hosted_inputs
+                        .in_process()
+                        .and_then(|apps| apps.borrow().feedback_deadline())
+                }),
+            ),
             (
                 "onboarding",
                 self.onboarding

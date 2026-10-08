@@ -737,10 +737,6 @@ impl MusicApp {
         self.persist_device_profile = false;
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate the field assignments, not reduce them"
-    )]
     fn new_with_device_profile(load_device_profile: bool) -> Self {
         // Optional initial-view override, used by `--shots` to capture
         // screens other than Home (e.g. `TILO_MUSIC_VIEW=album:al_glasslight`).
@@ -752,6 +748,24 @@ impl MusicApp {
         let device_profile = persist_device_profile
             .then(crate::storage::load_device_profile)
             .unwrap_or_default();
+        Self::from_device_profile(
+            device_profile,
+            persist_device_profile,
+            query,
+            preset_search_at,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate the field assignments, not reduce them"
+    )]
+    fn from_device_profile(
+        device_profile: crate::storage::DeviceProfile,
+        persist_device_profile: bool,
+        query: String,
+        preset_search_at: Option<Instant>,
+    ) -> Self {
         let media_cache = persist_device_profile
             .then(crate::storage::load_media_cache)
             .unwrap_or_default();
@@ -808,7 +822,7 @@ impl MusicApp {
             worker: None,
             backend_name: "offline (bundled library)".to_string(),
             backend_live: false,
-            live_hits: Vec::new(),
+            live_hits: device_profile.queue_catalogue,
             stored_library: Library::default(),
             live_search_pending: None,
             live_results: None,
@@ -1005,6 +1019,7 @@ impl MusicApp {
         }
         let next_library = doc::load_library(state);
         self.lib = next_library;
+        self.inject_live_hits();
         self.library_heads = Some(heads);
         self.sync_playlist_covers();
     }
@@ -1110,6 +1125,7 @@ impl MusicApp {
             spotify_catalogue: self.spotify_catalogue,
             local_file: self.local_file.clone(),
             playback: self.pb.clone(),
+            queue_catalogue: self.queue_catalogue(),
         })
         .map_err(|error| format!("could not save local Music state: {error}"))
     }
@@ -1119,6 +1135,21 @@ impl MusicApp {
             self.playback_error = Some(error.clone());
             self.notify(ToastKind::Error, error);
         }
+    }
+
+    fn queue_catalogue(&self) -> Vec<CatalogueTrack> {
+        self.pb
+            .queue
+            .iter()
+            .filter_map(|id| {
+                let track = self.lib.track(id)?;
+                Some(CatalogueTrack {
+                    track: track.clone(),
+                    album: self.lib.albums.get(&track.album_id)?.clone(),
+                    artist: self.lib.artists.get(&track.artist_id)?.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Show a transient message: a confirmation (`Success`), something under
@@ -1184,6 +1215,7 @@ impl MusicApp {
             return;
         }
         self.lib = state.clone();
+        self.inject_live_hits();
         self.sync_playlist_covers();
     }
 
@@ -1552,6 +1584,15 @@ impl MusicApp {
     }
 
     fn current_duration_ms(&self) -> u64 {
+        if self
+            .pb
+            .current
+            .as_deref()
+            .is_some_and(crate::stream::valid_native_track)
+            && let Some(duration) = self.audio.duration_ms()
+        {
+            return duration;
+        }
         if self
             .local_file
             .as_ref()
@@ -2908,8 +2949,11 @@ impl MusicApp {
         if self.play_cached_track_if_available(track_id) {
             return None;
         }
-        let t = self.lib.track(track_id)?;
-        let yt_id = t.yt_id.clone();
+        let yt_id = self
+            .lib
+            .track(track_id)
+            .map(|track| track.yt_id.clone())
+            .or_else(|| crate::stream::valid_native_track(track_id).then(|| track_id.to_owned()))?;
 
         self.ensure_worker();
         let Some(request_id) = self.next_worker_request_id() else {
@@ -3173,10 +3217,9 @@ impl MusicApp {
     ) -> Result<Option<u64>, String> {
         if playback.queue.len() > 10_000
             || playback.volume > 100
-            || playback
-                .queue
-                .iter()
-                .any(|id| self.playback_track(id).is_none())
+            || playback.queue.iter().any(|id| {
+                self.playback_track(id).is_none() && !crate::stream::valid_native_track(id)
+            })
         {
             return Err("invalid local playback request".into());
         }
@@ -3187,7 +3230,8 @@ impl MusicApp {
             Some(current)
                 if playback.queue.get(playback.queue_index).map(String::as_str)
                     != Some(current)
-                    || self.playback_track(current).is_none() =>
+                    || (self.playback_track(current).is_none()
+                        && !crate::stream::valid_native_track(current)) =>
             {
                 return Err("current playback track does not match the queue".into());
             }
@@ -3200,10 +3244,11 @@ impl MusicApp {
                             .map_or(0, crate::model::Track::duration_ms)
                     };
                     let pending_local_duration = duration == 0
-                        && self
-                            .local_file
-                            .as_ref()
-                            .is_some_and(|file| file.track.id == current);
+                        && (crate::stream::valid_native_track(current)
+                            || self
+                                .local_file
+                                .as_ref()
+                                .is_some_and(|file| file.track.id == current));
                     !pending_local_duration && playback.position_ms > duration
                 } =>
             {

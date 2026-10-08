@@ -76,9 +76,9 @@ struct Pending {
 /// start a local instance of each one it may. Returns whether anything
 /// was decided, so the caller can repaint only when needed.
 ///
-/// At most one launch per app id per call: the launcher correlates a
-/// launch with its window by app id, so two in flight would have the
-/// second displace the first.
+/// At most one unanswered launch per app id, across reconciliation passes:
+/// the launcher correlates each arriving window with its app's FIFO placement.
+/// Wait for that claim, failure or expiry before starting a saved sibling.
 pub fn examine(tree: &mut WorkspaceTree) -> bool {
     let released = release_brought_over(tree);
     let installing = start_requested_installs(tree);
@@ -90,8 +90,9 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
     let mut started: Vec<String> = Vec::new();
     let mut decided = false;
     for item in todo {
-        // One in flight per app; the rest wait for the next pass.
-        if started.iter().any(|a| a.eq_ignore_ascii_case(&item.app_id)) {
+        if started.iter().any(|a| a.eq_ignore_ascii_case(&item.app_id))
+            || launcher::has_unclaimed_launch(&item.app_id)
+        {
             continue;
         }
         let Some(workspace) = tree.desktop.workspaces.get(item.workspace) else {
@@ -840,6 +841,72 @@ mod tests {
                 })
             })
             .expect("local app tab remains in the tree")
+    }
+
+    #[test]
+    fn restored_sibling_waits_across_frames_until_the_first_window_maps() {
+        let app = "dev.tilo.restore-sibling-waits";
+        let (mut tree, first) = tree_with_local_app(app);
+        set_note(&mut tree, first, OPENING.into());
+        let second = next_id();
+        tree.desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .push(Tab {
+                id: second,
+                title: "Second saved window".into(),
+                tile: TileContent::LocalApp {
+                    app_id: app.into(),
+                    label: "Second saved window".into(),
+                    note: String::new(),
+                },
+            });
+        launcher::set_pending_placement(app, Placement::IntoTab(first));
+        launcher::attach_continuity_instance_for_test(app, 42);
+
+        for _ in 0..3 {
+            assert!(
+                !examine(&mut tree),
+                "the next reconciliation frame must wait for the preceding saved window"
+            );
+            assert_eq!(local_app_note(&tree, second), "");
+            assert!(any_pending(&tree), "the sibling still needs restoration");
+        }
+        assert_eq!(
+            launcher::placement_and_instance_for_toplevel(app, 4711),
+            Some((Placement::IntoTab(first), Some(42))),
+            "the first native surface retains its exact saved tab and record"
+        );
+        assert!(examine(&mut tree), "mapping releases the next saved window");
+        assert_eq!(local_app_note(&tree, second), NOT_INSTALLED);
+        launcher::clear_pending_placements();
+    }
+
+    #[test]
+    fn restored_window_waits_for_a_live_launch_but_not_a_failed_or_unrelated_one() {
+        let app = "dev.tilo.restore-launch-lifetime";
+        let (mut tree, tab) = tree_with_local_app(app);
+        launcher::set_pending_placement(app, Placement::IntoTab(next_id()));
+        assert!(
+            !examine(&mut tree),
+            "an unanswered launch must survive into the next reconciliation pass"
+        );
+        assert_eq!(local_app_note(&tree, tab), "");
+
+        let other = "dev.tilo.unrelated-restore";
+        let (mut other_tree, other_tab) = tree_with_local_app(other);
+        assert!(
+            examine(&mut other_tree),
+            "other apps are examined independently"
+        );
+        assert_eq!(local_app_note(&other_tree, other_tab), NOT_INSTALLED);
+
+        launcher::clear_pending_placement(app);
+        assert!(
+            examine(&mut tree),
+            "a failed launch must release its sibling"
+        );
+        assert_eq!(local_app_note(&tree, tab), NOT_INSTALLED);
+        launcher::clear_pending_placements();
     }
 
     fn tree_with_peer_window(ws: Workspace) -> (WorkspaceTree, u64) {

@@ -69,6 +69,9 @@ store-app-installed = App installed.
 store-app-updated = App updated.
 store-app-removed = App removed.
 
+store-search-empty = No apps found
+store-search-empty-help = Try a different search or category.
+store-search-clear = Clear filters
 store-operation-failed = Could not complete the operation
 store-error-refresh = Refresh apps
 store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
