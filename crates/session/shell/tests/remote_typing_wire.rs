@@ -1123,6 +1123,35 @@ fn authenticated_window_harness() -> (Harness, shell::shell::state::RoomId, u32,
     (h, room, pid, start)
 }
 
+fn assert_native_input_geometry(h: &Harness, id: u64, proof: &serde_json::Value) {
+    let mut frame = shell::compositor::frame::FrameBuilder::with_tree(
+        h.state.workspace_tree.read().clone(),
+        (1600, 900),
+    );
+    let _ = frame.paint_settled();
+    let hit = shell::shell::input_policy::foreign_tile_for_surface(
+        &h.state.workspace_tree.read(),
+        frame.host(),
+        id,
+    )
+    .expect("the production route has a laid-out tile");
+    let input = h.state.native_window_input_provenance_json(&frame);
+    drop(frame);
+    assert_eq!(
+        input["input_outputs"],
+        serde_json::json!([[0.0, 0.0, 1600.0, 900.0]])
+    );
+    assert_eq!(
+        input["windows"][0]["input_rect"],
+        serde_json::json!([hit.rect.x0, hit.rect.y0, hit.rect.x1, hit.rect.y1])
+    );
+    assert_eq!(
+        input["windows"][0]["adoption_id"],
+        proof["windows"][0]["adoption_id"]
+    );
+    assert!(!input.to_string().contains("private title"));
+}
+
 #[test]
 fn native_window_provenance_requires_current_authenticated_surface_record_and_lifetime() {
     use shell::shell::state::{LocalAppRecord, TileContent};
@@ -1178,6 +1207,8 @@ fn native_window_provenance_requires_current_authenticated_surface_record_and_li
         .unwrap();
     assert!(!adoption.is_nil());
     assert!(!proof.to_string().contains("private title"));
+    assert_native_input_geometry(&h, id, &proof);
+
     h.state
         .workspace_tree
         .write()

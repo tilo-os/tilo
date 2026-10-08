@@ -2901,7 +2901,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         serde_json::json!({
             "seat_focus": self.seat.map(State::seat_focus_json),
-            "native_window_provenance": self.seat.map(State::native_window_provenance_json),
+            "native_window_provenance": self.seat.map(|state| state.native_window_input_provenance_json(self.fb)),
             "host_window_provenance": self.seat.map(State::host_window_provenance_json),
             "overlays": {
                 "overview": overlays.overview,

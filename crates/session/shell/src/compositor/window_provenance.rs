@@ -155,6 +155,56 @@ impl State {
     }
 
     /// Read through owner-only `state_dump`, never agent-control or app RPC.
+    /// Add the exact current input-route geometry to already authenticated workers.
+    pub fn native_window_input_provenance_json(
+        &self,
+        frame: &super::frame::FrameBuilder,
+    ) -> serde_json::Value {
+        let mut proof = self.native_window_provenance_json();
+        let tree = self.workspace_tree.read();
+        let Some(fields) = proof.as_object_mut() else {
+            return proof;
+        };
+        fields.insert(
+            "input_outputs".into(),
+            serde_json::json!(
+                frame
+                    .host()
+                    .output_geometry()
+                    .iter()
+                    .map(|output| {
+                        let rect = output.rect();
+                        [rect.x0, rect.y0, rect.x1, rect.y1]
+                    })
+                    .collect::<Vec<_>>()
+            ),
+        );
+        if let Some(windows) = fields
+            .get_mut("windows")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for window in windows {
+                let surface = window.get("surface_id").and_then(serde_json::Value::as_u64);
+                let hit = surface.and_then(|surface| {
+                    crate::shell::input_policy::foreign_tile_for_surface(
+                        &tree,
+                        frame.host(),
+                        surface,
+                    )
+                });
+                if let Some(fields) = window.as_object_mut() {
+                    fields.insert(
+                        "input_rect".into(),
+                        hit.map_or(serde_json::Value::Null, |hit| {
+                            serde_json::json!([hit.rect.x0, hit.rect.y0, hit.rect.x1, hit.rect.y1])
+                        }),
+                    );
+                }
+            }
+        }
+        proof
+    }
+
     pub fn native_window_provenance_json(&self) -> serde_json::Value {
         let (candidates, omitted) = self.current_window_candidates();
         let mut windows = Vec::new();

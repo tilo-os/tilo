@@ -239,7 +239,12 @@ fn answer_navigation(
 ) -> EffectAnswer {
     match effect {
         NavigationEffect::InspectNavigation => {
-            Ok(ui::framework::Effected::value(app.navigation_inspection()))
+            let mut state = app.navigation_inspection();
+            let Some(fields) = state.as_object_mut() else {
+                return Err("Settings navigation inspection is unavailable".into());
+            };
+            fields.insert("input".into(), app.input_inspection());
+            Ok(ui::framework::Effected::value(state))
         }
         NavigationEffect::OpenPane { pane } => {
             let category = Category::from_slug(&pane)

@@ -82,6 +82,7 @@ pub struct SettingsApp {
     selected: Category,
     last_drawn_navigation: Option<NavigationState>,
     last_drawn_hover: Option<(bool, Option<Category>)>,
+    last_drawn_search: Option<serde_json::Value>,
     /// `true` once a selection (or other composition-affecting change) has
     /// happened and the host must re-run `build_layout`. Drained by
     /// `take_structure_dirty`.
@@ -209,6 +210,7 @@ impl SettingsApp {
             selected: Category::DEFAULT,
             last_drawn_navigation: None,
             last_drawn_hover: None,
+            last_drawn_search: None,
             structure_dirty: false,
             cx,
             narrow_screen: NavPane::Content,
@@ -307,6 +309,59 @@ impl SettingsApp {
 
     pub(crate) fn navigation_inspection(&self) -> serde_json::Value {
         self.navigation_state().snapshot()
+    }
+
+    /// Current mounted input bounds, read without delivering a probe event.
+    pub(crate) fn input_inspection(&self) -> serde_json::Value {
+        fn rect(value: vello::kurbo::Rect) -> [f64; 4] {
+            [value.x0, value.y0, value.x1, value.y1]
+        }
+        fn inspect(
+            widget: &dyn Widget,
+            search: &mut Option<serde_json::Value>,
+            rows: &mut Vec<serde_json::Value>,
+        ) {
+            if widget.test_id() == Some("settings.search") {
+                *search = Some(serde_json::json!({
+                    "id": "settings.search", "rect": rect(widget.get_rect()),
+                    "focused": widget.is_focused(),
+                }));
+            }
+            if let Some(list) = widget
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
+                && widget.test_id() == Some(sidebar::NAV_ID)
+            {
+                for id in list.visible_item_ids() {
+                    if Category::from_slug(&id).is_some()
+                        && let Some(bounds) = list.row_rect(&id)
+                    {
+                        rows.push(serde_json::json!({"pane": id, "rect": rect(bounds)}));
+                    }
+                }
+            }
+            widget.for_each_child(&mut |child| inspect(child, search, rows));
+        }
+        let mut search = None;
+        let mut rows = Vec::new();
+        inspect(self, &mut search, &mut rows);
+        serde_json::json!({
+            "app": "so.tilo.settings", "root_rect": rect(self.rect), "search": search,
+            "query_empty": self.search_state.with(String::is_empty) && self.search_query.is_empty(),
+            "search_state": {
+                "local_empty": self.search_state.with(String::is_empty),
+                "local_fixture_n": self.search_state.with(|value| value == "n"),
+                "synchronized_empty": self.search_query.is_empty(),
+                "synchronized_fixture_n": self.search_query == "n",
+                "focused": search.as_ref().and_then(|search| search["focused"].as_bool()),
+                "categories": rows.iter().filter_map(|row| row["pane"].as_str()).collect::<Vec<_>>(),
+            },
+            "rows": rows, "navigation": self.navigation_inspection(),
+            "rendered_search": self.last_drawn_search,
+            "rendered_navigation": self.last_drawn_navigation.map(NavigationState::snapshot),
+            "hover": Self::hover_snapshot(self.hover_state()),
+            "rendered_hover": self.last_drawn_hover.map(Self::hover_snapshot),
+        })
     }
 
     pub fn selected(&self) -> Category {
@@ -828,6 +883,8 @@ impl Widget for SettingsApp {
             "search_id": "settings.search",
             "nav_id": nav_id,
             "ready": valid(self.rect) && search_ready,
+            "search_state": self.input_inspection().get("search_state").cloned(),
+            "rendered_search": self.last_drawn_search,
             "local_search_text": self.search_state.with(Clone::clone),
             "synchronized_search_query": self.search_query,
             "search_widget_text": search.as_ref().and_then(|value| value.get("text")),
@@ -975,6 +1032,7 @@ impl Widget for SettingsApp {
             shell.draw(scene, transform, text_renderer, theme, presence);
             self.last_drawn_navigation = Some(self.navigation_state());
             self.last_drawn_hover = Some(self.hover_state());
+            self.last_drawn_search = self.input_inspection().get("search_state").cloned();
         }
     }
 
@@ -998,6 +1056,7 @@ impl Widget for SettingsApp {
             );
             self.last_drawn_navigation = Some(self.navigation_state());
             self.last_drawn_hover = Some(self.hover_state());
+            self.last_drawn_search = self.input_inspection().get("search_state").cloned();
         }
     }
 
@@ -1286,6 +1345,75 @@ mod tests {
             ui::headless::viewport((w, h)),
             theme.clone(),
         )
+    }
+
+    #[test]
+    fn settings_input_inspection_reads_mounted_bounds_without_a_probe_event() {
+        let unmounted = SettingsApp::with_selected(Category::Network);
+        assert!(unmounted.input_inspection()["search"].is_null());
+        let mut app = layout_at(unmounted, 1200.0, 1800.0);
+        let first = app.input_inspection();
+        assert_eq!(first["search"]["id"], "settings.search");
+        assert_eq!(first["query_empty"], true);
+        assert_eq!(first["rows"].as_array().unwrap().len(), Category::ALL.len());
+        let root = first["root_rect"].as_array().unwrap();
+        let search = first["search"]["rect"].as_array().unwrap();
+        assert!(search[0].as_f64().unwrap() >= root[0].as_f64().unwrap());
+        assert!(search[2].as_f64().unwrap() <= root[2].as_f64().unwrap());
+        assert!(search[1].as_f64().unwrap() >= root[1].as_f64().unwrap());
+        assert!(search[3].as_f64().unwrap() <= root[3].as_f64().unwrap());
+        assert_eq!(
+            app.input_inspection(),
+            first,
+            "read does not change navigation, focus or search"
+        );
+        Framed::harness_mut(&mut app)
+            .relayout_themed(ui::headless::viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .unwrap();
+        let resized = app.input_inspection();
+        assert_ne!(resized["root_rect"], first["root_rect"]);
+        assert_eq!(resized["query_empty"], true);
+        assert_eq!(resized["navigation"]["selected_pane"], "network");
+        assert!(!resized.to_string().contains("document_actor"));
+        assert_eq!(
+            resized["search_state"], resized["rendered_search"],
+            "the inspector reports an actual drawn witness"
+        );
+        let search = resized["search"]["rect"].as_array().unwrap();
+        let x = f64::midpoint(search[0].as_f64().unwrap(), search[2].as_f64().unwrap());
+        let y = f64::midpoint(search[1].as_f64().unwrap(), search[3].as_f64().unwrap());
+        Framed::harness_mut(&mut app).click_at(x, y);
+        let focused = app.input_inspection();
+        assert_eq!(focused["search_state"]["focused"], true);
+        assert_eq!(focused["search_state"], focused["rendered_search"]);
+        Framed::harness_mut(&mut app).type_text("n");
+        let searched = app.input_inspection();
+        assert_eq!(searched["query_empty"], false);
+        assert_eq!(searched["search_state"]["local_fixture_n"], true);
+        assert_eq!(searched["search_state"]["synchronized_fixture_n"], true);
+        assert_eq!(searched["search_state"], searched["rendered_search"]);
+        let mut categories = searched["search_state"]["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>();
+        categories.sort_unstable();
+        assert_eq!(
+            categories,
+            [
+                "agent_models",
+                "appearance",
+                "devices_sync",
+                "external_accounts",
+                "network",
+                "notifications",
+                "printers",
+                "region_formats",
+                "sound"
+            ]
+        );
+        assert_eq!(searched["navigation"]["selected_pane"], "network");
     }
 
     #[test]

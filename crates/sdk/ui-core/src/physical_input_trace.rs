@@ -144,6 +144,11 @@ pub(crate) fn safe_snapshot(snapshot: Option<Value>) -> Value {
                 safe.insert(key.into(), value);
             }
         }
+        for key in ["search_state", "rendered_search"] {
+            if let Some(value) = snapshot.get(key).and_then(safe_search) {
+                safe.insert(key.into(), value);
+            }
+        }
         return Value::Object(safe);
     }
     if snapshot["app"] != "so.tilo.notes" {
@@ -197,6 +202,64 @@ pub(crate) fn safe_snapshot(snapshot: Option<Value>) -> Value {
         safe.insert("caret".into(), Value::Object(safe_caret));
     }
     Value::Object(safe)
+}
+
+fn safe_search(value: &Value) -> Option<Value> {
+    let fields = [
+        "local_empty",
+        "local_fixture_n",
+        "synchronized_empty",
+        "synchronized_fixture_n",
+        "focused",
+    ];
+    let mut safe = serde_json::Map::new();
+    for field in fields {
+        safe.insert(field.into(), Value::Bool(value.get(field)?.as_bool()?));
+    }
+    if safe["local_empty"] == safe["local_fixture_n"]
+        || safe["synchronized_empty"] == safe["synchronized_fixture_n"]
+    {
+        return None;
+    }
+    let categories = value.get("categories")?.as_array()?;
+    let mut names = std::collections::HashSet::new();
+    if categories.len() > 32
+        || categories.iter().any(|category| {
+            let Some(name) = category.as_str() else {
+                return true;
+            };
+            !matches!(
+                name,
+                "network"
+                    | "bluetooth"
+                    | "devices_sync"
+                    | "sound"
+                    | "speakers"
+                    | "displays"
+                    | "mouse_keyboard"
+                    | "keyboard_shortcuts"
+                    | "time_date"
+                    | "users"
+                    | "printers"
+                    | "power"
+                    | "appearance"
+                    | "accessibility"
+                    | "notifications"
+                    | "default-apps"
+                    | "storage"
+                    | "external_accounts"
+                    | "agent_models"
+                    | "region_formats"
+                    | "permissions"
+                    | "updates"
+                    | "about"
+            ) || !names.insert(name)
+        })
+    {
+        return None;
+    }
+    safe.insert("categories".into(), Value::Array(categories.clone()));
+    Some(Value::Object(safe))
 }
 
 fn safe_hover(value: &Value) -> Option<Value> {
@@ -303,6 +366,36 @@ mod tests {
         assert_eq!(safe["editor_composing"], false);
         assert!(safe.get("sidebar_renaming").is_none());
         assert!(!safe.to_string().contains("private rename value"));
+    }
+
+    #[test]
+    fn settings_search_witness_keeps_only_the_empty_or_fixed_public_fixture() {
+        let state = serde_json::json!({"local_empty":true, "local_fixture_n":false,
+            "synchronized_empty":true, "synchronized_fixture_n":false, "focused":true,
+            "categories":["network", "sound"], "text":"private search"});
+        let safe = safe_snapshot(Some(serde_json::json!({"app":"so.tilo.settings",
+            "search_state":state, "rendered_search":state})));
+        assert_eq!(
+            safe["search_state"]["categories"],
+            serde_json::json!(["network", "sound"])
+        );
+        assert_eq!(safe["search_state"], safe["rendered_search"]);
+        assert!(!safe.to_string().contains("private search"));
+        let mut unknown = state.clone();
+        unknown["local_empty"] = Value::Bool(false);
+        assert!(
+            safe_search(&unknown).is_none(),
+            "other queries are not exportable"
+        );
+        unknown = state.clone();
+        unknown["categories"] = serde_json::json!(["private result"]);
+        assert!(safe_search(&unknown).is_none());
+        unknown = state.clone();
+        unknown["categories"] = serde_json::json!(["network", "network"]);
+        assert!(safe_search(&unknown).is_none());
+        unknown = state;
+        unknown["focused"] = Value::String("private value".into());
+        assert!(safe_search(&unknown).is_none());
     }
 
     #[test]
