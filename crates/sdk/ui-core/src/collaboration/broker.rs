@@ -2548,6 +2548,21 @@ struct ConnectedBroker {
     primary_route: PrimaryRouteState,
 }
 
+#[cfg(all(test, unix))]
+pub(crate) struct NativeRefreshProbe {
+    replace_history: Box<dyn Fn(Vec<u8>)>,
+    latest_action_count: Box<dyn Fn() -> Option<usize>>,
+}
+#[cfg(all(test, unix))]
+impl NativeRefreshProbe {
+    pub(crate) fn replace_history(&self, history: Vec<u8>) {
+        (self.replace_history)(history);
+    }
+    pub(crate) fn latest_action_count(&self) -> Option<usize> {
+        (self.latest_action_count)()
+    }
+}
+
 impl CollaborationManager {
     /// Connect to the launcher-inherited typed collaboration service and
     /// announce an explicit route. Headless participants use this instead of
@@ -2772,6 +2787,16 @@ impl CollaborationManager {
         )
         .map(Self::from_connected)
         .map_err(|error| error.to_string())
+    }
+
+    /// Observe actual committed refresh and surface RPCs on the existing socket fixture.
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_refresh_fixture_for_test(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+    ) -> (Self, NativeRefreshProbe) {
+        tests::native_refresh_fixture(app, room, history)
     }
 
     /// Wire/SDK ordering fixture only; not a native authority proof.
@@ -6699,6 +6724,7 @@ mod tests {
         #[cfg(unix)]
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
+        committed_history_revision: Option<[u8; 32]>,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         media_commands: Vec<runtime_collab::native_media::Request>,
@@ -7176,10 +7202,12 @@ mod tests {
                     Some(bytes) => match request {
                         Request::Open {
                             known_revision: Some(revision),
-                        } if revision == [7; 32] => Reply::Unchanged { revision },
+                        } if revision == captures.committed_history_revision.unwrap_or([7; 32]) => {
+                            Reply::Unchanged { revision }
+                        }
                         Request::Open { .. } => Reply::Chunk {
                             capture: 1,
-                            revision: [7; 32],
+                            revision: captures.committed_history_revision.unwrap_or([7; 32]),
                             total: bytes.len() as u32,
                             offset: 0,
                             bytes: bytes.clone(),
@@ -9485,6 +9513,44 @@ mod tests {
                 }
             })
             .await;
+    }
+
+    pub(super) fn native_refresh_fixture(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+    ) -> (CollaborationManager, NativeRefreshProbe) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                committed_history_fixture: Some(history),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let replace = captures.clone();
+        let probe = NativeRefreshProbe {
+            replace_history: Box::new(move |history| {
+                let mut captures = replace.lock().unwrap();
+                captures.committed_history_fixture = Some(history);
+                captures.committed_history_revision = Some([8; 32]);
+            }),
+            latest_action_count: Box::new(move || {
+                captures
+                    .lock()
+                    .unwrap()
+                    .action_publications
+                    .last()
+                    .map(|(_, actions)| actions.len())
+            }),
+        };
+        (
+            CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+            probe,
+        )
     }
 
     pub(super) fn native_initial_fixture(

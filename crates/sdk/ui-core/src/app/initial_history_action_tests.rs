@@ -511,3 +511,91 @@ fn initial_history_local_control_is_not_admitted_while_committed_capture_is_pend
     assert!(app.collaboration.manager.is_connected());
     assert!(app.action_publication_failure.is_none());
 }
+
+#[test]
+fn initial_history_committed_refresh_withdraws_offered_actions_until_owner_applies() {
+    let (mut app, calls) = initial_history_app();
+    let mut original = automerge::AutoCommit::new();
+    original.put(ROOT, "refresh-value", "original").unwrap();
+    original.commit();
+    let (manager, probe) = CollaborationManager::native_refresh_fixture_for_test(
+        "so.tilo.initial-history-probe",
+        uuid::Uuid::new_v4(),
+        original.save(),
+    );
+    app.collaboration.manager = manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.poll_and_apply_collab_events();
+        assert!(
+            crate::time::now() < deadline,
+            "original history never applied"
+        );
+        std::thread::yield_now();
+    }
+    app.publish_action_surface();
+    app.collaboration.manager.wait_for_commands_for_test();
+    assert!(probe.latest_action_count().is_some_and(|count| count > 0));
+    original.put(ROOT, "refresh-value", "updated").unwrap();
+    original.commit();
+    probe.replace_history(original.save());
+    // Observe the real transport's changed capture without applying the owner turn.
+    while app.published_action_history_ready() {
+        assert!(
+            crate::time::now() < deadline,
+            "changed committed capture never observed"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        app.state
+            .doc
+            .get(ROOT, "refresh-value")
+            .unwrap()
+            .unwrap()
+            .0
+            .as_str(),
+        Some("original")
+    );
+    app.publish_action_surface();
+    app.collaboration.manager.wait_for_commands_for_test();
+    assert_eq!(
+        probe.latest_action_count(),
+        Some(0),
+        "the broker must withdraw the offered surface during original owner refresh"
+    );
+    assert!(
+        app.published_action_directory_page(initial_history_query())
+            .rows
+            .is_empty()
+    );
+    assert_eq!(calls.get(), 0);
+    while !app.published_action_history_ready() {
+        app.poll_and_apply_collab_events();
+        assert!(
+            crate::time::now() < deadline,
+            "refreshed owner never applied"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        app.state
+            .doc
+            .get(ROOT, "refresh-value")
+            .unwrap()
+            .unwrap()
+            .0
+            .as_str(),
+        Some("updated")
+    );
+    app.publish_action_surface();
+    app.collaboration.manager.wait_for_commands_for_test();
+    assert!(probe.latest_action_count().is_some_and(|count| count > 0));
+    assert!(
+        !app.published_action_directory_page(initial_history_query())
+            .rows
+            .is_empty()
+    );
+    assert!(app.collaboration.manager.is_connected());
+    assert_eq!(calls.get(), 0);
+}

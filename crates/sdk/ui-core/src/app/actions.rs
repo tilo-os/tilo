@@ -638,9 +638,27 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
-        if !self.collaboration.manager.is_connected()
-            || !self.published_action_history_ready_after_refresh()
-        {
+        if !self.collaboration.manager.is_connected() {
+            return;
+        }
+        if !self.published_action_history_ready_after_refresh() {
+            // Discovery must follow the same original-owner gate as dispatch.
+            // A late delivery still reaches the existing fail-closed guard.
+            if self
+                .actions
+                .last_published_actions
+                .as_ref()
+                .is_some_and(|actions| !actions.is_empty())
+                && self
+                    .collaboration
+                    .manager
+                    .send(CollabRequest::PublishActions {
+                        app_id: self.publication_app_id(),
+                        actions: Vec::new(),
+                    })
+            {
+                self.actions.last_published_actions = Some(Vec::new());
+            }
             return;
         }
         if self.collaboration.manager.take_action_surface_failed() {
