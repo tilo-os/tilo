@@ -456,7 +456,7 @@ fn agent_navigation_chooser_survives_search_refresh_until_dismissed() {
 }
 
 #[test]
-fn one_agent_marker_opens_the_room_bound_quick_composer_at_its_exact_anchor() {
+fn one_agent_marker_refuses_an_uncertified_navigation_session() {
     use crate::shell::state::{Workspace, WorkspaceId};
 
     let owner = "a1".repeat(32);
@@ -473,23 +473,15 @@ fn one_agent_marker_opens_the_room_bound_quick_composer_at_its_exact_anchor() {
     host.attach_app_action_broker(broker);
     let anchor = Rect::new(924.0, 180.0, 948.0, 204.0);
 
-    assert!(host.open_agent_quick_composer_from_user_navigation(
+    assert!(!host.open_agent_quick_composer_from_user_navigation(
         &room,
         &[("scribe".into(), "Scribe".into())],
         anchor,
     ));
-    assert_eq!(
-        host.agent_quick_composer.target(),
-        Some((room.as_str(), "scribe"))
-    );
+    assert_eq!(host.agent_quick_composer.target(), None);
     assert!(
-        host.take_focus_reset(),
-        "the marker-owned surface moves keyboard and AT focus into its editor"
-    );
-    assert!(host.agent_quick_composer.dismiss());
-    assert!(
-        host.take_focus_reset(),
-        "dismissal asks the frame to restore the previous valid focus"
+        !host.take_focus_reset(),
+        "a bare membership fixture cannot mint a focusable task-command surface"
     );
 }
 
@@ -515,17 +507,20 @@ fn agent_quick_composer_captures_the_seat_and_receives_pointer_keyboard_input() 
     tree.desktop.workspaces.push(workspace);
     let broker = crate::shell::broker_services::test_broker_with_membership(tree.clone().shared());
     let mut frame = crate::shell::frame::FrameBuilder::with_tree(tree, (1600, 900));
-    frame.with_chrome(|chrome| chrome.act_as(owner));
+    frame.with_chrome(|chrome| chrome.act_as(owner.clone()));
+    let actions =
+        crate::shell::certified_action_session::ActionSessionSource::fixture(broker.clone())
+            .open(&room, Some(&owner))
+            .expect("fixture action session")
+            .action_client();
     frame.host_mut().attach_app_action_broker(broker);
-    assert!(
-        frame
-            .host_mut()
-            .open_agent_quick_composer_from_user_navigation(
-                &room,
-                &[("scribe".into(), "Scribe".into())],
-                Rect::new(924.0, 180.0, 948.0, 204.0),
-            )
-    );
+    assert!(frame.host_mut().open_agent_quick_composer_with_actions(
+        actions,
+        room,
+        "scribe".into(),
+        "Scribe".into(),
+        Rect::new(924.0, 180.0, 948.0, 204.0),
+    ));
     frame.host_mut().agent_quick_composer.set_draft("");
     let _ = frame.paint_settled();
 

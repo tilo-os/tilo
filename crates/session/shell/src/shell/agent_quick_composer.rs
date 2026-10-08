@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tilo_actions::remote::Caller;
 use ui::agent_message_action::{
     AgentMessageOffer, AgentMessageOfferPoll, AgentMessagePoll, AgentMessageSubmission,
 };
@@ -16,9 +15,8 @@ use ui::widget::{
 use ui::{LocalState, Theme};
 use vello::kurbo::Rect;
 
-use super::collab_broker::AppActionBroker;
+use super::certified_action_session::{ActionSessionCustody, DesktopActionClient};
 use super::i18n::{t, t_args};
-use super::remote_actions::BrokerActionHost;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum ComposerIntent {
@@ -116,7 +114,7 @@ struct PendingWork {
 }
 
 const RECEIPT_FOLLOW_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
-type DraftKey = (String, String, ComposerIntent);
+type DraftKey = (Option<ActionSessionCustody>, String, String, ComposerIntent);
 
 #[derive(Default)]
 struct Drafts {
@@ -256,6 +254,7 @@ fn receipt_follow_deadline() -> std::time::Instant {
 fn poll_retained_message(
     drafts: &mut Drafts,
     receipts: &mut HashMap<DraftKey, ComposerReceipt>,
+    custody: Option<&ActionSessionCustody>,
     room: &str,
     agent: &str,
     intent: ComposerIntent,
@@ -284,13 +283,13 @@ fn poll_retained_message(
         AgentMessagePoll::Succeeded => {
             let revision = pending.draft_revision;
             receipts.insert(
-                (room.to_owned(), agent.to_owned(), intent),
+                (custody.cloned(), room.to_owned(), agent.to_owned(), intent),
                 ComposerReceipt {
                     submitted_revision: revision,
                     kind: ComposerReceiptKind::MessageAccepted,
                 },
             );
-            clear_retained_draft(drafts, room, agent, intent, revision);
+            clear_retained_draft(drafts, custody, room, agent, intent, revision);
             session.pending_message = None;
         }
         AgentMessagePoll::Failed => session.pending_message = None,
@@ -341,6 +340,7 @@ fn retained_work_outcome(
 fn poll_retained_work(
     drafts: &mut Drafts,
     receipts: &mut HashMap<DraftKey, ComposerReceipt>,
+    custody: Option<&ActionSessionCustody>,
     room: &str,
     agent: &str,
     session: &mut RetainedSession,
@@ -349,7 +349,12 @@ fn poll_retained_work(
     let Some(pending) = session.pending_work else {
         return;
     };
-    let key = (room.to_owned(), agent.to_owned(), pending.intent);
+    let key = (
+        custody.cloned(),
+        room.to_owned(),
+        agent.to_owned(),
+        pending.intent,
+    );
     let Some(outcome) = retained_work_outcome(&session.tasks, pending, now) else {
         return;
     };
@@ -390,7 +395,14 @@ fn poll_retained_work(
             },
         );
     }
-    clear_retained_draft(drafts, room, agent, pending.intent, pending.draft_revision);
+    clear_retained_draft(
+        drafts,
+        custody,
+        room,
+        agent,
+        pending.intent,
+        pending.draft_revision,
+    );
 }
 
 fn receipt_status(kind: &ComposerReceiptKind) -> String {
@@ -520,6 +532,7 @@ pub(crate) struct AgentQuickComposer {
     popover: Popover<Container>,
     room: String,
     agent: String,
+    custody: Option<ActionSessionCustody>,
     agent_label: String,
     frozen_anchor: Rect,
     drafts: Drafts,
@@ -585,6 +598,7 @@ impl Default for AgentQuickComposer {
             popover,
             room: String::new(),
             agent: String::new(),
+            custody: None,
             agent_label: String::new(),
             frozen_anchor: Rect::ZERO,
             drafts: Drafts::default(),
@@ -745,6 +759,7 @@ impl AgentQuickComposer {
         self.status.set(t("agent-quick-ready"));
         self.actions = None;
         self.tasks = None;
+        self.custody = None;
         self.pending_message = None;
         self.pending_message_offer = None;
         self.message_offer = None;
@@ -759,16 +774,20 @@ impl AgentQuickComposer {
 
     pub(crate) fn open(
         &mut self,
-        broker: AppActionBroker,
-        caller: Caller,
+        client: DesktopActionClient,
         room: String,
         agent: String,
         agent_label: String,
         anchor: Rect,
         viewport: Rect,
     ) {
+        let DesktopActionClient { actions, custody } = client;
         self.save_draft();
-        if self.room == room && self.agent == agent && self.actions.is_some() {
+        if self.room == room
+            && self.agent == agent
+            && self.custody.as_ref() == Some(&custody)
+            && self.actions.is_some()
+        {
             self.agent_label = agent_label;
             self.title.set(t_args(
                 "agent-quick-title",
@@ -789,6 +808,7 @@ impl AgentQuickComposer {
         self.displayed_tasks.clear();
         self.room = room;
         self.agent = agent;
+        self.custody = Some(custody);
         self.agent_label = agent_label;
         self.title.set(t_args(
             "agent-quick-title",
@@ -797,6 +817,7 @@ impl AgentQuickComposer {
         self.frozen_anchor = anchor;
         self.permission_refused = false;
         if let Some(session) = self.retained_sessions.remove(&(
+            self.custody.clone(),
             self.room.clone(),
             self.agent.clone(),
             ComposerIntent::Message,
@@ -808,10 +829,6 @@ impl AgentQuickComposer {
             self.pending_work = session.pending_work;
         } else {
             self.shown_intent = ComposerIntent::Message;
-            let actions = ui::remote_actions::RemoteActions::with_host(
-                std::sync::Arc::new(BrokerActionHost::new(broker)),
-                caller,
-            );
             self.tasks = Some(AgentTaskFrontiers::with_actions(actions.clone()));
             self.actions = Some(actions);
             self.pending_message = None;
@@ -849,7 +866,12 @@ impl AgentQuickComposer {
         };
         if session.is_pending() {
             self.retained_sessions.insert(
-                (self.room.clone(), self.agent.clone(), self.shown_intent),
+                (
+                    self.custody.clone(),
+                    self.room.clone(),
+                    self.agent.clone(),
+                    self.shown_intent,
+                ),
                 session,
             );
         }
@@ -902,6 +924,9 @@ impl AgentQuickComposer {
             self.status.revision(),
             self.send_enabled.revision(),
             self.send_requested.revision(),
+            self.task_visible.revision(),
+            self.task_options.revision(),
+            self.task_selected.revision(),
         );
         self.poll_retained_sessions();
         if !self.is_open() {
@@ -925,6 +950,9 @@ impl AgentQuickComposer {
                     self.status.revision(),
                     self.send_enabled.revision(),
                     self.send_requested.revision(),
+                    self.task_visible.revision(),
+                    self.task_options.revision(),
+                    self.task_selected.revision(),
                 );
         }
         let selected = self.intent.get();
@@ -953,6 +981,9 @@ impl AgentQuickComposer {
                 self.status.revision(),
                 self.send_enabled.revision(),
                 self.send_requested.revision(),
+                self.task_visible.revision(),
+                self.task_options.revision(),
+                self.task_selected.revision(),
             )
     }
 
@@ -966,10 +997,12 @@ impl AgentQuickComposer {
         self.pending_message_offer = None;
         self.message_offer = None;
         self.permission_refused = false;
-        if let Some(session) =
-            self.retained_sessions
-                .remove(&(self.room.clone(), self.agent.clone(), selected))
-        {
+        if let Some(session) = self.retained_sessions.remove(&(
+            self.custody.clone(),
+            self.room.clone(),
+            self.agent.clone(),
+            selected,
+        )) {
             self.actions = Some(session.actions);
             self.tasks = Some(session.tasks);
             self.pending_message = session.pending_message;
@@ -1100,13 +1133,29 @@ impl AgentQuickComposer {
         let receipts = &mut self.receipts;
         let now = std::time::Instant::now();
         self.retained_sessions
-            .retain(|(room, agent, intent), session| {
+            .retain(|(custody, room, agent, intent), session| {
                 session.actions.poll();
                 if session.pending_work.is_some() {
                     session.tasks.observe(room, agent);
                 }
-                poll_retained_message(drafts, receipts, room, agent, *intent, session);
-                poll_retained_work(drafts, receipts, room, agent, session, now);
+                poll_retained_message(
+                    drafts,
+                    receipts,
+                    custody.as_ref(),
+                    room,
+                    agent,
+                    *intent,
+                    session,
+                );
+                poll_retained_work(
+                    drafts,
+                    receipts,
+                    custody.as_ref(),
+                    room,
+                    agent,
+                    session,
+                    now,
+                );
                 session.is_pending()
             });
     }
@@ -1367,8 +1416,13 @@ impl AgentQuickComposer {
         }
     }
 
-    fn draft_key(&self) -> (String, String, ComposerIntent) {
-        (self.room.clone(), self.agent.clone(), self.shown_intent)
+    fn draft_key(&self) -> DraftKey {
+        (
+            self.custody.clone(),
+            self.room.clone(),
+            self.agent.clone(),
+            self.shown_intent,
+        )
     }
 
     fn save_draft(&mut self) {
@@ -1444,12 +1498,13 @@ impl AgentQuickComposer {
 
 fn clear_retained_draft(
     drafts: &mut Drafts,
+    custody: Option<&ActionSessionCustody>,
     room: &str,
     agent: &str,
     intent: ComposerIntent,
     revision: u64,
 ) {
-    let key = (room.to_owned(), agent.to_owned(), intent);
+    let key = (custody.cloned(), room.to_owned(), agent.to_owned(), intent);
     let Some(entry) = drafts.values.get_mut(&key) else {
         return;
     };
@@ -1596,7 +1651,9 @@ impl Widget for AgentQuickComposer {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.popover.accessibility()
+        self.popover
+            .accessibility()
+            .map(|node| node.with_semantic_key("agent-quick-composer"))
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -2451,6 +2508,112 @@ mod tests {
     }
 
     #[test]
+    fn same_room_agent_keeps_drafts_and_pending_submission_private_per_identity_custody() {
+        use crate::shell::certified_action_session::ActionSessionSource;
+        use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+
+        let mut workspace = Workspace::new(WorkspaceId(190), "Custody room");
+        workspace.set_owner("person-a");
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let source = ActionSessionSource::fixture(
+            crate::shell::broker_services::test_broker_with_membership(tree.shared()),
+        );
+        let session_a = source
+            .open(&room, Some("person-a"))
+            .expect("first fixture identity");
+        let session_b = source
+            .open(&room, Some("person-b"))
+            .expect("second fixture identity");
+        drop(source);
+        let custody_a = session_a.custody();
+        let custody_b = session_b.custody();
+        assert!(custody_a != custody_b);
+
+        let mut composer = AgentQuickComposer::default();
+        let anchor = Rect::new(80.0, 80.0, 100.0, 100.0);
+        let viewport = Rect::new(0.0, 0.0, 900.0, 700.0);
+        composer.open(
+            session_a.action_client(),
+            room.clone(),
+            "scribe".into(),
+            "Scribe".into(),
+            anchor,
+            viewport,
+        );
+        composer.set_draft("person A private direction");
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x6d; 16]));
+        let actions = composer.actions.as_ref().expect("first actions");
+        let call = actions.invoke_with_id(
+            invocation,
+            RemoteActionTarget {
+                provider: "chat-provider".into(),
+                address: ActionAddress::new("chat.person:scribe", "message"),
+            },
+            InvokeArgument::Text("person A private direction".into()),
+            None,
+        );
+        composer.pending_message = Some(PendingMessage {
+            state: AgentMessageSubmission::Invoke { invocation, call },
+            deadline: receipt_follow_deadline(),
+            pages_remaining: 1,
+            text: "person A private direction".into(),
+            draft_revision: composer.draft.revision(),
+            outcome_uncertain: false,
+        });
+
+        composer.open(
+            session_b.action_client(),
+            room.clone(),
+            "scribe".into(),
+            "Scribe".into(),
+            anchor,
+            viewport,
+        );
+        assert!(composer.custody.as_ref() == Some(&custody_b));
+        assert_eq!(composer.draft(), "");
+        assert!(composer.pending_message.is_none());
+        composer.set_draft("person B private direction");
+
+        composer.open(
+            session_a.action_client(),
+            room.clone(),
+            "scribe".into(),
+            "Scribe".into(),
+            anchor,
+            viewport,
+        );
+        drop(session_a);
+        assert!(composer.custody.as_ref() == Some(&custody_a));
+        assert_eq!(composer.draft(), "person A private direction");
+        assert!(composer.pending_message.is_some());
+
+        composer.open(
+            session_b.action_client(),
+            room.clone(),
+            "scribe".into(),
+            "Scribe".into(),
+            anchor,
+            viewport,
+        );
+        assert!(composer.custody.as_ref() == Some(&custody_b));
+        assert_eq!(composer.draft(), "person B private direction");
+        assert!(composer.pending_message.is_none());
+        assert!(composer.dismiss());
+        composer.open(
+            session_b.action_client(),
+            room,
+            "scribe".into(),
+            "Scribe".into(),
+            anchor,
+            viewport,
+        );
+        drop(session_b);
+        assert_eq!(composer.draft(), "person B private direction");
+    }
+
+    #[test]
     fn terminal_success_clears_only_the_submitted_revision() {
         let mut composer = AgentQuickComposer {
             room: "room-a".into(),
@@ -2593,9 +2756,12 @@ mod tests {
 
         assert!(composer.retained_sessions.is_empty());
         assert_eq!(
-            composer
-                .receipts
-                .get(&("room-a".into(), "scribe".into(), ComposerIntent::Message,)),
+            composer.receipts.get(&(
+                None,
+                "room-a".into(),
+                "scribe".into(),
+                ComposerIntent::Message,
+            )),
             Some(&ComposerReceipt {
                 submitted_revision,
                 kind: ComposerReceiptKind::MessageAccepted,
@@ -2604,7 +2770,12 @@ mod tests {
         let saved = composer
             .drafts
             .values
-            .get(&("room-a".into(), "scribe".into(), ComposerIntent::Message))
+            .get(&(
+                None,
+                "room-a".into(),
+                "scribe".into(),
+                ComposerIntent::Message,
+            ))
             .expect("the submitted agent draft remains privately keyed");
         assert_eq!(saved.text, "");
         let follow_up = actions.take_collab_requests();
@@ -2634,7 +2805,12 @@ mod tests {
         composer.park_pending_session();
         composer.poll_retained_sessions();
 
-        let key = ("room-a".into(), "scribe".into(), ComposerIntent::Queue);
+        let key = (
+            None,
+            "room-a".into(),
+            "scribe".into(),
+            ComposerIntent::Queue,
+        );
         assert!(composer.retained_sessions.is_empty());
         assert_eq!(
             composer.receipts.get(&key),
@@ -2680,7 +2856,12 @@ mod tests {
             .follow_until = std::time::Instant::now();
         composer.save_draft();
         composer.park_pending_session();
-        let key = ("room-a".into(), "scribe".into(), ComposerIntent::Steer);
+        let key = (
+            None,
+            "room-a".into(),
+            "scribe".into(),
+            ComposerIntent::Steer,
+        );
         composer.drafts.values.insert(
             key.clone(),
             DraftEntry {
@@ -2733,7 +2914,12 @@ mod tests {
         composer.park_pending_session();
         composer.poll_retained_sessions();
 
-        let key = ("room-a".into(), "scribe".into(), ComposerIntent::Steer);
+        let key = (
+            None,
+            "room-a".into(),
+            "scribe".into(),
+            ComposerIntent::Steer,
+        );
         assert_eq!(composer.retained_sessions.len(), 1);
         assert!(matches!(
             composer.receipts.get(&key).map(|receipt| &receipt.kind),
@@ -2783,7 +2969,12 @@ mod tests {
             .draft_revision;
         composer.save_draft();
         composer.park_pending_session();
-        let key = ("room-a".into(), "scribe".into(), ComposerIntent::Steer);
+        let key = (
+            None,
+            "room-a".into(),
+            "scribe".into(),
+            ComposerIntent::Steer,
+        );
         composer.receipts.insert(
             key.clone(),
             ComposerReceipt {
@@ -3018,6 +3209,7 @@ mod tests {
         composer.switch_intent(ComposerIntent::Queue);
         assert!(composer.pending_message.is_none());
         assert!(composer.retained_sessions.contains_key(&(
+            None,
             "room-a".into(),
             "scribe".into(),
             ComposerIntent::Message,

@@ -20,6 +20,27 @@ pub(crate) struct CertifiedActionSession {
     caller: Caller,
     host: Arc<dyn ActionHost + Send + Sync>,
     presentation: Vec<u8>,
+    custody: ActionSessionCustody,
+}
+
+/// Opaque identity custody used only to isolate private desktop UI state.
+/// It is never rendered, logged, or accepted as invocation authority.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ActionSessionCustody(ActionSessionCustodyKind);
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ActionSessionCustodyKind {
+    Certified {
+        person: [u8; 32],
+        device: [u8; 32],
+    },
+    #[cfg(test)]
+    Fixture(String),
+}
+
+pub(crate) struct DesktopActionClient {
+    pub(crate) actions: ui::remote_actions::RemoteActions,
+    pub(crate) custody: ActionSessionCustody,
 }
 
 #[derive(Clone)]
@@ -95,6 +116,44 @@ impl ActionSessionSource {
 }
 
 impl DesktopActionSession {
+    #[cfg(test)]
+    pub(crate) fn custody(&self) -> ActionSessionCustody {
+        match self {
+            Self::Certified(session) => session.custody.clone(),
+            Self::Fixture { actor, .. } => {
+                ActionSessionCustody(ActionSessionCustodyKind::Fixture(actor.clone()))
+            }
+        }
+    }
+
+    /// Use this already-validated desktop session through the shared SDK
+    /// action client while preserving its exact certified invocation origin.
+    #[must_use]
+    pub(crate) fn action_client(&self) -> DesktopActionClient {
+        match self {
+            Self::Certified(session) => DesktopActionClient {
+                actions: ui::remote_actions::RemoteActions::with_host(
+                    Arc::clone(&session.host),
+                    session.caller.clone(),
+                ),
+                custody: session.custody.clone(),
+            },
+            #[cfg(test)]
+            Self::Fixture {
+                host,
+                caller,
+                actor,
+                ..
+            } => DesktopActionClient {
+                actions: ui::remote_actions::RemoteActions::with_host(
+                    Arc::new(host.clone()),
+                    caller.clone(),
+                ),
+                custody: ActionSessionCustody(ActionSessionCustodyKind::Fixture(actor.clone())),
+            },
+        }
+    }
+
     pub(crate) fn query(
         &self,
         query: CatalogueQuery,
@@ -256,6 +315,10 @@ impl CertifiedActionSession {
             caller,
             host,
             presentation,
+            custody: ActionSessionCustody(ActionSessionCustodyKind::Certified {
+                person: certificate.user_public_key,
+                device: certificate.device_public_key,
+            }),
         })
     }
 

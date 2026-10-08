@@ -38,6 +38,20 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+fn invalidate_intrinsic_measurements(
+    taffy: &mut TaffyTree<()>,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+) -> Result<(), taffy::TaffyError> {
+    for (&node, &widget) in nodes {
+        // SAFETY: callers exclusively own the live widget tree represented by
+        // `nodes` throughout invalidation and the following layout pass.
+        if unsafe { (*widget).layout_needs_measure() } {
+            taffy.mark_dirty(node)?;
+        }
+    }
+    Ok(())
+}
+
 fn consume_record_requests(
     chrome: &Chrome,
     index: &std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
@@ -1475,6 +1489,17 @@ impl FrameBuilder {
             width: AvailableSpace::Definite(w as f32),
             height: AvailableSpace::Definite(h as f32),
         };
+        // Intrinsic content can change without changing Taffy's topology or
+        // style. Invalidate the measured descendant itself: dirtying only the
+        // root leaves a cached one-line height in place when bound text grows
+        // and wraps on the next frame.
+        if let Err(err) = invalidate_intrinsic_measurements(&mut self.taffy, measure_map) {
+            tracing::error!(
+                %err,
+                "frame-builder: could not invalidate intrinsic measurement; skipping layout this frame"
+            );
+            return;
+        }
         let layout_result = self.taffy.compute_layout_with_measure(
             outer,
             available_space,
@@ -4669,6 +4694,61 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 mod tests {
     use super::*;
 
+    #[test]
+    fn retained_layout_remeasures_dirty_bound_text_on_the_same_tree() {
+        fn rect(frame: &FrameBuilder, id: &str) -> Rect {
+            let mut targets = HashMap::new();
+            walk_widget(frame.host.as_ref(), "", &mut HashMap::new(), &mut targets);
+            targets.remove(id).expect("named retained text")
+        }
+
+        let label = ui::LocalState::new("Ready".to_string());
+        let content = ui::widget::Column::new()
+            .push(Box::new(
+                ui::widget::Text::from_state(&label, Clone::clone)
+                    .with_id("changing-status")
+                    .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
+            ))
+            .push(Box::new(
+                ui::widget::Text::new("Message  Queue  Steer").with_id("following-control"),
+            ));
+        let content = ui::widget::Container::new()
+            .with_width(180.0)
+            .with_child(Box::new(content));
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        // Keep this hand-built content outside workspace reconciliation. The
+        // FrameBuilder still owns a real Chrome separately, while a host with
+        // no Chrome cannot replace the fixture tree with projected strips.
+        let host = ShellOverlayHost::with_fixture_content(Box::new(content));
+        let mut frame = FrameBuilder::from_parts((host, chrome), (480, 320));
+        assert!(
+            rect(&frame, "changing-status").height() > 0.0,
+            "the production frame constructor must lay out its retained custom content"
+        );
+        let _ = frame.paint();
+        let short_height = rect(&frame, "changing-status").height();
+
+        label.set(
+            "Message unavailable. Your draft is still here, and it remains ready to edit across every presentation without losing its text or selection."
+                .to_string(),
+        );
+        let mut document = AutoCommit::new();
+        frame.pump_apps(&mut document, &automerge::ROOT);
+        frame.relayout();
+        let status = rect(&frame, "changing-status");
+        let following = rect(&frame, "following-control");
+
+        assert!(
+            status.height() > short_height * 2.0,
+            "the same retained Taffy tree must replace its cached one-line height after bound text wraps"
+        );
+        assert!(
+            status.y1 <= following.y0,
+            "the remeasured status must reserve space before the following control: {status:?} vs {following:?}"
+        );
+    }
+
     /// The terminal a hosted Terminal tab shows, inside its app.
     fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
         let embedded = widget
@@ -7718,30 +7798,34 @@ mod tests {
         let broker =
             crate::shell::broker_services::test_broker_with_membership(tree.clone().shared());
         let mut frame = FrameBuilder::with_tree(tree, (1280, 800));
-        frame.host_mut().attach_app_action_broker(broker);
         frame.relayout();
         let order = frame.focusable_order();
         let prior = order.get(2).copied().or_else(|| order.first().copied());
         let prior_name = focused_name(&frame, prior).expect("desktop focus target");
         let mut focus = None;
         frame.set_native_focus(&mut focus, prior);
-        let room = frame
-            .chrome()
-            .tree()
-            .desktop
-            .active_workspace()
-            .expect("active workspace")
-            .room
-            .to_string();
-        assert!(
-            frame
-                .host_mut()
-                .open_agent_quick_composer_from_user_navigation(
-                    &room,
-                    &[("scribe".into(), "Scribe".into())],
-                    Rect::new(720.0, 180.0, 744.0, 204.0),
-                )
-        );
+        let (room, owner) = {
+            let chrome = frame.chrome();
+            let tree = chrome.tree();
+            let workspace = tree.desktop.active_workspace().expect("active workspace");
+            (
+                workspace.room.to_string(),
+                chrome.local_user_for_room(&workspace.room),
+            )
+        };
+        let actions =
+            crate::shell::certified_action_session::ActionSessionSource::fixture(broker.clone())
+                .open(&room, Some(&owner))
+                .expect("fixture action session")
+                .action_client();
+        frame.host_mut().attach_app_action_broker(broker);
+        assert!(frame.host_mut().open_agent_quick_composer_with_actions(
+            actions,
+            room,
+            "scribe".into(),
+            "Scribe".into(),
+            Rect::new(720.0, 180.0, 744.0, 204.0),
+        ));
         frame.reconcile_native_focus(&mut focus);
         assert_ne!(
             focused_name(&frame, focus).as_deref(),

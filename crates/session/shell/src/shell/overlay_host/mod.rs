@@ -8084,17 +8084,34 @@ impl ShellOverlayHost {
             };
             state.local_user_for_room(&workspace_room)
         };
-        let caller = tilo_actions::remote::Caller::local_person(local_person).in_room(room);
-        let viewport = self.overlay_area();
-        self.agent_quick_composer.open(
-            broker,
-            caller,
+        let Ok(session) = crate::shell::certified_action_session::ActionSessionSource::new(broker)
+            .open(room, Some(&local_person))
+        else {
+            return false;
+        };
+        self.open_agent_quick_composer_with_actions(
+            session.action_client(),
             room.to_owned(),
             agent.clone(),
             label.clone(),
             anchor,
-            viewport,
-        );
+        )
+    }
+
+    /// Open the marker-adjacent surface with an already-authenticated action
+    /// session. Keeping this boundary explicit lets input tests exercise the
+    /// real overlay without teaching live navigation a fixture fallback.
+    pub(crate) fn open_agent_quick_composer_with_actions(
+        &mut self,
+        client: crate::shell::certified_action_session::DesktopActionClient,
+        room: String,
+        agent: String,
+        label: String,
+        anchor: Rect,
+    ) -> bool {
+        let viewport = self.overlay_area();
+        self.agent_quick_composer
+            .open(client, room, agent, label, anchor, viewport);
         true
     }
 
