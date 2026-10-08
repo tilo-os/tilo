@@ -371,9 +371,9 @@
   "limitations": "Two exposed recordings, three configurations including previously worst10dB German condition, sequential pressured-builder development; not physical-device qualification or a universal latency/accuracy guarantee. New graph shapes remain lazy and were exercised by actual full streams. English quality remains21.05%.",
   "worst_measured_supported_condition": "German de_de-0 at deterministic 10 dB synthetic noise; actual worker strict score recorded in rows; neither natural noise nor holdout",
   "checks": {
-    "native_bridge_compile": "passed one native object plus shared-library link on rcargo builder; baseline artifacts preserved",
+    "native_bridge_compile": "passed one native object plus shared-library link on the remote build host; baseline artifacts preserved",
     "actual_worker_runs": "six passed, paired English/German/German10dB; no transcript/PCM/scoring difference between each pair",
     "scope_script_py_compile": "passed",
-    "required_shell_tests_compile": "passed rcargo --no-fallback --no-fetch check --locked -p shell --tests -j2; 3.00s"
+    "required_shell_tests_compile": "passed cargo check --locked -p shell --tests -j2; 3.00s"
   }
 }

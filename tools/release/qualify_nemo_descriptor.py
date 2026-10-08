@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review the pinned native descriptor seam on the rcargo builder only.
+"""Review the pinned native descriptor seam on the remote build host only.
 
 No download, model, audio, production admission change or shared build mutation.
 Compile the loader and its actual model/recognizer call sites, then exercise
